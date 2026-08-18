@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Editor overlay — Vite demo</title>
+    <link rel="stylesheet" href="./theme.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="shell header-inner">
+        <a class="brand" href="#top">
+          <span class="brand-mark" aria-hidden="true"></span>
+          Northwind
+        </a>
+        <nav class="nav" aria-label="Primary">
+          <a href="#features">Features</a>
+          <a href="#pricing">Pricing</a>
+          <a href="#docs">Docs</a>
+        </nav>
+        <a class="button" href="#start">Start free</a>
+      </div>
+    </header>
+
+    <main class="shell" id="top">
+      <section class="hero">
+        <p class="eyebrow">Design tokens, in place</p>
+        <h1 class="hero-title">Edit the page you are looking at</h1>
+        <p class="lede">
+          Select anything, change the copy, adjust spacing with real design tokens, then hand the
+          whole change set to whoever owns the codebase.
+        </p>
+        <div class="hero-actions">
+          <a class="button" href="#start">Try edit mode</a>
+          <a class="button ghost" href="#docs">Read the docs</a>
+        </div>
+      </section>
+
+      <section class="grid" id="features" aria-label="Features">
+        <article class="card">
+          <h2>Token-aware controls</h2>
+          <p>
+            Every value picker proposes the tokens this component already uses, then the ones the
+            project uses, before offering a literal.
+          </p>
+          <a class="link" href="#docs">How it works</a>
+        </article>
+        <article class="card">
+          <h2>Reorder by dragging</h2>
+          <p>
+            The drag thumb moves the real element as you go, so the preview is the layout you get.
+            Drag out of the window to cancel.
+          </p>
+          <a class="link" href="#docs">See the gesture</a>
+        </article>
+        <article class="card">
+          <h2>Save back to code</h2>
+          <p>
+            Source locations are stamped at build time, so the generated prompt names files and
+            lines instead of guessing at selectors.
+          </p>
+          <a class="link" href="#docs">Example output</a>
+        </article>
+      </section>
+
+      <section class="split" id="pricing">
+        <figure class="media">
+          <img
+            src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='960' height='540'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%236366f1'/%3E%3Cstop offset='1' stop-color='%2322d3ee'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='960' height='540' fill='url(%23g)'/%3E%3Ccircle cx='300' cy='250' r='140' fill='rgba(255,255,255,.28)'/%3E%3Crect x='470' y='150' width='340' height='240' rx='28' fill='rgba(255,255,255,.22)'/%3E%3C/svg%3E"
+            alt="Abstract gradient with a circle and a rounded rectangle"
+            width="960"
+            height="540"
+          />
+          <figcaption>Try the Media panel: object-fit, position and aspect ratio.</figcaption>
+        </figure>
+        <div class="stack">
+          <h2>Built from web components</h2>
+          <p>
+            The overlay is Lit end to end and lives in one shadow root, so page CSS cannot leak in
+            and the overlay cannot leak out.
+          </p>
+          <ul class="checks">
+            <li>Selection, drag reorder, inline text editing</li>
+            <li>Styles, Tokens, Tree, Library, Props, Media, HTML</li>
+            <li>Design system import and export</li>
+          </ul>
+          <heo-demo-stat value="7" label="panels, one dock"></heo-demo-stat>
+        </div>
+      </section>
+
+      <section class="callout" id="docs">
+        <strong>Keyboard first</strong>
+        <span>
+          Cmd/Ctrl+E toggles edit mode. Arrows move the selection, Shift+arrows move the element,
+          Enter edits text, and single letters jump between panels.
+        </span>
+      </section>
+
+      <section class="form-section" id="start">
+        <h2>Native controls stay usable</h2>
+        <form class="form" action="#">
+          <label>
+            Work email
+            <input type="email" name="email" placeholder="you@example.com" />
+          </label>
+          <label>
+            Team size
+            <select name="size">
+              <option>Just me</option>
+              <option>2–10</option>
+              <option>11–50</option>
+            </select>
+          </label>
+          <label>
+            Anything else?
+            <textarea name="notes" rows="3">Typing here should not select the element.</textarea>
+          </label>
+          <button class="button" type="submit">Request access</button>
+        </form>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="shell">
+        <p class="muted">A fixture page. Nothing here submits anywhere.</p>
+      </div>
+    </footer>
+
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

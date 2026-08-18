@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Editor overlay — visual state</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #0f172a;
+      --ink-muted: #4a5568;
+      --surface: #ffffff;
+      --surface-subtle: #f4f6fb;
+      --accent: #4f46e5;
+      --accent-soft: #eef0ff;
+      --accent-ink: #ffffff;
+      --border-color: #dfe4ee;
+      --space-xs: 4px;
+      --space-sm: 8px;
+      --space-md: 16px;
+      --space-lg: 24px;
+      --space-xl: 40px;
+      --radius-sm: 8px;
+      --radius-md: 14px;
+      --radius-lg: 22px;
+      --shadow-md: 0 10px 30px -12px rgb(15 23 42 / 18%);
+      --text-sm: 14px;
+      --text-lg: 20px;
+      --text-xl: 32px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--surface-subtle);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+      line-height: 1.6;
+    }
+
+    .shell {
+      width: min(760px, calc(100% - var(--space-xl)));
+      margin: var(--space-xl) auto;
+    }
+
+    .hero-title {
+      margin: 0 0 var(--space-sm);
+      font-size: var(--text-xl);
+      letter-spacing: -0.02em;
+    }
+
+    .lede {
+      margin: 0 0 var(--space-lg);
+      color: var(--ink-muted);
+      font-size: var(--text-lg);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: var(--space-lg);
+    }
+
+    .card {
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-sm);
+      padding: var(--space-lg);
+      background: var(--surface);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+      box-shadow: var(--shadow-md);
+    }
+
+    .card h2 {
+      margin: 0;
+      font-size: var(--text-lg);
+    }
+
+    .card p {
+      margin: 0;
+      color: var(--ink-muted);
+      font-size: var(--text-sm);
+    }
+
+    .button {
+      align-self: flex-start;
+      padding: 10px 16px;
+      border-radius: var(--radius-sm);
+      background: var(--accent);
+      color: var(--accent-ink);
+      text-decoration: none;
+      font-size: var(--text-sm);
+      font-weight: 600;
+    }
+  </style>
+</head>
+
+<body>
+  <!-- Renders the overlay in a representative state so the chrome can be reviewed. -->
+  <main class="shell">
+    <h1 class="hero-title" id="title">Visual state</h1>
+    <p class="lede">Edit mode on, an element selected, the Styles panel open.</p>
+    <div class="grid">
+      <article class="card" id="card-one">
+        <h2>Token-aware</h2>
+        <p>Spacing and colour come from the page's own custom properties.</p>
+        <a class="button" href="#a">Primary action</a>
+      </article>
+      <article class="card" id="card-two">
+        <h2>Second card</h2>
+        <p>Selected below, so the outline, badge, drag thumb and insert affordances all show.</p>
+        <a class="button" href="#b">Secondary</a>
+      </article>
+    </div>
+  </main>
+  <pre id="out" style="position:fixed;left:-9999px">pending</pre>
+
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      // `?state=` picks which piece of chrome to show, so one fixture can be
+      // captured in several states without duplicating the page.
+      const state = new URLSearchParams(location.search).get('state') || 'styles';
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark', accent: '#6366f1' });
+      const engine = api.engine;
+
+      api.setEditing(true);
+      await wait(120);
+      api.select(document.getElementById('card-two'));
+      await wait(120);
+
+      if (state === 'menu') {
+        engine.setQuickMenu(true);
+      } else if (state === 'insert') {
+        engine.setInsertAnchor({ reference: document.getElementById('card-two'), position: 'after' });
+      } else if (state === 'save') {
+        engine.setStyle('padding', 'var(--space-xl)');
+        engine.setStyle('border-radius', 'var(--radius-lg)');
+        engine.tokens.upsert({ name: 'accent-hover', value: '#4338ca', group: 'color' });
+        engine.extractClassFromSelection('card-featured');
+        await wait(80);
+        engine.previewSave();
+      } else if (state === 'text') {
+        engine.beginTextEdit(document.getElementById('card-two').querySelector('h2'));
+      } else if (state === 'drag') {
+        const el = document.getElementById('card-two');
+        engine.startDrag(el, 700, 460);
+        engine.updateDrag(700, 460);
+      } else {
+        api.openPanel(state);
+      }
+
+      await wait(400);
+      document.getElementById('out').textContent = 'RESULTS:ready:END';
+    })();
+  </script>
+</body>
+
+</html>

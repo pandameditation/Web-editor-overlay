@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Editor overlay self-check</title>
+  <style>
+    :root {
+      --accent: #4f46e5;
+      --space-md: 16px;
+      --space-lg: 24px;
+      --radius-md: 14px;
+      --ink: #101828;
+    }
+
+    body {
+      margin: 0;
+      font-family: system-ui, sans-serif;
+    }
+
+    .card {
+      padding: var(--space-md);
+      border-radius: var(--radius-md);
+      background: #fff;
+      color: var(--ink);
+    }
+
+    .wrap {
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-md);
+      padding: var(--space-lg);
+    }
+
+    .btn {
+      background: var(--accent);
+      color: #fff;
+      padding: 8px 14px;
+      border-radius: 8px;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="wrap" id="wrap">
+    <h1 id="title">Hello</h1>
+    <p class="card" id="para">Some copy that can be edited inline.</p>
+    <a class="btn" id="link" href="#x">Action</a>
+    <img id="pic" alt="placeholder"
+      src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='20'%3E%3Crect width='40' height='20' fill='%23ccc'/%3E%3C/svg%3E">
+  </div>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const errors = [];
+      window.addEventListener('error', (e) => errors.push('error: ' + e.message));
+      window.addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+      const realError = console.error;
+      console.error = (...args) => { errors.push('console.error: ' + args.map(String).join(' ')); realError(...args); };
+
+      const results = {};
+      const progress = document.getElementById('progress');
+      const check = (name, fn) => {
+        progress.textContent = name;
+        try { results[name] = fn(); }
+        catch (err) { results[name] = 'THREW: ' + (err && err.message ? err.message : String(err)); }
+        progress.textContent = name + ' ok';
+      };
+
+      check('globalPresent', () => typeof window.HtmlEditorOverlay === 'object');
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark', accent: '#4f46e5' });
+      check('version', () => api.version);
+      check('hostInDom', () => !!document.querySelector('html-editor-overlay'));
+      check('rootShadow', () => {
+        const root = document.querySelector('html-editor-overlay > heo-overlay');
+        return !!(root && root.shadowRoot);
+      });
+
+      api.setEditing(true);
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+      check('toolbarRendered', () => {
+        const root = document.querySelector('html-editor-overlay > heo-overlay');
+        const bar = root.shadowRoot.querySelector('heo-toolbar');
+        return !!(bar && bar.shadowRoot && bar.shadowRoot.querySelector('.toggle'));
+      });
+      check('selectionLayerRendered', () => {
+        const root = document.querySelector('html-editor-overlay > heo-overlay');
+        return !!root.shadowRoot.querySelector('heo-selection-layer');
+      });
+
+      const engine = api.engine;
+      check('tokensScanned', () => engine.tokens.size);
+      check('tokenGroups', () => engine.tokens.grouped().map((g) => g.group + ':' + g.tokens.length).join(','));
+      check('classesScanned', () => engine.classes.size);
+      check('blocksLoaded', () => engine.library.list().length);
+
+      const para = document.getElementById('para');
+      api.select(para);
+      check('selected', () => engine.snapshot().selected && engine.snapshot().selected.label);
+      check('usedByTokens', () => engine.tokens.usedBy(para).map((t) => t.name).sort().join(','));
+
+      engine.setStyle('padding', 'var(--space-lg)');
+      check('inlineStyleApplied', () => para.style.padding);
+      check('changeCountAfterStyle', () => engine.records.length);
+
+      engine.toggleClass('promo');
+      check('classAdded', () => para.classList.contains('promo'));
+
+      engine.duplicate(para);
+      check('duplicated', () => document.querySelectorAll('#wrap > .card').length);
+
+      engine.undo();
+      check('afterUndoDuplicate', () => document.querySelectorAll('#wrap > .card').length);
+      engine.redo();
+      check('afterRedoDuplicate', () => document.querySelectorAll('#wrap > .card').length);
+
+      // Structural move + undo
+      const title = document.getElementById('title');
+      api.select(title);
+      engine.move('down');
+      check('movedDown', () => document.getElementById('wrap').children[1].id);
+      engine.undo();
+      check('moveUndone', () => document.getElementById('wrap').children[0].id);
+
+      // Insert a preset block (no custom element, so no dynamic import needed)
+      const card = engine.library.get('card');
+      api.select(para);
+      await engine.insertBlock(card, { title: 'Inserted', body: 'From the library.' }, { reference: para, position: 'after' });
+      check('blockInserted', () => !!document.querySelector('[data-heo-inserted]'));
+
+      // Wrap
+      api.select(para);
+      engine.wrap('<div class="shell-test"></div>');
+      check('wrapped', () => !!document.querySelector('.shell-test > #para'));
+
+      // Token creation + class extraction
+      engine.tokens.upsert({ name: 'space-2xl', value: '64px', group: 'space' });
+      check('tokenCssWritten', () => {
+        const el = document.getElementById('heo-design-tokens');
+        return !!el && el.textContent.includes('--space-2xl: 64px');
+      });
+
+      api.select(para);
+      const className = engine.extractClassFromSelection('card-tokens');
+      check('classExtracted', () => className);
+      check('classCssWritten', () => {
+        const el = document.getElementById('heo-design-classes');
+        return !!el && el.textContent.includes('.card-tokens');
+      });
+
+      // Applied rules / cascade
+      check('appliedRulesFound', () => {
+        const root = document.querySelector('html-editor-overlay > heo-overlay');
+        return typeof root !== 'undefined';
+      });
+
+      // A shorthand holding a var() has to survive extraction: the browser
+      // stores it as a pending-substitution value that does not enumerate as
+      // longhands, so an index walk over `style` misses it entirely.
+      api.select(para);
+      engine.setStyle('padding', 'var(--space-lg)');
+      engine.setStyle('border-radius', 'var(--radius-md)');
+      const shorthandClass = engine.extractClassFromSelection('shorthand-test');
+      check('shorthandClassName', () => shorthandClass);
+      check('shorthandExtracted', () => {
+        const entry = engine.classes.get('shorthand-test');
+        return entry ? Object.keys(entry.declarations).sort().join(',') : 'missing';
+      });
+
+      // Prompt generation
+      const prompt = api.getPrompt();
+      check('promptHasNoInstrumentation', () => !prompt.includes('data-heo-'));
+      check('promptLength', () => prompt.length > 400);
+      check('promptHasGroundRules', () => prompt.includes('Ground rules'));
+      check('promptHasTokens', () => prompt.includes('--space-2xl'));
+      check('promptHasChecklist', () => prompt.includes('Before you finish'));
+      check('promptMentionsSelector', () => prompt.includes('#para') || prompt.includes('.card'));
+
+      // Design system round-trip
+      const ds = api.exportDesignSystem();
+      check('dsTokens', () => ds.tokens.length > 0);
+      check('dsClasses', () => ds.classes.length > 0);
+      api.importDesignSystem(JSON.stringify({ name: 'x', version: 1, tokens: [{ name: 'imported-one', value: '#f00', group: 'color' }], classes: [], blocks: [] }));
+      check('dsImported', () => !!engine.tokens.get('imported-one'));
+
+      // HTML export strips overlay
+      const exported = api.exportHTML();
+      // Parse the export instead of substring-matching: this page's own script text
+      // contains the very strings being looked for.
+      const parsed = new DOMParser().parseFromString(exported, 'text/html');
+      check('exportNoHost', () => parsed.querySelectorAll('html-editor-overlay').length);
+      check('exportNoSrcAttr', () => parsed.querySelectorAll('[data-heo-src]').length);
+      check('exportNoInsertedMark', () => parsed.querySelectorAll('[data-heo-inserted]').length);
+      check('exportNoContentEditable', () => parsed.querySelectorAll('[contenteditable]').length);
+      check('exportKeepsGeneratedCss', () => {
+        const styles = Array.from(parsed.querySelectorAll('style')).map((s) => s.textContent).join('');
+        return styles.includes('--space-2xl') && styles.includes('.card-tokens');
+      });
+      check('exportHasContent', () => !!parsed.getElementById('para'));
+
+      // Panels render
+      api.openPanel('styles');
+      await new Promise((r) => setTimeout(r, 60));
+      check('dockRendered', () => {
+        const root = document.querySelector('html-editor-overlay > heo-overlay');
+        const dock = root.shadowRoot.querySelector('heo-dock');
+        return !!(dock && dock.shadowRoot && dock.shadowRoot.querySelector('heo-styles-panel'));
+      });
+      check('stylesPanelRows', () => {
+        const root = document.querySelector('html-editor-overlay > heo-overlay');
+        const panel = root.shadowRoot.querySelector('heo-dock').shadowRoot.querySelector('heo-styles-panel');
+        return panel.shadowRoot.querySelectorAll('heo-section').length;
+      });
+
+      for (const tab of ['tokens', 'tree', 'library', 'props', 'media', 'code']) {
+        api.openPanel(tab);
+        await new Promise((r) => setTimeout(r, 50));
+        check('panel_' + tab, () => {
+          const root = document.querySelector('html-editor-overlay > heo-overlay');
+          const dock = root.shadowRoot.querySelector('heo-dock');
+          const panel = dock.shadowRoot.querySelector('heo-' + tab + '-panel');
+          return !!(panel && panel.shadowRoot && panel.shadowRoot.childElementCount > 0);
+        });
+      }
+
+      // The suggestion ordering the whole token story depends on: tokens the
+      // selected component already uses have to come first in every value picker.
+      api.select(para);
+      api.openPanel('styles');
+      await new Promise((r) => setTimeout(r, 80));
+      const stylesPanel = () => {
+        const root = document.querySelector('html-editor-overlay > heo-overlay');
+        return root.shadowRoot.querySelector('heo-dock').shadowRoot.querySelector('heo-styles-panel');
+      };
+      const fieldFor = (label) =>
+        Array.from(stylesPanel().shadowRoot.querySelectorAll('.row')).find(
+          (row) => row.querySelector('.name') && row.querySelector('.name').textContent.trim() === label,
+        );
+
+      check('suggestionGroupsForColor', () => {
+        const row = fieldFor('color');
+        if (!row) return 'row not found';
+        const field = row.querySelector('heo-value-field');
+        const groups = [];
+        for (const s of field.suggestions) if (!groups.includes(s.group)) groups.push(s.group);
+        return groups.join(' | ');
+      });
+      check('colorFieldIsColorKind', () => {
+        const row = fieldFor('color');
+        return row ? row.querySelector('heo-value-field').kind : null;
+      });
+      check('valueFieldHasSwatches', () => {
+        const row = fieldFor('color');
+        const field = row && row.querySelector('heo-value-field');
+        return field ? field.suggestions.filter((s) => s.swatch).length : 0;
+      });
+
+      // The box editor must write longhands, not a shorthand that resets sides the
+      // element never touched.
+      check('boxEditorLonghand', () => {
+        const box = stylesPanel().shadowRoot.querySelector('heo-box-editor');
+        if (!box) return 'no box editor';
+        let captured = null;
+        box.addEventListener('box-change', (e) => { captured = e.detail.declarations; }, { once: true });
+        box.dispatchEvent(new CustomEvent('box-change', {
+          detail: { declarations: { 'margin-top': '12px' } }, bubbles: true, composed: true,
+        }));
+        return captured ? Object.keys(captured).join(',') : 'no event';
+      });
+      check('boxEditorReceivesDeclared', () => {
+        const box = stylesPanel().shadowRoot.querySelector('heo-box-editor');
+        return box ? Object.keys(box.declared).length : 0;
+      });
+
+      // Cascade inspector should see the page's own class rule.
+      check('cascadeShowsClassRule', () => {
+        const selectors = Array.from(stylesPanel().shadowRoot.querySelectorAll('.rule .sel')).map(
+          (el) => el.textContent.trim(),
+        );
+        return selectors.join(',') || 'none';
+      });
+
+      // Media panel against an image
+      api.select(document.getElementById('pic'));
+      api.openPanel('media');
+      await new Promise((r) => setTimeout(r, 60));
+      check('mediaFitButtons', () => {
+        const root = document.querySelector('html-editor-overlay > heo-overlay');
+        const panel = root.shadowRoot.querySelector('heo-dock').shadowRoot.querySelector('heo-media-panel');
+        return panel.shadowRoot.querySelectorAll('.fit').length;
+      });
+
+      // Text editing lifecycle
+      api.select(para);
+      engine.beginTextEdit(para);
+      check('editingAttr', () => para.getAttribute('contenteditable'));
+      para.innerHTML = 'Edited copy';
+      engine.endTextEdit(true);
+      check('textCommitted', () => para.textContent.trim() === 'Edited copy');
+      check('editingCleared', () => !para.hasAttribute('contenteditable'));
+
+      // Drag lifecycle: start, move, cancel by leaving the viewport
+      const link = document.getElementById('link');
+      api.select(link);
+      engine.startDrag(link, 100, 100);
+      check('dragStarted', () => !!engine.store.value.drag);
+      engine.updateDrag(120, 300);
+      engine.updateDrag(-50, -50);
+      check('dragWillCancel', () => engine.store.value.drag.willCancel);
+      engine.endDrag();
+      check('dragEnded', () => engine.store.value.drag === null);
+      check('linkStillInPlace', () => document.getElementById('link').parentElement.id === 'wrap');
+
+      // Reset returns the DOM to its starting shape
+      const before = document.getElementById('wrap').children.length;
+      api.reset();
+      check('resetChanges', () => engine.records.length);
+      check('resetChildren', () => ({ before, after: document.getElementById('wrap').children.length }));
+      check('resetRemovedInline', () => document.getElementById('para').getAttribute('style'));
+
+      api.unmount();
+      check('unmountedHost', () => !document.querySelector('html-editor-overlay'));
+      check('unmountedPageStyles', () => !document.getElementById('heo-page-styles'));
+      check('editAttrCleared', () => !document.documentElement.hasAttribute('data-heo-edit'));
+
+      results.__errors = errors;
+      document.getElementById('out').textContent = 'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })();
+  </script>
+</body>
+
+</html>
