@@ -79,21 +79,24 @@ export class HeoCodeEditor extends LitElement {
         overflow-wrap: normal;
       }
 
+      /* The two layers are stacked absolutely inside a fixed-height area so the
+         textarea is the single scroll container and the highlight layer is
+         scrolled to match. Sizing the textarea independently, as this used to do,
+         left the layers disagreeing about how tall the content was. */
       pre {
         position: absolute;
         inset: 0;
-        overflow: auto;
+        overflow: hidden;
         color: var(--heo-text-dim);
         pointer-events: none;
       }
-      pre::-webkit-scrollbar {
-        display: none;
-      }
 
       textarea {
-        position: relative;
+        position: absolute;
+        inset: 0;
         display: block;
         width: 100%;
+        height: 100%;
         background: transparent;
         color: transparent;
         caret-color: var(--heo-text);
@@ -184,7 +187,12 @@ export class HeoCodeEditor extends LitElement {
   @query('.gutter') private gutter!: HTMLElement;
 
   override willUpdate(changed: PropertyValues<this>): void {
-    if (changed.has('value') && this.shadowRoot?.activeElement !== this.area) {
+    // Before the first render both `area` and `activeElement` are null, and
+    // `null !== null` reads as "the textarea has focus" — which skipped the very
+    // first sync and left the editor blank until some later update happened to
+    // run. Ask the real question instead: is the textarea actually focused.
+    const focused = this.area != null && this.shadowRoot?.activeElement === this.area;
+    if (changed.has('value') && !focused) {
       this.draft = this.value;
     }
     if (changed.has('error')) this.toggleAttribute('data-invalid', Boolean(this.error));
@@ -201,11 +209,14 @@ export class HeoCodeEditor extends LitElement {
 
   override render(): TemplateResult {
     const lines = this.draft.split('\n');
-    const height = `${Math.max(this.rows, Math.min(lines.length + 1, 40)) * 1.65}em`;
+    // A definite height, from `rows` alone. Growing with content would make the
+    // box scroll the panel instead of itself, which is what made scrolling feel
+    // broken on a long block of markup.
+    const height = `calc(${this.rows} * 1.65em + 18px)`;
     const numbers = Array.from({ length: Math.max(lines.length, 1) }, (_, i) => i + 1).join('\n');
 
     return html`
-      <div class="shell" style=${`height:calc(${height} + 18px)`}>
+      <div class="shell" style=${`height:${height}`}>
         <div class="gutter" aria-hidden="true">${numbers}</div>
         <div class="area">
           <pre aria-hidden="true"><code>${unsafeHTML(highlight(`${this.draft}\n`, this.language))}</code></pre>
@@ -217,7 +228,6 @@ export class HeoCodeEditor extends LitElement {
             autocomplete="off"
             wrap="off"
             aria-label=${`${this.language.toUpperCase()} source`}
-            style=${`height:calc(${height} + 18px)`}
             @input=${this.#onInput}
             @scroll=${this.#syncScroll}
             @keydown=${this.#onKeyDown}

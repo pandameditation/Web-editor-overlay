@@ -13,6 +13,7 @@ import './chrome/text-toolbar.js';
 import './chrome/drag-chip.js';
 import './chrome/toast.js';
 import './chrome/save-dialog.js';
+import './chrome/extract-dialog.js';
 import './chrome/dock.js';
 
 /**
@@ -59,6 +60,7 @@ export class HeoOverlay extends HeoElement {
         s.drag,
         s.toast,
         s.savePreview,
+        s.extraction,
         s.theme,
         s.accent,
       ] as const,
@@ -84,6 +86,7 @@ export class HeoOverlay extends HeoElement {
       ${state.drag ? html`<heo-drag-chip></heo-drag-chip>` : nothing}
       ${state.toast ? html`<heo-toast></heo-toast>` : nothing}
       ${state.savePreview != null ? html`<heo-save-dialog></heo-save-dialog>` : nothing}
+      ${state.extraction ? html`<heo-extract-dialog></heo-extract-dialog>` : nothing}
     `;
   }
 

@@ -152,6 +152,7 @@ function suggestionsFor(spec: PropSpec, editor?: EditorEngine): ValueSuggestion[
                 : 'width';
     return buildSuggestions(editor, proxy, editor.selected);
   }
+
   if (spec.type === 'color') return buildSuggestions(editor, 'color', editor.selected);
   return [];
 }

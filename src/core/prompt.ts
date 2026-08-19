@@ -117,6 +117,7 @@ function groundRules(input: PromptInput, instrumented: boolean): string {
       'Each change gives a CSS selector. Search the codebase for the markup that produces it — including template loops and component props — and edit the source of truth rather than a duplicate.',
     );
   }
+
   if (input.tokens.length) {
     rules.push(
       'The design tokens listed below are the project vocabulary for this session. Reuse them; only add a new token when no existing one fits.',
@@ -227,6 +228,7 @@ function bySelector(records: ChangeRecord[], hasInstrumented: boolean): string {
     if (bucket) bucket.push(record);
     else groups.set(record.target, [record]);
   }
+
   for (const [target, entries] of groups) {
     lines.push(`### \`${target}\``, '');
     for (const record of entries) lines.push(...describeChange(record, null));
@@ -249,6 +251,7 @@ function describeChange(record: ChangeRecord, location: string | null): string[]
         : '  - If a token already carries this value, use the token instead.',
     );
   }
+
   if (record.before != null && record.before !== '') lines.push(`  - Before: \`${clip(record.before)}\``);
   if (record.after != null && record.after !== '') lines.push(`  - After: \`${clip(record.after)}\``);
 
@@ -316,9 +319,11 @@ function checklist(input: PromptInput): string {
   if (input.records.some((record) => record.kind === 'delete')) {
     items.push('Deleted elements are gone from the source, along with any now-unused styles, assets or handlers they owned.');
   }
+
   if (input.records.some((record) => record.kind === 'move')) {
     items.push('Reordered elements keep their DOM order in source rather than being repositioned with CSS `order` or `flex-direction`.');
   }
+
   if (input.records.some((record) => record.kind === 'text')) {
     items.push('Text changes went into the same place the project stores copy, including any i18n catalogue.');
   }

@@ -274,11 +274,19 @@ export class HeoQuickMenu extends HeoElement {
       },
       {
         id: 'extract',
-        label: 'Extract styles into a class',
+        label: 'Extract styles into a class…',
         glyph: 'droplet',
         run: () => {
-          this.editor.extractClassFromSelection();
-          this.editor.setDockTab('tokens');
+          this.editor.beginClassExtraction(el);
+          this.editor.setQuickMenu(false);
+        },
+      },
+      {
+        id: 'save-block',
+        label: 'Save as a reusable block…',
+        glyph: 'blocks',
+        run: () => {
+          this.editor.beginBlockExtraction(el);
           this.editor.setQuickMenu(false);
         },
       },
@@ -380,8 +388,8 @@ export class HeoQuickMenu extends HeoElement {
     return html`
       <div class="head">
         <button class="back" type="button" title="Back" @click=${() => {
-          this.view = 'root';
-        }}>
+        this.view = 'root';
+      }}>
           ${icon('chevronLeft', 12)}
         </button>
         <span class="name">Wrap ${labelFor(el)} in…</span>

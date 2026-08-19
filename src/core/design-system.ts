@@ -164,15 +164,19 @@ export function exportHTML(): string {
     generated.removeAttribute('data-heo-generated');
     generated.removeAttribute('id');
   }
+
   for (const el of Array.from(clone.querySelectorAll(`[${SOURCE_ATTR}]`))) {
     el.removeAttribute(SOURCE_ATTR);
   }
+
   for (const el of Array.from(clone.querySelectorAll(`[${INSERTED_ATTR}]`))) {
     el.removeAttribute(INSERTED_ATTR);
   }
+
   for (const el of Array.from(clone.querySelectorAll('[contenteditable]'))) {
     el.removeAttribute('contenteditable');
   }
+
   for (const el of Array.from(clone.querySelectorAll('[data-heo-editing]'))) {
     el.removeAttribute('data-heo-editing');
   }

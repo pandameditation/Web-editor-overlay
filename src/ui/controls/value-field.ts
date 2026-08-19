@@ -117,6 +117,8 @@ export class HeoValueField extends LitElement {
         align-items: center;
         gap: 2px;
         padding-right: 3px;
+        padding-left: 2px;
+        cursor: pointer;
       }
       .unit {
         height: 20px;
@@ -257,6 +259,14 @@ export class HeoValueField extends LitElement {
   /** Show the unit chip and enable scrubbing. Inferred from `kind` by default. */
   @property({ type: Boolean }) numeric = false;
   @property({ type: Boolean }) clearable = false;
+  /**
+   * The CSS property being edited, when there is one.
+   *
+   * Used to decide whether what the user typed is already a value the browser
+   * accepts. That is what separates "I am searching for a token" from "I am
+   * typing a literal", and therefore what Enter should do.
+   */
+  @property({ type: String }) property = '';
 
   @state() private draft = '';
   @state() private open = false;
@@ -305,19 +315,63 @@ export class HeoValueField extends LitElement {
 
   private get filtered(): ValueSuggestion[] {
     const needle = this.draft.trim().toLowerCase();
+    const units = this.#unitSuggestions();
     const all = this.suggestions;
-    if (!needle) return all;
+    if (!needle) return [...units, ...all];
+
     const scored = all.filter(
       (item) =>
         item.value.toLowerCase().includes(needle) ||
         (item.label ?? '').toLowerCase().includes(needle),
     );
     // An exact-prefix match on the label is what the user is most likely after.
-    return scored.sort((a, b) => {
+    scored.sort((a, b) => {
       const aHit = (a.label ?? a.value).toLowerCase().startsWith(needle) ? 1 : 0;
       const bHit = (b.label ?? b.value).toLowerCase().startsWith(needle) ? 1 : 0;
       return bHit - aHit;
     });
+    // Units come first: having typed a bare number, a unit is the only thing that
+    // makes the value usable, so it should be one keystroke away. Any static
+    // suggestion a unit already covers is dropped rather than listed twice.
+    const unitValues = new Set(units.map((unit) => unit.value));
+    return [...units, ...scored.filter((item) => !unitValues.has(item.value))];
+  }
+
+  /**
+   * Unit completions for a bare number.
+   *
+   * `12` on a length property is not a value at all, so offering `12px`, `12rem`
+   * and friends turns the most common half-finished input into a single choice
+   * rather than something the user has to finish typing correctly.
+   */
+  #unitSuggestions(): ValueSuggestion[] {
+    if (!this.isNumeric || this.kind === 'number') return [];
+    const match = /^(-?[\d.]+)([a-z%]*)$/i.exec(this.draft.trim());
+    if (!match) return [];
+    const [, number, typed] = match;
+    const candidates = ['px', 'rem', 'em', '%', 'vw', 'vh', 'ch'];
+    return candidates
+      // Once a unit is typed, only offer the ones that extend it.
+      .filter((unit) => !typed || (unit.startsWith(typed.toLowerCase()) && unit !== typed.toLowerCase()))
+      .map((unit) => ({
+        value: `${number}${unit}`,
+        label: `${number}${unit}`,
+        hint: UNIT_HINTS[unit],
+        group: 'Units',
+      }));
+  }
+
+  /** True when the draft is already something the browser would accept. */
+  #draftIsComplete(): boolean {
+    const raw = this.draft.trim();
+    if (!raw) return false;
+    if (raw.includes('var(--')) return true;
+    if (!this.property) return this.suggestions.some((item) => item.value === raw);
+    try {
+      return CSS.supports(this.property, raw);
+    } catch {
+      return false;
+    }
   }
 
   override render(): TemplateResult {
@@ -355,7 +409,11 @@ export class HeoValueField extends LitElement {
           @blur=${this.#onBlur}
           @keydown=${this.#onKeyDown}
         />
-        <div class="trailing">
+        <div
+          class="trailing"
+          title="Show tokens and values"
+          @click=${this.#onTrailingClick}
+        >
           ${showUnit
         ? html`<button
                 class="unit"
@@ -380,7 +438,7 @@ export class HeoValueField extends LitElement {
                 ${icon('close', 11)}
               </button>`
         : nothing}
-          ${this.suggestions.length
+          ${this.suggestions.length || this.isNumeric
         ? html`<button
                 class="mini"
                 type="button"
@@ -483,13 +541,27 @@ export class HeoValueField extends LitElement {
 
   #onInput(event: Event): void {
     this.draft = (event.target as HTMLInputElement).value;
-    this.highlight = -1;
-    if (this.suggestions.length && !this.open) this.#openPopup();
+    if (!this.open) this.#openPopup();
+    // Pre-highlight the best match, matching the block search popover: typing a
+    // few letters of a token name and pressing Enter should pick it.
+    this.highlight = this.filtered.length ? 0 : -1;
     this.#emit('value-input');
   }
 
   #onFocus(): void {
-    if (this.suggestions.length) this.#openPopup();
+    if (this.filtered.length) this.#openPopup();
+  }
+
+  /**
+   * The whole trailing strip opens the list, not just the chevron.
+   *
+   * The chevron is a 22px target inside a wider area that looks clickable; only
+   * honouring the icon itself makes the control feel broken. Clicks that landed
+   * on a real button are left to that button.
+   */
+  #onTrailingClick(event: MouseEvent): void {
+    if (event.target !== event.currentTarget) return;
+    this.#toggleOpen();
   }
 
   #onBlur(): void {
@@ -519,8 +591,11 @@ export class HeoValueField extends LitElement {
 
     if (event.key === 'Enter') {
       event.preventDefault();
-      if (this.open && this.highlight >= 0 && items[this.highlight]) {
-        this.#choose(items[this.highlight]);
+      const highlighted = this.open && this.highlight >= 0 ? items[this.highlight] : undefined;
+      // A draft the browser already accepts is a literal the user meant; anything
+      // else was a search, so Enter takes the highlighted match.
+      if (highlighted && !this.#draftIsComplete()) {
+        this.#choose(highlighted);
         return;
       }
       this.open = false;
@@ -712,3 +787,14 @@ declare global {
     'heo-value-field': HeoValueField;
   }
 }
+
+/** Short explanations shown beside unit completions. */
+const UNIT_HINTS: Record<string, string> = {
+  px: 'pixels',
+  rem: 'root font size',
+  em: 'own font size',
+  '%': 'of the parent',
+  vw: 'viewport width',
+  vh: 'viewport height',
+  ch: 'character width',
+};

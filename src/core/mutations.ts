@@ -44,6 +44,7 @@ export function setInnerHTML(el: HTMLElement, before: string, after: string): Co
   return {
     label: 'Edit text',
     mergeKey: `text:${elementKey(el)}`,
+    subject: `text:${elementKey(el)}`,
     record: record(el, 'text', `Change text of ${labelFor(el)}`, {
       before: truncate(stripTags(before)),
       after: truncate(stripTags(after)),
@@ -63,6 +64,7 @@ export function setTextContent(el: HTMLElement, after: string): Command {
   return {
     label: 'Edit text',
     mergeKey: `text:${elementKey(el)}`,
+    subject: `text:${elementKey(el)}`,
     record: record(el, 'text', `Change text of ${labelFor(el)}`, {
       before: truncate(before),
       after: truncate(after),
@@ -94,6 +96,7 @@ export function setStyleProperty(el: HTMLElement, property: string, value: strin
   return {
     label: `Set ${property}`,
     mergeKey: `style:${elementKey(el)}:${property}`,
+    subject: `style:${elementKey(el)}:${property}`,
     record: record(el, 'style', `Set ${property} to ${after || '(removed)'} on ${labelFor(el)}`, {
       before: before || undefined,
       after: after || undefined,
@@ -139,8 +142,19 @@ export function setStyleProperties(
 
   return {
     label,
+    // Scoped to the exact property set so re-applying the same group collapses,
+    // and so a group put back to its original values cancels out.
+    mergeKey: `styles:${elementKey(el)}:${entries.map(([p]) => p).join(',')}`,
+    subject: `styles:${elementKey(el)}:${entries.map(([p]) => p).join(',')}`,
     record: record(el, 'style', `${label} on ${labelFor(el)}`, {
-      after: entries.map(([property, value]) => `${property}: ${value}`).join('; '),
+      before: before
+        .filter((item) => item.value)
+        .map((item) => `${item.property}: ${item.value}`)
+        .join('; '),
+      after: entries
+        .filter(([, value]) => value)
+        .map(([property, value]) => `${property}: ${value}`)
+        .join('; '),
       detail: Object.fromEntries(entries),
     }),
     apply: () => {
@@ -169,6 +183,7 @@ export function setAttribute(el: HTMLElement, name: string, value: string | null
   return {
     label: `Set ${name}`,
     mergeKey: `attr:${elementKey(el)}:${name}`,
+    subject: `attr:${elementKey(el)}:${name}`,
     record: record(el, 'attribute', `Set ${name}="${value ?? ''}" on ${labelFor(el)}`, {
       before: before ?? undefined,
       after: value ?? undefined,
@@ -190,6 +205,7 @@ export function setClassList(el: HTMLElement, classes: string[]): Command {
   const after = classes.filter(Boolean).join(' ');
   return {
     label: 'Update classes',
+    subject: `class:${elementKey(el)}`,
     record: record(el, 'class', `Set class="${after}" on ${labelFor(el)}`, {
       before: before ?? undefined,
       after,
@@ -236,6 +252,8 @@ export function insertHTML(
 
   const command: Command = {
     label,
+    // Keyed on the node itself, so deleting it again cancels the insertion.
+    subject: `node:${elementKey(nodes[0])}`,
     record: record(reference, 'insert', `${label} ${position} ${labelFor(reference)}`, {
       after: truncate(nodes.map(cleanMarkup).join('')),
       detail: { position, html: nodes.map(cleanMarkup).join('\n') },
@@ -284,6 +302,7 @@ export function insertNodes(
   for (const node of nodes) node.setAttribute(INSERTED_ATTR, '');
   return {
     label,
+    subject: `node:${elementKey(nodes[0])}`,
     record: record(reference, 'insert', `${label} ${position} ${labelFor(reference)}`, {
       after: truncate(nodes.map(cleanMarkup).join('')),
       detail: { position, html: nodes.map(cleanMarkup).join('\n') },
@@ -303,6 +322,7 @@ export function removeElement(el: HTMLElement): Command | null {
   const before = el.nextSibling;
   return {
     label: `Delete ${labelFor(el)}`,
+    subject: `node:${elementKey(el)}`,
     record: record(el, 'delete', `Delete ${labelFor(el)}`, {
       before: truncate(cleanMarkup(el)),
     }),
@@ -324,6 +344,7 @@ export function duplicateElement(el: HTMLElement): { command: Command; node: HTM
   const before = el.nextSibling;
   const command: Command = {
     label: `Duplicate ${labelFor(el)}`,
+    subject: `node:${elementKey(clone)}`,
     record: record(el, 'duplicate', `Duplicate ${labelFor(el)}`, {
       after: truncate(cleanMarkup(clone)),
     }),
@@ -351,7 +372,12 @@ export function moveElement(
 
   return {
     label: `${describe} ${labelFor(el)}`,
+    subject: `move:${elementKey(el)}`,
     record: record(el, 'move', `${describe} ${labelFor(el)}`, {
+      // Positions as comparable strings, so moving an element and moving it back
+      // reduces to no change at all.
+      before: describePosition(originParent, originBefore),
+      after: describePosition(targetParent, targetBefore),
       detail: {
         newParent:
           targetParent instanceof HTMLElement ? selectorFor(targetParent) : 'shadow root',
@@ -365,6 +391,12 @@ export function moveElement(
       originParent.insertBefore(el, originBefore);
     },
   };
+}
+
+/** A position as a stable string: parent selector plus index among elements. */
+function describePosition(parent: Node, before: Node | null): string {
+  const where = parent instanceof HTMLElement ? selectorFor(parent) : 'shadow root';
+  return `${where}[${indexWithin(parent, before)}]`;
 }
 
 /**
@@ -388,7 +420,10 @@ export function moveCommandFromOrigin(
 
   return {
     label: `${describe} ${labelFor(el)}`,
+    subject: `move:${elementKey(el)}`,
     record: record(el, 'move', `${describe} ${labelFor(el)}`, {
+      before: describePosition(origin.parent, origin.nextSibling),
+      after: describePosition(targetParent, targetBefore),
       detail: {
         newParent: targetParent instanceof HTMLElement ? selectorFor(targetParent) : 'shadow root',
         newIndex: String(indexWithin(targetParent, targetBefore)),
@@ -432,6 +467,7 @@ export function wrapElement(
   const before = el.nextSibling;
   const command: Command = {
     label: `Wrap ${labelFor(el)}`,
+    subject: `node:${elementKey(wrapper)}`,
     record: record(el, 'wrap', `Wrap ${labelFor(el)} in <${wrapper.tagName.toLowerCase()}>`, {
       after: truncate(cleanMarkup(wrapper)),
       detail: { wrapper: cleanMarkup(wrapper) },
@@ -458,6 +494,7 @@ export function unwrapElement(el: HTMLElement): Command | null {
 
   return {
     label: `Unwrap ${labelFor(el)}`,
+    subject: `node:${elementKey(el)}`,
     record: record(el, 'replace', `Unwrap ${labelFor(el)}, keeping its ${children.length} children`),
     apply: () => {
       for (const child of children) parent.insertBefore(child, el);
@@ -488,6 +525,9 @@ export function replaceElement(
 
   const command: Command = {
     label: `Edit HTML of ${labelFor(el)}`,
+    // Keyed on position, not node identity: each edit replaces the node, so a
+    // node key would make successive markup edits look like unrelated changes.
+    subject: `markup:${selectorFor(el)}`,
     record: record(el, 'replace', `Rewrite markup of ${labelFor(el)}`, {
       before: truncate(cleanMarkup(el)),
       after: truncate(cleanMarkup(replacement)),
@@ -520,6 +560,7 @@ export function retagElement(
 
   const command: Command = {
     label: `Change to <${safeTag}>`,
+    subject: `tag:${selectorFor(el)}`,
     record: record(el, 'replace', `Change <${el.tagName.toLowerCase()}> to <${safeTag}>`, {
       before: el.tagName.toLowerCase(),
       after: safeTag,

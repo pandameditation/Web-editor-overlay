@@ -1,5 +1,6 @@
 import { HOST_TAG, IGNORE_ATTR, VERSION } from './core/constants.js';
 import { exportHTML as serializePage } from './core/design-system.js';
+import { normalizeCustomElementTag } from './core/library.js';
 import { EditorEngine } from './core/editor.js';
 import { ManagedStyleSheet } from './core/stylesheet.js';
 import { publishLit } from './core/lit-bridge.js';
@@ -30,6 +31,15 @@ export type {
   SavePayload,
 };
 export { VERSION };
+
+/**
+ * Coerce a string into a valid custom element name.
+ *
+ * Exported because anyone assembling blocks in configuration needs the same
+ * correction the authoring form applies, rather than discovering the problem when
+ * the element fails to register.
+ */
+export { normalizeCustomElementTag };
 
 /**
  * Also exported in lower case so the IIFE global reads the same as the module.
@@ -205,6 +215,7 @@ export function configure(next: Partial<MountOptions>): void {
       true,
     );
   }
+
   if (next.theme) engine.store.patch({ theme: next.theme === 'light' ? 'light' : 'dark' });
   if (next.accent) engine.store.patch({ accent: next.accent });
 }
@@ -233,6 +244,7 @@ export interface HtmlEditorOverlayGlobal {
   unmount: typeof unmount;
   configure: typeof configure;
   getInstance: typeof getInstance;
+  normalizeCustomElementTag: typeof normalizeCustomElementTag;
 }
 
 const globalAPI: HtmlEditorOverlayGlobal = {
@@ -241,6 +253,7 @@ const globalAPI: HtmlEditorOverlayGlobal = {
   unmount,
   configure,
   getInstance,
+  normalizeCustomElementTag,
 };
 
 if (typeof window !== 'undefined') {

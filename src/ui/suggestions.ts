@@ -82,6 +82,8 @@ function filterGroup(tokens: DesignToken[], group: TokenGroup | undefined): Desi
 
 function literalsFor(meta: PropertyMeta): string[] {
   switch (meta.control) {
+    // `box` is margin/padding, whose per-side fields take the same lengths.
+    case 'box':
     case 'length':
       return ['0', '2px', '4px', '8px', '12px', '16px', '24px', '32px', '48px', '100%'];
     case 'number':

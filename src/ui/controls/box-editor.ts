@@ -3,6 +3,8 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { formatLength, parseLength } from '../../core/css.js';
 import { icon } from '../icons.js';
 import { baseStyles } from '../theme.js';
+import './value-field.js';
+import type { ValueSuggestion } from './value-field.js';
 
 export type BoxSide = 'top' | 'right' | 'bottom' | 'left';
 const SIDES: BoxSide[] = ['top', 'right', 'bottom', 'left'];
@@ -109,6 +111,30 @@ export class HeoBoxEditor extends LitElement {
       .side.token {
         color: var(--heo-accent);
       }
+      .side.active {
+        background: var(--heo-accent-soft);
+        border-color: var(--heo-accent-line);
+      }
+
+      .editor {
+        margin-top: 9px;
+        padding: 8px;
+        border: 1px solid var(--heo-accent-line);
+        border-radius: var(--heo-r-sm);
+        background: var(--heo-sunken);
+      }
+      .editor-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 6px;
+        margin-bottom: 6px;
+      }
+      .editor-name {
+        color: var(--heo-text-dim);
+        font-family: var(--heo-mono);
+        font-size: 10.5px;
+      }
 
       .side.top {
         top: 2px;
@@ -149,6 +175,12 @@ export class HeoBoxEditor extends LitElement {
         color: var(--heo-text-faint);
         font-size: 10px;
       }
+      .tip {
+        margin: 7px 0 0;
+        color: var(--heo-text-faint);
+        font-size: 10px;
+        line-height: 1.4;
+      }
       .dot {
         width: 7px;
         height: 7px;
@@ -167,8 +199,12 @@ export class HeoBoxEditor extends LitElement {
   @property({ attribute: false }) declared: Record<string, string> = {};
   /** Computed values, used as dimmed placeholders where nothing is declared. */
   @property({ attribute: false }) computed: Record<string, string> = {};
+  /** Token suggestions offered when a side is opened for editing. */
+  @property({ attribute: false }) suggestions: ValueSuggestion[] = [];
 
   @state() private linked = false;
+  /** Which side, if any, is open in the token/unit editor. */
+  @state() private editing: string | null = null;
 
   override render(): TemplateResult {
     return html`
@@ -199,7 +235,48 @@ export class HeoBoxEditor extends LitElement {
           <div class="core" title="Content box">${this.#coreLabel()}</div>
         </div>
       </div>
+      ${this.editing
+        ? this.#renderSideEditor(this.editing)
+        : html`<p class="tip">Drag a side to change it, or double-click for tokens and units.</p>`}
     `;
+  }
+
+  /**
+   * Full editor for one side, opened from the diagram.
+   *
+   * The 33px fields in the diagram are right for dragging and for typing `12px`,
+   * but far too small for `var(--space-lg)` or a unit menu. Rather than grow them
+   * and wreck the diagram, selecting a side reveals the same token-aware control
+   * used everywhere else in the panel.
+   */
+  #renderSideEditor(property: string): TemplateResult {
+    const value = this.declared[property] ?? '';
+    const computed = this.computed[property] ?? '';
+    return html`<div class="editor">
+      <div class="editor-head">
+        <span class="editor-name">${property}</span>
+        <button
+          class="btn sm ghost"
+          type="button"
+          aria-label="Close"
+          @click=${() => {
+        this.editing = null;
+      }}
+        >
+          ${icon('close', 11)}
+        </button>
+      </div>
+      <heo-value-field
+        .value=${value}
+        kind="length"
+        .property=${property}
+        .suggestions=${this.suggestions}
+        placeholder=${computed}
+        clearable
+        @value-change=${(event: CustomEvent<{ value: string }>) =>
+        this.#emit(property, event.detail.value)}
+      ></heo-value-field>
+    </div>`;
   }
 
   #coreLabel(): string {
@@ -219,16 +296,19 @@ export class HeoBoxEditor extends LitElement {
       .join(' ');
 
     return html`<input
-      class=${classes}
+      class=${`${classes}${this.editing === property ? ' active' : ''}`}
       .value=${isToken ? tokenShort(declared) : value}
       placeholder=${short(computed) || '0'}
       spellcheck="false"
       autocomplete="off"
       aria-label=${`${group} ${side}`}
       title=${declared
-        ? `${property}: ${declared} — drag to change`
-        : `${property} is ${computed || 'not set'} — drag to change`}
+        ? `${property}: ${declared} — drag to change, double-click for tokens and units`
+        : `${property} is ${computed || 'not set'} — drag to change, double-click for tokens and units`}
       @pointerdown=${(event: PointerEvent) => this.#onScrub(event, property, declared || computed)}
+      @dblclick=${() => {
+        this.editing = this.editing === property ? null : property;
+      }}
       @keydown=${(event: KeyboardEvent) => this.#onKeyDown(event, property)}
       @change=${(event: Event) => this.#commitInput(event, property)}
       @focus=${(event: Event) => this.#onFocus(event, declared, computed)}

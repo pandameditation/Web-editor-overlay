@@ -151,8 +151,9 @@ window.HtmlEditorOverlay.configure({
 ## The workflow
 
 1. **`Mod+E`** turns on edit mode. Hovering outlines elements; clicking selects one.
-2. **Edit.** Double-click for text, drag the thumb to reorder, `+` on either edge
-   to insert, and the dock for styles, tokens, props and markup.
+2. **Edit.** Click to select, click again to edit the text where you clicked, drag
+   the thumb to reorder, `+` on either edge to insert, and the dock for styles,
+   tokens, props and markup.
 3. **`Mod+S`** opens the save dialog. It has two tabs: the change list grouped by
    source file, and the generated prompt in full.
 4. **Save.** With no `onSave` handler the prompt is copied to the clipboard and
@@ -160,9 +161,11 @@ window.HtmlEditorOverlay.configure({
 5. **Apply.** Give the prompt to a coding agent or a developer. It names the
    files, the lines, the declarations, the tokens to reuse, and the CSS to add.
 
-The prompt is generated from the **undo stack**, not a log — undoing a change
-removes it, so the output always describes the page as it currently stands rather
-than replaying abandoned experiments.
+The change set is the **net difference** between how the page started and how it
+stands now, not a log of what you did on the way there. Nudging a margin from 0 to
+1 to 2 is one change, `0 → 2`. Setting a value and putting it back is no change at
+all, and so is inserting an element and deleting it again. Undo history keeps every
+step; the count and the prompt only report outcomes.
 
 ### What the prompt looks like
 
@@ -205,7 +208,7 @@ components that were injected, and a completion checklist.
 | --- | --- |
 | `Mod+E` | Toggle edit mode |
 | Click | Select an element |
-| Double-click / `Enter` | Edit text in place |
+| Second click / `Enter` | Edit text, caret where you clicked |
 | `↑` / `↓` | Previous / next sibling |
 | `←` / `→` | Parent / first child |
 | `Alt+↑` / `Alt+↓` | Parent / child |
@@ -219,7 +222,11 @@ components that were injected, and a completion checklist.
 | `Escape` | Close the topmost thing, then deselect, then leave edit mode |
 
 Inside a value field, `↑` / `↓` step the number, `Shift` makes it ×10 and `Alt`
-×0.1. Dragging a field's label scrubs it. Clicking the unit chip cycles units.
+×0.1. Dragging a field's label scrubs it, and clicking the unit chip cycles units.
+Typing filters the token list by name — `cre` finds `--cream` — and `Enter` takes
+the highlighted match unless what you typed is already a valid value, in which case
+it is kept as a literal. A bare number offers unit completions. The whole trailing
+strip of the field opens the list.
 
 ---
 
@@ -227,20 +234,29 @@ Inside a value field, `↑` / `↓` step the number, `Shift` makes it ×10 and `
 
 One dock, seven tabs, resizable by its left edge.
 
-**Styles** — a task-oriented form on top, a cascade inspector underneath.
-Declared values render solid, inherited ones dimmed, so it is always clear what
-this element actually sets. The matched-rules list shows which rule wins and lets
+**Styles** — opens with **Modified**: everything the element itself declares via
+its `style` attribute, in one list, each row resettable to the value it had before
+the session. Below that is a task-oriented form, and below that a cascade inspector
+that includes the style attribute alongside the matched rules so the priority order
+is visible. Declared values render solid, inherited ones dimmed, so it is always
+clear what this element actually sets. The matched-rules list shows which rule wins and lets
 you edit **that rule**, which updates every element using it — the difference
 between fixing a shared class and patching one element inline. Spacing uses a box
-diagram where every side scrubs and edits write the individual longhand, never a
-shorthand that would reset sides you never touched.
+diagram where every side scrubs, and a double-click on a side opens the same
+token-aware field used elsewhere so a side can take `var(--space-lg)` or a
+different unit. Edits write the individual longhand, never a shorthand that would
+reset sides you never touched.
 
 **Tokens** — tokens the selected component uses come first, then the full palette
 by group, then the class registry, then import/export. Token edits are written to
 a managed stylesheet so everything referencing them updates immediately, and they
-are undoable like any other change. "Extract class" promotes an element's
-declarations into a named, reusable class and strips the now-redundant inline
-styles.
+are undoable like any other change. "Extract class" opens a review step: rename the class, untick the
+declarations that do not belong in every use, and see the resulting rule before
+anything is committed. What the class absorbs is removed from the element; what you
+left behind stays.
+
+The dock is docked to the right edge by default and can be dragged anywhere by its
+header; the button beside the close button sends it back to the edge.
 
 **Tree** — a real expandable tree over the *flattened* DOM, so slots and shadow
 roots read the way the page looks. The path to the selection expands and scrolls
@@ -251,7 +267,11 @@ want but not where it is.
 page, sidebar, cluster) and components (card, button, callout, image, stat,
 heading, divider, and a working Lit counter). Blocks with props open a form first,
 so what lands on the page is already configured. The author form at the bottom
-takes HTML, CSS, or a JS/Lit module plus a tag name.
+takes HTML, CSS, or a JS/Lit module plus a tag name, and every block — presets
+included — can be opened back into that form to be renamed, inspected and changed.
+Invalid custom element names are corrected rather than rejected late: `myfooter`
+and `my@footer` both become `my-footer`, in the tag field and in the module
+source.
 
 **Props** — for a custom element, the class's declared reactive properties, read
 from Lit's `elementProperties` or `observedAttributes` with their types. For
@@ -332,6 +352,9 @@ api.exportHTML();                  // page serialized, every trace of the editor
 
 api.exportDesignSystem();          // a DesignSystemDocument
 api.importDesignSystem(doc, overwrite?);
+
+// Correct a string into a valid custom element name, as the authoring form does.
+HtmlEditorOverlay.normalizeCustomElementTag('myFooter'); // 'my-footer'
 
 api.configure({ accent: '#e11d48' });
 api.unmount();
@@ -602,6 +625,10 @@ Known limits, stated plainly:
   pixel dimensions, which is the opposite of what a token-driven system wants.
   Size is edited in the Styles panel, where it can be a token, a percentage or a
   ratio.
+- **Reset needs a baseline.** A property's pre-session value is only knowable at the
+  moment it is first modified, so the reset button appears once a property has been
+  changed, not on values that came with the page. Use the field's clear button to
+  remove one of those outright.
 - **Cross-origin stylesheets are unreadable**, so their rules do not appear in the
   cascade inspector and their tokens are not discovered. This is a browser
   security boundary, not something to work around.

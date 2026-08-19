@@ -236,6 +236,7 @@ function inferControl(name: string): ControlType {
   if (/(?:width|height|size|gap|spacing|radius|offset|inset|top|left|right|bottom)$/.test(name)) {
     return 'length';
   }
+
   if (/^(?:opacity|order|flex-grow|flex-shrink|z-index)$/.test(name)) return 'number';
   return 'text';
 }
@@ -335,6 +336,7 @@ function collectSheets(el: HTMLElement): LabelledSheet[] {
     }
     push(sheet, 'embedded');
   }
+
   for (const sheet of document.adoptedStyleSheets ?? []) push(sheet, 'adopted');
 
   const root = el.getRootNode();
@@ -368,6 +370,7 @@ function walkRules(
     // Cross-origin stylesheet: unreadable by design.
     return;
   }
+
   for (const rule of Array.from(list)) {
     if (rule instanceof CSSStyleRule) {
       if (!matches(el, rule.selectorText)) continue;
@@ -570,6 +573,7 @@ export function inlineDeclarations(el: HTMLElement): Record<string, string> {
     }
     current += ch;
   }
+
   if (current.trim()) parts.push(current);
 
   for (const part of parts) {
@@ -597,6 +601,7 @@ export function splitTopLevel(value: string): string[] {
     }
     current += ch;
   }
+
   if (current) parts.push(current);
   return parts;
 }

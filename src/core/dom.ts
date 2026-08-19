@@ -211,6 +211,7 @@ export function queryDeep(
       if (el.shadowRoot && !isOverlayNode(el)) visit(el.shadowRoot);
     }
   };
+
   visit(root);
   return results;
 }
@@ -289,6 +290,7 @@ export function isHorizontalFlow(el: HTMLElement): boolean {
     const columns = style.gridTemplateColumns.split(' ').filter(Boolean).length;
     return columns > 1;
   }
+
   if (style.display.includes('inline')) return true;
   return false;
 }

@@ -460,6 +460,7 @@ export class HeoMediaPanel extends HeoElement {
       <heo-value-field
         .value=${el.style.getPropertyValue(property)}
         .kind=${valueKindFor(property)}
+        .property=${property}
         .suggestions=${buildSuggestions(this.editor, property, el)}
         placeholder=${computed.getPropertyValue(property).slice(0, 24)}
         clearable

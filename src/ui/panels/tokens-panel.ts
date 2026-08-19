@@ -1,7 +1,6 @@
 import { css, html, nothing, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
-import { normalizeClassName, suggestClassName } from '../../core/classes.js';
 import { propertyMeta, searchProperties } from '../../core/css.js';
 import { pickTextFile } from '../../core/design-system.js';
 import { labelFor } from '../../core/dom.js';
@@ -274,7 +273,7 @@ export class HeoTokensPanel extends HeoElement {
             type="button"
             style="margin-top:9px"
             title="Group these declarations into a reusable class"
-            @click=${() => this.#extractClass(declarations)}
+            @click=${() => this.editor.beginClassExtraction()}
           >
             ${icon('blocks', 12)} Save ${count} declaration${count === 1 ? '' : 's'} as a class
           </button>`
@@ -423,7 +422,7 @@ export class HeoTokensPanel extends HeoElement {
             type="button"
             style="margin-bottom:8px"
             title="Turn this element's inline styles into a class"
-            @click=${() => this.editor.extractClassFromSelection()}
+            @click=${() => this.editor.beginClassExtraction(el)}
           >
             ${icon('droplet', 12)} Extract from ${labelFor(el)}
           </button>`
@@ -474,6 +473,7 @@ export class HeoTokensPanel extends HeoElement {
                   <heo-value-field
                     .value=${entry.declarations[property]}
                     .kind=${valueKindFor(property)}
+                    .property=${property}
                     .suggestions=${buildSuggestions(this.editor, property, el)}
                     clearable
                     @value-change=${(event: CustomEvent<{ value: string }>) =>
@@ -584,6 +584,7 @@ export class HeoTokensPanel extends HeoElement {
     this.editor.history.commit({
       label: `Set --${token.name}`,
       mergeKey: `token:${token.name}`,
+      subject: `token:${token.name}`,
       record: {
         id: `t${Date.now().toString(36)}`,
         kind: 'token',
@@ -665,6 +666,7 @@ export class HeoTokensPanel extends HeoElement {
     this.editor.history.commit({
       label: `Set ${property} on .${name}`,
       mergeKey: `class:${name}:${property}`,
+      subject: `class-decl:${name}:${property}`,
       record: {
         id: `k${Date.now().toString(36)}`,
         kind: 'token-class',
@@ -698,13 +700,6 @@ export class HeoTokensPanel extends HeoElement {
       revert: () => this.editor.classes.upsert(entry),
     });
     if (this.expandedClass === entry.name) this.expandedClass = null;
-  }
-
-  #extractClass(declarations: Record<string, string>): void {
-    const suggested = suggestClassName(declarations);
-    const name = normalizeClassName(suggested);
-    this.editor.extractClassFromSelection(name);
-    this.expandedClass = name;
   }
 
   async #import(): Promise<void> {

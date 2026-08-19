@@ -82,6 +82,7 @@ export interface LibraryBlock {
     /** Bare class source for a non-Lit custom element. Ignored if `module` set. */
     script?: string;
   };
+
   /** Blocks that accept children get `+` affordances inside them. */
   slots?: boolean;
   origin?: 'preset' | 'user' | 'imported';

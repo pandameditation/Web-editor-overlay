@@ -399,12 +399,14 @@ function accessibilityHint(el: HTMLElement): string {
       ? 'This image has alt text. Leave it empty only when the image is purely decorative.'
       : 'This image has no alt attribute. Add one, or set it to an empty string if decorative.';
   }
+
   if (tag === 'button' || tag === 'a') {
     const text = el.textContent?.trim();
     return text
       ? 'This control has a visible label, so an aria-label is usually unnecessary.'
       : 'This control has no visible text, so it needs an aria-label.';
   }
+
   if (tag.includes('-')) {
     return 'Custom elements inherit no semantics. A role and an accessible name are usually needed.';
   }

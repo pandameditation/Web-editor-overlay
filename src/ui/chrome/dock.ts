@@ -96,6 +96,25 @@ export class HeoDock extends HeoElement {
         align-items: center;
         gap: 8px;
         padding: 11px 12px 9px;
+        cursor: grab;
+        touch-action: none;
+        user-select: none;
+      }
+      header:active {
+        cursor: grabbing;
+      }
+      /* Controls inside the header must not start a drag. */
+      header .btn {
+        cursor: pointer;
+      }
+      .grip-dots {
+        display: grid;
+        place-items: center;
+        color: var(--heo-text-faint);
+        flex: 0 0 auto;
+      }
+      :host([data-floating]) .grip-dots {
+        color: var(--heo-accent);
       }
       .title {
         flex: 1 1 auto;
@@ -159,7 +178,7 @@ export class HeoDock extends HeoElement {
       }
 
       @media (max-width: 760px) {
-        :host {
+        :host:not([data-floating]) {
           left: 8px;
           right: 8px;
           top: auto;
@@ -176,7 +195,7 @@ export class HeoDock extends HeoElement {
   protected state = new StoreController(
     this,
     this.editor.store,
-    (s) => [s.dockOpen, s.dockTab, s.selected, s.dockWidth] as const,
+    (s) => [s.dockOpen, s.dockTab, s.selected, s.dockWidth, s.dockFloat] as const,
     shallowArrayEquals,
   );
 
@@ -184,19 +203,31 @@ export class HeoDock extends HeoElement {
     const state = this.state.value;
     if (!state.dockOpen) return nothing;
 
-    this.style.width = `${state.dockWidth}px`;
+    this.#applyGeometry(state.dockWidth, state.dockFloat);
     const tab = TABS.find((entry) => entry.id === state.dockTab) ?? TABS[0];
 
     return html`<div class="dock surface">
       <div class="grab" title="Drag to resize" @pointerdown=${this.#onResize}></div>
 
-      <header>
+      <header @pointerdown=${this.#onDragStart}>
+        <span class="grip-dots" title="Drag to move the panel">${icon('grip', 12)}</span>
         <div class="title">
           <div class="name">${tab.label}</div>
           <span class="target">
             ${state.selected ? labelFor(state.selected) : 'Nothing selected'}
           </span>
         </div>
+        ${state.dockFloat
+        ? html`<button
+              class="btn icon ghost"
+              type="button"
+              aria-label="Dock to the right edge"
+              title="Dock to the right edge"
+              @click=${() => this.editor.resetDockPosition()}
+            >
+              ${icon('panel', 14)}
+            </button>`
+        : nothing}
         <button
           class="btn icon ghost"
           type="button"
@@ -210,7 +241,7 @@ export class HeoDock extends HeoElement {
 
       <div class="tabs" role="tablist">
         ${TABS.map(
-      (entry) => html`<button
+          (entry) => html`<button
             class="tab"
             role="tab"
             aria-selected=${entry.id === state.dockTab}
@@ -218,7 +249,7 @@ export class HeoDock extends HeoElement {
           >
             ${icon(entry.glyph, 13)} ${entry.label}
           </button>`,
-    )}
+        )}
       </div>
 
       <div class="body" role="tabpanel">${this.#renderPanel(state.dockTab)}</div>
@@ -244,6 +275,57 @@ export class HeoDock extends HeoElement {
       default:
         return html`<div class="empty">Unknown panel.</div>`;
     }
+  }
+
+  /**
+   * Switch between edge-anchored and free-floating layout.
+   *
+   * Anchored is the default and stays responsive to window height. Once dragged,
+   * the dock keeps an explicit box, which is what lets it be parked over a wide
+   * page's empty space instead of covering the content being edited.
+   */
+  #applyGeometry(width: number, float: { x: number; y: number; height: number } | null): void {
+    this.style.width = `${width}px`;
+    this.toggleAttribute('data-floating', Boolean(float));
+    if (!float) {
+      this.style.removeProperty('left');
+      this.style.removeProperty('height');
+      this.style.right = '14px';
+      this.style.top = '14px';
+      this.style.bottom = '14px';
+      return;
+    }
+    this.style.removeProperty('right');
+    this.style.removeProperty('bottom');
+    this.style.left = `${float.x}px`;
+    this.style.top = `${float.y}px`;
+    this.style.height = `${float.height}px`;
+  }
+
+  #onDragStart(event: PointerEvent): void {
+    // A press on a button in the header is a button press, not a drag.
+    if (event.composedPath().some((node) => node instanceof HTMLElement && node.closest?.('.btn'))) {
+      return;
+    }
+    event.preventDefault();
+
+    const box = this.getBoundingClientRect();
+    const offset = { x: event.clientX - box.left, y: event.clientY - box.top };
+    const height = box.height;
+    const header = event.currentTarget as HTMLElement;
+    header.setPointerCapture(event.pointerId);
+
+    const move = (moveEvent: PointerEvent): void => {
+      this.editor.setDockFloat(moveEvent.clientX - offset.x, moveEvent.clientY - offset.y, height);
+    };
+    const up = (): void => {
+      header.removeEventListener('pointermove', move);
+      header.removeEventListener('pointerup', up);
+      header.removeEventListener('pointercancel', up);
+    };
+    header.addEventListener('pointermove', move);
+    header.addEventListener('pointerup', up);
+    header.addEventListener('pointercancel', up);
   }
 
   #onResize(event: PointerEvent): void {

@@ -107,13 +107,27 @@ export class HeoCodePanel extends HeoElement {
 
   @query('heo-code-editor') private codeEditor?: HeoCodeEditor;
 
-  override render(): TemplateResult {
+  /**
+   * Load the buffer before rendering, not during it.
+   *
+   * Writing reactive state inside `render()` schedules a second update and means
+   * the first frame is built from stale state. `willUpdate` is the hook for
+   * deriving state from other state.
+   */
+  override willUpdate(): void {
     const el = this.editor.selected;
     if (!el || !el.isConnected) {
       this.#loadedFor = null;
-      return html`<div class="empty">Select an element to edit its markup.</div>`;
+      return;
     }
     this.#syncBuffer(el);
+  }
+
+  override render(): TemplateResult {
+    const el = this.editor.selected;
+    if (!el || !el.isConnected) {
+      return html`<div class="empty">Select an element to edit its markup.</div>`;
+    }
     const source = nearestSourceRef(el);
 
     return html`
@@ -143,19 +157,19 @@ export class HeoCodePanel extends HeoElement {
         </div>
         <heo-segmented
           .options=${[
-            { value: 'outer', label: 'Whole element' },
-            { value: 'inner', label: 'Contents only' },
-          ]}
+        { value: 'outer', label: 'Whole element' },
+        { value: 'inner', label: 'Contents only' },
+      ]}
           .value=${this.mode}
           label="Edit scope"
           @segment-change=${(event: CustomEvent<{ value: string }>) => {
-            this.mode = (event.detail.value || 'outer') as 'outer' | 'inner';
-            this.#loadedFor = null;
-          }}
+        this.mode = (event.detail.value || 'outer') as 'outer' | 'inner';
+        this.#loadedFor = null;
+      }}
         ></heo-segmented>
         ${source
-          ? html`<span class="src">${source.file}:${source.line}:${source.column}</span>`
-          : nothing}
+        ? html`<span class="src">${source.file}:${source.line}:${source.column}</span>`
+        : nothing}
       </div>
 
       <div class="body">
@@ -170,14 +184,14 @@ export class HeoCodePanel extends HeoElement {
         ></heo-code-editor>
 
         ${this.stripped.length
-          ? html`<div class="warn">
+        ? html`<div class="warn">
               <span class="g">${icon('lock', 12)}</span>
               <span>
                 Removed on parse: ${this.stripped.join(', ')}. Scripts and inline event handlers
                 cannot be added from here — add them in source instead.
               </span>
             </div>`
-          : nothing}
+        : nothing}
       </div>
 
       <div class="foot">

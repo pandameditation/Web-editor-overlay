@@ -101,6 +101,7 @@ function tokenizeTag(tag: string): Token[] {
     if (match[3]) tokens.push({ type: 'value', text: match[3] });
     cursor = match.index + match[0].length;
   }
+
   if (cursor < rest.length) {
     rest = rest.slice(cursor);
     // Bare boolean attributes plus the closing bracket.
@@ -200,6 +201,7 @@ function tokenizeJS(source: string): Token[] {
     }
     cursor = match.index + match[0].length;
   }
+
   if (cursor < source.length) tokens.push({ type: 'plain', text: source.slice(cursor) });
   return tokens;
 }

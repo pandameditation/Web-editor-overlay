@@ -169,7 +169,7 @@ const SEGMENTED: Record<string, Array<{ value: string; label?: string; icon?: st
 };
 
 /** Sections open by default, then remembered for the session. */
-const openSections = new Set<string>(['classes', 'layout', 'spacing', 'typography']);
+const openSections = new Set<string>(['modified', 'classes', 'spacing', 'layout', 'typography']);
 
 /**
  * The style editor.
@@ -206,11 +206,29 @@ export class HeoStylesPanel extends HeoElement {
         display: grid;
         gap: 6px;
       }
+      /* The trailing column collapses to nothing when a row has no reset button,
+         so rows without one stay flush with the rest. */
       .row {
         display: grid;
-        grid-template-columns: 96px 1fr;
+        grid-template-columns: 96px minmax(0, 1fr) auto;
         align-items: center;
         gap: 6px;
+      }
+      .reset {
+        display: grid;
+        place-items: center;
+        width: 20px;
+        height: 20px;
+        border: 0;
+        border-radius: 5px;
+        background: transparent;
+        color: var(--heo-text-faint);
+        cursor: pointer;
+        padding: 0;
+      }
+      .reset:hover {
+        background: var(--heo-hover);
+        color: var(--heo-accent);
       }
       .row > .name {
         display: flex;
@@ -279,6 +297,13 @@ export class HeoStylesPanel extends HeoElement {
         gap: 6px;
         padding: 6px 8px;
         background: var(--heo-sunken);
+      }
+      .rule.inline {
+        border-color: var(--heo-accent-line);
+      }
+      .rule.inline > header {
+        background: var(--heo-accent-soft);
+        color: var(--heo-text);
       }
       .rule .sel {
         flex: 1 1 auto;
@@ -410,18 +435,72 @@ export class HeoStylesPanel extends HeoElement {
           class="btn sm"
           type="button"
           title="Turn this element's inline styles into a reusable class"
-          @click=${() => this.editor.extractClassFromSelection()}
+          @click=${() => this.editor.beginClassExtraction(el)}
         >
           ${icon('droplet', 12)} Extract class
         </button>
       </div>
 
+      ${this.#renderModified(el, computed)}
       ${this.#renderClasses(el)} ${this.#renderSpacing(el, computed, declared)}
       ${SECTIONS.filter((section) => !section.when || section.when(computed)).map((section) =>
       this.#renderSection(section, el, computed, declared),
     )}
       ${this.#renderAdder(el)} ${this.#renderCascade(rules, cascade)}
     `;
+  }
+
+  /**
+   * Everything set directly on this element, first in the panel.
+   *
+   * This is the answer to "what does this element itself do", which the grouped
+   * sections below cannot give: they are organised by concern, so a declaration
+   * like `margin-top` is buried inside Spacing and an unusual property might not
+   * appear in any group at all. Values are read from the `style` attribute as
+   * authored, so a shorthand stays a shorthand.
+   *
+   * Rows are intentionally duplicated with the sections below — the same
+   * declaration being editable in two places is less confusing than not being
+   * able to find it.
+   */
+  #renderModified(el: HTMLElement, computed: CSSStyleDeclaration): TemplateResult {
+    const declarations = inlineDeclarations(el);
+    const properties = Object.keys(declarations);
+
+    return html`<heo-section
+      heading="Modified"
+      glyph="sliders"
+      badge=${properties.length ? String(properties.length) : ''}
+      ?open=${openSections.has('modified')}
+      @section-toggle=${(event: CustomEvent<{ open: boolean }>) =>
+        this.#remember('modified', event.detail.open)}
+    >
+      ${properties.length === 0
+        ? html`<p class="hint" style="margin:0">
+            Nothing is set on this element yet. Values shown below come from the stylesheet or are
+            inherited; changing one here writes it onto the element.
+          </p>`
+        : html`<p class="hint" style="margin:0 0 9px">
+              Declared on this element via its <code class="mono">style</code> attribute, which wins
+              over every stylesheet rule.
+            </p>
+            <div class="rows">
+              ${repeat(
+          properties,
+          (property) => property,
+          (property) => this.#renderRow(property, el, computed, new Map(Object.entries(declarations))),
+        )}
+            </div>
+            <button
+              class="btn sm"
+              type="button"
+              style="margin-top:9px"
+              title="Move these declarations into a reusable class"
+              @click=${() => this.editor.beginClassExtraction()}
+            >
+              ${icon('blocks', 12)} Extract ${properties.length} into a class
+            </button>`}
+    </heo-section>`;
   }
 
   /* ---------------------------------------------------------------------- */
@@ -517,6 +596,7 @@ export class HeoStylesPanel extends HeoElement {
       <heo-box-editor
         .declared=${declaredBox}
         .computed=${computedBox}
+        .suggestions=${buildSuggestions(this.editor, 'margin', el)}
         @box-change=${(event: CustomEvent<{ declarations: Record<string, string> }>) =>
         this.editor.setStyles(event.detail.declarations, 'Adjust spacing', el)}
       ></heo-box-editor>
@@ -574,12 +654,16 @@ export class HeoStylesPanel extends HeoElement {
       : html`<heo-value-field
           .value=${value}
           .kind=${valueKindFor(property)}
+          .property=${property}
           .suggestions=${buildSuggestions(this.editor, property, el)}
           placeholder=${placeholderOverride ?? shorten(computedValue)}
           clearable
           @value-change=${(event: CustomEvent<{ value: string }>) =>
           this.editor.setStyle(property, event.detail.value, el)}
         ></heo-value-field>`;
+
+    const resettable = this.editor.canResetStyle(el, property);
+    const baseline = this.editor.styleBaseline(el, property);
 
     return html`<div class=${`row${isSet ? ' set' : ''}`}>
       <span
@@ -591,6 +675,19 @@ export class HeoStylesPanel extends HeoElement {
         <span class="dot"></span>${property}
       </span>
       ${control}
+      ${resettable
+        ? html`<button
+            class="reset"
+            type="button"
+            aria-label=${`Reset ${property}`}
+            title=${baseline
+            ? `Back to ${baseline}, its value before this session`
+            : 'Remove this declaration, as it was before this session'}
+            @click=${() => this.editor.resetStyle(property, el)}
+          >
+            ${icon('undo', 11)}
+          </button>`
+        : nothing}
     </div>`;
   }
 
@@ -649,6 +746,7 @@ export class HeoStylesPanel extends HeoElement {
         <heo-value-field
           .value=${this.newValue}
           .kind=${this.newProperty ? valueKindFor(this.newProperty) : 'text'}
+          .property=${this.newProperty}
           .suggestions=${this.newProperty ? buildSuggestions(this.editor, this.newProperty, el) : []}
           placeholder="value"
           @value-change=${(event: CustomEvent<{ value: string }>) => {
@@ -693,7 +791,10 @@ export class HeoStylesPanel extends HeoElement {
     rules: AppliedRule[],
     cascade: Map<string, { from: AppliedRule }>,
   ): TemplateResult {
-    const stylesheetRules = rules.filter((rule) => rule.origin === 'stylesheet');
+    // Include the style attribute so the list shows the real picture: it sits at
+    // the top as the highest-priority source, and its declarations are editable
+    // like any rule's, just written onto the element instead of into a sheet.
+    const stylesheetRules = rules;
     return html`<heo-section
       heading="Matched CSS rules"
       glyph="code"
@@ -704,11 +805,11 @@ export class HeoStylesPanel extends HeoElement {
     >
       ${stylesheetRules.length === 0
         ? html`<p class="hint" style="margin:0">
-            No stylesheet rule matches this element, so everything comes from inline styles or
-            inheritance.
+            No rule matches this element, so everything comes from inheritance.
           </p>`
         : html`<p class="hint" style="margin:0 0 8px">
-              Editing a value here changes the rule itself, so every element using it updates.
+              Most specific first. Editing a stylesheet rule changes it for every element that uses
+              it; editing the style attribute only affects this one.
             </p>
             ${repeat(
           [...stylesheetRules].reverse(),
@@ -719,10 +820,14 @@ export class HeoStylesPanel extends HeoElement {
   }
 
   #renderRule(rule: AppliedRule, cascade: Map<string, { from: AppliedRule }>): TemplateResult {
-    return html`<div class="rule">
+    const isInline = rule.origin === 'inline';
+    return html`<div class=${`rule${isInline ? ' inline' : ''}`}>
       <header>
+        ${isInline ? icon('cursor', 11) : nothing}
         <span class="sel" title=${rule.selector}>${rule.selector}</span>
-        <span class="src" title="Stylesheet">${rule.source}</span>
+        <span class="src" title=${isInline ? 'On the element itself' : 'Stylesheet'}>
+          ${isInline ? 'this element' : rule.source}
+        </span>
       </header>
       <div class="decls">
         ${rule.declarations.map((declaration) => {
@@ -739,10 +844,15 @@ export class HeoStylesPanel extends HeoElement {
             <heo-value-field
               .value=${declaration.value}
               .kind=${valueKindFor(declaration.property)}
+              .property=${declaration.property}
               .suggestions=${buildSuggestions(this.editor, declaration.property, this.editor.selected)}
               clearable
-              @value-change=${(event: CustomEvent<{ value: string }>) =>
-          rule.rule && this.editor.setRuleDeclaration(rule.rule, declaration.property, event.detail.value)}
+              @value-change=${(event: CustomEvent<{ value: string }>) => {
+          if (isInline) this.editor.setStyle(declaration.property, event.detail.value);
+          else if (rule.rule) {
+            this.editor.setRuleDeclaration(rule.rule, declaration.property, event.detail.value);
+          }
+        }}
             ></heo-value-field>
           </div>`;
     })}

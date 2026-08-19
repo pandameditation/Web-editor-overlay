@@ -75,6 +75,7 @@ export function inferGroup(name: string, value: string): TokenGroup {
   ) {
     return 'color';
   }
+
   if (!looksSingleLength && isColorValue(v)) return 'color';
   if (looksSingleLength) return 'size';
   return 'other';

@@ -70,6 +70,11 @@
         progress.textContent = name + ' ok';
       };
 
+      // Shared shadow-DOM accessors.
+      const overlayRoot = () => document.querySelector('html-editor-overlay > heo-overlay');
+      const dockEl = () => overlayRoot().shadowRoot.querySelector('heo-dock');
+      const dockPanel = (name) => dockEl().shadowRoot.querySelector('heo-' + name + '-panel');
+
       check('globalPresent', () => typeof window.HtmlEditorOverlay === 'object');
 
       const api = window.HtmlEditorOverlay.mount({ theme: 'dark', accent: '#4f46e5' });
@@ -316,12 +321,240 @@
       check('dragEnded', () => engine.store.value.drag === null);
       check('linkStillInPlace', () => document.getElementById('link').parentElement.id === 'wrap');
 
-      // Reset returns the DOM to its starting shape
-      const before = document.getElementById('wrap').children.length;
+      /* ------------------------------------------------------------------ *
+       * Change counting is the net difference, not a log of every keystroke.
+       * ------------------------------------------------------------------ */
+      engine.history.clear();
+      api.select(para);
+      engine.setStyle('margin-top', '1px', para);
+      await new Promise((r) => setTimeout(r, 60));
+      engine.setStyle('margin-top', '2px', para);
+      await new Promise((r) => setTimeout(r, 60));
+      check('netCountSameProperty', () => engine.records.length);
+      check('netDiffSpansFirstToLast', () =>
+        engine.records.map((x) => `${x.before || 'unset'}->${x.after}`).join(','),
+      );
+      // Return to the value the property actually started at, so this asserts a
+      // true round trip rather than "changed, then unset".
+      const marginAtStart = engine.records[0].before || '';
+      engine.setStyle('margin-top', marginAtStart, para);
+      await new Promise((r) => setTimeout(r, 60));
+      check('netCountAfterRoundTrip', () => engine.records.length);
+
+      engine.history.clear();
+      const throwaway = engine.insertMarkup('<span id="tmp">x</span>', {
+        reference: para,
+        position: 'after',
+      });
+      engine.remove(throwaway);
+      await new Promise((r) => setTimeout(r, 60));
+      check('netCountInsertThenDelete', () => engine.records.length);
+
+      /* Per-property reset restores the pre-session value. */
+      engine.history.clear();
+      para.setAttribute('style', 'color: rgb(1, 2, 3)');
+      engine.setStyle('color', 'var(--accent)', para);
+      await new Promise((r) => setTimeout(r, 60));
+      check('baselineCaptured', () => engine.styleBaseline(para, 'color'));
+      check('canResetAfterEdit', () => engine.canResetStyle(para, 'color'));
+      engine.resetStyle('color', para);
+      await new Promise((r) => setTimeout(r, 60));
+      check('valueAfterReset', () => para.style.color);
+      check('countAfterReset', () => engine.records.length);
+      para.removeAttribute('style');
+      engine.history.clear();
+
+      /* Modified section is first and lists the style attribute. */
+      para.setAttribute('style', 'margin-top: 8px; color: rgb(9, 9, 9)');
+      api.select(null);
+      api.select(para);
+      api.openPanel('styles');
+      await new Promise((r) => setTimeout(r, 250));
+      const stylesSections = () =>
+        Array.from(stylesPanel().shadowRoot.querySelectorAll('heo-section')).map((s) => s.heading);
+      check('firstSectionIsModified', () => stylesSections()[0]);
+      check('modifiedListsInlineProperties', () => {
+        const section = stylesPanel().shadowRoot.querySelector('heo-section');
+        return Array.from(section.querySelectorAll('.row .name'))
+          .map((n) => n.textContent.trim())
+          .join(',');
+      });
+      check('styleAttributeInCascade', () =>
+        Array.from(stylesPanel().shadowRoot.querySelectorAll('.rule .sel'))
+          .map((s) => s.textContent.trim())
+          .join(' | '),
+      );
+      para.removeAttribute('style');
+      engine.history.clear();
+
+      /* Unit completions, and Enter picking the highlighted match. */
+      const numericField = () => {
+        const row = Array.from(stylesPanel().shadowRoot.querySelectorAll('.row')).find(
+          (x) => x.querySelector('.name') && x.querySelector('.name').textContent.trim() === 'font-size',
+        );
+        return row && row.querySelector('heo-value-field');
+      };
+      api.select(para);
+      await new Promise((r) => setTimeout(r, 150));
+      const nf = numericField();
+      const nfInput = nf.shadowRoot.querySelector('input[type="text"]');
+      nfInput.value = '12';
+      nfInput.dispatchEvent(new Event('input', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 120));
+      check('unitCompletions', () =>
+        Array.from(nf.shadowRoot.querySelectorAll('.option .name'))
+          .map((n) => n.textContent.trim())
+          .join(','),
+      );
+      check('unitGroupPresent', () =>
+        Array.from(nf.shadowRoot.querySelectorAll('.group')).some(
+          (g) => g.textContent.trim() === 'Units',
+        ),
+      );
+      nfInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      await new Promise((r) => setTimeout(r, 120));
+      check('enterPicksHighlighted', () => para.style.fontSize);
+
+      /* The trailing strip, not just the chevron, opens the list. */
+      const colorRow = Array.from(stylesPanel().shadowRoot.querySelectorAll('.row')).find(
+        (x) => x.querySelector('.name') && x.querySelector('.name').textContent.trim() === 'color',
+      );
+      const colorField = colorRow.querySelector('heo-value-field');
+      colorField.shadowRoot
+        .querySelector('.trailing')
+        .dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+      await new Promise((r) => setTimeout(r, 150));
+      check('trailingOpensPopup', () => !!colorField.shadowRoot.querySelector('.popup'));
+
+      /* Box editor carries token suggestions and opens a full side editor. */
+      const boxEditor = stylesPanel().shadowRoot.querySelector('heo-box-editor');
+      check('boxEditorHasSuggestions', () => boxEditor.suggestions.length > 0);
+      boxEditor.shadowRoot
+        .querySelector('.side.top')
+        .dispatchEvent(new MouseEvent('dblclick', { bubbles: true, composed: true }));
+      await new Promise((r) => setTimeout(r, 120));
+      check('boxSideEditorOpens', () => !!boxEditor.shadowRoot.querySelector('.editor heo-value-field'));
+      engine.history.clear();
+      para.removeAttribute('style');
+
+      /* The HTML panel renders on first open, without toggling the mode. */
+      api.openPanel('code');
+      await new Promise((r) => setTimeout(r, 250));
+      check('codePanelPopulatedOnFirstOpen', () => {
+        const editor = dockPanel('code').shadowRoot.querySelector('heo-code-editor');
+        return editor.shadowRoot.querySelector('textarea').value.startsWith('<p');
+      });
+      check('codeEditorScrollsItself', () => {
+        const editor = dockPanel('code').shadowRoot.querySelector('heo-code-editor');
+        const shell = editor.shadowRoot.querySelector('.shell');
+        const area = editor.shadowRoot.querySelector('textarea');
+        return area.getBoundingClientRect().height <= shell.getBoundingClientRect().height + 1;
+      });
+
+      /* The dock can be moved and returned to the edge. */
+      engine.setDockFloat(120, 90, 480);
+      await new Promise((r) => setTimeout(r, 120));
+      check('dockFloats', () => {
+        const dock = overlayRoot().shadowRoot.querySelector('heo-dock');
+        return dock.style.left === '120px' && dock.hasAttribute('data-floating');
+      });
+      engine.resetDockPosition();
+      await new Promise((r) => setTimeout(r, 100));
+      check('dockRedocks', () => {
+        const dock = overlayRoot().shadowRoot.querySelector('heo-dock');
+        return dock.style.right === '14px' && !dock.hasAttribute('data-floating');
+      });
+      api.closePanel();
+
+      /* Click selects, the next click on the same element edits at the pointer. */
+      api.select(null);
+      await new Promise((r) => setTimeout(r, 60));
+      const paraBox = para.getBoundingClientRect();
+      const clickAt = {
+        clientX: Math.round(paraBox.left + 40),
+        clientY: Math.round(paraBox.top + paraBox.height / 2),
+      };
+      para.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true, ...clickAt }));
+      await new Promise((r) => setTimeout(r, 100));
+      check('firstClickSelectsOnly', () => engine.selected === para && !engine.store.value.textEditing);
+      para.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true, ...clickAt }));
+      await new Promise((r) => setTimeout(r, 180));
+      check('secondClickStartsEditing', () => engine.store.value.textEditing === para);
+      check('caretLandsWhereClicked', () => {
+        const selection = getSelection();
+        if (!selection || !selection.rangeCount) return 'no range';
+        const offset = selection.getRangeAt(0).startOffset;
+        return offset > 0 && offset < (para.textContent || '').length;
+      });
+      engine.endTextEdit(false);
+      engine.history.clear();
+
+      /* Class extraction is reviewable: rename and trim before committing. */
+      para.setAttribute('style', 'padding: var(--space-lg); color: rgb(4, 5, 6)');
+      api.select(para);
+      engine.beginClassExtraction(para);
+      await new Promise((r) => setTimeout(r, 150));
+      check('extractDialogOpens', () => !!overlayRoot().shadowRoot.querySelector('heo-extract-dialog'));
+      check('extractDialogListsDeclarations', () => {
+        const dialog = overlayRoot().shadowRoot.querySelector('heo-extract-dialog');
+        return Array.from(dialog.shadowRoot.querySelectorAll('.decl .p'))
+          .map((n) => n.textContent.trim())
+          .sort()
+          .join(',');
+      });
+      engine.updateExtraction({ name: 'promo-card', include: { padding: true, color: false } });
+      await new Promise((r) => setTimeout(r, 80));
+      check('extractCommits', () => engine.commitExtraction());
+      await new Promise((r) => setTimeout(r, 120));
+      check('extractedClassRenamed', () => !!engine.classes.get('promo-card'));
+      check('extractedClassTrimmed', () =>
+        Object.keys(engine.classes.get('promo-card').declarations).join(','),
+      );
+      check('extractedClassApplied', () => para.classList.contains('promo-card'));
+      check('unselectedDeclarationKept', () => para.style.color !== '');
+
+      /* An element can be captured as a reusable block. */
+      const blocksBefore = engine.library.list().length;
+      engine.beginBlockExtraction(para);
+      await new Promise((r) => setTimeout(r, 150));
+      check('blockDialogOpens', () => !!overlayRoot().shadowRoot.querySelector('heo-extract-dialog'));
+      engine.updateExtraction({ name: 'Card' });
+      check('blockExtractCommits', () => engine.commitExtraction());
+      check('blockAddedWithoutOverwriting', () => engine.library.list().length === blocksBefore + 1);
+      check('presetNotClobbered', () => engine.library.get('card').origin);
+      engine.history.clear();
+      para.removeAttribute('style');
+
+      /* Custom element names are corrected rather than rejected late. */
+      check('tagCorrections', () =>
+        ['myfooter', 'my@footer', 'MyFooter', '2cool', 'ui@card', 'my-widget']
+          .map((raw) => `${raw}=${window.HtmlEditorOverlay.normalizeCustomElementTag(raw)}`)
+          .join(' '),
+      );
+
+      /* Reset reverts everything still on the undo stack.
+       *
+       * Measured against a known starting point rather than the state at the top
+       * of this file: the assertions above clear history deliberately, and a
+       * cleared command can no longer be reverted by design. */
+      engine.history.clear();
+      const wrap = para.parentElement;
+      const childrenAtStart = wrap.children.length;
+      engine.insertMarkup('<span class="reset-probe">a</span>', { reference: para, position: 'after' });
+      engine.insertMarkup('<span class="reset-probe">b</span>', { reference: para, position: 'after' });
+      engine.setStyle('outline', '2px solid red', para);
+      await new Promise((r) => setTimeout(r, 60));
+      check('changesBeforeReset', () => engine.records.length);
+      check('childrenBeforeReset', () => wrap.children.length - childrenAtStart);
+
       api.reset();
       check('resetChanges', () => engine.records.length);
-      check('resetChildren', () => ({ before, after: document.getElementById('wrap').children.length }));
-      check('resetRemovedInline', () => document.getElementById('para').getAttribute('style'));
+      check('resetChildren', () => ({
+        before: childrenAtStart,
+        after: wrap.children.length,
+        restored: wrap.children.length === childrenAtStart,
+      }));
+      check('resetRemovedInline', () => document.getElementById('para').style.outline);
 
       api.unmount();
       check('unmountedHost', () => !document.querySelector('html-editor-overlay'));

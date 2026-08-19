@@ -26,7 +26,12 @@ export function handleKeyDown(engine: EditorEngine, event: KeyboardEvent): void 
     engine.toggleEditing();
     return;
   }
+
   if (!state.editing) return;
+
+  // Modal dialogs own their own keys; the dialog component handles Escape and
+  // commit, so the page keymap stays out of the way entirely.
+  if (state.extraction) return;
 
   // The save dialog is modal: only Escape means anything while it is open.
   if (state.savePreview != null) {
@@ -45,16 +50,19 @@ export function handleKeyDown(engine: EditorEngine, event: KeyboardEvent): void 
     else engine.undo();
     return;
   }
+
   if (mod && key.toLowerCase() === 'y') {
     event.preventDefault();
     engine.redo();
     return;
   }
+
   if (mod && key.toLowerCase() === 's') {
     event.preventDefault();
     engine.previewSave();
     return;
   }
+
   if (mod && key.toLowerCase() === 'd' && state.selected) {
     event.preventDefault();
     engine.duplicate();
@@ -163,7 +171,7 @@ const PANEL_KEYS: Record<string, PanelId> = {
 export const SHORTCUTS: Array<{ keys: string; action: string }> = [
   { keys: 'Mod+E', action: 'Toggle edit mode' },
   { keys: 'Click', action: 'Select an element' },
-  { keys: 'Double-click / Enter', action: 'Edit text in place' },
+  { keys: 'Second click / Enter', action: 'Edit text, caret where you clicked' },
   { keys: '↑ / ↓', action: 'Previous / next sibling' },
   { keys: '← / →', action: 'Parent / first child' },
   { keys: 'Alt+↑ / Alt+↓', action: 'Parent / child' },

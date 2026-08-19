@@ -28,8 +28,9 @@ import {
 } from './design-system.js';
 import { History, nextChangeId, type Command } from './history.js';
 import { handleKeyDown, matchesShortcut } from './keymap.js';
-import { BlockLibrary } from './library.js';
+import { BlockLibrary, blockFromSource } from './library.js';
 import {
+  cleanMarkup,
   duplicateElement,
   insertHTML,
   insertNodes,
@@ -49,9 +50,11 @@ import {
   type InsertPosition,
 } from './mutations.js';
 import { buildPrompt } from './prompt.js';
+import { formatHTML } from './sanitize.js';
 import { Store } from './store.js';
 import { TokenRegistry } from './tokens.js';
 import type {
+  BlockKind,
   ChangeRecord,
   DesignSystemDocument,
   DragState,
@@ -75,6 +78,40 @@ export interface InsertAnchor {
   position: InsertPosition;
 }
 
+/**
+ * A pending extraction, held in state while the user reviews it.
+ *
+ * Extraction used to happen silently with a generated name, which produced
+ * classes like `.surface-a3f1` holding whatever happened to be on the element.
+ * Naming and trimming the declaration set is the part that decides whether the
+ * result is reusable, so it happens before anything is committed.
+ */
+export interface ClassExtraction {
+  mode: 'class';
+  element: HTMLElement;
+  name: string;
+  declarations: Record<string, string>;
+  /** Which properties to include. Everything starts included. */
+  include: Record<string, boolean>;
+  /** Remove the absorbed declarations from the element's style attribute. */
+  stripInline: boolean;
+  error: string;
+}
+
+export interface BlockExtraction {
+  mode: 'block';
+  element: HTMLElement;
+  name: string;
+  kind: BlockKind;
+  category: string;
+  description: string;
+  html: string;
+  css: string;
+  error: string;
+}
+
+export type Extraction = ClassExtraction | BlockExtraction;
+
 export interface EditorState {
   editing: boolean;
   selected: HTMLElement | null;
@@ -84,9 +121,18 @@ export interface EditorState {
   dockTab: PanelId;
   toolbar: { x: number; y: number };
   dockWidth: number;
+  /**
+   * Set once the dock has been dragged away from its edge.
+   *
+   * `null` keeps it anchored to the right, stretched between the top and bottom
+   * margins, which is the right default. Dragging switches it to an explicit box
+   * so it can be parked anywhere, including over a wide layout's empty gutter.
+   */
+  dockFloat: { x: number; y: number; height: number } | null;
   drag: DragState | null;
   quickMenuOpen: boolean;
   insertAnchor: InsertAnchor | null;
+  extraction: Extraction | null;
   toast: ToastMessage | null;
   canUndo: boolean;
   canRedo: boolean;
@@ -144,9 +190,11 @@ export class EditorEngine {
       dockTab: 'styles',
       toolbar: { ...DEFAULT_TOOLBAR },
       dockWidth: 340,
+      dockFloat: null,
       drag: null,
       quickMenuOpen: false,
       insertAnchor: null,
+      extraction: null,
       toast: null,
       canUndo: false,
       canRedo: false,
@@ -177,7 +225,7 @@ export class EditorEngine {
           canUndo: this.history.canUndo,
           canRedo: this.history.canRedo,
           undoLabel: this.history.undoLabel,
-          changeCount: this.history.size,
+          changeCount: this.history.netSize,
         });
         this.options.onChange?.(this.history.records);
       }),
@@ -266,6 +314,23 @@ export class EditorEngine {
     this.store.patch({ dockWidth: Math.max(300, Math.min(560, Math.round(width))) });
   }
 
+  /** Park the dock at an explicit position. Clamped so it stays reachable. */
+  setDockFloat(x: number, y: number, height: number): void {
+    const width = this.store.value.dockWidth;
+    this.store.patch({
+      dockFloat: {
+        x: Math.min(Math.max(8, Math.round(x)), Math.max(8, innerWidth - width - 8)),
+        y: Math.min(Math.max(8, Math.round(y)), Math.max(8, innerHeight - 80)),
+        height: Math.max(240, Math.min(Math.round(height), innerHeight - 16)),
+      },
+    });
+  }
+
+  /** Send the dock back to the right edge. */
+  resetDockPosition(): void {
+    this.store.patch({ dockFloat: null });
+  }
+
   setToolbarPosition(x: number, y: number): void {
     this.store.patch({ toolbar: { x, y } });
   }
@@ -345,13 +410,67 @@ export class EditorEngine {
 
   setStyle(property: string, value: string, el = this.store.value.selected): void {
     if (!el) return;
+    this.#captureBaseline(el, property);
     this.history.commit(setStyleProperty(el, property, value));
     this.#bumpRevision();
   }
 
   setStyles(declarations: Record<string, string>, label?: string, el = this.store.value.selected): void {
     if (!el) return;
+    for (const property of Object.keys(declarations)) this.#captureBaseline(el, property);
     this.history.commit(setStyleProperties(el, declarations, label));
+    this.#bumpRevision();
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Per-property baselines                                                 */
+  /* ---------------------------------------------------------------------- */
+
+  /**
+   * The value a property had before this session touched it.
+   *
+   * Recorded lazily, on the first write to each property, which is the only
+   * moment at which the pre-session value is still knowable. `null` means the
+   * property was not set at all; `undefined` means it has never been modified,
+   * so there is nothing to reset to.
+   */
+  #styleBaseline = new WeakMap<HTMLElement, Map<string, string | null>>();
+
+  #captureBaseline(el: HTMLElement, property: string): void {
+    let map = this.#styleBaseline.get(el);
+    if (!map) {
+      map = new Map();
+      this.#styleBaseline.set(el, map);
+    }
+    if (!map.has(property)) {
+      map.set(property, el.style.getPropertyValue(property) || null);
+    }
+  }
+
+  /** `undefined` when the property was never modified in this session. */
+  styleBaseline(el: HTMLElement, property: string): string | null | undefined {
+    return this.#styleBaseline.get(el)?.get(property);
+  }
+
+  /** True when the property has been modified and differs from its baseline. */
+  canResetStyle(el: HTMLElement, property: string): boolean {
+    const baseline = this.styleBaseline(el, property);
+    if (baseline === undefined) return false;
+    return (el.style.getPropertyValue(property) || '') !== (baseline ?? '');
+  }
+
+  /**
+   * Put a property back to its pre-session value.
+   *
+   * Committed as a normal edit rather than an undo, so it is itself undoable —
+   * and because the change set is reduced to net differences, resetting a
+   * property removes it from the count entirely.
+   */
+  resetStyle(property: string, el = this.store.value.selected): void {
+    if (!el) return;
+    const baseline = this.styleBaseline(el, property);
+    if (baseline === undefined) return;
+    this.history.commit(setStyleProperty(el, property, baseline ?? ''));
     this.#bumpRevision();
   }
 
@@ -397,6 +516,7 @@ export class EditorEngine {
     this.history.commit({
       label: `Set ${property} on ${selector}`,
       mergeKey: `rule:${selector}:${property}`,
+      subject: `rule:${selector}:${property}`,
       record: {
         id: nextChangeId(),
         kind: 'style',
@@ -419,6 +539,143 @@ export class EditorEngine {
     if (target) this.#bumpRevision();
   }
 
+  /* ---------------------------------------------------------------------- */
+  /* Extraction                                                             */
+  /* ---------------------------------------------------------------------- */
+
+  /** Open the extract-to-class dialog for the selected element. */
+  beginClassExtraction(el = this.store.value.selected): void {
+    if (!el) return;
+    const inline = inlineDeclarations(el);
+    const declarations = Object.keys(inline).length ? inline : this.tokens.tokenDeclarationsOf(el);
+    if (!Object.keys(declarations).length) {
+      this.notify('There are no declarations on this element to turn into a class.', 'error');
+      return;
+    }
+    this.store.patch({
+      extraction: {
+        mode: 'class',
+        element: el,
+        name: suggestClassName(declarations),
+        declarations,
+        include: Object.fromEntries(Object.keys(declarations).map((key) => [key, true])),
+        // Only meaningful when the values came from the style attribute; token
+        // declarations inherited from a rule are not ours to remove.
+        stripInline: Object.keys(inline).length > 0,
+        error: '',
+      },
+    });
+  }
+
+  /** Open the extract-to-block dialog for the selected element. */
+  beginBlockExtraction(el = this.store.value.selected): void {
+    if (!el) return;
+    this.store.patch({
+      extraction: {
+        mode: 'block',
+        element: el,
+        name: suggestBlockName(el),
+        kind: el.children.length > 0 ? 'container' : 'component',
+        category: 'Extracted',
+        description: `Captured from ${labelFor(el)}.`,
+        html: formatHTML(cleanMarkup(el)),
+        // Ship the classes the element relies on, so the block still looks right
+        // in a project that does not have them yet.
+        css: this.#cssForSubtree(el),
+        error: '',
+      },
+    });
+  }
+
+  updateExtraction(patch: Partial<ClassExtraction> & Partial<BlockExtraction>): void {
+    const current = this.store.value.extraction;
+    if (!current) return;
+    this.store.patch({ extraction: { ...current, ...patch, error: '' } as Extraction });
+  }
+
+  cancelExtraction(): void {
+    this.store.patch({ extraction: null });
+  }
+
+  /** Apply the pending extraction. Returns false and sets an error if invalid. */
+  commitExtraction(): boolean {
+    const pending = this.store.value.extraction;
+    if (!pending) return false;
+
+    if (pending.mode === 'class') {
+      const name = normalizeClassName(pending.name);
+      if (!name) {
+        this.updateExtraction({ error: 'A class name must start with a letter and contain only letters, numbers, hyphens or underscores.' });
+        return false;
+      }
+      const declarations = Object.fromEntries(
+        Object.entries(pending.declarations).filter(
+          ([property, value]) => pending.include[property] !== false && value.trim() !== '',
+        ),
+      );
+      if (!Object.keys(declarations).length) {
+        this.updateExtraction({ error: 'Keep at least one declaration.' });
+        return false;
+      }
+      this.#commitClass(pending.element, name, declarations, pending.stripInline);
+      this.store.patch({ extraction: null });
+      return true;
+    }
+
+    const name = pending.name.trim();
+    if (!name) {
+      this.updateExtraction({ error: 'Give the block a name.' });
+      return false;
+    }
+    if (!pending.html.trim()) {
+      this.updateExtraction({ error: 'The block has no markup.' });
+      return false;
+    }
+    try {
+      const block = this.library.upsert(
+        blockFromSource({
+          id: this.library.uniqueId(name),
+          name,
+          kind: pending.kind,
+          category: pending.category,
+          description: pending.description,
+          html: pending.html,
+          css: pending.css,
+        }),
+      );
+      this.store.patch({ extraction: null });
+      this.notify(`Saved ${block.name} to the library.`, 'success');
+      return true;
+    } catch (error) {
+      this.updateExtraction({ error: error instanceof Error ? error.message : String(error) });
+      return false;
+    }
+  }
+
+  /**
+   * CSS for the registry classes used anywhere in a subtree.
+   *
+   * Makes an extracted block portable: the markup references classes, and this is
+   * what those classes mean.
+   */
+  #cssForSubtree(el: HTMLElement): string {
+    const names = new Set<string>();
+    for (const node of [el, ...Array.from(el.querySelectorAll('*'))]) {
+      for (const name of Array.from(node.classList)) {
+        if (!name.startsWith('heo-') && this.classes.get(name)) names.add(name);
+      }
+    }
+    return [...names]
+      .map((name) => {
+        const entry = this.classes.get(name)!;
+        const body = Object.entries(entry.declarations)
+          .map(([property, value]) => `  ${property}: ${value};`)
+          .join('\n');
+        return `.${name} {\n${body}\n}`;
+      })
+      .join('\n\n');
+  }
+
   /**
    * Promote the element's token-based declarations into a named class.
    *
@@ -439,15 +696,40 @@ export class EditorEngine {
       this.notify('That is not a valid class name.', 'error');
       return null;
     }
+    this.#commitClass(el, className, declarations, Object.keys(inline).length > 0);
+    return className;
+  }
 
-    this.classes.upsert({ name: className, declarations, origin: 'user' });
-
+  /**
+   * Register a class, apply it, and drop the declarations it absorbed.
+   *
+   * One command so undo restores the element's `class` and `style` attributes
+   * together — leaving one of the two behind would be worse than not undoing at
+   * all. The registry write is inside the command too, so undo also removes the
+   * class definition.
+   */
+  #commitClass(
+    el: HTMLElement,
+    className: string,
+    declarations: Record<string, string>,
+    stripInline: boolean,
+  ): void {
+    const previousEntry = this.classes.get(className);
     const previousStyle = el.getAttribute('style');
     const previousClass = el.getAttribute('class');
     const nextClass = [...new Set([...Array.from(el.classList), className])].join(' ');
 
+    // Only remove the declarations the class now carries; anything the user chose
+    // to leave behind stays on the element.
+    const remaining = { ...inlineDeclarations(el) };
+    for (const property of Object.keys(declarations)) delete remaining[property];
+    const remainingCss = Object.entries(remaining)
+      .map(([property, value]) => `${property}: ${value}`)
+      .join('; ');
+
     this.history.commit({
       label: `Extract .${className}`,
+      subject: `class-extract:${className}`,
       record: {
         id: nextChangeId(),
         kind: 'token-class',
@@ -459,10 +741,15 @@ export class EditorEngine {
         at: Date.now(),
       },
       apply: () => {
+        this.classes.upsert({ name: className, declarations, origin: 'user' });
         el.setAttribute('class', nextClass);
-        if (Object.keys(inline).length) el.removeAttribute('style');
+        if (!stripInline) return;
+        if (remainingCss) el.setAttribute('style', remainingCss);
+        else el.removeAttribute('style');
       },
       revert: () => {
+        if (previousEntry) this.classes.upsert(previousEntry);
+        else this.classes.remove(className);
         if (previousClass === null) el.removeAttribute('class');
         else el.setAttribute('class', previousClass);
         if (previousStyle === null) el.removeAttribute('style');
@@ -471,7 +758,6 @@ export class EditorEngine {
     });
     this.#bumpRevision();
     this.notify(`Created .${className} and applied it.`, 'success');
-    return className;
   }
 
   /* ---------------------------------------------------------------------- */
@@ -654,8 +940,16 @@ export class EditorEngine {
   /* Inline text editing                                                    */
   /* ---------------------------------------------------------------------- */
 
-  beginTextEdit(el = this.store.value.selected): void {
+  /**
+   * Start editing text in place.
+   *
+   * `caret` places the insertion point under the pointer instead of at the end,
+   * which is what makes clicking into a paragraph behave the way it does in every
+   * other editor: you land where you clicked.
+   */
+  beginTextEdit(el = this.store.value.selected, caret?: { x: number; y: number }): void {
     if (!el || this.store.value.textEditing === el) return;
+    if (!acceptsChildren(el)) return;
     this.endTextEdit(true);
     this.#textEditSnapshot = el.innerHTML;
     el.setAttribute('contenteditable', 'true');
@@ -668,12 +962,19 @@ export class EditorEngine {
     requestAnimationFrame(() => {
       if (this.store.value.textEditing !== el) return;
       el.focus({ preventScroll: true });
+      const selection = getSelection();
+      if (!selection) return;
+      selection.removeAllRanges();
+
+      const atPointer = caret ? rangeFromPoint(caret.x, caret.y) : null;
+      if (atPointer && el.contains(atPointer.startContainer)) {
+        selection.addRange(atPointer);
+        return;
+      }
       const range = document.createRange();
       range.selectNodeContents(el);
       range.collapse(false);
-      const selection = getSelection();
-      selection?.removeAllRanges();
-      selection?.addRange(range);
+      selection.addRange(range);
     });
   }
 
@@ -862,8 +1163,14 @@ export class EditorEngine {
 
   resetAll(): void {
     this.endTextEdit(false);
+    const selected = this.store.value.selected;
     this.history.reset();
-    this.store.patch({ selected: null, hovered: null });
+    // Keep the selection if the element survived the revert; losing it after an
+    // undo-all is disorienting and there is no reason for it.
+    this.store.patch({
+      selected: selected?.isConnected ? selected : null,
+      hovered: null,
+    });
     this.notify('All changes reverted.', 'info');
     this.#bumpGeometry();
   }
@@ -890,7 +1197,9 @@ export class EditorEngine {
   }
 
   previewSave(): void {
-    if (!this.history.size) {
+    // Net size, not stack depth: a page whose edits all cancelled out has nothing
+    // worth handing off even though undo history is not empty.
+    if (!this.history.netSize) {
       this.notify('Nothing has changed yet.', 'info');
       return;
     }
@@ -903,7 +1212,7 @@ export class EditorEngine {
   }
 
   async save(): Promise<boolean> {
-    if (!this.history.size) {
+    if (!this.history.netSize) {
       this.notify('Nothing has changed yet.', 'info');
       return false;
     }
@@ -1011,7 +1320,7 @@ export class EditorEngine {
       mounted: !this.#destroyed,
       version: VERSION,
       editing: state.editing,
-      dirty: this.history.size > 0,
+      dirty: this.history.netSize > 0,
       selected: state.selected
         ? {
           tag: state.selected.tagName.toLowerCase(),
@@ -1021,7 +1330,7 @@ export class EditorEngine {
         : null,
       canUndo: state.canUndo,
       canRedo: state.canRedo,
-      changes: this.history.size,
+      changes: this.history.netSize,
       dockOpen: state.dockOpen,
       dockTab: state.dockTab,
     };
@@ -1059,28 +1368,32 @@ export class EditorEngine {
       }
     });
 
+    /**
+     * One click selects; the next click on the same element starts editing.
+     *
+     * This replaces a separate double-click path. Two single clicks and a
+     * double-click now do the same thing, which is what people expect, and it
+     * removes the guesswork about which gesture the editor was waiting for. The
+     * caret lands where the pointer was, not at the end of the text.
+     */
     on(document, 'click', (event) => {
       if (!this.editing) return;
       if (isOverlayEvent(event)) return;
       const el = selectableFromEvent(event);
       if (!el) return;
       if (this.store.value.textEditing === el) return;
-      if (!isNativeInputEvent(event)) {
+
+      const native = isNativeInputEvent(event);
+      if (!native) {
         event.preventDefault();
         event.stopPropagation();
       }
-      this.select(el);
-    });
 
-    on(document, 'dblclick', (event) => {
-      if (!this.editing) return;
-      if (isOverlayEvent(event)) return;
-      const el = selectableFromEvent(event);
-      if (!el || isNativeInputEvent(event)) return;
-      event.preventDefault();
-      event.stopPropagation();
+      if (this.store.value.selected === el && !native) {
+        this.beginTextEdit(el, { x: event.clientX, y: event.clientY });
+        return;
+      }
       this.select(el);
-      this.beginTextEdit(el);
     });
 
     on(document, 'keydown', (event) => handleKeyDown(this, event));
@@ -1090,7 +1403,7 @@ export class EditorEngine {
     on(window, 'resize', geometry as (event: Event) => void);
 
     const beforeUnload = (event: BeforeUnloadEvent): void => {
-      if (!this.history.size) return;
+      if (!this.history.netSize) return;
       event.preventDefault();
       event.returnValue = '';
     };
@@ -1200,6 +1513,7 @@ function isSelfInflicted(record: MutationRecord): boolean {
     const name = record.attributeName ?? '';
     if (name.startsWith('data-heo-') || name === 'contenteditable') return true;
   }
+
   if (record.type === 'childList') {
     const touched = [...Array.from(record.addedNodes), ...Array.from(record.removedNodes)];
     return touched.length > 0 && touched.every(isEditorOwned);
@@ -1246,3 +1560,43 @@ function slug(value: string): string {
 
 /** Re-exported so consumers importing from the engine keep working. */
 export { matchesShortcut };
+
+/**
+ * A block name derived from the element, so the dialog opens with something
+ * recognisable rather than an empty field.
+ */
+function suggestBlockName(el: HTMLElement): string {
+  const fromClass = Array.from(el.classList).find((name) => !name.startsWith('heo-'));
+  const base = fromClass ?? el.id ?? el.tagName.toLowerCase();
+  const words = base.replace(/[-_]+/g, ' ').trim();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/**
+ * A collapsed range at a viewport point.
+ *
+ * Two APIs do this: the standard `caretPositionFromPoint` and the older
+ * `caretRangeFromPoint`. Browsers are split, so both are attempted.
+ */
+function rangeFromPoint(x: number, y: number): Range | null {
+  const doc = document as Document & {
+    caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
+    caretRangeFromPoint?: (x: number, y: number) => Range | null;
+  };
+  try {
+    const position = doc.caretPositionFromPoint?.(x, y);
+    if (position?.offsetNode) {
+      const range = document.createRange();
+      range.setStart(position.offsetNode, position.offset);
+      range.collapse(true);
+      return range;
+    }
+  } catch {
+    /* fall through to the legacy API */
+  }
+  try {
+    return doc.caretRangeFromPoint?.(x, y) ?? null;
+  } catch {
+    return null;
+  }
+}
