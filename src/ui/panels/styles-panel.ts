@@ -17,6 +17,7 @@ import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
 import { baseStyles } from '../theme.js';
 import { buildSuggestions, classSuggestions, valueKindFor } from '../suggestions.js';
+import type { HeoValueField } from '../controls/value-field.js';
 import '../controls/value-field.js';
 import '../controls/box-editor.js';
 import '../controls/segmented.js';
@@ -541,26 +542,45 @@ export class HeoStylesPanel extends HeoElement {
           </p>`}
 
       <heo-value-field
-        label="add"
-        .value=${this.classDraft}
+        label="class"
+        action="Add this class"
+        action-icon="plus"
         .suggestions=${classSuggestions(this.editor, this.classDraft)}
-        placeholder="class name"
+        placeholder="find or type a class name"
         @value-input=${(event: CustomEvent<{ value: string }>) => {
         this.classDraft = event.detail.value;
       }}
-        @value-change=${(event: CustomEvent<{ value: string }>) => this.#addClass(el, event.detail.value)}
+        @value-submit=${(event: CustomEvent<{ value: string }>) =>
+        this.#addClass(el, event.detail.value, event.target as HeoValueField)}
       ></heo-value-field>
+      <p class="hint" style="margin:6px 0 0">
+        Search the project's classes or type a new name, then press Enter or the add
+        button.
+      </p>
     </heo-section>`;
   }
 
-  #addClass(el: HTMLElement, raw: string): void {
+  /**
+   * Apply a class and hand the field back, empty, still focused.
+   *
+   * Clearing has to be done through the field's own API: while it has focus it
+   * deliberately ignores external writes to `value`, otherwise every re-render of
+   * this panel would overwrite what is being typed.
+   */
+  #addClass(el: HTMLElement, raw: string, field?: HeoValueField): void {
     const name = normalizeClassName(raw);
     if (!name) {
       if (raw.trim()) this.editor.notify(`"${raw}" is not a valid class name.`, 'error');
       return;
     }
-    if (!el.classList.contains(name)) this.editor.toggleClass(name, el);
+    if (el.classList.contains(name)) {
+      this.editor.notify(`${labelFor(el)} already has .${name}.`, 'info');
+    } else {
+      this.editor.toggleClass(name, el);
+    }
     this.classDraft = '';
+    field?.reset('');
+    field?.focusInput();
   }
 
   #renderSpacing(

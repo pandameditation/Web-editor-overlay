@@ -47,6 +47,16 @@ export class HeoDragChip extends HeoElement {
       .chip .glyph {
         color: var(--heo-accent);
       }
+      /* While a destination is announced but not yet applied, the glyph pulses.
+         It is the only cue that the pause is deliberate rather than a stall. */
+      :host([data-pending]) .chip .glyph {
+        animation: waiting 620ms var(--heo-ease) infinite;
+      }
+      @keyframes waiting {
+        50% {
+          opacity: 0.35;
+        }
+      }
       :host([data-cancel]) .chip {
         border-color: color-mix(in oklab, var(--heo-danger) 55%, transparent);
       }
@@ -66,6 +76,13 @@ export class HeoDragChip extends HeoElement {
     `,
   ];
 
+  /**
+   * Depends on the whole drag object, not a field of it.
+   *
+   * `updateDrag` replaces the object on every pointer move, so identity is the
+   * right trigger here: the chip has to follow the cursor, which means it has to
+   * re-render as often as the pointer reports.
+   */
   protected state = new StoreController(
     this,
     this.editor.store,
@@ -78,6 +95,7 @@ export class HeoDragChip extends HeoElement {
     if (!drag) return nothing;
 
     this.toggleAttribute('data-cancel', drag.willCancel);
+    this.toggleAttribute('data-pending', drag.pending && !drag.willCancel);
     this.style.left = `${Math.round(drag.pointer.x)}px`;
     this.style.top = `${Math.round(drag.pointer.y)}px`;
 

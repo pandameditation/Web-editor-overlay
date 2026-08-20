@@ -33,6 +33,12 @@ export function handleKeyDown(engine: EditorEngine, event: KeyboardEvent): void 
   // commit, so the page keymap stays out of the way entirely.
   if (state.extraction) return;
 
+  // A native `<dialog>` opened with `showModal` makes everything outside it inert,
+  // so a shortcut that opens overlay chrome would put it behind the modal where it
+  // cannot be reached. The expanded code editor is the one such dialog; while the
+  // event comes from inside it, the keys are its own.
+  if (insideNativeModal(event)) return;
+
   // The save dialog is modal: only Escape means anything while it is open.
   if (state.savePreview != null) {
     if (key === 'Escape') {
@@ -184,6 +190,18 @@ export const SHORTCUTS: Array<{ keys: string; action: string }> = [
   { keys: 'S T E B P M H', action: 'Styles, Tokens, Tree, Library, Props, Media, HTML' },
   { keys: 'Escape', action: 'Close the topmost thing, then deselect, then leave edit mode' },
 ];
+
+/**
+ * True when the keystroke came from inside an open native modal.
+ *
+ * Walks the composed path so it sees through shadow boundaries — the modal in
+ * question lives in a component's shadow root several levels down.
+ */
+function insideNativeModal(event: KeyboardEvent): boolean {
+  return event
+    .composedPath()
+    .some((node) => node instanceof HTMLDialogElement && node.open);
+}
 
 /** True when the keystroke belongs to a field the user is typing in. */
 function isEditableTarget(event: KeyboardEvent): boolean {

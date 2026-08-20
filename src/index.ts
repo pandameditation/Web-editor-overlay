@@ -1,4 +1,4 @@
-import { HOST_TAG, IGNORE_ATTR, VERSION } from './core/constants.js';
+import { DRAGGING_ATTR, HOST_TAG, IGNORE_ATTR, VERSION } from './core/constants.js';
 import { exportHTML as serializePage } from './core/design-system.js';
 import { normalizeCustomElementTag } from './core/library.js';
 import { EditorEngine } from './core/editor.js';
@@ -83,6 +83,22 @@ html[data-heo-edit] ${HOST_TAG} {
   all: initial;
   position: fixed !important;
   inset: 0 !important;
+  pointer-events: none !important;
+}
+
+/* The element being reordered. It really sits in the candidate slot — its
+   neighbours have already moved aside — so rendering it as a translucent dashed
+   shape is what separates "this is where it will land" from "this is done".
+   !important because the element's own styles are frequently more specific. */
+html[data-heo-edit] [${DRAGGING_ATTR}] {
+  opacity: 0.45 !important;
+  outline: 1.5px dashed var(--heo-drag-accent, #6366f1) !important;
+  outline-offset: 2px !important;
+  cursor: grabbing !important;
+  /* Its own transitions would fight the reflow animation. */
+  transition: none !important;
+}
+html[data-heo-edit] [${DRAGGING_ATTR}] * {
   pointer-events: none !important;
 }
 `;
@@ -193,11 +209,16 @@ export function unmount(): void {
   if (!instance) return;
   const { engine, host, sheet } = instance;
   instance = null;
+  // Order matters. `destroy()` cancels an in-flight drag, which patches the store
+  // and can queue one last render; removing the host next disconnects everything
+  // before the engine reference is dropped, so that render cannot ask a component
+  // for an engine that no longer exists.
   engine.destroy();
-  setEngine(null);
   host.remove();
+  setEngine(null);
   sheet.destroy();
   document.documentElement.removeAttribute('data-heo-edit');
+  document.documentElement.style.removeProperty('--heo-drag-accent');
 }
 
 /** Merge new options into a mounted overlay. */

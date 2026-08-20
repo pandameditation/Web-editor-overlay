@@ -154,6 +154,17 @@ export class HeoSelectionLayer extends HeoElement {
         border-radius: 2px;
         pointer-events: none;
       }
+
+      /* The element a pending Replace will swap out. Every other insert position
+         adds something and shows an accent guide line at the seam; this one takes
+         something away, and it deserves to say so before the block is picked. */
+      .doomed {
+        position: fixed;
+        border: 1.5px dashed var(--heo-danger);
+        border-radius: 3px;
+        background: color-mix(in oklab, var(--heo-danger) 10%, transparent);
+        pointer-events: none;
+      }
     `,
   ];
 
@@ -210,8 +221,12 @@ export class HeoSelectionLayer extends HeoElement {
       badgeAbove ? box.top - 25 : box.top + box.height + 4,
     )}px`;
 
+    const replacing =
+      state.insertAnchor?.reference === el && state.insertAnchor.position === 'replace';
+
     return html`
       <div class="select" style=${boxStyle(box)}></div>
+      ${replacing ? html`<div class="doomed" style=${boxStyle(box)}></div>` : nothing}
 
       <div class="badge" style=${badgeStyle}>
         ${editingText ? icon('text', 11) : icon('cursor', 11)}
@@ -251,13 +266,13 @@ export class HeoSelectionLayer extends HeoElement {
 
     const button = horizontal
       ? {
-          left: Math.round(side === 'before' ? box.left - 10 : box.left + box.width - 10),
-          top: Math.round(box.top + box.height / 2 - 10),
-        }
+        left: Math.round(side === 'before' ? box.left - 10 : box.left + box.width - 10),
+        top: Math.round(box.top + box.height / 2 - 10),
+      }
       : {
-          left: Math.round(box.left + box.width / 2 - 10),
-          top: Math.round(side === 'before' ? box.top - 10 : box.top + box.height - 10),
-        };
+        left: Math.round(box.left + box.width / 2 - 10),
+        top: Math.round(side === 'before' ? box.top - 10 : box.top + box.height - 10),
+      };
 
     const guide = horizontal
       ? `left:${Math.round(side === 'before' ? box.left - 1 : box.left + box.width - 1)}px;top:${Math.round(box.top)}px;width:2px;height:${Math.round(box.height)}px`
@@ -273,9 +288,9 @@ export class HeoSelectionLayer extends HeoElement {
         aria-label=${`Insert ${side} this element`}
         style=${`left:${button.left}px;top:${button.top}px`}
         @click=${() =>
-          this.editor.setInsertAnchor(
-            active ? null : { reference: this.state.value.selected!, position: side },
-          )}
+        this.editor.setInsertAnchor(
+          active ? null : { reference: this.state.value.selected!, position: side },
+        )}
       >
         ${icon('plus', 12)}
       </button>

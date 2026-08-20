@@ -1,10 +1,10 @@
 import { css, html, nothing, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
-import { acceptsChildren, labelFor } from '../../core/dom.js';
+import { acceptsChildren, isMutable, labelFor } from '../../core/dom.js';
 import { formatHTML } from '../../core/sanitize.js';
 import { blockFromSource, normalizeCustomElementTag } from '../../core/library.js';
-import type { InsertPosition } from '../../core/mutations.js';
+import { INSERT_POSITION_LABELS, type InsertPosition } from '../../core/mutations.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import type { BlockKind, LibraryBlock } from '../../core/types.js';
 import { HeoElement } from '../context.js';
@@ -355,12 +355,19 @@ export class HeoLibraryPanel extends HeoElement {
       </p>`;
     }
     const canNest = acceptsChildren(selected);
+    const canReplace = isMutable(selected);
+    // A position that no longer applies to the new selection would silently insert
+    // somewhere unexpected, so fall back rather than keep it.
+    if (this.position === 'lastChild' && !canNest) this.position = 'after';
+    if (this.position === 'replace' && !canReplace) this.position = 'after';
+
     return html`
       <heo-segmented
         .options=${[
         { value: 'before', label: 'Before' },
         { value: 'after', label: 'After' },
         ...(canNest ? [{ value: 'lastChild', label: 'Inside' }] : []),
+        ...(canReplace ? [{ value: 'replace', label: 'Replace' }] : []),
       ]}
         .value=${this.position}
         label="Insert position"
@@ -369,8 +376,10 @@ export class HeoLibraryPanel extends HeoElement {
       }}
       ></heo-segmented>
       <p class="target">
-        Inserting ${this.position === 'lastChild' ? 'inside' : this.position}
-        <code>${labelFor(selected)}</code>
+        ${this.position === 'replace'
+        ? html`Replacing <code>${labelFor(selected)}</code> and everything inside it`
+        : html`Inserting ${INSERT_POSITION_LABELS[this.position]}
+            <code>${labelFor(selected)}</code>`}
       </p>
     `;
   }
@@ -397,14 +406,14 @@ export class HeoLibraryPanel extends HeoElement {
           aria-label=${`Edit ${block.name}`}
           title="Inspect and edit this block"
           @click=${(event: Event) => {
-            event.stopPropagation();
-            this.#startEdit(block);
-          }}
+        event.stopPropagation();
+        this.#startEdit(block);
+      }}
           @keydown=${(event: KeyboardEvent) => {
-            if (event.key !== 'Enter') return;
-            event.stopPropagation();
-            this.#startEdit(block);
-          }}
+        if (event.key !== 'Enter') return;
+        event.stopPropagation();
+        this.#startEdit(block);
+      }}
           >${icon('sliders', 11)}</span
         >
         ${removable
@@ -545,6 +554,7 @@ export class HeoLibraryPanel extends HeoElement {
         ? html`<heo-code-editor
               language="html"
               rows="7"
+              heading="Block HTML"
               .value=${this.draft.html}
               placeholder=${isElement
             ? 'Ignored: this block inserts its custom element tag instead.'
@@ -557,6 +567,7 @@ export class HeoLibraryPanel extends HeoElement {
         ? html`<heo-code-editor
               language="css"
               rows="7"
+              heading="Block CSS"
               .value=${this.draft.css}
               placeholder=".my-block { display: grid; gap: var(--space-md, 16px); }"
               @code-input=${(event: CustomEvent<{ value: string }>) =>
@@ -585,6 +596,7 @@ export class HeoLibraryPanel extends HeoElement {
               <heo-code-editor
                 language="js"
                 rows="10"
+                heading="Component module"
                 .value=${this.draft.script}
                 placeholder=${"import { LitElement, html, css } from 'lit';\n\nclass MyWidget extends LitElement { … }\ncustomElements.define('my-widget', MyWidget);"}
                 @code-input=${(event: CustomEvent<{ value: string }>) =>

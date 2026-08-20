@@ -20,7 +20,8 @@ export function buildSuggestions(
 ): ValueSuggestion[] {
   const meta = propertyMeta(property);
   const group = meta.tokens;
-  const out: ValueSuggestion[] = [];
+  const tokenItems: ValueSuggestion[] = [];
+  const literalItems: ValueSuggestion[] = [];
   const seen = new Set<string>();
 
   const add = (
@@ -31,7 +32,7 @@ export function buildSuggestions(
     const value = `var(--${token.name})`;
     if (seen.has(value)) return;
     seen.add(value);
-    out.push({
+    tokenItems.push({
       value,
       label: token.name,
       hint: hint ?? token.value,
@@ -59,16 +60,25 @@ export function buildSuggestions(
   for (const keyword of meta.keywords ?? []) {
     if (seen.has(keyword)) continue;
     seen.add(keyword);
-    out.push({ value: keyword, group: 'Keywords' });
+    literalItems.push({ value: keyword, group: 'Accepted keywords' });
   }
 
   for (const literal of literalsFor(meta)) {
     if (seen.has(literal)) continue;
     seen.add(literal);
-    out.push({ value: literal, group: 'Common values' });
+    literalItems.push({ value: literal, group: 'Common values' });
   }
 
-  return out;
+  // A keyword property's vocabulary is a closed set, and no token can satisfy it:
+  // `overflow` wants `hidden`, never `var(--cream)`. Leading with tokens there
+  // buried the only usable answers under the whole palette. Where a token *is* a
+  // plausible value — lengths, colours, shadows, fonts — tokens stay first,
+  // because matching what the project already uses is the better default. Either
+  // way both halves are present and both are searchable, which is what makes
+  // typing a few letters of a token name work on any property.
+  return meta.control === 'keyword'
+    ? [...literalItems, ...tokenItems]
+    : [...tokenItems, ...literalItems];
 }
 
 function filterGroup(tokens: DesignToken[], group: TokenGroup | undefined): DesignToken[] {

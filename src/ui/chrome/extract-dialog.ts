@@ -361,6 +361,7 @@ export class HeoExtractDialog extends HeoElement {
           <heo-code-editor
             language="html"
             rows="9"
+            heading="Block markup"
             .value=${pending.html}
             @code-input=${(event: CustomEvent<{ value: string }>) =>
               this.editor.updateExtraction({ html: event.detail.value })}
@@ -372,6 +373,7 @@ export class HeoExtractDialog extends HeoElement {
           <heo-code-editor
             language="css"
             rows="6"
+            heading="CSS carried with the block"
             .value=${pending.css}
             placeholder="No classes from the design system are used here."
             @code-input=${(event: CustomEvent<{ value: string }>) =>

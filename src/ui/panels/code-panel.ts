@@ -176,6 +176,7 @@ export class HeoCodePanel extends HeoElement {
         <heo-code-editor
           language="html"
           rows="16"
+          heading=${`HTML · ${labelFor(el)} · ${this.mode === 'outer' ? 'whole element' : 'contents only'}`}
           .value=${this.draft}
           .error=${this.error}
           @code-input=${(event: CustomEvent<{ value: string }>) => this.#onInput(event.detail.value)}

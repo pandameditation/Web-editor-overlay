@@ -226,7 +226,16 @@ export function setClassList(el: HTMLElement, classes: string[]): Command {
 /* Structure                                                                   */
 /* -------------------------------------------------------------------------- */
 
-export type InsertPosition = 'before' | 'after' | 'firstChild' | 'lastChild';
+export type InsertPosition = 'before' | 'after' | 'firstChild' | 'lastChild' | 'replace';
+
+/** Human phrasing for each position, used in labels and change summaries. */
+export const INSERT_POSITION_LABELS: Record<InsertPosition, string> = {
+  before: 'before',
+  after: 'after',
+  firstChild: 'at the start of',
+  lastChild: 'inside',
+  replace: 'in place of',
+};
 
 /**
  * Insert sanitized HTML relative to a reference element.
@@ -245,27 +254,8 @@ export function insertHTML(
     (node): node is HTMLElement => node instanceof HTMLElement,
   );
   if (!nodes.length) return null;
-  for (const node of nodes) node.setAttribute(INSERTED_ATTR, '');
-
-  const anchor = resolveAnchor(reference, position);
-  if (!anchor) return null;
-
-  const command: Command = {
-    label,
-    // Keyed on the node itself, so deleting it again cancels the insertion.
-    subject: `node:${elementKey(nodes[0])}`,
-    record: record(reference, 'insert', `${label} ${position} ${labelFor(reference)}`, {
-      after: truncate(nodes.map(cleanMarkup).join('')),
-      detail: { position, html: nodes.map(cleanMarkup).join('\n') },
-    }),
-    apply: () => {
-      for (const node of nodes) anchor.parent.insertBefore(node, anchor.before);
-    },
-    revert: () => {
-      for (const node of nodes) node.remove();
-    },
-  };
-  return { command, nodes };
+  const command = insertNodes(reference, position, nodes, label);
+  return command ? { command, nodes } : null;
 }
 
 function resolveAnchor(
@@ -297,16 +287,24 @@ export function insertNodes(
   nodes: HTMLElement[],
   label = 'Insert element',
 ): Command | null {
+  if (!nodes.length) return null;
+  if (position === 'replace') return replaceWithNodes(reference, nodes, label);
+
   const anchor = resolveAnchor(reference, position);
-  if (!anchor || !nodes.length) return null;
+  if (!anchor) return null;
   for (const node of nodes) node.setAttribute(INSERTED_ATTR, '');
   return {
     label,
     subject: `node:${elementKey(nodes[0])}`,
-    record: record(reference, 'insert', `${label} ${position} ${labelFor(reference)}`, {
-      after: truncate(nodes.map(cleanMarkup).join('')),
-      detail: { position, html: nodes.map(cleanMarkup).join('\n') },
-    }),
+    record: record(
+      reference,
+      'insert',
+      `${label} ${INSERT_POSITION_LABELS[position]} ${labelFor(reference)}`,
+      {
+        after: truncate(nodes.map(cleanMarkup).join('')),
+        detail: { position, html: nodes.map(cleanMarkup).join('\n') },
+      },
+    ),
     apply: () => {
       for (const node of nodes) anchor.parent.insertBefore(node, anchor.before);
     },
@@ -314,6 +312,64 @@ export function insertNodes(
       for (const node of nodes) node.remove();
     },
   };
+}
+
+/**
+ * Swap the reference element out for the new nodes.
+ *
+ * Both sides are held by the closure, so undo and redo can trade them back and
+ * forth indefinitely. Each direction anchors on the node the other direction just
+ * put in place, which is what makes repeated alternation exact rather than
+ * approximate.
+ *
+ * Both anchors are also treated as advisory. Replacing an element and then
+ * dragging the replacement somewhere else is an ordinary next step, and it leaves
+ * the anchor in a different parent — an unguarded `insertBefore` would throw,
+ * `History.undo` would log and advance anyway, and the command would be stranded
+ * with neither direction able to move anything. Falling back to appending gets
+ * the element back into the right parent, which is the part that matters.
+ *
+ * Recorded as a `replace`, not an insert plus a delete, because that is the one
+ * thing the change is: "this element became that one".
+ */
+function replaceWithNodes(
+  reference: HTMLElement,
+  nodes: HTMLElement[],
+  label: string,
+): Command | null {
+  const parent = reference.parentNode;
+  if (!parent) return null;
+  if (reference === document.body || reference === document.documentElement) return null;
+  for (const node of nodes) node.setAttribute(INSERTED_ATTR, '');
+  const markup = nodes.map(cleanMarkup).join('\n');
+
+  return {
+    label,
+    // Keyed on position: the element at this spot is what changed, and keying on
+    // a node identity would make replacing twice look like two unrelated edits.
+    subject: `markup:${selectorFor(reference)}`,
+    // Described by what the swap produced rather than by the caller's label, so
+    // the prompt reads the same whether the replacement came from the block
+    // library, the code panel or the public API.
+    record: record(reference, 'replace', `Replace ${labelFor(reference)} with ${labelFor(nodes[0])}`, {
+      before: truncate(cleanMarkup(reference)),
+      after: truncate(markup),
+      detail: { position: 'replace', html: markup },
+    }),
+    apply: () => {
+      for (const node of nodes) insertNear(parent, node, reference);
+      reference.remove();
+    },
+    revert: () => {
+      insertNear(parent, reference, nodes[0]);
+      for (const node of nodes) node.remove();
+    },
+  };
+}
+
+/** Insert `node` before `anchor`, or append when the anchor has moved away. */
+function insertNear(parent: Node, node: Node, anchor: Node): void {
+  parent.insertBefore(node, anchor.parentNode === parent ? anchor : null);
 }
 
 export function removeElement(el: HTMLElement): Command | null {
@@ -607,10 +663,18 @@ function indexWithin(parent: Node, before: Node | null): number {
     (node): node is Element => node.nodeType === Node.ELEMENT_NODE,
   );
   if (!before) return elements.length;
-  let index = 0;
-  for (const element of elements) {
-    if (element === before) return index;
-    index += 1;
+  // `before` is an `insertBefore` anchor, which is very often the whitespace text
+  // node between two tags, so walk forward to the first element at or after it.
+  // Looking only for an exact element match reported every such position as "at
+  // the end" — which made moving an element read as no change at all, and the
+  // change set then dropped the move entirely.
+  let node: Node | null = before;
+  while (node) {
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      const index = elements.indexOf(node as Element);
+      if (index >= 0) return index;
+    }
+    node = node.nextSibling;
   }
   return elements.length;
 }

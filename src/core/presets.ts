@@ -303,6 +303,51 @@ export const COMPONENT_PRESETS: LibraryBlock[] = [
 </div>`,
   },
   {
+    id: 'bullet-list',
+    name: 'List',
+    kind: 'component',
+    category: 'Content',
+    icon: 'list',
+    description: 'Bulleted list whose marker is any character or emoji you like.',
+    origin: 'preset',
+    props: {
+      bullet: {
+        type: 'text',
+        label: 'Bullet',
+        default: '•',
+        description: 'Any character or emoji: → ▸ ◆ ✅ 🔥 ★ —',
+      },
+      item1: { type: 'text', label: 'First item', default: 'The first point' },
+      item2: { type: 'text', label: 'Second item', default: 'The second point' },
+      item3: { type: 'text', label: 'Third item', default: 'The third point' },
+      gap: { type: 'token', label: 'Row gap', tokenGroup: 'space', default: 'var(--space-sm, 8px)' },
+    },
+    /*
+     * Markers are real elements rather than `list-style-type`.
+     *
+     * A string `list-style-type` would be tidier CSS, but the marker it generates
+     * is not an element: it cannot be selected, its text cannot be edited in
+     * place, and the character would only be changeable by retyping a CSS value.
+     * A span per row keeps every bullet a first-class thing the editor can work
+     * with, at the cost of `list-style: none` and `role="list"` — the latter
+     * because removing the list style also removes list semantics in Safari.
+     */
+    html: `<ul role="list" style="margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:{{gap}};color:${S.ink}">
+  <li style="display:flex;align-items:flex-start;gap:10px;line-height:1.6">
+    <span aria-hidden="true" style="flex:0 0 auto;color:${S.accent}">{{bullet}}</span>
+    <span>{{item1}}</span>
+  </li>
+  <li style="display:flex;align-items:flex-start;gap:10px;line-height:1.6">
+    <span aria-hidden="true" style="flex:0 0 auto;color:${S.accent}">{{bullet}}</span>
+    <span>{{item2}}</span>
+  </li>
+  <li style="display:flex;align-items:flex-start;gap:10px;line-height:1.6">
+    <span aria-hidden="true" style="flex:0 0 auto;color:${S.accent}">{{bullet}}</span>
+    <span>{{item3}}</span>
+  </li>
+</ul>`,
+  },
+  {
     id: 'divider',
     name: 'Divider',
     kind: 'component',

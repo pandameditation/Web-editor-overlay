@@ -52,6 +52,8 @@ const PATHS: Record<string, string> = {
   chevronRight: 'M6 4l4 4-4 4',
   moveOut: 'M10 4.5H5.5a2 2 0 00-2 2v5M3.5 6.5l2-2 2 2M12.5 11.5h-6',
   moveIn: 'M6 4.5h4.5a2 2 0 012 2v5M10.5 6.5l2-2 2 2M3.5 11.5h6',
+  expand: 'M9.8 2.8h3.4v3.4M13.2 2.8L9.3 6.7M6.2 13.2H2.8V9.8M2.8 13.2l3.9-3.9',
+  collapse: 'M13.2 6.2H9.8V2.8M9.8 6.2l3.4-3.4M2.8 9.8h3.4v3.4M6.2 9.8l-3.4 3.4',
 
   // Panels
   styles: 'M2.6 4.6h10.8M2.6 8h10.8M2.6 11.4h10.8M6 3.2v2.8M10.4 6.6v2.8M4.8 10v2.8',
@@ -80,6 +82,7 @@ const PATHS: Record<string, string> = {
   sidebar: 'M2.6 3.4h10.8v9.2H2.6zM6.4 3.4v9.2',
   cluster: 'M2.8 6.4h3.4v3.2H2.8zM7.4 6.4h2.4v3.2H7.4zM11 6.4h2.2v3.2H11z',
   card: 'M2.6 3.4h10.8v9.2H2.6zM4.8 6.2h6.4M4.8 8.6h4.4',
+  list: 'M2.6 4.4h1.8M2.6 8h1.8M2.6 11.6h1.8M6.8 4.4h6.6M6.8 8h6.6M6.8 11.6h6.6',
   button: 'M2.6 5.6h10.8v4.8H2.6zM5.6 8h4.8',
   callout: 'M3.4 3.4h9.2v9.2H3.4zM3.4 3.4v9.2M6.2 6.4h4M6.2 9h2.4',
   stat: 'M3.4 12.6V7M8 12.6V3.4M12.6 12.6V9.4',

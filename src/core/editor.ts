@@ -1,7 +1,8 @@
 import { ClassRegistry, normalizeClassName, suggestClassName } from './classes.js';
-import { HOST_TAG, IGNORE_ATTR, VERSION } from './constants.js';
+import { DRAGGING_ATTR, DRAG_TIMING, HOST_TAG, IGNORE_ATTR, VERSION } from './constants.js';
 import { inlineDeclarations } from './css.js';
-import { findDropTarget } from './drop-target.js';
+import { findDropTarget, sameSlot, type DropTarget } from './drop-target.js';
+import { captureRects, neighbourhood, playFlip, settleDrop } from './reflow.js';
 import {
   acceptsChildren,
   firstSelectableChild,
@@ -178,6 +179,12 @@ export class EditorEngine {
   #injectedElements = new Set<string>();
   #destroyed = false;
 
+  /* Reorder bookkeeping. Timing, not UI state, so it stays out of the store. */
+  #dragPending: { target: DropTarget; since: number } | null = null;
+  #dragTimer: ReturnType<typeof setTimeout> | null = null;
+  #dragSettledAt = 0;
+  #dragSettledAtPointer = { x: 0, y: 0 };
+
   constructor(options: MountOptions = {}) {
     this.options = options;
     this.library = new BlockLibrary({ presets: options.presets !== false });
@@ -242,6 +249,13 @@ export class EditorEngine {
     if (this.#destroyed) return;
     this.#destroyed = true;
     this.endTextEdit(true);
+    // Unmounting mid-gesture has to put the page back: an abandoned drag would
+    // otherwise leave the element translucent and, worse, permanently unclickable
+    // through its inline `pointer-events: none`, on a page the editor no longer
+    // owns. Cancelling also drops the pending dwell timer, which would fire
+    // against a torn-down engine.
+    this.cancelDrag();
+    this.#clearDragTimer();
     for (const off of this.#listeners) off();
     this.#listeners = [];
     for (const observer of this.#observers) observer.disconnect();
@@ -817,7 +831,12 @@ export class EditorEngine {
       this.notify('There is nowhere to move this element.', 'info');
       return;
     }
+    // Animate the reorder the same way dragging does. Holding ⇧↑ to walk an
+    // element up a list is otherwise a series of jumps with nothing to show which
+    // element actually moved.
+    const rects = captureRects(neighbourhood(el.parentNode, el.parentNode?.parentNode));
     this.history.commit(command);
+    playFlip(rects);
     this.#bumpGeometry();
   }
 
@@ -861,19 +880,33 @@ export class EditorEngine {
       this.notify('Select an element first, then choose where to insert.', 'error');
       return null;
     }
+    if (target.position === 'replace' && !isMutable(target.reference)) {
+      this.notify(`${labelFor(target.reference)} cannot be replaced.`, 'error');
+      return null;
+    }
     try {
       const { nodes } = await this.library.instantiate(block, props);
       if (!nodes.length) {
         this.notify('That block produced no markup.', 'error');
         return null;
       }
-      const command = insertNodes(target.reference, target.position, nodes, `Insert ${block.name}`);
+      const replacing = target.position === 'replace' ? labelFor(target.reference) : null;
+      const command = insertNodes(
+        target.reference,
+        target.position,
+        nodes,
+        replacing ? `Replace with ${block.name}` : `Insert ${block.name}`,
+      );
       if (!command) return null;
       this.history.commit(command);
       if (block.element?.tag) this.#injectedElements.add(block.element.tag);
       this.store.patch({ insertAnchor: null });
       this.select(nodes[0]);
-      this.notify(`Inserted ${block.name}.`, 'success');
+      this.notify(
+        replacing ? `Replaced ${replacing} with ${block.name}.` : `Inserted ${block.name}.`,
+        'success',
+        { label: 'Undo', run: () => this.undo() },
+      );
       return nodes[0];
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -886,6 +919,10 @@ export class EditorEngine {
   insertMarkup(html: string, anchor?: InsertAnchor): HTMLElement | null {
     const target = anchor ?? this.store.value.insertAnchor ?? this.#defaultAnchor();
     if (!target) return null;
+    if (target.position === 'replace' && !isMutable(target.reference)) {
+      this.notify(`${labelFor(target.reference)} cannot be replaced.`, 'error');
+      return null;
+    }
     const result = insertHTML(target.reference, target.position, html);
     if (!result) {
       this.notify('That markup could not be inserted.', 'error');
@@ -1044,8 +1081,18 @@ export class EditorEngine {
 
   startDrag(el: HTMLElement, x: number, y: number): void {
     if (!isMutable(el) || !el.parentNode) return;
+    // A gesture already in flight has to be resolved first. This is reachable
+    // through the public engine, and starting a second drag without releasing the
+    // first would leave that element translucent and unclickable for good.
+    if (this.store.value.drag) this.cancelDrag();
     this.endTextEdit(true);
+    this.#clearDragTimer();
+    // The preview treatment lives in the page stylesheet, keyed on this attribute.
+    el.setAttribute(DRAGGING_ATTR, '');
     el.style.setProperty('pointer-events', 'none', 'important');
+    this.#dragPending = null;
+    this.#dragSettledAt = performance.now();
+    this.#dragSettledAtPointer = { x, y };
     this.store.patch({
       drag: {
         element: el,
@@ -1053,6 +1100,8 @@ export class EditorEngine {
         pointer: { x, y },
         willCancel: false,
         hint: 'Drag to a new position',
+        decision: null,
+        pending: false,
       },
       hovered: null,
       quickMenuOpen: false,
@@ -1063,57 +1112,127 @@ export class EditorEngine {
   /**
    * Update the in-flight drag.
    *
-   * The dragged element is physically moved to the candidate position rather
-   * than previewed with a placeholder line, so what the user sees during the
-   * drag is the real layout they will get on release. The move only happens when
-   * the target actually changes, which keeps reflow cost proportional to
-   * meaningful movement instead of to pointer events.
+   * The dragged element is physically moved to the candidate position rather than
+   * previewed with a placeholder line, so what the user sees during the drag is
+   * the real layout they will get on release: neighbours shift to open the gap,
+   * and the element itself renders translucent to say it is not committed yet.
+   *
+   * Three guards keep that honest rather than jittery. A candidate must persist
+   * for `dwell` before the DOM is touched, so grazing a boundary announces the
+   * move in the chip without performing it. After a move, `settle` ignores fresh
+   * candidates while the reflow animates — without it, the elements that just
+   * shifted land under the pointer and propose moving straight back, which is the
+   * flicker. And the before/after choice is sticky around an element's midpoint,
+   * so sub-pixel pointer noise cannot flip it.
    */
   updateDrag(x: number, y: number): void {
     const drag = this.store.value.drag;
     if (!drag) return;
+    this.#clearDragTimer();
 
     const outside = x < 4 || y < 4 || x > innerWidth - 4 || y > innerHeight - 4;
     if (outside) {
-      if (!drag.willCancel) {
-        drag.origin.parent.insertBefore(drag.element, drag.origin.nextSibling);
-      }
+      if (!drag.willCancel) this.#applyDrop(drag.origin.parent, drag.origin.nextSibling, drag.element);
+      this.#dragPending = null;
       this.store.patch({
-        drag: { ...drag, pointer: { x, y }, willCancel: true, hint: 'Release outside to cancel' },
+        drag: {
+          ...drag,
+          pointer: { x, y },
+          willCancel: true,
+          hint: 'Release outside to cancel',
+          // Back at the origin, so the last hit test's conclusion no longer
+          // describes anything; keeping it would make the sticky band replay a
+          // decision about an element the pointer has long since left.
+          decision: null,
+          pending: false,
+        },
       });
       return;
     }
 
-    const drop = findDropTarget(drag.element, x, y);
+    const drop = findDropTarget(drag.element, x, y, drag.decision);
     if (!drop) {
-      this.store.patch({ drag: { ...drag, pointer: { x, y }, willCancel: false } });
+      // Nowhere to drop, so there is nothing pending either. Leaving the pending
+      // flag set would keep the chip pulsing at a destination that no longer
+      // exists, and leaving `#dragPending` set would let a gesture that grazes a
+      // boundary, wanders off and comes back skip the dwell entirely.
+      this.#dragPending = null;
+      this.store.patch({
+        drag: { ...drag, pointer: { x, y }, willCancel: false, pending: false },
+      });
       return;
     }
 
-    const needsMove =
-      drag.element.parentNode !== drop.parent || drag.element.nextSibling !== drop.before;
-    if (needsMove) {
-      try {
-        drop.parent.insertBefore(drag.element, drop.before);
-      } catch {
-        // Inserting into a node that cannot accept the element; ignore and wait
-        // for the pointer to move somewhere valid.
-      }
+    // Already there: nothing to schedule, but the decision is worth recording so
+    // the next hit test stays on this side of the midpoint.
+    if (drag.element.parentNode === drop.parent && drag.element.nextSibling === drop.before) {
+      this.#dragPending = null;
+      this.store.patch({
+        drag: {
+          ...drag,
+          pointer: { x, y },
+          willCancel: false,
+          hint: drop.hint,
+          decision: drop.decision,
+          pending: false,
+        },
+      });
+      return;
     }
+
+    const now = performance.now();
+    const travelled = Math.hypot(x - this.#dragSettledAtPointer.x, y - this.#dragSettledAtPointer.y);
+    const settling = now - this.#dragSettledAt < DRAG_TIMING.settle;
+    if (settling && travelled < DRAG_TIMING.escape) {
+      this.store.patch({ drag: { ...drag, pointer: { x, y }, willCancel: false } });
+      this.#scheduleDragTick(x, y, DRAG_TIMING.settle - (now - this.#dragSettledAt));
+      return;
+    }
+
+    if (!this.#dragPending || !sameSlot(this.#dragPending.target, drop)) {
+      this.#dragPending = { target: drop, since: now };
+    }
+    const waited = now - this.#dragPending.since;
+    if (waited < DRAG_TIMING.dwell) {
+      // Announce the destination now, move later. The chip is instant feedback;
+      // the page only reflows once the intent has held.
+      this.store.patch({
+        drag: { ...drag, pointer: { x, y }, willCancel: false, hint: drop.hint, pending: true },
+      });
+      this.#scheduleDragTick(x, y, DRAG_TIMING.dwell - waited);
+      return;
+    }
+
+    const moved = this.#applyDrop(drop.parent, drop.before, drag.element);
+    this.#dragPending = null;
     this.store.patch({
-      drag: { ...drag, pointer: { x, y }, willCancel: false, hint: drop.hint },
+      drag: {
+        ...drag,
+        pointer: { x, y },
+        willCancel: false,
+        hint: drop.hint,
+        decision: drop.decision,
+        pending: false,
+      },
     });
-    if (needsMove) this.#bumpGeometry();
+    if (moved) {
+      this.#dragSettledAt = performance.now();
+      this.#dragSettledAtPointer = { x, y };
+      this.#bumpGeometry();
+    }
   }
 
   endDrag(): void {
     const drag = this.store.value.drag;
     if (!drag) return;
+    this.#clearDragTimer();
+    this.#dragPending = null;
     drag.element.style.removeProperty('pointer-events');
     tidyStyleAttribute(drag.element);
 
     if (drag.willCancel) {
-      drag.origin.parent.insertBefore(drag.element, drag.origin.nextSibling);
+      this.#applyDrop(drag.origin.parent, drag.origin.nextSibling, drag.element);
+      settleDrop(drag.element);
       this.store.patch({ drag: null });
       this.notify('Move cancelled.', 'info');
       this.#bumpGeometry();
@@ -1122,6 +1241,9 @@ export class EditorEngine {
 
     const command = moveCommandFromOrigin(drag.element, drag.origin, 'Move');
     this.store.patch({ drag: null });
+    // The element is already where it belongs — it went there as the preview — so
+    // committing is only about turning that preview solid.
+    settleDrop(drag.element);
     if (command) {
       this.history.commit(command, { alreadyApplied: true });
       this.notify('Moved.', 'success', { label: 'Undo', run: () => this.undo() });
@@ -1132,11 +1254,56 @@ export class EditorEngine {
   cancelDrag(): void {
     const drag = this.store.value.drag;
     if (!drag) return;
+    this.#clearDragTimer();
+    this.#dragPending = null;
     drag.element.style.removeProperty('pointer-events');
     tidyStyleAttribute(drag.element);
-    drag.origin.parent.insertBefore(drag.element, drag.origin.nextSibling);
+    this.#applyDrop(drag.origin.parent, drag.origin.nextSibling, drag.element);
+    settleDrop(drag.element);
     this.store.patch({ drag: null });
     this.#bumpGeometry();
+  }
+
+  /**
+   * Move the element, animating everything the move displaced.
+   *
+   * Measuring both parents before the insertion and replaying the difference
+   * afterwards is what turns a hundred-pixel jump into a glide, and it is why the
+   * neighbours appear to step aside to make room rather than teleport.
+   */
+  #applyDrop(parent: Node, before: Node | null, el: HTMLElement): boolean {
+    if (el.parentNode === parent && el.nextSibling === before) return false;
+    const rects = captureRects(neighbourhood(el.parentNode, parent));
+    try {
+      parent.insertBefore(el, before);
+    } catch {
+      // A node that cannot accept this element; leave the placement alone and
+      // wait for the pointer to reach somewhere valid.
+      return false;
+    }
+    playFlip(rects);
+    return true;
+  }
+
+  /**
+   * Re-evaluate at the last pointer position once a delay has elapsed.
+   *
+   * Both the dwell and settle windows are time-based, and the pointer may well
+   * have stopped moving inside one of them. Without this the pending move would
+   * sit there unapplied until the user jiggled the mouse.
+   */
+  #scheduleDragTick(x: number, y: number, delay: number): void {
+    this.#clearDragTimer();
+    this.#dragTimer = setTimeout(() => {
+      this.#dragTimer = null;
+      if (this.store.value.drag) this.updateDrag(x, y);
+    }, Math.max(8, delay));
+  }
+
+  #clearDragTimer(): void {
+    if (this.#dragTimer === null) return;
+    clearTimeout(this.#dragTimer);
+    this.#dragTimer = null;
   }
 
   /* ---------------------------------------------------------------------- */

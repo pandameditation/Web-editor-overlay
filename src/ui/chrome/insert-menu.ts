@@ -1,13 +1,16 @@
 import { css, html, nothing, type TemplateResult } from 'lit';
 import { customElement, query, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
-import { visualBox } from '../../core/dom.js';
+import { acceptsChildren, isMutable, labelFor, visualBox } from '../../core/dom.js';
+import type { InsertAnchor } from '../../core/editor.js';
+import { INSERT_POSITION_LABELS, type InsertPosition } from '../../core/mutations.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import type { LibraryBlock } from '../../core/types.js';
 import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
 import { baseStyles, surfaceStyles } from '../theme.js';
 import { PropForm } from '../panels/prop-form.js';
+import '../controls/segmented.js';
 
 /**
  * Block picker for the `+` affordances.
@@ -63,11 +66,26 @@ export class HeoInsertMenu extends HeoElement {
       .top input:focus {
         outline: none;
       }
+      /* Where the block lands, changeable without closing the popover. Which plus
+         button was clicked is a guess at the intent, not a commitment, and
+         re-opening the menu from the other edge just to switch sides is busywork. */
       .where {
+        display: grid;
+        gap: 6px;
+        padding: 8px 9px;
+        border-bottom: 1px solid var(--heo-line);
+      }
+      .where .target {
+        overflow: hidden;
         color: var(--heo-text-faint);
         font-family: var(--heo-mono);
         font-size: 10px;
+        text-overflow: ellipsis;
         white-space: nowrap;
+      }
+      .where .target b {
+        color: var(--heo-text-dim);
+        font-weight: 500;
       }
 
       .list {
@@ -261,37 +279,37 @@ export class HeoInsertMenu extends HeoElement {
           autocomplete="off"
           aria-label="Search blocks"
           @input=${(event: Event) => {
-            this.query = (event.target as HTMLInputElement).value;
-            this.highlight = 0;
-          }}
+        this.query = (event.target as HTMLInputElement).value;
+        this.highlight = 0;
+      }}
           @keydown=${this.#onSearchKey}
         />
-        <span class="where">${anchor.position}</span>
       </div>
+      ${this.#renderWhere(anchor)}
       <div class="list" role="listbox">
         ${results.length === 0
-          ? html`<div class="empty">
+        ? html`<div class="empty">
               No block matches “${this.query}”. Create one in the Library panel.
             </div>`
-          : repeat(
-              groups,
-              (group) => group.name,
-              (group) => html`
+        : repeat(
+          groups,
+          (group) => group.name,
+          (group) => html`
                 <div class="group">${group.name}</div>
                 ${repeat(
-                  group.blocks,
-                  (block) => block.id,
-                  (block) => {
-                    index += 1;
-                    const current = index;
-                    return html`<button
+            group.blocks,
+            (block) => block.id,
+            (block) => {
+              index += 1;
+              const current = index;
+              return html`<button
                       class="row"
                       type="button"
                       role="option"
                       aria-selected=${current === this.highlight}
                       @pointerenter=${() => {
-                        this.highlight = current;
-                      }}
+                  this.highlight = current;
+                }}
                       @click=${() => this.#pick(block)}
                     >
                       <span class="glyph">${icon(block.icon ?? 'blocks', 14)}</span>
@@ -301,20 +319,58 @@ export class HeoInsertMenu extends HeoElement {
                       </span>
                       <span class="kind">${block.kind === 'container' ? 'box' : 'cmp'}</span>
                     </button>`;
-                  },
-                )}
+            },
+          )}
               `,
-            )}
+        )}
       </div>
     `;
+  }
+
+  /**
+   * The position switch.
+   *
+   * `Inside` only appears for elements that can hold children, and `Replace` only
+   * for elements that can actually be removed — offering either where it cannot
+   * work would just be an error message waiting to happen.
+   */
+  #renderWhere(anchor: InsertAnchor): TemplateResult {
+    const reference = anchor.reference;
+    const options = [
+      { value: 'before', label: 'Before', title: `Insert before ${labelFor(reference)}` },
+      { value: 'after', label: 'After', title: `Insert after ${labelFor(reference)}` },
+      ...(acceptsChildren(reference)
+        ? [{ value: 'lastChild', label: 'Inside', title: `Insert inside ${labelFor(reference)}` }]
+        : []),
+      ...(isMutable(reference)
+        ? [{ value: 'replace', label: 'Replace', title: `Replace ${labelFor(reference)}` }]
+        : []),
+    ];
+
+    return html`<div class="where">
+      <heo-segmented
+        .options=${options}
+        .value=${anchor.position}
+        label="Insert position"
+        @segment-change=${(event: CustomEvent<{ value: string }>) => {
+        const position = (event.detail.value || 'after') as InsertPosition;
+        this.editor.setInsertAnchor({ reference, position });
+      }}
+      ></heo-segmented>
+      <span class="target">
+        ${anchor.position === 'replace'
+        ? html`Replaces <b>${labelFor(reference)}</b> and everything inside it`
+        : html`${INSERT_POSITION_LABELS[anchor.position]} <b>${labelFor(reference)}</b>`}
+      </span>
+    </div>`;
   }
 
   #renderConfigure(block: LibraryBlock): TemplateResult {
     return html`<div class="configure">
       <div class="chead">
         <button class="back" type="button" title="Back" @click=${() => {
-          this.configuring = null;
-        }}>
+        this.configuring = null;
+      }}>
           ${icon('chevronLeft', 12)}
         </button>
         <span class="name">${block.name}</span>
@@ -322,13 +378,13 @@ export class HeoInsertMenu extends HeoElement {
       <div class="cbody">
         ${block.description ? html`<p class="hint" style="margin:0 0 10px">${block.description}</p>` : nothing}
         ${PropForm.render(block.props ?? {}, this.props, (name, value) => {
-          this.props = { ...this.props, [name]: value };
-        }, this.editor)}
+        this.props = { ...this.props, [name]: value };
+      }, this.editor)}
       </div>
       <div class="cfoot">
         <button class="btn" type="button" @click=${() => {
-          this.configuring = null;
-        }}>
+        this.configuring = null;
+      }}>
           Cancel
         </button>
         <button class="btn primary" type="button" @click=${() => this.#insert(block)}>

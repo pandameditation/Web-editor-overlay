@@ -314,12 +314,82 @@
       api.select(link);
       engine.startDrag(link, 100, 100);
       check('dragStarted', () => !!engine.store.value.drag);
+      check('dragPreviewMarked', () => link.hasAttribute('data-heo-dragging'));
       engine.updateDrag(120, 300);
       engine.updateDrag(-50, -50);
       check('dragWillCancel', () => engine.store.value.drag.willCancel);
       engine.endDrag();
       check('dragEnded', () => engine.store.value.drag === null);
+      check('dragPreviewCleared', () => !link.hasAttribute('data-heo-dragging'));
+      check('dragPointerEventsRestored', () => link.style.pointerEvents === '');
       check('linkStillInPlace', () => document.getElementById('link').parentElement.id === 'wrap');
+
+      /* ------------------------------------------------------------------ *
+       * Reordering waits out the dwell window, then survives pointer jitter.
+       *
+       * The dwell is what stops a graze from reflowing the page, and the sticky
+       * midpoint is what stops sub-pixel noise from flipping a decision that has
+       * already been applied. Both are timing-dependent, so both need a real
+       * clock rather than a single synchronous call.
+       *
+       * Runs against a fixture of its own, positioned at known coordinates. By
+       * this point the page above has been duplicated, wrapped and inserted into
+       * several times, so nothing there has a stable box to aim at.
+       * ------------------------------------------------------------------ */
+      const rig = document.createElement('div');
+      rig.id = 'dragrig';
+      rig.style.cssText =
+        'position:fixed;left:16px;top:180px;width:190px;display:flex;flex-direction:column;gap:8px';
+      rig.innerHTML =
+        '<div id="r1" style="height:44px;background:#eee">One</div>' +
+        '<div id="r2" style="height:44px;background:#ddd">Two</div>' +
+        '<div id="r3" style="height:44px;background:#ccc">Three</div>';
+      document.body.appendChild(rig);
+      await new Promise((r) => requestAnimationFrame(r));
+
+      const order = () => Array.from(rig.children).map((n) => n.id).join(',');
+      const orderBefore = order();
+      const boxOf = (id) => document.getElementById(id).getBoundingClientRect();
+      const dragged = document.getElementById('r1');
+      api.select(dragged);
+      engine.startDrag(dragged, boxOf('r1').left + 10, boxOf('r1').top + 10);
+      // Well past the midpoint of the last row, so the intent is unambiguous.
+      engine.updateDrag(boxOf('r3').left + 10, boxOf('r3').bottom - 4);
+      check('dwellDefersTheMove', () => order() === orderBefore);
+      check('dwellAnnouncesTheDestination', () => engine.store.value.drag.pending === true);
+      check('dwellNamesTheDestination', () => engine.store.value.drag.hint);
+      await new Promise((r) => setTimeout(r, 220));
+      check('dwellAppliesWithoutFurtherInput', () => order());
+      check('dwellClearsPending', () => engine.store.value.drag.pending === false);
+
+      const settled = order();
+      const jittered = new Set();
+      for (let i = 0; i < 24; i += 1) {
+        const box = boxOf('r3');
+        const mid = { x: box.left + 10, y: box.top + box.height / 2 };
+        engine.updateDrag(mid.x + (i % 2 ? 0.4 : -0.4), mid.y + (i % 2 ? 0.6 : -0.6));
+        jittered.add(order());
+        await new Promise((r) => setTimeout(r, 12));
+      }
+      check('jitterCannotFlicker', () => jittered.size === 1 && jittered.has(settled));
+      engine.endDrag();
+      check('dragRecordedTheMove', () => engine.records.some((r) => r.kind === 'move'));
+      api.undo();
+      check('dragUndone', () => order() === orderBefore);
+
+      /* ------------------------------------------------------------------ *
+       * An abandoned drag must not leave the page unusable.
+       * ------------------------------------------------------------------ */
+      engine.startDrag(document.getElementById('r2'), 100, 100);
+      engine.startDrag(document.getElementById('r3'), 100, 100);
+      check('restartReleasesThePreviousElement', () =>
+        !document.getElementById('r2').hasAttribute('data-heo-dragging') &&
+        document.getElementById('r2').style.pointerEvents === '');
+      engine.cancelDrag();
+      check('cancelClearsThePreview', () =>
+        !document.getElementById('r3').hasAttribute('data-heo-dragging'));
+      rig.remove();
+      engine.history.clear();
 
       /* ------------------------------------------------------------------ *
        * Change counting is the net difference, not a log of every keystroke.
@@ -532,6 +602,159 @@
           .join(' '),
       );
 
+      /* ------------------------------------------------------------------ *
+       * Replace swaps an element out, and undo survives the replacement being
+       * moved afterwards — repositioning what you just inserted is the expected
+       * next action, and it invalidates the anchor undo would like to use.
+       * ------------------------------------------------------------------ */
+      engine.history.clear();
+      const victim = document.createElement('p');
+      victim.id = 'victim';
+      victim.textContent = 'Replace me';
+      document.getElementById('wrap').appendChild(victim);
+      const elsewhere = document.createElement('div');
+      elsewhere.id = 'elsewhere';
+      document.body.appendChild(elsewhere);
+
+      const swapped = engine.insertMarkup('<section id="fresh">new</section>', {
+        reference: victim,
+        position: 'replace',
+      });
+      check('replaceSwappedIn', () => !!swapped && swapped.id === 'fresh');
+      check('replaceRemovedTheOriginal', () => document.getElementById('victim') === null);
+      check('replaceRecordKind', () =>
+        (engine.records.find((r) => r.kind === 'replace') || {}).summary);
+
+      api.undo();
+      check('replaceUndone', () => ({
+        originalBack: !!document.getElementById('victim'),
+        replacementGone: !swapped.isConnected,
+      }));
+      api.redo();
+      check('replaceRedone', () => !document.getElementById('victim') && swapped.isConnected);
+
+      // Now move the replacement out of its parent and undo anyway.
+      elsewhere.appendChild(swapped);
+      api.undo();
+      check('replaceUndoneAfterTheReplacementMoved', () => ({
+        originalBack: !!document.getElementById('victim'),
+        replacementGone: !swapped.isConnected,
+        parentOfOriginal: document.getElementById('victim')?.parentElement?.id,
+      }));
+      document.getElementById('victim')?.remove();
+      elsewhere.remove();
+      engine.history.clear();
+
+      /* ------------------------------------------------------------------ *
+       * The value field's list has to reach the top layer.
+       *
+       * It lives inside the dock, whose backdrop-filter makes it the containing
+       * block for fixed descendants and whose overflow clips them, so a plainly
+       * positioned popup lands hundreds of pixels away and invisible.
+       * ------------------------------------------------------------------ */
+      api.openPanel('styles');
+      api.select(document.getElementById('para'));
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const stylesPanelEl = dockPanel('styles');
+      const valueFieldFor = (property) =>
+        Array.from(stylesPanelEl.shadowRoot.querySelectorAll('heo-value-field'))
+          .find((f) => f.property === property);
+      const typeInto = async (field, text) => {
+        const input = field.shadowRoot.querySelector('input[type=text]');
+        input.focus();
+        input.value = text;
+        input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+        return input;
+      };
+      const optionsOf = (field) =>
+        Array.from(field.shadowRoot.querySelector('.popup')?.querySelectorAll('.option') ?? [])
+          .map((b) => b.querySelector('.name').textContent.trim());
+
+      const overflow = valueFieldFor('overflow');
+      await typeInto(overflow, 'hid');
+      check('valuePopupReachesTopLayer', () =>
+        overflow.shadowRoot.querySelector('.popup')?.matches(':popover-open') === true);
+      check('valuePopupNotClippedByTheDock', () => {
+        const popup = overflow.shadowRoot.querySelector('.popup').getBoundingClientRect();
+        const anchor = overflow.getBoundingClientRect();
+        return Math.abs(popup.left - anchor.left) < 24 && popup.top > anchor.top;
+      });
+      check('keywordAutocomplete', () => optionsOf(overflow).join(','));
+      await typeInto(overflow, '');
+      check('keywordsLeadForKeywordProperties', () => optionsOf(overflow).slice(0, 3).join(','));
+
+      const colour = valueFieldFor('color');
+      await typeInto(colour, 'ac');
+      check('tokenSearchableByName', () => optionsOf(colour).join(','));
+      // The whole trailing strip opens the list, and it survives the blur debounce.
+      colour.shadowRoot.querySelector('input[type=text]').blur();
+      await new Promise((r) => setTimeout(r, 200));
+      const strip = colour.shadowRoot.querySelector('.trailing');
+      strip.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, composed: true, cancelable: true }));
+      strip.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+      await new Promise((r) => setTimeout(r, 250));
+      check('trailingStripStaysOpen', () => !!colour.shadowRoot.querySelector('.popup'));
+
+      /* ------------------------------------------------------------------ *
+       * The class field is a submit control: Enter and the add button both act,
+       * and neither may substitute a similarly named class for what was typed.
+       * ------------------------------------------------------------------ */
+      const target = document.getElementById('para');
+      const classField = () =>
+        Array.from(stylesPanelEl.shadowRoot.querySelectorAll('heo-value-field')).find((f) => f.action);
+      const classesBefore = Array.from(target.classList);
+      const typed = await typeInto(classField(), 'car');
+      check('classFieldSuggests', () => optionsOf(classField()).join(','));
+      check('classFieldPreselectsNothing', () =>
+        classField().shadowRoot.querySelector('.option[aria-selected="true"]') === null);
+      typed.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Enter', bubbles: true, composed: true, cancelable: true,
+      }));
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      // Exactly what was typed, and nothing the suggestion list merely offered.
+      check('enterAddsOnlyWhatWasTyped', () =>
+        Array.from(target.classList).filter((n) => !classesBefore.includes(n)).join(','));
+      check('classFieldClearsAfterAdding', () =>
+        classField().shadowRoot.querySelector('input[type=text]').value === '');
+
+      await typeInto(classField(), 'from-button');
+      classField().shadowRoot.querySelector('.action')
+        .dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      check('addButtonAdds', () => target.classList.contains('from-button'));
+
+      /* ------------------------------------------------------------------ *
+       * Every code input can expand into a modal, in the top layer so the dock
+       * cannot clip it, over one shared buffer rather than two.
+       * ------------------------------------------------------------------ */
+      api.openPanel('code');
+      api.select(document.getElementById('para'));
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const codeEditor = dockPanel('code').shadowRoot.querySelector('heo-code-editor');
+      const bufferBefore = codeEditor.code;
+      codeEditor.shadowRoot.querySelector('.grow')
+        .dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const modal = codeEditor.shadowRoot.querySelector('dialog.modal');
+      check('codeModalOpens', () => !!modal && modal.open);
+      check('codeModalEscapesTheDock', () => {
+        const dock = dockEl().shadowRoot.querySelector('.dock').getBoundingClientRect();
+        return modal.getBoundingClientRect().width > dock.width;
+      });
+      check('codeModalKeepsOneBuffer', () => ({
+        textareas: codeEditor.shadowRoot.querySelectorAll('textarea').length,
+        preserved: codeEditor.code === bufferBefore,
+      }));
+      codeEditor.shadowRoot.querySelector('dialog textarea').dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true, cancelable: true }),
+      );
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      check('escapeCollapsesWithoutDiscarding', () => ({
+        closed: !codeEditor.shadowRoot.querySelector('dialog.modal'),
+        kept: codeEditor.code === bufferBefore,
+      }));
+
       /* Reset reverts everything still on the undo stack.
        *
        * Measured against a known starting point rather than the state at the top
@@ -556,7 +779,25 @@
       }));
       check('resetRemovedInline', () => document.getElementById('para').style.outline);
 
+      /* ------------------------------------------------------------------ *
+       * Unmounting mid-gesture has to hand the page back intact.
+       *
+       * The dragged element carries an inline `pointer-events: none` that only the
+       * drag teardown removes, so an engine that forgot to cancel would leave a
+       * permanently unclickable element behind with no visible sign of why.
+       * ------------------------------------------------------------------ */
+      const abandoned = document.getElementById('title');
+      engine.startDrag(abandoned, 60, 60);
+      check('abandonedDragStarted', () => abandoned.hasAttribute('data-heo-dragging'));
+
       api.unmount();
+      check('unmountReleasedTheDrag', () => ({
+        attribute: !abandoned.hasAttribute('data-heo-dragging'),
+        pointerEvents: abandoned.style.pointerEvents === '',
+        state: engine.store.value.drag === null,
+      }));
+      // The queued dwell tick must not fire against a torn-down engine.
+      await new Promise((r) => setTimeout(r, 300));
       check('unmountedHost', () => !document.querySelector('html-editor-overlay'));
       check('unmountedPageStyles', () => !document.getElementById('heo-page-styles'));
       check('editAttrCleared', () => !document.documentElement.hasAttribute('data-heo-edit'));

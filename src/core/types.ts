@@ -5,6 +5,10 @@
  * is declared here so the public surface stays in one readable place.
  */
 
+import type { DropDecision } from './drop-target.js';
+
+export type { DropDecision };
+
 /** Which dock panel is showing. */
 export type PanelId = 'styles' | 'tokens' | 'tree' | 'library' | 'props' | 'media' | 'code';
 
@@ -110,18 +114,18 @@ export interface SourceRef {
 export interface ChangeRecord {
   id: string;
   kind:
-    | 'text'
-    | 'style'
-    | 'class'
-    | 'attribute'
-    | 'insert'
-    | 'delete'
-    | 'move'
-    | 'wrap'
-    | 'duplicate'
-    | 'replace'
-    | 'token'
-    | 'token-class';
+  | 'text'
+  | 'style'
+  | 'class'
+  | 'attribute'
+  | 'insert'
+  | 'delete'
+  | 'move'
+  | 'wrap'
+  | 'duplicate'
+  | 'replace'
+  | 'token'
+  | 'token-class';
   /** Short human summary, e.g. `Set padding to var(--space-lg)`. */
   summary: string;
   /** CSS selector path to the target, resolved at record time. */
@@ -190,6 +194,19 @@ export interface DragState {
   willCancel: boolean;
   /** Human description of the pending drop, shown in the drag chip. */
   hint: string;
+  /**
+   * The hit test's last conclusion, fed back in on the next one so the
+   * before/after choice stays stable around an element's midpoint.
+   */
+  decision: DropDecision | null;
+  /**
+   * True while a new position has been announced but not yet applied.
+   *
+   * The chip says where the element is heading immediately; the DOM waits out the
+   * dwell delay. That split is what makes the gesture feel responsive without
+   * letting a graze reflow the page.
+   */
+  pending: boolean;
 }
 
 export interface EditorSnapshotState {

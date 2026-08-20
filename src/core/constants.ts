@@ -13,6 +13,29 @@ export const SOURCE_ATTR = 'data-heo-src';
 /** Marks elements the overlay itself created, so the save prompt can call them out. */
 export const INSERTED_ATTR = 'data-heo-inserted';
 
+/**
+ * Set on the element being dragged, so the page stylesheet can render it as a
+ * translucent preview of where it will land.
+ */
+export const DRAGGING_ATTR = 'data-heo-dragging';
+
+/**
+ * Timings for the reorder gesture, in milliseconds.
+ *
+ * `dwell` is the heart of it: a candidate position has to persist before the DOM
+ * is touched, so a pointer grazing a midpoint cannot start a move. `settle`
+ * covers the reflow a move causes — during it, different elements sit under the
+ * pointer, and reacting to that immediately is what produced the flicker loop.
+ */
+export const DRAG_TIMING = {
+  dwell: 90,
+  settle: 190,
+  flip: 190,
+  drop: 180,
+  /** Pointer travel that overrides the settle freeze, for deliberate fast drags. */
+  escape: 26,
+} as const;
+
 /** id of the `<style>` element the token editor writes into. */
 export const TOKEN_STYLE_ID = 'heo-design-tokens';
 

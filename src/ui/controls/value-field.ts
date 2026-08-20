@@ -31,7 +31,8 @@ export type ValueKind = 'text' | 'length' | 'number' | 'color' | 'keyword';
  * require typing at all.
  *
  * Fires `value-input` continuously (for live preview) and `value-change` on
- * commit (for the undo stack).
+ * commit (for the undo stack). Set `action` to turn it into a submit control,
+ * which fires `value-submit` instead — see that property.
  */
 @customElement('heo-value-field')
 export class HeoValueField extends LitElement {
@@ -112,12 +113,18 @@ export class HeoValueField extends LitElement {
         font-family: var(--heo-font);
       }
 
+      /* A generous strip rather than a hairline: it is the affordance for opening
+         the list, so it has to be aimable even when it holds no chip. */
       .trailing {
         display: flex;
         align-items: center;
+        justify-content: flex-end;
         gap: 2px;
+        min-width: 14px;
         padding-right: 3px;
         padding-left: 2px;
+      }
+      .trailing.actionable {
         cursor: pointer;
       }
       .unit {
@@ -151,6 +158,30 @@ export class HeoValueField extends LitElement {
         color: var(--heo-text);
       }
 
+      /* Submit affordance, shown only when the field is used as an "add" control. */
+      .action {
+        display: grid;
+        place-items: center;
+        width: 22px;
+        height: 22px;
+        border: 0;
+        border-radius: 5px;
+        background: var(--heo-accent-soft);
+        color: var(--heo-accent);
+        cursor: pointer;
+        transition:
+          background var(--heo-fast),
+          color var(--heo-fast);
+      }
+      .action:hover:not(:disabled) {
+        background: var(--heo-accent);
+        color: var(--heo-accent-ink);
+      }
+      .action:disabled {
+        opacity: 0.35;
+        cursor: not-allowed;
+      }
+
       .color-btn {
         display: grid;
         place-items: center;
@@ -175,17 +206,35 @@ export class HeoValueField extends LitElement {
 
       /* ---- Popup ---- */
 
+      /* Rendered as a popover so it is painted in the top layer. The field lives
+         inside the dock, which sets backdrop-filter and overflow: hidden — that
+         makes the dock the containing block for fixed descendants and clips them,
+         so a plain fixed popup ended up hundreds of pixels off and invisible. The
+         top layer is positioned against the viewport and is never clipped by an
+         ancestor, which is the only reliable way out of that box.
+
+         Manual rather than auto: light dismiss would close the list on a click
+         anywhere else in the overlay, including the panel scrollbar, and it claims
+         Escape — which this field needs for "revert what I typed". Dismissal is
+         driven by focus instead, which every open path guarantees. */
       .popup {
         position: fixed;
+        inset: auto;
         z-index: 30;
+        margin: 0;
         max-height: 320px;
         overflow-y: auto;
+        overscroll-behavior: contain;
         padding: 4px;
         border: 1px solid var(--heo-line-strong);
         border-radius: var(--heo-r-md);
         background: var(--heo-raised);
+        color: var(--heo-text);
         box-shadow: var(--heo-shadow-lg);
         animation: pop var(--heo-fast);
+      }
+      .popup:popover-open {
+        display: block;
       }
       @keyframes pop {
         from {
@@ -196,8 +245,7 @@ export class HeoValueField extends LitElement {
       .group {
         padding: 6px 8px 3px;
         color: var(--heo-text-faint);
-        font-size: 10px
-        ;
+        font-size: 10px;
         font-weight: 600;
         letter-spacing: 0.05em;
         text-transform: uppercase;
@@ -267,6 +315,18 @@ export class HeoValueField extends LitElement {
    * typing a literal", and therefore what Enter should do.
    */
   @property({ type: String }) property = '';
+  /**
+   * Turns the field into a submit control.
+   *
+   * Set it to the action's description ("Add this class") and the field grows a
+   * trailing action button, Enter submits whatever is typed, and picking a
+   * suggestion submits it too. The distinction from the default behaviour
+   * matters: a value field commits a value and dedupes against the one it
+   * already has, whereas a submit control has to fire every time even when the
+   * host keeps handing the same buffer back.
+   */
+  @property({ type: String }) action = '';
+  @property({ type: String, attribute: 'action-icon' }) actionIcon = 'plus';
 
   @state() private draft = '';
   @state() private open = false;
@@ -278,6 +338,14 @@ export class HeoValueField extends LitElement {
   @query('input[type="color"]') private colorInput?: HTMLInputElement;
 
   #scrubStart = { x: 0, value: 0, unit: 'px' };
+  /**
+   * Whether the highlight was moved with the arrow keys.
+   *
+   * Typing pre-highlights the best match so Enter can accept it, but that guess
+   * must never override something the user aimed at deliberately.
+   */
+  #highlightMoved = false;
+  #blurTimer: ReturnType<typeof setTimeout> | undefined;
   #onScroll = (): void => {
     if (this.open) this.#positionPopup();
   };
@@ -293,11 +361,19 @@ export class HeoValueField extends LitElement {
     super.disconnectedCallback();
     removeEventListener('scroll', this.#onScroll, true);
     removeEventListener('resize', this.#onScroll);
+    // The deferred blur would otherwise commit from a detached element, and a
+    // still-open flag would re-promote the popover if Lit reuses this instance.
+    clearTimeout(this.#blurTimer);
+    this.open = false;
+    this.highlight = -1;
   }
 
   override willUpdate(changed: PropertyValues<this>): void {
-    // Adopt an external value change unless the user is mid-edit.
-    if (changed.has('value') && document.activeElement !== this) {
+    // Adopt an external value change unless the user is mid-edit. `:focus-within`
+    // is the question that can actually be answered here: `document.activeElement`
+    // reports the outermost shadow host, so comparing it against this element was
+    // always false and every host re-render clobbered the buffer being typed.
+    if (changed.has('value') && !this.#hasFocus()) {
       this.draft = this.value;
     }
     if (changed.has('value')) {
@@ -305,8 +381,39 @@ export class HeoValueField extends LitElement {
     }
   }
 
+  /**
+   * Move the popup into the top layer once it exists.
+   *
+   * Done here rather than in `render()` because `showPopover` needs the element
+   * to be in the document, and the measurement that positions it needs the
+   * popover to be laid out.
+   */
+  override updated(): void {
+    const popup = this.renderRoot.querySelector<HTMLElement>('.popup');
+    if (!popup || !this.open) return;
+    if (typeof popup.showPopover === 'function' && !popup.matches(':popover-open')) {
+      try {
+        popup.showPopover();
+      } catch {
+        // Already open, or popovers are unsupported: the popup still renders,
+        // it just stays in the normal painting order.
+      }
+    }
+    this.#positionPopup();
+  }
+
+  /** True when focus is inside this component, across the shadow boundary. */
+  #hasFocus(): boolean {
+    return this.matches(':focus-within');
+  }
+
   private get isNumeric(): boolean {
     return this.numeric || this.kind === 'length' || this.kind === 'number';
+  }
+
+  /** True when there is a list worth showing, i.e. when opening it does something. */
+  get #canOpen(): boolean {
+    return this.suggestions.length > 0 || this.isNumeric;
   }
 
   private get parsed(): { number: number; unit: string } | null {
@@ -365,6 +472,9 @@ export class HeoValueField extends LitElement {
   #draftIsComplete(): boolean {
     const raw = this.draft.trim();
     if (!raw) return false;
+    // A submit control takes free text: whatever was typed is what the user meant,
+    // so a fuzzy match must never hijack Enter.
+    if (this.action) return true;
     if (raw.includes('var(--')) return true;
     if (!this.property) return this.suggestions.some((item) => item.value === raw);
     try {
@@ -410,8 +520,9 @@ export class HeoValueField extends LitElement {
           @keydown=${this.#onKeyDown}
         />
         <div
-          class="trailing"
-          title="Show tokens and values"
+          class=${`trailing${this.#canOpen ? ' actionable' : ''}`}
+          title=${this.#canOpen ? 'Show tokens and values' : ''}
+          @pointerdown=${this.#onTrailingDown}
           @click=${this.#onTrailingClick}
         >
           ${showUnit
@@ -438,7 +549,7 @@ export class HeoValueField extends LitElement {
                 ${icon('close', 11)}
               </button>`
         : nothing}
-          ${this.suggestions.length || this.isNumeric
+          ${this.#canOpen
         ? html`<button
                 class="mini"
                 type="button"
@@ -449,6 +560,19 @@ export class HeoValueField extends LitElement {
                 @click=${this.#toggleOpen}
               >
                 ${icon('chevronDown', 12)}
+              </button>`
+        : nothing}
+          ${this.action
+        ? html`<button
+                class="action"
+                type="button"
+                title=${this.action}
+                aria-label=${this.action}
+                ?disabled=${!this.draft.trim()}
+                @pointerdown=${(event: Event) => event.preventDefault()}
+                @click=${this.#submit}
+              >
+                ${icon(this.actionIcon, 12)}
               </button>`
         : nothing}
         </div>
@@ -484,8 +608,12 @@ export class HeoValueField extends LitElement {
   #renderPopup(): TemplateResult {
     const items = this.filtered;
     if (!items.length) {
-      return html`<div class="popup" style=${this.popupStyle} role="listbox">
-        <div class="none">No matching token. Press Enter to keep your own value.</div>
+      return html`<div class="popup" popover="manual" style=${this.popupStyle} role="listbox">
+        <div class="none">
+          ${this.action
+          ? 'No matching name. Press Enter to use what you typed.'
+          : 'No matching token. Press Enter to keep your own value.'}
+        </div>
       </div>`;
     }
 
@@ -498,7 +626,7 @@ export class HeoValueField extends LitElement {
     }
 
     let index = -1;
-    return html`<div class="popup" style=${this.popupStyle} role="listbox">
+    return html`<div class="popup" popover="manual" style=${this.popupStyle} role="listbox">
       ${repeat(
       groups,
       (group) => group.name,
@@ -541,10 +669,16 @@ export class HeoValueField extends LitElement {
 
   #onInput(event: Event): void {
     this.draft = (event.target as HTMLInputElement).value;
-    if (!this.open) this.#openPopup();
+    if (!this.open && this.#canOpen) this.#openPopup();
     // Pre-highlight the best match, matching the block search popover: typing a
     // few letters of a token name and pressing Enter should pick it.
-    this.highlight = this.filtered.length ? 0 : -1;
+    //
+    // Never in a submit control, though. There, Enter sends what was typed, so a
+    // pre-selected row would both tell a screen reader the wrong thing and quietly
+    // turn "car" into `.card` — or, worse, register the typo. The arrow keys are
+    // how a suggestion gets taken.
+    this.highlight = !this.action && this.filtered.length ? 0 : -1;
+    this.#highlightMoved = false;
     this.#emit('value-input');
   }
 
@@ -553,22 +687,49 @@ export class HeoValueField extends LitElement {
   }
 
   /**
+   * Keep focus on the input when the trailing strip is pressed.
+   *
+   * Without this the press blurs the input, and the blur handler then closed the
+   * popup the click had just opened — which is what made the strip look inert.
+   */
+  #onTrailingDown(event: PointerEvent): void {
+    if (!this.#canOpen && !this.action) return;
+    event.preventDefault();
+  }
+
+  /**
    * The whole trailing strip opens the list, not just the chevron.
    *
    * The chevron is a 22px target inside a wider area that looks clickable; only
-   * honouring the icon itself makes the control feel broken. Clicks that landed
-   * on a real button are left to that button.
+   * honouring the icon itself makes the control feel broken. Clicks that already
+   * landed on a button are left to that button.
    */
   #onTrailingClick(event: MouseEvent): void {
-    if (event.target !== event.currentTarget) return;
+    if (!this.#canOpen) return;
+    const onButton = event
+      .composedPath()
+      .some((node) => node instanceof HTMLElement && node.tagName === 'BUTTON');
+    if (onButton) return;
     this.#toggleOpen();
   }
 
+  /**
+   * Close on blur — but only once focus has really left the component.
+   *
+   * The check has to be deferred: at blur time the next focus target is not yet
+   * active, so an immediate answer would always read as "focus left" and would
+   * tear down the popup mid-click.
+   */
   #onBlur(): void {
-    // Let a click on an option land before the popup unmounts.
-    setTimeout(() => {
+    clearTimeout(this.#blurTimer);
+    this.#blurTimer = setTimeout(() => {
+      if (this.#hasFocus()) return;
       this.open = false;
       this.highlight = -1;
+      // A submit control has an explicit trigger, so looking away is not an
+      // instruction to act. Committing here would fire an action the host never
+      // asked for — adding a class the user was only half-way through typing.
+      if (this.action) return;
       if (this.draft !== this.value) this.#commit();
     }, 120);
   }
@@ -592,14 +753,16 @@ export class HeoValueField extends LitElement {
     if (event.key === 'Enter') {
       event.preventDefault();
       const highlighted = this.open && this.highlight >= 0 ? items[this.highlight] : undefined;
-      // A draft the browser already accepts is a literal the user meant; anything
-      // else was a search, so Enter takes the highlighted match.
-      if (highlighted && !this.#draftIsComplete()) {
+      // An arrow-key selection always wins. Failing that, a draft the browser
+      // already accepts is a literal the user meant; anything else was a search,
+      // so Enter takes the highlighted match.
+      if (highlighted && (this.#highlightMoved || !this.#draftIsComplete())) {
         this.#choose(highlighted);
         return;
       }
       this.open = false;
-      this.#commit();
+      if (this.action) this.#submit();
+      else this.#commit();
       return;
     }
 
@@ -620,6 +783,7 @@ export class HeoValueField extends LitElement {
         event.preventDefault();
         const next = this.highlight + direction;
         this.highlight = next < 0 ? items.length - 1 : next >= items.length ? 0 : next;
+        this.#highlightMoved = true;
         return;
       }
       if (this.isNumeric) {
@@ -661,9 +825,14 @@ export class HeoValueField extends LitElement {
 
   #openPopup(): void {
     this.open = true;
-    this.#positionPopup();
-    // Re-measure after the popup renders so its real height is used.
-    requestAnimationFrame(() => this.#positionPopup());
+    this.highlight = -1;
+    this.#highlightMoved = false;
+    // First placement happens in `updated()`, once the popover exists and has been
+    // promoted to the top layer. A second pass after the frame has settled picks
+    // up the popup's real height and any layout the panel did in between.
+    requestAnimationFrame(() => {
+      if (this.open) this.#positionPopup();
+    });
   }
 
   /**
@@ -691,7 +860,50 @@ export class HeoValueField extends LitElement {
     this.draft = item.value;
     this.open = false;
     this.highlight = -1;
-    this.#commit();
+    this.#highlightMoved = false;
+    if (this.action) this.#submit();
+    else this.#commit();
+  }
+
+  /**
+   * Fire the action, unconditionally.
+   *
+   * Deliberately skips the "did the value change" guard that `#commit` applies.
+   * A submit control is usually bound to a buffer the host mirrors straight back,
+   * which makes every submission look like a no-op to that guard — the reason the
+   * add button and Enter appeared to do nothing.
+   */
+  #submit(): void {
+    const next = this.draft.trim();
+    if (!next) return;
+    this.open = false;
+    this.dispatchEvent(
+      new CustomEvent('value-submit', {
+        detail: { value: next },
+        bubbles: true,
+        composed: true,
+      }),
+    );
+  }
+
+  /**
+   * Replace the buffer from the outside.
+   *
+   * Hosts that consume a submission need a way to clear the field while it still
+   * has focus, which the `value` property alone cannot do: an in-flight edit is
+   * intentionally protected from external writes.
+   */
+  reset(next = ''): void {
+    this.value = next;
+    this.draft = next;
+    this.open = false;
+    this.highlight = -1;
+    this.#highlightMoved = false;
+  }
+
+  /** Focus the text input, e.g. after the host cleared the field. */
+  focusInput(): void {
+    this.textInput?.focus();
   }
 
   /* ---- Colour ---- */

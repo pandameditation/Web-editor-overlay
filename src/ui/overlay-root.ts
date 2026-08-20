@@ -73,8 +73,18 @@ export class HeoOverlay extends HeoElement {
     this.dataset.theme = state.theme;
     this.style.setProperty('--heo-accent', state.accent);
     // The page needs to know about edit mode so text selection and cursors can be
-    // adjusted; see the page stylesheet installed at mount.
-    document.documentElement.toggleAttribute('data-heo-edit', state.editing);
+    // adjusted; see the page stylesheet installed at mount. The accent has to
+    // cross the shadow boundary too, because the drag preview is drawn on a page
+    // element and therefore cannot read the overlay's own variables.
+    //
+    // Gated on being connected: unmounting removes the host synchronously while a
+    // Lit update queued just before it lands a microtask later, and that late
+    // render would otherwise stamp edit mode back onto a page the overlay has
+    // already left.
+    const owns = this.isConnected;
+    document.documentElement.toggleAttribute('data-heo-edit', state.editing && owns);
+    if (owns) document.documentElement.style.setProperty('--heo-drag-accent', state.accent);
+    else document.documentElement.style.removeProperty('--heo-drag-accent');
 
     return html`
       ${state.editing ? html`<heo-selection-layer></heo-selection-layer>` : nothing}
@@ -93,6 +103,7 @@ export class HeoOverlay extends HeoElement {
   override disconnectedCallback(): void {
     super.disconnectedCallback();
     document.documentElement.removeAttribute('data-heo-edit');
+    document.documentElement.style.removeProperty('--heo-drag-accent');
   }
 }
 
