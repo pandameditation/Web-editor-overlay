@@ -4,19 +4,24 @@ import { repeat } from 'lit/directives/repeat.js';
 import {
   appliedRules,
   cascadedDeclarations,
+  declaredValues,
   inlineDeclarations,
+  parentLayoutProperties,
   PROPERTY_GROUP_LABELS,
   searchProperties,
+  sizeConstraints,
   splitTopLevel,
   type AppliedRule,
+  type SizeConstraint,
 } from '../../core/css.js';
-import { labelFor } from '../../core/dom.js';
+import { labelFor, selectableParent } from '../../core/dom.js';
 import { normalizeClassName } from '../../core/classes.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
 import { baseStyles } from '../theme.js';
 import { buildSuggestions, classSuggestions, valueKindFor } from '../suggestions.js';
+import { ClassEditor } from './class-editor.js';
 import type { HeoValueField } from '../controls/value-field.js';
 import '../controls/value-field.js';
 import '../controls/box-editor.js';
@@ -75,12 +80,8 @@ const SECTIONS: SectionSpec[] = [
     ],
     when: (computed) => computed.display.includes('grid'),
   },
-  {
-    id: 'child',
-    heading: 'In its parent',
-    glyph: 'moveOut',
-    properties: ['flex', 'align-self', 'order', 'grid-column', 'grid-row'],
-  },
+  // `child` is rendered by hand — see #renderParent — because it mixes the
+  // element's own properties with its parent's, and the two need telling apart.
   {
     id: 'size',
     heading: 'Size',
@@ -186,6 +187,7 @@ const openSections = new Set<string>(['modified', 'classes', 'spacing', 'layout'
 export class HeoStylesPanel extends HeoElement {
   static override styles = [
     baseStyles,
+    ClassEditor.styles,
     css`
       :host {
         display: block;
@@ -264,11 +266,35 @@ export class HeoStylesPanel extends HeoElement {
         gap: 5px;
         margin-bottom: 8px;
       }
-      .chip button {
+      /* Two targets in one chip: the name opens the definition, the cross takes the
+         class off this element. Separating them matters because the two actions are
+         not comparable — one edits a shared rule, the other edits one element. */
+      .chip {
+        padding: 0;
+        gap: 0;
+      }
+      .chip .name {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        height: 100%;
+        padding: 0 3px 0 7px;
+        border: 0;
+        border-radius: 999px 0 0 999px;
+        background: transparent;
+        color: inherit;
+        font-size: 11px;
+        cursor: pointer;
+      }
+      .chip .name:hover {
+        color: var(--heo-text);
+      }
+      .chip .kill {
         display: grid;
         place-items: center;
-        width: 13px;
-        height: 13px;
+        width: 15px;
+        height: 15px;
+        margin-right: 4px;
         border: 0;
         border-radius: 999px;
         background: transparent;
@@ -276,12 +302,85 @@ export class HeoStylesPanel extends HeoElement {
         cursor: pointer;
         padding: 0;
       }
-      .chip button:hover {
+      .chip .kill:hover {
         background: var(--heo-line-strong);
         color: var(--heo-text);
       }
       .chip.known {
         border-color: var(--heo-accent-line);
+        color: var(--heo-text);
+      }
+      .chip.open {
+        background: var(--heo-accent-soft);
+        border-color: var(--heo-accent-line);
+        color: var(--heo-text);
+      }
+
+      /* A cap somewhere above. Warm rather than red: it is an explanation, not a
+         mistake — plenty of layouts are capped on purpose. */
+      .capped {
+        margin-bottom: 9px;
+        padding: 8px 9px;
+        border: 1px solid color-mix(in oklab, var(--heo-warn) 40%, transparent);
+        border-radius: var(--heo-r-sm);
+        background: color-mix(in oklab, var(--heo-warn) 8%, transparent);
+      }
+      .capped .head {
+        display: flex;
+        align-items: flex-start;
+        gap: 7px;
+        margin-bottom: 7px;
+      }
+      .capped .g {
+        flex: 0 0 auto;
+        color: var(--heo-warn);
+      }
+      .capped .what {
+        color: var(--heo-text-dim);
+        font-size: 10.5px;
+        line-height: 1.5;
+      }
+
+      /* Rows that edit the parent, not the selection. Fenced with an accent rail
+         so a glance is enough to tell whose properties these are. */
+      .onparent {
+        margin-top: 11px;
+        padding: 9px 0 0 10px;
+        border-left: 2px solid var(--heo-accent-line);
+      }
+      .onparent .sub {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-bottom: 5px;
+      }
+      .onparent .g {
+        color: var(--heo-accent);
+      }
+      .onparent .who {
+        flex: 1 1 auto;
+        min-width: 0;
+        color: var(--heo-text-dim);
+        font-size: 11px;
+      }
+      .onparent .count {
+        flex: 0 0 auto;
+        color: var(--heo-text-faint);
+        font-size: 9.5px;
+      }
+
+      .link {
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: var(--heo-accent);
+        font-family: var(--heo-mono);
+        font-size: 10.5px;
+        text-decoration: underline;
+        text-underline-offset: 2px;
+        cursor: pointer;
+      }
+      .link:hover {
         color: var(--heo-text);
       }
 
@@ -409,7 +508,12 @@ export class HeoStylesPanel extends HeoElement {
   );
 
   @state() private classDraft = '';
+  /** Which class chip is expanded into its definition, if any. */
+  @state() private openClass: string | null = null;
+  @state() private classProperty = '';
   @state() private newProperty = '';
+  /** The element whose size cap has already auto-opened the parent section. */
+  #capsShownFor: HTMLElement | null = null;
   @state() private newValue = '';
   @state() private propertyPickerOpen = false;
   @state() private sectionsVersion = 0;
@@ -447,8 +551,153 @@ export class HeoStylesPanel extends HeoElement {
       ${SECTIONS.filter((section) => !section.when || section.when(computed)).map((section) =>
       this.#renderSection(section, el, computed, declared),
     )}
+      ${this.#renderParent(el, computed, declared)}
       ${this.#renderAdder(el)} ${this.#renderCascade(rules, cascade)}
     `;
+  }
+
+  /**
+   * How the parent treats this element — and, when it is the reason a size is
+   * being ignored, the parent's own properties.
+   *
+   * Two things live here that used to be missing. First, an answer to "I set a
+   * bigger width and nothing happened": the ancestor holding the cap is named,
+   * with its declaration editable in place, so the fix happens where the cause is
+   * rather than by piling `!important` onto the child. Second, the parent controls
+   * that decide how much room a child gets at all — a flex row's `flex-wrap` and
+   * `gap`, a grid's template.
+   *
+   * Editing someone else's element is the risk here, so the parent's rows are
+   * fenced off: their own sub-header names the element, every row says so in its
+   * tooltip, hovering the group highlights it on the page, and one click selects
+   * it outright.
+   */
+  #renderParent(
+    el: HTMLElement,
+    computed: CSSStyleDeclaration,
+    declared: Map<string, string>,
+  ): TemplateResult {
+    const parent = selectableParent(el);
+    const parentComputed = parent ? getComputedStyle(parent) : null;
+    const own = ['flex', 'align-self', 'order'];
+    if (parentComputed?.display.includes('grid')) own.push('grid-column', 'grid-row');
+
+    const caps = [
+      ...sizeConstraints(el, 'width'),
+      ...sizeConstraints(el, 'height'),
+    ].filter((cap) => cap.binding);
+    const setCount = own.filter((property) => declared.has(property)).length;
+
+    // Open itself the first time a cap turns up for this element: it is the answer
+    // to a question the user is actively asking, and hiding it behind a disclosure
+    // defeats the point. Recorded in the session set rather than forcing `open`, so
+    // collapsing it still sticks.
+    if (caps.length && this.#capsShownFor !== el) {
+      this.#capsShownFor = el;
+      openSections.add('child');
+    }
+
+    return html`<heo-section
+      heading="In its parent"
+      glyph="moveOut"
+      badge=${caps.length ? String(caps.length) : setCount ? String(setCount) : ''}
+      ?open=${openSections.has('child')}
+      @section-toggle=${(event: CustomEvent<{ open: boolean }>) =>
+        this.#remember('child', event.detail.open)}
+    >
+      ${caps.length ? caps.map((cap) => this.#renderConstraint(cap)) : nothing}
+
+      <div class="rows">
+        ${own.map((property) => this.#renderRow(property, el, computed, declared))}
+      </div>
+
+      ${parent && parentComputed
+        ? this.#renderParentControls(parent, parentComputed)
+        : html`<p class="hint" style="margin:9px 0 0">
+            This element has no editable parent, so its size is decided by the viewport.
+          </p>`}
+    </heo-section>`;
+  }
+
+  /** One "something above is capping this" notice, with the cause editable. */
+  #renderConstraint(cap: SizeConstraint): TemplateResult {
+    const owner = cap.el;
+    return html`<div
+      class="capped"
+      @pointerenter=${() => this.editor.hover(owner)}
+      @pointerleave=${() => this.editor.hover(null)}
+    >
+      <div class="head">
+        <span class="g">${icon('lock', 12)}</span>
+        <span class="what">
+          Only ${Math.round(cap.available)}px of ${cap.axis} is available here:
+          <button
+            class="link"
+            type="button"
+            title="Select this ancestor"
+            @click=${() => this.editor.select(owner)}
+          >
+            ${labelFor(owner)}
+          </button>
+          sets <code class="mono">${cap.property}: ${cap.value}</code>${cap.depth > 1
+        ? html`, ${cap.depth} levels up`
+        : nothing}.
+        </span>
+      </div>
+      <div class="row">
+        <span class="name" title=${`${cap.property} on ${labelFor(owner)}`}>
+          <span class="dot"></span>${cap.property}
+        </span>
+        <heo-value-field
+          .value=${cap.value}
+          .kind=${valueKindFor(cap.property)}
+          .property=${cap.property}
+          .suggestions=${buildSuggestions(this.editor, cap.property, owner)}
+          clearable
+          @value-change=${(event: CustomEvent<{ value: string }>) =>
+        this.editor.setStyle(cap.property, event.detail.value, owner)}
+        ></heo-value-field>
+      </div>
+    </div>`;
+  }
+
+  /** The parent's own layout properties, clearly fenced off as not this element's. */
+  #renderParentControls(parent: HTMLElement, parentComputed: CSSStyleDeclaration): TemplateResult {
+    const properties = parentLayoutProperties(parent);
+    const parentDeclared = new Map(
+      Array.from(declaredValues(parent), ([property, entry]) => [property, entry.value]),
+    );
+    const setCount = properties.filter((property) => parentDeclared.has(property)).length;
+
+    return html`<div
+      class="onparent"
+      @pointerenter=${() => this.editor.hover(parent)}
+      @pointerleave=${() => this.editor.hover(null)}
+    >
+      <div class="sub">
+        <span class="g">${icon('moveOut', 11)}</span>
+        <span class="who">
+          On the parent,
+          <button
+            class="link"
+            type="button"
+            title="Select the parent"
+            @click=${() => this.editor.select(parent)}
+          >
+            ${labelFor(parent)}
+          </button>
+        </span>
+        ${setCount ? html`<span class="count">${setCount} set</span>` : nothing}
+      </div>
+      <p class="hint" style="margin:0 0 8px">
+        These change the container, so every child moves with them.
+      </p>
+      <div class="rows">
+        ${properties.map((property) =>
+      this.#renderRow(property, parent, parentComputed, parentDeclared),
+    )}
+      </div>
+    </div>`;
   }
 
   /**
@@ -521,25 +770,45 @@ export class HeoStylesPanel extends HeoElement {
             ${repeat(
           classes,
           (name) => name,
-          (name) => html`<span
-                class=${`chip${this.editor.classes.get(name) ? ' known' : ''}`}
-                title=${this.editor.classes.get(name)
-              ? `${Object.keys(this.editor.classes.get(name)!.declarations).length} declarations`
-              : 'Not defined in a stylesheet the editor can read'}
-                >${name}
+          (name) => {
+            const defined = this.editor.classes.get(name);
+            const open = this.openClass === name;
+            return html`<span
+                class=${`chip${defined ? ' known' : ''}${open ? ' open' : ''}`}
+                title=${defined
+                ? `${Object.keys(defined.declarations).length} declarations — click to edit them`
+                : 'Click to see where this class comes from'}
+                >
                 <button
+                  class="name"
+                  type="button"
+                  aria-expanded=${open}
+                  @click=${() => {
+                this.openClass = open ? null : name;
+              }}
+                >
+                  ${icon(open ? 'chevronDown' : 'chevronRight', 8)} ${name}
+                </button>
+                <button
+                  class="kill"
                   type="button"
                   aria-label=${`Remove class ${name}`}
+                  title=${`Remove .${name} from this element`}
                   @click=${() => this.editor.toggleClass(name, el)}
                 >
                   ${icon('close', 9)}
                 </button>
-              </span>`,
+              </span>`;
+          },
         )}
           </div>`
         : html`<p class="hint" style="margin:0 0 8px">
             No classes yet. Adding one keeps styling reusable instead of inline.
           </p>`}
+
+      ${this.openClass && classes.includes(this.openClass)
+        ? this.#renderOpenClass(this.openClass, el)
+        : nothing}
 
       <heo-value-field
         label="class"
@@ -558,6 +827,47 @@ export class HeoStylesPanel extends HeoElement {
         button.
       </p>
     </heo-section>`;
+  }
+
+  /**
+   * The class's definition, opened in place under its chip.
+   *
+   * The same editor the design system panel uses, on purpose: a class means the
+   * same thing in both places, and editing one here changes every element wearing
+   * it — a distinction worth making obvious rather than re-teaching in a second UI.
+   */
+  #renderOpenClass(name: string, el: HTMLElement): TemplateResult {
+    const entry = this.editor.classes.get(name);
+    const host = {
+      engine: this.editor,
+      element: el,
+      newProperty: this.classProperty,
+      onNewProperty: (value: string) => {
+        this.classProperty = value;
+      },
+      onRemoved: () => {
+        this.openClass = null;
+      },
+    };
+    if (!entry) return ClassEditor.renderUnknown(name, host);
+
+    const uses = this.editor.classes.usage().get(name) ?? 0;
+    return html`
+      <p class="hint" style="margin:0 0 6px">
+        Editing <code class="mono">.${name}</code>${uses > 1
+        ? html` changes all ${uses} elements using it.`
+        : html`, which only this element uses.`}
+      </p>
+      ${ClassEditor.render(entry, {
+          expanded: true,
+          uses,
+          bare: true,
+          onToggle: () => {
+            this.openClass = null;
+          },
+          host,
+        })}
+    `;
   }
 
   /**

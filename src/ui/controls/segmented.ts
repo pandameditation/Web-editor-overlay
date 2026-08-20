@@ -37,10 +37,15 @@ export class HeoSegmented extends LitElement {
         background: var(--heo-sunken);
         gap: 2px;
       }
+      /* Inline row rather than a grid: an option may carry an icon, a label, or
+         both, and a single-column grid stacked the two into a 22px box and clipped
+         them. */
       button {
         flex: 1 1 0;
-        display: grid;
-        place-items: center;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 4px;
         min-width: 0;
         height: 22px;
         padding: 0 6px;
@@ -82,8 +87,8 @@ export class HeoSegmented extends LitElement {
   override render(): TemplateResult {
     return html`<div class="bar" role="group" aria-label=${this.label || 'Options'}>
       ${this.options.map((option) => {
-        const active = option.value === this.value;
-        return html`<button
+      const active = option.value === this.value;
+      return html`<button
           type="button"
           aria-pressed=${active}
           class=${this.accent ? 'accent' : ''}
@@ -91,9 +96,13 @@ export class HeoSegmented extends LitElement {
           @click=${() => this.#pick(option, active)}
         >
           ${option.icon ? icon(option.icon, 13) : nothing}
-          ${option.icon && option.label ? nothing : (option.label ?? option.value)}
+          ${
+        // An icon on its own is the whole label; falling through to `value`
+        // printed "row" under the row glyph and clipped it.
+        option.label ?? (option.icon ? nothing : option.value)
+        }
         </button>`;
-      })}
+    })}
     </div>`;
   }
 

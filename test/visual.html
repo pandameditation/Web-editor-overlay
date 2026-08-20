@@ -135,23 +135,43 @@
       await wait(120);
 
       if (state === 'extract') {
-    engine.setStyle('padding', 'var(--space-xl)');
-    engine.setStyle('border-color', 'var(--accent)');
-    await wait(60);
-    engine.beginClassExtraction(document.getElementById('card-two'));
-  } else if (state === 'extract-block') {
-    engine.beginBlockExtraction(document.getElementById('card-two'));
-  } else if (state === 'modified') {
-    document.getElementById('card-two').setAttribute('style', 'padding: 32px; color: #0f172a; border-radius: 20px');
-    api.select(null);
-    api.select(document.getElementById('card-two'));
-    engine.setStyle('gap', '12px');
-    api.openPanel('styles');
-  } else if (state === 'floating') {
-    api.openPanel('styles');
-    await wait(150);
-    engine.setDockFloat(80, 120, 620);
-  } else if (state === 'menu') {
+        engine.setStyle('padding', 'var(--space-xl)');
+        engine.setStyle('border-color', 'var(--accent)');
+        await wait(60);
+        engine.beginClassExtraction(document.getElementById('card-two'));
+      } else if (state === 'extract-block') {
+        engine.beginBlockExtraction(document.getElementById('card-two'));
+      } else if (state === 'modified') {
+        document.getElementById('card-two').setAttribute('style', 'padding: 32px; color: #0f172a; border-radius: 20px');
+        api.select(null);
+        api.select(document.getElementById('card-two'));
+        engine.setStyle('gap', '12px');
+        api.openPanel('styles');
+      } else if (state === 'floating') {
+        api.openPanel('styles');
+        await wait(150);
+        engine.setDockFloat(80, 120, 620);
+      } else if (state === 'parent') {
+        // A child that wants to be wider than its container allows, so both the
+        // constraint notice and the parent controls have something to say.
+        const shell = document.createElement('div');
+        shell.id = 'shell';
+        shell.style.cssText =
+          'max-width:220px;display:flex;flex-direction:column;gap:var(--space-sm);padding:var(--space-md);background:#fff;border-radius:var(--radius-md)';
+        shell.innerHTML =
+          '<div id="wide" style="width:900px;height:28px;background:var(--accent-soft);border-radius:6px"></div>';
+        document.querySelector('.shell').appendChild(shell);
+        await wait(80);
+        api.openPanel('styles');
+        api.select(document.getElementById('wide'));
+        await wait(220);
+        const dockNode = document.querySelector('html-editor-overlay > heo-overlay')
+          .shadowRoot.querySelector('heo-dock');
+        const stylesPanel = dockNode.shadowRoot.querySelector('heo-styles-panel');
+        const section = Array.from(stylesPanel.shadowRoot.querySelectorAll('heo-section'))
+          .find((s) => s.heading === 'In its parent');
+        section?.scrollIntoView({ block: 'start' });
+      } else if (state === 'menu') {
         engine.setQuickMenu(true);
       } else if (state === 'insert') {
         engine.setInsertAnchor({ reference: document.getElementById('card-two'), position: 'after' });

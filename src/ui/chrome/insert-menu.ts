@@ -175,6 +175,13 @@ export class HeoInsertMenu extends HeoElement {
         overflow-y: auto;
         padding: 10px;
       }
+      /* The configure view is a form, not a menu, so its prose is text to read and
+         copy rather than a target to click past. */
+      .selectable {
+        -webkit-user-select: text;
+        user-select: text;
+        cursor: text;
+      }
       .cfoot {
         display: flex;
         justify-content: flex-end;
@@ -376,10 +383,12 @@ export class HeoInsertMenu extends HeoElement {
         <span class="name">${block.name}</span>
       </div>
       <div class="cbody">
-        ${block.description ? html`<p class="hint" style="margin:0 0 10px">${block.description}</p>` : nothing}
+        ${block.description
+        ? html`<p class="hint selectable" style="margin:0 0 10px">${block.description}</p>`
+        : nothing}
         ${PropForm.render(block.props ?? {}, this.props, (name, value) => {
-        this.props = { ...this.props, [name]: value };
-      }, this.editor)}
+          this.props = { ...this.props, [name]: value };
+        }, this.editor)}
       </div>
       <div class="cfoot">
         <button class="btn" type="button" @click=${() => {

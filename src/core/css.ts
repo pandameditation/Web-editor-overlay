@@ -460,6 +460,158 @@ export function cascadedDeclarations(rules: AppliedRule[]): Map<string, AppliedD
   return winner;
 }
 
+/**
+ * What an element declares, as opposed to what it computes to.
+ *
+ * The distinction is the whole point when explaining why a size is not applying:
+ * every laid-out element has a computed `width` in pixels, so only the declared
+ * value tells you whether an author actually asked for one.
+ */
+export function declaredValues(el: HTMLElement): Map<string, { value: string; from: string }> {
+  const out = new Map<string, { value: string; from: string }>();
+  for (const [property, entry] of cascadedDeclarations(appliedRules(el))) {
+    out.set(property, { value: entry.value, from: entry.from.selector });
+  }
+  return out;
+}
+
+export type SizeAxis = 'width' | 'height';
+
+/** An ancestor declaration that limits how large the element can become. */
+export interface SizeConstraint {
+  /** The ancestor imposing the limit. */
+  el: HTMLElement;
+  axis: SizeAxis;
+  property: string;
+  /** The value as declared, e.g. `600px` or `hidden`. */
+  value: string;
+  /** Selector the declaration came from, for provenance. */
+  from: string;
+  /** How many levels above the element the ancestor sits. */
+  depth: number;
+  /** Content extent the ancestor leaves its children, in CSS pixels. */
+  available: number;
+  /** True when the element is already filling that extent, so the cap is active. */
+  binding: boolean;
+}
+
+/** Properties that cap a child's extent, per axis. */
+const CAPS: Record<SizeAxis, string[]> = {
+  width: ['max-width', 'width', 'overflow-x', 'overflow'],
+  height: ['max-height', 'height', 'overflow-y', 'overflow'],
+};
+
+/**
+ * Ancestor declarations that stop the element from growing along one axis.
+ *
+ * Answers the question a designer actually asks — "I set a bigger width and
+ * nothing happened" — by naming the element and the declaration responsible.
+ * Only declared caps count: an ancestor that merely happens to be narrow because
+ * *its* parent is narrow is not where the fix belongs, and reporting it would send
+ * the user to the wrong place.
+ *
+ * `binding` separates "there is a cap somewhere above" from "that cap is what you
+ * are hitting right now", which is what lets the UI stay quiet until it matters.
+ */
+export function sizeConstraints(el: HTMLElement, axis: SizeAxis, limit = 3): SizeConstraint[] {
+  const extent = axis === 'width' ? el.getBoundingClientRect().width : el.getBoundingClientRect().height;
+  const out: SizeConstraint[] = [];
+
+  let current = el.parentElement;
+  let depth = 1;
+  while (current && current !== document.documentElement && out.length < limit) {
+    const declared = declaredValues(current);
+    const available = contentExtent(current, axis);
+    for (const property of CAPS[axis]) {
+      const entry = declared.get(property);
+      if (!entry) continue;
+      if (!isCapping(property, entry.value)) continue;
+      out.push({
+        el: current,
+        axis,
+        property,
+        value: entry.value,
+        from: entry.from,
+        depth,
+        available,
+        // Within a pixel of the space available is "flush against it"; subpixel
+        // layout means an exact comparison would almost never be true.
+        binding: extent >= available - 1,
+      });
+      break; // One reason per ancestor is enough; the first is the most specific.
+    }
+    current = current.parentElement;
+    depth += 1;
+  }
+  return out;
+}
+
+/** True when this declaration actually limits children rather than just existing. */
+function isCapping(property: string, value: string): boolean {
+  const text = value.trim().toLowerCase();
+  if (!text || text === 'auto' || text === 'none' || text === 'initial' || text === 'unset') {
+    return false;
+  }
+  if (property.startsWith('overflow')) return text !== 'visible';
+  // A percentage or `100%` width does not cap anything on its own; a length does.
+  if (property === 'width' || property === 'height') return !text.endsWith('%');
+  return true;
+}
+
+/** The space an element leaves its children along one axis, padding excluded. */
+function contentExtent(el: HTMLElement, axis: SizeAxis): number {
+  const style = getComputedStyle(el);
+  if (axis === 'width') {
+    const pad = Number.parseFloat(style.paddingLeft) + Number.parseFloat(style.paddingRight);
+    return Math.max(0, el.clientWidth - (Number.isFinite(pad) ? pad : 0));
+  }
+  const pad = Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom);
+  return Math.max(0, el.clientHeight - (Number.isFinite(pad) ? pad : 0));
+}
+
+/**
+ * The parent properties that govern how much room this child gets.
+ *
+ * Tailored to the parent's own layout mode, because the useful set is completely
+ * different: a flex row's `flex-wrap` and `gap` decide a child's width, while in a
+ * grid it is the template that does. Showing all of them regardless would turn a
+ * targeted answer back into a property dump.
+ */
+export function parentLayoutProperties(parent: HTMLElement): string[] {
+  const display = getComputedStyle(parent).display;
+  const common = ['display', 'width', 'max-width', 'padding', 'overflow'];
+
+  if (display.includes('flex')) {
+    return [
+      'display',
+      'flex-direction',
+      'flex-wrap',
+      'justify-content',
+      'align-items',
+      'gap',
+      'width',
+      'max-width',
+      'padding',
+      'overflow',
+    ];
+  }
+  if (display.includes('grid')) {
+    return [
+      'display',
+      'grid-template-columns',
+      'grid-auto-flow',
+      'justify-items',
+      'align-items',
+      'gap',
+      'width',
+      'max-width',
+      'padding',
+      'overflow',
+    ];
+  }
+  return common;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Values                                                                      */
 /* -------------------------------------------------------------------------- */
@@ -556,9 +708,22 @@ export function joinBoxValue(sides: [string, string, string, string]): string {
  * which is also what should end up in an extracted class.
  */
 export function inlineDeclarations(el: HTMLElement): Record<string, string> {
+  return parseDeclarations(el.style.cssText);
+}
+
+/**
+ * Declarations from serialized CSS text, as authored.
+ *
+ * The alternative — indexing into a `CSSStyleDeclaration` — expands every
+ * shorthand, so one `background: #fff` comes back as eight longhands and
+ * `padding: var(--x)` comes back as nothing at all, because the browser stores a
+ * var-bearing shorthand as a pending-substitution value that does not enumerate.
+ * Parsing the text keeps what the author wrote, which is what belongs in an
+ * editor and in an exported rule.
+ */
+export function parseDeclarations(cssText: string): Record<string, string> {
   const out: Record<string, string> = {};
-  const cssText = el.style.cssText;
-  if (!cssText.trim()) return out;
+  if (!cssText?.trim()) return out;
 
   let depth = 0;
   let current = '';

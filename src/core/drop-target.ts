@@ -1,4 +1,4 @@
-import { acceptsChildren, isHorizontalFlow, isSelectable, labelFor } from './dom.js';
+import { acceptsChildren, isHorizontalFlow, isOverlayNode, isSelectable, labelFor } from './dom.js';
 
 /** Which side of the reference element the drop lands on. */
 export type DropSide = 'before' | 'after' | 'inside';
@@ -9,13 +9,30 @@ export interface DropDecision {
   side: DropSide;
 }
 
-export interface DropTarget {
+/** Where the element would go if the drop happened now. */
+export interface DropPlacement {
   parent: Node;
   before: Node | null;
+}
+
+/** Carried between pointer samples so the re-parent gestures can be timed. */
+export interface DragScope {
+  /** The parent whose children are being reordered. */
+  home: Node;
+  /** Last before/after conclusion, for the sticky midpoint. */
+  decision: DropDecision | null;
+  /** When the pointer first left the home's frame; null while inside it. */
+  leftHomeAt: number | null;
+  /** The container the pointer has been resting inside, and since when. */
+  dwell: { host: HTMLElement; since: number } | null;
+}
+
+export interface DragPlan extends DragScope {
+  placement: DropPlacement;
   /** Human description of the pending drop, shown in the drag chip. */
   hint: string;
-  /** What the decision was made against, so the caller can feed it back in. */
-  decision: DropDecision;
+  /** A re-parent being counted down rather than performed. */
+  waiting: 'nest' | 'leave' | null;
 }
 
 /**
@@ -29,104 +46,265 @@ function stickyBand(extent: number): number {
 }
 
 /**
- * Where a drop at (x, y) should land.
+ * How far inside a container the pointer must be for it to read as "in here".
  *
- * Three decisions make dragging feel right. First, hit-testing walks the whole
- * stack at the pointer rather than taking the topmost element: while dragging,
- * the element's former neighbours frequently overlap the gap the user is aiming
- * at, and the topmost hit is often the wrong answer. Second, the before/after
- * decision is made along the container's own flow axis, so the gesture reads the
- * same whether the parent lays its children out in a row or a column. Third, that
- * decision is sticky: once a side has been chosen for a given element, the pointer
- * has to commit to the other half rather than merely graze the midpoint.
- *
- * The stickiness is what stops the loop that made this feel broken. Applying a
- * move reflows the page, which moves the midpoint the decision was based on,
- * which flips the decision, which reflows again. A deadzone around the midpoint
- * breaks that cycle without the user ever noticing it is there.
- *
- * Pure geometry, deliberately free of editor state, so it can be reasoned about
- * and exercised on its own. `null` means "no opinion" — the caller should keep
- * whatever placement it already has.
+ * Without this, passing over a container on the way somewhere else counts as
+ * aiming into it, and reordering past a card would nest inside it. The edges
+ * belong to the gaps between siblings; the middle belongs to the container.
  */
-export function findDropTarget(
+function nestInset(extent: number): number {
+  return Math.min(28, Math.max(8, extent * 0.22));
+}
+
+/**
+ * The plan for one pointer sample of a reorder.
+ *
+ * The gesture is deliberately narrow: a drag reorders siblings, and nothing else.
+ * That constraint is the whole fix for the flicker this used to have — hit-testing
+ * the element stack let a drag re-parent itself on any pointer move, and since a
+ * re-parent reflows the *ancestors* too, the next sample saw a different page and
+ * proposed something else. Reordering within one parent can only move the parent's
+ * own children, so the ground under the pointer stays still.
+ *
+ * Changing parent is therefore a separate, explicit gesture with a dwell on it:
+ * rest inside another container to go into it, or leave the current parent's frame
+ * and stay out to become a sibling somewhere else. Both cost the same 200-ish ms,
+ * so neither can happen by brushing past.
+ *
+ * Pure: takes the previous scope and a clock, returns the next one. All the timing
+ * lives in the caller's state, which makes the whole gesture reproducible.
+ */
+export function planDrag(
+  dragged: HTMLElement,
+  scope: DragScope,
+  x: number,
+  y: number,
+  now: number,
+  reparentMs: number,
+): DragPlan {
+  let home = scope.home;
+  let leftHomeAt = scope.leftHomeAt;
+  let dwell = scope.dwell;
+  let waiting: 'nest' | 'leave' | null = null;
+
+  const insideHome = containsPoint(home, x, y);
+
+  if (insideHome) {
+    leftHomeAt = null;
+    // Descending: resting well inside a container that is not the current parent.
+    const host = hostUnder(dragged, x, y, home);
+    if (host) {
+      if (dwell?.host !== host) dwell = { host, since: now };
+      if (now - dwell.since >= reparentMs) {
+        home = host;
+        dwell = null;
+      } else {
+        waiting = 'nest';
+      }
+    } else {
+      dwell = null;
+    }
+  } else {
+    // Leaving: the pointer has to stay out, not merely cross the boundary.
+    dwell = null;
+    leftHomeAt ??= now;
+    if (now - leftHomeAt >= reparentMs) {
+      const next = siblingHomeUnder(dragged, x, y, home);
+      if (next && next !== home) {
+        home = next;
+        leftHomeAt = null;
+      } else {
+        // Nothing to move into out here; keep counting rather than snapping back.
+        waiting = 'leave';
+      }
+    } else {
+      waiting = 'leave';
+    }
+  }
+
+  const slot = slotWithin(home, dragged, x, y, scope.decision);
+  const hint =
+    waiting === 'nest' && dwell
+      ? `Hold to move inside ${labelFor(dwell.host)}`
+      : waiting === 'leave'
+        ? `Hold outside ${labelFor(asElement(home))} to move it out`
+        : slot.hint;
+
+  return {
+    home,
+    placement: slot.placement,
+    decision: slot.decision,
+    hint,
+    leftHomeAt,
+    dwell,
+    waiting,
+  };
+}
+
+/**
+ * Where the element sits among `home`'s children, from the pointer's position.
+ *
+ * Projection onto the parent's own children rather than a hit test on the element
+ * stack. Two things fall out of that: only siblings can ever be proposed, and a
+ * pointer in the gap between two items still resolves to a slot instead of to
+ * whatever happens to be painted underneath.
+ *
+ * The nearest child is chosen by distance to its box, then before or after it
+ * along the container's flow axis, so rows, columns, grids and wrapped layouts all
+ * behave without special cases.
+ */
+export function slotWithin(
+  home: Node,
   dragged: HTMLElement,
   x: number,
   y: number,
   held?: DropDecision | null,
-): DropTarget | null {
-  for (const candidate of document.elementsFromPoint(x, y)) {
-    if (!(candidate instanceof HTMLElement)) continue;
-    if (candidate === dragged || dragged.contains(candidate)) continue;
-    if (!isSelectable(candidate)) continue;
-    if (candidate === document.body) break;
+): { placement: DropPlacement; decision: DropDecision | null; hint: string } {
+  const homeEl = asElement(home);
+  const children = orderableChildren(home, dragged);
 
-    const parent = candidate.parentNode;
-    if (!parent) continue;
-
-    // An empty container big enough to aim at is almost always meant as a target
-    // to drop *into*, not next to.
-    if (acceptsChildren(candidate) && isEmptyContainer(candidate) && isLargeEnough(candidate)) {
-      return {
-        parent: candidate,
-        before: null,
-        hint: `Into ${labelFor(candidate)}`,
-        decision: { reference: candidate, side: 'inside' },
-      };
-    }
-
-    const box = candidate.getBoundingClientRect();
-    const parentEl = candidate.parentElement;
-    const horizontal = parentEl ? isHorizontalFlow(parentEl) : false;
-    const extent = horizontal ? box.width : box.height;
-    const distance = (horizontal ? x - box.left : y - box.top) - extent / 2;
-
-    let after = distance > 0;
-    // Inside the deadzone, keep the side already chosen for this same element.
-    if (Math.abs(distance) < stickyBand(extent) && held?.reference === candidate) {
-      if (held.side === 'inside') return null;
-      after = held.side === 'after';
-    }
-
+  if (!children.length) {
     return {
-      parent,
-      before: after ? candidate.nextSibling : candidate,
-      hint: `${after ? 'After' : 'Before'} ${labelFor(candidate)}`,
-      decision: { reference: candidate, side: after ? 'after' : 'before' },
+      placement: { parent: home, before: null },
+      decision: homeEl ? { reference: homeEl, side: 'inside' } : null,
+      hint: `Into ${labelFor(homeEl)}`,
     };
   }
 
-  // Below everything: append to the end of the document.
-  if (y > innerHeight * 0.9) {
-    return {
-      parent: document.body,
-      before: null,
-      hint: 'At the end of the page',
-      decision: { reference: document.body, side: 'inside' },
-    };
+  let nearest = children[0];
+  let best = Infinity;
+  for (const child of children) {
+    const distance = distanceToBox(child.getBoundingClientRect(), x, y);
+    if (distance < best) {
+      best = distance;
+      nearest = child;
+    }
+  }
+
+  const box = nearest.getBoundingClientRect();
+  const horizontal = homeEl ? isHorizontalFlow(homeEl) : false;
+  const extent = horizontal ? box.width : box.height;
+  const distance = (horizontal ? x - box.left : y - box.top) - extent / 2;
+
+  let after = distance > 0;
+  // Inside the deadzone, keep the side already chosen for this same element: a
+  // move reflows the siblings, which moves the midpoint the decision was based on.
+  if (Math.abs(distance) < stickyBand(extent) && held?.reference === nearest) {
+    after = held.side === 'after';
+  }
+
+  return {
+    placement: { parent: home, before: after ? nearest.nextSibling : nearest },
+    decision: { reference: nearest, side: after ? 'after' : 'before' },
+    hint: `${after ? 'After' : 'Before'} ${labelFor(nearest)}`,
+  };
+}
+
+/** Children of `home` that could take the dragged element's place. */
+function orderableChildren(home: Node, dragged: HTMLElement): HTMLElement[] {
+  const parent = home as ParentNode;
+  if (!parent.children) return [];
+  const out: HTMLElement[] = [];
+  for (const child of Array.from(parent.children)) {
+    if (!(child instanceof HTMLElement) && !(child instanceof SVGElement)) continue;
+    const el = child as HTMLElement;
+    if (el === dragged || dragged.contains(el)) continue;
+    if (isOverlayNode(el) || !isSelectable(el)) continue;
+    const box = el.getBoundingClientRect();
+    if (box.width <= 0 && box.height <= 0) continue;
+    out.push(el);
+  }
+  return out;
+}
+
+/**
+ * The deepest container under the pointer that the element could move into.
+ *
+ * Must be strictly inside `home` — going up a level is the other gesture — and the
+ * pointer must be well inside it rather than near an edge, so passing over a
+ * container on the way past does not read as aiming into it.
+ */
+function hostUnder(dragged: HTMLElement, x: number, y: number, home: Node): HTMLElement | null {
+  for (const candidate of document.elementsFromPoint(x, y)) {
+    if (!(candidate instanceof HTMLElement)) continue;
+    if (candidate === dragged || dragged.contains(candidate)) continue;
+    if (isOverlayNode(candidate) || !isSelectable(candidate)) continue;
+    if (candidate === home) return null;
+    if (!home.contains(candidate)) continue;
+    if (!canHostChildren(candidate)) continue;
+    const box = candidate.getBoundingClientRect();
+    const inset = Math.min(nestInset(box.width), box.width / 2);
+    const insetY = Math.min(nestInset(box.height), box.height / 2);
+    if (x < box.left + inset || x > box.right - inset) continue;
+    if (y < box.top + insetY || y > box.bottom - insetY) continue;
+    return candidate;
   }
   return null;
 }
 
-/** True when two targets resolve to the same slot. */
-export function sameSlot(a: DropTarget, b: DropTarget): boolean {
-  return a.parent === b.parent && a.before === b.before;
+/** The parent to reorder within once the pointer has committed to leaving home. */
+function siblingHomeUnder(
+  dragged: HTMLElement,
+  x: number,
+  y: number,
+  home: Node,
+): Node | null {
+  for (const candidate of document.elementsFromPoint(x, y)) {
+    if (!(candidate instanceof HTMLElement)) continue;
+    if (candidate === dragged || dragged.contains(candidate)) continue;
+    if (isOverlayNode(candidate) || !isSelectable(candidate)) continue;
+    // Landing on the old parent's own box means the pointer is back in bounds.
+    if (candidate === home) return null;
+    // A container the pointer is inside is a place to go into; anything else means
+    // "beside this", which is its parent.
+    const target = canHostChildren(candidate) ? candidate : candidate.parentNode;
+    if (!target || target === home) continue;
+    if (dragged.contains(target as Node)) continue;
+    return target;
+  }
+  // Past the end of everything: the document itself is the parent.
+  if (y > innerHeight * 0.9) return document.body;
+  return null;
 }
 
-/** Big enough that the pointer is plausibly aiming inside it, not past it. */
-function isLargeEnough(el: HTMLElement): boolean {
+/**
+ * True when children can meaningfully be put inside this element.
+ *
+ * A paragraph or a heading technically accepts children, but dropping a card into
+ * one is never the intent — its content is a run of text, not a layout. Requiring
+ * either existing element children or a genuinely empty box separates containers
+ * from leaves without needing a tag list.
+ */
+export function canHostChildren(el: HTMLElement): boolean {
+  if (!acceptsChildren(el)) return false;
+  if (el.children.length > 0) return true;
+  if (el.textContent?.trim()) return false;
   const box = el.getBoundingClientRect();
   return box.width > 24 && box.height > 24;
 }
 
-/**
- * Truly empty: no element children *and* no text.
- *
- * Checking `children.length` alone counted every card and paragraph as an empty
- * container, because their content is a text node. Dragging over a paragraph then
- * swallowed the element into it, which is essentially never the intent and was
- * the most jarring thing about the old gesture.
- */
-function isEmptyContainer(el: HTMLElement): boolean {
-  return el.children.length === 0 && !el.textContent?.trim();
+/** True when (x, y) is within the element's frame. A non-element home is the page. */
+export function containsPoint(home: Node, x: number, y: number): boolean {
+  const el = asElement(home);
+  if (!el || el === document.body || el === document.documentElement) {
+    return x >= 0 && y >= 0 && x <= innerWidth && y <= innerHeight;
+  }
+  const box = el.getBoundingClientRect();
+  return x >= box.left && x <= box.right && y >= box.top && y <= box.bottom;
+}
+
+/** Zero inside the box, otherwise the shortest distance to its edge. */
+function distanceToBox(box: DOMRect, x: number, y: number): number {
+  const dx = Math.max(box.left - x, 0, x - box.right);
+  const dy = Math.max(box.top - y, 0, y - box.bottom);
+  return Math.hypot(dx, dy);
+}
+
+function asElement(node: Node | null): HTMLElement | null {
+  return node instanceof HTMLElement ? node : null;
+}
+
+/** True when two placements resolve to the same slot. */
+export function samePlacement(a: DropPlacement, b: DropPlacement): boolean {
+  return a.parent === b.parent && a.before === b.before;
 }

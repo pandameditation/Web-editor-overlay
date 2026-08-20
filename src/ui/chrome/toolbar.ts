@@ -14,6 +14,7 @@ const TABS: Array<{ id: PanelId; label: string; glyph: string; key: string }> = 
   { id: 'props', label: 'Props', glyph: 'sliders', key: 'P' },
   { id: 'media', label: 'Media', glyph: 'image', key: 'M' },
   { id: 'code', label: 'HTML', glyph: 'code', key: 'H' },
+  { id: 'css', label: 'CSS', glyph: 'styles', key: 'C' },
 ];
 
 /**

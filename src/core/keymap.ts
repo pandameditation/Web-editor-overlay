@@ -171,6 +171,7 @@ const PANEL_KEYS: Record<string, PanelId> = {
   p: 'props',
   m: 'media',
   h: 'code',
+  c: 'css',
 };
 
 /** Documentation of the keymap, for a help surface or a README. */

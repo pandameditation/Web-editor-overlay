@@ -155,6 +155,41 @@ export class HeoSelectionLayer extends HeoElement {
         pointer-events: none;
       }
 
+      /* The container a drag is currently reordering within.
+         A drag only moves the element among this element's children, so saying
+         which element that is turns an invisible rule into a visible one — and
+         makes the two hold-to-re-parent gestures discoverable rather than magic. */
+      .scope {
+        position: fixed;
+        border: 1px dashed color-mix(in oklab, var(--heo-accent) 45%, transparent);
+        border-radius: 4px;
+        background: color-mix(in oklab, var(--heo-accent) 5%, transparent);
+        pointer-events: none;
+      }
+      :host([data-waiting]) .scope {
+        border-style: solid;
+        border-color: var(--heo-accent);
+        animation: pulse 620ms var(--heo-ease) infinite;
+      }
+      @keyframes pulse {
+        50% {
+          opacity: 0.45;
+        }
+      }
+      .scope .tag {
+        position: absolute;
+        left: 0;
+        top: -17px;
+        padding: 0 5px;
+        border-radius: 4px;
+        background: var(--heo-accent);
+        color: var(--heo-accent-ink);
+        font-family: var(--heo-mono);
+        font-size: 9.5px;
+        line-height: 16px;
+        white-space: nowrap;
+      }
+
       /* The element a pending Replace will swap out. Every other insert position
          adds something and shows an accent guide line at the seam; this one takes
          something away, and it deserves to say so before the block is picked. */
@@ -190,15 +225,27 @@ export class HeoSelectionLayer extends HeoElement {
     const state = this.state.value;
     if (!state.editing) return nothing;
     this.toggleAttribute('data-dragging', Boolean(state.drag));
+    this.toggleAttribute('data-waiting', Boolean(state.drag?.waiting));
 
     const selected = state.selected;
     const hovered =
       state.hovered && state.hovered !== selected && !state.drag ? state.hovered : null;
 
     return html`
+      ${state.drag ? this.#renderScope(state.drag.home) : nothing}
       ${hovered ? this.#renderHover(hovered) : nothing}
       ${selected && selected.isConnected ? this.#renderSelection(selected) : nothing}
     `;
+  }
+
+  /** The parent a drag is confined to, labelled so the rule is legible. */
+  #renderScope(home: Node): TemplateResult | typeof nothing {
+    if (!(home instanceof HTMLElement) || home === document.body) return nothing;
+    const box = visualBox(home);
+    if (box.width <= 0 && box.height <= 0) return nothing;
+    return html`<div class="scope" style=${boxStyle(box)}>
+      <span class="tag">reordering in ${labelFor(home)}</span>
+    </div>`;
   }
 
   #renderHover(el: HTMLElement): TemplateResult {

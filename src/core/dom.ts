@@ -101,15 +101,28 @@ export function flatParent(el: HTMLElement): HTMLElement | null {
  */
 export function flatChildren(el: HTMLElement): HTMLElement[] {
   if (el instanceof HTMLSlotElement) {
-    const assigned = el.assignedElements({ flatten: true }).filter(isHTMLElement);
-    return assigned.length ? assigned : Array.from(el.children).filter(isHTMLElement);
+    const assigned = el.assignedElements({ flatten: true }).filter(isEditableElement);
+    return assigned.length ? assigned : Array.from(el.children).filter(isEditableElement);
   }
   const root: ParentNode = el.shadowRoot ?? el;
-  return Array.from(root.children).filter(isHTMLElement);
+  return Array.from(root.children).filter(isEditableElement);
 }
 
-function isHTMLElement(node: unknown): node is HTMLElement {
-  return node instanceof HTMLElement;
+/**
+ * An element node the editor is willing to work with.
+ *
+ * SVG counts. `<svg>` is an `SVGSVGElement`, not an `HTMLElement`, so an
+ * `instanceof HTMLElement` filter here silently dropped every inline icon and
+ * illustration from the tree — even though clicking one on the page selected it
+ * quite happily, because `isSelectable` admits SVG. The two have to agree.
+ *
+ * The `HTMLElement` return type is the same deliberate simplification the rest of
+ * this module makes: everything the editor touches on an SVG element (style,
+ * classList, dataset, getBoundingClientRect) exists on both, and typing the whole
+ * surface as `Element` would cost far more than it explains.
+ */
+function isEditableElement(node: unknown): node is HTMLElement {
+  return node instanceof HTMLElement || node instanceof SVGElement;
 }
 
 /** Selectable ancestors and self, nearest first, stopping at `<body>`. */
@@ -187,7 +200,7 @@ export function previousInFlow(el: HTMLElement): HTMLElement | null {
   const previous = previousSibling(el);
   if (!previous) return selectableParent(el);
   let deepest = previous;
-  for (;;) {
+  for (; ;) {
     const children = selectableChildren(deepest);
     if (!children.length) return deepest;
     deepest = children[children.length - 1];
@@ -261,8 +274,8 @@ export function visualBox(el: HTMLElement): Box {
   }
   const kids =
     el instanceof HTMLSlotElement
-      ? el.assignedElements({ flatten: true }).filter(isHTMLElement)
-      : Array.from(el.children).filter(isHTMLElement);
+      ? el.assignedElements({ flatten: true }).filter(isEditableElement)
+      : Array.from(el.children).filter(isEditableElement);
   const rects = kids.map((k) => k.getBoundingClientRect()).filter((r) => r.width > 0 || r.height > 0);
   if (!rects.length) {
     return { top: own.top, left: own.left, width: own.width, height: own.height };

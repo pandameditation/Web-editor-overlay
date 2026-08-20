@@ -267,41 +267,41 @@ export class HeoTreePanel extends HeoElement {
           autocomplete="off"
           aria-label="Filter elements"
           @input=${(event: Event) => {
-            this.query = (event.target as HTMLInputElement).value;
-          }}
+        this.query = (event.target as HTMLInputElement).value;
+      }}
           @keydown=${(event: KeyboardEvent) => {
-            if (event.key === 'Escape') {
-              event.stopPropagation();
-              this.query = '';
-            }
-          }}
+        if (event.key === 'Escape') {
+          event.stopPropagation();
+          this.query = '';
+        }
+      }}
         />
         ${this.query
-          ? html`<button
+        ? html`<button
               class="btn icon ghost sm"
               type="button"
               aria-label="Clear filter"
               @click=${() => {
-                this.query = '';
-              }}
+            this.query = '';
+          }}
             >
               ${icon('close', 11)}
             </button>`
-          : nothing}
+        : nothing}
       </div>
 
       ${selected && !this.query ? this.#renderCrumbs(selected) : nothing}
 
       <div class="list" role="tree">
         ${rows.length === 0
-          ? html`<div class="empty">
+        ? html`<div class="empty">
               ${this.query ? `Nothing matches “${this.query}”.` : 'This page has no editable elements.'}
             </div>`
-          : repeat(
-              rows,
-              (row) => row.el,
-              (row) => this.#renderRow(row, selected),
-            )}
+        : repeat(
+          rows,
+          (row) => row.el,
+          (row) => this.#renderRow(row, selected),
+        )}
       </div>
 
       ${this.#renderPad()}
@@ -350,7 +350,7 @@ export class HeoTreePanel extends HeoElement {
     const chain = [...ancestors(selected)].reverse();
     return html`<div class="crumbs" aria-label="Ancestors">
       ${chain.map(
-        (el) => html`<button
+      (el) => html`<button
           class="crumb"
           type="button"
           title="Select this ancestor"
@@ -361,7 +361,7 @@ export class HeoTreePanel extends HeoElement {
           ${el.tagName.toLowerCase()}
         </button>
         <span class="sepc">${icon('chevronRight', 9)}</span>`,
-      )}
+    )}
       <button class="crumb current" type="button" disabled>
         ${selected.tagName.toLowerCase()}
       </button>
@@ -392,7 +392,12 @@ export class HeoTreePanel extends HeoElement {
       @pointerleave=${() => this.editor.hover(null)}
       @click=${() => this.editor.select(el)}
       @dblclick=${() => {
+        // Expand as well as edit. A double click on a row that has children is
+        // just as likely to mean "show me what is in here" as "let me retype the
+        // label", and doing both costs nothing: the twisty state is independent
+        // of whether a text edit started.
         this.editor.select(el);
+        if (row.hasChildren && !row.expanded) this.#toggle(el);
         this.editor.beginTextEdit(el);
       }}
     >
@@ -400,10 +405,10 @@ export class HeoTreePanel extends HeoElement {
         class=${`twisty${row.hasChildren ? '' : ' leaf'}`}
         role="presentation"
         @click=${(event: Event) => {
-          if (!row.hasChildren) return;
-          event.stopPropagation();
-          this.#toggle(el);
-        }}
+        if (!row.hasChildren) return;
+        event.stopPropagation();
+        this.#toggle(el);
+      }}
       >
         ${icon(row.expanded ? 'chevronDown' : 'chevronRight', 10)}
       </span>
@@ -413,14 +418,14 @@ export class HeoTreePanel extends HeoElement {
       ${preview ? html`<span class="text">${preview}</span>` : html`<span class="text"></span>`}
       <span class="marks">
         ${isComponent
-          ? html`<span class="mark cmp" title="Custom element">${icon('component', 11)}</span>`
-          : nothing}
+        ? html`<span class="mark cmp" title="Custom element">${icon('component', 11)}</span>`
+        : nothing}
         ${isNew
-          ? html`<span class="mark new" title="Added in this session">${icon('plus', 11)}</span>`
-          : nothing}
+        ? html`<span class="mark new" title="Added in this session">${icon('plus', 11)}</span>`
+        : nothing}
         ${hasSource
-          ? html`<span class="mark" title=${`Source: ${formatSource(el)}`}>${icon('code', 11)}</span>`
-          : nothing}
+        ? html`<span class="mark" title=${`Source: ${formatSource(el)}`}>${icon('code', 11)}</span>`
+        : nothing}
       </span>
     </button>`;
   }

@@ -1,4 +1,5 @@
 import { CLASS_STYLE_ID } from './constants.js';
+import { parseDeclarations } from './css.js';
 import { queryDeep } from './dom.js';
 import { declarationsToCSS, ManagedStyleSheet } from './stylesheet.js';
 import type { DesignClass } from './types.js';
@@ -221,13 +222,16 @@ function simpleClassName(selector: string): string | null {
   return match[1];
 }
 
+/**
+ * A rule's declarations, as they were written.
+ *
+ * Parsed from `cssText` rather than read by index, because indexing expands every
+ * shorthand: a `.card` with four declarations came back as nineteen longhands,
+ * which is what the class editor then had to show and what an export would have
+ * emitted. The authored form is both shorter and what the developer will recognise.
+ */
 function readDeclarations(style: CSSStyleDeclaration): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (let i = 0; i < style.length; i += 1) {
-    const property = style[i];
-    out[property] = style.getPropertyValue(property).trim();
-  }
-  return out;
+  return parseDeclarations(style.cssText);
 }
 
 export function normalizeClassName(name: string): string {

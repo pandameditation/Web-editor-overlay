@@ -95,7 +95,12 @@ export class HeoDragChip extends HeoElement {
     if (!drag) return nothing;
 
     this.toggleAttribute('data-cancel', drag.willCancel);
-    this.toggleAttribute('data-pending', drag.pending && !drag.willCancel);
+    // A re-parent countdown pulses too: the pause is the gesture, so it has to look
+    // deliberate rather than like the drag has stalled.
+    this.toggleAttribute(
+      'data-pending',
+      (drag.pending || Boolean(drag.waiting)) && !drag.willCancel,
+    );
     this.style.left = `${Math.round(drag.pointer.x)}px`;
     this.style.top = `${Math.round(drag.pointer.y)}px`;
 

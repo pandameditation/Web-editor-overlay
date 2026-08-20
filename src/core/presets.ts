@@ -315,7 +315,7 @@ export const COMPONENT_PRESETS: LibraryBlock[] = [
         type: 'text',
         label: 'Bullet',
         default: '•',
-        description: 'Any character or emoji: → ▸ ◆ ✅ 🔥 ★ —',
+        description: 'Any character or emoji: → • ▸ ◆ ✅ 🔥 🌟 ★ —',
       },
       item1: { type: 'text', label: 'First item', default: 'The first point' },
       item2: { type: 'text', label: 'Second item', default: 'The second point' },
@@ -323,28 +323,18 @@ export const COMPONENT_PRESETS: LibraryBlock[] = [
       gap: { type: 'token', label: 'Row gap', tokenGroup: 'space', default: 'var(--space-sm, 8px)' },
     },
     /*
-     * Markers are real elements rather than `list-style-type`.
+     * The marker is a string `list-style-type`, which is the whole trick.
      *
-     * A string `list-style-type` would be tidier CSS, but the marker it generates
-     * is not an element: it cannot be selected, its text cannot be edited in
-     * place, and the character would only be changeable by retyping a CSS value.
-     * A span per row keeps every bullet a first-class thing the editor can work
-     * with, at the cost of `list-style: none` and `role="list"` — the latter
-     * because removing the list style also removes list semantics in Safari.
+     * Any character or emoji is a valid marker value, so one declaration replaces
+     * the span-per-row scaffolding this used to need — and the rows stay real list
+     * items, which keeps list semantics and lets a new one be added by duplicating
+     * an `<li>` rather than a two-span assembly. `padding-left` gives the marker a
+     * gutter to sit in, since a string marker is positioned outside by default.
      */
-    html: `<ul role="list" style="margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:{{gap}};color:${S.ink}">
-  <li style="display:flex;align-items:flex-start;gap:10px;line-height:1.6">
-    <span aria-hidden="true" style="flex:0 0 auto;color:${S.accent}">{{bullet}}</span>
-    <span>{{item1}}</span>
-  </li>
-  <li style="display:flex;align-items:flex-start;gap:10px;line-height:1.6">
-    <span aria-hidden="true" style="flex:0 0 auto;color:${S.accent}">{{bullet}}</span>
-    <span>{{item2}}</span>
-  </li>
-  <li style="display:flex;align-items:flex-start;gap:10px;line-height:1.6">
-    <span aria-hidden="true" style="flex:0 0 auto;color:${S.accent}">{{bullet}}</span>
-    <span>{{item3}}</span>
-  </li>
+    html: `<ul style="margin:0;padding-left:1.5em;list-style-type:'{{bullet}} ';display:flex;flex-direction:column;gap:{{gap}};color:${S.ink};line-height:1.6">
+  <li>{{item1}}</li>
+  <li>{{item2}}</li>
+  <li>{{item3}}</li>
 </ul>`,
   },
   {

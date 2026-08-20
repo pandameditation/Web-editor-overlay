@@ -34,6 +34,16 @@ export const DRAG_TIMING = {
   drop: 180,
   /** Pointer travel that overrides the settle freeze, for deliberate fast drags. */
   escape: 26,
+  /**
+   * How long the pointer must hold a re-parent gesture.
+   *
+   * Changing which parent an element belongs to is a bigger edit than reordering
+   * within one, and it is the edit that reflows ancestors — so it is gated behind a
+   * deliberate pause rather than available on any pointer move.
+   */
+  reparent: 200,
+  /** Poll interval while a re-parent countdown is running. */
+  tick: 40,
 } as const;
 
 /** id of the `<style>` element the token editor writes into. */
@@ -45,7 +55,13 @@ export const CLASS_STYLE_ID = 'heo-design-classes';
 /** id of the `<style>` element block CSS accumulates in. */
 export const BLOCK_STYLE_ID = 'heo-block-styles';
 
-/** Elements that are never selectable. */
+/**
+ * Elements that are never selectable.
+ *
+ * The SVG entries are definition and paint-server nodes: they render nothing of
+ * their own, so listing them in the tree would be noise between the `<svg>` and
+ * the shapes actually worth selecting.
+ */
 export const NON_SELECTABLE_TAGS = new Set([
   'html',
   'head',
@@ -58,6 +74,16 @@ export const NON_SELECTABLE_TAGS = new Set([
   'noscript',
   'br',
   'wbr',
+  'defs',
+  'desc',
+  'metadata',
+  'clippath',
+  'mask',
+  'symbol',
+  'lineargradient',
+  'radialgradient',
+  'stop',
+  'pattern',
   HOST_TAG,
 ]);
 

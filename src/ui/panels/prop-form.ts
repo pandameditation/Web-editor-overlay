@@ -40,10 +40,20 @@ export const PropForm = {
       font-family: var(--heo-mono);
       font-size: 9.5px;
     }
+    /* Selectable on purpose. These descriptions carry the values themselves —
+       "Any character or emoji: → • 🔥 ✅ 🌟" is a menu, not prose — and copying one
+       out is the fastest way to use it. */
     .pf-desc {
       color: var(--heo-text-faint);
       font-size: 10.5px;
       line-height: 1.4;
+      -webkit-user-select: text;
+      user-select: text;
+      cursor: text;
+    }
+    .pf-label code {
+      -webkit-user-select: text;
+      user-select: text;
     }
     .pf-check {
       display: flex;
@@ -81,7 +91,7 @@ export const PropForm = {
               type="checkbox"
               .checked=${value === 'true'}
               @change=${(event: Event) =>
-                onChange(name, (event.target as HTMLInputElement).checked ? 'true' : 'false')}
+            onChange(name, (event.target as HTMLInputElement).checked ? 'true' : 'false')}
             />
             ${label}
           </label>
@@ -103,11 +113,11 @@ export const PropForm = {
             @change=${(event: Event) => onChange(name, (event.target as HTMLSelectElement).value)}
           >
             ${options.map(
-              (option) =>
-                html`<option value=${option.value} ?selected=${option.value === value}>
+          (option) =>
+            html`<option value=${option.value} ?selected=${option.value === value}>
                   ${option.label}
                 </option>`,
-            )}
+        )}
           </select>
           ${spec.description ? html`<span class="pf-desc">${spec.description}</span>` : nothing}
         </div>`;
@@ -125,7 +135,7 @@ export const PropForm = {
           .suggestions=${suggestions}
           placeholder=${String(spec.default ?? '')}
           @value-change=${(event: CustomEvent<{ value: string }>) =>
-            onChange(name, event.detail.value)}
+          onChange(name, event.detail.value)}
         ></heo-value-field>
         ${spec.description ? html`<span class="pf-desc">${spec.description}</span>` : nothing}
       </div>`;

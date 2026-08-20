@@ -19,7 +19,7 @@ export function buildSuggestions(
   element: HTMLElement | null,
 ): ValueSuggestion[] {
   const meta = propertyMeta(property);
-  const group = meta.tokens;
+  const group = tokenGroupFor(meta);
   const tokenItems: ValueSuggestion[] = [];
   const literalItems: ValueSuggestion[] = [];
   const seen = new Set<string>();
@@ -42,18 +42,25 @@ export function buildSuggestions(
     });
   };
 
+  // Every bucket goes through the same compatibility filter. Filtering by exact
+  // group inside the registry, as this used to, meant "Used in this project" and
+  // "All tokens" disagreed with the compatibility rules and — for any property
+  // without a declared group — listed the entire palette.
   if (element) {
-    const local = filterGroup(engine.tokens.usedBy(element), group);
-    for (const token of local) add(token, 'Used in this component');
+    for (const token of filterGroup(engine.tokens.usedBy(element), group)) {
+      add(token, 'Used in this component');
+    }
   }
 
   const usage = engine.tokens.usage();
-  for (const token of engine.tokens.usedInProject(group, 14)) {
+  // Ranked by usage first, then narrowed, so the cut is the most-used *compatible*
+  // tokens rather than whatever survived a pre-trimmed list.
+  for (const token of filterGroup(engine.tokens.usedInProject(undefined, 400), group).slice(0, 14)) {
     const count = usage.get(token.name) ?? 0;
     add(token, 'Used in this project', `${token.value} · ${count}×`);
   }
 
-  for (const token of filterGroup(engine.tokens.list(group), group)) {
+  for (const token of filterGroup(engine.tokens.list(), group)) {
     add(token, group ? `All ${group} tokens` : 'All tokens');
   }
 
@@ -81,13 +88,59 @@ export function buildSuggestions(
     : [...tokenItems, ...literalItems];
 }
 
+/**
+ * Which token groups may appear on a property in a given group.
+ *
+ * Mostly one-to-one, with two deliberate exceptions. A spacing field accepts size
+ * tokens, because a scale like `--size-2` is routinely used as a gap — but not the
+ * reverse: nothing good comes of offering `--space-md` for a `font-size`. And a
+ * `border` shorthand needs a width *and* a colour, so it takes both.
+ */
+const COMPATIBLE_GROUPS: Record<TokenGroup, TokenGroup[]> = {
+  color: ['color'],
+  space: ['space', 'size'],
+  size: ['size'],
+  radius: ['radius'],
+  shadow: ['shadow'],
+  font: ['font'],
+  border: ['border', 'color'],
+  motion: ['motion'],
+  other: ['other'],
+};
+
 function filterGroup(tokens: DesignToken[], group: TokenGroup | undefined): DesignToken[] {
-  if (!group) return tokens;
-  // Size and space tokens are interchangeable in practice, so a gap field should
-  // still see a `--size-*` token rather than showing an empty list.
-  const compatible: TokenGroup[] =
-    group === 'space' ? ['space', 'size'] : group === 'size' ? ['size', 'space'] : [group];
+  // No group means no token can satisfy this property, so offer none. Showing the
+  // whole palette on `overflow` or `transform` was what buried the handful of
+  // values that actually apply.
+  if (!group) return [];
+  const compatible = COMPATIBLE_GROUPS[group] ?? [group];
   return tokens.filter((token) => compatible.includes(token.group));
+}
+
+/**
+ * The token group a property draws from.
+ *
+ * The catalogue declares this for most properties. Where it does not, the control
+ * type is a reliable proxy: a colour control wants colour tokens whatever the
+ * property is called. Keyword and number controls resolve to nothing, which is
+ * the point — there is no token spelling of `hidden` or `700`.
+ */
+function tokenGroupFor(meta: PropertyMeta): TokenGroup | undefined {
+  if (meta.tokens) return meta.tokens;
+  switch (meta.control) {
+    case 'color':
+      return 'color';
+    case 'box':
+      return 'space';
+    case 'length':
+      return 'size';
+    case 'shadow':
+      return 'shadow';
+    case 'font':
+      return 'font';
+    default:
+      return undefined;
+  }
 }
 
 function literalsFor(meta: PropertyMeta): string[] {

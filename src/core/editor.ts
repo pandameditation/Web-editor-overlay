@@ -1,7 +1,7 @@
 import { ClassRegistry, normalizeClassName, suggestClassName } from './classes.js';
 import { DRAGGING_ATTR, DRAG_TIMING, HOST_TAG, IGNORE_ATTR, VERSION } from './constants.js';
 import { inlineDeclarations } from './css.js';
-import { findDropTarget, sameSlot, type DropTarget } from './drop-target.js';
+import { planDrag, samePlacement, type DropPlacement } from './drop-target.js';
 import { captureRects, neighbourhood, playFlip, settleDrop } from './reflow.js';
 import {
   acceptsChildren,
@@ -57,6 +57,7 @@ import { TokenRegistry } from './tokens.js';
 import type {
   BlockKind,
   ChangeRecord,
+  DesignClass,
   DesignSystemDocument,
   DragState,
   EditorSnapshotState,
@@ -179,11 +180,25 @@ export class EditorEngine {
   #injectedElements = new Set<string>();
   #destroyed = false;
 
+  /**
+   * Which library block produced an element, and with what prop values.
+   *
+   * Keyed on the node rather than written into an attribute, so nothing leaks into
+   * the exported HTML and the record survives moves, undo and redo — all of which
+   * re-insert the very same node. A WeakMap also means a deleted element's entry
+   * disappears with it.
+   */
+  #instances = new WeakMap<HTMLElement, { blockId: string; values: Record<string, string> }>();
+
   /* Reorder bookkeeping. Timing, not UI state, so it stays out of the store. */
-  #dragPending: { target: DropTarget; since: number } | null = null;
+  #dragPending: { placement: DropPlacement; since: number } | null = null;
   #dragTimer: ReturnType<typeof setTimeout> | null = null;
   #dragSettledAt = 0;
   #dragSettledAtPointer = { x: 0, y: 0 };
+  /** When the pointer left the current parent's frame, for the leave gesture. */
+  #dragLeftHomeAt: number | null = null;
+  /** The container the pointer is resting inside, for the nest gesture. */
+  #dragDwell: { host: HTMLElement; since: number } | null = null;
 
   constructor(options: MountOptions = {}) {
     this.options = options;
@@ -512,6 +527,61 @@ export class EditorEngine {
   }
 
   /**
+   * Change one declaration on a reusable class. An empty value removes it.
+   *
+   * Lives on the engine rather than in a panel because the class editor is reached
+   * from two places now — the design system panel and the class chips in Styles —
+   * and an undoable mutation should not exist twice.
+   */
+  setClassDeclaration(name: string, property: string, value: string): void {
+    const before = this.classes.get(name);
+    if (!before) return;
+    const snapshot: DesignClass = { ...before, declarations: { ...before.declarations } };
+    this.history.commit({
+      label: `Set ${property} on .${name}`,
+      mergeKey: `class:${name}:${property}`,
+      subject: `class-decl:${name}:${property}`,
+      record: {
+        id: nextChangeId(),
+        kind: 'token-class',
+        summary: `Set ${property} to ${value || '(removed)'} on .${name}`,
+        target: `.${name}`,
+        before: snapshot.declarations[property],
+        after: value || undefined,
+        detail: { class: name, property, value },
+        at: Date.now(),
+      },
+      apply: () => {
+        this.classes.setDeclaration(name, property, value);
+      },
+      revert: () => this.classes.upsert(snapshot),
+    });
+    this.#bumpRevision();
+  }
+
+  /** Delete a reusable class, keeping it on the undo stack. */
+  removeClass(name: string): void {
+    const entry = this.classes.get(name);
+    if (!entry) return;
+    const snapshot: DesignClass = { ...entry, declarations: { ...entry.declarations } };
+    this.history.commit({
+      label: `Delete .${name}`,
+      record: {
+        id: nextChangeId(),
+        kind: 'token-class',
+        summary: `Remove class .${name}`,
+        target: `.${name}`,
+        at: Date.now(),
+      },
+      apply: () => {
+        this.classes.remove(name);
+      },
+      revert: () => this.classes.upsert(snapshot),
+    });
+    this.#bumpRevision();
+  }
+
+  /**
    * Edit a declaration on a live CSS rule.
    *
    * Distinct from `setStyle`, which writes an inline override on one element.
@@ -783,6 +853,10 @@ export class EditorEngine {
     const result = duplicateElement(el);
     if (!result) return;
     this.history.commit(result.command);
+    // A clone is a new node, so it needs its own instance record; without this the
+    // copy of a configured block would lose its editable props.
+    const instance = this.#instances.get(el);
+    if (instance) this.#instances.set(result.node, { ...instance, values: { ...instance.values } });
     this.select(result.node);
     this.notify('Duplicated.', 'success');
   }
@@ -900,6 +974,9 @@ export class EditorEngine {
       if (!command) return null;
       this.history.commit(command);
       if (block.element?.tag) this.#injectedElements.add(block.element.tag);
+      // Remember what the block was configured with, so the props panel can offer
+      // the same form again instead of leaving the values write-once.
+      this.#rememberInstance(nodes[0], block, props);
       this.store.patch({ insertAnchor: null });
       this.select(nodes[0]);
       this.notify(
@@ -957,6 +1034,80 @@ export class EditorEngine {
     this.history.commit(result.command);
     this.select(result.node);
     return true;
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Block instances                                                        */
+  /* ---------------------------------------------------------------------- */
+
+  #rememberInstance(
+    el: HTMLElement,
+    block: LibraryBlock,
+    props: Record<string, unknown>,
+  ): void {
+    if (!block.props || !Object.keys(block.props).length) return;
+    const values: Record<string, string> = {};
+    for (const [name, spec] of Object.entries(block.props)) {
+      values[name] = String(props[name] ?? spec.default ?? '');
+    }
+    this.#instances.set(el, { blockId: block.id, values });
+  }
+
+  /**
+   * The block an element came from, with the props it was built with.
+   *
+   * Returns nothing for elements the editor did not insert, which is most of the
+   * page — the props panel falls back to attributes there.
+   */
+  blockInstance(
+    el: HTMLElement | null,
+  ): { block: LibraryBlock; values: Record<string, string> } | null {
+    if (!el) return null;
+    const entry = this.#instances.get(el);
+    if (!entry) return null;
+    const block = this.library.get(entry.blockId);
+    if (!block) return null;
+    return { block, values: { ...entry.values } };
+  }
+
+  /**
+   * Change a prop on an inserted block.
+   *
+   * Two very different mechanics behind one call. A block that registers a custom
+   * element carries its props as attributes, so the element re-renders itself and
+   * nothing structural happens. A template block has no such machinery: its props
+   * were substituted into markup at insert time, so the only honest way to change
+   * one is to re-render the template and swap the element out — which is why this
+   * goes through the same replace command the code panel uses, and why the new node
+   * inherits the instance record.
+   */
+  async setBlockProp(el: HTMLElement, name: string, value: string): Promise<void> {
+    const entry = this.#instances.get(el);
+    const instance = this.blockInstance(el);
+    if (!entry || !instance) return;
+    const { block } = instance;
+    const values = { ...instance.values, [name]: value };
+
+    if (block.element?.tag) {
+      entry.values = values;
+      this.setAttribute(name, value || null, el);
+      return;
+    }
+
+    try {
+      const { nodes } = await this.library.instantiate(block, values);
+      const replacement = nodes[0];
+      if (!replacement) return;
+      const command = replaceElement(el, replacement.outerHTML);
+      if (!command) return;
+      this.history.commit(command.command);
+      this.#instances.set(command.node, { blockId: block.id, values });
+      this.select(command.node);
+      this.#bumpRevision();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.notify(`Could not update ${name}: ${message}`, 'error');
+    }
   }
 
   #defaultAnchor(): InsertAnchor | null {
@@ -1091,6 +1242,8 @@ export class EditorEngine {
     el.setAttribute(DRAGGING_ATTR, '');
     el.style.setProperty('pointer-events', 'none', 'important');
     this.#dragPending = null;
+    this.#dragLeftHomeAt = null;
+    this.#dragDwell = null;
     this.#dragSettledAt = performance.now();
     this.#dragSettledAtPointer = { x, y };
     this.store.patch({
@@ -1099,8 +1252,11 @@ export class EditorEngine {
         origin: { parent: el.parentNode, nextSibling: el.nextSibling },
         pointer: { x, y },
         willCancel: false,
-        hint: 'Drag to a new position',
+        hint: 'Drag to reorder',
+        // A drag starts scoped to where the element already lives.
+        home: el.parentNode,
         decision: null,
+        waiting: null,
         pending: false,
       },
       hovered: null,
@@ -1117,13 +1273,15 @@ export class EditorEngine {
    * the real layout they will get on release: neighbours shift to open the gap,
    * and the element itself renders translucent to say it is not committed yet.
    *
-   * Three guards keep that honest rather than jittery. A candidate must persist
-   * for `dwell` before the DOM is touched, so grazing a boundary announces the
-   * move in the chip without performing it. After a move, `settle` ignores fresh
-   * candidates while the reflow animates — without it, the elements that just
-   * shifted land under the pointer and propose moving straight back, which is the
-   * flicker. And the before/after choice is sticky around an element's midpoint,
-   * so sub-pixel pointer noise cannot flip it.
+   * The gesture is scoped to one parent at a time — see `planDrag` — which is what
+   * makes the preview stable: only the parent's own children can move, so the
+   * ground under the pointer stays where it was. Three further guards keep the
+   * reordering itself honest. A slot must persist for `dwell` before the DOM is
+   * touched, so grazing a boundary announces the move without performing it. After
+   * a move, `settle` ignores fresh candidates while the reflow animates, otherwise
+   * the siblings that just shifted land under the pointer and propose moving
+   * straight back. And the before/after choice is sticky around an element's
+   * midpoint, so sub-pixel pointer noise cannot flip it.
    */
   updateDrag(x: number, y: number): void {
     const drag = this.store.value.drag;
@@ -1134,46 +1292,20 @@ export class EditorEngine {
     if (outside) {
       if (!drag.willCancel) this.#applyDrop(drag.origin.parent, drag.origin.nextSibling, drag.element);
       this.#dragPending = null;
+      this.#dragLeftHomeAt = null;
+      this.#dragDwell = null;
       this.store.patch({
         drag: {
           ...drag,
           pointer: { x, y },
           willCancel: true,
           hint: 'Release outside to cancel',
-          // Back at the origin, so the last hit test's conclusion no longer
-          // describes anything; keeping it would make the sticky band replay a
-          // decision about an element the pointer has long since left.
+          // Back at the origin, so the last conclusion no longer describes
+          // anything; keeping it would make the sticky band replay a decision
+          // about an element the pointer has long since left.
+          home: drag.origin.parent,
           decision: null,
-          pending: false,
-        },
-      });
-      return;
-    }
-
-    const drop = findDropTarget(drag.element, x, y, drag.decision);
-    if (!drop) {
-      // Nowhere to drop, so there is nothing pending either. Leaving the pending
-      // flag set would keep the chip pulsing at a destination that no longer
-      // exists, and leaving `#dragPending` set would let a gesture that grazes a
-      // boundary, wanders off and comes back skip the dwell entirely.
-      this.#dragPending = null;
-      this.store.patch({
-        drag: { ...drag, pointer: { x, y }, willCancel: false, pending: false },
-      });
-      return;
-    }
-
-    // Already there: nothing to schedule, but the decision is worth recording so
-    // the next hit test stays on this side of the midpoint.
-    if (drag.element.parentNode === drop.parent && drag.element.nextSibling === drop.before) {
-      this.#dragPending = null;
-      this.store.patch({
-        drag: {
-          ...drag,
-          pointer: { x, y },
-          willCancel: false,
-          hint: drop.hint,
-          decision: drop.decision,
+          waiting: null,
           pending: false,
         },
       });
@@ -1181,40 +1313,78 @@ export class EditorEngine {
     }
 
     const now = performance.now();
+    const plan = planDrag(
+      drag.element,
+      {
+        home: drag.home,
+        decision: drag.decision,
+        leftHomeAt: this.#dragLeftHomeAt,
+        dwell: this.#dragDwell,
+      },
+      x,
+      y,
+      now,
+      DRAG_TIMING.reparent,
+    );
+    this.#dragLeftHomeAt = plan.leftHomeAt;
+    this.#dragDwell = plan.dwell;
+
+    const base = {
+      ...drag,
+      pointer: { x, y },
+      willCancel: false,
+      home: plan.home,
+      hint: plan.hint,
+      waiting: plan.waiting,
+    };
+
+    // A re-parent countdown owns the gesture, so reordering stops for its duration.
+    // Two reasons, and the second is the one that matters: the pointer is aiming
+    // into another container or out of this one, so shuffling siblings underneath
+    // it is not what was asked — and doing it moves the target out from under the
+    // pointer, which meant the hold could never finish. The countdown also has to
+    // tick itself along, because holding still is the whole gesture.
+    if (plan.waiting) {
+      this.#dragPending = null;
+      this.store.patch({ drag: { ...base, pending: false } });
+      this.#scheduleDragTick(x, y, DRAG_TIMING.tick);
+      return;
+    }
+
+    // Already in the proposed slot: nothing to schedule, but the decision is worth
+    // recording so the next sample stays on this side of the midpoint.
+    if (
+      drag.element.parentNode === plan.placement.parent &&
+      drag.element.nextSibling === plan.placement.before
+    ) {
+      this.#dragPending = null;
+      this.store.patch({ drag: { ...base, decision: plan.decision, pending: false } });
+      return;
+    }
+
     const travelled = Math.hypot(x - this.#dragSettledAtPointer.x, y - this.#dragSettledAtPointer.y);
     const settling = now - this.#dragSettledAt < DRAG_TIMING.settle;
     if (settling && travelled < DRAG_TIMING.escape) {
-      this.store.patch({ drag: { ...drag, pointer: { x, y }, willCancel: false } });
+      this.store.patch({ drag: { ...base, hint: drag.hint } });
       this.#scheduleDragTick(x, y, DRAG_TIMING.settle - (now - this.#dragSettledAt));
       return;
     }
 
-    if (!this.#dragPending || !sameSlot(this.#dragPending.target, drop)) {
-      this.#dragPending = { target: drop, since: now };
+    if (!this.#dragPending || !samePlacement(this.#dragPending.placement, plan.placement)) {
+      this.#dragPending = { placement: plan.placement, since: now };
     }
     const waited = now - this.#dragPending.since;
     if (waited < DRAG_TIMING.dwell) {
       // Announce the destination now, move later. The chip is instant feedback;
       // the page only reflows once the intent has held.
-      this.store.patch({
-        drag: { ...drag, pointer: { x, y }, willCancel: false, hint: drop.hint, pending: true },
-      });
+      this.store.patch({ drag: { ...base, pending: true } });
       this.#scheduleDragTick(x, y, DRAG_TIMING.dwell - waited);
       return;
     }
 
-    const moved = this.#applyDrop(drop.parent, drop.before, drag.element);
+    const moved = this.#applyDrop(plan.placement.parent, plan.placement.before, drag.element);
     this.#dragPending = null;
-    this.store.patch({
-      drag: {
-        ...drag,
-        pointer: { x, y },
-        willCancel: false,
-        hint: drop.hint,
-        decision: drop.decision,
-        pending: false,
-      },
-    });
+    this.store.patch({ drag: { ...base, decision: plan.decision, pending: false } });
     if (moved) {
       this.#dragSettledAt = performance.now();
       this.#dragSettledAtPointer = { x, y };
@@ -1227,6 +1397,8 @@ export class EditorEngine {
     if (!drag) return;
     this.#clearDragTimer();
     this.#dragPending = null;
+    this.#dragLeftHomeAt = null;
+    this.#dragDwell = null;
     drag.element.style.removeProperty('pointer-events');
     tidyStyleAttribute(drag.element);
 
@@ -1256,6 +1428,8 @@ export class EditorEngine {
     if (!drag) return;
     this.#clearDragTimer();
     this.#dragPending = null;
+    this.#dragLeftHomeAt = null;
+    this.#dragDwell = null;
     drag.element.style.removeProperty('pointer-events');
     tidyStyleAttribute(drag.element);
     this.#applyDrop(drag.origin.parent, drag.origin.nextSibling, drag.element);

@@ -1,7 +1,6 @@
 import { css, html, nothing, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
-import { propertyMeta, searchProperties } from '../../core/css.js';
 import { pickTextFile } from '../../core/design-system.js';
 import { labelFor } from '../../core/dom.js';
 import { TOKEN_GROUP_LABELS, TOKEN_GROUPS, prettifyTokenName } from '../../core/tokens.js';
@@ -10,7 +9,7 @@ import type { DesignClass, DesignToken, TokenGroup } from '../../core/types.js';
 import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
 import { baseStyles, swatchStyle } from '../theme.js';
-import { buildSuggestions, valueKindFor } from '../suggestions.js';
+import { ClassEditor } from './class-editor.js';
 import '../controls/value-field.js';
 import '../controls/section.js';
 
@@ -122,65 +121,6 @@ export class HeoTokensPanel extends HeoElement {
         display: grid;
         grid-template-columns: 1fr 96px;
         gap: 6px;
-      }
-
-      /* Classes */
-      .cls {
-        border: 1px solid var(--heo-line);
-        border-radius: var(--heo-r-sm);
-        margin-bottom: 6px;
-        overflow: hidden;
-      }
-      .cls > header {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        padding: 6px 8px;
-        background: var(--heo-sunken);
-        cursor: pointer;
-      }
-      .cls .dot {
-        width: 5px;
-        height: 5px;
-        border-radius: 999px;
-        background: var(--heo-accent);
-      }
-      .cls .n {
-        flex: 1 1 auto;
-        min-width: 0;
-        overflow: hidden;
-        font-family: var(--heo-mono);
-        font-size: 11px;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .cls .meta {
-        color: var(--heo-text-faint);
-        font-size: 9.5px;
-      }
-      .cls .decls {
-        display: grid;
-        gap: 5px;
-        padding: 7px 8px;
-      }
-      .decl {
-        display: grid;
-        grid-template-columns: 92px 1fr;
-        align-items: center;
-        gap: 6px;
-      }
-      .decl .p {
-        overflow: hidden;
-        color: var(--heo-text-dim);
-        font-family: var(--heo-mono);
-        font-size: 10.5px;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .cls .apply {
-        display: flex;
-        gap: 5px;
-        padding: 0 8px 8px;
       }
 
       pre {
@@ -441,97 +381,24 @@ export class HeoTokensPanel extends HeoElement {
   }
 
   #renderClass(entry: DesignClass, uses: number, el: HTMLElement | null): TemplateResult {
-    const expanded = this.expandedClass === entry.name;
-    const properties = Object.keys(entry.declarations);
-    const applied = el?.classList.contains(entry.name) ?? false;
-
-    return html`<div class="cls">
-      <header
-        role="button"
-        tabindex="0"
-        @click=${() => {
-        this.expandedClass = expanded ? null : entry.name;
-      }}
-        @keydown=${(event: KeyboardEvent) => {
-        if (event.key === 'Enter' || event.key === ' ') {
-          event.preventDefault();
-          this.expandedClass = expanded ? null : entry.name;
-        }
-      }}
-      >
-        ${icon(expanded ? 'chevronDown' : 'chevronRight', 11)}
-        ${entry.origin !== 'stylesheet' ? html`<span class="dot" title="Defined in this session"></span>` : nothing}
-        <span class="n">.${entry.name}</span>
-        <span class="meta">${properties.length} rules${uses ? ` · ${uses}×` : ''}</span>
-      </header>
-
-      ${expanded
-        ? html`<div class="decls">
-              ${properties.map(
-          (property) => html`<div class="decl">
-                  <span class="p" title=${property}>${property}</span>
-                  <heo-value-field
-                    .value=${entry.declarations[property]}
-                    .kind=${valueKindFor(property)}
-                    .property=${property}
-                    .suggestions=${buildSuggestions(this.editor, property, el)}
-                    clearable
-                    @value-change=${(event: CustomEvent<{ value: string }>) =>
-              this.#setClassDeclaration(entry.name, property, event.detail.value)}
-                  ></heo-value-field>
-                </div>`,
-        )}
-              <div class="decl">
-                <span class="p">add</span>
-                <input
-                  class="input mono"
-                  type="text"
-                  list=${`heo-props-${entry.name}`}
-                  placeholder="property"
-                  .value=${this.newClassProperty}
-                  spellcheck="false"
-                  aria-label="New property"
-                  @input=${(event: Event) => {
-            this.newClassProperty = (event.target as HTMLInputElement).value;
-          }}
-                  @keydown=${(event: KeyboardEvent) => {
-            if (event.key !== 'Enter') return;
-            event.preventDefault();
-            const property = this.newClassProperty.trim();
-            if (!property) return;
-            this.#setClassDeclaration(entry.name, property, initialValueFor(property));
-            this.newClassProperty = '';
-          }}
-                />
-                <datalist id=${`heo-props-${entry.name}`}>
-                  ${searchProperties(this.newClassProperty, 20).map(
-            (meta) => html`<option value=${meta.name}></option>`,
-          )}
-                </datalist>
-              </div>
-            </div>
-            <div class="apply">
-              ${el
-            ? html`<button
-                    class="btn sm"
-                    type="button"
-                    aria-pressed=${applied}
-                    @click=${() => this.editor.toggleClass(entry.name, el)}
-                  >
-                    ${icon(applied ? 'check' : 'plus', 12)}
-                    ${applied ? 'Applied here' : 'Apply to selection'}
-                  </button>`
-            : nothing}
-              <button
-                class="btn sm danger"
-                type="button"
-                @click=${() => this.#removeClass(entry)}
-              >
-                ${icon('trash', 12)} Delete
-              </button>
-            </div>`
-        : nothing}
-    </div>`;
+    return ClassEditor.render(entry, {
+      expanded: this.expandedClass === entry.name,
+      uses,
+      onToggle: () => {
+        this.expandedClass = this.expandedClass === entry.name ? null : entry.name;
+      },
+      host: {
+        engine: this.editor,
+        element: el,
+        newProperty: this.newClassProperty,
+        onNewProperty: (value) => {
+          this.newClassProperty = value;
+        },
+        onRemoved: (name) => {
+          if (this.expandedClass === name) this.expandedClass = null;
+        },
+      },
+    });
   }
 
   #renderTransfer(): TemplateResult {
@@ -659,48 +526,6 @@ export class HeoTokensPanel extends HeoElement {
     });
   }
 
-  #setClassDeclaration(name: string, property: string, value: string): void {
-    const before = this.editor.classes.get(name);
-    if (!before) return;
-    const snapshot: DesignClass = { ...before, declarations: { ...before.declarations } };
-    this.editor.history.commit({
-      label: `Set ${property} on .${name}`,
-      mergeKey: `class:${name}:${property}`,
-      subject: `class-decl:${name}:${property}`,
-      record: {
-        id: `k${Date.now().toString(36)}`,
-        kind: 'token-class',
-        summary: `Set ${property} to ${value || '(removed)'} on .${name}`,
-        target: `.${name}`,
-        before: snapshot.declarations[property],
-        after: value || undefined,
-        detail: { class: name, property, value },
-        at: Date.now(),
-      },
-      apply: () => {
-        this.editor.classes.setDeclaration(name, property, value);
-      },
-      revert: () => this.editor.classes.upsert(snapshot),
-    });
-  }
-
-  #removeClass(entry: DesignClass): void {
-    this.editor.history.commit({
-      label: `Delete .${entry.name}`,
-      record: {
-        id: `k${Date.now().toString(36)}`,
-        kind: 'token-class',
-        summary: `Remove class .${entry.name}`,
-        target: `.${entry.name}`,
-        at: Date.now(),
-      },
-      apply: () => {
-        this.editor.classes.remove(entry.name);
-      },
-      revert: () => this.editor.classes.upsert(entry),
-    });
-    if (this.expandedClass === entry.name) this.expandedClass = null;
-  }
 
   async #import(): Promise<void> {
     const text = await pickTextFile();
@@ -739,22 +564,6 @@ function glyphForGroup(group: TokenGroup): string {
 }
 
 /** A sensible starting value so a newly added property is immediately visible. */
-function initialValueFor(property: string): string {
-  const meta = propertyMeta(property);
-  switch (meta.control) {
-    case 'length':
-      return '0px';
-    case 'number':
-      return '1';
-    case 'color':
-      return 'currentColor';
-    case 'keyword':
-      return meta.keywords?.[0] ?? 'initial';
-    default:
-      return 'initial';
-  }
-}
-
 declare global {
   interface HTMLElementTagNameMap {
     'heo-tokens-panel': HeoTokensPanel;

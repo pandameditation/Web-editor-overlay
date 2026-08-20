@@ -10,7 +10,15 @@ import type { DropDecision } from './drop-target.js';
 export type { DropDecision };
 
 /** Which dock panel is showing. */
-export type PanelId = 'styles' | 'tokens' | 'tree' | 'library' | 'props' | 'media' | 'code';
+export type PanelId =
+  | 'styles'
+  | 'tokens'
+  | 'tree'
+  | 'library'
+  | 'props'
+  | 'media'
+  | 'code'
+  | 'css';
 
 /** A design token. `value` is the raw CSS value; `name` excludes the leading `--`. */
 export interface DesignToken {
@@ -195,10 +203,19 @@ export interface DragState {
   /** Human description of the pending drop, shown in the drag chip. */
   hint: string;
   /**
+   * The parent whose children are being reordered.
+   *
+   * A drag only ever moves the element among this parent's children; becoming a
+   * child of something else is a separate, dwell-gated gesture that changes this.
+   */
+  home: Node;
+  /**
    * The hit test's last conclusion, fed back in on the next one so the
    * before/after choice stays stable around an element's midpoint.
    */
   decision: DropDecision | null;
+  /** A re-parent being counted down: the chip says so, the DOM waits. */
+  waiting: 'nest' | 'leave' | null;
   /**
    * True while a new position has been announced but not yet applied.
    *

@@ -7,6 +7,7 @@ import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
 import { baseStyles } from '../theme.js';
+import { PropForm } from './prop-form.js';
 import '../controls/value-field.js';
 import '../controls/section.js';
 
@@ -51,6 +52,7 @@ const COMMON_TAGS = [
 export class HeoPropsPanel extends HeoElement {
   static override styles = [
     baseStyles,
+    PropForm.styles,
     css`
       :host {
         display: block;
@@ -132,6 +134,32 @@ export class HeoPropsPanel extends HeoElement {
         grid-template-columns: 1fr auto;
         gap: 6px;
       }
+
+      /* Provenance line above each group in the Component section, so it is never
+         ambiguous whether a field came from the block that was inserted or from the
+         custom element's own class. */
+      .sub {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-bottom: 5px;
+      }
+      .sub .g {
+        flex: 0 0 auto;
+        color: var(--heo-accent);
+      }
+      .sub .who {
+        min-width: 0;
+        overflow: hidden;
+        color: var(--heo-text-dim);
+        font-size: 11px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .sub .who b {
+        color: var(--heo-text);
+        font-weight: 550;
+      }
     `,
   ];
 
@@ -161,38 +189,16 @@ export class HeoPropsPanel extends HeoElement {
           <span class="chip">${icon(isComponent ? 'component' : 'cursor', 11)} ${labelFor(el)}</span>
         </div>
         ${source
-          ? html`<span class="src" title="Source location from the build-time instrumentation">
+        ? html`<span class="src" title="Source location from the build-time instrumentation">
               ${source.file}:${source.line}:${source.column}
             </span>`
-          : html`<span class="src">
+        : html`<span class="src">
               No source marker — add the Vite plugin for file and line references.
             </span>`}
         ${this.#renderTag(el)}
       </div>
 
-      ${described.reactive.length
-        ? html`<heo-section
-            heading="Component props"
-            glyph="component"
-            badge=${String(described.reactive.length)}
-            ?open=${openSections.has('component')}
-            @section-toggle=${(event: CustomEvent<{ open: boolean }>) =>
-              this.#remember('component', event.detail.open)}
-          >
-            <p class="hint" style="margin:0 0 9px">
-              Declared by
-              <code class="mono">&lt;${el.tagName.toLowerCase()}&gt;</code>. Changes are written as
-              attributes, so the component re-renders the way it would in source.
-            </p>
-            <div class="rows">
-              ${repeat(
-                described.reactive,
-                (prop) => prop.attribute,
-                (prop) => this.#renderProp(el, prop),
-              )}
-            </div>
-          </heo-section>`
-        : nothing}
+      ${this.#renderComponent(el, described.reactive)}
 
       <heo-section
         heading="Attributes"
@@ -200,14 +206,14 @@ export class HeoPropsPanel extends HeoElement {
         badge=${String(described.attributes.filter((prop) => !prop.unset).length)}
         ?open=${openSections.has('attributes')}
         @section-toggle=${(event: CustomEvent<{ open: boolean }>) =>
-          this.#remember('attributes', event.detail.open)}
+        this.#remember('attributes', event.detail.open)}
       >
         <div class="rows">
           ${repeat(
-            described.attributes,
-            (prop) => prop.attribute,
-            (prop) => this.#renderProp(el, prop),
-          )}
+          described.attributes,
+          (prop) => prop.attribute,
+          (prop) => this.#renderProp(el, prop),
+        )}
         </div>
       </heo-section>
 
@@ -217,7 +223,7 @@ export class HeoPropsPanel extends HeoElement {
         badge=${String(described.aria.filter((prop) => !prop.unset).length)}
         ?open=${openSections.has('aria')}
         @section-toggle=${(event: CustomEvent<{ open: boolean }>) =>
-          this.#remember('aria', event.detail.open)}
+        this.#remember('aria', event.detail.open)}
       >
         <p class="hint" style="margin:0 0 9px">
           ${accessibilityHint(el)}
@@ -229,6 +235,71 @@ export class HeoPropsPanel extends HeoElement {
 
       ${this.#renderRaw(el)}
     `;
+  }
+
+  /**
+   * The COMPONENT section: what this element is, as opposed to what it has.
+   *
+   * Two sources of truth can apply, and both belong here. A block inserted from the
+   * library was configured with prop values, and those values are the vocabulary the
+   * user chose it with — "bullet: ✅" means far more than the resulting markup. A
+   * custom element additionally declares reactive properties on its class. When both
+   * exist, the block form comes first, because that is the level the user was
+   * working at.
+   */
+  #renderComponent(el: HTMLElement, reactive: PropDescriptor[]): TemplateResult {
+    const instance = this.editor.blockInstance(el);
+    if (!instance && !reactive.length) return html``;
+
+    const specs = instance?.block.props ?? {};
+    const count = Object.keys(specs).length + reactive.length;
+
+    return html`<heo-section
+      heading="Component"
+      glyph="component"
+      badge=${String(count)}
+      ?open=${openSections.has('component')}
+      @section-toggle=${(event: CustomEvent<{ open: boolean }>) =>
+        this.#remember('component', event.detail.open)}
+    >
+      ${instance
+        ? html`<div class="block">
+            <div class="sub">
+              <span class="g">${icon('blocks', 11)}</span>
+              <span class="who">Inserted as <b>${instance.block.name}</b></span>
+            </div>
+            <p class="hint" style="margin:0 0 9px">
+              ${instance.block.element?.tag
+            ? 'Values are written as attributes, so the component re-renders itself.'
+            : 'Changing a value re-renders the block from its template, replacing this element.'}
+            </p>
+            ${PropForm.render(specs, instance.values, (name, value) => {
+              void this.editor.setBlockProp(el, name, value);
+            }, this.editor)}
+          </div>`
+        : nothing}
+      ${reactive.length
+        ? html`
+            ${instance ? html`<div class="divider" style="margin:12px 0 10px"></div>` : nothing}
+            <div class="sub">
+              <span class="g">${icon('component', 11)}</span>
+              <span class="who">
+                Declared by <code class="mono">&lt;${el.tagName.toLowerCase()}&gt;</code>
+              </span>
+            </div>
+            <p class="hint" style="margin:0 0 9px">
+              Written as attributes, so the component re-renders the way it would in source.
+            </p>
+            <div class="rows">
+              ${repeat(
+          reactive,
+          (prop) => prop.attribute,
+          (prop) => this.#renderProp(el, prop),
+        )}
+            </div>
+          `
+        : nothing}
+    </heo-section>`;
   }
 
   #renderTag(el: HTMLElement): TemplateResult {
@@ -245,11 +316,11 @@ export class HeoPropsPanel extends HeoElement {
         spellcheck="false"
         aria-label="Tag name"
         @input=${(event: Event) => {
-          this.tagDraft = (event.target as HTMLInputElement).value;
-        }}
+        this.tagDraft = (event.target as HTMLInputElement).value;
+      }}
         @keydown=${(event: KeyboardEvent) => {
-          if (event.key === 'Enter') this.#retag(current);
-        }}
+        if (event.key === 'Enter') this.#retag(current);
+      }}
       />
       <datalist id="heo-tag-list">
         ${COMMON_TAGS.map((tag) => html`<option value=${tag}></option>`)}
@@ -282,11 +353,11 @@ export class HeoPropsPanel extends HeoElement {
             type="checkbox"
             .checked=${on}
             @change=${(event: Event) =>
-              this.editor.setAttribute(
-                prop.attribute,
-                (event.target as HTMLInputElement).checked ? '' : null,
-                el,
-              )}
+          this.editor.setAttribute(
+            prop.attribute,
+            (event.target as HTMLInputElement).checked ? '' : null,
+            el,
+          )}
           />
           <code class="mono">${prop.attribute}</code>
         </label>
@@ -306,11 +377,11 @@ export class HeoPropsPanel extends HeoElement {
           .value=${prop.value}
           aria-label=${prop.label}
           @change=${(event: Event) =>
-            this.editor.setAttribute(
-              prop.attribute,
-              (event.target as HTMLSelectElement).value || null,
-              el,
-            )}
+          this.editor.setAttribute(
+            prop.attribute,
+            (event.target as HTMLSelectElement).value || null,
+            el,
+          )}
         >
           ${options.map(
             (option) => html`<option value=${option.value} ?selected=${option.value === prop.value}>
@@ -332,7 +403,7 @@ export class HeoPropsPanel extends HeoElement {
         placeholder=${prop.unset ? prop.attribute : ''}
         clearable
         @value-change=${(event: CustomEvent<{ value: string }>) =>
-          this.editor.setAttribute(prop.attribute, event.detail.value || null, el)}
+        this.editor.setAttribute(prop.attribute, event.detail.value || null, el)}
       ></heo-value-field>
     </div>`;
   }
@@ -376,7 +447,7 @@ export class HeoPropsPanel extends HeoElement {
               .suggestions=${[]}
               clearable
               @value-change=${(event: CustomEvent<{ value: string }>) =>
-                this.editor.setAttribute(attr.name, event.detail.value || null, el)}
+              this.editor.setAttribute(attr.name, event.detail.value || null, el)}
             ></heo-value-field>
           </div>`,
         )}
