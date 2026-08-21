@@ -21,7 +21,7 @@ import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
 import { baseStyles } from '../theme.js';
 import { buildSuggestions, classSuggestions, valueKindFor } from '../suggestions.js';
-import { ClassEditor } from './class-editor.js';
+import { ClassEditor, focusDeclaration } from './class-editor.js';
 import type { HeoValueField } from '../controls/value-field.js';
 import '../controls/value-field.js';
 import '../controls/box-editor.js';
@@ -233,6 +233,11 @@ export class HeoStylesPanel extends HeoElement {
         background: var(--heo-hover);
         color: var(--heo-accent);
       }
+      .row .pn {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
       .row > .name {
         display: flex;
         align-items: center;
@@ -246,6 +251,18 @@ export class HeoStylesPanel extends HeoElement {
       }
       .row.set > .name {
         color: var(--heo-text);
+      }
+      /* The selector a value arrived from. Worth a glance because editing the row
+         writes an inline override rather than changing that rule. */
+      .row .from {
+        flex: 0 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        color: var(--heo-accent);
+        font-size: 9.5px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        opacity: 0.75;
       }
       .row .dot {
         width: 5px;
@@ -530,7 +547,7 @@ export class HeoStylesPanel extends HeoElement {
     const computed = getComputedStyle(el);
     const rules = appliedRules(el);
     const cascade = cascadedDeclarations(rules);
-    const declared = declaredMap(el, cascade);
+    const { values: declared, origins } = declaredMap(el, cascade);
 
     return html`
       <div class="top">
@@ -547,11 +564,11 @@ export class HeoStylesPanel extends HeoElement {
       </div>
 
       ${this.#renderModified(el, computed)}
-      ${this.#renderClasses(el)} ${this.#renderSpacing(el, computed, declared)}
+      ${this.#renderClasses(el)} ${this.#renderSpacing(el, computed, declared, origins)}
       ${SECTIONS.filter((section) => !section.when || section.when(computed)).map((section) =>
-      this.#renderSection(section, el, computed, declared),
+      this.#renderSection(section, el, computed, declared, origins),
     )}
-      ${this.#renderParent(el, computed, declared)}
+      ${this.#renderParent(el, computed, declared, origins)}
       ${this.#renderAdder(el)} ${this.#renderCascade(rules, cascade)}
     `;
   }
@@ -576,6 +593,7 @@ export class HeoStylesPanel extends HeoElement {
     el: HTMLElement,
     computed: CSSStyleDeclaration,
     declared: Map<string, string>,
+    origins: Map<string, DeclarationOrigin>,
   ): TemplateResult {
     const parent = selectableParent(el);
     const parentComputed = parent ? getComputedStyle(parent) : null;
@@ -608,7 +626,9 @@ export class HeoStylesPanel extends HeoElement {
       ${caps.length ? caps.map((cap) => this.#renderConstraint(cap)) : nothing}
 
       <div class="rows">
-        ${own.map((property) => this.#renderRow(property, el, computed, declared))}
+        ${own.map((property) =>
+          this.#renderRow(property, el, computed, declared, undefined, origins),
+        )}
       </div>
 
       ${parent && parentComputed
@@ -667,6 +687,15 @@ export class HeoStylesPanel extends HeoElement {
     const parentDeclared = new Map(
       Array.from(declaredValues(parent), ([property, entry]) => [property, entry.value]),
     );
+    const parentOrigins = new Map<string, DeclarationOrigin>(
+      Array.from(declaredValues(parent), ([property, entry]) => [
+        property,
+        {
+          kind: entry.from === 'style attribute' ? ('inline' as const) : ('rule' as const),
+          selector: entry.from,
+        },
+      ]),
+    );
     const setCount = properties.filter((property) => parentDeclared.has(property)).length;
 
     return html`<div
@@ -694,7 +723,7 @@ export class HeoStylesPanel extends HeoElement {
       </p>
       <div class="rows">
         ${properties.map((property) =>
-      this.#renderRow(property, parent, parentComputed, parentDeclared),
+      this.#renderRow(property, parent, parentComputed, parentDeclared, undefined, parentOrigins),
     )}
       </div>
     </div>`;
@@ -848,6 +877,11 @@ export class HeoStylesPanel extends HeoElement {
       onRemoved: () => {
         this.openClass = null;
       },
+      onFocus: (property: string) => focusDeclaration(this.renderRoot, property),
+      // Reached from this element's own chips: "Apply to selection" is already true,
+      // and deleting a rule every other element shares is far too large an action to
+      // sit under one element's panel. The design system panel owns both.
+      actions: 'none' as const,
     };
     if (!entry) return ClassEditor.renderUnknown(name, host);
 
@@ -857,6 +891,14 @@ export class HeoStylesPanel extends HeoElement {
         Editing <code class="mono">.${name}</code>${uses > 1
         ? html` changes all ${uses} elements using it.`
         : html`, which only this element uses.`}
+        <button
+          class="link"
+          type="button"
+          title="Open this class in the design system panel"
+          @click=${() => this.editor.setDockTab('tokens')}
+        >
+          Manage it in Tokens
+        </button>
       </p>
       ${ClassEditor.render(entry, {
           expanded: true,
@@ -897,6 +939,7 @@ export class HeoStylesPanel extends HeoElement {
     el: HTMLElement,
     computed: CSSStyleDeclaration,
     declared: Map<string, string>,
+    origins: Map<string, DeclarationOrigin>,
   ): TemplateResult {
     const longhands = [
       'margin-top',
@@ -933,7 +976,7 @@ export class HeoStylesPanel extends HeoElement {
 
       <div class="rows" style="margin-top:10px">
         ${['margin', 'padding'].map((property) =>
-          this.#renderRow(property, el, computed, declared, `all sides`),
+          this.#renderRow(property, el, computed, declared, `all sides`, origins),
         )}
       </div>
     </heo-section>`;
@@ -944,6 +987,7 @@ export class HeoStylesPanel extends HeoElement {
     el: HTMLElement,
     computed: CSSStyleDeclaration,
     declared: Map<string, string>,
+    origins: Map<string, DeclarationOrigin>,
   ): TemplateResult {
     const setCount = section.properties.filter((property) => declared.has(property)).length;
     return html`<heo-section
@@ -955,20 +999,38 @@ export class HeoStylesPanel extends HeoElement {
         this.#remember(section.id, event.detail.open)}
     >
       <div class="rows">
-        ${section.properties.map((property) => this.#renderRow(property, el, computed, declared))}
+        ${section.properties.map((property) =>
+          this.#renderRow(property, el, computed, declared, undefined, origins),
+        )}
       </div>
     </heo-section>`;
   }
 
+  /**
+   * One property row.
+   *
+   * Shows the value that actually wins the cascade, as authored. That matters more
+   * than it sounds: a `width: min(980px, calc(100% - var(--space-xl)))` living in a
+   * stylesheet used to appear as a grey `948px` placeholder, so the panel described
+   * the outcome while hiding the intent — and the expression the user wanted to
+   * adjust was nowhere on screen. The resolved number is still one click away, at
+   * the top of the value list.
+   *
+   * Where the value came from is marked rather than flattened, because editing here
+   * always writes onto this element: adjusting a value that arrived from `.card`
+   * creates an inline override, which is a different act from fixing the class.
+   */
   #renderRow(
     property: string,
     el: HTMLElement,
     computed: CSSStyleDeclaration,
     declared: Map<string, string>,
     placeholderOverride?: string,
+    origins?: Map<string, DeclarationOrigin>,
   ): TemplateResult {
     const value = declared.get(property) ?? '';
     const isSet = declared.has(property);
+    const origin = origins?.get(property);
     const computedValue = computed.getPropertyValue(property).trim();
     const segments = SEGMENTED[property];
 
@@ -985,9 +1047,13 @@ export class HeoStylesPanel extends HeoElement {
           .value=${value}
           .kind=${valueKindFor(property)}
           .property=${property}
+          .computed=${computedValue}
           .suggestions=${buildSuggestions(this.editor, property, el)}
           placeholder=${placeholderOverride ?? shorten(computedValue)}
           clearable
+          @value-input=${(event: CustomEvent<{ value: string }>) =>
+          this.editor.previewStyle(property, event.detail.value, el)}
+          @value-revert=${() => this.editor.cancelPreview()}
           @value-change=${(event: CustomEvent<{ value: string }>) =>
           this.editor.setStyle(property, event.detail.value, el)}
         ></heo-value-field>`;
@@ -995,14 +1061,14 @@ export class HeoStylesPanel extends HeoElement {
     const resettable = this.editor.canResetStyle(el, property);
     const baseline = this.editor.styleBaseline(el, property);
 
-    return html`<div class=${`row${isSet ? ' set' : ''}`}>
-      <span
-        class="name"
-        title=${isSet
-        ? `${property}: ${value} (set on this element)`
-        : `${property} is ${computedValue || 'unset'} — inherited from the cascade`}
-      >
-        <span class="dot"></span>${property}
+    return html`<div class=${`row${isSet ? ' set' : ''}`} data-property=${property}>
+      <span class="name" title=${describeOrigin(property, value, computedValue, origin)}>
+        <span class="dot"></span><span class="pn">${property}</span>
+        ${origin && origin.kind === 'rule'
+        ? html`<span class="from" title=${`From the ${origin.selector} rule`}>
+              ${origin.selector}
+            </span>`
+        : nothing}
       </span>
       ${control}
       ${resettable
@@ -1151,6 +1217,10 @@ export class HeoStylesPanel extends HeoElement {
 
   #renderRule(rule: AppliedRule, cascade: Map<string, { from: AppliedRule }>): TemplateResult {
     const isInline = rule.origin === 'inline';
+    const selected = this.editor.selected;
+    // Resolved against the selected element, which is the one whose cascade this is.
+    const resolvedFor = (property: string): string =>
+      selected ? getComputedStyle(selected).getPropertyValue(property).trim() : '';
     return html`<div class=${`rule${isInline ? ' inline' : ''}`}>
       <header>
         ${isInline ? icon('cursor', 11) : nothing}
@@ -1175,8 +1245,16 @@ export class HeoStylesPanel extends HeoElement {
               .value=${declaration.value}
               .kind=${valueKindFor(declaration.property)}
               .property=${declaration.property}
+              .computed=${resolvedFor(declaration.property)}
               .suggestions=${buildSuggestions(this.editor, declaration.property, this.editor.selected)}
               clearable
+              @value-input=${(event: CustomEvent<{ value: string }>) => {
+          if (isInline) this.editor.previewStyle(declaration.property, event.detail.value);
+          else if (rule.rule) {
+            this.editor.previewRuleDeclaration(rule.rule, declaration.property, event.detail.value);
+          }
+        }}
+              @value-revert=${() => this.editor.cancelPreview()}
               @value-change=${(event: CustomEvent<{ value: string }>) => {
           if (isInline) this.editor.setStyle(declaration.property, event.detail.value);
           else if (rule.rule) {
@@ -1205,19 +1283,35 @@ export class HeoStylesPanel extends HeoElement {
  * from box shorthands so the box editor can show a value that was written as
  * `padding: 8px 12px`.
  */
+/** Where a row's value came from, so the row can say so. */
+export interface DeclarationOrigin {
+  kind: 'inline' | 'rule';
+  /** Selector of the winning rule; `style attribute` when inline. */
+  selector: string;
+}
+
 function declaredMap(
   el: HTMLElement,
   cascade: Map<string, { property: string; value: string; from: AppliedRule }>,
-): Map<string, string> {
+): { values: Map<string, string>; origins: Map<string, DeclarationOrigin> } {
   const out = new Map<string, string>();
+  const origins = new Map<string, DeclarationOrigin>();
 
+  // Every declaration that wins the cascade, from wherever it won. `cascade` is
+  // already ordered by specificity with the style attribute last, so inline values
+  // overwrite rule values here for the same reason the browser prefers them.
   for (const [property, entry] of cascade) {
-    if (entry.from.origin === 'inline') out.set(property, entry.value);
+    out.set(property, entry.value);
+    origins.set(property, {
+      kind: entry.from.origin === 'inline' ? 'inline' : 'rule',
+      selector: entry.from.selector,
+    });
   }
   // Parsed from cssText so a shorthand holding a var() — which does not
   // enumerate as its longhands — is still shown as set on this element.
   for (const [property, value] of Object.entries(inlineDeclarations(el))) {
     out.set(property, value);
+    origins.set(property, { kind: 'inline', selector: 'style attribute' });
   }
 
   for (const group of ['margin', 'padding', 'border-radius'] as const) {
@@ -1229,11 +1323,32 @@ function declaredMap(
       group === 'border-radius'
         ? ['border-top-left-radius', 'border-top-right-radius', 'border-bottom-right-radius', 'border-bottom-left-radius']
         : [`${group}-top`, `${group}-right`, `${group}-bottom`, `${group}-left`];
+    const from = origins.get(group);
     names.forEach((name, index) => {
-      if (!out.has(name)) out.set(name, sides[index]);
+      if (out.has(name)) return;
+      out.set(name, sides[index]);
+      if (from) origins.set(name, from);
     });
   }
-  return out;
+  return { values: out, origins };
+}
+
+/** A row's tooltip: the value, and where it is coming from. */
+function describeOrigin(
+  property: string,
+  value: string,
+  computedValue: string,
+  origin: DeclarationOrigin | undefined,
+): string {
+  if (!origin) {
+    return `${property} is ${computedValue || 'unset'} — inherited, or the browser's default`;
+  }
+  if (origin.kind === 'inline') return `${property}: ${value} — set on this element`;
+  return (
+    `${property}: ${value} — from the ${origin.selector} rule. ` +
+    'Changing it here writes an inline override on this element only; edit the rule ' +
+    'itself under Matched CSS rules to change every element using it.'
+  );
 }
 
 function expand(parts: string[]): [string, string, string, string] {

@@ -190,6 +190,20 @@ export class EditorEngine {
    */
   #instances = new WeakMap<HTMLElement, { blockId: string; values: Record<string, string> }>();
 
+  /**
+   * The inline value a live preview is painting over.
+   *
+   * At most one at a time: a preview belongs to the field the user is currently in,
+   * and moving to another field commits or abandons the last one.
+   */
+  #preview: { el: HTMLElement; property: string; before: string; priority: string } | null = null;
+  /** Declarations a class had before its live preview started. */
+  #classPreview: { name: string; declarations: Record<string, string> } | null = null;
+  /** The rule declaration a live preview is painting over. */
+  #rulePreview:
+    | { rule: CSSStyleRule; property: string; before: string; priority: string }
+    | null = null;
+
   /* Reorder bookkeeping. Timing, not UI state, so it stays out of the store. */
   #dragPending: { placement: DropPlacement; since: number } | null = null;
   #dragTimer: ReturnType<typeof setTimeout> | null = null;
@@ -375,6 +389,9 @@ export class EditorEngine {
   select(el: HTMLElement | null, options: { reveal?: boolean } = {}): void {
     const current = this.store.value.selected;
     if (current === el) return;
+    // Whatever was being previewed belonged to the old selection's panel, and its
+    // fields are about to be replaced; nothing would ever put the page back.
+    this.cancelPreview();
     if (this.store.value.textEditing && this.store.value.textEditing !== el) {
       this.endTextEdit(true);
     }
@@ -439,9 +456,91 @@ export class EditorEngine {
 
   setStyle(property: string, value: string, el = this.store.value.selected): void {
     if (!el) return;
+    this.#endPreview();
     this.#captureBaseline(el, property);
     this.history.commit(setStyleProperty(el, property, value));
     this.#bumpRevision();
+  }
+
+  /**
+   * Show a value on the page without committing it.
+   *
+   * Editing a colour or a length is a search, not a decision: the whole point is
+   * seeing the page respond while dragging in a picker or typing a number. Only the
+   * committed value belongs on the undo stack, though, so this writes the DOM
+   * directly and remembers what it painted over.
+   *
+   * Deliberately does not touch history, the change set, or the revision counter —
+   * a re-render mid-keystroke would fight the field the user is typing in.
+   */
+  previewStyle(property: string, value: string, el = this.store.value.selected): void {
+    if (!el) return;
+    if (
+      this.#preview &&
+      (this.#preview.el !== el || this.#preview.property !== property)
+    ) {
+      this.#endPreview();
+    }
+    this.#preview ??= {
+      el,
+      property,
+      before: el.style.getPropertyValue(property),
+      priority: el.style.getPropertyPriority(property),
+    };
+    const next = value.trim();
+    if (next) el.style.setProperty(property, next);
+    else el.style.removeProperty(property);
+  }
+
+  /**
+   * Put back whatever the preview painted over.
+   *
+   * Called before every commit so the command records the value the property had
+   * *before* the user started exploring, not the last frame of the exploration.
+   */
+  #endPreview(): void {
+    const preview = this.#preview;
+    this.#preview = null;
+    if (!preview) return;
+    if (preview.before) {
+      preview.el.style.setProperty(preview.property, preview.before, preview.priority);
+    } else {
+      preview.el.style.removeProperty(preview.property);
+    }
+    tidyStyleAttribute(preview.el);
+  }
+
+  /**
+   * Abandon every in-flight preview.
+   *
+   * Called when a field is left without committing and when the selection changes,
+   * so an exploration that went nowhere leaves no trace — not even an inline
+   * property that did not exist before it started.
+   */
+  cancelPreview(): void {
+    this.#endPreview();
+    this.#endRulePreview();
+    const classPreview = this.#classPreview;
+    this.#classPreview = null;
+    if (classPreview) {
+      const entry = this.classes.get(classPreview.name);
+      if (entry) this.classes.upsert({ ...entry, declarations: classPreview.declarations });
+    }
+  }
+
+  /**
+   * Live preview for a class declaration.
+   *
+   * Writes straight into the managed sheet rather than through the history-backed
+   * setter, so a colour being dragged updates every element wearing the class. The
+   * registry holds the authoritative value, so the next commit or a re-scan puts
+   * things right; there is nothing to unwind.
+   */
+  previewClassDeclaration(name: string, property: string, value: string): void {
+    const entry = this.classes.get(name);
+    if (!entry) return;
+    this.#classPreview ??= { name, declarations: { ...entry.declarations } };
+    this.classes.setDeclaration(name, property, value);
   }
 
   setStyles(declarations: Record<string, string>, label?: string, el = this.store.value.selected): void {
@@ -534,8 +633,14 @@ export class EditorEngine {
    * and an undoable mutation should not exist twice.
    */
   setClassDeclaration(name: string, property: string, value: string): void {
-    const before = this.classes.get(name);
-    if (!before) return;
+    const live = this.classes.get(name);
+    if (!live) return;
+    // A live preview has already written into the registry, so the pre-edit state
+    // has to come from the snapshot taken when the preview began — otherwise undo
+    // would return to the last frame of the exploration rather than to the start.
+    const preview = this.#classPreview?.name === name ? this.#classPreview : null;
+    this.#classPreview = null;
+    const before: DesignClass = preview ? { ...live, declarations: preview.declarations } : live;
     const snapshot: DesignClass = { ...before, declarations: { ...before.declarations } };
     this.history.commit({
       label: `Set ${property} on .${name}`,
@@ -590,7 +695,40 @@ export class EditorEngine {
    * the change expressible as a stylesheet edit rather than a pile of inline
    * styles for the agent to clean up.
    */
+  /**
+   * Live preview for a stylesheet rule, without touching history.
+   *
+   * The counterpart of `previewStyle` for the cascade inspector: dragging a colour
+   * on a `.card` rule should recolour every card as it moves.
+   */
+  previewRuleDeclaration(rule: CSSStyleRule, property: string, value: string): void {
+    if (this.#rulePreview && this.#rulePreview.rule !== rule) this.#endRulePreview();
+    this.#rulePreview ??= {
+      rule,
+      property,
+      before: rule.style.getPropertyValue(property),
+      priority: rule.style.getPropertyPriority(property),
+    };
+    const next = value.trim();
+    if (next) rule.style.setProperty(property, next);
+    else rule.style.removeProperty(property);
+  }
+
+  #endRulePreview(): void {
+    const preview = this.#rulePreview;
+    this.#rulePreview = null;
+    if (!preview) return;
+    if (preview.before) {
+      preview.rule.style.setProperty(preview.property, preview.before, preview.priority);
+    } else {
+      preview.rule.style.removeProperty(preview.property);
+    }
+  }
+
   setRuleDeclaration(rule: CSSStyleRule, property: string, value: string): void {
+    // Put the previewed value back first, so the command records the rule as it was
+    // before the user started exploring.
+    this.#endRulePreview();
     const before = rule.style.getPropertyValue(property);
     const beforePriority = rule.style.getPropertyPriority(property);
     const after = value.trim();

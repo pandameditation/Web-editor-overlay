@@ -27,6 +27,36 @@ export interface ClassEditorHost {
   onNewProperty: (value: string) => void;
   /** Called after a structural change so the host can drop its expanded state. */
   onRemoved?: (name: string) => void;
+  /**
+   * Which actions the host wants offered.
+   *
+   * The design system panel is where a class is managed, so it gets Apply and
+   * Delete. Reached from an element's own chips in Styles, both are wrong: the
+   * class is applied here by definition, and deleting a shared rule from a
+   * single element's panel is a much larger action than it looks.
+   */
+  actions?: 'all' | 'none';
+  /**
+   * Called with a property whose value field should take focus.
+   *
+   * The field does not exist yet at call time — it appears on the render the new
+   * declaration triggers — so the host has to do the focusing after that update.
+   */
+  onFocus?: (property: string) => void;
+}
+
+/**
+ * Focus the value field for `property`, once it exists.
+ *
+ * Exported so both hosts do this identically. Deferred to the next frame because
+ * the field is created by the render that the new declaration schedules; querying
+ * for it any earlier finds nothing.
+ */
+export function focusDeclaration(root: ParentNode, property: string): void {
+  requestAnimationFrame(() => {
+    const field = root.querySelector(`heo-value-field[data-property="${CSS.escape(property)}"]`);
+    (field as { focusInput?: () => void } | null)?.focusInput?.();
+  });
 }
 
 export const ClassEditor = {
@@ -94,6 +124,42 @@ export const ClassEditor = {
       text-overflow: ellipsis;
       white-space: nowrap;
     }
+
+    /* Property name plus its confirm button, sharing one field's worth of width. */
+    .decl .pair {
+      display: flex;
+      gap: 4px;
+      min-width: 0;
+    }
+    .decl .pair .input {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+    .decl .confirm {
+      display: grid;
+      place-items: center;
+      flex: 0 0 auto;
+      width: 28px;
+      border: 1px solid var(--heo-accent-line);
+      border-radius: var(--heo-r-sm);
+      background: var(--heo-accent-soft);
+      color: var(--heo-accent);
+      cursor: pointer;
+      padding: 0;
+      transition:
+        background var(--heo-fast),
+        color var(--heo-fast);
+    }
+    .decl .confirm:hover:not(:disabled) {
+      background: var(--heo-accent);
+      color: var(--heo-accent-ink);
+    }
+    .decl .confirm:disabled {
+      border-color: var(--heo-line);
+      background: transparent;
+      color: var(--heo-text-faint);
+      cursor: not-allowed;
+    }
     .cls .apply {
       display: flex;
       flex-wrap: wrap;
@@ -131,15 +197,15 @@ export const ClassEditor = {
             aria-expanded=${expanded}
             @click=${onToggle}
             @keydown=${(event: KeyboardEvent) => {
-              if (event.key !== 'Enter' && event.key !== ' ') return;
-              event.preventDefault();
-              onToggle();
-            }}
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+            event.preventDefault();
+            onToggle();
+          }}
           >
             ${icon(expanded ? 'chevronDown' : 'chevronRight', 11)}
             ${entry.origin !== 'stylesheet'
-              ? html`<span class="dot" title="Defined in this session"></span>`
-              : nothing}
+            ? html`<span class="dot" title="Defined in this session"></span>`
+            : nothing}
             <span class="n">.${entry.name}</span>
             <span class="meta">${properties.length} rules${uses ? ` · ${uses}×` : ''}</span>
           </header>`}
@@ -147,88 +213,137 @@ export const ClassEditor = {
     </div>`;
   },
 
-  /** The declaration list, the add-property field and the apply/delete actions. */
+  /** The declaration list, the add-property field and, optionally, the actions. */
   renderBody(entry: DesignClass, host: ClassEditorHost): TemplateResult {
     const { engine, element } = host;
     const properties = Object.keys(entry.declarations);
     const applied = element?.classList.contains(entry.name) ?? false;
     const listId = `heo-props-${entry.name}`;
 
+    /*
+     * Turn the typed property name into a declaration.
+     *
+     * Shared by the confirm button, Enter, and leaving the field, because all three
+     * mean the same thing: that is the property I want. Seeding a starting value
+     * matters — an empty declaration would neither render nor tell the user what
+     * kind of value the new field expects.
+     */
+    const commitProperty = (): void => {
+      const property = host.newProperty.trim().toLowerCase().replace(/:+$/, '');
+      if (!property) return;
+      host.onNewProperty('');
+      if (entry.declarations[property] !== undefined) {
+        engine.notify(`.${entry.name} already sets ${property}.`, 'info');
+      } else {
+        engine.setClassDeclaration(entry.name, property, initialValueFor(property));
+      }
+      // Naming a property is never the goal; giving it a value is. Hand the caret to
+      // the field that was just created, with its own autocomplete already loaded.
+      host.onFocus?.(property);
+    };
+
     return html`
       <div class="decls">
         ${properties.length === 0
-          ? html`<p class="hint" style="margin:0">
+        ? html`<p class="hint" style="margin:0">
               No declarations yet. Add a property below to give this class something to do.
             </p>`
-          : nothing}
+        : nothing}
         ${properties.map(
           (property) => html`<div class="decl">
             <span class="p" title=${property}>${property}</span>
             <heo-value-field
+              data-property=${property}
               .value=${entry.declarations[property]}
               .kind=${valueKindFor(property)}
               .property=${property}
               .suggestions=${buildSuggestions(engine, property, element)}
               clearable
+              @value-input=${(event: CustomEvent<{ value: string }>) =>
+              engine.previewClassDeclaration(entry.name, property, event.detail.value)}
+              @value-revert=${() => engine.cancelPreview()}
               @value-change=${(event: CustomEvent<{ value: string }>) =>
-                engine.setClassDeclaration(entry.name, property, event.detail.value)}
+              engine.setClassDeclaration(entry.name, property, event.detail.value)}
             ></heo-value-field>
           </div>`,
         )}
         <div class="decl">
           <span class="p">add</span>
-          <input
-            class="input mono"
-            type="text"
-            list=${listId}
-            placeholder="property"
-            .value=${host.newProperty}
-            spellcheck="false"
-            aria-label="New property"
-            @input=${(event: Event) =>
-              host.onNewProperty((event.target as HTMLInputElement).value)}
-            @keydown=${(event: KeyboardEvent) => {
-              if (event.key !== 'Enter') return;
-              event.preventDefault();
-              const property = host.newProperty.trim();
-              if (!property) return;
-              engine.setClassDeclaration(entry.name, property, initialValueFor(property));
-              host.onNewProperty('');
-            }}
-          />
+          <div class="pair">
+            <input
+              class="input mono"
+              type="text"
+              list=${listId}
+              placeholder="property"
+              .value=${host.newProperty}
+              spellcheck="false"
+              aria-label="New property"
+              @input=${(event: Event) =>
+        host.onNewProperty((event.target as HTMLInputElement).value)}
+              @keydown=${(event: KeyboardEvent) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          commitProperty();
+          return;
+        }
+        // Tab means "done here", so confirm on the way out rather than
+        // discarding what was typed.
+        if (event.key === 'Tab' && !event.shiftKey && host.newProperty.trim()) {
+          event.preventDefault();
+          commitProperty();
+        }
+      }}
+              @blur=${() => {
+        if (host.newProperty.trim()) commitProperty();
+      }}
+            />
+            <button
+              class="confirm"
+              type="button"
+              title="Add this property"
+              aria-label="Add this property"
+              ?disabled=${!host.newProperty.trim()}
+              @pointerdown=${(event: Event) => event.preventDefault()}
+              @click=${commitProperty}
+            >
+              ${icon('check', 12)}
+            </button>
+          </div>
           <datalist id=${listId}>
             ${searchProperties(host.newProperty, 20).map(
-              (meta) => html`<option value=${meta.name}></option>`,
-            )}
+        (meta) => html`<option value=${meta.name}></option>`,
+      )}
           </datalist>
         </div>
       </div>
-      <div class="apply">
-        ${element
-          ? html`<button
-              class="btn sm"
-              type="button"
-              aria-pressed=${applied}
-              title=${applied
+      ${host.actions === 'none'
+        ? nothing
+        : html`<div class="apply">
+            ${element
+            ? html`<button
+                  class="btn sm"
+                  type="button"
+                  aria-pressed=${applied}
+                  title=${applied
                 ? `Remove .${entry.name} from this element`
                 : `Add .${entry.name} to this element`}
-              @click=${() => engine.toggleClass(entry.name, element)}
-            >
-              ${icon(applied ? 'check' : 'plus', 12)}
-              ${applied ? 'Applied here' : 'Apply to selection'}
-            </button>`
-          : nothing}
-        <button
-          class="btn sm danger"
-          type="button"
-          @click=${() => {
+                  @click=${() => engine.toggleClass(entry.name, element)}
+                >
+                  ${icon(applied ? 'check' : 'plus', 12)}
+                  ${applied ? 'Applied here' : 'Apply to selection'}
+                </button>`
+            : nothing}
+            <button
+              class="btn sm danger"
+              type="button"
+              @click=${() => {
             engine.removeClass(entry.name);
             host.onRemoved?.(entry.name);
           }}
-        >
-          ${icon('trash', 12)} Delete
-        </button>
-      </div>
+            >
+              ${icon('trash', 12)} Delete
+            </button>
+          </div>`}
     `;
   },
 
@@ -251,9 +366,9 @@ export const ClassEditor = {
           class="btn sm"
           type="button"
           @click=${() => {
-            host.engine.classes.upsert({ name, declarations: {}, origin: 'user' });
-            host.engine.notify(`Now editing .${name}.`, 'info');
-          }}
+        host.engine.classes.upsert({ name, declarations: {}, origin: 'user' });
+        host.engine.notify(`Now editing .${name}.`, 'info');
+      }}
         >
           ${icon('plus', 12)} Define .${name}
         </button>

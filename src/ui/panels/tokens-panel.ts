@@ -9,7 +9,7 @@ import type { DesignClass, DesignToken, TokenGroup } from '../../core/types.js';
 import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
 import { baseStyles, swatchStyle } from '../theme.js';
-import { ClassEditor } from './class-editor.js';
+import { ClassEditor, focusDeclaration } from './class-editor.js';
 import '../controls/value-field.js';
 import '../controls/section.js';
 
@@ -31,6 +31,7 @@ const openGroups = new Set<string>(['component', 'color', 'space', 'classes']);
 export class HeoTokensPanel extends HeoElement {
   static override styles = [
     baseStyles,
+    ClassEditor.styles,
     css`
       :host {
         display: block;
@@ -397,6 +398,7 @@ export class HeoTokensPanel extends HeoElement {
         onRemoved: (name) => {
           if (this.expandedClass === name) this.expandedClass = null;
         },
+        onFocus: (property) => focusDeclaration(this.renderRoot, property),
       },
     });
   }

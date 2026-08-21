@@ -417,14 +417,27 @@ function matches(el: HTMLElement, selectorText: string): boolean {
   }
 }
 
+/**
+ * A rule's declarations, as they were authored.
+ *
+ * Parsed from `cssText` rather than read by index, because indexing expands every
+ * shorthand and drops any it cannot: `overflow: hidden` enumerates as `overflow-x`
+ * and `overflow-y` with no `overflow` at all, so a panel row for `overflow` found
+ * nothing and showed the property as unset. `width: min(980px, calc(...))` fares
+ * worse still — a var-bearing value is stored as a pending substitution that does
+ * not enumerate.
+ *
+ * Longhands are still available where they matter: the style panel expands box
+ * shorthands itself for the per-side editor.
+ */
 function readDeclarations(style: CSSStyleDeclaration): AppliedDeclaration[] {
   const out: AppliedDeclaration[] = [];
-  for (let i = 0; i < style.length; i += 1) {
-    const property = style[i];
+  for (const [property, raw] of Object.entries(parseDeclarations(style.cssText))) {
+    const important = /!\s*important\s*$/i.test(raw);
     out.push({
       property,
-      value: style.getPropertyValue(property).trim(),
-      important: style.getPropertyPriority(property) === 'important',
+      value: important ? raw.replace(/!\s*important\s*$/i, '').trim() : raw,
+      important,
     });
   }
   return out;

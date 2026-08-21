@@ -267,7 +267,7 @@
       };
       const fieldFor = (label) =>
         Array.from(stylesPanel().shadowRoot.querySelectorAll('.row')).find(
-          (row) => row.querySelector('.name') && row.querySelector('.name').textContent.trim() === label,
+          (row) => row.dataset.property === label,
         );
 
       check('suggestionGroupsForColor', () => {
@@ -483,7 +483,7 @@
       /* Unit completions, and Enter picking the highlighted match. */
       const numericField = () => {
         const row = Array.from(stylesPanel().shadowRoot.querySelectorAll('.row')).find(
-          (x) => x.querySelector('.name') && x.querySelector('.name').textContent.trim() === 'font-size',
+          (x) => x.dataset.property === 'font-size',
         );
         return row && row.querySelector('heo-value-field');
       };
@@ -510,7 +510,7 @@
 
       /* The trailing strip, not just the chevron, opens the list. */
       const colorRow = Array.from(stylesPanel().shadowRoot.querySelectorAll('.row')).find(
-        (x) => x.querySelector('.name') && x.querySelector('.name').textContent.trim() === 'color',
+        (x) => x.dataset.property === 'color',
       );
       const colorField = colorRow.querySelector('heo-value-field');
       colorField.shadowRoot
@@ -624,6 +624,121 @@
           .map((raw) => `${raw}=${window.HtmlEditorOverlay.normalizeCustomElementTag(raw)}`)
           .join(' '),
       );
+
+      /* ------------------------------------------------------------------ *
+       * A row shows the value that wins the cascade, as authored.
+       *
+       * A stylesheet value used to appear only as a grey placeholder, so the panel
+       * described the outcome while hiding the expression the user wanted to adjust.
+       * ------------------------------------------------------------------ */
+      const sheet = document.querySelector('head style');
+      sheet.textContent += `
+        #declared-probe { width: min(980px, calc(100% - var(--space-xl))); overflow: hidden;
+          padding: calc(var(--space-md) + 2px) }
+      `;
+      const probeEl = document.createElement('div');
+      probeEl.id = 'declared-probe';
+      document.getElementById('wrap').appendChild(probeEl);
+      api.openPanel('styles');
+      api.select(probeEl);
+      await frame();
+      const rowFor = (property) =>
+        Array.from(dockPanel('styles').shadowRoot.querySelectorAll('.row'))
+          .find((row) => row.dataset.property === property);
+      const valueOf = (property) => rowFor(property)?.querySelector('heo-value-field')?.value;
+      check('rowShowsAuthoredExpression', () => valueOf('width'));
+      check('rowShowsStylesheetKeyword', () => valueOf('overflow'));
+      check('rowNamesTheRuleItCameFrom', () =>
+        rowFor('width')?.querySelector('.from')?.textContent.trim());
+      check('rowCountsAsSet', () => rowFor('width')?.classList.contains('set'));
+      check('rowTooltipExplainsTheOverride', () =>
+        rowFor('width')?.querySelector('.name')?.title.includes('inline override'));
+
+      /* An inline style still wins, and is attributed to the element. */
+      engine.setStyle('width', '120px', probeEl);
+      await frame();
+      check('inlineValueWinsOverTheRule', () => valueOf('width'));
+      check('inlineValueHasNoRuleTag', () => !rowFor('width')?.querySelector('.from'));
+
+      /* The resolved value is one click away, and only when it differs.
+       *
+       * Tested on `padding`, which lives in a section that is open by default: an
+       * input inside a collapsed section is in a display:none subtree, and focusing
+       * one of those does nothing at all. */
+      engine.resetStyle('width', probeEl);
+      await frame();
+      const padField = rowFor('padding').querySelector('heo-value-field');
+      check('rowShowsAuthoredShorthand', () => padField.value);
+      padField.shadowRoot.querySelector('input[type=text]').focus();
+      await frame();
+      check('computedShownForAnExpression', () => {
+        const popup = padField.shadowRoot.querySelector('.popup');
+        if (!popup) {
+          return `no popup (value=${JSON.stringify(padField.value)} computed=${JSON.stringify(padField.computed)})`;
+        }
+        const group = Array.from(popup.querySelectorAll('.group'))[0];
+        const first = popup.querySelector('.option .name');
+        return `${group?.textContent.trim()}:${first?.textContent.trim()}`;
+      });
+      padField.shadowRoot.querySelector('input[type=text]').blur();
+      await wait(200);
+
+      /* A literal needs no restating, so no Computed row appears for one. */
+      engine.setStyle('color', 'rgb(1, 2, 3)', probeEl);
+      await frame();
+      const litField = rowFor('color').querySelector('heo-value-field');
+      litField.shadowRoot.querySelector('input[type=text]').focus();
+      await frame();
+      check('computedHiddenForALiteral', () =>
+        Array.from(litField.shadowRoot.querySelectorAll('.popup .group'))
+          .every((g) => g.textContent.trim() !== 'Computed'));
+      litField.shadowRoot.querySelector('input[type=text]').blur();
+      await wait(200);
+      engine.resetStyle('color', probeEl);
+      await frame();
+
+      /* ------------------------------------------------------------------ *
+       * Editing a value repaints the page before it is committed.
+       * ------------------------------------------------------------------ */
+      const colourRow = rowFor('color');
+      const colourField = colourRow.querySelector('heo-value-field');
+      const changesBeforePreview = engine.records.length;
+      const undoBeforePreview = engine.history.size;
+      colourField.dispatchEvent(new CustomEvent('value-input', {
+        detail: { value: 'rgb(9, 8, 7)' }, bubbles: true, composed: true,
+      }));
+      await frame();
+      check('previewRepaintsThePage', () => getComputedStyle(probeEl).color);
+      check('previewIsNotAChange', () => engine.records.length - changesBeforePreview);
+      check('previewIsNotUndoable', () => engine.history.size === undoBeforePreview);
+
+      /* Leaving without committing puts the page back, inline style and all. */
+      colourField.dispatchEvent(new CustomEvent('value-revert', { bubbles: true, composed: true }));
+      await frame();
+      check('revertRestoresThePage', () => getComputedStyle(probeEl).color);
+      check('revertLeavesNoInlineStyle', () => probeEl.style.color === '');
+
+      /* Committing records the pre-edit value, not the last previewed frame. */
+      colourField.dispatchEvent(new CustomEvent('value-input', {
+        detail: { value: 'rgb(1, 2, 3)' }, bubbles: true, composed: true,
+      }));
+      colourField.dispatchEvent(new CustomEvent('value-input', {
+        detail: { value: 'rgb(4, 5, 6)' }, bubbles: true, composed: true,
+      }));
+      colourField.dispatchEvent(new CustomEvent('value-change', {
+        detail: { value: 'rgb(4, 5, 6)' }, bubbles: true, composed: true,
+      }));
+      await frame();
+      check('commitAfterPreviewApplies', () => probeEl.style.color);
+      check('commitAfterPreviewRecordsTheOriginal', () => {
+        const record = engine.records.find((r) => r.detail?.property === 'color');
+        return record ? `${record.before ?? '(none)'} -> ${record.after}` : 'no record';
+      });
+      api.undo();
+      await frame();
+      check('undoAfterPreviewClearsIt', () => probeEl.style.color === '');
+      probeEl.remove();
+      engine.history.clear();
 
       /* ------------------------------------------------------------------ *
        * Inline SVG belongs in the tree.

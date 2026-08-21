@@ -316,6 +316,15 @@ export class HeoValueField extends LitElement {
    */
   @property({ type: String }) property = '';
   /**
+   * What the browser resolves the current value to.
+   *
+   * Shown as the first row of the list whenever it differs from what is typed, so
+   * `min(980px, calc(100% - var(--space-xl)))` can stay on screen as the authored
+   * intent while `948px` is one click away. Picking it replaces the expression with
+   * the number, which is occasionally what you want and never a surprise.
+   */
+  @property({ type: String }) computed = '';
+  /**
    * Turns the field into a submit control.
    *
    * Set it to the action's description ("Add this class") and the field grows a
@@ -413,18 +422,41 @@ export class HeoValueField extends LitElement {
 
   /** True when there is a list worth showing, i.e. when opening it does something. */
   get #canOpen(): boolean {
-    return this.suggestions.length > 0 || this.isNumeric;
+    return (
+      this.suggestions.length > 0 || this.isNumeric || this.#computedSuggestion().length > 0
+    );
   }
 
   private get parsed(): { number: number; unit: string } | null {
     return parseLength(this.draft);
   }
 
+  /**
+   * The resolved value, when it is worth stating.
+   *
+   * Only when it actually differs from what is written: repeating `16px` back as
+   * `16px` is noise, whereas `auto` → `948px` or a `calc()` → `948px` is the answer
+   * to why the box is the size it is.
+   */
+  #computedSuggestion(): ValueSuggestion[] {
+    const resolved = this.computed.trim();
+    const raw = this.draft.trim();
+    if (!resolved || resolved === raw) return [];
+    return [
+      {
+        value: resolved,
+        label: resolved,
+        hint: raw ? 'resolved' : 'currently',
+        group: 'Computed',
+      },
+    ];
+  }
+
   private get filtered(): ValueSuggestion[] {
     const needle = this.draft.trim().toLowerCase();
     const units = this.#unitSuggestions();
     const all = this.suggestions;
-    if (!needle) return [...units, ...all];
+    if (!needle) return [...this.#computedSuggestion(), ...units, ...all];
 
     const scored = all.filter(
       (item) =>
@@ -441,7 +473,13 @@ export class HeoValueField extends LitElement {
     // makes the value usable, so it should be one keystroke away. Any static
     // suggestion a unit already covers is dropped rather than listed twice.
     const unitValues = new Set(units.map((unit) => unit.value));
-    return [...units, ...scored.filter((item) => !unitValues.has(item.value))];
+    // The resolved value leads even while filtering: it is context for what is being
+    // typed rather than a match for it.
+    return [
+      ...this.#computedSuggestion(),
+      ...units,
+      ...scored.filter((item) => !unitValues.has(item.value)),
+    ];
   }
 
   /**
@@ -730,7 +768,14 @@ export class HeoValueField extends LitElement {
       // instruction to act. Committing here would fire an action the host never
       // asked for — adding a class the user was only half-way through typing.
       if (this.action) return;
-      if (this.draft !== this.value) this.#commit();
+      if (this.draft !== this.value) {
+        this.#commit();
+        return;
+      }
+      // Nothing to commit, but `value-input` may have painted a live preview on the
+      // way here — typing a value and deleting it again, or cancelling a colour
+      // picker. Say so, so the host can put the page back.
+      this.dispatchEvent(new CustomEvent('value-revert', { bubbles: true, composed: true }));
     }, 120);
   }
 
