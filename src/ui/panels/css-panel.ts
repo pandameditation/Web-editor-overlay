@@ -169,6 +169,13 @@ export class HeoCssPanel extends HeoElement {
   @state() private error = '';
   /** Which source the buffer belongs to, so switching sheets reloads it. */
   #loadedId: string | null = null;
+  /**
+   * Undo depth right after this panel applied something.
+   *
+   * Lets Revert offer to take that apply back, and stop offering once anything else
+   * has been committed on top of it.
+   */
+  #appliedAt: number | null = null;
 
   @query('heo-code-editor') private codeEditor?: HeoCodeEditor;
 
@@ -208,14 +215,7 @@ export class HeoCssPanel extends HeoElement {
       <div class="body">${this.#renderSource(current)}</div>
 
       <div class="foot">
-        <button
-          class="btn"
-          type="button"
-          ?disabled=${!this.dirty}
-          @click=${() => this.#reset(current)}
-        >
-          ${icon('undo', 12)} Revert
-        </button>
+        ${this.#renderRevert(current)}
         <span class="spacer"></span>
         <button
           class="btn primary"
@@ -291,6 +291,48 @@ export class HeoCssPanel extends HeoElement {
     `;
   }
 
+  /**
+   * Revert, meaning whichever "put it back" is available.
+   *
+   * With unapplied edits it discards them and reloads from the sheet. Straight after
+   * applying there is nothing to discard, but the change is still the most recent
+   * thing that happened — so the button undoes it, which is what the user reaches for
+   * when an apply turns out wrong. The offer lapses as soon as anything else is
+   * committed, since undoing then would take back somebody else's change.
+   */
+  #renderRevert(source: StyleSource): TemplateResult {
+    const canUndoApply =
+      !this.dirty && this.#appliedAt !== null && this.editor.history.size === this.#appliedAt;
+    return html`<button
+      class="btn"
+      type="button"
+      ?disabled=${!this.dirty && !canUndoApply}
+      title=${this.dirty
+        ? 'Discard these edits and reload the stylesheet'
+        : 'Undo the CSS you just applied'}
+      @click=${() => {
+        if (this.dirty) this.#reset(source);
+        else this.#undoApply(source);
+      }}
+    >
+      ${icon('undo', 12)} ${this.dirty ? 'Revert' : 'Undo apply'}
+    </button>`;
+  }
+
+  #undoApply(source: StyleSource): void {
+    this.#appliedAt = null;
+    this.editor.undo();
+    this.#loadedId = null;
+    this.dirty = false;
+    this.#syncBuffer(source);
+    this.#refocus();
+  }
+
+  /** Put the caret back in the editor, after the render that follows an action. */
+  #refocus(): void {
+    requestAnimationFrame(() => this.codeEditor?.focusEditor());
+  }
+
   /** Load the buffer when the selection changes, but never mid-edit. */
   #syncBuffer(source: StyleSource): void {
     if (this.#loadedId === source.id) return;
@@ -318,6 +360,8 @@ export class HeoCssPanel extends HeoElement {
     this.editor.history.commit(command);
     this.dirty = false;
     this.#loadedId = null;
+    this.#appliedAt = this.editor.history.size;
+    this.#refocus();
     this.editor.notify(`Applied ${source.label}.`, 'success', {
       label: 'Undo',
       run: () => this.editor.undo(),
@@ -327,7 +371,9 @@ export class HeoCssPanel extends HeoElement {
   #reset(source: StyleSource): void {
     this.#loadedId = null;
     this.#syncBuffer(source);
-    this.codeEditor?.focusEditor();
+    // After the render, not before: focusing first put the caret in the textarea, and
+    // the editor then refused the reloaded buffer because it was focused.
+    this.#refocus();
   }
 
   async #copy(): Promise<void> {

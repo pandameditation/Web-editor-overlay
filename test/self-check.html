@@ -950,6 +950,100 @@
       await frame();
 
       /* ------------------------------------------------------------------ *
+       * The code editor owns its buffer, its caret and its undo.
+       * ------------------------------------------------------------------ */
+      const codeTarget = document.createElement('p');
+      codeTarget.id = 'code-target';
+      codeTarget.textContent = 'Original copy.';
+      document.getElementById('wrap').appendChild(codeTarget);
+      api.select(codeTarget);
+      engine.beginTextEdit(codeTarget);
+      await frame();
+      check('inlineTextEditStarted', () => Boolean(engine.store.value.textEditing));
+
+      api.openPanel('code');
+      await frame();
+      const codeArea = () =>
+        dockPanel('code').shadowRoot.querySelector('heo-code-editor')
+          ?.shadowRoot.querySelector('textarea');
+      const codeEditorEl = () => dockPanel('code').shadowRoot.querySelector('heo-code-editor');
+      codeArea().dispatchEvent(
+        new PointerEvent('pointerdown', { bubbles: true, composed: true, cancelable: true }),
+      );
+      codeArea().focus();
+      await frame();
+      // Clicking into the panel has to end the page's inline edit: leaving it running
+      // meant the page kept its contenteditable while the caret sat in the textarea,
+      // so Escape and Mod+Z went to the page instead of the editor under the cursor.
+      check('clickingIntoTheEditorEndsThePageEdit', () => ({
+        engineState: engine.store.value.textEditing === null,
+        pageAttribute: !codeTarget.hasAttribute('contenteditable'),
+        caretInEditor: deepActive() === codeArea(),
+      }));
+
+      /* Mod+Z in a code buffer is the buffer's own undo, not the page's. */
+      engine.history.clear();
+      engine.setStyle('outline', '2px solid red', codeTarget);
+      await frame();
+      const depthBeforeModZ = engine.history.size;
+      codeArea().focus();
+      press(codeArea(), 'z', { metaKey: true });
+      await wait(120);
+      check('modZInACodeBufferLeavesThePageAlone', () => ({
+        history: engine.history.size === depthBeforeModZ,
+        stillStyled: codeTarget.style.outline !== '',
+      }));
+      engine.resetStyle('outline', codeTarget);
+      engine.history.clear();
+      await frame();
+
+      /* Revert reloads the buffer and keeps the caret in the panel. */
+      const codeFoot = () =>
+        Array.from(dockPanel('code').shadowRoot.querySelectorAll('.foot .btn'));
+      const revertBtn = () => codeFoot().find((b) => !b.classList.contains('primary'));
+      const applyBtn = () => codeFoot().find((b) => b.classList.contains('primary'));
+      const pristine = codeEditorEl().code;
+      codeArea().focus();
+      codeArea().value = '<p id="code-target">Typed, not applied.</p>';
+      codeArea().dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      await frame();
+      check('revertReadsAsRevertWhileDirty', () => revertBtn().textContent.trim());
+      revertBtn().dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+      await wait(100);
+      check('revertActuallyReloadsTheBuffer', () => ({
+        buffer: codeEditorEl().code === pristine,
+        textarea: codeArea().value === pristine,
+        caretInEditor: deepActive() === codeArea(),
+      }));
+
+      /* Apply keeps the caret in the panel, and Revert then undoes the apply. */
+      codeArea().focus();
+      codeArea().value = '<p id="code-target">Applied copy.</p>';
+      codeArea().dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      await frame();
+      applyBtn().dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+      await wait(160);
+      check('applyChangedThePage', () => document.getElementById('code-target')?.textContent);
+      check('applyKeptTheCaretInTheEditor', () => deepActive() === codeArea());
+      check('revertBecomesUndoApply', () => ({
+        label: revertBtn()?.textContent.trim(),
+        enabled: Boolean(revertBtn() && !revertBtn().disabled),
+      }));
+      revertBtn().dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+      await wait(180);
+      check('undoApplyRestoresTheMarkup', () =>
+        document.getElementById('code-target')?.textContent);
+      // The undo swaps a different node back in, so the selection has to follow it
+      // rather than be left on the detached replacement.
+      check('undoApplyKeepsThePanelPopulated', () => Boolean(revertBtn()));
+      check('undoApplyLapsesTheOffer', () => Boolean(revertBtn()?.disabled));
+      codeTarget.remove();
+      document.getElementById('code-target')?.remove();
+      engine.history.clear();
+      api.openPanel('styles');
+      await frame();
+
+      /* ------------------------------------------------------------------ *
        * Tab accepts an arrow-key selection, and nothing else.
        *
        * The highlight has three sources — the arrow keys, the pre-highlight that

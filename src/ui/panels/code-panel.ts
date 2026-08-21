@@ -104,6 +104,17 @@ export class HeoCodePanel extends HeoElement {
   /** Which element the buffer belongs to, so a new selection reloads it. */
   #loadedFor: HTMLElement | null = null;
   #loadedMode: 'outer' | 'inner' = 'outer';
+  /** The raw markup the buffer was built from, to notice it changing underneath. */
+  #loadedSource = '';
+  /**
+   * Undo depth right after this panel applied something.
+   *
+   * Lets Revert offer to take that apply back, and stop offering once anything else
+   * has been committed on top of it.
+   */
+  #appliedAt: number | null = null;
+  /** The element an apply replaced, so undoing it can put the selection back. */
+  #appliedTo: HTMLElement | null = null;
 
   @query('heo-code-editor') private codeEditor?: HeoCodeEditor;
 
@@ -195,10 +206,7 @@ export class HeoCodePanel extends HeoElement {
         : nothing}
       </div>
 
-      <div class="foot">
-        <button class="btn" type="button" ?disabled=${!this.dirty} @click=${() => this.#reset(el)}>
-          ${icon('undo', 12)} Revert
-        </button>
+      <div class="foot">${this.#renderRevert(el)}
         <span class="spacer"></span>
         <button
           class="btn primary"
@@ -212,12 +220,77 @@ export class HeoCodePanel extends HeoElement {
     `;
   }
 
-  /** Reload the buffer when the selection or the mode changes, but never mid-edit. */
+  /**
+   * Revert, meaning whichever "put it back" is available.
+   *
+   * Two states, one intent. With unapplied edits it discards them and reloads the
+   * buffer from the DOM. Straight after applying there is nothing to discard, but the
+   * change is still the most recent thing that happened — so the button undoes it,
+   * which is what the user reaches for when an apply turns out wrong. Splitting these
+   * into two controls would be truer to the machinery and worse to use.
+   *
+   * The undo offer lapses as soon as anything else is committed: undoing then would
+   * take back somebody else's change.
+   */
+  #renderRevert(el: HTMLElement): TemplateResult {
+    const canUndoApply =
+      !this.dirty && this.#appliedAt !== null && this.editor.history.size === this.#appliedAt;
+    return html`<button
+      class="btn"
+      type="button"
+      ?disabled=${!this.dirty && !canUndoApply}
+      title=${this.dirty
+        ? 'Discard these edits and reload the markup'
+        : 'Undo the markup you just applied'}
+      @click=${() => {
+        if (this.dirty) this.#reset(el);
+        else this.#undoApply();
+      }}
+    >
+      ${icon('undo', 12)} ${this.dirty ? 'Revert' : 'Undo apply'}
+    </button>`;
+  }
+
+  #undoApply(): void {
+    const target = this.#appliedTo;
+    this.#appliedAt = null;
+    this.#appliedTo = null;
+    this.editor.undo();
+    // Whole-element mode swaps the node out, so undoing puts a *different* object
+    // back and the selection would otherwise be left pointing at the detached
+    // replacement — which reads as the panel emptying itself.
+    if (target?.isConnected) this.editor.select(target);
+    this.#loadedFor = null;
+    this.dirty = false;
+    this.#refocus();
+  }
+
+  /** Put the caret back in the editor, after the render that follows an action. */
+  #refocus(): void {
+    requestAnimationFrame(() => this.codeEditor?.focusEditor());
+  }
+
+  /**
+   * Reload the buffer when it no longer describes the element — but never mid-edit.
+   *
+   * Three triggers: a different element, a different scope, or the markup having
+   * changed underneath. That third one matters more than it sounds: styling from the
+   * Styles panel, a drag, an undo, all rewrite the element, and a buffer keyed only on
+   * identity went on showing whatever it loaded the first time. Reverting then
+   * "restored" markup that no longer existed.
+   *
+   * Unapplied edits still win — they are the one thing that cannot be recovered — and
+   * the raw source is compared before reformatting, so an unchanged element costs a
+   * string comparison rather than a re-pretty-print on every revision bump.
+   */
   #syncBuffer(el: HTMLElement): void {
-    if (this.#loadedFor === el && this.#loadedMode === this.mode) return;
+    const source = this.mode === 'outer' ? el.outerHTML : el.innerHTML;
+    const sameTarget = this.#loadedFor === el && this.#loadedMode === this.mode;
+    if (sameTarget && (this.dirty || source === this.#loadedSource)) return;
     this.#loadedFor = el;
     this.#loadedMode = this.mode;
-    this.draft = formatHTML(this.mode === 'outer' ? el.outerHTML : el.innerHTML);
+    this.#loadedSource = source;
+    this.draft = formatHTML(source);
     this.error = '';
     this.dirty = false;
     this.stripped = [];
@@ -276,6 +349,11 @@ export class HeoCodePanel extends HeoElement {
       if (this.editor.replaceMarkup(this.draft, el)) {
         this.#loadedFor = null;
         this.dirty = false;
+        // Remembered so Revert can offer to undo this, and only while it is still the
+        // most recent change.
+        this.#appliedAt = this.editor.history.size;
+        this.#appliedTo = el;
+        this.#refocus();
       }
       return;
     }
@@ -308,13 +386,18 @@ export class HeoCodePanel extends HeoElement {
     });
     this.dirty = false;
     this.#loadedFor = null;
+    this.#appliedAt = this.editor.history.size;
+    this.#appliedTo = el;
+    this.#refocus();
     this.editor.notify('Contents replaced.', 'success');
   }
 
   #reset(el: HTMLElement): void {
     this.#loadedFor = null;
     this.#syncBuffer(el);
-    this.codeEditor?.focusEditor();
+    // After the render, not before: focusing first put the caret in the textarea, and
+    // the editor then refused the reloaded buffer because it was focused.
+    this.#refocus();
   }
 
   #format(): void {

@@ -518,6 +518,19 @@ export class EditorEngine {
    * so an exploration that went nowhere leaves no trace — not even an inline
    * property that did not exist before it started.
    */
+  /**
+   * Let go of a selection the history just removed from the page.
+   *
+   * A command that swaps one node for another leaves the selection pointing at the
+   * node that is now detached, and every panel then renders against something the
+   * user cannot see. Clearing it is the honest outcome; callers that know what took
+   * its place re-select deliberately.
+   */
+  #dropDetachedSelection(): void {
+    const selected = this.store.value.selected;
+    if (selected && !selected.isConnected) this.store.patch({ selected: null });
+  }
+
   cancelPreview(): void {
     this.#endPreview();
     this.#endRulePreview();
@@ -1656,6 +1669,7 @@ export class EditorEngine {
     this.cancelPreview();
     const command = this.history.undo();
     if (!command) return;
+    this.#dropDetachedSelection();
     this.notify(`Undid: ${command.label}`, 'info');
     this.#bumpGeometry();
     this.#bumpRevision();
@@ -1666,6 +1680,7 @@ export class EditorEngine {
     this.cancelPreview();
     const command = this.history.redo();
     if (!command) return;
+    this.#dropDetachedSelection();
     this.notify(`Redid: ${command.label}`, 'info');
     this.#bumpGeometry();
     this.#bumpRevision();
@@ -1869,12 +1884,21 @@ export class EditorEngine {
 
     on(document, 'pointerdown', (event) => {
       if (!this.editing) return;
-      // A pointerdown outside the active text edit ends it, matching how every
-      // other inline editor behaves.
+      /*
+       * A pointerdown outside the active text edit ends it, matching how every other
+       * inline editor behaves — and that includes a press inside the panel.
+       *
+       * Exempting the whole of the chrome, as this used to, left the page and the
+       * panel both live: clicking into a code editor moved focus and the caret into
+       * the textarea while the page element kept its `contenteditable` and the engine
+       * kept treating a text edit as in progress, so Escape and Mod+Z went to the page
+       * instead of to the editor under the cursor. Only the text toolbar is genuinely
+       * part of the edit it acts on, so only the text toolbar is exempt.
+       */
       const editing = this.store.value.textEditing;
       if (editing) {
         const path = event.composedPath();
-        if (!path.includes(editing) && !path.some(isOverlayChrome)) this.endTextEdit(true);
+        if (!path.includes(editing) && !path.some(isTextEditChrome)) this.endTextEdit(true);
       }
     });
 
@@ -2013,6 +2037,18 @@ export class EditorEngine {
 
 function isOverlayChrome(node: EventTarget): boolean {
   return node instanceof Element && node.tagName.toLowerCase() === 'html-editor-overlay';
+}
+
+/**
+ * True for the chrome that belongs to an inline text edit rather than sitting beside
+ * it.
+ *
+ * The formatting toolbar operates on the live selection, so pressing Bold cannot be
+ * allowed to end the edit it is formatting. Everything else in the overlay is a
+ * different place to be working, and pressing there means the text edit is over.
+ */
+function isTextEditChrome(node: EventTarget): boolean {
+  return node instanceof Element && node.tagName.toLowerCase() === 'heo-text-toolbar';
 }
 
 /**

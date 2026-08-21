@@ -328,14 +328,21 @@ export class HeoCodeEditor extends LitElement {
 
   /** Caret and scroll carried across the move between containers. */
   #carry: { start: number; end: number; scrollTop: number } | null = null;
+  /** The last buffer this editor emitted, to tell an echo from an external change. */
+  #lastEmitted = '';
 
   override willUpdate(changed: PropertyValues<this>): void {
     // Before the first render both `area` and `activeElement` are null, and
     // `null !== null` reads as "the textarea has focus" — which skipped the very
     // first sync and left the editor blank until some later update happened to
     // run. Ask the real question instead: is the textarea actually focused.
+    //
+    // Focus is a tie-breaker, not a veto. A value this editor did not produce came
+    // from somewhere else and has to win: that is what Revert is — the host reloads
+    // the buffer from the DOM and hands focus back, and the old rule made the two
+    // cancel out, so the button moved the caret and changed nothing.
     const focused = this.area != null && this.shadowRoot?.activeElement === this.area;
-    if (changed.has('value') && !focused) {
+    if (changed.has('value') && (!focused || this.value !== this.#lastEmitted)) {
       this.draft = this.value;
     }
     if (changed.has('error')) this.toggleAttribute('data-invalid', Boolean(this.error));
@@ -623,6 +630,7 @@ export class HeoCodeEditor extends LitElement {
   }
 
   #emit(type: 'code-input' | 'code-submit' | 'code-cancel'): void {
+    this.#lastEmitted = this.draft;
     this.dispatchEvent(
       new CustomEvent(type, { detail: { value: this.draft }, bubbles: true, composed: true }),
     );

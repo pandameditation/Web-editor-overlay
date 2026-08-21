@@ -49,18 +49,19 @@ export function handleKeyDown(engine: EditorEngine, event: KeyboardEvent): void 
     return;
   }
 
-  if (mod && key.toLowerCase() === 'z') {
+  if (mod && (key.toLowerCase() === 'z' || key.toLowerCase() === 'y')) {
     // Inside a text edit, leave undo to the browser so it works per keystroke.
     if (state.textEditing) return;
+    // Same for a multi-line buffer in the panel: the code editors hold text that has
+    // not been applied yet, with an edit history the browser already maintains, so
+    // Mod+Z there means "undo my typing". Taking it would undo the last thing that
+    // happened to the page instead, while the user was looking at their own draft.
+    // A single-line value field is the opposite case and deliberately not exempt:
+    // its own history is worthless and the page change is what undo should reach.
+    if (ownsItsOwnUndo(event)) return;
     event.preventDefault();
-    if (event.shiftKey) engine.redo();
+    if (key.toLowerCase() === 'y' || event.shiftKey) engine.redo();
     else engine.undo();
-    return;
-  }
-
-  if (mod && key.toLowerCase() === 'y') {
-    event.preventDefault();
-    engine.redo();
     return;
   }
 
@@ -230,6 +231,22 @@ function fromOverlay(event: KeyboardEvent): boolean {
   return event
     .composedPath()
     .some((node) => node instanceof Element && node.tagName.toLowerCase() === HOST_TAG);
+}
+
+/**
+ * True when the keystroke came from a control that maintains its own edit history.
+ *
+ * A `<textarea>` is the only such control the overlay draws: the code editors, whose
+ * buffers are unapplied text. The browser tracks their undo stack, and that is the
+ * one the user means.
+ *
+ * Has to be decided here rather than by the component, because this keymap listens in
+ * the capture phase — a `stopPropagation` at the textarea would arrive far too late.
+ */
+function ownsItsOwnUndo(event: KeyboardEvent): boolean {
+  return event
+    .composedPath()
+    .some((node) => node instanceof HTMLElement && node.tagName === 'TEXTAREA');
 }
 
 /** True when the keystroke belongs to a field the user is typing in. */
