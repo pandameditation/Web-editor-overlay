@@ -383,8 +383,25 @@ export class HeoValueField extends LitElement {
    */
   #highlightMoved = false;
   #blurTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The last value this field committed, to tell an echo from an external change. */
+  #lastCommitted = '';
   #onScroll = (): void => {
     if (this.open) this.#positionPopup();
+  };
+
+  /**
+   * Close on a press anywhere else.
+   *
+   * Blur alone is not enough: opening a second field's list starts with a
+   * `preventDefault`ed pointerdown so the caret is not lost, which means the first
+   * field never blurs and its list stays up. Two popovers in the top layer at once,
+   * one of them stale. Capture phase so this runs before the press is acted on.
+   */
+  #onDocumentDown = (event: Event): void => {
+    if (!this.open) return;
+    if (event.composedPath().includes(this)) return;
+    this.open = false;
+    this.highlight = -1;
   };
 
   override connectedCallback(): void {
@@ -392,15 +409,18 @@ export class HeoValueField extends LitElement {
     this.draft = this.value;
     addEventListener('scroll', this.#onScroll, true);
     addEventListener('resize', this.#onScroll);
+    document.addEventListener('pointerdown', this.#onDocumentDown, true);
   }
 
   override disconnectedCallback(): void {
     super.disconnectedCallback();
     removeEventListener('scroll', this.#onScroll, true);
     removeEventListener('resize', this.#onScroll);
+    document.removeEventListener('pointerdown', this.#onDocumentDown, true);
     // The deferred blur would otherwise commit from a detached element, and a
     // still-open flag would re-promote the popover if Lit reuses this instance.
     clearTimeout(this.#blurTimer);
+    openFields.delete(this);
     this.open = false;
     this.highlight = -1;
   }
@@ -410,7 +430,12 @@ export class HeoValueField extends LitElement {
     // is the question that can actually be answered here: `document.activeElement`
     // reports the outermost shadow host, so comparing it against this element was
     // always false and every host re-render clobbered the buffer being typed.
-    if (changed.has('value') && !this.#hasFocus()) {
+    //
+    // Focus is not a veto, though — only a tie-breaker. A new value that this field
+    // did not produce came from somewhere else, and undo is the case that matters:
+    // pressing Mod+Z with the caret still in the field restored the page but left the
+    // box showing the text that had just been undone.
+    if (changed.has('value') && (!this.#hasFocus() || this.value.trim() !== this.#lastCommitted)) {
       this.draft = this.value;
     }
     if (changed.has('value')) {
@@ -751,7 +776,11 @@ export class HeoValueField extends LitElement {
     // pre-selected row would both tell a screen reader the wrong thing and quietly
     // turn "car" into `.card` — or, worse, register the typo. The arrow keys are
     // how a suggestion gets taken.
-    this.highlight = this.action ? -1 : this.filtered.findIndex((item) => !item.info);
+    // An emptied field is a request to clear the declaration, not the start of a
+    // search, so nothing is pre-selected: Enter used to grab the first suggestion in
+    // the list and set that instead of removing the value.
+    this.highlight =
+      this.action || !this.draft.trim() ? -1 : this.filtered.findIndex((item) => !item.info);
     this.#highlightMoved = false;
     this.#emit('value-input');
   }
@@ -916,6 +945,12 @@ export class HeoValueField extends LitElement {
   }
 
   #openPopup(): void {
+    // One list at a time. Stacked popovers in the top layer look like a rendering
+    // fault, and only one of them can be the one the keyboard is driving.
+    for (const other of openFields) {
+      if (other !== this) other.closePopup();
+    }
+    openFields.add(this);
     this.open = true;
     this.highlight = -1;
     this.#highlightMoved = false;
@@ -987,15 +1022,33 @@ export class HeoValueField extends LitElement {
    */
   reset(next = ''): void {
     this.value = next;
+    this.#lastCommitted = next.trim();
     this.draft = next;
     this.open = false;
     this.highlight = -1;
     this.#highlightMoved = false;
   }
 
-  /** Focus the text input, e.g. after the host cleared the field. */
-  focusInput(): void {
-    this.textInput?.focus();
+  /** Close the list, from the outside. */
+  closePopup(): void {
+    openFields.delete(this);
+    if (!this.open) return;
+    this.open = false;
+    this.highlight = -1;
+  }
+
+  /**
+   * Focus the text input.
+   *
+   * `select` preselects the whole value, which is what a field arriving under the
+   * caret should do: the value there is a placeholder the user is expected to
+   * replace, so typing should overwrite it rather than append to it.
+   */
+  focusInput(options: { select?: boolean } = {}): void {
+    const input = this.textInput;
+    if (!input) return;
+    input.focus();
+    if (options.select) input.select();
   }
 
   /* ---- Colour ---- */
@@ -1034,6 +1087,9 @@ export class HeoValueField extends LitElement {
     const next = this.draft.trim();
     if (next === this.value.trim()) return;
     this.value = next;
+    // Remembered so a later `value` change can be told apart from the host simply
+    // echoing this commit back. See `willUpdate`.
+    this.#lastCommitted = next;
     this.#emit('value-change');
   }
 
@@ -1085,6 +1141,15 @@ export class HeoValueField extends LitElement {
     target.addEventListener('pointercancel', up);
   }
 }
+
+/**
+ * Every field with its list open.
+ *
+ * Module-level because the constraint is global: there is one keyboard and one top
+ * layer, so there can be one open list. Nothing else in the overlay needs to know
+ * about it, which is why this is not editor state.
+ */
+const openFields = new Set<HeoValueField>();
 
 declare global {
   interface HTMLElementTagNameMap {

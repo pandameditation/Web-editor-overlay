@@ -741,6 +741,215 @@
       engine.history.clear();
 
       /* ------------------------------------------------------------------ *
+       * Keystrokes belong to one side of the fence.
+       *
+       * The old guard asked whether the target was a text field, but focus sits on a
+       * button for most of the time spent in the dock — an autocomplete row, a class
+       * chip, a segmented option. Every one of those let the page keymap through, so
+       * an arrow moved the selected element, Enter began editing its text, and
+       * Backspace deleted it outright.
+       * ------------------------------------------------------------------ */
+      const keyStack = document.createElement('div');
+      keyStack.id = 'keystack';
+      keyStack.style.cssText =
+        'position:fixed;left:16px;top:210px;width:200px;display:flex;flex-direction:column;gap:6px';
+      keyStack.innerHTML =
+        '<div id="k1" class="card" style="height:36px">k1</div>' +
+        '<div id="k2" style="height:36px;background:#eee">k2</div>' +
+        '<a id="kpage" href="#x">page link</a>';
+      document.body.appendChild(keyStack);
+      const press = (target, key, init = {}) =>
+        target.dispatchEvent(new KeyboardEvent('keydown', {
+          key, bubbles: true, composed: true, cancelable: true, ...init,
+        }));
+      const deepActive = () => {
+        let n = document.activeElement;
+        while (n?.shadowRoot?.activeElement) n = n.shadowRoot.activeElement;
+        return n;
+      };
+
+      api.openPanel('styles');
+      api.select(document.getElementById('k1'));
+      await frame();
+      const keyOrder = () => Array.from(keyStack.children).map((n) => n.id).join(',');
+      const panelChip = () =>
+        Array.from(dockPanel('styles').shadowRoot.querySelectorAll('.chip .name'))
+          .find((x) => x.textContent.trim() === 'card');
+      panelChip().focus();
+      check('panelButtonTakesFocus', () => deepActive()?.tagName.toLowerCase());
+
+      const orderBeforeKeys = keyOrder();
+      press(panelChip(), 'ArrowDown', { shiftKey: true });
+      await frame();
+      check('shiftArrowFromPanelDoesNotMoveTheElement', () => keyOrder() === orderBeforeKeys);
+      press(panelChip(), 'ArrowDown');
+      await frame();
+      check('arrowFromPanelDoesNotChangeSelection', () => engine.selected?.id);
+      press(panelChip(), 'Enter');
+      await frame();
+      check('enterFromPanelDoesNotEditPageText', () => engine.store.value.textEditing === null);
+      press(panelChip(), 'Backspace');
+      await frame();
+      check('backspaceFromPanelDoesNotDelete', () => Boolean(document.getElementById('k1')));
+      press(panelChip(), 't');
+      await frame();
+      check('letterFromPanelDoesNotSwitchTab', () => engine.store.value.dockTab);
+
+      /* The same keys from the page still do their job. */
+      press(document.body, 'ArrowDown');
+      await frame();
+      check('pageArrowStillNavigates', () => engine.selected?.id);
+      api.select(document.getElementById('k1'));
+      await frame();
+
+      /* Tab cannot walk out of the chrome and into the page. */
+      panelChip().focus();
+      press(panelChip(), 'Tab');
+      await frame();
+      check('tabStaysInsideTheChrome', () => {
+        const landed = deepActive();
+        return landed?.id === 'kpage'
+          ? 'escaped to the page'
+          : landed?.tagName.toLowerCase() ?? 'nothing';
+      });
+      let inChrome = 0;
+      for (let i = 0; i < 8; i += 1) {
+        press(deepActive(), 'Tab');
+        await frame();
+        if (document.querySelector('html-editor-overlay').contains(document.activeElement)) {
+          inChrome += 1;
+        }
+      }
+      check('tabCyclesWithinTheChrome', () => `${inChrome}/8`);
+
+      /* ------------------------------------------------------------------ *
+       * One autocomplete at a time, and a press elsewhere closes it.
+       * ------------------------------------------------------------------ */
+      const openLists = () =>
+        Array.from(dockPanel('styles').shadowRoot.querySelectorAll('heo-value-field'))
+          .filter((f) => f.shadowRoot.querySelector('.popup')).length;
+      // Visible fields only: one inside a collapsed section has no box, so focusing
+      // its input is a no-op and the test would be measuring nothing.
+      const listFields = Array.from(
+        dockPanel('styles').shadowRoot.querySelectorAll('heo-value-field'),
+      ).filter((f) => (f.suggestions ?? []).length && f.getClientRects().length > 0);
+      listFields[0].shadowRoot.querySelector('input[type=text]').focus();
+      await frame();
+      check('oneListOpens', () => openLists());
+      listFields[1].shadowRoot.querySelector('input[type=text]').focus();
+      await frame();
+      check('onlyOneListStaysOpen', () => openLists());
+      dockEl().shadowRoot.querySelector('.tabs').dispatchEvent(
+        new PointerEvent('pointerdown', { bubbles: true, composed: true, cancelable: true }),
+      );
+      await frame();
+      check('pressElsewhereClosesTheList', () => openLists());
+
+      /* ------------------------------------------------------------------ *
+       * Undo reaches a value field that still has the caret.
+       * ------------------------------------------------------------------ */
+      engine.history.clear();
+      const k1 = document.getElementById('k1');
+      api.select(k1);
+      await frame();
+      // Last match: a set property also appears in the Set section, and that row is
+      // removed the moment the value is cleared.
+      const keyRow = (property) =>
+        Array.from(dockPanel('styles').shadowRoot.querySelectorAll('.row'))
+          .filter((r) => r.dataset.property === property).pop();
+      engine.setStyle('font-size', '30px', k1);
+      await frame();
+      // Successive edits to one property merge into a single undo step by design.
+      await wait(2600);
+      const fsField = keyRow('font-size').querySelector('heo-value-field');
+      const fsInput = fsField.shadowRoot.querySelector('input[type=text]');
+      fsInput.focus();
+      fsInput.value = '';
+      fsInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      press(fsInput, 'Enter');
+      await wait(90);
+      check('clearingRemovesTheDeclaration', () => JSON.stringify(k1.style.fontSize));
+      press(fsInput, 'z', { metaKey: true });
+      await wait(140);
+      await frame();
+      check('undoFromInsideAFieldRestoresThePage', () => k1.style.fontSize);
+      check('undoRefreshesTheFocusedField', () => {
+        const field = keyRow('font-size').querySelector('heo-value-field');
+        return `${field.value} / ${field.shadowRoot.querySelector('input[type=text]').value}`;
+      });
+
+      /* Class-provided declarations stay out of the Set section. */
+      engine.setStyle('z-index', '4', k1);
+      await frame();
+      check('setSectionExcludesClassDeclarations', () => {
+        const section = Array.from(dockPanel('styles').shadowRoot.querySelectorAll('heo-section'))
+          .find((s) => s.heading === 'Set on this element');
+        const rows = Array.from(section?.querySelectorAll('.rows .row') ?? [])
+          .map((r) => r.dataset.property);
+        const fromCard = Object.keys(engine.classes.get('card').declarations);
+        return `rows=${rows.join(',')} card=${fromCard.join(',')} overlap=${rows.filter((r) => fromCard.includes(r)).join(',') || 'none'}`;
+      });
+      keyStack.remove();
+      engine.history.clear();
+
+      /* ------------------------------------------------------------------ *
+       * The class editor looks and behaves the same in both panels.
+       * ------------------------------------------------------------------ */
+      api.select(document.getElementById('para'));
+      await frame();
+      const stylesChip = Array.from(dockPanel('styles').shadowRoot.querySelectorAll('.chip .name'))
+        .find((x) => x.textContent.trim() === 'card');
+      stylesChip.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+      await frame();
+      const columnsIn = (panel) => {
+        const row = dockPanel(panel).shadowRoot.querySelector('.cls .decl');
+        return row ? getComputedStyle(row).gridTemplateColumns : 'no row';
+      };
+      const stylesColumns = columnsIn('styles');
+      check('stylesClassRowLayout', () => stylesColumns);
+      check('stylesAddPropertyIsVisible', () =>
+        Boolean(dockPanel('styles').shadowRoot
+          .querySelector('.cls .decl .pair input')?.getClientRects().length));
+      check('stylesConfirmIsVisible', () =>
+        Boolean(dockPanel('styles').shadowRoot
+          .querySelector('.cls .confirm')?.getClientRects().length));
+      check('stylesRemoveSitsOnTheSameRow', () => {
+        const row = dockPanel('styles').shadowRoot.querySelector('.cls .decl');
+        const drop = row?.querySelector('.drop');
+        const field = row?.querySelector('heo-value-field');
+        if (!drop || !field) return 'missing';
+        return Math.abs(drop.getBoundingClientRect().top - field.getBoundingClientRect().top) < 12;
+      });
+      api.openPanel('tokens');
+      await frame();
+      const tokensHeader = Array.from(dockPanel('tokens').shadowRoot.querySelectorAll('.cls > header'))
+        .find((h) => h.querySelector('.n')?.textContent === '.card');
+      tokensHeader.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+      await frame();
+      check('bothPanelsShareTheClassRowLayout', () => columnsIn('tokens') === stylesColumns);
+
+      /* A newly added property arrives focused with its value preselected. */
+      const tokensAdder = dockPanel('tokens').shadowRoot.querySelector('.cls .decl .pair input');
+      tokensAdder.focus();
+      tokensAdder.value = 'word-spacing';
+      tokensAdder.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      await frame();
+      press(tokensAdder, 'Enter');
+      await wait(150);
+      check('newValueIsPreselected', () => {
+        const field = dockPanel('tokens').shadowRoot
+          .querySelector('heo-value-field[data-property="word-spacing"]');
+        const input = field?.shadowRoot.querySelector('input[type=text]');
+        if (!input) return 'no field';
+        return `${input.selectionStart}-${input.selectionEnd} of ${JSON.stringify(input.value)}`;
+      });
+      engine.removeClassDeclaration('card', 'word-spacing');
+      await frame();
+      engine.history.clear();
+      api.openPanel('styles');
+      await frame();
+
+      /* ------------------------------------------------------------------ *
        * The Computed row states what an expression comes to, and keeps it.
        *
        * Flattening `var(--ink-muted)` into `rgb(74, 85, 104)` would throw away the

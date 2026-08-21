@@ -758,6 +758,14 @@ export class HeoStylesPanel extends HeoElement {
       // Longhands synthesised from a box shorthand are already represented by the
       // shorthand itself; listing both would double every margin and padding.
       .filter((property) => origins.has(property))
+      // Whatever a class contributes belongs to the class, and Classes already shows
+      // it — editable at the source, where a change reaches every element wearing it.
+      // Repeating it here would invite the opposite: an inline override per element.
+      .filter((property) => {
+        const origin = origins.get(property);
+        if (!origin || origin.kind === 'inline') return true;
+        return !fromElementClass(origin.selector, el);
+      })
       .sort((a, b) => {
         const rank = (property: string): number => (inline[property] !== undefined ? 0 : 1);
         return rank(a) - rank(b) || a.localeCompare(b);
@@ -774,13 +782,12 @@ export class HeoStylesPanel extends HeoElement {
     >
       ${properties.length === 0
         ? html`<p class="hint" style="margin:0">
-            Nothing declares anything for this element, so every value it shows is inherited or a
-            browser default. Changing one below writes it onto the element.
+            Nothing is set here beyond what its classes provide, so every other value is
+            inherited or a browser default. Changing one below writes it onto the element.
           </p>`
         : html`<p class="hint" style="margin:0 0 9px">
-              Every property a rule or the <code class="mono">style</code> attribute sets here, as
-              authored. Rows tagged with a selector come from that rule; editing one writes an
-              inline override on this element.
+              Set on this element itself, as authored. What its classes contribute lives under
+              Classes, where editing it reaches every element using the class.
             </p>
             <div class="rows">
               ${repeat(
@@ -1352,6 +1359,21 @@ function declaredMap(
     });
   }
   return { values: out, origins };
+}
+
+/**
+ * True when a declaration arrived from one of the element's own classes.
+ *
+ * Only a bare single-class selector counts, because that is exactly the shape the
+ * Classes section can show and edit. A compound or descendant selector like
+ * `.card .title` is not a class you can take off an element, so its declarations
+ * still belong in the list of what is set here.
+ */
+function fromElementClass(selector: string, el: HTMLElement): boolean {
+  return selector.split(',').some((part) => {
+    const match = /^\s*\.([A-Za-z_][\w-]*)\s*$/.exec(part);
+    return match ? el.classList.contains(match[1]) : false;
+  });
 }
 
 /** A row's tooltip: the value, and where it is coming from. */

@@ -27,6 +27,7 @@ import {
   exportHTML,
   importDesignSystem,
 } from './design-system.js';
+import { containTab } from './focus.js';
 import { History, nextChangeId, type Command } from './history.js';
 import { handleKeyDown, matchesShortcut } from './keymap.js';
 import { BlockLibrary, blockFromSource } from './library.js';
@@ -1650,6 +1651,9 @@ export class EditorEngine {
 
   undo(): void {
     this.endTextEdit(true);
+    // A live preview is an uncommitted overwrite sitting on top of the DOM; undoing
+    // underneath it would restore a value the preview immediately hides again.
+    this.cancelPreview();
     const command = this.history.undo();
     if (!command) return;
     this.notify(`Undid: ${command.label}`, 'info');
@@ -1659,6 +1663,7 @@ export class EditorEngine {
 
   redo(): void {
     this.endTextEdit(true);
+    this.cancelPreview();
     const command = this.history.redo();
     if (!command) return;
     this.notify(`Redid: ${command.label}`, 'info');
@@ -1901,7 +1906,12 @@ export class EditorEngine {
       this.select(el);
     });
 
-    on(document, 'keydown', (event) => handleKeyDown(this, event));
+    on(document, 'keydown', (event) => {
+      // Tab first, and only while editing: it decides *where* the next keystroke
+      // will land, which every other binding then depends on.
+      if (this.store.value.editing && containTab(event)) return;
+      handleKeyDown(this, event);
+    });
 
     const geometry = (): void => this.#bumpGeometry();
     on(window, 'scroll', geometry as (event: Event) => void);

@@ -1,3 +1,4 @@
+import { HOST_TAG } from './constants.js';
 import type { EditorEngine } from './editor.js';
 import type { PanelId } from './types.js';
 
@@ -93,7 +94,21 @@ export function handleKeyDown(engine: EditorEngine, event: KeyboardEvent): void 
     return;
   }
 
-  // Anything typed into a field belongs to that field.
+  /*
+   * Everything below this line acts on the page, so it only applies to keystrokes
+   * that came from the page.
+   *
+   * The old guard asked whether the target was a text field, which is a much
+   * narrower question than "is the user working in the panel". Focus sits on a
+   * *button* for most of the time spent in the dock — an autocomplete row, a class
+   * chip, a segmented option, a section header — and every one of those let the page
+   * keymap through: arrows moved the selected element instead of walking the list,
+   * Enter started editing its text instead of picking a value, and Backspace deleted
+   * it outright. The panel's own components handle their own keys.
+   */
+  if (fromOverlay(event)) return;
+
+  // Anything typed into a page field belongs to that field.
   if (isEditableTarget(event)) return;
 
   switch (key) {
@@ -202,6 +217,19 @@ function insideNativeModal(event: KeyboardEvent): boolean {
   return event
     .composedPath()
     .some((node) => node instanceof HTMLDialogElement && node.open);
+}
+
+/**
+ * True when the keystroke came from the editor's own chrome.
+ *
+ * Tested against the composed path rather than `event.target`, because retargeting
+ * reports the host element for anything inside a shadow root — which is every
+ * control the overlay draws.
+ */
+function fromOverlay(event: KeyboardEvent): boolean {
+  return event
+    .composedPath()
+    .some((node) => node instanceof Element && node.tagName.toLowerCase() === HOST_TAG);
 }
 
 /** True when the keystroke belongs to a field the user is typing in. */

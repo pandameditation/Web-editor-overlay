@@ -55,7 +55,11 @@ export interface ClassEditorHost {
 export function focusDeclaration(root: ParentNode, property: string): void {
   requestAnimationFrame(() => {
     const field = root.querySelector(`heo-value-field[data-property="${CSS.escape(property)}"]`);
-    (field as { focusInput?: () => void } | null)?.focusInput?.();
+    // Preselected, because the seeded value is a stand-in the user is meant to
+    // replace: typing should overwrite it, not append to it.
+    (field as { focusInput?: (o: { select?: boolean }) => void } | null)?.focusInput?.({
+      select: true,
+    });
   });
 }
 
@@ -113,13 +117,13 @@ export const ClassEditor = {
     /* Name, value, and an explicit way out. The third column exists because
        clearing the value no longer removes the property — emptying a field is how
        you retype it, so removal had to become something you ask for. */
-    .decl {
+    .cls .decl {
       display: grid;
       grid-template-columns: 92px minmax(0, 1fr) 18px;
       align-items: center;
       gap: 6px;
     }
-    .decl .drop {
+    .cls .decl .drop {
       display: grid;
       place-items: center;
       width: 18px;
@@ -133,15 +137,15 @@ export const ClassEditor = {
       opacity: 0;
       transition: opacity var(--heo-fast);
     }
-    .decl:hover .drop,
-    .decl .drop:focus-visible {
+    .cls .decl:hover .drop,
+    .cls .decl .drop:focus-visible {
       opacity: 1;
     }
-    .decl .drop:hover {
+    .cls .decl .drop:hover {
       background: color-mix(in oklab, var(--heo-danger) 18%, transparent);
       color: var(--heo-danger);
     }
-    .decl .p {
+    .cls .decl .p {
       overflow: hidden;
       color: var(--heo-text-dim);
       font-family: var(--heo-mono);
@@ -151,16 +155,16 @@ export const ClassEditor = {
     }
 
     /* Property name plus its confirm button, sharing one field's worth of width. */
-    .decl .pair {
+    .cls .decl .pair {
       display: flex;
       gap: 4px;
       min-width: 0;
     }
-    .decl .pair .input {
+    .cls .decl .pair .input {
       flex: 1 1 auto;
       min-width: 0;
     }
-    .decl .confirm {
+    .cls .decl .confirm {
       display: grid;
       place-items: center;
       flex: 0 0 auto;
@@ -175,11 +179,11 @@ export const ClassEditor = {
         background var(--heo-fast),
         color var(--heo-fast);
     }
-    .decl .confirm:hover:not(:disabled) {
+    .cls .decl .confirm:hover:not(:disabled) {
       background: var(--heo-accent);
       color: var(--heo-accent-ink);
     }
-    .decl .confirm:disabled {
+    .cls .decl .confirm:disabled {
       border-color: var(--heo-line);
       background: transparent;
       color: var(--heo-text-faint);
