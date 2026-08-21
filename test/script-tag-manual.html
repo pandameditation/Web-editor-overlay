@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Editor overlay — a bundle without data-heo stays dormant</title>
+  <!--
+    The counterpart to script-tag.html. Loading the bundle must not put an editor
+    on the page: only `data-heo` does that, so a production page that ships the
+    bundle behind its own gate keeps deciding for itself.
+  -->
+</head>
+
+<body>
+  <p class="card" id="para">Nothing should be mounted until this page says so.</p>
+  <pre id="out">pending</pre>
+
+  <!-- No data-heo, so this is inert. -->
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+
+  <script>
+    (async () => {
+      const out = [];
+      const frame = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const check = (name, fn) => {
+        try { out.push(` "${name}": ${JSON.stringify(fn())},`); }
+        catch (e) { out.push(` "${name}": "THREW ${e.message}",`); }
+      };
+      const heo = window.HtmlEditorOverlay;
+
+      check('theBundleLoaded', () => typeof heo.mount === 'function');
+
+      // Wait past the point where an auto-mount would have happened.
+      await new Promise((r) => addEventListener('DOMContentLoaded', r, { once: true }));
+      await wait(200);
+      await frame();
+      check('anUnmarkedTagMountsNothing', () => heo.getInstance() === null);
+      check('andLeavesNoHostElementBehind', () =>
+        document.querySelectorAll('html-editor-overlay').length === 0);
+
+      /* The page decides, as before. */
+      const api = heo.mount({ fileName: 'decided-by-the-page.html', theme: 'light' });
+      await frame();
+      check('thePageCanStillMountItself', () => heo.getInstance() === api);
+      check('withItsOwnOptions', () => engineOptions());
+      function engineOptions() {
+        return `${api.engine.options.fileName} / ${api.engine.store.value.theme}`;
+      }
+      check('andNotInEditModeUnlessAsked', () => api.getState().editing === false);
+
+      api.unmount();
+      await frame();
+      check('unmountLeavesNothingBehind', () =>
+        heo.getInstance() === null &&
+        document.querySelectorAll('html-editor-overlay').length === 0 &&
+        !document.documentElement.hasAttribute('data-heo-edit'));
+
+      document.getElementById('out').textContent =
+        'RESULTS:{\n' + out.join('\n') + '\n "__errors": []\n}:END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{\n "__errors": ["' + e.message + '"]\n}:END';
+    });
+  </script>
+</body>
+
+</html>

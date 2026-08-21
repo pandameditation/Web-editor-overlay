@@ -30,7 +30,7 @@
     "types": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "preview": "vite preview --config vite.demo.config.ts",
-    "check": "npm run build:lib && node scripts/browser-check.mjs test/self-check.html 60000",
+    "check": "npm run build:lib && node scripts/browser-check.mjs test/self-check.html 60000 && node scripts/browser-check.mjs test/script-tag.html 45000 && node scripts/browser-check.mjs test/script-tag-manual.html 45000",
     "check:plugin": "node scripts/browser-check.mjs http://localhost:5180/probe.html 40000"
   },
   "dependencies": {

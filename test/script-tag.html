@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Editor overlay — one tag is the whole integration</title>
+  <!--
+    This page's entire integration is the single <script> tag near the bottom.
+    There is no mount() call anywhere: `data-heo` is the consent, and the rest of
+    the attributes are the configuration.
+
+    The second script only checks the result, so this file doubles as the fixture
+    for `npm run check`. Run `npm run build:lib` first.
+  -->
+  <style>
+    :root {
+      --ink: #172033;
+      --accent: #356dff;
+      --space-md: 16px;
+      --radius-md: 16px;
+    }
+
+    body {
+      margin: 0;
+      padding: var(--space-md);
+      background: #f4f6fb;
+      color: var(--ink);
+      font-family: system-ui, sans-serif;
+    }
+
+    .card {
+      padding: var(--space-md);
+      border-radius: var(--radius-md);
+      background: #fff;
+    }
+  </style>
+</head>
+
+<body>
+  <main>
+    <h1>One tag</h1>
+    <p class="card" id="para">No JavaScript on this page mounts the editor.</p>
+  </main>
+
+  <div id="editor-host"></div>
+  <pre id="out">pending</pre>
+
+  <!-- The whole integration. -->
+  <script src="../dist/html-editor-overlay.iife.js" data-heo="edit" data-theme="light" data-accent="#ff5500"
+    data-file-name="one-tag.html" data-shortcut="alt+e" data-presets="false" data-container="#editor-host"
+    data-design-system="./design-system.json"></script>
+
+  <script>
+    (async () => {
+      const out = [];
+      const frame = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const check = (name, fn) => {
+        try { out.push(` "${name}": ${JSON.stringify(fn())},`); }
+        catch (e) { out.push(` "${name}": "THREW ${e.message}",`); }
+      };
+
+      // The tag mounts on DOMContentLoaded, which has not happened yet: this
+      // script is inline, so it runs while the document is still parsing.
+      const heo = window.HtmlEditorOverlay;
+      check('nothingIsMountedWhileTheDocumentIsStillParsing', () => heo.getInstance() === null);
+
+      await new Promise((r) => addEventListener('DOMContentLoaded', r, { once: true }));
+      await frame();
+
+      const api = heo.getInstance();
+      check('mountedFromTheTagWithoutAnyJavaScript', () => api !== null);
+      check('theGlobalIsStillThereForManualUse', () => typeof heo.mount === 'function');
+
+      const engine = api.engine;
+      check('dataHeoEditStartedInEditMode', () => api.getState().editing);
+      check('dataThemeApplied', () => engine.store.value.theme);
+      check('dataAccentApplied', () => engine.store.value.accent);
+      check('dataFileNameApplied', () => engine.options.fileName);
+      check('dataShortcutApplied', () => engine.options.toggleShortcut);
+      check('dataPresetsFalseLeftTheLibraryEmpty', () => engine.library.list().length === 0);
+      check('dataContainerApplied', () =>
+        document.querySelector('html-editor-overlay').parentElement.id);
+
+      /* The shortcut is not just stored, it is the one that works. */
+      document.body.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'e', altKey: true, bubbles: true, composed: true, cancelable: true,
+      }));
+      await wait(60);
+      check('theCustomShortcutTogglesEditMode', () => api.getState().editing === false);
+
+      /* data-design-system is fetched after mounting, so give it a moment. */
+      await wait(400);
+      check('dataDesignSystemLoadedItsTokens', () =>
+        `${engine.tokens.get('brand-ink')?.value} ${engine.tokens.get('space-gutter')?.value}`);
+      check('dataDesignSystemLoadedItsClasses', () =>
+        JSON.stringify(engine.classes.get('panel')?.declarations ?? null));
+
+      /*
+       * Mounting again must hand back what is already there rather than stack.
+       *
+       * This is the path the bookmarklet takes on a second click: the bundle is a
+       * one-per-page global, so re-injecting the script would re-run every
+       * `customElements.define` and throw. The documented bookmarklet therefore
+       * looks for the global first and only injects when it is absent.
+       */
+      const second = heo.mount({ theme: 'dark', accent: '#000000' });
+      await frame();
+      check('mountingAgainReturnsTheSameInstance', () => second === api);
+      check('mountingAgainDoesNotStackOverlays', () =>
+        document.querySelectorAll('html-editor-overlay').length);
+      check('mountingAgainDoesNotRewriteTheFirstOptions', () => engine.store.value.accent);
+
+      /* The bookmarklet's own logic, run against a page that already has it. */
+      const bookmarklet = () => {
+        const existing = window.HtmlEditorOverlay;
+        if (existing && existing.getInstance()) { existing.getInstance().toggleEditing(); return 'toggled'; }
+        return 'injected';
+      };
+      check('theBookmarkletTogglesInsteadOfReinjecting', () => bookmarklet());
+      await wait(60);
+      check('andThatToggleReachedTheEditor', () => api.getState().editing);
+
+      document.getElementById('out').textContent =
+        'RESULTS:{\n' + out.join('\n') + '\n "__errors": []\n}:END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{\n "__errors": ["' + e.message + '"]\n}:END';
+    });
+  </script>
+</body>
+
+</html>

@@ -21,7 +21,10 @@ root, no build step required on the consuming side.
 ## Contents
 
 - [Install](#install)
-- [Two integration paths](#two-integration-paths)
+- [Three integration paths](#three-integration-paths)
+  - [One script tag](#1-one-script-tag)
+  - [Bookmarklet](#2-bookmarklet)
+  - [Vite plugin](#3-vite-plugin)
 - [The workflow](#the-workflow)
 - [Keyboard shortcuts](#keyboard-shortcuts)
 - [Panels](#panels)
@@ -72,46 +75,115 @@ import 'html-editor-overlay/standalone';               // IIFE, sets the global
 
 ---
 
-## Two integration paths
+## Three integration paths
 
-### 1. Script tag
+| Path | Use it when | Setup |
+| --- | --- | --- |
+| [One script tag](#1-one-script-tag) | You can edit the page's HTML | One line, no JavaScript |
+| [Bookmarklet](#2-bookmarklet) | You cannot edit the page at all | Paste a URL into a bookmark |
+| [Vite plugin](#3-vite-plugin) | You want file and line numbers in the prompt | One plugin entry |
 
-For an existing site, a static page, or any framework the Vite plugin does not
-cover. **The overlay never mounts itself** — a visual editor that appears
-unbidden in production is a liability, so the page decides.
+### 1. One script tag
+
+Add the tag, add `data-heo`, done. No `mount()` call, no JavaScript of your own:
 
 ```html
-<script src="/path/to/html-editor-overlay.iife.js"></script>
+<script src="/path/to/html-editor-overlay.iife.js" data-heo></script>
+```
+
+That loads the editor dormant. Press `Mod+E` to start editing. To skip that step
+and land in edit mode, say so:
+
+```html
+<script src="/path/to/html-editor-overlay.iife.js" data-heo="edit"></script>
+```
+
+**The overlay still never mounts itself.** A visual editor that appears unbidden
+in production is a liability, so consent is required — `data-heo` *is* the
+consent. A bundle loaded without it stays inert, which is what lets a production
+page ship the file behind its own gate and keep deciding for itself:
+
+```html
+<!-- Inert. Nothing mounts. -->
+<script src="/vendor/html-editor-overlay.iife.js"></script>
 <script>
-  window.HtmlEditorOverlay.mount({
-    accent: '#4f46e5',
-    onSave(payload) {
-      // payload.prompt      → markdown instructions
-      // payload.records     → the structured change set
-      // payload.designSystem→ tokens, classes and blocks
-      // payload.html        → the page serialized, overlay stripped
-      console.log(payload.prompt);
-    },
-  });
+  if (localStorage.getItem('editor') === 'on') window.HtmlEditorOverlay.mount();
 </script>
 ```
 
-Gate it however you gate any dev tool:
+Reach for `mount()` rather than attributes when you need a callback, inline seed
+data, or a gate like the one above. `test-page.html` is a working fixture for that
+form, with `onSave`, `onChange` and a custom block.
 
-```html
-<script>
-  if (location.hostname === 'localhost' || localStorage.getItem('editor') === 'on') {
-    const s = document.createElement('script');
-    s.src = '/vendor/html-editor-overlay.iife.js';
-    s.onload = () => window.HtmlEditorOverlay.mount({});
-    document.head.append(s);
-  }
-</script>
+#### Script tag attributes
+
+Every attribute is optional except `data-heo`. Attributes hold strings, so this
+covers the scalar half of [`mount()` options](#mount-options); anything needing a
+function or inline data stays in JavaScript.
+
+| Attribute | Values | Default | What it does |
+| --- | --- | --- | --- |
+| `data-heo` | empty, or `edit` / `editing` / `on` | **required** | Consent to mount. Empty mounts dormant; the three words above also turn edit mode on immediately (`startInEditMode`). |
+| `data-theme` | `dark`, `light` | `dark` | Overlay chrome theme. Any value other than `light` is treated as `dark`. |
+| `data-accent` | any CSS colour | `#6366f1` | Accent colour of the overlay chrome. Does not touch the page. |
+| `data-file-name` | a file name | `edited-page.html` | Name suggested when exporting the page, and carried in the save payload. |
+| `data-shortcut` | e.g. `mod+e`, `alt+e`, `mod+shift+k` | `mod+e` | Shortcut that toggles edit mode. `mod` is Cmd on macOS, Ctrl elsewhere. |
+| `data-presets` | `false`, `off`, `0`, `no` | enabled | Set one of those values to leave the built-in container and component blocks out of the Library. |
+| `data-container` | a CSS selector | `document.body` | Element the overlay host attaches to. A selector matching nothing logs a warning and falls back to the default. |
+| `data-design-system` | a URL | none | JSON with tokens, reusable classes and blocks — see [Design system format](#design-system-format). Fetched with `same-origin` credentials. |
+
+Four behaviours worth knowing, all of them deliberate:
+
+- **Mount timing.** A tag in `<head>` waits for `DOMContentLoaded`, so the overlay
+  never mounts before there is a `<body>` to mount into. A tag injected after the
+  page has loaded mounts immediately.
+- **Your `mount()` wins.** If the page calls `mount()` itself, the attributes stand
+  down rather than race it — your call is more specific than any attribute can be.
+  So use one or the other, not both.
+- **`data-design-system` does not block the mount.** The editor opens straight away
+  and the panels re-render when the tokens land. A failed fetch logs a warning and
+  shows a toast; the editor keeps working without it.
+- **Saving without a callback.** With no `onSave`, saving copies the prompt to the
+  clipboard *and* downloads it as `apply-visual-edits.md`. That is usually what you
+  want on a page with no backend, so the one-tag path needs no wiring.
+
+`test/script-tag.html` is a working fixture for this path — its entire integration
+is one tag — and `test/script-tag-manual.html` is the counterpart proving an
+unmarked bundle stays dormant.
+
+### 2. Bookmarklet
+
+For a page you cannot add a script to. Put this in a bookmark's URL field, replace
+the host with wherever you serve the bundle, then click it on any page:
+
+```js
+javascript:(()=>{const g=window.HtmlEditorOverlay;if(g&&g.getInstance()){g.getInstance().toggleEditing();return}const s=document.createElement('script');s.src='https://YOUR-HOST/html-editor-overlay.iife.js';s.dataset.heo='edit';document.head.append(s)})()
 ```
 
-`test-page.html` in this repository is a working fixture for this path.
+It is the same mechanism as path 1 — it writes `data-heo="edit"` onto a script tag
+it injects — with one addition: clicking it again toggles edit mode instead of
+loading the bundle twice. The bundle registers custom elements, so it is
+one-per-page; a second load would fail on the names already taken.
 
-### 2. Vite plugin
+The bundle needs to be reachable over `http(s)`. During development:
+
+```sh
+npm run build
+npx serve .           # then point the bookmarklet at http://localhost:3000/dist/html-editor-overlay.iife.js
+```
+
+Three limits to expect on sites you do not control:
+
+- **Content Security Policy.** A site sending `script-src` without your host blocks
+  the injection outright. The console will say so. Nothing to be done from outside.
+- **Cross-origin stylesheets are invisible.** The browser refuses to expose their
+  rules, so tokens defined in CSS served from another origin are not discovered.
+  This degrades quietly — you get the editor with fewer tokens offered, not an
+  error — and tokens on `:root` in a same-origin or inline stylesheet still work.
+- **Nothing is written back.** Saving produces the prompt and the markdown file,
+  the same as everywhere else. The overlay never writes to the site.
+
+### 3. Vite plugin
 
 Adds one thing the script tag cannot: **source locations**. The plugin stamps
 every opening tag — in HTML files and inside `html` / `svg` tagged templates —
@@ -291,7 +363,9 @@ every other insertion.
 
 ## `mount()` options
 
-Every option is optional.
+Every option is optional. The scalar ones can also be set as
+[script tag attributes](#script-tag-attributes), with no JavaScript at all; the
+callbacks and the inline seed arrays are the reason this form exists.
 
 ```ts
 import { mount } from 'html-editor-overlay';
@@ -582,7 +656,7 @@ page built from web components.
 npm run dev            # demo fixture with the Vite plugin, port 5180
 npm run typecheck      # tsc --noEmit
 npm run build          # library + plugin + type declarations
-npm run check          # build, then 60+ assertions in headless Chrome
+npm run check          # build, then 300+ assertions in headless Chrome
 npm run check:plugin   # verify source markers (needs `npm run dev` running)
 ```
 
@@ -597,11 +671,17 @@ node scripts/browser-check.mjs test/visual.html 25000 --shot /tmp/overlay.png
 node scripts/browser-check.mjs "file://$PWD/test/visual.html?state=tokens" 25000 --shot /tmp/tokens.png
 ```
 
-`test/self-check.html` is the regression suite: mounting, selection, styles,
-classes, structure, drag, tokens, prompt generation, export, unmount, and every
-panel rendering. `test/visual.html` renders the chrome in a given state for
-review: any panel id (`styles`, `tokens`, `tree`, `library`, `props`, `media`,
-`code`) plus `menu`, `insert`, `save`, `text` and `drag`.
+`npm run check` runs three pages:
+
+| Page | Covers |
+| --- | --- |
+| `test/self-check.html` | The regression suite: mounting, selection, styles, classes, structure, drag, tokens, undo/redo depth, prompt generation, export, unmount, and every panel rendering. |
+| `test/script-tag.html` | The one-tag integration. Its whole setup is a single `<script>`, so the file is both the fixture and the example. Asserts every `data-*` attribute lands. |
+| `test/script-tag-manual.html` | That a bundle *without* `data-heo` mounts nothing, and that `mount()` and `unmount()` still behave. |
+
+`test/visual.html` renders the chrome in a given state for review: any panel id
+(`styles`, `tokens`, `tree`, `library`, `props`, `media`, `code`) plus `menu`,
+`insert`, `save`, `text` and `drag`.
 
 ### Legacy files
 

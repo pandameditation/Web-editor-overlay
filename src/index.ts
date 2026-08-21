@@ -4,6 +4,7 @@ import { normalizeCustomElementTag } from './core/library.js';
 import { EditorEngine } from './core/editor.js';
 import { ManagedStyleSheet } from './core/stylesheet.js';
 import { publishLit } from './core/lit-bridge.js';
+import { autoMountFromScriptTag } from './integrations/script-tag.js';
 import { setEngine } from './ui/context.js';
 import './ui/overlay-root.js';
 
@@ -280,5 +281,17 @@ const globalAPI: HtmlEditorOverlayGlobal = {
 if (typeof window !== 'undefined') {
   (window as unknown as Record<string, unknown>).HtmlEditorOverlay = globalAPI;
 }
+
+/*
+ * Let a script tag mount the overlay on its own.
+ *
+ * Still not unbidden: this does nothing unless the tag that loaded the bundle
+ * carries `data-heo`. What it removes is the JavaScript block, which was the only
+ * thing standing between "a page with no build step" and "a page with an editor".
+ *
+ * Harmless for module consumers — `document.currentScript` is null inside a module,
+ * and a bundled app has no marked tag to find.
+ */
+autoMountFromScriptTag(globalAPI);
 
 export default globalAPI;

@@ -1,0 +1,15 @@
+{
+  "name": "Fixture design system",
+  "version": 1,
+  "tokens": [
+    { "name": "brand-ink", "value": "#12203a", "group": "color", "label": "Brand ink" },
+    { "name": "space-gutter", "value": "28px", "group": "space", "label": "Gutter" }
+  ],
+  "classes": [
+    {
+      "name": "panel",
+      "declarations": { "padding": "var(--space-gutter)", "border-radius": "14px" }
+    }
+  ],
+  "blocks": []
+}
