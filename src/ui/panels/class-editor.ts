@@ -1,5 +1,5 @@
 import { css, html, nothing, type CSSResult, type TemplateResult } from 'lit';
-import { propertyMeta, searchProperties } from '../../core/css.js';
+import { propertyMeta, resolveValue, searchProperties } from '../../core/css.js';
 import type { EditorEngine } from '../../core/editor.js';
 import type { DesignClass } from '../../core/types.js';
 import { icon } from '../icons.js';
@@ -110,11 +110,36 @@ export const ClassEditor = {
       font-size: 10.5px;
       line-height: 1.5;
     }
+    /* Name, value, and an explicit way out. The third column exists because
+       clearing the value no longer removes the property — emptying a field is how
+       you retype it, so removal had to become something you ask for. */
     .decl {
       display: grid;
-      grid-template-columns: 92px 1fr;
+      grid-template-columns: 92px minmax(0, 1fr) 18px;
       align-items: center;
       gap: 6px;
+    }
+    .decl .drop {
+      display: grid;
+      place-items: center;
+      width: 18px;
+      height: 18px;
+      border: 0;
+      border-radius: 4px;
+      background: transparent;
+      color: var(--heo-text-faint);
+      cursor: pointer;
+      padding: 0;
+      opacity: 0;
+      transition: opacity var(--heo-fast);
+    }
+    .decl:hover .drop,
+    .decl .drop:focus-visible {
+      opacity: 1;
+    }
+    .decl .drop:hover {
+      background: color-mix(in oklab, var(--heo-danger) 18%, transparent);
+      color: var(--heo-danger);
     }
     .decl .p {
       overflow: hidden;
@@ -254,6 +279,7 @@ export const ClassEditor = {
             <span class="p" title=${property}>${property}</span>
             <heo-value-field
               data-property=${property}
+              .computed=${resolvedValue(entry.declarations[property], element)}
               .value=${entry.declarations[property]}
               .kind=${valueKindFor(property)}
               .property=${property}
@@ -265,6 +291,15 @@ export const ClassEditor = {
               @value-change=${(event: CustomEvent<{ value: string }>) =>
               engine.setClassDeclaration(entry.name, property, event.detail.value)}
             ></heo-value-field>
+            <button
+              class="drop"
+              type="button"
+              title=${`Remove ${property} from .${entry.name}`}
+              aria-label=${`Remove ${property} from .${entry.name}`}
+              @click=${() => engine.removeClassDeclaration(entry.name, property)}
+            >
+              ${icon('close', 10)}
+            </button>
           </div>`,
         )}
         <div class="decl">
@@ -376,6 +411,19 @@ export const ClassEditor = {
     </div>`;
   },
 };
+
+/**
+ * What a declaration's value comes to, when that differs from what is written.
+ *
+ * Resolved against the selected element, since a token's value depends on where it
+ * is read from. Returns nothing when there is no expression to expand, which is the
+ * signal the value field uses to leave the Computed row out.
+ */
+function resolvedValue(value: string, element: HTMLElement | null): string {
+  if (!value || !element) return '';
+  const resolved = resolveValue(element, value);
+  return resolved === value ? '' : resolved;
+}
 
 /** A sensible starting value so a freshly added property is immediately visible. */
 export function initialValueFor(property: string): string {

@@ -135,13 +135,28 @@ export class ClassRegistry {
     return next;
   }
 
-  /** Change one declaration on a class. An empty value removes it. */
+  /**
+   * Change one declaration on a class.
+   *
+   * An emptied value is kept as an empty string rather than dropped. Clearing a
+   * field is how you retype it, and having the row vanish mid-edit — taking the
+   * property name with it — costs far more than an inert entry does. `toCSS` skips
+   * empties, so nothing invalid reaches the page; `removeDeclaration` is the way to
+   * actually get rid of one.
+   */
   setDeclaration(name: string, property: string, value: string): DesignClass | undefined {
     const entry = this.#classes.get(name.replace(/^\./, ''));
     if (!entry) return undefined;
+    const declarations = { ...entry.declarations, [property]: value.trim() };
+    return this.upsert({ ...entry, declarations, origin: 'user' });
+  }
+
+  /** Drop a declaration entirely, name and all. */
+  removeDeclaration(name: string, property: string): DesignClass | undefined {
+    const entry = this.#classes.get(name.replace(/^\./, ''));
+    if (!entry) return undefined;
     const declarations = { ...entry.declarations };
-    if (value.trim()) declarations[property] = value.trim();
-    else delete declarations[property];
+    delete declarations[property];
     return this.upsert({ ...entry, declarations, origin: 'user' });
   }
 

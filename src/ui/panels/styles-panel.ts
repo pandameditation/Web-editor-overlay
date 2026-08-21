@@ -563,7 +563,7 @@ export class HeoStylesPanel extends HeoElement {
         </button>
       </div>
 
-      ${this.#renderModified(el, computed)}
+      ${this.#renderModified(el, computed, declared, origins)}
       ${this.#renderClasses(el)} ${this.#renderSpacing(el, computed, declared, origins)}
       ${SECTIONS.filter((section) => !section.when || section.when(computed)).map((section) =>
       this.#renderSection(section, el, computed, declared, origins),
@@ -730,24 +730,42 @@ export class HeoStylesPanel extends HeoElement {
   }
 
   /**
-   * Everything set directly on this element, first in the panel.
+   * Everything this element actually sets, first in the panel.
    *
-   * This is the answer to "what does this element itself do", which the grouped
-   * sections below cannot give: they are organised by concern, so a declaration
-   * like `margin-top` is buried inside Spacing and an unusual property might not
-   * appear in any group at all. Values are read from the `style` attribute as
-   * authored, so a shorthand stays a shorthand.
+   * "Set" means declared somewhere that matches this element, as opposed to
+   * inherited or left at the browser's default — which is the same distinction the
+   * blue dot has always drawn on a row. Restricting this to the `style` attribute
+   * made the section disagree with its own dots and hid the majority of what a real
+   * page declares, since most declarations live in a stylesheet.
    *
-   * Rows are intentionally duplicated with the sections below — the same
-   * declaration being editable in two places is less confusing than not being
-   * able to find it.
+   * It answers a question the grouped sections below cannot: they are organised by
+   * concern, so `margin-top` is buried inside Spacing and an unusual property might
+   * not appear in any group at all. Rows are intentionally duplicated with those
+   * sections — the same declaration being editable in two places is less confusing
+   * than not being able to find it.
+   *
+   * Ordered inline-first, because the values written onto this element are the ones
+   * a user is most likely to have just changed.
    */
-  #renderModified(el: HTMLElement, computed: CSSStyleDeclaration): TemplateResult {
-    const declarations = inlineDeclarations(el);
-    const properties = Object.keys(declarations);
+  #renderModified(
+    el: HTMLElement,
+    computed: CSSStyleDeclaration,
+    declared: Map<string, string>,
+    origins: Map<string, DeclarationOrigin>,
+  ): TemplateResult {
+    const inline = inlineDeclarations(el);
+    const properties = [...declared.keys()]
+      // Longhands synthesised from a box shorthand are already represented by the
+      // shorthand itself; listing both would double every margin and padding.
+      .filter((property) => origins.has(property))
+      .sort((a, b) => {
+        const rank = (property: string): number => (inline[property] !== undefined ? 0 : 1);
+        return rank(a) - rank(b) || a.localeCompare(b);
+      });
+    const inlineCount = Object.keys(inline).length;
 
     return html`<heo-section
-      heading="Modified"
+      heading="Set on this element"
       glyph="sliders"
       badge=${properties.length ? String(properties.length) : ''}
       ?open=${openSections.has('modified')}
@@ -756,29 +774,32 @@ export class HeoStylesPanel extends HeoElement {
     >
       ${properties.length === 0
         ? html`<p class="hint" style="margin:0">
-            Nothing is set on this element yet. Values shown below come from the stylesheet or are
-            inherited; changing one here writes it onto the element.
+            Nothing declares anything for this element, so every value it shows is inherited or a
+            browser default. Changing one below writes it onto the element.
           </p>`
         : html`<p class="hint" style="margin:0 0 9px">
-              Declared on this element via its <code class="mono">style</code> attribute, which wins
-              over every stylesheet rule.
+              Every property a rule or the <code class="mono">style</code> attribute sets here, as
+              authored. Rows tagged with a selector come from that rule; editing one writes an
+              inline override on this element.
             </p>
             <div class="rows">
               ${repeat(
           properties,
           (property) => property,
-          (property) => this.#renderRow(property, el, computed, new Map(Object.entries(declarations))),
+          (property) => this.#renderRow(property, el, computed, declared, undefined, origins),
         )}
             </div>
-            <button
-              class="btn sm"
-              type="button"
-              style="margin-top:9px"
-              title="Move these declarations into a reusable class"
-              @click=${() => this.editor.beginClassExtraction()}
-            >
-              ${icon('blocks', 12)} Extract ${properties.length} into a class
-            </button>`}
+            ${inlineCount
+            ? html`<button
+                  class="btn sm"
+                  type="button"
+                  style="margin-top:9px"
+                  title="Move this element's inline declarations into a reusable class"
+                  @click=${() => this.editor.beginClassExtraction()}
+                >
+                  ${icon('blocks', 12)} Extract ${inlineCount} inline into a class
+                </button>`
+            : nothing}`}
     </heo-section>`;
   }
 

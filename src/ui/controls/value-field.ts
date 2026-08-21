@@ -16,6 +16,14 @@ export interface ValueSuggestion {
   swatch?: string;
   /** Renders the token affordance and marks the value as design-system-backed. */
   token?: boolean;
+  /**
+   * Context rather than a choice.
+   *
+   * Shown in the list but never pre-highlighted and never reachable with the arrow
+   * keys, because picking it is not what the user is looking for — the resolved
+   * value of an expression is something to read, not something to switch to.
+   */
+  info?: boolean;
 }
 
 export type ValueKind = 'text' | 'length' | 'number' | 'color' | 'keyword';
@@ -291,6 +299,26 @@ export class HeoValueField extends LitElement {
       .option .tokenmark {
         color: var(--heo-accent);
       }
+      /* The resolved value of an expression: a reading, not an option. Its formula
+         gets the room, since that is the part worth recognising. */
+      .option.info {
+        cursor: default;
+      }
+      .option.info .name {
+        flex: 0 0 auto;
+        max-width: 45%;
+        color: var(--heo-text-dim);
+      }
+      .option.info .meta {
+        flex: 1 1 auto;
+        max-width: none;
+        color: var(--heo-accent);
+        font-family: var(--heo-mono);
+        text-align: right;
+      }
+      .option.info:hover {
+        background: transparent;
+      }
       .none {
         padding: 10px 8px;
         color: var(--heo-text-faint);
@@ -444,10 +472,15 @@ export class HeoValueField extends LitElement {
     if (!resolved || resolved === raw) return [];
     return [
       {
-        value: resolved,
+        // The authored expression, not the number. Selecting this row — or pressing
+        // Enter while it happens to be under the cursor — must never flatten
+        // `var(--ink-muted)` into `rgb(71, 84, 103)`: the formula is the thing worth
+        // keeping, and the resolved value is only here to say what it comes to.
+        value: raw,
         label: resolved,
-        hint: raw ? 'resolved' : 'currently',
+        hint: raw || 'inherited',
         group: 'Computed',
+        info: true,
       },
     ];
   }
@@ -677,13 +710,16 @@ export class HeoValueField extends LitElement {
           index += 1;
           const current = index;
           return html`<button
-                class="option"
+                class=${`option${item.info ? ' info' : ''}`}
                 type="button"
                 role="option"
                 aria-selected=${current === this.highlight}
+                title=${item.info
+              ? `${item.label} — what ${item.hint} currently resolves to. Selecting this keeps the expression.`
+              : (item.hint ?? item.value)}
                 @pointerdown=${(event: Event) => event.preventDefault()}
                 @pointerenter=${() => {
-              this.highlight = current;
+              if (!item.info) this.highlight = current;
             }}
                 @click=${() => this.#choose(item)}
               >
@@ -715,7 +751,7 @@ export class HeoValueField extends LitElement {
     // pre-selected row would both tell a screen reader the wrong thing and quietly
     // turn "car" into `.card` — or, worse, register the typo. The arrow keys are
     // how a suggestion gets taken.
-    this.highlight = !this.action && this.filtered.length ? 0 : -1;
+    this.highlight = this.action ? -1 : this.filtered.findIndex((item) => !item.info);
     this.#highlightMoved = false;
     this.#emit('value-input');
   }
@@ -797,7 +833,10 @@ export class HeoValueField extends LitElement {
 
     if (event.key === 'Enter') {
       event.preventDefault();
-      const highlighted = this.open && this.highlight >= 0 ? items[this.highlight] : undefined;
+      const candidate = this.open && this.highlight >= 0 ? items[this.highlight] : undefined;
+      // A context row is never what Enter meant. Without this, committing an
+      // expression would swap it for its own resolved number.
+      const highlighted = candidate?.info ? undefined : candidate;
       // An arrow-key selection always wins. Failing that, a draft the browser
       // already accepts is a literal the user meant; anything else was a search,
       // so Enter takes the highlighted match.
@@ -826,8 +865,16 @@ export class HeoValueField extends LitElement {
       // the number, which is the faster interaction for a length field.
       if (this.open && items.length) {
         event.preventDefault();
-        const next = this.highlight + direction;
-        this.highlight = next < 0 ? items.length - 1 : next >= items.length ? 0 : next;
+        // Step over context rows: the resolved value of an expression is there to
+        // read, and landing on it would make the arrows feel like they had stuck.
+        let next = this.highlight;
+        for (let step = 0; step < items.length; step += 1) {
+          next += direction;
+          if (next < 0) next = items.length - 1;
+          else if (next >= items.length) next = 0;
+          if (!items[next]?.info) break;
+        }
+        this.highlight = items[next]?.info ? -1 : next;
         this.#highlightMoved = true;
         return;
       }

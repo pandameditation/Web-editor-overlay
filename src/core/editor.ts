@@ -664,6 +664,32 @@ export class EditorEngine {
     this.#bumpRevision();
   }
 
+  /** Drop a declaration from a class, name and all. */
+  removeClassDeclaration(name: string, property: string): void {
+    const entry = this.classes.get(name);
+    if (!entry) return;
+    this.#classPreview = null;
+    const snapshot: DesignClass = { ...entry, declarations: { ...entry.declarations } };
+    this.history.commit({
+      label: `Remove ${property} from .${name}`,
+      subject: `class-decl:${name}:${property}`,
+      record: {
+        id: nextChangeId(),
+        kind: 'token-class',
+        summary: `Remove ${property} from .${name}`,
+        target: `.${name}`,
+        before: snapshot.declarations[property],
+        detail: { class: name, property },
+        at: Date.now(),
+      },
+      apply: () => {
+        this.classes.removeDeclaration(name, property);
+      },
+      revert: () => this.classes.upsert(snapshot),
+    });
+    this.#bumpRevision();
+  }
+
   /** Delete a reusable class, keeping it on the undo stack. */
   removeClass(name: string): void {
     const entry = this.classes.get(name);

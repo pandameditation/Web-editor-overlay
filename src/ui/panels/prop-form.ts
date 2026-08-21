@@ -71,14 +71,30 @@ export const PropForm = {
     }
   ` as CSSResult,
 
+  /**
+   * @param onChange Called when a value is committed.
+   * @param options.onInput Called on every keystroke.
+   *
+   * Hosts that only hold the values in local state — the insert popover, the block
+   * author — should pass `onInput` as well as `onChange`. A text field commits on a
+   * short blur debounce, so a host reading its state from `onChange` alone still had
+   * the defaults at the moment an adjacent Insert button was clicked: the click ran
+   * before the blur landed. That is why a List inserted with the default bullet no
+   * matter what had been typed, yet edited correctly afterwards.
+   *
+   * Hosts where a change is expensive — the props panel re-renders a live block —
+   * should pass `onChange` only.
+   */
   render(
     specs: Record<string, PropSpec>,
     values: Record<string, string>,
     onChange: (name: string, value: string) => void,
     editor?: EditorEngine,
+    options: { onInput?: (name: string, value: string) => void } = {},
   ): TemplateResult | typeof nothing {
     const entries = Object.entries(specs);
     if (!entries.length) return nothing;
+    const onInput = options.onInput;
 
     return html`${entries.map(([name, spec]) => {
       const value = values[name] ?? String(spec.default ?? '');
@@ -134,6 +150,8 @@ export const PropForm = {
           .kind=${kind}
           .suggestions=${suggestions}
           placeholder=${String(spec.default ?? '')}
+          @value-input=${(event: CustomEvent<{ value: string }>) =>
+          onInput?.(name, event.detail.value)}
           @value-change=${(event: CustomEvent<{ value: string }>) =>
           onChange(name, event.detail.value)}
         ></heo-value-field>

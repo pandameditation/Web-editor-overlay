@@ -741,6 +741,173 @@
       engine.history.clear();
 
       /* ------------------------------------------------------------------ *
+       * The Computed row states what an expression comes to, and keeps it.
+       *
+       * Flattening `var(--ink-muted)` into `rgb(74, 85, 104)` would throw away the
+       * only part worth keeping, so the row is context: not pre-highlighted, skipped
+       * by the arrow keys, and carrying the formula as its own value.
+       * ------------------------------------------------------------------ */
+      const exprProbe = document.createElement('p');
+      exprProbe.id = 'expr-probe';
+      exprProbe.textContent = 'x';
+      document.getElementById('wrap').appendChild(exprProbe);
+      sheet.textContent += `\n#expr-probe { color: var(--ink) }\n`;
+      api.openPanel('styles');
+      api.select(exprProbe);
+      await frame();
+      const exprRow = () =>
+        Array.from(dockPanel('styles').shadowRoot.querySelectorAll('.row'))
+          .find((row) => row.dataset.property === 'color');
+      const exprField = exprRow().querySelector('heo-value-field');
+      const exprInput = exprField.shadowRoot.querySelector('input[type=text]');
+      exprInput.focus();
+      await frame();
+      const exprRows = () =>
+        Array.from(exprField.shadowRoot.querySelectorAll('.popup .option')).map((b) => ({
+          name: b.querySelector('.name')?.textContent.trim(),
+          meta: b.querySelector('.meta')?.textContent.trim(),
+          info: b.classList.contains('info'),
+          selected: b.getAttribute('aria-selected'),
+        }));
+      check('computedRowCarriesItsFormula', () => {
+        const first = exprRows()[0];
+        return first ? `${first.name} | ${first.meta} | info=${first.info}` : 'no rows';
+      });
+      check('computedRowIsNotPreselected', () => exprRows()[0]?.selected === 'false');
+      exprInput.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'ArrowDown', bubbles: true, composed: true, cancelable: true,
+      }));
+      await frame();
+      check('arrowKeysStepOverTheComputedRow', () =>
+        exprRows().findIndex((r) => r.selected === 'true'));
+      exprField.shadowRoot.querySelector('.popup .option.info')
+        .dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+      await wait(80);
+      check('choosingComputedKeepsTheFormula', () => exprProbe.style.color || '(no inline)');
+
+      /* Enter on an expression commits the expression. */
+      const exprField2 = exprRow().querySelector('heo-value-field');
+      const exprInput2 = exprField2.shadowRoot.querySelector('input[type=text]');
+      exprInput2.focus();
+      exprInput2.value = 'var(--ink)';
+      exprInput2.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      await frame();
+      exprInput2.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Enter', bubbles: true, composed: true, cancelable: true,
+      }));
+      await wait(100);
+      check('enterCommitsTheFormulaNotTheNumber', () => exprProbe.style.color);
+
+      /* Set-on-this-element lists what a rule declares, not only inline styles. */
+      check('setSectionListsRuleProperties', () => {
+        const section = Array.from(dockPanel('styles').shadowRoot.querySelectorAll('heo-section'))
+          .find((s) => s.heading === 'Set on this element');
+        return Array.from(section?.querySelectorAll('.rows .row') ?? [])
+          .map((r) => r.dataset.property).join(',');
+      });
+      exprProbe.remove();
+      engine.history.clear();
+
+      /* ------------------------------------------------------------------ *
+       * A class property survives having its value cleared.
+       *
+       * Emptying a field is how you retype it; taking the property name away with
+       * the value made backspace a destructive act.
+       * ------------------------------------------------------------------ */
+      api.openPanel('tokens');
+      api.select(document.getElementById('para'));
+      await frame();
+      const tokensPanel = dockPanel('tokens');
+      const clsHeader = Array.from(tokensPanel.shadowRoot.querySelectorAll('.cls > header'))
+        .find((h) => h.querySelector('.n')?.textContent === '.card');
+      check('classHeaderIsOneLine', () => Math.round(clsHeader.getBoundingClientRect().height));
+      clsHeader.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+      await frame();
+      const adder = tokensPanel.shadowRoot.querySelector('.cls .decl .pair input');
+      check('addPropertyHasAConfirmButton', () =>
+        Boolean(tokensPanel.shadowRoot.querySelector('.cls .confirm')));
+      adder.focus();
+      adder.value = 'letter-spacing';
+      adder.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      await frame();
+      adder.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Enter', bubbles: true, composed: true, cancelable: true,
+      }));
+      await wait(140);
+      const newField = () =>
+        tokensPanel.shadowRoot.querySelector('heo-value-field[data-property="letter-spacing"]');
+      check('addedPropertyGetsAStartingValue', () =>
+        engine.classes.get('card').declarations['letter-spacing']);
+      check('focusLandsInTheNewValueField', () => Boolean(newField()?.matches(':focus-within')));
+
+      newField().dispatchEvent(new CustomEvent('value-change', {
+        detail: { value: '' }, bubbles: true, composed: true,
+      }));
+      await frame();
+      check('clearingKeepsTheProperty', () => {
+        const declarations = engine.classes.get('card').declarations;
+        return `present=${'letter-spacing' in declarations} value=${JSON.stringify(declarations['letter-spacing'])}`;
+      });
+      check('clearedRowStaysOnScreen', () => Boolean(newField()));
+      check('rowHasAnExplicitRemove', () =>
+        Boolean(tokensPanel.shadowRoot.querySelector('.decl .drop')));
+      engine.removeClassDeclaration('card', 'letter-spacing');
+      await frame();
+      check('explicitRemoveDropsTheProperty', () =>
+        !('letter-spacing' in engine.classes.get('card').declarations));
+
+      /* Under Styles the class editor offers neither Apply nor Delete. */
+      api.openPanel('styles');
+      await frame();
+      const chipButton = Array.from(dockPanel('styles').shadowRoot.querySelectorAll('.chip .name'))
+        .find((b) => b.textContent.trim() === 'card');
+      chipButton.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+      await frame();
+      check('stylesClassEditorHidesActions', () =>
+        !dockPanel('styles').shadowRoot.querySelector('.cls .apply'));
+      check('stylesClassEditorStillEdits', () =>
+        Boolean(dockPanel('styles').shadowRoot.querySelector('.cls .decls heo-value-field')));
+      chipButton.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+      engine.history.clear();
+
+      /* ------------------------------------------------------------------ *
+       * A block inserts with the props on screen, not the ones last committed.
+       *
+       * A text field commits on a short blur debounce, and Insert is one click away:
+       * the click used to run first, so a List inserted with its default bullet no
+       * matter what had been typed.
+       * ------------------------------------------------------------------ */
+      const bulletHost = document.getElementById('title');
+      api.select(bulletHost);
+      engine.setInsertAnchor({ reference: bulletHost, position: 'after' });
+      await frame();
+      const insertMenu = overlayRoot().shadowRoot.querySelector('heo-insert-menu');
+      const menuSearch = insertMenu.shadowRoot.querySelector('.top input');
+      menuSearch.value = 'List';
+      menuSearch.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      await frame();
+      insertMenu.shadowRoot.querySelector('.row')
+        .dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+      await frame();
+      check('blockConfigureFormShown', () =>
+        Boolean(insertMenu.shadowRoot.querySelector('.configure')));
+      const bulletInput = insertMenu.shadowRoot
+        .querySelector('heo-value-field').shadowRoot.querySelector('input[type=text]');
+      bulletInput.focus();
+      bulletInput.value = '✅';
+      bulletInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      await frame();
+      insertMenu.shadowRoot.querySelector('.cfoot .btn.primary')
+        .dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+      await wait(200);
+      const typedList = document.querySelector('#wrap ul');
+      check('blockInsertedWithTheTypedProp', () =>
+        typedList ? getComputedStyle(typedList).listStyleType : 'no list');
+      if (typedList) engine.remove(typedList);
+      await frame();
+      engine.history.clear();
+
+      /* ------------------------------------------------------------------ *
        * Inline SVG belongs in the tree.
        *
        * `<svg>` is an SVGSVGElement, not an HTMLElement, so an instanceof filter

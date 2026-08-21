@@ -386,9 +386,21 @@ export class HeoInsertMenu extends HeoElement {
         ${block.description
         ? html`<p class="hint selectable" style="margin:0 0 10px">${block.description}</p>`
         : nothing}
-        ${PropForm.render(block.props ?? {}, this.props, (name, value) => {
+        ${PropForm.render(
+        block.props ?? {},
+        this.props,
+        (name, value) => {
           this.props = { ...this.props, [name]: value };
-        }, this.editor)}
+        },
+        this.editor,
+        // Track every keystroke: Insert is one click away and would otherwise fire
+        // before the field's blur debounce had handed over what was typed.
+        {
+          onInput: (name, value) => {
+            this.props = { ...this.props, [name]: value };
+          },
+        },
+      )}
       </div>
       <div class="cfoot">
         <button class="btn" type="button" @click=${() => {

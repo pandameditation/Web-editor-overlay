@@ -461,6 +461,13 @@ export class HeoLibraryPanel extends HeoElement {
           this.props = { ...this.props, [name]: value };
         },
         this.editor,
+        // As in the insert popover: Insert must see what is on screen, not what was
+        // last committed by a blur.
+        {
+          onInput: (name, value) => {
+            this.props = { ...this.props, [name]: value };
+          },
+        },
       )}
       <div class="actions">
         <button
