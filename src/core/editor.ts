@@ -1,5 +1,5 @@
 import { ClassRegistry, normalizeClassName, suggestClassName } from './classes.js';
-import { DRAGGING_ATTR, DRAG_TIMING, HOST_TAG, IGNORE_ATTR, VERSION } from './constants.js';
+import { DRAGGING_ATTR, DRAG_TIMING, EDIT_DISCARDED_EVENT, HOST_TAG, IGNORE_ATTR, VERSION } from './constants.js';
 import { inlineDeclarations } from './css.js';
 import { planDrag, samePlacement, type DropPlacement } from './drop-target.js';
 import { captureRects, neighbourhood, playFlip, settleDrop } from './reflow.js';
@@ -1691,11 +1691,31 @@ export class EditorEngine {
   /* History                                                                */
   /* ---------------------------------------------------------------------- */
 
+  /**
+   * Take back an edit that is still being typed, if there is one.
+   *
+   * This is the first thing undo and redo do, and when it finds something it is the
+   * whole step — history is left alone. Both used to discard the preview *and* move
+   * through history, which made one press change two things while the press back
+   * could only restore one of them. Undo and redo have to be mirrors, so an
+   * unfinished edit is a step of its own: one press, one thing.
+   *
+   * Returns true when a step was spent here.
+   */
+  #takeBackUnfinishedEdit(): boolean {
+    if (!this.#preview && !this.#rulePreview && !this.#classPreview) return false;
+    this.cancelPreview();
+    // Let the field that owns the draft drop it, so its box agrees with the page.
+    document.dispatchEvent(new CustomEvent(EDIT_DISCARDED_EVENT));
+    this.notify('Discarded the unfinished edit', 'info');
+    this.#bumpGeometry();
+    this.#bumpRevision();
+    return true;
+  }
+
   undo(): void {
     this.endTextEdit(true);
-    // A live preview is an uncommitted overwrite sitting on top of the DOM; undoing
-    // underneath it would restore a value the preview immediately hides again.
-    this.cancelPreview();
+    if (this.#takeBackUnfinishedEdit()) return;
     const command = this.history.undo();
     if (!command) return;
     this.#dropDetachedSelection();
@@ -1706,7 +1726,7 @@ export class EditorEngine {
 
   redo(): void {
     this.endTextEdit(true);
-    this.cancelPreview();
+    if (this.#takeBackUnfinishedEdit()) return;
     const command = this.history.redo();
     if (!command) return;
     this.#dropDetachedSelection();

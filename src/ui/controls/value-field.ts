@@ -1,6 +1,7 @@
 import { css, html, LitElement, nothing, type PropertyValues, type TemplateResult } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
+import { DIRTY_ATTR, EDIT_DISCARDED_EVENT } from '../../core/constants.js';
 import { formatLength, nextUnit, parseLength, toHexColor } from '../../core/css.js';
 import { icon } from '../icons.js';
 import { baseStyles, swatchStyle } from '../theme.js';
@@ -411,8 +412,20 @@ export class HeoValueField extends LitElement {
     addEventListener('scroll', this.#onScroll, true);
     addEventListener('resize', this.#onScroll);
     document.addEventListener('pointerdown', this.#onDocumentDown, true);
+    document.addEventListener(EDIT_DISCARDED_EVENT, this.#onEditDiscarded);
     if (this.hasUpdated) this.#watchFocus();
   }
+
+  /**
+   * Undo took back the edit being typed here, so let go of the draft.
+   *
+   * The engine has already put the page back; without this the box would keep showing
+   * the text that was just taken back, and looking away would commit it all over again.
+   */
+  #onEditDiscarded = (): void => {
+    if (!this.hasAttribute(DIRTY_ATTR)) return;
+    this.draft = this.value;
+  };
 
   /**
    * Listen for focus moves on the shadow root, not on the host.
@@ -436,6 +449,7 @@ export class HeoValueField extends LitElement {
     removeEventListener('scroll', this.#onScroll, true);
     removeEventListener('resize', this.#onScroll);
     document.removeEventListener('pointerdown', this.#onDocumentDown, true);
+    document.removeEventListener(EDIT_DISCARDED_EVENT, this.#onEditDiscarded);
     this.renderRoot?.removeEventListener('focusout', this.#onFocusOutBound);
     // The deferred blur would otherwise commit from a detached element, and a
     // still-open flag would re-promote the popover if Lit reuses this instance.
@@ -474,7 +488,7 @@ export class HeoValueField extends LitElement {
      * is set, the typing in this box is more recent than anything in the undo stack,
      * so Mod+Z belongs to the box.
      */
-    this.toggleAttribute('data-heo-dirty', this.draft.trim() !== this.value.trim());
+    this.toggleAttribute(DIRTY_ATTR, this.draft.trim() !== this.value.trim());
   }
 
   /**

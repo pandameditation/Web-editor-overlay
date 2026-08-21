@@ -1,4 +1,4 @@
-import { HOST_TAG } from './constants.js';
+import { DIRTY_ATTR, HOST_TAG } from './constants.js';
 import type { EditorEngine } from './editor.js';
 import type { PanelId } from './types.js';
 
@@ -272,7 +272,7 @@ function ownsItsOwnUndo(event: KeyboardEvent): boolean {
 function holdsAnUncommittedEdit(event: KeyboardEvent): boolean {
   return event
     .composedPath()
-    .some((node) => node instanceof Element && node.hasAttribute('data-heo-dirty'));
+    .some((node) => node instanceof Element && node.hasAttribute(DIRTY_ATTR));
 }
 
 /** True when the keystroke belongs to a field the user is typing in. */

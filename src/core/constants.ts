@@ -7,6 +7,22 @@ export const HOST_TAG = 'html-editor-overlay';
 /** Any element carrying this attribute (and its subtree) is invisible to the editor. */
 export const IGNORE_ATTR = 'data-heo-ignore';
 
+/**
+ * Marks a control holding an edit the user has not committed.
+ *
+ * Read as a plain attribute so the keymap can tell that a keystroke belongs to the
+ * panel without knowing anything about the panel's components.
+ */
+export const DIRTY_ATTR = 'data-heo-dirty';
+
+/**
+ * Fired on `document` when undo takes back an edit that was still being typed.
+ *
+ * The engine can restore the page on its own, but the box the draft lives in is the
+ * control's private state, so it has to be told to let go of it.
+ */
+export const EDIT_DISCARDED_EVENT = 'heo-edit-discarded';
+
 /** Source location marker, written by the Vite plugin: `file:line:column`. */
 export const SOURCE_ATTR = 'data-heo-src';
 

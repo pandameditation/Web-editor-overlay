@@ -915,6 +915,71 @@
         return !field.hasAttribute('data-heo-dirty');
       });
 
+      /*
+       * Undo and redo have to be mirrors, at any depth.
+       *
+       * They both used to discard an in-flight preview *and* move through history, so
+       * one press changed two things while the press back could only restore one —
+       * "undo twice, redo twice" did not land where it started. An unfinished edit is
+       * now a step of its own.
+       */
+      engine.history.clear();
+      k1.removeAttribute('style');
+      await frame();
+      const styleOf = () => k1.getAttribute('style') || '';
+      const commitRow = async (property, text) => {
+        const input = keyRow(property).querySelector('heo-value-field')
+          .shadowRoot.querySelector('input[type=text]');
+        input.focus();
+        input.value = text;
+        input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        await frame();
+        press(input, 'Enter');
+        await wait(140);
+        await frame();
+      };
+      const deepSteps = [['font-size', '14px'], ['letter-spacing', '2px'], ['opacity', '0.5']];
+      for (const [p, v] of deepSteps) { await commitRow(p, v); await wait(2600); }
+      const allThree = styleOf();
+      check('threeEditsAreThreeSteps', () => engine.history.size === 3);
+      const unwound = [];
+      for (let i = 0; i < 3; i += 1) { engine.undo(); await frame(); unwound.push(styleOf()); }
+      check('undoUnwindsOneStepAtATime', () => unwound.join(' | '));
+      const replayed = [];
+      for (let i = 0; i < 3; i += 1) { engine.redo(); await frame(); replayed.push(styleOf()); }
+      check('redoReplaysOneStepAtATime', () => replayed.join(' | '));
+      check('undoThenRedoLandsWhereItStarted', () => styleOf() === allThree);
+      // Again, to prove a round trip does not consume the stack.
+      for (let i = 0; i < 3; i += 1) { engine.undo(); await frame(); }
+      for (let i = 0; i < 3; i += 1) { engine.redo(); await frame(); }
+      check('theRoundTripIsRepeatable', () => styleOf() === allThree);
+
+      /* An edit still being typed is the step undo takes back, on its own. */
+      engine.history.clear();
+      k1.removeAttribute('style');
+      await frame();
+      await commitRow('font-size', '12px');
+      await wait(2600);
+      const pending = keyRow('letter-spacing').querySelector('heo-value-field');
+      const pendingInput = pending.shadowRoot.querySelector('input[type=text]');
+      pendingInput.focus();
+      pendingInput.value = '77px';
+      pendingInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      await frame();
+      check('theUnfinishedEditIsOnThePage', () => styleOf());
+      engine.undo();
+      await frame();
+      check('undoTakesBackOnlyTheUnfinishedEdit', () => styleOf());
+      check('undoKeepsTheHistoryStepForLater', () => engine.history.size === 1);
+      check('theFieldLetsGoOfTheDiscardedDraft', () =>
+        `${JSON.stringify(pendingInput.value)} dirty=${pending.hasAttribute('data-heo-dirty')}`);
+      engine.undo();
+      await frame();
+      check('theNextUndoReachesTheCommittedStep', () => styleOf());
+      engine.redo();
+      await frame();
+      check('redoMirrorsThatUndoExactly', () => styleOf());
+
       /* Duplicating is a page action, so it stays out of reach from inside a field. */
       const cardCount = () => keyStack.children.length;
       const beforeDup = cardCount();
