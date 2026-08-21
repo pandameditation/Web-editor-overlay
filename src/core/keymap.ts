@@ -52,13 +52,24 @@ export function handleKeyDown(engine: EditorEngine, event: KeyboardEvent): void 
   if (mod && (key.toLowerCase() === 'z' || key.toLowerCase() === 'y')) {
     // Inside a text edit, leave undo to the browser so it works per keystroke.
     if (state.textEditing) return;
-    // Same for a multi-line buffer in the panel: the code editors hold text that has
-    // not been applied yet, with an edit history the browser already maintains, so
-    // Mod+Z there means "undo my typing". Taking it would undo the last thing that
-    // happened to the page instead, while the user was looking at their own draft.
-    // A single-line value field is the opposite case and deliberately not exempt:
-    // its own history is worthless and the page change is what undo should reach.
-    if (ownsItsOwnUndo(event)) return;
+    /*
+     * Same wherever the panel is holding an edit of its own.
+     *
+     * Undo means "take back the most recent thing I did", and an uncommitted edit in a
+     * panel control is more recent than anything on the undo stack. Reaching past it
+     * into page history is what made undo feel like it fired into the wrong window:
+     * the user was typing in a field and something else on the page changed.
+     *
+     * Two shapes of that. A code editor's buffer is unapplied text whose history the
+     * browser already keeps. A value field marks itself while its box disagrees with
+     * the value it has committed. Either way the browser's own undo restores the text,
+     * the field's `input` event re-previews it, and the page follows — so the caret and
+     * the page stay on the same side.
+     *
+     * Once a field is clean, undo goes back to meaning page history, which is what
+     * makes "clear a value, press Mod+Z, get it back" work.
+     */
+    if (ownsItsOwnUndo(event) || holdsAnUncommittedEdit(event)) return;
     event.preventDefault();
     if (key.toLowerCase() === 'y' || event.shiftKey) engine.redo();
     else engine.undo();
@@ -71,7 +82,10 @@ export function handleKeyDown(engine: EditorEngine, event: KeyboardEvent): void 
     return;
   }
 
-  if (mod && key.toLowerCase() === 'd' && state.selected) {
+  // Duplicating is a structural change to the page, so it stays out of reach while the
+  // caret is in a field. Typing somewhere and having an element on the page copy itself
+  // is exactly the kind of leak between the two surfaces that has no good explanation.
+  if (mod && key.toLowerCase() === 'd' && state.selected && !isEditableTarget(event)) {
     event.preventDefault();
     engine.duplicate();
     return;
@@ -247,6 +261,18 @@ function ownsItsOwnUndo(event: KeyboardEvent): boolean {
   return event
     .composedPath()
     .some((node) => node instanceof HTMLElement && node.tagName === 'TEXTAREA');
+}
+
+/**
+ * True when a control in the path is holding an edit it has not committed.
+ *
+ * Read from an attribute rather than from the component, so this file stays free of
+ * any knowledge of the overlay's controls — the same arrangement as `data-heo-ignore`.
+ */
+function holdsAnUncommittedEdit(event: KeyboardEvent): boolean {
+  return event
+    .composedPath()
+    .some((node) => node instanceof Element && node.hasAttribute('data-heo-dirty'));
 }
 
 /** True when the keystroke belongs to a field the user is typing in. */

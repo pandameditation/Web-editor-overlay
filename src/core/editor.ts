@@ -494,6 +494,34 @@ export class EditorEngine {
   }
 
   /**
+   * The inline value of a property, with any in-flight preview looked through.
+   *
+   * A preview is paint, not state: it exists so the page can answer "what would this
+   * look like" while the user is still typing. Reading it back as though it were
+   * declared makes the editor lose track of what the user actually has, and three
+   * things break at once — a field can no longer tell that it holds an uncommitted
+   * edit, committing looks like a no-op because the value "already" matches, and a
+   * re-render mid-keystroke adopts the half-typed text as the new baseline.
+   *
+   * So every read of a declared value goes through here.
+   */
+  inlineStyle(property: string, el = this.store.value.selected): string {
+    if (!el) return '';
+    const preview = this.#preview;
+    if (preview && preview.el === el && preview.property === property) return preview.before;
+    return el.style.getPropertyValue(property);
+  }
+
+  /**
+   * What an in-flight preview is painting over, for readers that build their own view
+   * of the cascade and need to subtract the paint from it.
+   */
+  get previewTarget(): { el: HTMLElement; property: string; before: string } | null {
+    const preview = this.#preview;
+    return preview ? { el: preview.el, property: preview.property, before: preview.before } : null;
+  }
+
+  /**
    * Put back whatever the preview painted over.
    *
    * Called before every commit so the command records the value the property had
@@ -598,7 +626,8 @@ export class EditorEngine {
   canResetStyle(el: HTMLElement, property: string): boolean {
     const baseline = this.styleBaseline(el, property);
     if (baseline === undefined) return false;
-    return (el.style.getPropertyValue(property) || '') !== (baseline ?? '');
+    // Through the preview, so a value being typed does not flicker the reset affordance.
+    return (this.inlineStyle(property, el) || '') !== (baseline ?? '');
   }
 
   /**

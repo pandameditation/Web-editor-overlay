@@ -461,6 +461,20 @@ export class HeoValueField extends LitElement {
     if (changed.has('value')) {
       this.toggleAttribute('data-token', this.value.includes('var(--'));
     }
+    /*
+     * Announce an uncommitted edit, as an attribute.
+     *
+     * The global keymap listens in the capture phase, so a control cannot claim a key
+     * by stopping propagation — the decision has to be made before the event arrives.
+     * An attribute lets that decision be made without the keymap knowing what a value
+     * field is: it looks for a marked control in the event's path, the same way it
+     * already recognises a textarea.
+     *
+     * What it buys is a correct answer to "what is the most recent edit". While this
+     * is set, the typing in this box is more recent than anything in the undo stack,
+     * so Mod+Z belongs to the box.
+     */
+    this.toggleAttribute('data-heo-dirty', this.draft.trim() !== this.value.trim());
   }
 
   /**

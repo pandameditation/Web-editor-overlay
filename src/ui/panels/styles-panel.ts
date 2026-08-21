@@ -548,6 +548,16 @@ export class HeoStylesPanel extends HeoElement {
     const rules = appliedRules(el);
     const cascade = cascadedDeclarations(rules);
     const { values: declared, origins } = declaredMap(el, cascade);
+    // Subtract any live preview. It is painted onto the style attribute, so the cascade
+    // read above cannot tell it apart from a value the user actually set — and feeding
+    // it back into the row it came from would tell that row its half-typed text is
+    // already committed. Undo then has nothing to take back, and the commit that
+    // follows looks like a no-op.
+    const preview = this.editor.previewTarget;
+    if (preview && preview.el === el) {
+      if (preview.before) declared.set(preview.property, preview.before);
+      else declared.delete(preview.property);
+    }
 
     return html`
       <div class="top">

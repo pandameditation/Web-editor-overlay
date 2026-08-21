@@ -458,7 +458,7 @@ export class HeoMediaPanel extends HeoElement {
     return html`<div class="row">
       <span class="name" title=${property}>${property}</span>
       <heo-value-field
-        .value=${el.style.getPropertyValue(property)}
+        .value=${this.editor.inlineStyle(property, el)}
         .kind=${valueKindFor(property)}
         .property=${property}
         .suggestions=${buildSuggestions(this.editor, property, el)}

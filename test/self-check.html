@@ -878,6 +878,57 @@
         return `${field.value} / ${field.shadowRoot.querySelector('input[type=text]').value}`;
       });
 
+      /*
+       * The other half of undo-in-a-field: while an edit is still uncommitted, undo
+       * belongs to the box, not to the page.
+       *
+       * A live preview is painted onto the style attribute, so the panel's own read of
+       * the cascade used to hand the half-typed text back to the row as its committed
+       * value. Two things followed. The field could not tell it held an uncommitted
+       * edit, so Mod+Z reached past it and undid whatever the user had done before —
+       * from the user's seat, typing in the panel changed something else on the page.
+       * And the commit that followed compared equal and did nothing at all.
+       */
+      await wait(2600);
+      engine.setStyle('letter-spacing', '3px', k1);
+      await frame();
+      const liveDepth = engine.history.size;
+      const liveField = keyRow('font-size').querySelector('heo-value-field');
+      const liveInput = liveField.shadowRoot.querySelector('input[type=text]');
+      liveInput.focus();
+      liveInput.value = '99px';
+      liveInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      await frame();
+      check('aFieldKeepsItsCommittedValueWhilePreviewing', () => liveField.value);
+      check('anUncommittedFieldSaysSo', () => liveField.hasAttribute('data-heo-dirty'));
+      check('thePreviewStillReachesThePage', () => getComputedStyle(k1).fontSize);
+      press(liveInput, 'z', { metaKey: true });
+      await wait(140);
+      check('undoLeavesPageHistoryAloneWhilePreviewing', () => engine.history.size === liveDepth);
+      check('undoWhilePreviewingTouchesNothingElse', () => k1.style.letterSpacing);
+      // And the commit still lands, which it did not while the preview echoed back.
+      press(liveInput, 'Enter');
+      await wait(120);
+      check('committingAPreviewedValueLands', () => k1.style.fontSize);
+      check('committingClearsTheUncommittedMark', () => {
+        const field = keyRow('font-size').querySelector('heo-value-field');
+        return !field.hasAttribute('data-heo-dirty');
+      });
+
+      /* Duplicating is a page action, so it stays out of reach from inside a field. */
+      const cardCount = () => keyStack.children.length;
+      const beforeDup = cardCount();
+      keyRow('font-size').querySelector('heo-value-field')
+        .shadowRoot.querySelector('input[type=text]').focus();
+      press(deepActive(), 'd', { metaKey: true });
+      await wait(120);
+      check('modDFromAFieldDoesNotDuplicate', () => cardCount() === beforeDup);
+      api.select(k1);
+      await frame();
+      press(document.body, 'd', { metaKey: true });
+      await wait(140);
+      check('modDFromThePageStillDuplicates', () => cardCount() === beforeDup + 1);
+
       /* Class-provided declarations stay out of the Set section. */
       engine.setStyle('z-index', '4', k1);
       await frame();
