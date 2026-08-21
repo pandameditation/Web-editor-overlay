@@ -950,6 +950,71 @@
       await frame();
 
       /* ------------------------------------------------------------------ *
+       * A list stays open only for the input that drives it and its own rows.
+       *
+       * The chevron, the clear button and the unit chip are siblings of the input,
+       * not part of the editing context, so landing on one ends the list. Anything
+       * looser leaves a list standing over a control it has nothing to do with.
+       * ------------------------------------------------------------------ */
+      api.openPanel('styles');
+      api.select(document.getElementById('para'));
+      await frame();
+      const listField = Array.from(dockPanel('styles').shadowRoot.querySelectorAll('heo-value-field'))
+        .find((f) => f.property === 'color' && f.getClientRects().length > 0);
+      const listInput = listField.shadowRoot.querySelector('input[type=text]');
+      const listShown = () => Boolean(listField.shadowRoot.querySelector('.popup'));
+      const reopenList = async () => {
+        listInput.focus();
+        await frame();
+        if (!listShown()) {
+          const strip = listField.shadowRoot.querySelector('.trailing');
+          strip.dispatchEvent(
+            new PointerEvent('pointerdown', { bubbles: true, composed: true, cancelable: true }),
+          );
+          strip.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+          await frame();
+        }
+      };
+
+      await reopenList();
+      check('listOpensWithTheCaretInTheInput', () => listShown());
+      await wait(220);
+      check('listStaysWhileTheCaretRemains', () => listShown());
+
+      const chevron = Array.from(listField.shadowRoot.querySelectorAll('.trailing .mini'))
+        .find((b) => b.getAttribute('aria-label') === 'Show tokens and values');
+      chevron.focus();
+      await wait(220);
+      check('listClosesWhenFocusMovesToTheChevron', () => !listShown());
+      // Narrower than :focus-within on purpose — focus is still inside the field.
+      check('chevronFocusIsStillInsideTheField', () => listField.matches(':focus-within'));
+
+      /* Clicking it still opens the list, because that hands the caret back. */
+      const openStrip = listField.shadowRoot.querySelector('.trailing');
+      openStrip.dispatchEvent(
+        new PointerEvent('pointerdown', { bubbles: true, composed: true, cancelable: true }),
+      );
+      openStrip.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+      await wait(220);
+      check('clickingTheChevronStillOpensIt', () => listShown());
+      check('clickingTheChevronReturnsTheCaret', () =>
+        listField.shadowRoot.activeElement === listInput);
+
+      /* Focus inside the list keeps it; stepping back out of it does not. */
+      const listRow = listField.shadowRoot.querySelector('.popup .option');
+      listRow.focus();
+      await wait(220);
+      check('listStaysWhenFocusIsOnARow', () => listShown());
+      chevron.focus();
+      await wait(220);
+      check('listClosesWhenFocusLeavesTheRows', () => !listShown());
+
+      await reopenList();
+      dockEl().shadowRoot.querySelector('.tab').focus();
+      await wait(220);
+      check('listClosesWhenFocusLeavesTheField', () => !listShown());
+
+      /* ------------------------------------------------------------------ *
        * The Computed row states what an expression comes to, and keeps it.
        *
        * Flattening `var(--ink-muted)` into `rgb(74, 85, 104)` would throw away the

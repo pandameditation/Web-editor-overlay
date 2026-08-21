@@ -397,6 +397,7 @@ export class HeoValueField extends LitElement {
    * field never blurs and its list stays up. Two popovers in the top layer at once,
    * one of them stale. Capture phase so this runs before the press is acted on.
    */
+  #onFocusOutBound = (): void => this.#onFocusOut();
   #onDocumentDown = (event: Event): void => {
     if (!this.open) return;
     if (event.composedPath().includes(this)) return;
@@ -410,6 +411,24 @@ export class HeoValueField extends LitElement {
     addEventListener('scroll', this.#onScroll, true);
     addEventListener('resize', this.#onScroll);
     document.addEventListener('pointerdown', this.#onDocumentDown, true);
+    if (this.hasUpdated) this.#watchFocus();
+  }
+
+  /**
+   * Listen for focus moves on the shadow root, not on the host.
+   *
+   * `focusout` is composed, but the platform trims its propagation path when focus
+   * moves between two elements of the *same* shadow tree — internal focus changes
+   * are not the outside world's business. Every move this field cares about is
+   * exactly that kind: input to chevron, list row to clear button. Bound to the root
+   * of the tree, all of them are visible; bound to the host, none of them are.
+   */
+  #watchFocus(): void {
+    this.renderRoot.addEventListener('focusout', this.#onFocusOutBound);
+  }
+
+  override firstUpdated(): void {
+    this.#watchFocus();
   }
 
   override disconnectedCallback(): void {
@@ -417,6 +436,7 @@ export class HeoValueField extends LitElement {
     removeEventListener('scroll', this.#onScroll, true);
     removeEventListener('resize', this.#onScroll);
     document.removeEventListener('pointerdown', this.#onDocumentDown, true);
+    this.renderRoot?.removeEventListener('focusout', this.#onFocusOutBound);
     // The deferred blur would otherwise commit from a detached element, and a
     // still-open flag would re-promote the popover if Lit reuses this instance.
     clearTimeout(this.#blurTimer);
@@ -467,6 +487,27 @@ export class HeoValueField extends LitElement {
   /** True when focus is inside this component, across the shadow boundary. */
   #hasFocus(): boolean {
     return this.matches(':focus-within');
+  }
+
+  /**
+   * True while the list has a reason to stay open.
+   *
+   * Narrower than "focus is somewhere in this field". A list belongs to the text
+   * input that drives it and to its own rows; the chevron, the clear button, the unit
+   * chip and the colour swatch are all siblings of the input, not part of the
+   * editing context, so landing on one of them ends the list. Anything looser leaves
+   * a list standing over a control that has nothing to do with it.
+   *
+   * `shadowRoot.activeElement` is the right question here: it names the element
+   * inside *this* shadow tree that holds focus, which is exactly the distinction
+   * `:focus-within` on the host flattens away.
+   */
+  #focusKeepsListOpen(): boolean {
+    const active = this.shadowRoot?.activeElement;
+    if (!active) return false;
+    if (active === this.textInput) return true;
+    const popup = this.renderRoot.querySelector('.popup');
+    return Boolean(popup && (active === popup || popup.contains(active)));
   }
 
   private get isNumeric(): boolean {
@@ -612,7 +653,6 @@ export class HeoValueField extends LitElement {
           aria-autocomplete="list"
           @input=${this.#onInput}
           @focus=${this.#onFocus}
-          @blur=${this.#onBlur}
           @keydown=${this.#onKeyDown}
         />
         <div
@@ -817,18 +857,27 @@ export class HeoValueField extends LitElement {
   }
 
   /**
-   * Close on blur — but only once focus has really left the component.
+   * Re-decide what should be open and what should be committed, after focus moves.
    *
-   * The check has to be deferred: at blur time the next focus target is not yet
-   * active, so an immediate answer would always read as "focus left" and would
-   * tear down the popup mid-click.
+   * Bound to `focusout` on the host rather than `blur` on the input, because focus
+   * moving *within* the field matters as much as focus leaving it: stepping onto the
+   * chevron has to close the list, and stepping from a list row out to another
+   * control has to as well. `blur` on the input sees neither of those.
+   *
+   * Deferred because at `focusout` time the incoming target is not yet active, so an
+   * immediate answer always reads as "focus left" — which would tear the list down
+   * mid-click.
+   *
+   * Two independent questions, deliberately not conflated: the list closes when focus
+   * is no longer in the input or the list, while committing waits until focus has
+   * left the field altogether. Otherwise clicking the unit chip, which has its own
+   * handler, would race a commit against it.
    */
-  #onBlur(): void {
+  #onFocusOut(): void {
     clearTimeout(this.#blurTimer);
     this.#blurTimer = setTimeout(() => {
+      if (!this.#focusKeepsListOpen()) this.closePopup();
       if (this.#hasFocus()) return;
-      this.open = false;
-      this.highlight = -1;
       // A submit control has an explicit trigger, so looking away is not an
       // instruction to act. Committing here would fire an action the host never
       // asked for — adding a class the user was only half-way through typing.
