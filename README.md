@@ -712,6 +712,12 @@ Known limits, stated plainly:
 - **Cross-origin stylesheets are unreadable**, so their rules do not appear in the
   cascade inspector and their tokens are not discovered. This is a browser
   security boundary, not something to work around.
+- **The chrome sits in the top layer**, entered with a `manual` popover, so no page
+  `z-index`, stacking context, `overflow: hidden` or ancestor `filter` can cover it.
+  Where the top layer is unavailable the host falls back to `z-index: 2147482000`,
+  which a page can in principle match. One consequence either way: a page opening a
+  modal `<dialog>` enters the top layer *after* the overlay and will cover it, since
+  the top layer is ordered by when each element entered it.
 - **Inline text formatting uses `document.execCommand`.** Deprecated, but still
   the only cross-browser way to format a live selection without breaking the
   caret and native undo inside a contenteditable region.

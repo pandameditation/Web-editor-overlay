@@ -1,4 +1,4 @@
-import { DRAGGING_ATTR, HOST_TAG, IGNORE_ATTR, VERSION } from './core/constants.js';
+import { DRAGGING_ATTR, HOST_TAG, IGNORE_ATTR, VERSION, Z_BASE } from './core/constants.js';
 import { exportHTML as serializePage } from './core/design-system.js';
 import { normalizeCustomElementTag } from './core/library.js';
 import { EditorEngine } from './core/editor.js';
@@ -85,6 +85,9 @@ html[data-heo-edit] ${HOST_TAG} {
   position: fixed !important;
   inset: 0 !important;
   pointer-events: none !important;
+  /* Declared after the reset above, which would otherwise set it back to auto.
+     See the note where this is also applied inline, at mount. */
+  z-index: ${Z_BASE} !important;
 }
 
 /* The element being reordered. It really sits in the candidate slot — its
@@ -158,9 +161,14 @@ export function mount(options: MountOptions = {}): OverlayAPI {
   host.setAttribute('data-heo-version', VERSION);
   host.setAttribute('aria-label', 'Visual editor');
   // Inline the essentials so the overlay is positioned correctly even before the
-  // page stylesheet lands.
+  // page stylesheet lands. `z-index` has to be here, on the host: `position: fixed`
+  // makes this element a stacking context, which traps every z-index inside it. The
+  // chrome asking for 2147482000 was therefore competing with its own siblings while
+  // the host itself sat at `auto`, and any page element with a z-index at all — a
+  // sticky header at 100 was the report — painted straight over the toolbar.
+  // Declared after `all: initial`, which would otherwise reset it back to `auto`.
   host.style.cssText =
-    'all:initial;position:fixed!important;inset:0!important;pointer-events:none!important;';
+    `all:initial;position:fixed!important;inset:0!important;pointer-events:none!important;z-index:${Z_BASE}!important;`;
 
   const sheet = new ManagedStyleSheet('heo-page-styles', { internal: true });
   sheet.write(PAGE_CSS);
@@ -172,6 +180,7 @@ export function mount(options: MountOptions = {}): OverlayAPI {
   root.setAttribute(IGNORE_ATTR, '');
   host.appendChild(root);
   container.appendChild(host);
+  raiseToTopLayer(host);
 
   engine.start();
 
@@ -204,6 +213,34 @@ export function mount(options: MountOptions = {}): OverlayAPI {
 
   instance = { engine, host, sheet, api };
   return api;
+}
+
+/**
+ * Lift the host into the top layer, so no page z-index can reach it.
+ *
+ * A number, however large, is still a number the page can match — 2147483647 is
+ * available to everyone, and a stacking context anywhere above the host would cap
+ * it long before that. The top layer sidesteps the whole contest: it paints above
+ * the document regardless of z-index, stacking contexts, `overflow` clipping or
+ * `filter` on an ancestor.
+ *
+ * `manual` because this is not a dismissable popup: nothing about clicking the page
+ * should close the editor, and manual popovers do not light-dismiss or force other
+ * popovers shut — which matters because the value fields open popovers of their own
+ * inside this one.
+ *
+ * The z-index remains as the fallback for browsers without the top layer, so the
+ * attribute is removed again if anything here refuses; a `popover` that never gets
+ * shown is `display: none`, and an invisible editor is worse than a covered one.
+ */
+function raiseToTopLayer(host: HTMLElement): void {
+  if (typeof host.showPopover !== 'function') return;
+  try {
+    host.setAttribute('popover', 'manual');
+    host.showPopover();
+  } catch {
+    host.removeAttribute('popover');
+  }
 }
 
 export function unmount(): void {

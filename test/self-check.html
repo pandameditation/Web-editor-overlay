@@ -121,6 +121,48 @@
         return !!root.shadowRoot.querySelector('heo-selection-layer');
       });
 
+      /*
+       * The chrome has to win against whatever the page stacked.
+       *
+       * `position: fixed` makes the host a stacking context, so a z-index set on the
+       * chrome inside it only ever competed with its own siblings — the host itself sat
+       * at `auto` and an ordinary sticky header at z-index 100 painted over the
+       * toolbar. The z-index belongs on the host, and the top layer above that, since a
+       * number can always be matched by a page willing to use 2147483647.
+       */
+      {
+        const host = document.querySelector('html-editor-overlay');
+        check('hostCarriesTheStackingOrder', () => getComputedStyle(host).zIndex);
+        check('hostSitsInTheTopLayer', () =>
+          host.getAttribute('popover') === 'manual' && host.matches(':popover-open'));
+
+        const sticky = document.createElement('div');
+        sticky.style.cssText =
+          'position:fixed;top:0;left:0;right:0;height:120px;z-index:100;background:#123';
+        const greedy = document.createElement('div');
+        greedy.id = 'greedy-layer';
+        greedy.style.cssText =
+          'position:fixed;top:0;left:0;right:0;height:120px;z-index:2147483647;background:#801';
+        document.body.append(sticky, greedy);
+        const bar = overlayRoot().shadowRoot.querySelector('heo-toolbar');
+        const before = { left: bar.style.left, top: bar.style.top };
+        bar.style.left = '220px';
+        bar.style.top = '24px';
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+        const box = bar.getBoundingClientRect();
+        const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+        check('theToolbarBeatsAStickyHeaderAndAMaxZIndexPage', () =>
+          hit !== null && host.contains(hit));
+        // And the page is still reachable where the chrome is not drawn.
+        const low = document.elementFromPoint(8, innerHeight - 8);
+        check('thePageIsStillReachableAroundTheChrome', () =>
+          low !== null && !host.contains(low));
+        sticky.remove();
+        greedy.remove();
+        bar.style.left = before.left;
+        bar.style.top = before.top;
+      }
+
       const engine = api.engine;
       check('tokensScanned', () => engine.tokens.size);
       check('tokenGroups', () => engine.tokens.grouped().map((g) => g.group + ':' + g.tokens.length).join(','));
