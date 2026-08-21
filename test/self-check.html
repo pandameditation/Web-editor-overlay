@@ -950,6 +950,68 @@
       await frame();
 
       /* ------------------------------------------------------------------ *
+       * Tab accepts an arrow-key selection, and nothing else.
+       *
+       * The highlight has three sources — the arrow keys, the pre-highlight that
+       * typing applies, and whatever the pointer is resting over — and only the first
+       * is something the user chose. Tabbing used to accept the others too, so a
+       * mouse left anywhere over the list silently rewrote the value on the way out.
+       * ------------------------------------------------------------------ */
+      const tabProbe = document.createElement('p');
+      tabProbe.id = 'tab-probe';
+      tabProbe.textContent = 'x';
+      document.getElementById('wrap').appendChild(tabProbe);
+      api.openPanel('styles');
+
+      const tabScenario = async (arrows, hoverIndex) => {
+        api.select(null);
+        await frame();
+        api.select(tabProbe);
+        await frame();
+        tabProbe.removeAttribute('style');
+        await frame();
+        const field = Array.from(dockPanel('styles').shadowRoot.querySelectorAll('heo-value-field'))
+          .filter((f) => f.property === 'color' && f.getClientRects().length > 0).pop();
+        const input = field.shadowRoot.querySelector('input[type=text]');
+        input.focus();
+        input.value = 'var';
+        input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        await frame();
+        const rows = () => Array.from(field.shadowRoot.querySelectorAll('.popup .option'));
+        for (let i = 0; i < arrows; i += 1) {
+          press(input, 'ArrowDown');
+          await frame();
+        }
+        const arrowPick = rows().findIndex((r) => r.getAttribute('aria-selected') === 'true');
+        if (hoverIndex !== null && rows()[hoverIndex]) {
+          rows()[hoverIndex].dispatchEvent(
+            new PointerEvent('pointerenter', { bubbles: true, composed: true }),
+          );
+          await frame();
+        }
+        const shownPick = rows().findIndex((r) => r.getAttribute('aria-selected') === 'true');
+        press(input, 'Tab');
+        await wait(90);
+        return { arrowPick, shownPick, committed: tabProbe.style.color };
+      };
+
+      const hoverOnly = await tabScenario(0, 2);
+      check('hoverMovesTheHighlightButTabTakesNothing', () =>
+        `highlight=${hoverOnly.shownPick} committed=${JSON.stringify(hoverOnly.committed)}`);
+      const arrowsOnly = await tabScenario(2, null);
+      check('tabTakesTheArrowSelection', () =>
+        `highlight=${arrowsOnly.shownPick} committed=${JSON.stringify(arrowsOnly.committed)}`);
+      const arrowsThenHover = await tabScenario(1, 3);
+      check('aStrayHoverCannotStealTheArrowSelection', () =>
+        `arrow=${arrowsThenHover.arrowPick} shown=${arrowsThenHover.shownPick} ` +
+        `committed=${JSON.stringify(arrowsThenHover.committed)}`);
+      const nothingChosen = await tabScenario(0, null);
+      check('tabWithNothingChosenLeavesTheTextAlone', () =>
+        JSON.stringify(nothingChosen.committed));
+      tabProbe.remove();
+      engine.history.clear();
+
+      /* ------------------------------------------------------------------ *
        * A list stays open only for the input that drives it and its own rows.
        *
        * The chevron, the clear button and the unit chip are siblings of the input,

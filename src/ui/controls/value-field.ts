@@ -784,7 +784,14 @@ export class HeoValueField extends LitElement {
               : (item.hint ?? item.value)}
                 @pointerdown=${(event: Event) => event.preventDefault()}
                 @pointerenter=${() => {
-              if (!item.info) this.highlight = current;
+              if (item.info) return;
+              // Once the arrow keys have been used they own the highlight. Letting
+              // the pointer move it would make the selected row and the row Tab
+              // takes disagree — and a mouse resting anywhere over the list would
+              // quietly redirect a keyboard choice. Clicking a row still works
+              // regardless; that is an explicit act.
+              if (this.#highlightMoved) return;
+              this.highlight = current;
             }}
                 @click=${() => this.#choose(item)}
               >
@@ -929,9 +936,21 @@ export class HeoValueField extends LitElement {
     }
 
     if (event.key === 'Tab') {
-      if (this.open && this.highlight >= 0 && items[this.highlight]) {
+      /*
+       * Only a keyboard selection is a selection.
+       *
+       * The highlight has three possible sources — the arrow keys, the pre-highlight
+       * that typing applies, and whatever the pointer happens to be resting over —
+       * and only the first is something the user chose. Tabbing used to accept the
+       * others too, so a mouse left anywhere over the list silently rewrote the value
+       * on the way out, and a half-typed search was replaced by its first guess.
+       *
+       * With nothing chosen, Tab is just Tab: leave, and leave the text alone.
+       */
+      const chosen = this.#highlightMoved && this.highlight >= 0 ? items[this.highlight] : undefined;
+      if (chosen && !chosen.info) {
         event.preventDefault();
-        this.#choose(items[this.highlight]);
+        this.#choose(chosen);
       }
       return;
     }

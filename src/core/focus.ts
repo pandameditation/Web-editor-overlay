@@ -52,6 +52,10 @@ export function insideOverlay(node: Node | null): boolean {
  */
 export function containTab(event: KeyboardEvent): boolean {
   if (event.key !== 'Tab' || event.metaKey || event.ctrlKey || event.altKey) return false;
+  // A control that has already acted on the Tab has consumed it. The value field
+  // uses it to accept the row picked with the arrow keys, and moving focus on top of
+  // that would take the caret away from the value just committed.
+  if (event.defaultPrevented) return false;
 
   const host = document.querySelector(HOST_TAG);
   if (!host) return false;
