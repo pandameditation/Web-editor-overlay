@@ -18,6 +18,32 @@ import '../controls/value-field.js';
  * `PropForm`: both hosts already have a shadow root, and a nested one per class
  * would buy nothing while making the two views drift apart.
  */
+/**
+ * Somewhere declarations live, and how to change them.
+ *
+ * The editor itself does not care whether it is pointed at a reusable class or at a
+ * stylesheet rule — both are a name and a set of declarations — so the difference is
+ * confined to this handful of functions.
+ */
+export interface DeclarationTarget {
+  /** How to name it to the user: `.card`, `p::before`. Used in tooltips. */
+  label: string;
+  /** Unique among targets rendered together, for the datalist id. */
+  id: string;
+  declarations: Record<string, string>;
+  /** Shown instead of the list when there is nothing in it. */
+  empty: string;
+  preview(property: string, value: string): void;
+  commit(property: string, value: string): void;
+  remove(property: string): void;
+  /** True when something more specific wins this property on the selected element. */
+  overridden?(property: string): boolean;
+  /** The property's tooltip, when there is more to say than its name. */
+  describe?(property: string): string;
+  /** What the value comes to here, when that differs from what is written. */
+  resolve?(property: string): string;
+}
+
 export interface ClassEditorHost {
   engine: EditorEngine;
   /** The element the class is being edited from, for token ranking and Apply. */
@@ -122,6 +148,12 @@ export const ClassEditor = {
       grid-template-columns: 92px minmax(0, 1fr) 18px;
       align-items: center;
       gap: 6px;
+    }
+    /* A declaration something more specific beats. Dimmed rather than hidden: that
+       it is being overridden is usually the answer to "why did nothing happen". */
+    .cls .decl.overridden .p,
+    .cls .decl.overridden heo-value-field {
+      opacity: 0.45;
     }
     .cls .decl .drop {
       display: grid;
@@ -245,9 +277,68 @@ export const ClassEditor = {
   /** The declaration list, the add-property field and, optionally, the actions. */
   renderBody(entry: DesignClass, host: ClassEditorHost): TemplateResult {
     const { engine, element } = host;
-    const properties = Object.keys(entry.declarations);
     const applied = element?.classList.contains(entry.name) ?? false;
-    const listId = `heo-props-${entry.name}`;
+
+    return html`
+      ${ClassEditor.renderDeclarations(
+      {
+        label: `.${entry.name}`,
+        id: `class-${entry.name}`,
+        declarations: entry.declarations,
+        empty: 'No declarations yet. Add a property below to give this class something to do.',
+        preview: (property, value) =>
+          engine.previewClassDeclaration(entry.name, property, value),
+        commit: (property, value) => engine.setClassDeclaration(entry.name, property, value),
+        remove: (property) => engine.removeClassDeclaration(entry.name, property),
+      },
+      host,
+    )}
+      ${host.actions === 'none'
+        ? nothing
+        : html`<div class="apply">
+            ${element
+            ? html`<button
+                  class="btn sm"
+                  type="button"
+                  aria-pressed=${applied}
+                  title=${applied
+                ? `Remove .${entry.name} from this element`
+                : `Add .${entry.name} to this element`}
+                  @click=${() => engine.toggleClass(entry.name, element)}
+                >
+                  ${icon(applied ? 'check' : 'plus', 12)}
+                  ${applied ? 'Applied here' : 'Apply to selection'}
+                </button>`
+            : nothing}
+            <button
+              class="btn sm danger"
+              type="button"
+              @click=${() => {
+            engine.removeClass(entry.name);
+            host.onRemoved?.(entry.name);
+          }}
+            >
+              ${icon('trash', 12)} Delete
+            </button>
+          </div>`}
+    `;
+  },
+
+  /**
+   * The declaration list and the add-property field, for anything that holds
+   * declarations.
+   *
+   * Split out from the class body so a stylesheet rule gets the same editor rather
+   * than a lookalike. The two used to be genuinely different experiences — a rule's
+   * declarations were a read-only-ish list with no way to add a property — and
+   * keeping them as one function is what stops them drifting apart again. The
+   * target supplies where the values live and how to write them; everything the
+   * user touches is identical.
+   */
+  renderDeclarations(target: DeclarationTarget, host: ClassEditorHost): TemplateResult {
+    const { engine, element } = host;
+    const properties = Object.keys(target.declarations);
+    const listId = `heo-props-${target.id}`;
 
     /*
      * Turn the typed property name into a declaration.
@@ -261,10 +352,10 @@ export const ClassEditor = {
       const property = host.newProperty.trim().toLowerCase().replace(/:+$/, '');
       if (!property) return;
       host.onNewProperty('');
-      if (entry.declarations[property] !== undefined) {
-        engine.notify(`.${entry.name} already sets ${property}.`, 'info');
+      if (target.declarations[property] !== undefined) {
+        engine.notify(`${target.label} already sets ${property}.`, 'info');
       } else {
-        engine.setClassDeclaration(entry.name, property, initialValueFor(property));
+        target.commit(property, initialValueFor(property));
       }
       // Naming a property is never the goal; giving it a value is. Hand the caret to
       // the field that was just created, with its own autocomplete already loaded.
@@ -274,33 +365,37 @@ export const ClassEditor = {
     return html`
       <div class="decls">
         ${properties.length === 0
-        ? html`<p class="hint" style="margin:0">
-              No declarations yet. Add a property below to give this class something to do.
-            </p>`
+        ? html`<p class="hint" style="margin:0">${target.empty}</p>`
         : nothing}
         ${properties.map(
-          (property) => html`<div class="decl">
-            <span class="p" title=${property}>${property}</span>
+          (property) => html`<div
+            class=${`decl${target.overridden?.(property) ? ' overridden' : ''}`}
+          >
+            <span
+              class="p"
+              title=${target.describe?.(property) ?? property}
+            >${property}</span>
             <heo-value-field
               data-property=${property}
-              .computed=${resolvedValue(entry.declarations[property], element)}
-              .value=${entry.declarations[property]}
+              .computed=${target.resolve?.(property) ??
+            resolvedValue(target.declarations[property], element)}
+              .value=${target.declarations[property]}
               .kind=${valueKindFor(property)}
               .property=${property}
               .suggestions=${buildSuggestions(engine, property, element)}
               clearable
               @value-input=${(event: CustomEvent<{ value: string }>) =>
-              engine.previewClassDeclaration(entry.name, property, event.detail.value)}
+              target.preview(property, event.detail.value)}
               @value-revert=${() => engine.cancelPreview()}
               @value-change=${(event: CustomEvent<{ value: string }>) =>
-              engine.setClassDeclaration(entry.name, property, event.detail.value)}
+              target.commit(property, event.detail.value)}
             ></heo-value-field>
             <button
               class="drop"
               type="button"
-              title=${`Remove ${property} from .${entry.name}`}
-              aria-label=${`Remove ${property} from .${entry.name}`}
-              @click=${() => engine.removeClassDeclaration(entry.name, property)}
+              title=${`Remove ${property} from ${target.label}`}
+              aria-label=${`Remove ${property} from ${target.label}`}
+              @click=${() => target.remove(property)}
             >
               ${icon('close', 10)}
             </button>
@@ -355,34 +450,6 @@ export const ClassEditor = {
           </datalist>
         </div>
       </div>
-      ${host.actions === 'none'
-        ? nothing
-        : html`<div class="apply">
-            ${element
-            ? html`<button
-                  class="btn sm"
-                  type="button"
-                  aria-pressed=${applied}
-                  title=${applied
-                ? `Remove .${entry.name} from this element`
-                : `Add .${entry.name} to this element`}
-                  @click=${() => engine.toggleClass(entry.name, element)}
-                >
-                  ${icon(applied ? 'check' : 'plus', 12)}
-                  ${applied ? 'Applied here' : 'Apply to selection'}
-                </button>`
-            : nothing}
-            <button
-              class="btn sm danger"
-              type="button"
-              @click=${() => {
-            engine.removeClass(entry.name);
-            host.onRemoved?.(entry.name);
-          }}
-            >
-              ${icon('trash', 12)} Delete
-            </button>
-          </div>`}
     `;
   },
 

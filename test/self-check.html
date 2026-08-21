@@ -1051,6 +1051,119 @@
       engine.history.clear();
 
       /* ------------------------------------------------------------------ *
+       * Styles splits three ways: inline, classes, everything else.
+       *
+       * `*`, `p`, `.fig .ph` and `.pull blockquote` all reach an element, and they
+       * used to sit among its own values — where changing one wrote an inline
+       * override on that element alone rather than editing the rule responsible.
+       * Each source now has one home, and rules are editable where they live.
+       * ------------------------------------------------------------------ */
+      const ruleSheet = document.createElement('style');
+      ruleSheet.textContent = `
+        * { box-sizing: border-box }
+        p { line-height: 1.6 }
+        .fig .ph { opacity: 0.8; letter-spacing: 1px }
+        .ph:hover { color: rgb(238, 17, 17) }
+        .ph::before { content: '> ' }
+        @media (min-width: 100px) { .fig .ph { text-transform: uppercase } }
+      `;
+      document.head.append(ruleSheet);
+      const fig = document.createElement('div');
+      fig.className = 'fig';
+      fig.innerHTML =
+        '<p class="ph plain" id="rtarget" style="font-size:15px">Target.</p>' +
+        '<p class="ph" id="rsibling">Sibling.</p>';
+      document.body.append(fig);
+      const rtarget = document.getElementById('rtarget');
+      const rsibling = document.getElementById('rsibling');
+      api.select(rtarget);
+      await frame();
+      await wait(120);
+
+      const stylesSection = (heading) =>
+        Array.from(dockPanel('styles').shadowRoot.querySelectorAll('heo-section'))
+          .find((s) => s.heading === heading);
+
+      check('setOnThisElementIsInlineOnly', () =>
+        Array.from(stylesSection('Set on this element').querySelectorAll('.rows .row'))
+          .map((r) => r.dataset.property).sort().join(','));
+
+      const cssRules = stylesSection('CSS rules');
+      check('theCssRulesSectionExists', () => Boolean(cssRules));
+      check('theCssRulesSectionStartsClosed', () => cssRules.open === false);
+      cssRules.shadowRoot.querySelector('.head').click();
+      await frame();
+      const groupHeaders = () => Array.from(cssRules.querySelectorAll('.cls > header'));
+      check('everySelectorReachingTheElementIsOffered', () =>
+        groupHeaders().map((h) => h.querySelector('.n').textContent.trim()).join(' | '));
+      check('itsOwnClassesAreNotRepeatedHere', () =>
+        !groupHeaders().some((h) => ['.ph', '.plain'].includes(h.querySelector('.n').textContent.trim())));
+      check('theGroupsStartClosedToo', () =>
+        groupHeaders().every((h) => h.getAttribute('aria-expanded') === 'false'));
+
+      // Two rules share `.fig .ph`; the meta line is what tells them apart.
+      const openRuleGroup = async (selector, condition) => {
+        const header = groupHeaders().find((h) => {
+          if (h.querySelector('.n').textContent.trim() !== selector) return false;
+          const meta = h.querySelector('.meta').textContent;
+          return condition ? meta.includes(condition) : !meta.includes('@media');
+        });
+        if (!header) throw new Error(`no group for ${selector}`);
+        header.click();
+        await frame();
+        return header.parentElement;
+      };
+      const figGroup = await openRuleGroup('.fig .ph');
+      check('aRuleGroupOffersItsOwnDeclarations', () =>
+        Array.from(figGroup.querySelectorAll('heo-value-field'))
+          .map((f) => f.getAttribute('data-property')).join(','));
+
+      /* Editing there edits the rule, so every element it matches follows. */
+      const lsBefore = getComputedStyle(rsibling).letterSpacing;
+      const lsField = figGroup.querySelector('heo-value-field[data-property="letter-spacing"]');
+      const lsInput = lsField.shadowRoot.querySelector('input[type=text]');
+      lsInput.focus();
+      lsInput.value = '6px';
+      // Enter goes to the same input, in the same tick: letting a render intervene
+      // detaches the element this reference points at and the commit lands nowhere.
+      lsInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      press(lsInput, 'Enter');
+      await wait(160);
+      check('editingARuleMovesEveryElementItMatches', () =>
+        `${lsBefore} -> ${getComputedStyle(rsibling).letterSpacing}`);
+      check('editingARuleWritesNoInlineOverride', () => rtarget.getAttribute('style'));
+      api.undo();
+      await wait(140);
+      check('undoingARuleEditPutsTheRuleBack', () => getComputedStyle(rsibling).letterSpacing);
+
+      /* State and pseudo-element rules are reachable, and say what they are. */
+      check('stateAndPseudoElementRulesAreOffered', () => {
+        const names = groupHeaders().map((h) => h.querySelector('.n').textContent.trim());
+        return `${names.includes('.ph:hover')} ${names.includes('.ph::before')}`;
+      });
+      const hoverGroup = await openRuleGroup('.ph:hover');
+      check('aStateGroupSaysTheStateIsNotActive', () => /state is active/.test(hoverGroup.textContent));
+
+      /*
+       * And a state rule never reports as the element's current value. This is why
+       * they are collected apart from the cascade: in it, the panel would claim this
+       * paragraph is already the hover colour.
+       */
+      check('noStateValueEscapesIntoTheOtherSections', () => {
+        const hoverColour = 'rgb(238,17,17)';
+        return !Array.from(dockPanel('styles').shadowRoot.querySelectorAll('heo-value-field'))
+          .filter((f) => !cssRules.contains(f))
+          .some((f) => (f.value || '').replace(/\s/g, '').toLowerCase() === hoverColour);
+      });
+
+      cssRules.shadowRoot.querySelector('.head').click();
+      fig.remove();
+      ruleSheet.remove();
+      engine.history.clear();
+      api.select(null);
+      await frame();
+
+      /* ------------------------------------------------------------------ *
        * The class editor looks and behaves the same in both panels.
        * ------------------------------------------------------------------ */
       api.select(document.getElementById('para'));

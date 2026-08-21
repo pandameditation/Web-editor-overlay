@@ -287,6 +287,20 @@ export interface AppliedRule {
   rule?: CSSStyleRule;
   /** Media/container query text this rule sits inside, when any. */
   condition?: string;
+  /**
+   * The part of a selector list that actually matched.
+   *
+   * `h1, .card p` tells the user very little about why it applies here; the one
+   * compound that matched tells them everything.
+   */
+  matchedSelector?: string;
+  /**
+   * The state or pseudo-element this rule targets, e.g. `:hover`, `::before`.
+   *
+   * Only set for rules found by `stateRules`. Empty means the rule applies to the
+   * element as it is right now, which is the only kind the cascade may consider.
+   */
+  pseudo?: string;
 }
 
 /**
@@ -356,12 +370,17 @@ function sheetLabel(sheet: CSSStyleSheet, fallback: string): string {
   }
 }
 
+/**
+ * @param wantPseudo Collect only the rules that need a state or draw a
+ * pseudo-element, instead of only the ones applying as the element stands.
+ */
 function walkRules(
   container: CSSStyleSheet | CSSGroupingRule,
   source: string,
   condition: string | undefined,
   el: HTMLElement,
   out: AppliedRule[],
+  wantPseudo = false,
 ): void {
   let list: CSSRuleList;
   try {
@@ -373,7 +392,9 @@ function walkRules(
 
   for (const rule of Array.from(list)) {
     if (rule instanceof CSSStyleRule) {
-      if (!matches(el, rule.selectorText)) continue;
+      const reach = reachesElement(el, rule.selectorText);
+      if (!reach) continue;
+      if (Boolean(reach.pseudo) !== wantPseudo) continue;
       out.push({
         selector: rule.selectorText,
         origin: 'stylesheet',
@@ -382,20 +403,22 @@ function walkRules(
         declarations: readDeclarations(rule.style),
         rule,
         condition,
+        matchedSelector: reach.matchedSelector,
+        pseudo: reach.pseudo || undefined,
       });
       continue;
     }
     if (rule instanceof CSSMediaRule) {
       if (!safeMatchMedia(rule.conditionText)) continue;
-      walkRules(rule, source, `@media ${rule.conditionText}`, el, out);
+      walkRules(rule, source, `@media ${rule.conditionText}`, el, out, wantPseudo);
       continue;
     }
     if (typeof CSSContainerRule !== 'undefined' && rule instanceof CSSContainerRule) {
-      walkRules(rule, source, `@container ${rule.conditionText}`, el, out);
+      walkRules(rule, source, `@container ${rule.conditionText}`, el, out, wantPseudo);
       continue;
     }
     if (rule instanceof CSSSupportsRule) {
-      walkRules(rule, source, `@supports ${rule.conditionText}`, el, out);
+      walkRules(rule, source, `@supports ${rule.conditionText}`, el, out, wantPseudo);
     }
   }
 }
@@ -415,6 +438,133 @@ function matches(el: HTMLElement, selectorText: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Pseudo-classes that describe a passing state rather than a place in the tree.
+ *
+ * The distinction is what makes a rule findable. `el.matches('a:hover')` answers
+ * "is this link hovered *right now*", which is false every time a panel asks, so
+ * the rule styling a link's hover was invisible to the editor. Structural
+ * pseudo-classes are the opposite: `:first-child` and `:nth-of-type()` are facts
+ * about the element, so they stay in the selector and keep matching honest.
+ */
+const STATE_PSEUDO_CLASSES = new Set([
+  'active', 'autofill', 'checked', 'default', 'disabled', 'enabled', 'focus',
+  'focus-visible', 'focus-within', 'fullscreen', 'hover', 'in-range',
+  'indeterminate', 'invalid', 'link', 'open', 'optional', 'out-of-range',
+  'placeholder-shown', 'read-only', 'read-write', 'required', 'target',
+  'user-invalid', 'user-valid', 'valid', 'visited',
+]);
+
+/** Pseudo-elements, including the four that predate the double colon. */
+const PSEUDO_ELEMENTS = new Set([
+  'after', 'backdrop', 'before', 'details-content', 'file-selector-button',
+  'first-letter', 'first-line', 'grammar-error', 'marker', 'placeholder',
+  'selection', 'spelling-error', 'target-text',
+]);
+
+/** Split a selector list on top-level commas, so `:is(a, b)` survives intact. */
+function splitSelectorList(selectorText: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let current = '';
+  for (const ch of selectorText) {
+    if (ch === '(' || ch === '[') depth += 1;
+    else if (ch === ')' || ch === ']') depth = Math.max(0, depth - 1);
+    if (ch === ',' && depth === 0) {
+      parts.push(current);
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  parts.push(current);
+  return parts.map((part) => part.trim()).filter(Boolean);
+}
+
+/**
+ * Peel the state and pseudo-element parts off one compound selector.
+ *
+ * Returns the selector that can still be tested against a live element, plus what
+ * was removed, in source order — so `a:hover::before` reports `:hover::before` and
+ * leaves `a` to match against.
+ */
+function peelPseudos(part: string): { base: string; pseudo: string } {
+  let base = '';
+  let pseudo = '';
+  let index = 0;
+  let depth = 0;
+  while (index < part.length) {
+    const ch = part[index];
+    if (ch === '(' || ch === '[') depth += 1;
+    else if (ch === ')' || ch === ']') depth = Math.max(0, depth - 1);
+    if (ch !== ':' || depth > 0) {
+      base += ch;
+      index += 1;
+      continue;
+    }
+    const double = part[index + 1] === ':';
+    const start = index + (double ? 2 : 1);
+    let end = start;
+    while (end < part.length && /[\w-]/.test(part[end])) end += 1;
+    const name = part.slice(start, end).toLowerCase();
+    // Any argument travels with the pseudo it belongs to.
+    let argument = '';
+    if (part[end] === '(') {
+      let inner = 1;
+      let cursor = end + 1;
+      while (cursor < part.length && inner > 0) {
+        if (part[cursor] === '(') inner += 1;
+        if (part[cursor] === ')') inner -= 1;
+        cursor += 1;
+      }
+      argument = part.slice(end, cursor);
+      end = cursor;
+    }
+    const token = `${double ? '::' : ':'}${name}${argument}`;
+    const isPseudoElement = double || PSEUDO_ELEMENTS.has(name);
+    if (isPseudoElement || STATE_PSEUDO_CLASSES.has(name)) pseudo += token;
+    else base += token;
+    index = end;
+  }
+  return { base: base.trim(), pseudo };
+}
+
+/**
+ * How a rule reaches this element, if it does.
+ *
+ * `pseudo` empty means the rule applies as the element stands. Anything else means
+ * the rule waits for a state or draws a pseudo-element, which is exactly the set
+ * the cascade must ignore and the panel must still offer.
+ */
+function reachesElement(
+  el: HTMLElement,
+  selectorText: string,
+): { matchedSelector: string; pseudo: string } | null {
+  for (const part of splitSelectorList(selectorText)) {
+    const { base, pseudo } = peelPseudos(part);
+    // A bare `::selection` or `:hover` has no base left and applies to anything.
+    if (matches(el, base || '*')) return { matchedSelector: part, pseudo };
+  }
+  return null;
+}
+
+/**
+ * Rules that target this element in a state it is not currently in, or through a
+ * pseudo-element.
+ *
+ * Deliberately separate from `appliedRules`: these do not apply right now, so
+ * letting them into the cascade would report a hover colour as the element's
+ * current value. The panel shows them as their own, editable, group.
+ */
+export function stateRules(el: HTMLElement): AppliedRule[] {
+  const rules: AppliedRule[] = [];
+  for (const sheet of collectSheets(el)) {
+    walkRules(sheet.sheet, sheet.label, undefined, el, rules, true);
+  }
+  rules.sort((a, b) => a.specificity - b.specificity);
+  return rules;
 }
 
 /**

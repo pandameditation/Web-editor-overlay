@@ -10,6 +10,7 @@ import {
   PROPERTY_GROUP_LABELS,
   searchProperties,
   sizeConstraints,
+  stateRules,
   splitTopLevel,
   type AppliedRule,
   type SizeConstraint,
@@ -21,7 +22,7 @@ import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
 import { baseStyles } from '../theme.js';
 import { buildSuggestions, classSuggestions, valueKindFor } from '../suggestions.js';
-import { ClassEditor, focusDeclaration } from './class-editor.js';
+import { ClassEditor, focusDeclaration, type DeclarationTarget } from './class-editor.js';
 import type { HeoValueField } from '../controls/value-field.js';
 import '../controls/value-field.js';
 import '../controls/box-editor.js';
@@ -534,6 +535,14 @@ export class HeoStylesPanel extends HeoElement {
   @state() private newValue = '';
   @state() private propertyPickerOpen = false;
   @state() private sectionsVersion = 0;
+  /**
+   * Which CSS rule groups are open, and the add-property draft inside each.
+   *
+   * A Map rather than a Set because every open group owns a draft: they are all on
+   * screen at once, so one shared field would put the text in the wrong group.
+   * Not reactive by itself — mutations bump `sectionsVersion`.
+   */
+  private readonly openRules = new Map<string, string>();
 
   override render(): TemplateResult {
     const el = this.editor.selected;
@@ -574,12 +583,13 @@ export class HeoStylesPanel extends HeoElement {
       </div>
 
       ${this.#renderModified(el, computed, declared, origins)}
-      ${this.#renderClasses(el)} ${this.#renderSpacing(el, computed, declared, origins)}
+      ${this.#renderClasses(el)} ${this.#renderCssRules(el, rules, cascade)}
+      ${this.#renderSpacing(el, computed, declared, origins)}
       ${SECTIONS.filter((section) => !section.when || section.when(computed)).map((section) =>
       this.#renderSection(section, el, computed, declared, origins),
     )}
       ${this.#renderParent(el, computed, declared, origins)}
-      ${this.#renderAdder(el)} ${this.#renderCascade(rules, cascade)}
+      ${this.#renderAdder(el)}
     `;
   }
 
@@ -768,14 +778,12 @@ export class HeoStylesPanel extends HeoElement {
       // Longhands synthesised from a box shorthand are already represented by the
       // shorthand itself; listing both would double every margin and padding.
       .filter((property) => origins.has(property))
-      // Whatever a class contributes belongs to the class, and Classes already shows
-      // it — editable at the source, where a change reaches every element wearing it.
-      // Repeating it here would invite the opposite: an inline override per element.
-      .filter((property) => {
-        const origin = origins.get(property);
-        if (!origin || origin.kind === 'inline') return true;
-        return !fromElementClass(origin.selector, el);
-      })
+      // Only what this element itself declares. Anything arriving from a rule belongs
+      // to that rule, and now has somewhere better to be edited: a class under
+      // Classes, any other selector under CSS rules. Listing them here invited the
+      // one edit nobody wants — an inline override on this element, forking the
+      // design instead of fixing the rule that was actually responsible.
+      .filter((property) => origins.get(property)?.kind === 'inline')
       .sort((a, b) => {
         const rank = (property: string): number => (inline[property] !== undefined ? 0 : 1);
         return rank(a) - rank(b) || a.localeCompare(b);
@@ -792,12 +800,13 @@ export class HeoStylesPanel extends HeoElement {
     >
       ${properties.length === 0
         ? html`<p class="hint" style="margin:0">
-            Nothing is set here beyond what its classes provide, so every other value is
-            inherited or a browser default. Changing one below writes it onto the element.
+            Nothing is set on the element itself. What reaches it comes from its classes or from
+            other rules, listed below. Changing a value anywhere else on this panel writes it
+            onto the element and it will appear here.
           </p>`
         : html`<p class="hint" style="margin:0 0 9px">
-              Set on this element itself, as authored. What its classes contribute lives under
-              Classes, where editing it reaches every element using the class.
+              On the element itself, as authored — highest priority in the cascade. What its
+              classes and other rules contribute is below, editable at the source.
             </p>
             <div class="rows">
               ${repeat(
@@ -821,6 +830,173 @@ export class HeoStylesPanel extends HeoElement {
   }
 
   /* ---------------------------------------------------------------------- */
+
+  /**
+   * Every rule reaching this element that is not one of its own classes.
+   *
+   * The reason this section exists is a mismatch it fixes. `*`, `p`, `.fig .ph` and
+   * `.pull blockquote` all put declarations on an element, and they used to surface
+   * among the element's own values — where changing one wrote an inline override on
+   * this element alone, quietly forking the design instead of editing the rule that
+   * was actually responsible. Grouping them by the selector they came from, with the
+   * same editor a class gets, means the edit lands where the cause is.
+   *
+   * State and pseudo-element rules live here too. They are found separately, because
+   * `:hover` does not match while a panel is asking and `::before` cannot match at
+   * all, so both were previously invisible — there was no way to reach the styling of
+   * a link's hover, or a pseudo-element's content, from the editor.
+   *
+   * Closed by default, and one closed sub-section per selector: this is reference
+   * material for when something unexpected is happening, not the first thing to read.
+   */
+  #renderCssRules(
+    el: HTMLElement,
+    rules: AppliedRule[],
+    cascade: Map<string, { from: AppliedRule }>,
+  ): TemplateResult {
+    // What belongs here: stylesheet rules that are not the element's own classes.
+    // Inline is "Set on this element"; a bare `.card` is "Classes". Both of those
+    // edit the same declarations somewhere better suited to them.
+    const direct = rules.filter(
+      (rule) => rule.origin === 'stylesheet' && !fromElementClass(rule.selector, el),
+    );
+    const all = [...direct, ...stateRules(el)].sort((a, b) => b.specificity - a.specificity);
+
+    return html`<heo-section
+      heading="CSS rules"
+      glyph="code"
+      badge=${all.length ? String(all.length) : ''}
+      ?open=${openSections.has('cssrules')}
+      @section-toggle=${(event: CustomEvent<{ open: boolean }>) =>
+        this.#remember('cssrules', event.detail.open)}
+    >
+      ${all.length === 0
+        ? html`<p class="hint" style="margin:0">
+            No stylesheet rule beyond this element's own classes reaches it, so everything else is
+            inherited or a browser default.
+          </p>`
+        : html`<p class="hint" style="margin:0 0 8px">
+              Most specific first. Editing one of these changes the rule itself, so every element it
+              matches changes with it — unlike the values above, which are this element's alone.
+            </p>
+            ${repeat(
+          all,
+          (rule) => this.#ruleKey(rule),
+          (rule) => this.#renderRuleGroup(rule, el, cascade),
+        )}`}
+    </heo-section>`;
+  }
+
+  /**
+   * Identity for a rule across re-renders.
+   *
+   * Selector plus source plus condition, rather than the live `CSSStyleRule`: keying
+   * on the object would defeat `repeat`'s reuse the moment a stylesheet is re-read.
+   * The pseudo is in there because `a` and `a:hover` are two groups the user opens
+   * independently.
+   */
+  #ruleKey(rule: AppliedRule): string {
+    return `${rule.source}|${rule.condition ?? ''}|${rule.selector}|${rule.pseudo ?? ''}`;
+  }
+
+  /** One selector, collapsed, with the Classes editor inside it. */
+  #renderRuleGroup(
+    rule: AppliedRule,
+    el: HTMLElement,
+    cascade: Map<string, { from: AppliedRule }>,
+  ): TemplateResult {
+    const key = this.#ruleKey(rule);
+    const expanded = this.openRules.has(key);
+    const shown = rule.matchedSelector ?? rule.selector;
+    const declarations: Record<string, string> = {};
+    for (const one of rule.declarations) declarations[one.property] = one.value;
+    const live = rule.rule;
+
+    const target: DeclarationTarget = {
+      label: shown,
+      id: key.replace(/[^\w-]/g, '_'),
+      declarations,
+      empty: 'This rule declares nothing the editor can read.',
+      preview: (property, value) => {
+        if (live) this.editor.previewRuleDeclaration(live, property, value);
+      },
+      commit: (property, value) => {
+        if (live) this.editor.setRuleDeclaration(live, property, value);
+      },
+      remove: (property) => {
+        if (live) this.editor.setRuleDeclaration(live, property, '');
+      },
+      // A state rule is not in the cascade as things stand, so it cannot be said to be
+      // overridden — dimming it on that basis would be telling the user something false.
+      overridden: (property) => {
+        if (rule.pseudo) return false;
+        const winner = cascade.get(property);
+        return winner ? winner.from !== rule : false;
+      },
+      describe: (property) => {
+        if (rule.pseudo) {
+          return `${property} applies to ${shown}, a state this element is not in right now`;
+        }
+        const winner = cascade.get(property);
+        if (winner && winner.from !== rule) return `Overridden by ${winner.from.selector}`;
+        return `${property} wins the cascade here`;
+      },
+      resolve: (property) =>
+        rule.pseudo ? '' : getComputedStyle(el).getPropertyValue(property).trim(),
+    };
+
+    const host = {
+      engine: this.editor,
+      element: el,
+      newProperty: this.openRules.get(key) ?? '',
+      onNewProperty: (value: string) => {
+        this.openRules.set(key, value);
+        this.sectionsVersion += 1;
+      },
+      onFocus: (property: string) => focusDeclaration(this.renderRoot, property),
+      // Editing the declarations is the point here; a rule has no "apply to selection"
+      // and deleting a shared rule from one element's panel is far too large an action.
+      actions: 'none' as const,
+    };
+
+    return html`<div class="cls">
+      <header
+        role="button"
+        tabindex="0"
+        aria-expanded=${expanded}
+        @click=${() => this.#toggleRule(key)}
+        @keydown=${(event: KeyboardEvent) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        this.#toggleRule(key);
+      }}
+      >
+        ${icon(expanded ? 'chevronDown' : 'chevronRight', 11)}
+        <span class="n mono" title=${rule.selector}>${shown}</span>
+        <span class="meta">
+          ${rule.declarations.length}
+          ${rule.declarations.length === 1 ? 'rule' : 'rules'} · ${rule.source}${rule.condition
+        ? ` · ${rule.condition}`
+        : ''}
+        </span>
+      </header>
+      ${expanded
+        ? html`${rule.pseudo
+          ? html`<p class="hint" style="margin:0 0 6px">
+                Applies on <code class="mono">${rule.pseudo}</code>, so the page will not change
+                until that state is active.
+              </p>`
+          : nothing}
+            ${ClassEditor.renderDeclarations(target, host)}`
+        : nothing}
+    </div>`;
+  }
+
+  #toggleRule(key: string): void {
+    if (this.openRules.has(key)) this.openRules.delete(key);
+    else this.openRules.set(key, '');
+    this.sectionsVersion += 1;
+  }
 
   #renderClasses(el: HTMLElement): TemplateResult {
     const classes = Array.from(el.classList).filter((name) => !name.startsWith('heo-'));
@@ -1213,100 +1389,6 @@ export class HeoStylesPanel extends HeoElement {
     this.newProperty = '';
     this.newValue = '';
   }
-
-  /**
-   * The cascade, most specific last.
-   *
-   * Declarations that lose to a later rule are dimmed rather than hidden: knowing
-   * that a value is being overridden is usually the answer to "why did nothing
-   * happen when I changed it".
-   */
-  #renderCascade(
-    rules: AppliedRule[],
-    cascade: Map<string, { from: AppliedRule }>,
-  ): TemplateResult {
-    // Include the style attribute so the list shows the real picture: it sits at
-    // the top as the highest-priority source, and its declarations are editable
-    // like any rule's, just written onto the element instead of into a sheet.
-    const stylesheetRules = rules;
-    return html`<heo-section
-      heading="Matched CSS rules"
-      glyph="code"
-      badge=${String(stylesheetRules.length)}
-      ?open=${openSections.has('cascade')}
-      @section-toggle=${(event: CustomEvent<{ open: boolean }>) =>
-        this.#remember('cascade', event.detail.open)}
-    >
-      ${stylesheetRules.length === 0
-        ? html`<p class="hint" style="margin:0">
-            No rule matches this element, so everything comes from inheritance.
-          </p>`
-        : html`<p class="hint" style="margin:0 0 8px">
-              Most specific first. Editing a stylesheet rule changes it for every element that uses
-              it; editing the style attribute only affects this one.
-            </p>
-            ${repeat(
-          [...stylesheetRules].reverse(),
-          (rule, index) => `${rule.selector}:${index}`,
-          (rule) => this.#renderRule(rule, cascade),
-        )}`}
-    </heo-section>`;
-  }
-
-  #renderRule(rule: AppliedRule, cascade: Map<string, { from: AppliedRule }>): TemplateResult {
-    const isInline = rule.origin === 'inline';
-    const selected = this.editor.selected;
-    // Resolved against the selected element, which is the one whose cascade this is.
-    const resolvedFor = (property: string): string =>
-      selected ? getComputedStyle(selected).getPropertyValue(property).trim() : '';
-    return html`<div class=${`rule${isInline ? ' inline' : ''}`}>
-      <header>
-        ${isInline ? icon('cursor', 11) : nothing}
-        <span class="sel" title=${rule.selector}>${rule.selector}</span>
-        <span class="src" title=${isInline ? 'On the element itself' : 'Stylesheet'}>
-          ${isInline ? 'this element' : rule.source}
-        </span>
-      </header>
-      <div class="decls">
-        ${rule.declarations.map((declaration) => {
-      const winner = cascade.get(declaration.property);
-      const overridden = winner ? winner.from !== rule : false;
-      return html`<div class=${`decl${overridden ? ' overridden' : ''}`}>
-            <span
-              class="p"
-              title=${overridden
-          ? `Overridden by ${winner!.from.selector}`
-          : `${declaration.property} wins the cascade here`}
-              >${declaration.property}</span
-            >
-            <heo-value-field
-              .value=${declaration.value}
-              .kind=${valueKindFor(declaration.property)}
-              .property=${declaration.property}
-              .computed=${resolvedFor(declaration.property)}
-              .suggestions=${buildSuggestions(this.editor, declaration.property, this.editor.selected)}
-              clearable
-              @value-input=${(event: CustomEvent<{ value: string }>) => {
-          if (isInline) this.editor.previewStyle(declaration.property, event.detail.value);
-          else if (rule.rule) {
-            this.editor.previewRuleDeclaration(rule.rule, declaration.property, event.detail.value);
-          }
-        }}
-              @value-revert=${() => this.editor.cancelPreview()}
-              @value-change=${(event: CustomEvent<{ value: string }>) => {
-          if (isInline) this.editor.setStyle(declaration.property, event.detail.value);
-          else if (rule.rule) {
-            this.editor.setRuleDeclaration(rule.rule, declaration.property, event.detail.value);
-          }
-        }}
-            ></heo-value-field>
-          </div>`;
-    })}
-      </div>
-      ${rule.condition ? html`<div class="cond">${rule.condition}</div>` : nothing}
-    </div>`;
-  }
-
   #remember(id: string, open: boolean): void {
     if (open) openSections.add(id);
     else openSections.delete(id);
