@@ -15,6 +15,7 @@ const TABS: Array<{ id: PanelId; label: string; glyph: string; key: string }> = 
   { id: 'media', label: 'Media', glyph: 'image', key: 'M' },
   { id: 'code', label: 'HTML', glyph: 'code', key: 'H' },
   { id: 'css', label: 'CSS', glyph: 'styles', key: 'C' },
+  { id: 'js', label: 'JS', glyph: 'play', key: 'J' },
 ];
 
 /**

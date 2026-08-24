@@ -39,6 +39,31 @@ export class HeoCodeEditor extends LitElement {
         position: relative;
       }
 
+      /*
+       * Fill the space the host gives, instead of standing a fixed number of rows tall.
+       *
+       * A fixed height made sense for a field inside a form. For the panels, whose whole
+       * job is the buffer, it left a band of empty panel under a box the user had to
+       * scroll — two scrollbars for one document. The host still decides: the row count
+       * remains the default, so the block dialog's fields keep their deliberate size.
+       */
+      :host([fill]) {
+        display: flex;
+        flex-direction: column;
+        flex: 1 1 auto;
+        min-height: 0;
+      }
+      :host([fill]) .frame {
+        display: flex;
+        flex-direction: column;
+        flex: 1 1 auto;
+        min-height: 0;
+      }
+      :host([fill]) .shell {
+        flex: 1 1 auto;
+        min-height: 0;
+      }
+
       .shell {
         position: relative;
         display: grid;
@@ -181,6 +206,14 @@ export class HeoCodeEditor extends LitElement {
       .status .error {
         color: var(--heo-danger);
       }
+      /* Filling means the buffer is the point, so the status line gives back the space
+         it does not need. It stays — a line count and the submit hint are worth a row —
+         but it stops costing three. */
+      :host([fill]) .status {
+        flex: 0 0 auto;
+        margin-top: 4px;
+        font-size: 9.5px;
+      }
 
       /* ---- Expand ---- */
 
@@ -284,7 +317,7 @@ export class HeoCodeEditor extends LitElement {
         padding: 2px;
         border: 1px solid var(--heo-line);
         border-radius: var(--heo-r-sm);
-        background: var(--heo-surface-sunken, transparent);
+        background: var(--heo-sunken);
       }
       dialog.modal > header .tabs button {
         padding: 3px 9px;
@@ -347,8 +380,23 @@ export class HeoCodeEditor extends LitElement {
   @property({ type: Boolean }) showStatus = true;
   /** Human name for the buffer, shown in the expanded view's title. */
   @property({ type: String }) heading = '';
+  /**
+   * Grow to the height available rather than to `rows`.
+   *
+   * Reflected, because the sizing is done in CSS against the host.
+   */
+  @property({ type: Boolean, reflect: true }) fill = false;
   /** Set `expandable="false"` to drop the fullscreen affordance. */
   @property({ type: Boolean }) expandable = true;
+  /**
+   * Hand expanding to the host instead of opening this editor's own modal.
+   *
+   * The three page languages share one fullscreen view, which has to outlive the panel
+   * that opened it — a modal owned by the panel closed the moment you switched
+   * language, since that destroys the panel. Set this and the button asks; leave it
+   * empty and the editor expands itself, which is what the block dialog wants.
+   */
+  @property({ type: String }) expandTarget = '';
   /**
    * Sibling buffers this editor can switch to, shown as tabs once expanded.
    *
@@ -441,7 +489,7 @@ export class HeoCodeEditor extends LitElement {
     // A definite height, from `rows` alone. Growing with content would make the
     // box scroll the panel instead of itself, which is what made scrolling feel
     // broken on a long block of markup.
-    const height = `calc(${this.rows} * 1.65em + 18px)`;
+    const height = this.fill ? '100%' : `calc(${this.rows} * 1.65em + 18px)`;
     return html`
       <div class="frame">
         ${this.#renderShell(height)}
@@ -525,7 +573,7 @@ export class HeoCodeEditor extends LitElement {
   #renderShell(height: string): TemplateResult {
     const numbers = Array.from({ length: this.#lineCount() }, (_, i) => i + 1).join('\n');
     return html`
-      <div class="shell" style=${`height:${height}`}>
+      <div class="shell" style=${this.fill ? nothing : `height:${height}`}>
         <div class="gutter" aria-hidden="true">${numbers}</div>
         <div class="area">
           <pre aria-hidden="true"><code>${unsafeHTML(highlight(`${this.draft}\n`, this.language))}</code></pre>
@@ -567,6 +615,16 @@ export class HeoCodeEditor extends LitElement {
   /* ---- Expanding ---- */
 
   #expand(): void {
+    if (this.expandTarget) {
+      this.dispatchEvent(
+        new CustomEvent('code-expand', {
+          detail: { target: this.expandTarget },
+          bubbles: true,
+          composed: true,
+        }),
+      );
+      return;
+    }
     if (this.expanded) return;
     this.#remember();
     this.expanded = true;

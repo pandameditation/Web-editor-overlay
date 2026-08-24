@@ -3,12 +3,13 @@ import { customElement, property, query, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 import { copyToClipboard } from '../../core/design-system.js';
 import {
-  collectStyleSources,
-  countRules,
-  readStyleSource,
-  writeStyleSource,
-  type StyleSource,
-} from '../../core/sheets.js';
+  collectScriptSources,
+  fetchScriptSource,
+  readScriptSource,
+  runScriptSource,
+  writeScriptSource,
+  type ScriptSource,
+} from '../../core/scripts.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
@@ -17,21 +18,20 @@ import type { HeoCodeEditor } from '../controls/code-editor.js';
 import '../controls/code-editor.js';
 
 /**
- * The stylesheet editor.
+ * The script editor.
  *
- * The Styles panel is element-first: it answers what applies here and lets it be
- * overridden. This is the other half — the CSS itself, by file, so a fix can land
- * in the rule that every element shares instead of as one more inline override on
- * one of them.
+ * Deliberately shaped like the CSS panel — sources on top, one buffer below — because
+ * they answer the same question about different material, and a second layout would
+ * make the pair feel like two products.
  *
- * Editing writes through the CSSOM, since a page cannot write to a file. The
- * preview is faithful and undoable, and the change record carries the file name so
- * the save prompt tells an agent exactly which file to open. Sheets that cannot be
- * touched — cross-origin, or owned by the editor's own registries — say so rather
- * than silently failing.
+ * What differs is what "apply" can mean. CSS is live, so applying it changes the page.
+ * A script has already run: its functions and listeners are in memory and no edit to a
+ * `<script>` element reaches them. Applying therefore updates the source and records
+ * the change — which is the product's whole output — and running it again is a
+ * separate button that says what it will cost.
  */
-@customElement('heo-css-panel')
-export class HeoCssPanel extends HeoElement {
+@customElement('heo-js-panel')
+export class HeoJsPanel extends HeoElement {
   static override styles = [
     baseStyles,
     css`
@@ -56,14 +56,13 @@ export class HeoCssPanel extends HeoElement {
       .meta .spacer {
         flex: 1 1 auto;
       }
-
-      .sheets {
+      .files {
         display: grid;
         gap: 3px;
         max-height: 168px;
         overflow-y: auto;
       }
-      .sheet {
+      .file {
         display: flex;
         align-items: center;
         gap: 7px;
@@ -76,23 +75,23 @@ export class HeoCssPanel extends HeoElement {
         text-align: left;
         cursor: pointer;
       }
-      .sheet:hover {
+      .file:hover {
         background: var(--heo-hover);
         color: var(--heo-text);
       }
-      .sheet[aria-selected='true'] {
+      .file[aria-selected='true'] {
         background: var(--heo-accent-soft);
         border-color: var(--heo-accent-line);
         color: var(--heo-text);
       }
-      .sheet .g {
+      .file .g {
         flex: 0 0 auto;
         color: var(--heo-text-faint);
       }
-      .sheet[aria-selected='true'] .g {
+      .file[aria-selected='true'] .g {
         color: var(--heo-accent);
       }
-      .sheet .name {
+      .file .name {
         flex: 1 1 auto;
         min-width: 0;
         overflow: hidden;
@@ -101,16 +100,15 @@ export class HeoCssPanel extends HeoElement {
         text-overflow: ellipsis;
         white-space: nowrap;
       }
-      .sheet .count {
+      .file .count {
         flex: 0 0 auto;
         color: var(--heo-text-faint);
         font-size: 9.5px;
       }
-      .sheet .locked {
+      .file .locked {
         flex: 0 0 auto;
         color: var(--heo-text-faint);
       }
-
       /* A column, not a scroller: the editor inside does its own scrolling, and the
          action row below stays put. Two scrollbars for one document was the problem. */
       .body {
@@ -135,9 +133,8 @@ export class HeoCssPanel extends HeoElement {
         color: var(--heo-text-faint);
         font-family: var(--heo-mono);
         font-size: 10px;
+        line-height: 1.5;
         overflow-wrap: anywhere;
-        -webkit-user-select: text;
-        user-select: text;
       }
       .note {
         display: flex;
@@ -146,25 +143,37 @@ export class HeoCssPanel extends HeoElement {
         padding: 9px 10px;
         border: 1px solid var(--heo-line);
         border-radius: var(--heo-r-sm);
-        background: var(--heo-sunken);
         color: var(--heo-text-dim);
-        font-size: 10.5px;
+        font-size: 11px;
         line-height: 1.5;
       }
       .note .g {
         flex: 0 0 auto;
+        margin-top: 1px;
         color: var(--heo-text-faint);
       }
-
+      .note.warn {
+        border-color: var(--heo-warn);
+      }
+      .note.warn .g {
+        color: var(--heo-warn);
+      }
       .foot {
         display: flex;
         align-items: center;
-        gap: 6px;
-        padding: 10px 12px;
+        gap: 7px;
+        flex: 0 0 auto;
+        padding: 9px 12px;
         border-top: 1px solid var(--heo-line);
       }
       .foot .spacer {
         flex: 1 1 auto;
+      }
+      .empty {
+        padding: 18px 14px;
+        color: var(--heo-text-faint);
+        font-size: 11.5px;
+        line-height: 1.6;
       }
     `,
   ];
@@ -172,11 +181,10 @@ export class HeoCssPanel extends HeoElement {
   protected state = new StoreController(
     this,
     this.editor.store,
-    (s) => [s.revision, s.registry] as const,
+    (s) => [s.revision, s.changeCount] as const,
     shallowArrayEquals,
   );
 
-  @state() private selectedId: string | null = null;
   /**
    * True for the copy hosted inside the fullscreen code view.
    *
@@ -185,59 +193,69 @@ export class HeoCssPanel extends HeoElement {
    */
   @property({ type: Boolean }) embedded = false;
 
+  @state() private selectedId = '';
   @state() private draft = '';
   @state() private dirty = false;
   @state() private error = '';
-  /** Which source the buffer belongs to, so switching sheets reloads it. */
+  /** A fetch in flight, so the pane can say so rather than looking empty. */
+  @state() private loading = false;
+
+  /** The source the buffer was loaded from, so a re-render cannot clobber an edit. */
   #loadedId: string | null = null;
-  /**
-   * Undo depth right after this panel applied something.
-   *
-   * Lets Revert offer to take that apply back, and stop offering once anything else
-   * has been committed on top of it.
-   */
+  /** History depth straight after applying, so Revert can offer to take it back. */
   #appliedAt: number | null = null;
 
   @query('heo-code-editor') private codeEditor?: HeoCodeEditor;
 
   override render(): TemplateResult {
-    const sources = collectStyleSources();
+    const sources = collectScriptSources();
     if (!sources.length) {
-      return html`<div class="empty">This page has no stylesheets the editor can see.</div>`;
+      return html`<div class="empty">
+        This page has no scripts of its own. Anything the overlay loaded is excluded, since editing
+        the editor from inside itself is not a useful thing to be offered.
+      </div>`;
     }
-
     const current = sources.find((source) => source.id === this.selectedId) ?? sources[0];
     this.#syncBuffer(current);
-
     return html`
       <div class="top">
         <div class="meta">
           <span class="chip">
-            ${icon('styles', 11)} ${sources.length}
-            ${sources.length === 1 ? 'stylesheet' : 'stylesheets'}
+            ${icon('code', 11)} ${sources.length} ${sources.length === 1 ? 'script' : 'scripts'}
           </span>
-          ${this.dirty ? html`<span class="chip" style="color:var(--heo-warn)">unapplied</span>` : nothing}
+          ${this.dirty
+        ? html`<span class="chip" style="color:var(--heo-warn)">unapplied</span>`
+        : nothing}
           <span class="spacer"></span>
           <button
             class="btn icon ghost sm"
             type="button"
-            title="Copy this stylesheet"
-            aria-label="Copy this stylesheet"
+            title="Copy this script"
+            aria-label="Copy this script"
             @click=${this.#copy}
           >
             ${icon('copy', 12)}
           </button>
         </div>
-        <div class="sheets" role="listbox" aria-label="Stylesheets">
+        <div class="files" role="listbox" aria-label="Scripts">
           ${repeat(sources, (source) => source.id, (source) => this.#renderRow(source, current))}
         </div>
       </div>
-
       <div class="body">${this.#renderSource(current)}</div>
-
       <div class="foot">
         ${this.#renderRevert(current)}
         <span class="spacer"></span>
+        ${current.readOnly || current.remote
+        ? nothing
+        : html`<button
+              class="btn"
+              type="button"
+              title="Execute this source again. Anything it declares or attaches happens a second time."
+              ?disabled=${Boolean(this.error)}
+              @click=${() => this.#run(current)}
+            >
+              ${icon('play', 12)} Run
+            </button>`}
         <button
           class="btn primary"
           type="button"
@@ -250,9 +268,9 @@ export class HeoCssPanel extends HeoElement {
     `;
   }
 
-  #renderRow(source: StyleSource, current: StyleSource): TemplateResult {
+  #renderRow(source: ScriptSource, current: ScriptSource): TemplateResult {
     return html`<button
-      class="sheet"
+      class="file"
       type="button"
       role="option"
       aria-selected=${source.id === current.id}
@@ -263,15 +281,16 @@ export class HeoCssPanel extends HeoElement {
     >
       <span class="g">${icon(glyphFor(source), 12)}</span>
       <span class="name">${source.label}</span>
-      ${source.media ? html`<span class="count">${source.media}</span>` : nothing}
-      <span class="count">${source.rules} rules</span>
+      ${source.type ? html`<span class="count">${source.type}</span>` : nothing}
+      ${source.loading ? html`<span class="count">${source.loading}</span>` : nothing}
+      ${source.lines ? html`<span class="count">${source.lines} lines</span>` : nothing}
       ${source.readOnly
         ? html`<span class="locked" title=${source.readOnly}>${icon('lock', 11)}</span>`
         : nothing}
     </button>`;
   }
 
-  #renderSource(source: StyleSource): TemplateResult {
+  #renderSource(source: ScriptSource): TemplateResult {
     if (source.readOnly) {
       return html`
         ${source.href ? html`<p class="where">${source.href}</p>` : nothing}
@@ -279,37 +298,37 @@ export class HeoCssPanel extends HeoElement {
           <span class="g">${icon('lock', 12)}</span>
           <span>${source.readOnly}</span>
         </div>
-        ${this.draft
-          ? html`<heo-code-editor
-              fill
-        .expandable=${!this.embedded}
-        expandTarget=${this.embedded ? '' : 'css'}
-        @code-expand=${() => this.editor.openCodeWorkspace('css')}
-                            language="css"
-              rows="14"
-              heading=${`CSS · ${source.label} (read only)`}
-              .value=${this.draft}
-              .showStatus=${true}
-            ></heo-code-editor>`
-          : nothing}
       `;
     }
-
     return html`
       ${source.href
         ? html`<p class="where">
-            ${source.href} — edits preview live here; the save prompt names this file so the change
-            can be made in source.
+            ${source.href}${this.loading ? ' — loading…' : ''}
           </p>`
         : nothing}
+      <!--
+        The honest note. Editing a script that has already run cannot change what is on
+        screen, and saying so up front is the difference between a tool that looks
+        broken and one the user understands.
+      -->
+      <div class="note">
+        <span class="g">${icon('sparkle', 12)}</span>
+        <span>
+          ${source.remote
+        ? html`This file is not writable from the page. Applying records the change and the
+              save prompt names the file, so it can be made in source.`
+        : html`This script has already run, so applying updates its source and records the
+              change — it does not re-execute. <strong>Run</strong> does that, deliberately.`}
+        </span>
+      </div>
       <heo-code-editor
         fill
         .expandable=${!this.embedded}
-        expandTarget=${this.embedded ? '' : 'css'}
-        @code-expand=${() => this.editor.openCodeWorkspace('css')}
-        language="css"
+        expandTarget=${this.embedded ? '' : 'js'}
+        @code-expand=${() => this.editor.openCodeWorkspace('js')}
+                language="js"
         rows="16"
-        heading=${`CSS · ${source.label}`}
+        heading=${`JS · ${source.label}`}
         .value=${this.draft}
         .error=${this.error}
         @code-input=${(event: CustomEvent<{ value: string }>) => this.#onInput(event.detail.value)}
@@ -322,22 +341,19 @@ export class HeoCssPanel extends HeoElement {
   /**
    * Revert, meaning whichever "put it back" is available.
    *
-   * With unapplied edits it discards them and reloads from the sheet. Straight after
-   * applying there is nothing to discard, but the change is still the most recent
-   * thing that happened — so the button undoes it, which is what the user reaches for
-   * when an apply turns out wrong. The offer lapses as soon as anything else is
-   * committed, since undoing then would take back somebody else's change.
+   * With unapplied edits it discards them and reloads. Straight after applying there is
+   * nothing to discard, but the change is still the most recent thing that happened, so
+   * the button undoes it. The offer lapses once anything else is committed, since
+   * undoing then would take back somebody else's change.
    */
-  #renderRevert(source: StyleSource): TemplateResult {
+  #renderRevert(source: ScriptSource): TemplateResult {
     const canUndoApply =
       !this.dirty && this.#appliedAt !== null && this.editor.history.size === this.#appliedAt;
     return html`<button
       class="btn"
       type="button"
       ?disabled=${!this.dirty && !canUndoApply}
-      title=${this.dirty
-        ? 'Discard these edits and reload the stylesheet'
-        : 'Undo the CSS you just applied'}
+      title=${this.dirty ? 'Discard these edits and reload the script' : 'Undo the edit you just applied'}
       @click=${() => {
         if (this.dirty) this.#reset(source);
         else this.#undoApply(source);
@@ -347,7 +363,7 @@ export class HeoCssPanel extends HeoElement {
     </button>`;
   }
 
-  #undoApply(source: StyleSource): void {
+  #undoApply(source: ScriptSource): void {
     this.#appliedAt = null;
     this.editor.undo();
     this.#loadedId = null;
@@ -356,31 +372,51 @@ export class HeoCssPanel extends HeoElement {
     this.#refocus();
   }
 
-  /** Put the caret back in the editor, after the render that follows an action. */
   #refocus(): void {
     requestAnimationFrame(() => this.codeEditor?.focusEditor());
   }
 
   /** Load the buffer when the selection changes, but never mid-edit. */
-  #syncBuffer(source: StyleSource): void {
+  #syncBuffer(source: ScriptSource): void {
     if (this.#loadedId === source.id) return;
     this.#loadedId = source.id;
-    this.draft = readStyleSource(source);
-    this.dirty = false;
     this.error = '';
+    this.dirty = false;
+    if (!source.remote || source.readOnly) {
+      this.draft = readScriptSource(source);
+      this.loading = false;
+      return;
+    }
+    // An external file has to be fetched. Blank the buffer first so the previous
+    // script's text is never shown under this one's name.
+    this.draft = '';
+    this.loading = true;
+    void fetchScriptSource(source)
+      .then((text) => {
+        // Only if the user is still looking at this source, and has not started typing.
+        if (this.#loadedId !== source.id || this.dirty) return;
+        this.draft = text;
+        source.pendingBefore = text;
+        this.loading = false;
+      })
+      .catch((error: unknown) => {
+        if (this.#loadedId !== source.id) return;
+        this.loading = false;
+        this.error = `Could not read ${source.label}: ${
+          error instanceof Error ? error.message : String(error)
+        }`;
+      });
   }
 
   #onInput(value: string): void {
     this.draft = value;
     this.dirty = true;
-    // Parsed by the browser itself, so the check is exactly what the sheet will do.
-    const text = value.trim();
-    this.error = text && countRules(text) === 0 ? 'No rule in this text parses.' : '';
+    this.error = syntaxErrorIn(value);
   }
 
-  #apply(source: StyleSource): void {
+  #apply(source: ScriptSource): void {
     if (source.readOnly) return;
-    const command = writeStyleSource(source, this.draft);
+    const command = writeScriptSource(source, this.draft);
     if (!command) {
       this.dirty = false;
       return;
@@ -390,39 +426,74 @@ export class HeoCssPanel extends HeoElement {
     this.#loadedId = null;
     this.#appliedAt = this.editor.history.size;
     this.#refocus();
-    this.editor.notify(`Applied ${source.label}.`, 'success', {
-      label: 'Undo',
-      run: () => this.editor.undo(),
-    });
+    this.editor.notify(
+      source.remote
+        ? `Recorded the change to ${source.label}.`
+        : `Applied ${source.label}. Run it to execute the new source.`,
+      'success',
+      { label: 'Undo', run: () => this.editor.undo() },
+    );
   }
 
-  #reset(source: StyleSource): void {
+  #run(source: ScriptSource): void {
+    const failure = runScriptSource(source, this.draft);
+    if (failure) {
+      this.error = failure;
+      this.editor.notify(`${source.label} threw: ${failure}`, 'error');
+      return;
+    }
+    this.editor.notify(`Ran ${source.label}.`, 'success');
+  }
+
+  #reset(source: ScriptSource): void {
     this.#loadedId = null;
     this.#syncBuffer(source);
-    // After the render, not before: focusing first put the caret in the textarea, and
-    // the editor then refused the reloaded buffer because it was focused.
     this.#refocus();
   }
 
   async #copy(): Promise<void> {
     const ok = await copyToClipboard(this.draft);
-    this.editor.notify(ok ? 'CSS copied.' : 'Could not access the clipboard.', ok ? 'success' : 'error');
+    this.editor.notify(
+      ok ? 'Script copied.' : 'Could not access the clipboard.',
+      ok ? 'success' : 'error',
+    );
   }
 }
 
-function glyphFor(source: StyleSource): string {
+/**
+ * Check the source the way the engine will.
+ *
+ * `new Function` parses without running, so this is the browser's own verdict rather
+ * than a guess — and it catches the typo before Apply records it. A module is not
+ * parseable this way (`import` is illegal in a function body), so those are left
+ * alone rather than reported as broken.
+ */
+function syntaxErrorIn(code: string): string {
+  const text = code.trim();
+  if (!text) return '';
+  if (/^\s*(import|export)\b/m.test(text)) return '';
+  try {
+    new Function(text);
+    return '';
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
+function glyphFor(source: ScriptSource): string {
   switch (source.kind) {
-    case 'link':
+    case 'external':
+    case 'module':
       return 'link';
-    case 'style':
-      return 'code';
-    default:
+    case 'json':
       return 'blocks';
+    default:
+      return 'code';
   }
 }
 
 declare global {
   interface HTMLElementTagNameMap {
-    'heo-css-panel': HeoCssPanel;
+    'heo-js-panel': HeoJsPanel;
   }
 }

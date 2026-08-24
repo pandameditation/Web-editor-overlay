@@ -148,6 +148,16 @@ export interface BlockExtraction {
 
 export type Extraction = ClassExtraction | BlockExtraction;
 
+/** Which language the fullscreen code view is showing. */
+export type CodeWorkspaceTab = 'html' | 'css' | 'js';
+
+/** The dock panel that owns each language, so the two stay in step. */
+const DOCK_TAB_FOR_CODE: Record<CodeWorkspaceTab, PanelId> = {
+  html: 'code',
+  css: 'css',
+  js: 'js',
+};
+
 /** Everything a block draft starts as, before an entry point fills in what it knows. */
 function emptyBlockDraft(): BlockExtraction {
   return {
@@ -189,6 +199,15 @@ export interface EditorState {
   quickMenuOpen: boolean;
   insertAnchor: InsertAnchor | null;
   extraction: Extraction | null;
+  /**
+   * The fullscreen code view, and which language it is showing.
+   *
+   * At the store rather than inside a panel because it has to outlive them: the three
+   * code panels each live in the dock, and switching dock tabs destroys the one you
+   * came from. An expanded editor owned by a panel therefore closed the moment you
+   * reached for another language, which is exactly when you wanted it open.
+   */
+  codeWorkspace: CodeWorkspaceTab | null;
   toast: ToastMessage | null;
   canUndo: boolean;
   canRedo: boolean;
@@ -285,6 +304,7 @@ export class EditorEngine {
       quickMenuOpen: false,
       insertAnchor: null,
       extraction: null,
+      codeWorkspace: null,
       toast: null,
       canUndo: false,
       canRedo: false,
@@ -1084,6 +1104,25 @@ export class EditorEngine {
   /** Props a block already declares, so editing one keeps its descriptions. */
   #existingProps(id: string | null): Record<string, PropSpec> | undefined {
     return id ? this.library.get(id)?.props : undefined;
+  }
+
+  /**
+   * Open the fullscreen code view.
+   *
+   * The dock tab follows, so collapsing leaves the user where the code they were
+   * editing lives rather than back where they started two languages ago.
+   */
+  openCodeWorkspace(tab: CodeWorkspaceTab = 'html'): void {
+    this.store.patch({ codeWorkspace: tab, dockTab: DOCK_TAB_FOR_CODE[tab], dockOpen: true });
+  }
+
+  setCodeWorkspaceTab(tab: CodeWorkspaceTab): void {
+    if (!this.store.value.codeWorkspace) return;
+    this.store.patch({ codeWorkspace: tab, dockTab: DOCK_TAB_FOR_CODE[tab] });
+  }
+
+  closeCodeWorkspace(): void {
+    if (this.store.value.codeWorkspace) this.store.patch({ codeWorkspace: null });
   }
 
   /** Step back to the markup without losing the props reviewed so far. */

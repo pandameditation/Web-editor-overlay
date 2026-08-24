@@ -1,5 +1,6 @@
 import { css, html, nothing, type TemplateResult } from 'lit';
-import { customElement, query, state } from 'lit/decorators.js';
+import { customElement, property, query, state } from 'lit/decorators.js';
+import { HOST_TAG } from '../../core/constants.js';
 import { labelFor, nearestSourceRef } from '../../core/dom.js';
 import { copyToClipboard } from '../../core/design-system.js';
 import { formatHTML, sanitizeFragment } from '../../core/sanitize.js';
@@ -10,6 +11,7 @@ import { baseStyles } from '../theme.js';
 import type { HeoCodeEditor } from '../controls/code-editor.js';
 import '../controls/code-editor.js';
 import '../controls/segmented.js';
+import './seo-form.js';
 
 /**
  * The HTML editor.
@@ -54,11 +56,35 @@ export class HeoCodePanel extends HeoElement {
         font-family: var(--heo-mono);
         font-size: 10px;
       }
+      /* A column, not a scroller: the editor inside does its own scrolling, and the
+         action row below stays put. Two scrollbars for one document was the problem. */
       .body {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
         flex: 1 1 auto;
         min-height: 0;
-        overflow-y: auto;
         padding: 10px 12px;
+      }
+      /* The fixed matter above the buffer — a path, a note — keeps its own height. */
+      .body > .where,
+      .body > .note {
+        flex: 0 0 auto;
+      }
+      .body > heo-code-editor {
+        flex: 1 1 auto;
+        min-height: 0;
+      }
+      /* The head form is a document, not a buffer: it scrolls. */
+      .body.scrolls {
+        display: block;
+        overflow-y: auto;
+      }
+      .where {
+        margin: 0;
+        color: var(--heo-text-faint);
+        font-size: 10.5px;
+        line-height: 1.45;
       }
       .foot {
         display: flex;
@@ -97,6 +123,20 @@ export class HeoCodePanel extends HeoElement {
   );
 
   @state() private mode: 'outer' | 'inner' = 'outer';
+  /**
+   * True for the copy hosted inside the fullscreen code view.
+   *
+   * That copy is already as large as it gets, so it drops the expand affordance; the
+   * one in the dock keeps it, since that is how the view is opened.
+   */
+  @property({ type: Boolean }) embedded = false;
+
+  /**
+   * Which half of the document view is showing, when nothing is selected.
+   *
+   * Head by default: it is the part of a page no click can reach.
+   */
+  @state() private docTab: 'head' | 'body' = 'head';
   @state() private draft = '';
   @state() private error = '';
   @state() private dirty = false;
@@ -126,7 +166,7 @@ export class HeoCodePanel extends HeoElement {
    * deriving state from other state.
    */
   override willUpdate(): void {
-    const el = this.editor.selected;
+    const el = this.#target();
     if (!el || !el.isConnected) {
       this.#loadedFor = null;
       return;
@@ -134,11 +174,102 @@ export class HeoCodePanel extends HeoElement {
     this.#syncBuffer(el);
   }
 
+  /**
+   * The element this panel is editing.
+   *
+   * With nothing selected it is the document body, so the panel has something to show
+   * instead of an instruction to go and click something. That is also the only way to
+   * reach the parts of a page no element selection can cover — the body's own
+   * attributes, and everything in the head, which the other tab handles.
+   */
+  #target(): HTMLElement | null {
+    const selected = this.editor.selected;
+    if (selected?.isConnected) return selected;
+    return this.docTab === 'body' ? document.body : null;
+  }
+
   override render(): TemplateResult {
-    const el = this.editor.selected;
-    if (!el || !el.isConnected) {
-      return html`<div class="empty">Select an element to edit its markup.</div>`;
-    }
+    const selected = this.editor.selected;
+    // Nothing selected means the document itself is the subject, which is two very
+    // different jobs: the head is a form, the body is markup.
+    if (!selected?.isConnected) return this.#renderDocument();
+    return this.#renderElement(selected);
+  }
+
+  /**
+   * The document view: head as a form, body as markup.
+   *
+   * Head first, because it is the part with no other way in — every element in the
+   * body can be reached by clicking it, and nothing in the head can be reached at all.
+   */
+  #renderDocument(): TemplateResult {
+    const onHead = this.docTab === 'head';
+    return html`
+      <div class="top">
+        <div class="meta">
+          <span class="chip">${icon('code', 11)} ${documentLabel()}</span>
+          ${this.dirty && !onHead
+        ? html`<span class="chip" style="color:var(--heo-warn)">unapplied</span>`
+        : nothing}
+          <span class="spacer"></span>
+          <span class="src">nothing selected — editing the document</span>
+        </div>
+        <heo-segmented
+          .options=${[
+        { value: 'head', label: 'Head & SEO' },
+        { value: 'body', label: 'Body markup' },
+      ]}
+          .value=${this.docTab}
+          label="Document scope"
+          @segment-change=${(event: CustomEvent<{ value: string }>) => {
+        this.docTab = (event.detail.value || 'head') as 'head' | 'body';
+        this.#loadedFor = null;
+      }}
+        ></heo-segmented>
+      </div>
+      ${onHead
+        ? html`<div class="body scrolls"><heo-seo-form></heo-seo-form></div>`
+        : this.#renderBodyMarkup()}
+    `;
+  }
+
+  #renderBodyMarkup(): TemplateResult {
+    const el = document.body;
+    return html`
+      <div class="body">
+        <p class="where">
+          The whole body, overlay excluded. Applying replaces its contents.
+        </p>
+        <heo-code-editor
+          fill
+          .expandable=${!this.embedded}
+          expandTarget=${this.embedded ? '' : 'html'}
+          @code-expand=${() => this.editor.openCodeWorkspace('html')}
+          language="html"
+          heading="HTML · body"
+          .value=${this.draft}
+          .error=${this.error}
+          @code-input=${(event: CustomEvent<{ value: string }>) => this.#onInput(event.detail.value)}
+          @code-submit=${() => this.#apply(el)}
+          @code-cancel=${() => this.#reset(el)}
+        ></heo-code-editor>
+      </div>
+      <div class="foot">
+        ${this.#renderRevert(el)}
+        <span class="spacer"></span>
+        <button
+          class="btn primary"
+          type="button"
+          ?disabled=${!this.dirty || Boolean(this.error)}
+          @click=${() => this.#apply(el)}
+        >
+          ${icon('check', 12)} Apply
+        </button>
+      </div>
+    `;
+  }
+
+  #renderElement(el: HTMLElement): TemplateResult {
     const source = nearestSourceRef(el);
 
     return html`
@@ -185,6 +316,10 @@ export class HeoCodePanel extends HeoElement {
 
       <div class="body">
         <heo-code-editor
+        fill
+        .expandable=${!this.embedded}
+        expandTarget=${this.embedded ? '' : 'html'}
+        @code-expand=${() => this.editor.openCodeWorkspace('html')}
           language="html"
           rows="16"
           heading=${`HTML · ${labelFor(el)} · ${this.mode === 'outer' ? 'whole element' : 'contents only'}`}
@@ -284,8 +419,9 @@ export class HeoCodePanel extends HeoElement {
    * string comparison rather than a re-pretty-print on every revision bump.
    */
   #syncBuffer(el: HTMLElement): void {
-    const source = this.mode === 'outer' ? el.outerHTML : el.innerHTML;
-    const sameTarget = this.#loadedFor === el && this.#loadedMode === this.mode;
+    const source = isBody(el) ? bodyMarkup() : this.mode === 'outer' ? el.outerHTML : el.innerHTML;
+    const sameTarget =
+      this.#loadedFor === el && (isBody(el) || this.#loadedMode === this.mode);
     if (sameTarget && (this.dirty || source === this.#loadedSource)) return;
     this.#loadedFor = el;
     this.#loadedMode = this.mode;
@@ -345,6 +481,11 @@ export class HeoCodePanel extends HeoElement {
     this.#validate();
     if (this.error) return;
 
+    if (isBody(el)) {
+      this.#applyBody();
+      return;
+    }
+
     if (this.mode === 'outer') {
       if (this.editor.replaceMarkup(this.draft, el)) {
         this.#loadedFor = null;
@@ -392,6 +533,53 @@ export class HeoCodePanel extends HeoElement {
     this.editor.notify('Contents replaced.', 'success');
   }
 
+  /**
+   * Replace the body's contents while leaving the overlay standing.
+   *
+   * The overlay mounts into the body, so a plain `innerHTML =` would delete the editor
+   * doing the deleting — the panel would vanish mid-edit and the page would be left
+   * with no way back. The host is set aside and put back on both apply and revert.
+   */
+  #applyBody(): void {
+    const body = document.body;
+    const host = body.querySelector(HOST_TAG);
+    const before = bodyMarkup();
+    const holder = document.createElement('div');
+    holder.append(sanitizeFragment(this.draft));
+    const after = holder.innerHTML;
+    if (after.trim() === before.trim()) {
+      this.dirty = false;
+      return;
+    }
+    const write = (markup: string): void => {
+      body.innerHTML = markup;
+      if (host) body.appendChild(host);
+    };
+    this.editor.history.commit({
+      label: 'Edit the body markup',
+      subject: 'markup:body',
+      record: {
+        id: `h${Date.now().toString(36)}`,
+        kind: 'replace',
+        summary: 'Rewrite the contents of <body>',
+        target: 'body',
+        detail: { html: after, scope: 'document body' },
+        at: Date.now(),
+      },
+      apply: () => write(after),
+      revert: () => write(before),
+    });
+    this.dirty = false;
+    this.#loadedFor = null;
+    this.#appliedAt = this.editor.history.size;
+    this.#appliedTo = null;
+    this.#refocus();
+    this.editor.notify('Body markup replaced.', 'success', {
+      label: 'Undo',
+      run: () => this.editor.undo(),
+    });
+  }
+
   #reset(el: HTMLElement): void {
     this.#loadedFor = null;
     this.#syncBuffer(el);
@@ -416,4 +604,33 @@ declare global {
   interface HTMLElementTagNameMap {
     'heo-code-panel': HeoCodePanel;
   }
+}
+
+/** `example.com/pricing`, or just the host on a root page. */
+function documentLabel(): string {
+  const path = location.pathname === '/' ? '' : location.pathname;
+  return `${location.host}${path}`;
+}
+
+function isBody(el: HTMLElement): boolean {
+  return el === document.body;
+}
+
+/**
+ * The body's markup, with the editor's own nodes left out.
+ *
+ * Showing the overlay host in a buffer the user is about to rewrite would be an
+ * invitation to delete it, and it is not part of their page in the first place.
+ */
+function bodyMarkup(): string {
+  const clone = document.body.cloneNode(true) as HTMLElement;
+  for (const host of Array.from(clone.querySelectorAll(HOST_TAG))) host.remove();
+  for (const node of [clone, ...Array.from(clone.querySelectorAll('*'))]) {
+    for (const attribute of Array.from(node.attributes)) {
+      if (attribute.name.startsWith('data-heo-') || attribute.name === 'contenteditable') {
+        node.removeAttribute(attribute.name);
+      }
+    }
+  }
+  return clone.innerHTML;
 }

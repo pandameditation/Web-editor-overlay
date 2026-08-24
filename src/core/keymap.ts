@@ -202,6 +202,7 @@ const PANEL_KEYS: Record<string, PanelId> = {
   m: 'media',
   h: 'code',
   c: 'css',
+  j: 'js',
 };
 
 /** Documentation of the keymap, for a help surface or a README. */
@@ -218,7 +219,10 @@ export const SHORTCUTS: Array<{ keys: string; action: string }> = [
   { keys: 'Delete', action: 'Delete' },
   { keys: 'Mod+Z / Shift+Mod+Z', action: 'Undo / redo' },
   { keys: 'Mod+S', action: 'Review and save changes' },
-  { keys: 'S T E B P M H', action: 'Styles, Tokens, Tree, Library, Props, Media, HTML' },
+  {
+    keys: 'S T E B P M H C J',
+    action: 'Styles, Tokens, Tree, Library, Props, Media, HTML, CSS, JS',
+  },
   { keys: 'Escape', action: 'Close the topmost thing, then deselect, then leave edit mode' },
 ];
 

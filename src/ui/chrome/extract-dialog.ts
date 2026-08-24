@@ -248,7 +248,7 @@ export class HeoExtractDialog extends HeoElement {
         padding: 11px;
         border: 1px solid var(--heo-line);
         border-radius: var(--heo-r-sm);
-        background: var(--heo-surface);
+        background: var(--heo-raised);
       }
       .propcard > header {
         display: flex;

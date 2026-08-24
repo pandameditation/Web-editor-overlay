@@ -2203,35 +2203,286 @@
       check('addButtonAdds', () => target.classList.contains('from-button'));
 
       /* ------------------------------------------------------------------ *
-       * Every code input can expand into a modal, in the top layer so the dock
-       * cannot clip it, over one shared buffer rather than two.
+       * The three page languages share one fullscreen code view.
+       *
+       * Each used to expand into its own modal, owned by the panel it came from — so
+       * reaching another language meant collapse, switch dock tab, find the expand
+       * button, expand, and the three could not be compared at all. Worse, the modal
+       * died with its panel, which is precisely what switching language does.
        * ------------------------------------------------------------------ */
       api.openPanel('code');
       api.select(document.getElementById('para'));
-      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-      const codeEditor = dockPanel('code').shadowRoot.querySelector('heo-code-editor');
-      const bufferBefore = codeEditor.code;
-      codeEditor.shadowRoot.querySelector('.grow')
+      await frame();
+      await wait(140);
+      const workspace = () => overlayRoot().shadowRoot.querySelector('heo-code-workspace');
+      check('noSharedViewUntilAsked', () => workspace() === null);
+
+      const htmlEditor = dockPanel('code').shadowRoot.querySelector('heo-code-editor');
+      const bufferBefore = htmlEditor.code;
+      htmlEditor.shadowRoot.querySelector('.grow')
         .dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
-      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-      const modal = codeEditor.shadowRoot.querySelector('dialog.modal');
-      check('codeModalOpens', () => !!modal && modal.open);
-      check('codeModalEscapesTheDock', () => {
-        const dock = dockEl().shadowRoot.querySelector('.dock').getBoundingClientRect();
-        return modal.getBoundingClientRect().width > dock.width;
+      await wait(280);
+      await frame();
+      check('expandingOpensTheSharedView', () => Boolean(workspace()));
+      const wsRoot = () => workspace().shadowRoot;
+      check('itSitsInTheTopLayer', () => Boolean(wsRoot().querySelector('dialog')?.open));
+      /*
+       * Opaque, and not by accident.
+       *
+       * The surface was authored against a custom property the theme never defined, and
+       * an undefined property with no fallback invalidates the whole declaration — so
+       * `background` computed to transparent and the page showed through the code. The
+       * backdrop is meant to be translucent; the panel carrying text is not.
+       */
+      check('theSharedViewHasAnOpaqueSurface', () => {
+        const colour = getComputedStyle(wsRoot().querySelector('dialog')).backgroundColor;
+        // The theme is authored in oklch, where alpha appears as `/ n%` rather than a
+        // fourth channel, so a slash is what "translucent" looks like here.
+        return colour !== 'transparent' && !colour.includes('/');
       });
-      check('codeModalKeepsOneBuffer', () => ({
-        textareas: codeEditor.shadowRoot.querySelectorAll('textarea').length,
-        preserved: codeEditor.code === bufferBefore,
+      check('andNothingOfThePageIsReachableThroughIt', () => {
+        const box = wsRoot().querySelector('dialog').getBoundingClientRect();
+        const hit = document.elementFromPoint(box.x + box.width / 2, box.y + 40);
+        return hit !== null && document.querySelector('html-editor-overlay').contains(hit);
+      });
+
+      check('itEscapesTheDock', () => {
+        const dock = dockEl().shadowRoot.querySelector('.dock').getBoundingClientRect();
+        return wsRoot().querySelector('dialog').getBoundingClientRect().width > dock.width;
+      });
+      const wsTabs = () => Array.from(wsRoot().querySelectorAll('header .tabs button'));
+      check('itOffersAllThreeLanguages', () =>
+        wsTabs().map((b) => b.textContent.trim()).join(','));
+      check('itOpensOnTheLanguageItWasCalledFrom', () =>
+        wsTabs().find((b) => b.getAttribute('aria-selected') === 'true').textContent.trim());
+      check('theHostedCopyDoesNotOfferToExpandAgain', () =>
+        wsRoot().querySelector('heo-code-panel').shadowRoot
+          .querySelector('heo-code-editor').shadowRoot.querySelector('.grow') === null);
+
+      /* Switching language keeps the view open. This is the whole point of it. */
+      wsTabs().find((b) => b.textContent.trim() === 'CSS').click();
+      await wait(240);
+      await frame();
+      check('switchingLanguageKeepsTheViewOpen', () =>
+        Boolean(wsRoot().querySelector('dialog')?.open));
+      check('andShowsThatLanguage', () => Boolean(wsRoot().querySelector('heo-css-panel')));
+      check('andTheDockFollowsSoCollapsingLandsThere', () => api.getState().dockTab);
+      wsTabs().find((b) => b.textContent.trim() === 'JS').click();
+      await wait(240);
+      await frame();
+      check('andJsToo', () => Boolean(wsRoot().querySelector('heo-js-panel')));
+
+      // Mod+digit is the fast path between them.
+      wsRoot().querySelector('dialog').dispatchEvent(new KeyboardEvent('keydown', {
+        key: '1', metaKey: true, bubbles: true, composed: true, cancelable: true,
       }));
-      codeEditor.shadowRoot.querySelector('dialog textarea').dispatchEvent(
-        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true, cancelable: true }),
-      );
-      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      await wait(240);
+      await frame();
+      check('modDigitSwitchesLanguage', () => Boolean(wsRoot().querySelector('heo-code-panel')));
+
+      /* Escape leaves the big view; it never discards a buffer. */
+      wsRoot().querySelector('dialog').dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Escape', bubbles: true, composed: true, cancelable: true,
+      }));
+      await wait(260);
+      await frame();
       check('escapeCollapsesWithoutDiscarding', () => ({
-        closed: !codeEditor.shadowRoot.querySelector('dialog.modal'),
-        kept: codeEditor.code === bufferBefore,
+        closed: workspace() === null,
+        kept: dockPanel('code').shadowRoot.querySelector('heo-code-editor').code === bufferBefore,
       }));
+
+      /* ------------------------------------------------------------------ *
+       * With nothing selected, the HTML panel is the document.
+       *
+       * It used to say "select an element" and stop, which left the head — the part of
+       * a page no click can reach — with no way in at all. Head first, as a form with
+       * the previews its values are for; body markup on the other tab.
+       * ------------------------------------------------------------------ */
+      api.select(null);
+      api.openPanel('code');
+      await frame();
+      await wait(180);
+      const docPanel = () => dockPanel('code');
+      const docTabs = () => docPanel().shadowRoot.querySelector('heo-segmented');
+      check('nothingSelectedOffersTheDocument', () =>
+        (docTabs()?.options ?? []).map((o) => o.label).join(','));
+      check('theHeadIsTheDefaultTab', () => docTabs()?.value);
+
+      const seoForm = () => docPanel().shadowRoot.querySelector('heo-seo-form');
+      check('theHeadIsAForm', () => Boolean(seoForm()));
+
+      // Seed the head so the previews and the fallback chains have something to show.
+      document.title = 'Pricing that scales with you';
+      const seededMeta = [];
+      const seedMeta = (attribute, name, content) => {
+        const tag = document.createElement('meta');
+        tag.setAttribute(attribute, name);
+        tag.setAttribute('content', content);
+        document.head.append(tag);
+        seededMeta.push(tag);
+      };
+      seedMeta('name', 'description', 'Simple per-seat pricing, no minimums.');
+      seedMeta('property', 'og:title', 'Pricing — Example');
+      // The form reads the head on render; nothing observes meta tags for us.
+      seoForm().requestUpdate();
+      await frame();
+      await wait(140);
+
+      const cardText = (index) =>
+        Array.from(seoForm().shadowRoot.querySelectorAll('.card'))[index]
+          .textContent.replace(/\s+/g, ' ').trim();
+      check('itPreviewsTheSearchResult', () => /Pricing that scales with you/.test(cardText(0)));
+      check('theUnfurlFallsBackForWhatItLacks', () =>
+        /no minimums/.test(cardText(1)) && /Pricing — Example/.test(cardText(2)));
+      check('aMissingImageIsSaidOutLoud', () => /no image/.test(cardText(1)));
+      check('lengthBudgetsAreShown', () =>
+        Array.from(seoForm().shadowRoot.querySelectorAll('.count')).length > 0);
+
+      /* Editing a field writes the tag, records it, and undoes cleanly. */
+      const descBox = seoForm().shadowRoot.querySelector('textarea.input');
+      descBox.focus();
+      descBox.value = 'Per-seat pricing with no minimum commitment.';
+      descBox.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      await frame();
+      const headDepth = engine.history.size;
+      descBox.dispatchEvent(new Event('blur', { bubbles: true, composed: true }));
+      await wait(200);
+      await frame();
+      check('editingAHeadFieldWritesTheTag', () =>
+        document.querySelector('meta[name="description"]').getAttribute('content'));
+      check('andRecordsItOnce', () => engine.history.size === headDepth + 1);
+      check('theRecordNamesTheTagItWrote', () => engine.records.at(-1).summary);
+      api.undo();
+      await wait(180);
+      check('undoingAHeadEditRestoresIt', () =>
+        document.querySelector('meta[name="description"]').getAttribute('content'));
+
+      /* A field with no tag gets one, and undo takes the tag away again. */
+      const ogImageField = Array.from(
+        seoForm().shadowRoot.querySelectorAll('input.input.mono'),
+      ).find((input) => input.getAttribute('aria-label') === 'Image');
+      ogImageField.focus();
+      ogImageField.value = 'https://example.com/card.png';
+      ogImageField.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      press(ogImageField, 'Enter');
+      await wait(200);
+      await frame();
+      check('aFieldWithNoTagGetsOne', () =>
+        Boolean(document.querySelector('meta[property="og:image"]')));
+      api.undo();
+      await wait(180);
+      check('andUndoTakesThatTagAwayAgain', () =>
+        document.querySelector('meta[property="og:image"]') === null);
+
+      /* The body tab: the whole body, overlay excluded, applied without self-harm. */
+      docTabs().dispatchEvent(new CustomEvent('segment-change', {
+        detail: { value: 'body' }, bubbles: true, composed: true,
+      }));
+      await wait(240);
+      await frame();
+      const bodyArea = () =>
+        docPanel().shadowRoot.querySelector('heo-code-editor')?.shadowRoot.querySelector('textarea');
+      check('theBodyTabShowsTheWholeBody', () => /id="para"/.test(bodyArea()?.value ?? ''));
+      check('andLeavesTheOverlayOutOfIt', () => {
+        // Parsed rather than string-matched: this page's own results element is inside
+        // the body being serialized, and it quotes the tag name.
+        const parsed = document.createElement('template');
+        parsed.innerHTML = bodyArea()?.value ?? '';
+        return parsed.content.querySelector('html-editor-overlay') === null;
+      });
+
+      /*
+       * And the buffer takes the room left, rather than standing at a fixed height with
+       * empty panel beneath it and its own scrollbar inside the panel's.
+       */
+      check('theBufferTakesTheRoomLeft', () => {
+        const panelBody = docPanel().shadowRoot.querySelector('.body');
+        const editor = docPanel().shadowRoot.querySelector('heo-code-editor');
+        const fixed = Array.from(panelBody.children)
+          .filter((child) => child.tagName.toLowerCase() !== 'heo-code-editor')
+          .reduce((sum, child) => sum + child.getBoundingClientRect().height + 8, 0);
+        const status = editor.shadowRoot.querySelector('.status')?.getBoundingClientRect().height ?? 0;
+        const forBuffer = panelBody.getBoundingClientRect().height - 20 - fixed - status - 4;
+        const shell = editor.shadowRoot.querySelector('.shell').getBoundingClientRect().height;
+        return shell / forBuffer > 0.9;
+      });
+      check('andTheActionRowIsStillThere', () =>
+        docPanel().shadowRoot.querySelector('.foot').getBoundingClientRect().height > 20);
+
+      for (const tag of seededMeta) tag.remove();
+      engine.history.clear();
+      api.openPanel('styles');
+      await frame();
+
+      /* ------------------------------------------------------------------ *
+       * The JS panel: the page's scripts, by source.
+       *
+       * Shaped like the CSS panel because they answer the same question about
+       * different material. What differs is that a script has already run, so
+       * applying an edit records it and updates the source without re-executing —
+       * running again is a separate, explicit act.
+       * ------------------------------------------------------------------ */
+      const pageScript = document.createElement('script');
+      pageScript.textContent = 'window.__probeRan = 1;';
+      document.body.append(pageScript);
+      api.openPanel('js');
+      await frame();
+      await wait(200);
+      const jsPanel = () => dockPanel('js');
+      const scriptRows = () => Array.from(jsPanel().shadowRoot.querySelectorAll('.file'));
+      check('theJsPanelListsThePagesScripts', () => scriptRows().length > 0);
+      check('andExcludesTheOverlaysOwnBundle', () =>
+        !scriptRows().some((r) => /html-editor-overlay/.test(r.textContent)));
+      const ourRow = scriptRows().find((r) => {
+        r.click();
+        return true;
+      });
+      // Select the one we just added: it is the last inline script on the page.
+      const inlineRows = scriptRows().filter((r) => /inline script/.test(r.textContent));
+      inlineRows[inlineRows.length - 1].click();
+      await wait(220);
+      await frame();
+      const jsArea = () =>
+        jsPanel().shadowRoot.querySelector('heo-code-editor')?.shadowRoot.querySelector('textarea');
+      check('selectingAScriptLoadsItsSource', () => (jsArea()?.value ?? '').includes('__probeRan'));
+
+      /* A syntax error is caught by the browser's own parser, before Apply. */
+      jsArea().focus();
+      jsArea().value = 'const = ;';
+      jsArea().dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      await wait(200);
+      await frame();
+      check('badSyntaxBlocksApply', () =>
+        Array.from(jsPanel().shadowRoot.querySelectorAll('.foot .btn'))
+          .find((b) => /apply/i.test(b.textContent)).disabled);
+
+      /* A good edit applies: recorded, DOM text updated, nothing executed. */
+      jsArea().focus();
+      jsArea().value = 'window.__probeRan = 42;';
+      jsArea().dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      await wait(200);
+      await frame();
+      const jsDepth = engine.history.size;
+      Array.from(jsPanel().shadowRoot.querySelectorAll('.foot .btn'))
+        .find((b) => /apply/i.test(b.textContent)).click();
+      await wait(240);
+      await frame();
+      check('applyingAScriptRecordsAChange', () => engine.history.size === jsDepth + 1);
+      check('andRewritesTheSourceInTheDocument', () => /42/.test(pageScript.textContent));
+      check('butDoesNotReExecuteIt', () => window.__probeRan === 1);
+      check('theRecordNamesTheScript', () => engine.records.at(-1).summary);
+
+      /* Running is the separate, deliberate act. */
+      Array.from(jsPanel().shadowRoot.querySelectorAll('.foot .btn'))
+        .find((b) => /^run$/i.test(b.textContent.trim())).click();
+      await wait(220);
+      check('runningItExecutesTheNewSource', () => window.__probeRan === 42);
+      check('runningLeavesNoScriptBehind', () =>
+        document.querySelectorAll('script[data-heo-ignore]').length === 0);
+      pageScript.remove();
+      engine.history.clear();
+      api.openPanel('styles');
+      await frame();
 
       /* Reset reverts everything still on the undo stack.
        *
