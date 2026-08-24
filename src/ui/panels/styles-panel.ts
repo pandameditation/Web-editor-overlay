@@ -171,8 +171,26 @@ const SEGMENTED: Record<string, Array<{ value: string; label?: string; icon?: st
   ],
 };
 
-/** Sections open by default, then remembered for the session. */
-const openSections = new Set<string>(['modified', 'classes', 'spacing', 'layout', 'typography']);
+/**
+ * Sections the user has opened or closed by hand, which then wins for the session.
+ *
+ * Separate from the default so the two can disagree. A section whose default is
+ * "open when it has something in it" still has to stay shut once someone shuts it,
+ * and stay open once someone opens it — including the empty ones, where opening it
+ * is how you get to the affordance inside.
+ */
+const userToggled = new Map<string, boolean>();
+
+/**
+ * Whether a section renders open.
+ *
+ * Empty sections used to open anyway, so selecting a plain element produced a column
+ * of headings with nothing under them and the ones that did have content were pushed
+ * off screen. Content decides now, and the user overrules.
+ */
+function sectionOpen(id: string, fallback: boolean): boolean {
+  return userToggled.get(id) ?? fallback;
+}
 
 /**
  * The style editor.
@@ -632,14 +650,14 @@ export class HeoStylesPanel extends HeoElement {
     // collapsing it still sticks.
     if (caps.length && this.#capsShownFor !== el) {
       this.#capsShownFor = el;
-      openSections.add('child');
+      userToggled.set('child', true);
     }
 
     return html`<heo-section
       heading="In its parent"
       glyph="moveOut"
       badge=${caps.length ? String(caps.length) : setCount ? String(setCount) : ''}
-      ?open=${openSections.has('child')}
+      ?open=${sectionOpen('child', caps.length > 0 || setCount > 0)}
       @section-toggle=${(event: CustomEvent<{ open: boolean }>) =>
         this.#remember('child', event.detail.open)}
     >
@@ -794,7 +812,7 @@ export class HeoStylesPanel extends HeoElement {
       heading="Set on this element"
       glyph="sliders"
       badge=${properties.length ? String(properties.length) : ''}
-      ?open=${openSections.has('modified')}
+      ?open=${sectionOpen('modified', properties.length > 0)}
       @section-toggle=${(event: CustomEvent<{ open: boolean }>) =>
         this.#remember('modified', event.detail.open)}
     >
@@ -866,7 +884,7 @@ export class HeoStylesPanel extends HeoElement {
       heading="CSS rules"
       glyph="code"
       badge=${all.length ? String(all.length) : ''}
-      ?open=${openSections.has('cssrules')}
+      ?open=${sectionOpen('cssrules', all.length > 0)}
       @section-toggle=${(event: CustomEvent<{ open: boolean }>) =>
         this.#remember('cssrules', event.detail.open)}
     >
@@ -1004,7 +1022,7 @@ export class HeoStylesPanel extends HeoElement {
       heading="Classes"
       glyph="blocks"
       badge=${classes.length ? String(classes.length) : ''}
-      ?open=${openSections.has('classes')}
+      ?open=${sectionOpen('classes', classes.length > 0)}
       @section-toggle=${(event: CustomEvent<{ open: boolean }>) =>
         this.#remember('classes', event.detail.open)}
     >
@@ -1176,7 +1194,7 @@ export class HeoStylesPanel extends HeoElement {
       heading="Spacing"
       glyph="wrap"
       badge=${touched ? String(touched) : ''}
-      ?open=${openSections.has('spacing')}
+      ?open=${sectionOpen('spacing', true)}
       @section-toggle=${(event: CustomEvent<{ open: boolean }>) =>
         this.#remember('spacing', event.detail.open)}
     >
@@ -1208,7 +1226,7 @@ export class HeoStylesPanel extends HeoElement {
       heading=${section.heading}
       glyph=${section.glyph}
       badge=${setCount ? String(setCount) : ''}
-      ?open=${openSections.has(section.id)}
+      ?open=${sectionOpen(section.id, section.id === 'layout' || section.id === 'typography')}
       @section-toggle=${(event: CustomEvent<{ open: boolean }>) =>
         this.#remember(section.id, event.detail.open)}
     >
@@ -1308,7 +1326,7 @@ export class HeoStylesPanel extends HeoElement {
     return html`<heo-section
       heading="Add a declaration"
       glyph="plus"
-      ?open=${openSections.has('adder')}
+      ?open=${sectionOpen('adder', false)}
       @section-toggle=${(event: CustomEvent<{ open: boolean }>) =>
         this.#remember('adder', event.detail.open)}
     >
@@ -1390,8 +1408,7 @@ export class HeoStylesPanel extends HeoElement {
     this.newValue = '';
   }
   #remember(id: string, open: boolean): void {
-    if (open) openSections.add(id);
-    else openSections.delete(id);
+    userToggled.set(id, open);
     this.sectionsVersion += 1;
   }
 }

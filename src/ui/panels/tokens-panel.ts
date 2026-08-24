@@ -2,15 +2,17 @@ import { css, html, nothing, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 import { pickTextFile } from '../../core/design-system.js';
+import { normalizeClassName } from '../../core/classes.js';
 import { labelFor } from '../../core/dom.js';
 import { TOKEN_GROUP_LABELS, TOKEN_GROUPS, prettifyTokenName } from '../../core/tokens.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import type { DesignClass, DesignToken, TokenGroup } from '../../core/types.js';
 import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
+import { classSuggestions } from '../suggestions.js';
 import { baseStyles, swatchStyle } from '../theme.js';
 import { ClassEditor, focusDeclaration } from './class-editor.js';
-import '../controls/value-field.js';
+import { type HeoValueField } from '../controls/value-field.js';
 import '../controls/section.js';
 
 const openGroups = new Set<string>(['component', 'color', 'space', 'classes']);
@@ -154,6 +156,7 @@ export class HeoTokensPanel extends HeoElement {
   @state() private expandedClass: string | null = null;
   @state() private newClassProperty = '';
   @state() private version = 0;
+  @state() private classDraft = '';
 
   override render(): TemplateResult {
     const el = this.editor.selected;
@@ -369,16 +372,67 @@ export class HeoTokensPanel extends HeoElement {
           </button>`
         : nothing}
       ${classes.length === 0
-        ? html`<p class="hint" style="margin:0">
-            No classes yet. Style an element, then extract its declarations into a class to reuse
-            them.
+        ? html`<p class="hint" style="margin:0 0 8px">
+            No classes yet. Extract one from an element's inline styles, or name a new one below and
+            add its properties by hand.
           </p>`
         : repeat(
           classes,
           (entry) => entry.name,
           (entry) => this.#renderClass(entry, usage.get(entry.name) ?? 0, el),
         )}
+      <!--
+        The same field Styles uses to add a class, and deliberately so: this panel is
+        where classes are managed, yet the only way to make one was to extract it from
+        an element that already had the styles inline. A class with no element to
+        extract from had nowhere to start.
+      -->
+      <heo-value-field
+        style="margin-top:8px"
+        label="class"
+        action="Create this class"
+        action-icon="plus"
+        .suggestions=${classSuggestions(this.editor, this.classDraft)}
+        placeholder="name a new class"
+        @value-input=${(event: CustomEvent<{ value: string }>) => {
+        this.classDraft = event.detail.value;
+      }}
+        @value-submit=${(event: CustomEvent<{ value: string }>) =>
+        this.#createClass(event.detail.value, event.target as HeoValueField)}
+      ></heo-value-field>
+      <p class="hint" style="margin:6px 0 0">
+        Enter, or the add button, creates it empty and opens it for editing.
+      </p>
     </heo-section>`;
+  }
+
+  /**
+   * Create an empty class and open it, ready for its first property.
+   *
+   * Empty on purpose: there is no element to take declarations from here, so the
+   * useful next step is the property editor, which is why this expands it rather than
+   * leaving the user to find it in the list.
+   */
+  #createClass(raw: string, field?: HeoValueField): void {
+    const name = normalizeClassName(raw);
+    if (!name) {
+      if (raw.trim()) this.editor.notify(`"${raw}" is not a valid class name.`, 'error');
+      return;
+    }
+    const existing = this.editor.classes.get(name);
+    if (existing) {
+      this.editor.notify(`.${name} already exists — opening it.`, 'info');
+    } else {
+      this.editor.classes.upsert({ name, declarations: {}, origin: 'user' });
+      this.editor.notify(`Created .${name}.`, 'success');
+    }
+    this.expandedClass = name;
+    this.classDraft = '';
+    openGroups.add('classes');
+    this.version += 1;
+    // Through the field's own API: while focused it ignores external writes to
+    // `value`, so assigning to the draft alone would leave the text on screen.
+    field?.reset('');
   }
 
   #renderClass(entry: DesignClass, uses: number, el: HTMLElement | null): TemplateResult {

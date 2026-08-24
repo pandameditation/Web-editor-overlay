@@ -276,6 +276,37 @@ export class HeoCodeEditor extends LitElement {
       dialog.modal > header .spacer {
         flex: 1 1 auto;
       }
+      /* Sibling buffers. Same shape as the panel's own tab strip, so expanding does
+         not feel like arriving somewhere with different rules. */
+      dialog.modal > header .tabs {
+        display: flex;
+        gap: 2px;
+        padding: 2px;
+        border: 1px solid var(--heo-line);
+        border-radius: var(--heo-r-sm);
+        background: var(--heo-surface-sunken, transparent);
+      }
+      dialog.modal > header .tabs button {
+        padding: 3px 9px;
+        border: 0;
+        border-radius: calc(var(--heo-r-sm) - 2px);
+        background: transparent;
+        color: var(--heo-text-faint);
+        font: inherit;
+        font-size: 11px;
+        cursor: pointer;
+      }
+      dialog.modal > header .tabs button:hover {
+        color: var(--heo-text);
+      }
+      dialog.modal > header .tabs button[data-on] {
+        background: var(--heo-accent);
+        color: #fff;
+      }
+      dialog.modal > header .tabs button:focus-visible {
+        outline: 2px solid var(--heo-accent);
+        outline-offset: 1px;
+      }
       dialog.modal > .pane {
         flex: 1 1 auto;
         min-height: 0;
@@ -318,6 +349,17 @@ export class HeoCodeEditor extends LitElement {
   @property({ type: String }) heading = '';
   /** Set `expandable="false"` to drop the fullscreen affordance. */
   @property({ type: Boolean }) expandable = true;
+  /**
+   * Sibling buffers this editor can switch to, shown as tabs once expanded.
+   *
+   * A component is three files that only make sense together, so expanding the
+   * markup used to be a dead end: reaching its CSS meant collapsing, switching, and
+   * expanding again. The host keeps owning the buffers — this only says which ones
+   * exist and asks to be pointed at another.
+   */
+  @property({ attribute: false }) tabs: Array<{ id: string; label: string }> = [];
+  /** Which of `tabs` is showing. Matched against each entry's `id`. */
+  @property({ type: String }) activeTab = '';
 
   @state() private draft = '';
   @state() private expanded = false;
@@ -345,6 +387,13 @@ export class HeoCodeEditor extends LitElement {
     if (changed.has('value') && (!focused || this.value !== this.#lastEmitted)) {
       this.draft = this.value;
     }
+    // A new language means the host pointed this editor at a different buffer, so the
+    // draft belongs to the old one. Nothing about focus can argue with that, and the
+    // value may well be identical (two empty buffers) and so not register as changed.
+    if (changed.has('language') && changed.get('language') !== undefined) {
+      this.draft = this.value;
+      this.#lastEmitted = this.value;
+    }
     if (changed.has('error')) this.toggleAttribute('data-invalid', Boolean(this.error));
   }
 
@@ -363,6 +412,21 @@ export class HeoCodeEditor extends LitElement {
   /** Current buffer, whether or not it has been submitted. */
   get code(): string {
     return this.draft;
+  }
+
+  /**
+   * Ask the host to point this editor at another buffer.
+   *
+   * The pending draft goes out first. Switching tabs is not submitting, but losing
+   * what was typed because the user looked at the CSS would be indefensible, and the
+   * host is already storing every keystroke from `code-input`.
+   */
+  #selectTab(id: string): void {
+    if (id === this.activeTab) return;
+    if (this.draft !== this.value) this.#emit('code-input');
+    this.dispatchEvent(
+      new CustomEvent('tab-change', { detail: { id }, bubbles: true, composed: true }),
+    );
   }
 
   focusEditor(): void {
@@ -421,7 +485,21 @@ export class HeoCodeEditor extends LitElement {
       >
         <header>
           ${icon('code', 13)}
-          <span class="lang">${this.#title()}</span>
+          ${this.tabs.length > 1
+        ? html`<div class="tabs" role="tablist" aria-label="Source files">
+              ${this.tabs.map(
+          (tab) => html`<button
+                  type="button"
+                  role="tab"
+                  aria-selected=${tab.id === this.activeTab}
+                  ?data-on=${tab.id === this.activeTab}
+                  @click=${() => this.#selectTab(tab.id)}
+                >
+                  ${tab.label}
+                </button>`,
+        )}
+            </div>`
+        : html`<span class="lang">${this.#title()}</span>`}
           <span class="spacer"></span>
           <button
             class="btn sm"

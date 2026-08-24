@@ -143,13 +143,43 @@ export function safePropValue(value: unknown, spec?: PropSpec): string {
 }
 
 /** Fill `{{prop}}` placeholders and return sanitized markup. */
+/**
+ * A block template's placeholder syntax, in one place.
+ *
+ * Three things read it — filling a template, discovering what props a block needs,
+ * and renaming one — and they have to agree exactly, or a prop the author named in
+ * the form would not be the prop the template substitutes.
+ */
+const PLACEHOLDER = /\{\{\s*([A-Za-z][\w-]*)\s*\}\}/g;
+
+/**
+ * The prop names a template refers to, in the order they first appear.
+ *
+ * Source order rather than alphabetical: it matches the order the author wrote them
+ * and, in practice, the order they read on screen.
+ */
+export function templatePropNames(html: string): string[] {
+  const seen: string[] = [];
+  for (const match of String(html ?? '').matchAll(PLACEHOLDER)) {
+    if (!seen.includes(match[1])) seen.push(match[1]);
+  }
+  return seen;
+}
+
+/** Rewrite every occurrence of one placeholder, leaving the rest of the markup alone. */
+export function renameTemplateProp(html: string, from: string, to: string): string {
+  return String(html ?? '').replace(PLACEHOLDER, (match, name: string) =>
+    name === from ? `{{${to}}}` : match,
+  );
+}
+
 export function renderBlockTemplate(
   html: string,
   values: Record<string, unknown>,
   specs: Record<string, PropSpec> = {},
 ): string {
   const filled = String(html ?? '').replace(
-    /\{\{\s*([A-Za-z][\w-]*)\s*\}\}/g,
+    PLACEHOLDER,
     (_match, name: string) => safePropValue(values[name], specs[name]),
   );
   const holder = document.createElement('div');

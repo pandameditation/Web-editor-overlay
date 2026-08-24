@@ -2,8 +2,6 @@ import { css, html, nothing, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 import { acceptsChildren, isMutable, labelFor } from '../../core/dom.js';
-import { formatHTML } from '../../core/sanitize.js';
-import { blockFromSource, normalizeCustomElementTag } from '../../core/library.js';
 import { INSERT_POSITION_LABELS, type InsertPosition } from '../../core/mutations.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import type { BlockKind, LibraryBlock } from '../../core/types.js';
@@ -11,11 +9,9 @@ import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
 import { baseStyles } from '../theme.js';
 import { PropForm } from './prop-form.js';
-import '../controls/code-editor.js';
 import '../controls/section.js';
 import '../controls/segmented.js';
 
-const openSections = new Set<string>(['blocks']);
 
 /**
  * The block library.
@@ -268,27 +264,6 @@ export class HeoLibraryPanel extends HeoElement {
   @state() private position: InsertPosition = 'after';
   @state() private configuring: LibraryBlock | null = null;
   @state() private props: Record<string, string> = {};
-  @state() private sourceTab: 'html' | 'css' | 'js' = 'html';
-
-  /**
-   * The authoring buffer.
-   *
-   * `id` is null for a new block and set when editing an existing one, which is
-   * the only difference between the create and edit flows — the form is the same,
-   * so there is one code path and no second dialog to keep in sync.
-   *
-   * All three source buffers live here rather than in the editors, so switching
-   * tabs cannot lose work.
-   */
-  @state() private draft = emptyDraft();
-  @state() private error = '';
-  @state() private version = 0;
-
-  override connectedCallback(): void {
-    super.connectedCallback();
-    // Seed the name once the library is known, so the form is ready to use.
-    if (!this.draft.name) this.draft = emptyDraft(this.#defaultName());
-  }
 
   override render(): TemplateResult {
     const selected = this.editor.selected;
@@ -328,21 +303,30 @@ export class HeoLibraryPanel extends HeoElement {
       ${this.configuring ? this.#renderConfigure(this.configuring) : nothing}
 
       ${groups.length === 0
-        ? html`<div class="empty">No block matches. Create one below.</div>`
-        : groups.map(
+        ? html`<div class="empty">
+            <p style="margin:0 0 9px">
+              ${this.query.trim()
+            ? html`Nothing matches <strong>${this.query}</strong>.`
+            : html`No block here yet.`}
+            </p>
+            ${this.#renderCreateButton()}
+          </div>`
+        : html`${groups.map(
           (group) => html`
-              <div class="group">${group.name}</div>
-              <div class="cards">
-                ${repeat(
+                <div class="group">${group.name}</div>
+                <div class="cards">
+                  ${repeat(
             group.blocks,
             (block) => block.id,
             (block) => this.#renderCard(block),
           )}
-              </div>
-            `,
+                </div>
+              `,
         )}
-
-      ${this.#renderAuthor()}
+            <!-- After the last card as well as on an empty result: looking through the
+                 library and not finding the thing is exactly when someone decides to
+                 build it. -->
+            <div class="makerow">${this.#renderCreateButton()}</div>`}
     `;
   }
 
@@ -407,12 +391,12 @@ export class HeoLibraryPanel extends HeoElement {
           title="Inspect and edit this block"
           @click=${(event: Event) => {
         event.stopPropagation();
-        this.#startEdit(block);
+        this.editor.beginBlockEdit(block.id);
       }}
           @keydown=${(event: KeyboardEvent) => {
         if (event.key !== 'Enter') return;
         event.stopPropagation();
-        this.#startEdit(block);
+        this.editor.beginBlockEdit(block.id);
       }}
           >${icon('sliders', 11)}</span
         >
@@ -486,152 +470,25 @@ export class HeoLibraryPanel extends HeoElement {
     </div>`;
   }
 
-  #renderAuthor(): TemplateResult {
-    const isElement = Boolean(this.draft.tag.trim() && this.draft.script.trim());
-    const editing = this.draft.id !== null;
-    const normalizedTag = normalizeCustomElementTag(this.draft.tag);
-    const tagCorrected = Boolean(this.draft.tag.trim()) && normalizedTag !== this.draft.tag.trim();
-
-    return html`<heo-section
-      heading=${editing ? `Editing ${this.draft.name || 'block'}` : 'Create a block'}
-      glyph=${editing ? 'sliders' : 'plus'}
-      ?open=${openSections.has('author')}
-      @section-toggle=${(event: CustomEvent<{ open: boolean }>) => {
-        if (event.detail.open) openSections.add('author');
-        else openSections.delete('author');
-        this.version += 1;
-      }}
+  /**
+   * Start a block from the list, seeded with whatever was being searched for.
+   *
+   * The panel used to carry its own copy of the authoring form in a collapsible
+   * section, so there were two forms for one job — and the one reached from an element
+   * could not express half of what a block can hold. There is one dialog now, and both
+   * this and a card's edit action are ways into it.
+   */
+  #renderCreateButton(): TemplateResult {
+    const seed = this.query.trim();
+    return html`<button
+      class="btn sm"
+      type="button"
+      title="Author a new block"
+      @click=${() => this.editor.beginBlockDraft(seed, this.kind === 'all' ? 'component' : this.kind)}
     >
-      <div class="author">
-        ${editing
-        ? html`<div class="editing-banner">
-              ${icon('sliders', 12)}
-              <span>Changes replace the existing block.</span>
-              <button class="btn sm ghost" type="button" @click=${this.#resetDraft}>
-                ${icon('close', 11)} New instead
-              </button>
-            </div>`
-        : nothing}
-        <div class="two">
-          <input
-            class="input"
-            type="text"
-            placeholder="Block name"
-            .value=${this.draft.name}
-            aria-label="Block name"
-            @input=${(event: Event) => this.#edit('name', (event.target as HTMLInputElement).value)}
-          />
-          <select
-            class="input"
-            .value=${this.draft.kind}
-            aria-label="Block kind"
-            @change=${(event: Event) =>
-        this.#edit('kind', (event.target as HTMLSelectElement).value as BlockKind)}
-          >
-            <option value="component" ?selected=${this.draft.kind === 'component'}>Component</option>
-            <option value="container" ?selected=${this.draft.kind === 'container'}>Container</option>
-          </select>
-        </div>
-        <input
-          class="input"
-          type="text"
-          placeholder="Short description (optional)"
-          .value=${this.draft.description}
-          aria-label="Description"
-          @input=${(event: Event) =>
-        this.#edit('description', (event.target as HTMLInputElement).value)}
-        />
-
-        <div class="tabs" role="tablist">
-          ${(['html', 'css', 'js'] as const).map(
-          (tab) => html`<button
-              type="button"
-              role="tab"
-              aria-selected=${this.sourceTab === tab}
-              @click=${() => {
-              this.sourceTab = tab;
-            }}
-            >
-              ${tab === 'js' ? 'JS / Lit' : tab.toUpperCase()}
-            </button>`,
-        )}
-        </div>
-
-        ${this.sourceTab === 'html'
-        ? html`<heo-code-editor
-              language="html"
-              rows="7"
-              heading="Block HTML"
-              .value=${this.draft.html}
-              placeholder=${isElement
-            ? 'Ignored: this block inserts its custom element tag instead.'
-            : '<div class="my-block">…</div>  ·  use {{propName}} for props'}
-              @code-input=${(event: CustomEvent<{ value: string }>) =>
-            this.#edit('html', event.detail.value)}
-            ></heo-code-editor>`
-        : nothing}
-        ${this.sourceTab === 'css'
-        ? html`<heo-code-editor
-              language="css"
-              rows="7"
-              heading="Block CSS"
-              .value=${this.draft.css}
-              placeholder=".my-block { display: grid; gap: var(--space-md, 16px); }"
-              @code-input=${(event: CustomEvent<{ value: string }>) =>
-            this.#edit('css', event.detail.value)}
-            ></heo-code-editor>`
-        : nothing}
-        ${this.sourceTab === 'js'
-        ? html`
-              <input
-                class="input mono"
-                type="text"
-                placeholder="custom element tag, e.g. my-widget"
-                .value=${this.draft.tag}
-                aria-label="Custom element tag"
-                @input=${(event: Event) =>
-            this.#edit('tag', (event.target as HTMLInputElement).value)}
-                @blur=${this.#normalizeTag}
-              />
-              ${tagCorrected
-            ? html`<p class="hint tagfix">
-                  ${icon('sparkle', 11)} Will be used as
-                  <code class="mono">${normalizedTag || '(unusable — needs a letter)'}</code>.
-                  Custom element names are lowercase and need a hyphen.
-                </p>`
-            : nothing}
-              <heo-code-editor
-                language="js"
-                rows="10"
-                heading="Component module"
-                .value=${this.draft.script}
-                placeholder=${"import { LitElement, html, css } from 'lit';\n\nclass MyWidget extends LitElement { … }\ncustomElements.define('my-widget', MyWidget);"}
-                @code-input=${(event: CustomEvent<{ value: string }>) =>
-            this.#edit('script', event.detail.value)}
-              ></heo-code-editor>
-              <p class="hint">
-                Imports of <code class="mono">lit</code> resolve to the copy the overlay already
-                loads, so a component pasted here runs without a build step. The module has to call
-                <code class="mono">customElements.define</code> with the tag above.
-              </p>
-            `
-        : nothing}
-
-        ${this.error ? html`<p class="save-error">${icon('close', 11)} ${this.error}</p>` : nothing}
-
-        <div class="row">
-          <button class="btn primary" type="button" @click=${this.#save}>
-            ${icon(editing ? 'check' : 'plus', 12)} ${editing ? 'Update block' : 'Save block'}
-          </button>
-          ${editing
-        ? html`<button class="btn" type="button" @click=${this.#resetDraft}>Cancel</button>`
-        : nothing}
-        </div>
-      </div>
-    </heo-section>`;
+      ${icon('plus', 12)} ${seed ? `Create "${seed}"` : 'Create a block'}
+    </button>`;
   }
-
-  /* ---------------------------------------------------------------------- */
 
   #visibleBlocks(): LibraryBlock[] {
     const found = this.editor.library.search(this.query);
@@ -661,136 +518,6 @@ export class HeoLibraryPanel extends HeoElement {
     this.editor.notify(`Removed ${block.name} from the library.`, 'info');
   }
 
-  #edit<K extends keyof BlockDraft>(key: K, value: BlockDraft[K]): void {
-    this.draft = { ...this.draft, [key]: value };
-    this.error = '';
-  }
-
-  /** Apply the tag correction once the user leaves the field. */
-  #normalizeTag(): void {
-    const normalized = normalizeCustomElementTag(this.draft.tag);
-    if (normalized && normalized !== this.draft.tag) this.#edit('tag', normalized);
-  }
-
-  #resetDraft = (): void => {
-    this.draft = emptyDraft(this.#defaultName(), this.draft.kind);
-    this.error = '';
-    this.sourceTab = 'html';
-  };
-
-  /** Load an existing block into the form so it can be inspected and changed. */
-  #startEdit(block: LibraryBlock): void {
-    this.draft = {
-      id: block.id,
-      name: block.name,
-      kind: block.kind,
-      category: block.category ?? '',
-      description: block.description ?? '',
-      html: formatHTML(block.html),
-      css: block.css ?? '',
-      script: block.element?.module ?? block.element?.script ?? '',
-      tag: block.element?.tag ?? '',
-    };
-    this.error = '';
-    this.sourceTab = block.element ? 'js' : 'html';
-    openSections.add('author');
-    this.version += 1;
-    // Bring the form into view; it sits below a potentially long block grid.
-    requestAnimationFrame(() => {
-      this.renderRoot.querySelector('.author')?.scrollIntoView({ block: 'nearest' });
-    });
-  }
-
-  /**
-   * Validate and save.
-   *
-   * The button stays enabled whatever the state of the form: a disabled button
-   * cannot explain itself, and "why can't I click this" is a worse experience
-   * than being told exactly what is missing.
-   */
-  #save = (): void => {
-    const name = this.draft.name.trim();
-    const hasScript = Boolean(this.draft.script.trim());
-    const tag = normalizeCustomElementTag(this.draft.tag);
-
-    if (!name) {
-      this.error = 'Give the block a name so it can be found in the library.';
-      return;
-    }
-    if (hasScript && !tag) {
-      this.error =
-        'A component with a module needs a custom element tag: lowercase letters, numbers and at least one hyphen.';
-      return;
-    }
-    if (tag && !hasScript) {
-      this.error = `Add the module that defines <${tag}>, or clear the tag to save plain markup.`;
-      return;
-    }
-    if (!hasScript && !this.draft.html.trim()) {
-      this.error = 'Add some HTML, or a tag and module on the JS / Lit tab.';
-      return;
-    }
-    if (hasScript && !this.draft.script.includes('customElements.define')) {
-      this.error = `The module must call customElements.define('${tag}', …) for the tag to exist.`;
-      return;
-    }
-
-    try {
-      const existing = this.draft.id ? this.editor.library.get(this.draft.id) : undefined;
-      const built = blockFromSource({
-        ...this.draft,
-        tag,
-        id: this.draft.id ?? this.editor.library.uniqueId(name),
-      });
-      // Merge so editing keeps what the form does not cover, such as declared
-      // props and the card icon.
-      const block = this.editor.library.upsert({ ...existing, ...built });
-      this.editor.notify(
-        this.draft.id ? `Updated ${block.name}.` : `Saved ${block.name} to the library.`,
-        'success',
-      );
-      this.#resetDraft();
-    } catch (error) {
-      this.error = error instanceof Error ? error.message : String(error);
-    }
-  };
-
-  /** `Block 1`, `Block 2`, … so a new form is usable without thinking. */
-  #defaultName(): string {
-    const used = new Set(this.editor.library.list().map((block) => block.name));
-    for (let n = 1; n < 500; n += 1) {
-      const candidate = `Block ${n}`;
-      if (!used.has(candidate)) return candidate;
-    }
-    return 'Block';
-  }
-}
-
-interface BlockDraft {
-  /** Null for a new block, otherwise the block being edited. */
-  id: string | null;
-  name: string;
-  kind: BlockKind;
-  category: string;
-  description: string;
-  html: string;
-  css: string;
-  script: string;
-  tag: string;
-}
-
-function emptyDraft(name = 'Block 1', kind: BlockKind = 'component'): BlockDraft {
-  return {
-    id: null,
-    name,
-    kind,
-    category: '',
-    description: '',
-    html: '',
-    css: '',
-    script: '',
-    tag: '',
-  };
 }
 
 function groupBy(blocks: LibraryBlock[]): Array<{ name: string; blocks: LibraryBlock[] }> {

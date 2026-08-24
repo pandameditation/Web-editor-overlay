@@ -1,7 +1,7 @@
 import { BLOCK_STYLE_ID } from './constants.js';
 import { evaluateModule } from './lit-bridge.js';
 import { allPresets } from './presets.js';
-import { renderBlockTemplate, sanitizeFragment } from './sanitize.js';
+import { renameTemplateProp, renderBlockTemplate, sanitizeFragment, templatePropNames } from './sanitize.js';
 import { ManagedStyleSheet } from './stylesheet.js';
 import type { BlockKind, LibraryBlock, PropSpec } from './types.js';
 
@@ -242,6 +242,134 @@ export function slugify(value: string): string {
  * once, and a JS/Lit module plus tag name turns the block into a real custom
  * element whose tag is what actually gets inserted.
  */
+/**
+ * One `{{placeholder}}` in a block's markup, and what the author decided about it.
+ *
+ * Lives here rather than in the panel that renders it because two entry points now
+ * author blocks — the library and "save as reusable block" — and they have to reach
+ * the same conclusions from the same markup.
+ */
+export interface BlockPropRow {
+  /** The name as it currently appears in the markup, which renaming rewrites. */
+  placeholder: string;
+  name: string;
+  type: PropSpec['type'];
+  label: string;
+  description: string;
+  default: string;
+}
+
+export const PROP_TYPES = ['text', 'number', 'color', 'select', 'url', 'boolean', 'token'] as const;
+
+/**
+ * Propose a row per placeholder, keeping whatever the block already declared.
+ *
+ * Matched by name, so revisiting a block does not discard the descriptions written
+ * last time. Names absent from the markup are dropped: they are props nothing can
+ * ever fill.
+ */
+export function blockPropRows(
+  html: string,
+  existing?: Record<string, PropSpec>,
+): BlockPropRow[] {
+  return templatePropNames(html).map((placeholder) => {
+    const spec = existing?.[placeholder];
+    return {
+      placeholder,
+      name: placeholder,
+      type: spec?.type ?? inferPropType(placeholder),
+      label: spec?.label ?? humanisePropName(placeholder),
+      description: spec?.description ?? '',
+      default: spec?.default === undefined ? '' : String(spec.default),
+    };
+  });
+}
+
+/**
+ * Turn reviewed rows into declared props, rewriting the markup for any rename.
+ *
+ * Renaming has to reach the template or the two drift apart, leaving a prop the
+ * insert form offers and the markup never substitutes. Returns an error message
+ * instead of throwing, because the caller's job is to show it next to the field.
+ */
+export function applyBlockProps(
+  html: string,
+  rows: readonly BlockPropRow[],
+): { html: string; props: Record<string, PropSpec>; error?: string } {
+  let out = html;
+  const props: Record<string, PropSpec> = {};
+  for (const row of rows) {
+    const name = row.name.trim();
+    if (!name) {
+      return { html, props: {}, error: `Give {{${row.placeholder}}} a name, or remove it from the markup.` };
+    }
+    if (!/^[A-Za-z][\w-]*$/.test(name)) {
+      return {
+        html,
+        props: {},
+        error: `"${name}" cannot be a prop name: start with a letter, then letters, digits, - or _.`,
+      };
+    }
+    if (props[name]) {
+      return { html, props: {}, error: `Two props are called ${name}. Names have to be unique.` };
+    }
+    if (name !== row.placeholder) out = renameTemplateProp(out, row.placeholder, name);
+    // A label still matching what the placeholder produced was never chosen, so it
+    // follows the rename. One the author set is left alone.
+    const untouched = !row.label.trim() || row.label.trim() === humanisePropName(row.placeholder);
+    props[name] = {
+      type: row.type,
+      label: untouched ? humanisePropName(name) : row.label.trim(),
+      ...(row.description.trim() ? { description: row.description.trim() } : {}),
+      ...(row.default.trim() ? { default: row.default.trim() } : {}),
+    };
+  }
+  return { html: out, props };
+}
+
+/**
+ * A first guess at a prop's type, from what it is called.
+ *
+ * By word, not by substring: `ctaHref` has to read as a URL, which an anchored test
+ * misses, while a loose substring test would call `iconColour` a URL. The order is
+ * the tie-breaker — `linkColour` is a colour first. Wrong sometimes, and cheap to
+ * correct from the control beside it; the point is that a colour prop arrives as a
+ * colour picker rather than a text box.
+ */
+export function inferPropType(name: string): PropSpec['type'] {
+  const words = name
+    .replace(/[-_]+/g, ' ')
+    .replace(/([a-z\d])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean);
+  const has = (...candidates: string[]): boolean => words.some((word) => candidates.includes(word));
+
+  if (has('color', 'colour', 'background', 'bg', 'fill', 'stroke', 'tint', 'accent')) return 'color';
+  if (has('href', 'url', 'link', 'src', 'image', 'img', 'logo', 'icon', 'avatar', 'poster')) {
+    return 'url';
+  }
+  if (has('count', 'size', 'width', 'height', 'index', 'qty', 'quantity', 'amount', 'level',
+    'columns', 'rows', 'total', 'max', 'min')) {
+    return 'number';
+  }
+  if (words.length > 1 && has('is', 'has', 'show', 'hide', 'enable', 'disable', 'with')) {
+    return 'boolean';
+  }
+  if (has('spacing', 'space', 'gap', 'radius', 'shadow', 'font')) return 'token';
+  return 'text';
+}
+
+/** `ctaLabel` → `Cta label`. A starting point for the insert form's field label. */
+export function humanisePropName(name: string): string {
+  const spaced = name
+    .replace(/[-_]+/g, ' ')
+    .replace(/([a-z\d])([A-Z])/g, '$1 $2')
+    .trim()
+    .toLowerCase();
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+}
+
 export function blockFromSource(input: {
   name: string;
   kind: BlockKind;

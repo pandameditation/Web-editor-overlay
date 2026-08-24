@@ -660,6 +660,190 @@
       engine.history.clear();
       para.removeAttribute('style');
 
+      /* ------------------------------------------------------------------ *
+       * Authoring a block, in one dialog.
+       *
+       * There used to be two forms for this job — a collapsible section in the Library
+       * panel and a separate dialog on "save as reusable block" — and the one reached
+       * from an element could not express half of what a block can hold. Both entry
+       * points now open the same two-step dialog: Source, then Props when the markup
+       * has placeholders and never otherwise.
+       * ------------------------------------------------------------------ */
+      const blockDialog = () => overlayRoot().shadowRoot.querySelector('heo-extract-dialog');
+      const typeInto2 = (el, value) => {
+        el.focus();
+        el.value = value;
+        el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      };
+      const inDialog = (sel, text) => Array.from(blockDialog().shadowRoot.querySelectorAll(sel))
+        .find((n) => n.textContent.trim().toLowerCase().includes(text.toLowerCase()));
+
+      const blockHost = document.createElement('div');
+      blockHost.className = 'card';
+      blockHost.innerHTML = '<span>Inner.</span>';
+      document.body.append(blockHost);
+      engine.beginBlockExtraction(blockHost);
+      await wait(180);
+      await frame();
+      check('savingAnElementAsABlockOffersTheWholeForm', () =>
+        Array.from(blockDialog().shadowRoot.querySelectorAll('.field .label'))
+          .map((l) => l.textContent.trim()).join(','));
+      check('andAllThreeSourceBuffers', () =>
+        Array.from(blockDialog().shadowRoot.querySelectorAll('.tabs button'))
+          .map((b) => b.textContent.trim()).join(','));
+      check('andShowsWhichStepItIsOn', () =>
+        Boolean(blockDialog().shadowRoot.querySelector('.steps .step[data-on]')));
+      check('theCategoryIsPrefilledAndSuggested', () => {
+        const root = blockDialog().shadowRoot;
+        return `${root.querySelector('input[aria-label="Category"]').value} n=${root.querySelectorAll('#heo-extract-categories option').length > 3}`;
+      });
+
+      /* Give it placeholders, then continue. */
+      const blockArea = () =>
+        blockDialog().shadowRoot.querySelector('heo-code-editor').shadowRoot.querySelector('textarea');
+      check('theMarkupCameFromThePage', () => /Inner/.test(blockArea().value));
+      typeInto2(blockArea(), '<div class="card">{{headline}}<a href="{{ctaHref}}">go</a></div>');
+      await wait(110);
+      await frame();
+      typeInto2(blockDialog().shadowRoot.querySelector('input[aria-label="Block name"]'), 'Promo');
+      await wait(110);
+      await frame();
+      check('confirmReadsAsContinueOnTheFirstStep', () =>
+        Boolean(inDialog('footer .btn.primary', 'Continue')));
+      inDialog('footer .btn.primary', 'Continue').click();
+      await wait(200);
+      await frame();
+
+      /* One prop per card, one field per line. Five to a row was unreadable. */
+      check('continueReachesThePropsStep', () =>
+        blockDialog().shadowRoot.querySelectorAll('.propcard').length);
+      check('eachPropStacksItsFields', () =>
+        Array.from(blockDialog().shadowRoot.querySelectorAll('.propcard'))[0]
+          .querySelectorAll('.field .label').length + ' fields, one per line');
+      check('thePropsStepOffersBackAndSave', () =>
+        Boolean(inDialog('footer .btn', 'Back')) && Boolean(inDialog('footer .btn.primary', 'Save block')));
+      typeInto2(
+        blockDialog().shadowRoot.querySelector('.propcard input[aria-label^="Name"]'), 'title');
+      await wait(110);
+      await frame();
+      check('aRenameIsShownAgainstThePlaceholder', () =>
+        /renames to/.test(blockDialog().shadowRoot.textContent));
+      typeInto2(
+        blockDialog().shadowRoot.querySelector('.propcard input[aria-label^="Description"]'),
+        'The big line');
+      await wait(110);
+      await frame();
+      inDialog('footer .btn.primary', 'Save block').click();
+      await wait(240);
+      await frame();
+      check('savingClosesTheDialog', () => blockDialog() === null);
+      const authored = engine.library.list().find((b) => b.name === 'Promo');
+      check('theBlockIsInTheLibraryWithItsProps', () =>
+        Object.entries(authored.props ?? {}).map(([k, v]) => `${k}:${v.type}`).join(' '));
+      check('theDescriptionSurvived', () => authored.props?.title?.description);
+      check('theRenameReachedTheMarkup', () =>
+        /\{\{title\}\}/.test(authored.html) && !/\{\{headline\}\}/.test(authored.html));
+
+      /* A block with no placeholders never sees the props step at all. */
+      const plainHost = document.createElement('p');
+      plainHost.textContent = 'Plain.';
+      document.body.append(plainHost);
+      engine.beginBlockExtraction(plainHost);
+      await wait(180);
+      await frame();
+      typeInto2(blockDialog().shadowRoot.querySelector('input[aria-label="Block name"]'), 'Plainish');
+      await wait(110);
+      await frame();
+      inDialog('footer .btn.primary', 'Continue').click();
+      await wait(240);
+      await frame();
+      check('noPlaceholdersMeansOneStep', () =>
+        blockDialog() === null && Boolean(engine.library.list().find((b) => b.name === 'Plainish')));
+
+      /* The Library panel routes into that same dialog instead of its own form. */
+      api.openPanel('library');
+      await frame();
+      await wait(140);
+      const libPanel = dockPanel('library');
+      check('theLibraryPanelHasNoFormOfItsOwn', () =>
+        !Array.from(libPanel.shadowRoot.querySelectorAll('heo-section'))
+          .some((s) => /create a block|editing/i.test(s.heading ?? '')));
+      const blockSearch = libPanel.shadowRoot.querySelector('input[aria-label="Search blocks"]');
+      typeInto2(blockSearch, 'zzz-no-such-block');
+      await wait(120);
+      await frame();
+      const createBtn = Array.from(libPanel.shadowRoot.querySelectorAll('.empty button'))
+        .find((b) => /create/i.test(b.textContent));
+      check('anEmptyBlockSearchOffersToCreateOne', () => createBtn.textContent.trim());
+      createBtn.click();
+      await wait(200);
+      await frame();
+      check('creatingFromTheListOpensTheSameDialogSeeded', () => {
+        const root = blockDialog().shadowRoot;
+        return `${root.querySelector('header h2').textContent.trim()} / ${root.querySelector('input[aria-label="Block name"]').value}`;
+      });
+      engine.cancelExtraction();
+      await wait(120);
+      typeInto2(blockSearch, '');
+      await wait(120);
+      await frame();
+      check('createAlsoSitsAfterTheLastCard', () =>
+        Boolean(Array.from(libPanel.shadowRoot.querySelectorAll('.makerow button'))
+          .find((b) => /create/i.test(b.textContent))));
+
+      /* Editing a block opens the same dialog, pre-filled, props and all. */
+      engine.beginBlockEdit(authored.id);
+      await wait(200);
+      await frame();
+      check('editingABlockOpensItPreFilled', () => {
+        const root = blockDialog().shadowRoot;
+        return `${root.querySelector('header h2').textContent.trim()} / ${root.querySelector('input[aria-label="Block name"]').value}`;
+      });
+      engine.commitExtraction();
+      await wait(200);
+      await frame();
+      check('editingKeepsThePropDescriptions', () =>
+        blockDialog().shadowRoot.querySelector('.propcard input[aria-label^="Description"]').value);
+      engine.cancelExtraction();
+      await wait(120);
+      engine.library.remove(authored.id);
+      const plainish = engine.library.list().find((b) => b.name === 'Plainish');
+      if (plainish) engine.library.remove(plainish.id);
+      blockHost.remove();
+      plainHost.remove();
+      await frame();
+
+      /* Tokens can create a class outright, not only extract one from an element. */
+      api.openPanel('tokens');
+      await frame();
+      await wait(150);
+      const reusablePanel = dockPanel('tokens');
+      const reusable = Array.from(reusablePanel.shadowRoot.querySelectorAll('heo-section'))
+        .find((s) => s.heading === 'Reusable classes');
+      if (!reusable.open) reusable.shadowRoot.querySelector('.head').click();
+      await frame();
+      const classMaker = Array.from(reusable.querySelectorAll('heo-value-field'))
+        .find((f) => f.getAttribute('placeholder') === 'name a new class');
+      check('tokensOffersToCreateAClass', () => Boolean(classMaker));
+      const makerInput = classMaker.shadowRoot.querySelector('input[type=text]');
+      typeInto2(makerInput, 'promo-shell');
+      await frame();
+      // `press` is declared further down this file, so dispatch directly.
+      makerInput.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Enter', bubbles: true, composed: true, cancelable: true,
+      }));
+      await wait(220);
+      await frame();
+      check('theNewClassExists', () => Boolean(engine.classes.get('promo-shell')));
+      check('andItOpensReadyForItsFirstProperty', () =>
+        Array.from(reusable.querySelectorAll('.cls'))
+          .some((c) => c.textContent.includes('promo-shell') && c.querySelector('.decls')));
+      check('theCreateFieldClearsItself', () =>
+        classMaker.shadowRoot.querySelector('input[type=text]').value === '');
+      engine.classes.remove('promo-shell');
+      api.openPanel('styles');
+      await frame();
+
       /* Custom element names are corrected rather than rejected late. */
       check('tagCorrections', () =>
         ['myfooter', 'my@footer', 'MyFooter', '2cool', 'ui@card', 'my-widget']
@@ -1090,7 +1274,10 @@
 
       const cssRules = stylesSection('CSS rules');
       check('theCssRulesSectionExists', () => Boolean(cssRules));
-      check('theCssRulesSectionStartsClosed', () => cssRules.open === false);
+      // Open because it has rules in it — an empty section opening was the complaint.
+      // The per-selector groups inside still start closed; that is where "do not expand
+      // complex selectors by default" applies, and it is checked just below.
+      check('theCssRulesSectionOpensWhenItHasContent', () => cssRules.open === true);
       cssRules.shadowRoot.querySelector('.head').click();
       await frame();
       const groupHeaders = () => Array.from(cssRules.querySelectorAll('.cls > header'));
@@ -1100,6 +1287,33 @@
         !groupHeaders().some((h) => ['.ph', '.plain'].includes(h.querySelector('.n').textContent.trim())));
       check('theGroupsStartClosedToo', () =>
         groupHeaders().every((h) => h.getAttribute('aria-expanded') === 'false'));
+
+      /*
+       * And an empty section stays shut. Selecting a plain element used to produce a
+       * column of headings with nothing under them, pushing the ones that did have
+       * content off screen.
+       */
+      const bareEl = document.createElement('span');
+      bareEl.textContent = 'bare';
+      document.body.append(bareEl);
+      api.select(bareEl);
+      await frame();
+      await wait(120);
+      check('emptySectionsStayClosed', () => {
+        const shut = ['Set on this element', 'Classes', 'CSS rules'].map((heading) => {
+          const section = stylesSection(heading);
+          return `${heading}=${section ? section.open : 'missing'}`;
+        });
+        return shut.join(' ');
+      });
+      // Opening one by hand still sticks, which is how you reach the affordance inside.
+      stylesSection('Classes').shadowRoot.querySelector('.head').click();
+      await frame();
+      check('openingAnEmptySectionSticks', () => stylesSection('Classes').open === true);
+      bareEl.remove();
+      api.select(rtarget);
+      await frame();
+      await wait(120);
 
       // Two rules share `.fig .ph`; the meta line is what tells them apart.
       const openRuleGroup = async (selector, condition) => {

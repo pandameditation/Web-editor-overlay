@@ -30,7 +30,14 @@ import {
 import { containTab } from './focus.js';
 import { History, nextChangeId, type Command } from './history.js';
 import { handleKeyDown, matchesShortcut } from './keymap.js';
-import { BlockLibrary, blockFromSource } from './library.js';
+import {
+  applyBlockProps,
+  BlockLibrary,
+  blockFromSource,
+  blockPropRows,
+  normalizeCustomElementTag,
+  type BlockPropRow,
+} from './library.js';
 import {
   cleanMarkup,
   duplicateElement,
@@ -66,6 +73,7 @@ import type {
   MountOptions,
   PanelId,
   SavePayload,
+  PropSpec,
 } from './types.js';
 
 export interface ToastMessage {
@@ -101,19 +109,64 @@ export interface ClassExtraction {
   error: string;
 }
 
+/**
+ * A block being authored, wherever it came from.
+ *
+ * One shape for all three entry points — captured from an element, started empty
+ * from the library, or opened to edit an existing block — because they were three
+ * different forms for the same job, and the one reached from an element could not
+ * express half of what a block can hold. What differs between them is only what this
+ * starts out containing.
+ */
 export interface BlockExtraction {
   mode: 'block';
-  element: HTMLElement;
+  /** The element it was captured from, or null when authored from scratch. */
+  element: HTMLElement | null;
+  /** The block being replaced, or null when this will be a new one. */
+  id: string | null;
   name: string;
   kind: BlockKind;
   category: string;
   description: string;
   html: string;
   css: string;
+  /** ES module source for a block that registers a custom element. */
+  script: string;
+  /** Custom element tag that `script` defines. */
+  tag: string;
+  /**
+   * Which pane of the dialog is showing.
+   *
+   * `props` is only reachable when the markup has `{{placeholders}}`, so a block
+   * without any is a single step and never mentions props at all.
+   */
+  step: 'source' | 'props';
+  /** The props step's rows, built on the way into it. */
+  props: BlockPropRow[];
   error: string;
 }
 
 export type Extraction = ClassExtraction | BlockExtraction;
+
+/** Everything a block draft starts as, before an entry point fills in what it knows. */
+function emptyBlockDraft(): BlockExtraction {
+  return {
+    mode: 'block',
+    element: null,
+    id: null,
+    name: '',
+    kind: 'component',
+    category: '',
+    description: '',
+    html: '',
+    css: '',
+    script: '',
+    tag: '',
+    step: 'source',
+    props: [],
+    error: '',
+  };
+}
 
 export interface EditorState {
   editing: boolean;
@@ -858,12 +911,12 @@ export class EditorEngine {
     });
   }
 
-  /** Open the extract-to-block dialog for the selected element. */
+  /** Open the block dialog on an element, pre-filled from what is on the page. */
   beginBlockExtraction(el = this.store.value.selected): void {
     if (!el) return;
     this.store.patch({
       extraction: {
-        mode: 'block',
+        ...emptyBlockDraft(),
         element: el,
         name: suggestBlockName(el),
         kind: el.children.length > 0 ? 'container' : 'component',
@@ -873,7 +926,38 @@ export class EditorEngine {
         // Ship the classes the element relies on, so the block still looks right
         // in a project that does not have them yet.
         css: this.#cssForSubtree(el),
-        error: '',
+      },
+    });
+  }
+
+  /**
+   * Open the block dialog empty, for a block written rather than captured.
+   *
+   * `seed` is whatever the user was searching for when they gave up and decided to
+   * build it, which is the best available guess at the name.
+   */
+  beginBlockDraft(seed = '', kind: BlockKind = 'component'): void {
+    this.store.patch({
+      extraction: { ...emptyBlockDraft(), name: seed.trim(), kind },
+    });
+  }
+
+  /** Open the block dialog on a block already in the library. */
+  beginBlockEdit(id: string): void {
+    const block = this.library.get(id);
+    if (!block) return;
+    this.store.patch({
+      extraction: {
+        ...emptyBlockDraft(),
+        id: block.id,
+        name: block.name,
+        kind: block.kind,
+        category: block.category ?? '',
+        description: block.description ?? '',
+        html: block.html,
+        css: block.css ?? '',
+        script: block.element?.module ?? block.element?.script ?? '',
+        tag: block.element?.tag ?? '',
       },
     });
   }
@@ -914,33 +998,99 @@ export class EditorEngine {
     }
 
     const name = pending.name.trim();
+    const tag = normalizeCustomElementTag(pending.tag);
+    const hasScript = Boolean(pending.script.trim());
+
     if (!name) {
       this.updateExtraction({ error: 'Give the block a name.' });
       return false;
     }
-    if (!pending.html.trim()) {
+    if (hasScript && !tag) {
+      this.updateExtraction({
+        error:
+          'A component with a module needs a custom element tag: lowercase letters, numbers and at least one hyphen.',
+      });
+      return false;
+    }
+    if (tag && !hasScript) {
+      this.updateExtraction({
+        error: `Add the module that defines <${tag}>, or clear the tag to save plain markup.`,
+      });
+      return false;
+    }
+    if (hasScript && !pending.script.includes('customElements.define')) {
+      this.updateExtraction({
+        error: `The module must call customElements.define('${tag}', …) for the tag to exist.`,
+      });
+      return false;
+    }
+    if (!hasScript && !pending.html.trim()) {
       this.updateExtraction({ error: 'The block has no markup.' });
       return false;
     }
+
+    // The markup is settled, so if it declares props there is one thing left that only
+    // the author knows: what each one is for. Asking here rather than on the way in
+    // means the question arrives once the answer is knowable, and never at all for a
+    // block without placeholders.
+    if (pending.step === 'source') {
+      const rows = blockPropRows(pending.html, this.#existingProps(pending.id));
+      if (rows.length) {
+        this.store.patch({
+          extraction: { ...pending, step: 'props', props: rows, error: '' },
+        });
+        return false;
+      }
+    }
+
+    const applied = applyBlockProps(pending.html, pending.props);
+    if (applied.error) {
+      this.updateExtraction({ error: applied.error });
+      return false;
+    }
+
     try {
-      const block = this.library.upsert(
-        blockFromSource({
-          id: this.library.uniqueId(name),
-          name,
-          kind: pending.kind,
-          category: pending.category,
-          description: pending.description,
-          html: pending.html,
-          css: pending.css,
-        }),
-      );
+      const existing = pending.id ? this.library.get(pending.id) : undefined;
+      const built = blockFromSource({
+        id: pending.id ?? this.library.uniqueId(name),
+        name,
+        kind: pending.kind,
+        category: pending.category,
+        description: pending.description,
+        html: applied.html,
+        css: pending.css,
+        script: pending.script,
+        tag,
+      });
+      // Props replace rather than merge: the review step is the whole truth about
+      // them, so one deleted from the markup has to disappear with it.
+      const block = this.library.upsert({
+        ...existing,
+        ...built,
+        props: Object.keys(applied.props).length ? applied.props : undefined,
+      });
       this.store.patch({ extraction: null });
-      this.notify(`Saved ${block.name} to the library.`, 'success');
+      this.notify(
+        pending.id ? `Updated ${block.name}.` : `Saved ${block.name} to the library.`,
+        'success',
+      );
       return true;
     } catch (error) {
       this.updateExtraction({ error: error instanceof Error ? error.message : String(error) });
       return false;
     }
+  }
+
+  /** Props a block already declares, so editing one keeps its descriptions. */
+  #existingProps(id: string | null): Record<string, PropSpec> | undefined {
+    return id ? this.library.get(id)?.props : undefined;
+  }
+
+  /** Step back to the markup without losing the props reviewed so far. */
+  backToBlockSource(): void {
+    const pending = this.store.value.extraction;
+    if (pending?.mode !== 'block') return;
+    this.store.patch({ extraction: { ...pending, step: 'source', error: '' } });
   }
 
   /**
