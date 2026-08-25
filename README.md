@@ -32,6 +32,7 @@ root, no build step required on the consuming side.
 - [The returned API](#the-returned-api)
 - [Vite plugin options](#vite-plugin-options)
 - [Design system format](#design-system-format)
+- [Design system seeds](#design-system-seeds)
 - [Authoring blocks](#authoring-blocks)
 - [Architecture](#architecture)
 - [Development](#development)
@@ -130,9 +131,24 @@ function or inline data stays in JavaScript.
 | `data-shortcut` | e.g. `mod+e`, `alt+e`, `mod+shift+k` | `mod+e` | Shortcut that toggles edit mode. `mod` is Cmd on macOS, Ctrl elsewhere. |
 | `data-presets` | `false`, `off`, `0`, `no` | enabled | Set one of those values to leave the built-in container and component blocks out of the Library. |
 | `data-container` | a CSS selector | `document.body` | Element the overlay host attaches to. A selector matching nothing logs a warning and falls back to the default. |
+| `data-seed` | a seed string | none | A whole design system inline — tokens, classes and blocks in one token. See [Design system seeds](#design-system-seeds). Applied while mounting, so the page is never briefly un-themed. |
 | `data-design-system` | a URL | none | JSON with tokens, reusable classes and blocks — see [Design system format](#design-system-format). Fetched with `same-origin` credentials. |
 
-Four behaviours worth knowing, all of them deliberate:
+A seed too long to read in an attribute can go in a block of its own instead. An
+unknown `type` is inert markup, so nothing but the editor looks at it:
+
+```html
+<script type="application/heo-seed">
+heo1z.ZZDBasMwEER_RUyvSotDLxVpIN_QY5PD2tq6wrJWSHJIMf73ItcphV6HnZk3OyPQyDB4Y7Zs1UeSUVFQVEpy…
+</script>
+<script src="./html-editor-overlay.iife.js" data-heo></script>
+```
+
+`data-seed` wins when both are present — it is on the tag doing the mounting, so
+it is the more specific answer. Both compose with `data-design-system`, which is
+applied afterwards.
+
+Five behaviours worth knowing, all of them deliberate:
 
 - **Mount timing.** A tag in `<head>` waits for `DOMContentLoaded`, so the overlay
   never mounts before there is a `<body>` to mount into. A tag injected after the
@@ -143,6 +159,10 @@ Four behaviours worth knowing, all of them deliberate:
 - **`data-design-system` does not block the mount.** The editor opens straight away
   and the panels re-render when the tokens land. A failed fetch logs a warning and
   shows a toast; the editor keeps working without it.
+- **`data-seed` does not need a network at all.** It is decoded in place, so a
+  seeded page is themed from its own markup. `api.whenReady()` resolves once a seed
+  and any URL have both been applied, which is what a test should await instead of
+  a delay.
 - **Saving without a callback.** With no `onSave`, saving copies the prompt to the
   clipboard *and* downloads it as `apply-visual-edits.md`. That is usually what you
   want on a page with no backend, so the one-tag path needs no wiring.
@@ -327,6 +347,10 @@ declarations that do not belong in every use, and see the resulting rule before
 anything is committed. What the class absorbs is removed from the element; what you
 left behind stays.
 
+"Share & import" at the bottom of the panel carries the whole system to another
+page as a single string — see [Design system seeds](#design-system-seeds) — with the
+JSON file still there for when the document belongs in the repository.
+
 The name field is an autocomplete over the project's classes, so a group of
 declarations can go into a class that already exists rather than a new one. Naming
 an existing class folds the declarations into it — everything it already held
@@ -412,7 +436,8 @@ const api = mount({
   blocks: [],                      // extra blocks, array or JSON string
   tokens: [],                      // seed tokens, merged with scanned ones
   classes: [],                     // seed classes
-  designSystem: undefined,         // or load all three at once
+  designSystem: undefined,         // or load all three at once, as a document
+  seed: undefined,                 // …or all three as one string: 'heo1z.…'
 
   onSave(payload) {                // return false to signal failure
     // { prompt, records, designSystem, html, fileName }
@@ -455,7 +480,9 @@ api.getChanges();                  // the structured change records
 api.exportHTML();                  // page serialized, every trace of the editor removed
 
 api.exportDesignSystem();          // a DesignSystemDocument
-api.importDesignSystem(doc, overwrite?);
+await api.exportSeed();            // the same thing as one string: 'heo1z.…'
+await api.importDesignSystem(x);   // a seed, a document, or either as text
+await api.whenReady();             // once a seed given at mount time has landed
 
 // Correct a string into a valid custom element name, as the authoring form does.
 HtmlEditorOverlay.normalizeCustomElementTag('myFooter'); // 'my-footer'
@@ -487,11 +514,23 @@ editorOverlay({
   theme: 'dark',
   accent: '#4f46e5',
   toggleShortcut: 'mod+e',
+
+  // The design system every page starts from. Four forms accepted:
+  designSystem: './design-system.json',  // a path, read at config time
+  // designSystem: 'heo1z.ZZDBasMwEER…',  // a seed string
+  // designSystem: '{"name":"…"}',        // JSON text
+  // designSystem: { name: '…', … },      // a document
 });
 ```
 
 `apply` defaults to `'serve'` deliberately: shipping a visual editor to
 production is rarely intended, and the markers add weight to every element.
+
+A `designSystem` path is read from disk when the config resolves and inlined into
+the bootstrap module, so the browser makes no request and no page is ever mounted
+but not yet themed. A missing or unreadable file fails the build rather than
+quietly serving pages without their vocabulary. Relative paths resolve against the
+Vite root.
 
 The instrumentation is careful about two things. Positions are measured against
 the **original** source before any attribute is inserted, and insertions are
@@ -539,6 +578,91 @@ for ones created in a session, `imported` for ones from a file. Only non-
 diff rather than a copy of your theme.
 
 Import merges without overwriting existing entries unless you ask it to.
+
+---
+
+## Design system seeds
+
+A file is the right thing to keep in a repository and the wrong thing to move
+between pages: it has to be hosted somewhere the other page can reach, behind a URL
+that resolves, behind a fetch that can fail. The common request is smaller than
+that — *give this page the same tokens, classes and components as that one* — and a
+**seed** is the answer to it. The whole document, compacted and compressed, as one
+URL-safe string:
+
+```
+heo1z.ZZDBasMwEER_RUyvSotDLxVpIN_QY5PD2tq6wrJWSHJIMf73ItcphV6HnZk3OyPQyDB4Y7Zs1UeSUVFQVEpy…
+```
+
+Get one from **Tokens → Share & import**, or from `await api.exportSeed()`. The
+panel counts what is in it, shows its size, and hands over the exact line to paste
+for each integration — a script tag, a seed block, a Vite config, or a `mount()`
+call — because knowing the string is only half of knowing where it goes. Paste one
+back into the same panel to load it; a seed and raw JSON go through the same door.
+
+Four places accept one:
+
+```html
+<!-- 1. A script tag attribute -->
+<script src="./html-editor-overlay.iife.js" data-heo data-seed="heo1z.ZZDBas…"></script>
+
+<!-- 2. A block of its own, for a seed too long to read in an attribute -->
+<script type="application/heo-seed">heo1z.ZZDBas…</script>
+<script src="./html-editor-overlay.iife.js" data-heo></script>
+```
+
+```ts
+// 3. The Vite plugin, for every page the dev server builds
+editorOverlay({ designSystem: 'heo1z.ZZDBas…' });
+
+// 4. mount(), for an app that mounts the overlay itself
+mount({ seed: 'heo1z.ZZDBas…' });
+```
+
+### The format
+
+`heo1` + a codec letter + `.` + base64url. The version leads so the prefix can be
+matched before anything is decoded, and so a future format is a different prefix
+rather than a guess.
+
+| Prefix | Payload |
+| --- | --- |
+| `heo1z.` | raw DEFLATE of the JSON, then base64url |
+| `heo1p.` | base64url of the JSON, for platforms without `CompressionStream` |
+
+base64url — no `+`, `/` or `=` — so a seed survives an HTML attribute, a query
+parameter and a JSON literal with no escaping, and stays one double-clickable word
+in an editor. Raw DEFLATE rather than gzip because the prefix already says what the
+envelope would.
+
+Three things come off the document on the way in, which is both smaller and more
+correct. `$schema` and `createdAt` are rebuilt on import. Labels that match what
+the receiving page would generate from the name anyway are noise. And `origin` is
+about where data came from in *your* session, not the importing page's — dropping
+it means a token read from your stylesheet arrives as one the overlay owns, so the
+receiving page emits it as real CSS. A seed has to stand on its own; the page taking
+it may not have the stylesheet the tokens were read from. Library presets are left
+out too, since every instance rebuilds those.
+
+Compression does most of the work — a system of 20 tokens and 7 classes lands under
+1 kB, roughly 80% smaller than the file it replaces — but a system carrying several
+components will still run to a few thousand characters. That is what the seed block
+is for, and the panel switches its recommendation once an attribute stops being
+readable.
+
+### Timing
+
+A plain seed and a JSON document are applied while mounting, before the first
+paint. A compressed one cannot be — the platform's inflate is stream-shaped — so it
+lands on the next microtask. `api.whenReady()` resolves once every seed and remote
+document handed to `mount()` has been applied, and is the thing to await instead of
+a delay:
+
+```ts
+const api = mount({ seed: 'heo1z.ZZDBas…' });
+await api.whenReady();
+api.exportDesignSystem().tokens.length; // now populated
+```
 
 ---
 

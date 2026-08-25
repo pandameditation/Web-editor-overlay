@@ -1,95 +1,114 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <title>Plugin probe</title>
-    <link rel="stylesheet" href="./theme.css" />
-  </head>
-  <body>
-    <!--
+
+<head>
+  <meta charset="utf-8" />
+  <title>Plugin probe</title>
+  <link rel="stylesheet" href="./theme.css" />
+</head>
+
+<body>
+  <!--
       Verifies the Vite plugin path: source markers on HTML and on Lit templates,
       automatic injection, and source locations reaching the save prompt.
       Served by `npm run dev` at /probe.html.
     -->
-    <main class="shell">
-      <h1 id="heading" class="hero-title">Probe</h1>
-      <p id="copy" class="lede">Instrumented copy.</p>
-      <heo-demo-stat id="stat" value="42" label="answers"></heo-demo-stat>
-    </main>
+  <main class="shell">
+    <h1 id="heading" class="hero-title">Probe</h1>
+    <p id="copy" class="lede">Instrumented copy.</p>
+    <heo-demo-stat id="stat" value="42" label="answers"></heo-demo-stat>
+  </main>
 
-    <pre id="progress">start</pre>
-    <pre id="out">pending</pre>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
 
-    <script type="module" src="./main.ts"></script>
-    <script type="module">
-      const progress = document.getElementById('progress');
-      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-      const results = {};
-      const step = (name, fn) => {
-        progress.textContent = name;
-        try {
-          results[name] = fn();
-        } catch (err) {
-          results[name] = 'THREW: ' + (err && err.message ? err.message : String(err));
-        }
-      };
-
-      // The plugin injects and mounts the overlay itself; wait for it to appear.
-      for (let i = 0; i < 80; i += 1) {
-        if (window.HtmlEditorOverlay && window.HtmlEditorOverlay.getInstance()) break;
-        await wait(100);
+  <script type="module" src="./main.ts"></script>
+  <script type="module">
+    const progress = document.getElementById('progress');
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const results = {};
+    const step = (name, fn) => {
+      progress.textContent = name;
+      try {
+        results[name] = fn();
+      } catch (err) {
+        results[name] = 'THREW: ' + (err && err.message ? err.message : String(err));
       }
+    };
 
-      step('autoMounted', () => !!(window.HtmlEditorOverlay && window.HtmlEditorOverlay.getInstance()));
-      const api = window.HtmlEditorOverlay.getInstance();
+    // The plugin injects and mounts the overlay itself; wait for it to appear.
+    for (let i = 0; i < 80; i += 1) {
+      if (window.HtmlEditorOverlay && window.HtmlEditorOverlay.getInstance()) break;
+      await wait(100);
+    }
 
-      step('htmlMarkers', () => document.querySelectorAll('[data-heo-src]').length);
-      step('headingMarker', () => document.getElementById('heading').getAttribute('data-heo-src'));
-      step('markerPointsAtHtml', () => {
-        const raw = document.getElementById('heading').getAttribute('data-heo-src') || '';
-        return raw.startsWith('probe.html:');
-      });
-      step('scriptNotMarked', () => document.querySelectorAll('script[data-heo-src]').length);
-      step('templateMarkers', () => {
-        const stat = document.getElementById('stat');
-        const inner = stat.shadowRoot ? stat.shadowRoot.querySelectorAll('[data-heo-src]') : [];
-        return inner.length;
-      });
-      step('templateMarkerFile', () => {
-        const stat = document.getElementById('stat');
-        const marked = stat.shadowRoot && stat.shadowRoot.querySelector('[data-heo-src]');
-        return marked ? marked.getAttribute('data-heo-src') : null;
-      });
+    step('autoMounted', () => !!(window.HtmlEditorOverlay && window.HtmlEditorOverlay.getInstance()));
+    const api = window.HtmlEditorOverlay.getInstance();
 
-      // A change on an instrumented element must reach the prompt with its file.
-      api.setEditing(true);
-      await wait(120);
-      api.select(document.getElementById('copy'));
-      await wait(80);
-      api.engine.setStyle('color', 'var(--accent)');
-      await wait(60);
-
-      step('changeHasSource', () => {
-        const record = api.getChanges()[0];
-        return record && record.source ? record.source.file + ':' + record.source.line : null;
-      });
-      step('promptGroupsByFile', () => api.getPrompt().includes('Changes by source file'));
-      step('promptNamesFile', () => api.getPrompt().includes('probe.html'));
-      step('promptKeepsToken', () => api.getPrompt().includes('var(--accent)'));
-
-      // Selecting inside a shadow root should work through the flattened tree.
+    step('htmlMarkers', () => document.querySelectorAll('[data-heo-src]').length);
+    step('headingMarker', () => document.getElementById('heading').getAttribute('data-heo-src'));
+    step('markerPointsAtHtml', () => {
+      const raw = document.getElementById('heading').getAttribute('data-heo-src') || '';
+      return raw.startsWith('probe.html:');
+    });
+    step('scriptNotMarked', () => document.querySelectorAll('script[data-heo-src]').length);
+    step('templateMarkers', () => {
       const stat = document.getElementById('stat');
-      const inner = stat.shadowRoot && stat.shadowRoot.querySelector('.value');
-      if (inner) {
-        api.select(inner);
-        await wait(60);
-        step('shadowSelection', () => {
-          const snapshot = api.getState().selected;
-          return snapshot ? snapshot.label : null;
-        });
-      }
+      const inner = stat.shadowRoot ? stat.shadowRoot.querySelectorAll('[data-heo-src]') : [];
+      return inner.length;
+    });
+    step('templateMarkerFile', () => {
+      const stat = document.getElementById('stat');
+      const marked = stat.shadowRoot && stat.shadowRoot.querySelector('[data-heo-src]');
+      return marked ? marked.getAttribute('data-heo-src') : null;
+    });
 
-      document.getElementById('out').textContent = 'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
-    </script>
-  </body>
+    // A change on an instrumented element must reach the prompt with its file.
+    api.setEditing(true);
+    await wait(120);
+    api.select(document.getElementById('copy'));
+    await wait(80);
+    api.engine.setStyle('color', 'var(--accent)');
+    await wait(60);
+
+    step('changeHasSource', () => {
+      const record = api.getChanges()[0];
+      return record && record.source ? record.source.file + ':' + record.source.line : null;
+    });
+    step('promptGroupsByFile', () => api.getPrompt().includes('Changes by source file'));
+    step('promptNamesFile', () => api.getPrompt().includes('probe.html'));
+    step('promptKeepsToken', () => api.getPrompt().includes('var(--accent)'));
+
+    // The plugin's design system is read from disk at config time and inlined
+    // into the bootstrap module, so it is present without any request.
+    await api.whenReady();
+    step('pluginSeededTheTokens', () => {
+      const token = api.engine.tokens.get('brand-ink');
+      return token ? token.value : null;
+    });
+    step('pluginSeededTheClasses', () => {
+      const entry = api.engine.classes.get('panel');
+      return entry ? JSON.stringify(entry.declarations) : null;
+    });
+
+    // And the seed this page would hand over is the string the plugin option takes.
+    const seed = await api.exportSeed();
+    step('theSeedIsPasteable', () => seed.startsWith('heo1z.') && !/[\s"'<>&]/.test(seed));
+
+    // Selecting inside a shadow root should work through the flattened tree.
+    const stat = document.getElementById('stat');
+    const inner = stat.shadowRoot && stat.shadowRoot.querySelector('.value');
+    if (inner) {
+      api.select(inner);
+      await wait(60);
+      step('shadowSelection', () => {
+        const snapshot = api.getState().selected;
+        return snapshot ? snapshot.label : null;
+      });
+    }
+
+    document.getElementById('out').textContent = 'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+  </script>
+</body>
+
 </html>

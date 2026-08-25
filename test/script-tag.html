@@ -46,10 +46,19 @@
   <div id="editor-host"></div>
   <pre id="out">pending</pre>
 
-  <!-- The whole integration. -->
+  <!--
+    The whole integration.
+
+    `data-seed` carries a design system inline, as one string: tokens, classes and
+    a block, applied while mounting. `data-design-system` still fetches a document
+    from a URL afterwards, so both paths are exercised and their order is pinned.
+    The seed here was produced by Node's raw deflate rather than the browser's,
+    which is the point — the format has to be the same on both sides.
+  -->
   <script src="../dist/html-editor-overlay.iife.js" data-heo="edit" data-theme="light" data-accent="#ff5500"
     data-file-name="one-tag.html" data-shortcut="alt+e" data-presets="false" data-container="#editor-host"
-    data-design-system="./design-system.json"></script>
+    data-design-system="./design-system.json"
+    data-seed="heo1z.ZZDBasMwEER_RUyvSotDLxVpIN_QY5PD2tq6wrJWSHJIMf73ItcphV6HnZk3OyPQyDB4Y7Zs1UeSUVFQVEpy7VQYGldO2UmAaTSKDBwyzPt8N2Zmu3NhqIfkpyo97NuGni00-iRThEEnXhI0PLXstzZVTctFo_OUM_8L5RpgufOUqDiprTMiWetCD4N9E2_QaCVZTrtE1k0ZBi_xhqWmtl664SfU2TtnkHXRn81qkwYX7Ao6RgkcCjQ6KtxL-vr9DjQ-y1j5D1Gt1K_nDfWM4ykld11nKVJVfTw8xSOWy_IN"></script>
 
   <script>
     (async () => {
@@ -79,9 +88,25 @@
       check('dataAccentApplied', () => engine.store.value.accent);
       check('dataFileNameApplied', () => engine.options.fileName);
       check('dataShortcutApplied', () => engine.options.toggleShortcut);
-      check('dataPresetsFalseLeftTheLibraryEmpty', () => engine.library.list().length === 0);
       check('dataContainerApplied', () =>
         document.querySelector('html-editor-overlay').parentElement.id);
+
+      /*
+       * The inline seed is applied while mounting, not after it.
+       *
+       * Asserted before any waiting, which is the property that matters: a page
+       * seeded from its own markup should never render un-themed. Only the
+       * compressed decode is deferred, and it lands on the next microtask.
+       */
+      await api.whenReady();
+      check('dataSeedLoadedItsToken', () => engine.tokens.get('seed-ink')?.value);
+      check('dataSeedLoadedItsClass', () =>
+        JSON.stringify(engine.classes.get('seeded')?.declarations ?? null));
+      check('dataSeedLoadedItsBlock', () => engine.library.get('seed-note')?.name);
+      // A seed carrying one block, and presets switched off: the library holds
+      // exactly what arrived in the attribute and nothing built in.
+      check('dataPresetsFalseLeftOnlyTheSeededBlock', () =>
+        engine.library.list().map((block) => block.id).join(','));
 
       /* The shortcut is not just stored, it is the one that works. */
       document.body.dispatchEvent(new KeyboardEvent('keydown', {
@@ -90,12 +115,17 @@
       await wait(60);
       check('theCustomShortcutTogglesEditMode', () => api.getState().editing === false);
 
-      /* data-design-system is fetched after mounting, so give it a moment. */
-      await wait(400);
+      /*
+       * data-design-system is fetched after mounting, and the fetch is registered
+       * with the engine — so this awaits the actual work rather than guessing how
+       * long it takes, which is what the fixed 400ms delay here used to do.
+       */
+      await api.whenReady();
       check('dataDesignSystemLoadedItsTokens', () =>
         `${engine.tokens.get('brand-ink')?.value} ${engine.tokens.get('space-gutter')?.value}`);
       check('dataDesignSystemLoadedItsClasses', () =>
         JSON.stringify(engine.classes.get('panel')?.declarations ?? null));
+      check('theSeedSurvivedTheLaterUrlLoad', () => engine.tokens.get('seed-ink')?.value);
 
       /*
        * Mounting again must hand back what is already there rather than stack.

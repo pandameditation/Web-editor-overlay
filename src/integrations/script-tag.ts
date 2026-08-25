@@ -9,20 +9,37 @@ import type { MountOptions } from '../core/types.js';
  * consent instead. A bare `<script src>` still does nothing; add `data-heo` and
  * the page needs no JavaScript of its own.
  *
- * Everything here is a scalar, because attributes are. Callbacks and inline seed
- * data stay in `mount()` where they belong — `data-design-system` is the bridge
- * for the one case that would otherwise need them.
+ * Everything here is a scalar, because attributes are. Callbacks stay in `mount()`
+ * where they belong. Design systems have three ways in, in order of how much they
+ * weigh: `data-seed` for one that fits in an attribute, a
+ * `<script type="application/heo-seed">` block for one that does not, and
+ * `data-design-system` for a URL when the document lives in the project.
  */
 
 /** The subset of `mount()` that this module needs, passed in to avoid a cycle. */
 export interface ScriptTagHost {
-  mount(options?: MountOptions): { engine: { notify(message: string, tone?: 'info' | 'success' | 'error'): void } };
+  mount(options?: MountOptions): {
+    engine: {
+      notify(message: string, tone?: 'info' | 'success' | 'error'): void;
+      track(work: Promise<unknown>): void;
+    };
+  };
   configure(options: Partial<MountOptions>): void;
   getInstance(): unknown;
 }
 
 /** Attribute values meaning "no". Everything else present means "yes". */
 const NEGATIVE = new Set(['false', 'off', '0', 'no']);
+
+/**
+ * A seed too long for an attribute, in a block of its own.
+ *
+ * An unknown `type` is markup the browser will not execute, so this is inert to
+ * everything but us. It exists because a design system with components runs to
+ * several thousand characters, and while an attribute will technically hold that,
+ * nobody can read or edit the file afterwards. A block wraps.
+ */
+const SEED_BLOCK = 'script[type="application/heo-seed"]';
 
 /**
  * The tag that loaded this bundle.
@@ -63,6 +80,11 @@ export function optionsFromAttributes(tag: HTMLElement): MountOptions {
   const presets = read('data-presets');
   if (presets !== null) options.presets = !NEGATIVE.has(presets.trim().toLowerCase());
 
+  // A whole design system, inline. The attribute wins over the block when both are
+  // present: it is on the tag doing the mounting, so it is the more specific answer.
+  const seed = read('data-seed') ?? seedFromBlock();
+  if (seed) options.seed = seed;
+
   // A selector rather than an element, since an attribute cannot hold a reference.
   const container = read('data-container');
   if (container) {
@@ -72,6 +94,13 @@ export function optionsFromAttributes(tag: HTMLElement): MountOptions {
   }
 
   return options;
+}
+
+/** The seed in a `<script type="application/heo-seed">` block, if the page has one. */
+function seedFromBlock(): string | null {
+  const block = document.querySelector(SEED_BLOCK);
+  const text = block?.textContent?.trim();
+  return text ? text : null;
 }
 
 /**
@@ -93,7 +122,9 @@ export function autoMountFromScriptTag(host: ScriptTagHost): void {
     // detail than attributes can. Leave it alone rather than racing it.
     if (host.getInstance()) return;
     const api = host.mount(options);
-    if (designSystemUrl) void loadDesignSystem(host, api, designSystemUrl);
+    // Registered with the engine so `whenReady()` covers the fetch too, which is
+    // what lets a test await the load instead of guessing how long it takes.
+    if (designSystemUrl) api.engine.track(loadDesignSystem(host, api, designSystemUrl));
   };
 
   if (document.readyState === 'loading') {

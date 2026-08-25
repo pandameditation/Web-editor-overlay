@@ -266,8 +266,66 @@
       const ds = api.exportDesignSystem();
       check('dsTokens', () => ds.tokens.length > 0);
       check('dsClasses', () => ds.classes.length > 0);
-      api.importDesignSystem(JSON.stringify({ name: 'x', version: 1, tokens: [{ name: 'imported-one', value: '#f00', group: 'color' }], classes: [], blocks: [] }));
+      await api.importDesignSystem(JSON.stringify({ name: 'x', version: 1, tokens: [{ name: 'imported-one', value: '#f00', group: 'color' }], classes: [], blocks: [] }));
       check('dsImported', () => !!engine.tokens.get('imported-one'));
+
+      /* ------------------------------------------------------------------ *
+       * The same system as one copy-pasteable string.
+       *
+       * A file is the right thing to keep in a repository and the wrong thing to
+       * move between pages — it needs hosting, a URL that resolves, and a fetch
+       * that can fail. A seed is the whole document compacted and compressed into
+       * one URL-safe token that goes anywhere a string goes.
+       * ------------------------------------------------------------------ */
+      engine.tokens.upsert({ name: 'seed-probe', value: '#0a2e5c', group: 'color', origin: 'user' });
+      engine.classes.upsert({ name: 'seed-probe-class', declarations: { gap: '13px' }, origin: 'user' });
+      engine.library.upsert({
+        id: 'seed-probe-block', name: 'Seed probe', kind: 'component',
+        html: '<p class="seed-probe-class">Probe.</p>', category: 'Probes',
+      });
+      const seed = await api.exportSeed();
+      check('theSeedIsOneToken', () => seed.startsWith('heo1z.') && !/[\s"'<>&+/=]/.test(seed));
+      check('theSeedIsSmallerThanTheFile', () => {
+        const file = JSON.stringify(api.exportDesignSystem(), null, 2).length;
+        return `${seed.length} vs ${file} = ${Math.round((1 - seed.length / file) * 100)}% smaller`;
+      });
+
+      /* Wiped from this page, then rebuilt from nothing but the string. */
+      engine.tokens.remove('seed-probe');
+      engine.classes.remove('seed-probe-class');
+      engine.library.remove('seed-probe-block');
+      check('theProbesAreGone', () =>
+        !engine.tokens.get('seed-probe') && !engine.classes.get('seed-probe-class') &&
+        !engine.library.get('seed-probe-block'));
+      const seedRebuilt = await api.importDesignSystem(seed);
+      check('theSeedRebuildsTheSystem', () => seedRebuilt);
+      check('theSeedCarriedTheToken', () => engine.tokens.get('seed-probe')?.value);
+      check('theSeedCarriedTheClass', () =>
+        JSON.stringify(engine.classes.get('seed-probe-class')?.declarations ?? null));
+      check('theSeedCarriedTheBlock', () => {
+        const block = engine.library.get('seed-probe-block');
+        return block ? `${block.name} / ${block.category} / ${block.html}` : 'missing';
+      });
+      // Presets are rebuilt by every instance, so a seed carrying them would be
+      // weight spent shipping what the receiving page already has. Still a preset
+      // here means the seed did not bring one along and overwrite it.
+      check('theSeedLeftThePresetsAlone', () => engine.library.get('card')?.origin);
+
+      /* A damaged or unknown seed says so rather than failing silently. */
+      const damaged = await api.importDesignSystem('heo1z.notvalidbase64!!!!');
+      const future = await api.importDesignSystem('heo9q.AAAA');
+      check('aDamagedSeedIsRefused', () => damaged === false);
+      check('aSeedFromAFutureVersionIsRefused', () => future === false);
+
+      /* Import takes a seed and raw JSON through the same door, on purpose. */
+      const viaJson = await api.importDesignSystem(
+        '{"name":"j","version":1,"tokens":[{"name":"json-door","value":"#111","group":"color"}],"classes":[],"blocks":[]}');
+      check('importStillTakesPlainJson', () => viaJson && engine.tokens.get('json-door')?.value);
+
+      engine.tokens.remove('seed-probe');
+      engine.tokens.remove('json-door');
+      engine.classes.remove('seed-probe-class');
+      engine.library.remove('seed-probe-block');
 
       // HTML export strips overlay
       const exported = api.exportHTML();
@@ -1011,6 +1069,55 @@
       check('theCreateFieldClearsItself', () =>
         classMaker.shadowRoot.querySelector('input[type=text]').value === '');
       engine.classes.remove('promo-shell');
+
+      /* ------------------------------------------------------------------ *
+       * Share & import: the seed, plus the line to paste it into.
+       *
+       * Knowing the string is only half an answer — whether it belongs in an
+       * attribute, a config object or a script block is the part that costs ten
+       * minutes to get wrong. So the section hands over a snippet per integration
+       * and marks the one that suits the payload's size.
+       * ------------------------------------------------------------------ */
+      const share = Array.from(reusablePanel.shadowRoot.querySelectorAll('heo-section'))
+        .find((s) => s.heading === 'Share & import');
+      check('theTokensPanelOffersToShareTheSystem', () => Boolean(share));
+      if (share && !share.open) share.shadowRoot.querySelector('button').click();
+      await wait(200);
+      await frame();
+      check('itCountsWhatIsInTheSeedAndItsSize', () =>
+        share.querySelector('.tally')?.textContent.replace(/\s+/g, ' ').trim());
+      check('itOffersEveryIntegration', () =>
+        Array.from(share.querySelectorAll('.targets button'))
+          .map((b) => b.textContent.trim()).join(','));
+      check('theSnippetIsReadyToPaste', () => {
+        const code = share.querySelector('.snippet pre')?.textContent ?? '';
+        return code.startsWith('<script src=') && code.includes('data-heo data-seed="heo1');
+      });
+      check('andSwitchingTargetRewritesIt', () => {
+        const vite = Array.from(share.querySelectorAll('.targets button'))
+          .find((b) => b.textContent.includes('Vite'));
+        vite.click();
+        return Boolean(vite);
+      });
+      await frame();
+      check('theViteSnippetConfiguresThePlugin', () => {
+        const code = share.querySelector('.snippet pre')?.textContent ?? '';
+        return code.includes('editorOverlay({') && code.includes("designSystem: 'heo1");
+      });
+      /* Pasting into the box is the same act as opening a file. */
+      const pasteBox = share.querySelector('textarea.paste');
+      check('thereIsSomewhereToPasteOneIn', () => Boolean(pasteBox));
+      typeInto2(pasteBox,
+        '{"name":"pasted","version":1,"tokens":[{"name":"pasted-in","value":"#3b0764","group":"color"}],"classes":[],"blocks":[]}');
+      await frame();
+      Array.from(share.querySelectorAll('.btn'))
+        .find((b) => b.textContent.trim() === 'Load')
+        ?.click();
+      await wait(200);
+      check('loadingAPastedSystemWorks', () => engine.tokens.get('pasted-in')?.value);
+      check('andTheBoxClearsItself', () => share.querySelector('textarea.paste').value === '');
+      engine.tokens.remove('pasted-in');
+
       api.openPanel('styles');
       await frame();
 

@@ -159,8 +159,19 @@ export interface MountOptions {
   tokens?: DesignToken[] | string;
   /** Seed classes. */
   classes?: DesignClass[] | string;
-  /** Load a whole design system in one object. */
+  /** Load a whole design system in one object, or as JSON text. */
   designSystem?: DesignSystemDocument | string;
+  /**
+   * A design system as a single copy-pasteable string.
+   *
+   * What `designSystem` is for a file, this is for a message: the same tokens,
+   * classes and blocks compacted and compressed into one URL-safe token that goes
+   * anywhere a string goes. Produced by the Tokens panel or `api.exportSeed()`.
+   *
+   * A compressed seed decodes a tick after mounting, so `whenReady()` is the way
+   * to wait for one; a page is usable before its vocabulary lands.
+   */
+  seed?: string;
   /** Include the built-in container/component presets. Default `true`. */
   presets?: boolean;
   /** Element the overlay attaches to. Defaults to `document.body`. */

@@ -149,6 +149,20 @@
         engine.beginClassExtraction(document.getElementById('card-two'));
         await wait(60);
         engine.updateExtraction({ name: 'card' });
+      } else if (state === 'seed') {
+        // The Share & import section, open, with a real seed in it. Closed by
+        // default in the panel, so it has to be clicked for the shot.
+        engine.classes.upsert({ name: 'promo', declarations: { padding: '18px', gap: '10px' }, origin: 'user' });
+        api.openPanel('tokens');
+        await wait(260);
+        const panel = document.querySelector('html-editor-overlay > heo-overlay')
+          .shadowRoot.querySelector('heo-dock').shadowRoot
+          .querySelector('heo-tokens-panel');
+        const section = Array.from(panel.shadowRoot.querySelectorAll('heo-section'))
+          .find((s) => s.heading === 'Share & import');
+        section?.shadowRoot.querySelector('button')?.click();
+        await wait(300);
+        section?.scrollIntoView({ block: 'center' });
       } else if (state === 'extract-list') {
         // The class-name combobox open, so the list's placement over the modal can
         // be reviewed — it is a popover in the top layer, not an in-flow panel.

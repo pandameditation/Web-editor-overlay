@@ -1,5 +1,7 @@
-import { relative } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { isAbsolute, relative, resolve } from 'node:path';
 import type { Plugin } from 'vite';
+import type { DesignSystemDocument } from '../core/types.js';
 import { instrumentHTML, instrumentTemplates } from './instrument.js';
 
 const SOURCE_ATTR = 'data-heo-src';
@@ -39,6 +41,17 @@ export interface EditorOverlayPluginOptions {
   accent?: string;
   /** Shortcut that toggles edit mode. Default `'mod+e'`. */
   toggleShortcut?: string;
+  /**
+   * The design system every page starts from: tokens, classes and blocks.
+   *
+   * Four things are accepted, because the useful one differs by where the system
+   * came from. A seed string (`'heo1z.…'`, from the Tokens panel) is the one to
+   * paste when it arrived in a message. A path — `'./design-system.json'` — is the
+   * one to use when the document is checked in, and it is read at config time and
+   * inlined, so the browser makes no request and the page is never briefly
+   * un-themed. A JSON string and a plain object also work.
+   */
+  designSystem?: DesignSystemDocument | string;
   /** Extra file filter. Return false to skip a module. */
   filter?: (id: string) => boolean;
 }
@@ -83,12 +96,23 @@ export default function editorOverlay(options: EditorOverlayPluginOptions = {}):
     return rel.split('\\').join('/');
   };
 
-  const mountOptions = JSON.stringify({
-    startInEditMode: options.startInEditMode ?? false,
-    theme: options.theme,
-    accent: options.accent,
-    toggleShortcut: options.toggleShortcut,
-  });
+  /**
+   * Built on demand rather than up front, because a design-system path is resolved
+   * against the project root and the root is not known until `configResolved`.
+   * Memoised after the first call: `load` runs once per page reload.
+   */
+  let mountOptions: string | null = null;
+  const buildMountOptions = (): string => {
+    if (mountOptions !== null) return mountOptions;
+    mountOptions = JSON.stringify({
+      startInEditMode: options.startInEditMode ?? false,
+      theme: options.theme,
+      accent: options.accent,
+      toggleShortcut: options.toggleShortcut,
+      ...resolveDesignSystem(options.designSystem, root),
+    });
+    return mountOptions;
+  };
 
   return {
     name: 'html-editor-overlay',
@@ -112,7 +136,7 @@ export default function editorOverlay(options: EditorOverlayPluginOptions = {}):
       if (id !== RESOLVED_ID) return null;
       return [
         `import { mount } from 'html-editor-overlay';`,
-        `const api = mount(${mountOptions});`,
+        `const api = mount(${buildMountOptions()});`,
         `if (import.meta.hot) {`,
         `  import.meta.hot.dispose(() => api.unmount());`,
         `}`,
@@ -156,6 +180,39 @@ export default function editorOverlay(options: EditorOverlayPluginOptions = {}):
       return { code: next, map: null };
     },
   };
+}
+
+/**
+ * Work out which kind of design system was configured, and hand back the mount
+ * option it belongs in.
+ *
+ * A path is read here, at config time, rather than fetched by the browser. That is
+ * the whole reason to prefer it: the system is inlined into the bootstrap module,
+ * so there is no request to fail and no moment where the page is mounted but not
+ * yet themed. A file that is missing or malformed is a config error worth failing
+ * loudly on — silently serving pages without their design system is the outcome
+ * nobody wants to debug.
+ */
+function resolveDesignSystem(
+  input: DesignSystemDocument | string | undefined,
+  root: string,
+): { seed?: string; designSystem?: DesignSystemDocument | string } {
+  if (!input) return {};
+  if (typeof input !== 'string') return { designSystem: input };
+
+  const text = input.trim();
+  if (/^heo\d+[a-z]\./.test(text)) return { seed: text };
+  if (text.startsWith('{')) return { designSystem: text };
+
+  const path = isAbsolute(text) ? text : resolve(root, text);
+  try {
+    return { designSystem: readFileSync(path, 'utf8') };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `[html-editor-overlay] could not read the design system at ${path}: ${reason}`,
+    );
+  }
 }
 
 export { editorOverlay };

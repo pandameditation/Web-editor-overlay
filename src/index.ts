@@ -134,7 +134,20 @@ export interface OverlayAPI {
   getChanges(): ChangeRecord[];
   exportHTML(): string;
   exportDesignSystem(): DesignSystemDocument;
-  importDesignSystem(document: DesignSystemDocument | string, overwrite?: boolean): void;
+  /** The whole design system as one copy-pasteable seed string. */
+  exportSeed(): Promise<string>;
+  /** Accepts a seed, a design system document, or either as text. */
+  importDesignSystem(
+    document: DesignSystemDocument | string,
+    overwrite?: boolean,
+  ): Promise<boolean>;
+  /**
+   * Resolves once a seed or design-system URL given at mount time has landed.
+   *
+   * Everything else is applied before `mount()` returns; only a compressed seed
+   * and a remote document arrive later. Awaiting is always safe.
+   */
+  whenReady(): Promise<void>;
   configure(options: Partial<MountOptions>): void;
   /** Escape hatch for advanced integrations. Not covered by semver. */
   readonly engine: EditorEngine;
@@ -202,12 +215,13 @@ export function mount(options: MountOptions = {}): OverlayAPI {
     getChanges: () => engine.records,
     exportHTML: () => serializePage(),
     exportDesignSystem: () => engine.designSystem(),
-    importDesignSystem: (document_, overwrite = false) => {
+    exportSeed: () => engine.designSystemSeed(),
+    importDesignSystem: (document_, overwrite = false) =>
       engine.importDesignSystemText(
         typeof document_ === 'string' ? document_ : JSON.stringify(document_),
         overwrite,
-      );
-    },
+      ),
+    whenReady: () => engine.whenReady(),
     configure: (next) => configure(next),
   };
 
@@ -268,10 +282,17 @@ export function configure(next: Partial<MountOptions>): void {
   if (next.tokens) engine.tokens.import(asArray<DesignToken>(next.tokens), { overwrite: true });
   if (next.classes) engine.classes.import(asArray<DesignClass>(next.classes), { overwrite: true });
   if (next.blocks) engine.library.import(asArray<LibraryBlock>(next.blocks), { overwrite: true });
+  // Registered with the engine rather than left floating, so `whenReady()` covers a
+  // system configured after mounting — which is how the script tag loads a URL.
+  if (next.seed) engine.track(engine.importDesignSystemText(next.seed, true));
   if (next.designSystem) {
-    engine.importDesignSystemText(
-      typeof next.designSystem === 'string' ? next.designSystem : JSON.stringify(next.designSystem),
-      true,
+    engine.track(
+      engine.importDesignSystemText(
+        typeof next.designSystem === 'string'
+          ? next.designSystem
+          : JSON.stringify(next.designSystem),
+        true,
+      ),
     );
   }
 

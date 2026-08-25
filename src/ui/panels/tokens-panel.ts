@@ -1,9 +1,16 @@
 import { css, html, nothing, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
-import { pickTextFile } from '../../core/design-system.js';
+import { copyToClipboard, pickTextFile } from '../../core/design-system.js';
 import { normalizeClassName } from '../../core/classes.js';
 import { labelFor } from '../../core/dom.js';
+import {
+  compactDesignSystem,
+  recommendedTarget,
+  seedSnippets,
+  seedStats,
+  type SeedTarget,
+} from '../../core/seed.js';
 import { TOKEN_GROUP_LABELS, TOKEN_GROUPS, prettifyTokenName } from '../../core/tokens.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import type { DesignClass, DesignToken, TokenGroup } from '../../core/types.js';
@@ -140,6 +147,172 @@ export class HeoTokensPanel extends HeoElement {
         line-height: 1.6;
         white-space: pre;
       }
+
+      /* ---- Handing the system to another page ---- */
+
+      .tally {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 4px 8px;
+        margin: 0 0 9px;
+        color: var(--heo-text-dim);
+        font-size: 10.5px;
+      }
+      .tally b {
+        color: var(--heo-text);
+        font-weight: 600;
+      }
+      .tally .sep {
+        color: var(--heo-text-faint);
+      }
+      .tally .spacer {
+        flex: 1 1 auto;
+      }
+      .tally .size {
+        padding: 1px 6px;
+        border-radius: 999px;
+        background: var(--heo-accent-soft);
+        color: var(--heo-accent);
+        font-family: var(--heo-mono);
+        font-size: 10px;
+      }
+
+      /* Which integration the snippet is written for. A row of small tabs rather
+         than a select, because the whole point is seeing that there are four
+         answers and that one of them is yours. */
+      .targets {
+        display: flex;
+        gap: 2px;
+        margin-bottom: 7px;
+        padding: 2px;
+        border: 1px solid var(--heo-line);
+        border-radius: var(--heo-r-sm);
+        background: var(--heo-sunken);
+      }
+      .targets button {
+        flex: 1 1 0;
+        min-width: 0;
+        height: 22px;
+        padding: 0 5px;
+        border: 0;
+        border-radius: 5px;
+        background: transparent;
+        color: var(--heo-text-faint);
+        font: inherit;
+        font-size: 10.5px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        cursor: pointer;
+        transition:
+          background var(--heo-fast),
+          color var(--heo-fast);
+      }
+      .targets button:hover {
+        color: var(--heo-text);
+      }
+      .targets button[aria-pressed='true'] {
+        background: var(--heo-raised);
+        box-shadow: var(--heo-shadow-sm);
+        color: var(--heo-text);
+      }
+      .targets button .star {
+        color: var(--heo-accent);
+      }
+
+      .snippet {
+        position: relative;
+      }
+      /* Wraps, unlike the CSS block above it: a seed is one very long word, and a
+         snippet you have to scroll sideways through cannot be checked by eye. */
+      .snippet pre {
+        max-height: 132px;
+        padding-right: 34px;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        color: var(--heo-text);
+      }
+      .snippet .copy {
+        position: absolute;
+        top: 5px;
+        right: 5px;
+        display: grid;
+        place-items: center;
+        width: 24px;
+        height: 24px;
+        border: 1px solid var(--heo-line);
+        border-radius: 5px;
+        background: var(--heo-raised);
+        color: var(--heo-text-dim);
+        cursor: pointer;
+      }
+      .snippet .copy:hover {
+        border-color: var(--heo-accent-line);
+        color: var(--heo-accent);
+      }
+
+      .note {
+        margin: 6px 0 0;
+        color: var(--heo-text-faint);
+        font-size: 10.5px;
+        line-height: 1.5;
+      }
+
+      .divide {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        margin: 13px 0 9px;
+        color: var(--heo-text-faint);
+        font-size: 9.5px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      .divide::after {
+        content: '';
+        flex: 1 1 auto;
+        height: 1px;
+        background: var(--heo-line);
+      }
+
+      textarea.paste {
+        width: 100%;
+        min-height: 54px;
+        padding: 7px 8px;
+        border: 1px solid var(--heo-line);
+        border-radius: var(--heo-r-sm);
+        background: var(--heo-sunken);
+        color: var(--heo-text);
+        font-family: var(--heo-mono);
+        font-size: 10.5px;
+        line-height: 1.5;
+        resize: vertical;
+        overflow-wrap: anywhere;
+      }
+      textarea.paste:focus {
+        outline: none;
+        border-color: var(--heo-accent-line);
+        background: var(--heo-bg);
+      }
+      textarea.paste::placeholder {
+        color: var(--heo-text-faint);
+        font-family: var(--heo-font);
+      }
+
+      .check {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        color: var(--heo-text-dim);
+        font-size: 10.5px;
+        cursor: pointer;
+      }
+      .check input {
+        width: 13px;
+        height: 13px;
+        accent-color: var(--heo-accent);
+      }
     `,
   ];
 
@@ -157,6 +330,21 @@ export class HeoTokensPanel extends HeoElement {
   @state() private newClassProperty = '';
   @state() private version = 0;
   @state() private classDraft = '';
+
+  /**
+   * The seed for the system as it stands, and what it was built from.
+   *
+   * Held rather than computed in `render` because encoding is async — compression
+   * is a stream — and because it must not be recomputed on every keystroke
+   * elsewhere in the panel. `#seedFor` is the document it describes, so a stale
+   * seed can be told from a current one without deep-comparing anything.
+   */
+  @state() private seed = '';
+  @state() private seedTarget: SeedTarget | null = null;
+  #seedFor = '';
+  /** Pasted seed or JSON waiting to be loaded, and whether it replaces or merges. */
+  @state() private incoming = '';
+  @state() private overwrite = false;
 
   override render(): TemplateResult {
     const el = this.editor.selected;
@@ -457,36 +645,218 @@ export class HeoTokensPanel extends HeoElement {
     });
   }
 
+  /**
+   * Handing this design system to another page, and taking one in.
+   *
+   * The section used to offer a file download and a file picker, which is the right
+   * pair for archiving a system and the wrong one for reusing it: a file has to be
+   * hosted somewhere the other page can reach, and the answer to "make this page
+   * look like that one" should not involve deployment. So the seed leads — the whole
+   * system as one string — and the file stays underneath for when a document
+   * belongs in the repository.
+   *
+   * The seed alone is still only half an answer, since knowing the string does not
+   * tell you whether it goes in an attribute, a config object or a script block.
+   * Hence a snippet per integration rather than a bare value to copy.
+   */
   #renderTransfer(): TemplateResult {
+    const doc = this.editor.designSystem();
     const css_ = [this.editor.tokens.toCSS(), this.editor.classes.toCSS()]
       .filter(Boolean)
       .join('\n\n');
+    // Encoding is async, so a first render has nothing to show; asking for it here
+    // means the seed is ready by the time the section has finished opening. The
+    // compacted document is the fingerprint as well as the payload: it is exact,
+    // and unlike `doc` it carries no timestamp, so an unchanged system compares
+    // equal across renders.
+    const key = JSON.stringify(compactDesignSystem(doc));
+    if (key !== this.#seedFor) void this.#refreshSeed(key);
+    const stats = this.seed ? seedStats(doc, this.seed) : null;
+    const target = this.seedTarget ?? (stats ? recommendedTarget(stats) : 'attribute');
+    const snippets = this.seed ? seedSnippets(this.seed) : [];
+    const active = snippets.find((one) => one.id === target) ?? snippets[0];
+    const best = stats ? recommendedTarget(stats) : 'attribute';
+
     return html`<heo-section
-      heading="Import & export"
+      heading="Share & import"
       glyph="download"
       ?open=${openGroups.has('transfer')}
       @section-toggle=${(event: CustomEvent<{ open: boolean }>) =>
         this.#remember('transfer', event.detail.open)}
     >
       <p class="hint" style="margin:0 0 9px">
-        A design system file carries tokens, classes and blocks between pages and projects.
+        A seed carries this whole system — tokens, classes and blocks — as one string. Paste it into
+        any page and that page rebuilds the same vocabulary, with nothing to host and nothing to
+        fetch.
       </p>
-      <div class="row" style="margin-bottom:10px">
-        <button class="btn" type="button" @click=${() => this.editor.exportDesignSystemFile()}>
-          ${icon('download', 12)} Export
+
+      ${stats
+        ? html`<p class="tally">
+              <span><b>${stats.tokens}</b> token${stats.tokens === 1 ? '' : 's'}</span>
+              <span class="sep">·</span>
+              <span><b>${stats.classes}</b> class${stats.classes === 1 ? '' : 'es'}</span>
+              <span class="sep">·</span>
+              <span><b>${stats.blocks}</b> block${stats.blocks === 1 ? '' : 's'}</span>
+              <span class="spacer"></span>
+              <span class="size" title=${stats.saved || 'Length of the seed'}>${stats.size}</span>
+            </p>
+
+            <div class="targets" role="group" aria-label="Where the seed is going">
+              ${snippets.map(
+          (one) => html`<button
+                  type="button"
+                  aria-pressed=${one.id === target}
+                  title=${one.id === best ? `${one.note} Recommended for this size.` : one.note}
+                  @click=${() => {
+              this.seedTarget = one.id;
+            }}
+                >
+                  ${one.label}${one.id === best
+              ? html` <span class="star" aria-label="Recommended">*</span>`
+              : nothing}
+                </button>`,
+        )}
+            </div>
+
+            <div class="snippet">
+              <pre>${active?.code ?? ''}</pre>
+              <button
+                class="copy"
+                type="button"
+                title="Copy this snippet"
+                aria-label="Copy this snippet"
+                @click=${() => this.#copySnippet(active?.code ?? '')}
+              >
+                ${icon('copy', 12)}
+              </button>
+            </div>
+            <p class="note">
+              ${active?.note}
+              ${stats.bulky && target === 'attribute'
+            ? html`<br />This seed is ${stats.size} — long for an attribute. The seed block keeps
+                  the file readable.`
+            : nothing}
+            </p>
+
+            <div class="row" style="margin-top:10px">
+              <button
+                class="btn"
+                type="button"
+                title="Copy the seed on its own, without any surrounding code"
+                @click=${this.#copySeed}
+              >
+                ${icon('copy', 12)} Copy seed
+              </button>
+              <button
+                class="btn"
+                type="button"
+                title="Download the system as a JSON file for the repository"
+                @click=${() => this.editor.exportDesignSystemFile()}
+              >
+                ${icon('download', 12)} JSON file
+              </button>
+            </div>`
+        : html`<p class="hint" style="margin:0 0 9px">Building the seed…</p>`}
+
+      <p class="divide">Bring one in</p>
+      <div class="field">
+        <textarea
+          class="paste"
+          .value=${this.incoming}
+          spellcheck="false"
+          aria-label="Seed or design system JSON"
+          placeholder="Paste a seed (heo1z.…) or design system JSON here"
+          @input=${(event: Event) => {
+        this.incoming = (event.target as HTMLTextAreaElement).value;
+      }}
+          @keydown=${(event: KeyboardEvent) => {
+        // Enter alone would be a newline in a textarea, so the commit key is the
+        // one that means "done" everywhere else in the overlay.
+        if (event.key !== 'Enter' || !(event.metaKey || event.ctrlKey)) return;
+        event.preventDefault();
+        void this.#load();
+      }}
+        ></textarea>
+      </div>
+      <div class="row" style="margin-top:7px">
+        <button
+          class="btn primary"
+          type="button"
+          ?disabled=${!this.incoming.trim()}
+          @click=${this.#load}
+        >
+          ${icon('check', 12)} Load
         </button>
         <button class="btn" type="button" @click=${this.#import}>
-          ${icon('upload', 12)} Import
+          ${icon('upload', 12)} Open a file…
         </button>
+        <span class="spacer" style="flex:1 1 auto"></span>
+        <label class="check" title="Replace tokens, classes and blocks that already exist here">
+          <input
+            type="checkbox"
+            .checked=${this.overwrite}
+            @change=${(event: Event) => {
+        this.overwrite = (event.target as HTMLInputElement).checked;
+      }}
+          />
+          Overwrite
+        </label>
       </div>
+
+      <p class="divide">Generated CSS</p>
       ${css_
-        ? html`<span class="label" style="display:block;margin-bottom:5px">Generated CSS</span>
-            <pre>${css_}</pre>`
+        ? html`<pre>${css_}</pre>`
         : html`<p class="hint" style="margin:0">
             Nothing generated yet. New tokens and classes appear here as CSS, ready to paste into
             the project's stylesheet.
           </p>`}
     </heo-section>`;
+  }
+
+  /**
+   * Re-encode the seed for the system as it stands.
+   *
+   * Keyed on a cheap fingerprint rather than the document itself: the section
+   * re-renders on every token edit, and compressing a design system on each one
+   * would be work nobody asked for. Recorded before awaiting so two renders in the
+   * same frame do not both encode.
+   */
+  async #refreshSeed(key: string): Promise<void> {
+    this.#seedFor = key;
+    try {
+      const seed = await this.editor.designSystemSeed();
+      // A later edit already superseded this one; its own pass will land.
+      if (this.#seedFor !== key) return;
+      this.seed = seed;
+    } catch (error) {
+      console.error('[html-editor-overlay] could not build the seed', error);
+      this.#seedFor = '';
+    }
+  }
+
+  async #copySnippet(code: string): Promise<void> {
+    if (!code) return;
+    const ok = await copyToClipboard(code);
+    this.editor.notify(
+      ok ? 'Snippet copied — paste it into the other page.' : 'Could not access the clipboard.',
+      ok ? 'success' : 'error',
+    );
+  }
+
+  async #copySeed(): Promise<void> {
+    if (!this.seed) return;
+    const ok = await copyToClipboard(this.seed);
+    this.editor.notify(
+      ok ? 'Seed copied.' : 'Could not access the clipboard.',
+      ok ? 'success' : 'error',
+    );
+  }
+
+  /** Load whatever was pasted: a seed and raw JSON are the same act from here. */
+  async #load(): Promise<void> {
+    const text = this.incoming.trim();
+    if (!text) return;
+    if (await this.editor.importDesignSystemText(text, this.overwrite)) this.incoming = '';
   }
 
   /* ---------------------------------------------------------------------- */
@@ -584,9 +954,9 @@ export class HeoTokensPanel extends HeoElement {
 
 
   async #import(): Promise<void> {
-    const text = await pickTextFile();
+    const text = await pickTextFile('application/json,.json,.txt,text/plain');
     if (!text) return;
-    this.editor.importDesignSystemText(text, false);
+    await this.editor.importDesignSystemText(text, this.overwrite);
   }
 
   #remember(id: string, open: boolean): void {

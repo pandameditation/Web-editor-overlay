@@ -68,6 +68,7 @@ import {
 } from './mutations.js';
 import { buildPrompt } from './prompt.js';
 import { formatHTML } from './sanitize.js';
+import { decodeSeed, decodeSeedSync, encodeSeed } from './seed.js';
 import { Store } from './store.js';
 import { TokenRegistry } from './tokens.js';
 import type {
@@ -264,6 +265,8 @@ export class EditorEngine {
   #textEditSnapshot: string | null = null;
   #injectedElements = new Set<string>();
   #destroyed = false;
+  /** Deferred seed and design-system loads, so `whenReady` has something to await. */
+  #pending = new Set<Promise<unknown>>();
 
   /**
    * Which library block produced an element, and with what prop values.
@@ -386,6 +389,7 @@ export class EditorEngine {
   #seedFromOptions(): void {
     const { options } = this;
     try {
+      if (options.seed) this.#applySeed(options.seed);
       if (options.designSystem) {
         importDesignSystem(options.designSystem, this, { overwrite: true });
       }
@@ -402,6 +406,61 @@ export class EditorEngine {
       console.error('[html-editor-overlay] failed to load the supplied design system', error);
       this.notify('Could not load the supplied design system.', 'error');
     }
+  }
+
+  /**
+   * Apply a seed, synchronously when the format allows it.
+   *
+   * A plain seed and a JSON document both land before the first paint, which is
+   * what a page seeded at mount time should look like. A compressed one cannot —
+   * the platform's inflate is stream-shaped, so it arrives on the next tick. That
+   * is registered as pending work rather than left to chance, so `whenReady()`
+   * has something to wait for and a test does not have to guess a delay.
+   */
+  #applySeed(seed: string): void {
+    const immediate = decodeSeedSync(seed);
+    if (immediate) {
+      importDesignSystem(immediate, this, { overwrite: true });
+      return;
+    }
+    this.track(
+      decodeSeed(seed).then((doc) => {
+        if (this.#destroyed) return;
+        importDesignSystem(doc, this, { overwrite: true });
+        this.#bumpRevision();
+      }),
+    );
+  }
+
+  /**
+   * Register work `whenReady()` should wait for.
+   *
+   * Seeds and design-system URLs both resolve after mounting, and until now there
+   * was no way to know when — the script-tag test waits out a fixed 400ms for
+   * exactly this reason. Failures are reported here rather than left to whoever
+   * happens to await, so a page that never calls `whenReady()` still sees the
+   * toast.
+   */
+  track(work: Promise<unknown>): void {
+    const settled = work.catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('[html-editor-overlay] failed to load the supplied design system', error);
+      if (!this.#destroyed) this.notify(`Could not load the design system: ${message}`, 'error');
+    });
+    this.#pending.add(settled);
+    void settled.then(() => this.#pending.delete(settled));
+  }
+
+  /**
+   * Resolves once every deferred seed and design-system load has been applied.
+   *
+   * Only compressed seeds and remote documents need this; everything else is in
+   * place by the time `mount()` returns. Loops rather than awaiting once, because
+   * one load can start another — a URL fetched after mounting, say. Awaiting is
+   * always safe.
+   */
+  async whenReady(): Promise<void> {
+    while (this.#pending.size) await Promise.all([...this.#pending]);
   }
 
   /* ---------------------------------------------------------------------- */
@@ -2283,16 +2342,33 @@ export class EditorEngine {
     this.notify('Design system exported.', 'success');
   }
 
-  importDesignSystemText(text: string, overwrite = false): void {
+  /** This session's tokens, classes and blocks as one copy-pasteable string. */
+  designSystemSeed(): Promise<string> {
+    return encodeSeed(this.designSystem());
+  }
+
+  /**
+   * Adopt a design system from anything the user might have in hand.
+   *
+   * One entry point for a seed, a JSON document and the contents of a file,
+   * because from the user's side they are the same act — "use this system here" —
+   * and asking them to know which one they are holding is a question with no
+   * useful answer. `decodeSeed` sorts it out.
+   */
+  async importDesignSystemText(text: string, overwrite = false): Promise<boolean> {
     try {
-      const result = importDesignSystem(text, this, { overwrite });
+      const doc = await decodeSeed(text);
+      const result = importDesignSystem(doc, this, { overwrite });
+      this.#bumpRevision();
       this.notify(
         `Imported ${result.tokens} tokens, ${result.classes} classes and ${result.blocks} blocks.`,
         'success',
       );
+      return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.notify(`Import failed: ${message}`, 'error');
+      return false;
     }
   }
 

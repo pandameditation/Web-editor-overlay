@@ -20,6 +20,9 @@ export default defineConfig({
       startInEditMode: false,
       accent: '#4f46e5',
       theme: 'dark',
+      // A path, read when the config resolves and inlined into the bootstrap, so
+      // the demo exercises the branch a project checking its system in would take.
+      designSystem: '../test/design-system.json',
     }),
   ],
   server: { port: 5180 },
