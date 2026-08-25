@@ -234,6 +234,7 @@ export class HeoCodePanel extends HeoElement {
           expandTarget=${this.embedded ? '' : 'html'}
           @code-expand=${() => this.editor.openCodeWorkspace('html')}
           language="html"
+          .autoCollapse=${isDoc ? DOCUMENT_AUTO_COLLAPSE : NO_AUTO_COLLAPSE}
           heading=${isDoc
         ? 'HTML · full document'
         : `HTML · ${labelFor(el)} · ${this.mode === 'outer' ? 'whole element' : 'contents only'}`}
@@ -600,6 +601,20 @@ declare global {
     'heo-code-panel': HeoCodePanel;
   }
 }
+
+/**
+ * Collapsed on sight in the whole-document view.
+ *
+ * An inlined stylesheet is often longer than the markup around it, so opening the
+ * document on it means scrolling past someone else's CSS to reach your own HTML —
+ * and neither of these is editable from this tab anyway: CSS has its own tab, and
+ * scripts are carried through a document apply untouched.
+ *
+ * Constants rather than inline arrays: a fresh array on every render would look like
+ * a changed property to Lit and reload the buffer, discarding whatever was expanded.
+ */
+const DOCUMENT_AUTO_COLLAPSE = ['style', 'script'];
+const NO_AUTO_COLLAPSE: string[] = [];
 
 /** `example.com/pricing`, or just the host on a root page. */
 function documentLabel(): string {

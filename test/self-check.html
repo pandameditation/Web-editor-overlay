@@ -5,6 +5,9 @@
   <meta charset="utf-8">
   <title>Editor overlay self-check</title>
   <style>
+    /* heo-check-fold-sentinel: a marker the folding checks look for, to tell "the
+       stylesheet body is hidden from the projection" apart from "it is still in the
+       full buffer". Only ever matched as a string; it styles nothing. */
     :root {
       --accent: #4f46e5;
       --space-md: 16px;
@@ -2341,6 +2344,205 @@
       });
       check('noEditScopeSegmentedForTheWholeDocument', () =>
         docPanel().shadowRoot.querySelector('heo-segmented') === null);
+
+      /* ------------------------------------------------------------------ *
+       * Folding, and the two things it is easy to get wrong.
+       *
+       * The textarea holds text, not a tree, so collapsing means rewriting what the
+       * textarea shows while the full buffer stays whole. That makes the marker lines
+       * load-bearing: the hidden text is stored beside them, so a marker destroyed
+       * without the editor knowing would take a block of the document with it.
+       * ------------------------------------------------------------------ */
+      const foldEditor = () => docPanel().shadowRoot.querySelector('heo-code-editor');
+      const foldArea = () => foldEditor().shadowRoot.querySelector('textarea');
+      const markerCount = () => (foldArea().value.match(/⋯ \d+ lines? ⋯/g) || []).length;
+      const foldButtons = () =>
+        Array.from(foldEditor().shadowRoot.querySelectorAll('.gutter .ln button.fold'));
+
+      check('styleAndScriptStartCollapsedInTheDocumentView', () => markerCount() > 0);
+      check('theCollapsedBodiesAreOutOfSight', () =>
+        !/heo-check-fold-sentinel/.test(foldArea().value));
+      // Folding is a change to the view, so the full buffer still has everything and
+      // pressing a chevron must not mark the panel dirty.
+      check('theFullBufferIsUnaffectedByFolding', () =>
+        /heo-check-fold-sentinel/.test(foldEditor().code));
+      check('foldingDoesNotMakeTheBufferDirty', () =>
+        Array.from(docPanel().shadowRoot.querySelectorAll('.foot .btn'))
+          .find((b) => /apply/i.test(b.textContent)).disabled === true);
+
+      /*
+       * Alignment, which a earlier pass got wrong in a way no assertion caught: the
+       * gutter kept `white-space: pre` from when it was one block of numbers, so the
+       * template's own newlines rendered as blank lines and pushed every number and
+       * fold control two lines away from the code it labels.
+       */
+      check('theGutterLinesUpWithTheCode', () => {
+        const rows = Array.from(foldEditor().shadowRoot.querySelectorAll('.gutter .ln'));
+        const code = foldEditor().shadowRoot.querySelector('pre').firstElementChild;
+        const walker = document.createTreeWalker(code, NodeFilter.SHOW_TEXT);
+        const range = document.createRange();
+        range.selectNodeContents(walker.nextNode());
+        // The row box is a full line-height and the glyph box is shorter, so the row
+        // starts a couple of pixels above the text it labels. A whole line out is the
+        // failure this is guarding against.
+        const delta = rows[0].getBoundingClientRect().top - range.getBoundingClientRect().top;
+        return Math.abs(delta) < 6;
+      });
+
+      /* Collapsing a container hides its children and keeps the container itself. */
+      const rowButton = (line) =>
+        Array.from(foldEditor().shadowRoot.querySelectorAll('.gutter .ln'))[line]
+          ?.querySelector('button.fold');
+
+      /*
+       * Comments and raw text are scanned in the same pass as tags, because they cannot
+       * be layered. Two failures came from trying:
+       *
+       * - A comment mentioning a tag ("a plain <script> tag") was read as a real
+       *   element, so the scanner went hunting for its close, found the page's last one,
+       *   and swallowed every fold in between — one control, on a comment.
+       * - Masking comments before scanning tags inverted it: a script containing the
+       *   string '<!--' opened a comment that never closed, and nothing after it was
+       *   scanned at all.
+       *
+       * This page's own harness script contains both shapes, which is what makes the
+       * check below meaningful rather than decorative.
+       */
+      check('tagsMentionedInsideACommentAreNotFolded', () => {
+        const text = foldArea().value.split('\n');
+        const commentLine = text.findIndex((l) => l.trim() === '<!--');
+        // No comment in this fixture is fine; what must not happen is a fold control
+        // appearing on a line of comment prose.
+        if (commentLine < 0) return true;
+        const prose = commentLine + 1;
+        return rowButton(prose) === null;
+      });
+      check('foldsStillExistAfterTheHarnessScript', () => {
+        // The harness script holds the literal '<!--'. If that were mistaken for a
+        // comment opener, every range after it would vanish.
+        const text = foldArea().value.split('\n');
+        const closingHtml = text.findIndex((l) => l.trim() === '</html>');
+        const anyAfter = Array.from(
+          foldEditor().shadowRoot.querySelectorAll('.gutter .ln'),
+        ).some((row, i) => i > 2 && i < closingHtml && row.querySelector('button.fold'));
+        return anyAfter;
+      });
+      // A container that really spans lines. A single-line element such as the
+      // paragraph has nothing between its tags, so offering a fold on it would be
+      // offering to hide nothing.
+      const containerLine = foldArea().value.split('\n').findIndex((l) => l.includes('id="wrap"'));
+      check('aContainerTagOffersAFold', () =>
+        containerLine >= 0 && Boolean(rowButton(containerLine)));
+      check('aSingleLineElementOffersNoFold', () => {
+        const line = foldArea().value.split('\n').findIndex((l) => l.includes('id="title"'));
+        return line >= 0 && rowButton(line) === null;
+      });
+
+      /*
+       * Typing into a collapsed range expands it rather than editing the marker.
+       *
+       * This is what keeps the hidden text safe, so it is checked directly: put the
+       * caret on a marker line, send the input, and the range must open with no stray
+       * character landing anywhere.
+       */
+      const markerIndex = foldArea().value.split('\n').findIndex((l) => /⋯ \d+ lines? ⋯/.test(l));
+      const beforeMarkerLines = foldArea().value.split('\n');
+      let markerOffset = 0;
+      for (let i = 0; i < markerIndex; i += 1) markerOffset += beforeMarkerLines[i].length + 1;
+      const caretAt = markerOffset + beforeMarkerLines[markerIndex].length;
+      const markersBeforeTyping = markerCount();
+      foldArea().focus();
+      foldArea().setSelectionRange(caretAt, caretAt);
+      foldArea().dispatchEvent(new InputEvent('beforeinput', {
+        inputType: 'insertText', data: 'X', bubbles: true, cancelable: true, composed: true,
+      }));
+      await frame();
+      await wait(120);
+      check('typingOnACollapsedRangeExpandsIt', () => markerCount() === markersBeforeTyping - 1);
+      check('andLeavesNoStrayCharacter', () => !/⋯ \d+ lines? ⋯X/.test(foldArea().value));
+      check('andTheBufferSurvivesIt', () =>
+        /heo-check-fold-sentinel/.test(foldEditor().code));
+
+      /*
+       * Clicking the pill opens it.
+       *
+       * It is drawn in the highlight layer, which is under the textarea and inert to the
+       * pointer, so it cannot be a real button — the click lands on the textarea and is
+       * resolved from where the caret ended up. A click that put the caret on a marker
+       * line was a click on the pill, since a caret has no other business there.
+       */
+      const collapseSomething = () => {
+        const line = foldArea().value.split('\n').findIndex((l) => l.includes('id="wrap"'));
+        rowButton(line)?.click();
+      };
+      collapseSomething();
+      await frame();
+      await wait(120);
+      const pillsBeforeClick = markerCount();
+      const pillLine = foldArea().value.split('\n').findIndex((l) => /⋯ \d+ lines? ⋯/.test(l));
+      const pillLines = foldArea().value.split('\n');
+      let pillOffset = 0;
+      for (let i = 0; i < pillLine; i += 1) pillOffset += pillLines[i].length + 1;
+      const midPill = pillOffset + Math.floor(pillLines[pillLine].length / 2);
+      foldArea().focus();
+      foldArea().setSelectionRange(midPill, midPill);
+      foldArea().dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+      await frame();
+      await wait(120);
+      check('clickingAPillExpandsIt', () => markerCount() === pillsBeforeClick - 1);
+
+      /* But a selection dragged across one must not expand it on release. */
+      collapseSomething();
+      await frame();
+      await wait(120);
+      const pillsBeforeDrag = markerCount();
+      const dragLines = foldArea().value.split('\n');
+      const dragLine = dragLines.findIndex((l) => /⋯ \d+ lines? ⋯/.test(l));
+      let dragOffset = 0;
+      for (let i = 0; i < dragLine; i += 1) dragOffset += dragLines[i].length + 1;
+      foldArea().focus();
+      foldArea().setSelectionRange(dragOffset, dragOffset + dragLines[dragLine].length);
+      foldArea().dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+      await frame();
+      await wait(120);
+      check('aSelectionAcrossAPillLeavesItCollapsed', () => markerCount() === pillsBeforeDrag);
+
+      /*
+       * The highlight layer tracks the textarea by transform rather than by scrolling.
+       *
+       * Assigning scrollTop/scrollLeft clamped each layer to its own scrollable extent,
+       * and the two do not share one — the textarea's horizontal scrollbar raises its
+       * maximum scrollTop above the highlight layer's. The selection is painted by the
+       * textarea and the glyphs by the layer underneath, so any disagreement slid the
+       * highlight off its own text, worst at the edges.
+       */
+      foldEditor().value = Array.from(
+        { length: 60 },
+        (_unused, i) => `<div class="wide">${'y'.repeat(200)}</div> <!-- ${i} -->`,
+      ).join('\n');
+      await frame();
+      await wait(160);
+      const scrollArea = foldArea();
+      scrollArea.scrollTop = scrollArea.scrollHeight;
+      scrollArea.scrollLeft = scrollArea.scrollWidth;
+      scrollArea.dispatchEvent(new Event('scroll', { bubbles: true }));
+      await frame();
+      check('theHighlightTracksBothAxesExactly', () => {
+        const code = foldEditor().shadowRoot.querySelector('pre').firstElementChild;
+        const match = /translate\(\s*(-?[\d.]+)px,\s*(-?[\d.]+)px\)/.exec(code.style.transform);
+        if (!match) return false;
+        return (
+          Math.abs(-parseFloat(match[1]) - scrollArea.scrollLeft) < 0.5 &&
+          Math.abs(-parseFloat(match[2]) - scrollArea.scrollTop) < 0.5
+        );
+      });
+      check('theHighlightLayerIsNotItselfScrolled', () => {
+        const pre = foldEditor().shadowRoot.querySelector('pre');
+        return pre.scrollTop === 0 && pre.scrollLeft === 0;
+      });
+      api.openPanel('code');
+      await frame();
+      await wait(160);
 
       /*
        * Applying a whole-document edit must never delete a script that was already

@@ -92,7 +92,70 @@ export class HeoCodeEditor extends LitElement {
         text-align: right;
         user-select: none;
         overflow: hidden;
-        white-space: pre;
+        /*
+         * Note the deliberate absence of a white-space declaration.
+         *
+         * Preserving whitespace belonged here when the gutter was one block of
+         * newline-separated numbers. Now that it renders a row per line, preserving it
+         * turns the newlines and indentation of the template itself into rendered blank
+         * lines — which pushed the whole gutter two lines down and put every number and
+         * fold control beside the wrong line.
+         */
+      }
+      /* Translated to follow the textarea, so it is not itself a scroll container. */
+      .gutter .nums {
+        display: block;
+        will-change: transform;
+      }
+      /* One row per visible line, exactly one line-height tall so the numbers stay
+         registered against the code beside them. */
+      .gutter .ln {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 4px;
+        height: 1.65em;
+      }
+      .gutter .n {
+        font-variant-numeric: tabular-nums;
+      }
+      /* The fold control. Reserved space on every row rather than appearing on hover,
+         because a gutter that changes width when the pointer enters it drags the code
+         sideways under the caret. */
+      .gutter .fold {
+        display: grid;
+        place-items: center;
+        width: 11px;
+        height: 11px;
+        padding: 0;
+        border: 0;
+        border-radius: 3px;
+        background: none;
+        color: var(--heo-text-faint);
+        cursor: pointer;
+        opacity: 0;
+        transition: opacity var(--heo-fast);
+      }
+      .gutter .fold.on,
+      .shell:hover .gutter .fold,
+      .gutter .fold:focus-visible {
+        opacity: 1;
+      }
+      .gutter .fold:hover {
+        background: var(--heo-hover);
+        color: var(--heo-text);
+      }
+      .gutter .fold.spacer {
+        cursor: default;
+        pointer-events: none;
+      }
+      /* The collapsed-range pill in the code itself. */
+      .t-fold {
+        padding: 0 5px;
+        border: 1px solid var(--heo-line-strong);
+        border-radius: 999px;
+        background: var(--heo-raised);
+        color: var(--heo-text-faint);
       }
 
       .area {
@@ -125,6 +188,11 @@ export class HeoCodeEditor extends LitElement {
         overflow: hidden;
         color: var(--heo-text-dim);
         pointer-events: none;
+      }
+      /* Translated to follow the textarea rather than scrolled; see syncScroll. */
+      pre > code {
+        display: block;
+        will-change: transform;
       }
 
       textarea {
@@ -409,13 +477,33 @@ export class HeoCodeEditor extends LitElement {
   /** Which of `tabs` is showing. Matched against each entry's `id`. */
   @property({ type: String }) activeTab = '';
 
+  /**
+   * Tag names to collapse as soon as a buffer loads.
+   *
+   * The full-document view sets `['style', 'script']`: a stylesheet inlined into a page
+   * is frequently longer than the markup around it, so opening the document on it means
+   * scrolling past someone else's CSS to reach your own HTML. Only applied on load, so
+   * expanding one keeps it expanded.
+   */
+  @property({ attribute: false }) autoCollapse: string[] = [];
+
+  /** The full buffer. What `code` returns, what the host sees, what gets applied. */
   @state() private draft = '';
+  /**
+   * The full buffer with each collapsed range replaced by one marker line.
+   *
+   * This is what the textarea and the highlight layer show. Identical to `draft`
+   * whenever nothing is collapsed.
+   */
+  @state() private projection = '';
   @state() private expanded = false;
 
   @query('textarea') private area!: HTMLTextAreaElement;
   @query('pre') private pre!: HTMLPreElement;
   @query('.gutter') private gutter!: HTMLElement;
 
+  /** Text behind each marker, in the order the markers appear in the projection. */
+  #hidden: string[] = [];
   /** Caret and scroll carried across the move between containers. */
   #carry: { start: number; end: number; scrollTop: number } | null = null;
   /** The last buffer this editor emitted, to tell an echo from an external change. */
@@ -433,13 +521,13 @@ export class HeoCodeEditor extends LitElement {
     // cancel out, so the button moved the caret and changed nothing.
     const focused = this.area != null && this.shadowRoot?.activeElement === this.area;
     if (changed.has('value') && (!focused || this.value !== this.#lastEmitted)) {
-      this.draft = this.value;
+      this.#loadBuffer(this.value);
     }
     // A new language means the host pointed this editor at a different buffer, so the
     // draft belongs to the old one. Nothing about focus can argue with that, and the
     // value may well be identical (two empty buffers) and so not register as changed.
     if (changed.has('language') && changed.get('language') !== undefined) {
-      this.draft = this.value;
+      this.#loadBuffer(this.value);
       this.#lastEmitted = this.value;
     }
     if (changed.has('error')) this.toggleAttribute('data-invalid', Boolean(this.error));
@@ -571,14 +659,13 @@ export class HeoCodeEditor extends LitElement {
   }
 
   #renderShell(height: string): TemplateResult {
-    const numbers = Array.from({ length: this.#lineCount() }, (_, i) => i + 1).join('\n');
     return html`
       <div class="shell" style=${this.fill ? nothing : `height:${height}`}>
-        <div class="gutter" aria-hidden="true">${numbers}</div>
+        <div class="gutter">${this.#renderGutter()}</div>
         <div class="area">
-          <pre aria-hidden="true"><code>${unsafeHTML(highlight(`${this.draft}\n`, this.language))}</code></pre>
+          <pre aria-hidden="true"><code>${unsafeHTML(this.#highlighted())}</code></pre>
           <textarea
-            .value=${this.draft}
+            .value=${this.projection}
             placeholder=${this.placeholder}
             spellcheck="false"
             autocapitalize="off"
@@ -586,12 +673,64 @@ export class HeoCodeEditor extends LitElement {
             wrap="off"
             aria-label=${`${this.language.toUpperCase()} source`}
             @input=${this.#onInput}
+            @beforeinput=${this.#onBeforeInput}
+            @click=${this.#onClick}
             @scroll=${this.#syncScroll}
             @keydown=${this.#onKeyDown}
           ></textarea>
         </div>
       </div>
     `;
+  }
+
+  /**
+   * The highlighted projection, with marker lines drawn as pills.
+   *
+   * Substituted after highlighting rather than before: the marker is plain text as far
+   * as the tokeniser is concerned, so it survives into the output untouched and can be
+   * matched there. Safe to match on, because the sentinel cannot occur in the buffer —
+   * `#onBeforeInput` refuses to let one be typed or pasted.
+   */
+  #highlighted(): string {
+    const marked = new RegExp(`^(\\s*)(${FOLD_MARK} \\d+ lines? ${FOLD_MARK})$`, 'gm');
+    return highlight(`${this.projection}\n`, this.language).replace(
+      marked,
+      (_full, indent: string, pill: string) => `${indent}<span class="t-fold">${pill}</span>`,
+    );
+  }
+
+  /**
+   * One gutter row per visible line, with a fold control where there is one to offer.
+   *
+   * Rows rather than a block of text, because a fold control has to sit on the line it
+   * belongs to. Every row reserves the control's width whether or not it has one, so
+   * the gutter never changes width and the code never shifts sideways under the caret.
+   */
+  #renderGutter(): TemplateResult {
+    const lines = this.projection.split('\n');
+    const openers = new Set(this.#ranges().map((range) => range.open));
+    return html`<div class="nums">
+      ${lines.map((_text, index) => {
+      const collapsed = isMarkerLine(lines[index + 1] ?? '');
+      const foldable = collapsed || openers.has(index);
+      return html`<div class="ln">
+          ${foldable
+          ? html`<button
+                class=${`fold${collapsed ? ' on' : ''}`}
+                type="button"
+                tabindex="-1"
+                title=${collapsed ? 'Expand' : 'Collapse'}
+                aria-label=${collapsed ? `Expand line ${index + 1}` : `Collapse line ${index + 1}`}
+                @mousedown=${(event: MouseEvent) => event.preventDefault()}
+                @click=${() => this.#toggleFold(index)}
+              >
+                ${icon(collapsed ? 'chevronRight' : 'chevronDown', 9)}
+              </button>`
+          : html`<span class="fold spacer"></span>`}
+          <span class="n" aria-hidden="true">${index + 1}</span>
+        </div>`;
+    })}
+    </div>`;
   }
 
   #renderStatus(): TemplateResult {
@@ -677,15 +816,194 @@ export class HeoCodeEditor extends LitElement {
   }
 
   #onInput(event: Event): void {
-    this.draft = (event.target as HTMLTextAreaElement).value;
+    this.projection = (event.target as HTMLTextAreaElement).value;
+    this.draft = expandProjection(this.projection, this.#hidden);
     this.#emit('code-input');
   }
 
+  /* ---- Folding ---- */
+
+  /**
+   * Take a buffer from the host, discarding any collapsed state.
+   *
+   * A new buffer is a new document: its line numbers have nothing to do with the old
+   * one's, so keeping folds would hide arbitrary ranges of it.
+   */
+  #loadBuffer(next: string): void {
+    this.draft = next;
+    this.projection = next;
+    this.#hidden = [];
+    if (this.autoCollapse.length) this.#applyAutoCollapse();
+  }
+
+  /**
+   * Collapse the ranges the host asked for by name, innermost-last.
+   *
+   * Folding back to front keeps every remaining range's line numbers valid, since a
+   * fold only ever shortens the projection below the line it starts on.
+   */
+  #applyAutoCollapse(): void {
+    const wanted = new Set(this.autoCollapse.map((tag) => tag.toLowerCase()));
+    const ranges = foldRanges(this.projection, this.language)
+      .filter((range) => wanted.has(range.label.toLowerCase()))
+      .sort((a, b) => b.open - a.open);
+    for (const range of ranges) this.#collapseRange(range, false);
+  }
+
+  /** Ranges of the *projection*, which is what the gutter is drawn against. */
+  #ranges(): FoldRange[] {
+    return foldRanges(this.projection, this.language);
+  }
+
+  /**
+   * Replace a range's contents with a marker, keeping its opening and closing lines.
+   *
+   * Leaving both ends visible is what makes a collapsed range readable — `<style>` over
+   * `</style>` says what is inside it, where a single opaque marker would not — and it
+   * also gives the closing line back as an anchor for expanding again.
+   */
+  #collapseRange(range: FoldRange, emit = true): void {
+    const lines = this.projection.split('\n');
+    const body = lines.slice(range.open + 1, range.close);
+    if (!body.length) return;
+    const indent = /^\s*/.exec(lines[range.open])?.[0] ?? '';
+    const marker = `${indent}  ${FOLD_MARK} ${body.length} line${body.length === 1 ? '' : 's'} ${FOLD_MARK}`;
+    this.#hidden.splice(markersBefore(lines, range.open), 0, body.join('\n'));
+    lines.splice(range.open + 1, body.length, marker);
+    this.#setProjection(lines.join('\n'), emit);
+  }
+
+  /** Put a marker's text back where it came from. */
+  #expandAt(line: number, emit = true): void {
+    const lines = this.projection.split('\n');
+    if (!isMarkerLine(lines[line] ?? '')) return;
+    const [block] = this.#hidden.splice(markersBefore(lines, line), 1);
+    lines.splice(line, 1, ...(block ?? '').split('\n'));
+    this.#setProjection(lines.join('\n'), emit);
+  }
+
+  /**
+   * Write a new projection.
+   *
+   * The full buffer is unchanged by folding, so `draft` is only recomputed as a
+   * consistency check rather than as an edit — and no `code-input` is emitted for a
+   * fold, because collapsing a range is a change to the view and not to the document.
+   * Emitting would mark the host's buffer dirty for pressing a chevron.
+   */
+  #setProjection(next: string, emit: boolean): void {
+    this.projection = next;
+    const expanded = expandProjection(next, this.#hidden);
+    if (emit) this.draft = expanded;
+    this.requestUpdate();
+  }
+
+  /**
+   * Clicking a collapsed range opens it.
+   *
+   * The pill is drawn in the highlight layer, which is underneath the textarea and
+   * inert to the pointer, so it cannot be a real button — the click always lands on the
+   * textarea. What it can do is read where the caret ended up: a click that put it on a
+   * marker line was a click on the pill, and there is nothing else a caret would be
+   * doing there, since typing on that line expands the range anyway.
+   *
+   * Ignored while a range is selected, so dragging a selection across a collapsed range
+   * does not expand it on release.
+   */
+  #onClick(): void {
+    const area = this.area;
+    if (!area || area.selectionStart !== area.selectionEnd) return;
+    const lines = this.projection.split('\n');
+    let offset = 0;
+    for (let line = 0; line < lines.length; line += 1) {
+      const end = offset + lines[line].length;
+      if (area.selectionStart <= end) {
+        if (isMarkerLine(lines[line])) this.#expandAt(line, false);
+        return;
+      }
+      offset = end + 1;
+    }
+  }
+
+  #toggleFold(line: number): void {
+    const lines = this.projection.split('\n');
+    if (isMarkerLine(lines[line + 1] ?? '')) {
+      this.#expandAt(line + 1, false);
+      return;
+    }
+    const range = this.#ranges().find((candidate) => candidate.open === line);
+    if (range) this.#collapseRange(range, false);
+  }
+
+  /**
+   * Guard the markers against being edited.
+   *
+   * This is what lets the hidden text be stored beside the marker lines rather than
+   * inside them. Two things are refused:
+   *
+   * - An edit whose range touches a marker line. Every marker it touches is expanded
+   *   instead, and the keystroke is spent doing that — which is also the behaviour a
+   *   code editor is expected to have when you type into a folded region.
+   * - Inserted text containing the sentinel, which would otherwise fabricate a marker
+   *   with no text behind it and shift every later marker onto the wrong block.
+   */
+  #onBeforeInput(event: InputEvent): void {
+    const area = this.area;
+    if (!area) return;
+    const lines = this.projection.split('\n');
+    if (!lines.some(isMarkerLine)) return;
+
+    // Line spans, so the edit range can be compared against the marker lines.
+    const spans: Array<{ line: number; start: number; end: number }> = [];
+    let offset = 0;
+    lines.forEach((text, line) => {
+      spans.push({ line, start: offset, end: offset + text.length });
+      offset += text.length + 1;
+    });
+
+    const from = area.selectionStart;
+    const to = area.selectionEnd;
+    const touched = spans.filter(
+      (span) => isMarkerLine(lines[span.line]) && span.start <= to && span.end >= from,
+    );
+    if (touched.length) {
+      event.preventDefault();
+      // Back to front, so each expansion leaves the earlier lines where they were.
+      for (const span of touched.reverse()) this.#expandAt(span.line, false);
+      return;
+    }
+    if (event.data?.includes(FOLD_MARK)) event.preventDefault();
+  }
+
+  /**
+   * Keep the highlight layer and the gutter aligned with the textarea.
+   *
+   * By translating their contents rather than scrolling them, which is the fix for a
+   * misalignment that showed up as a selection highlight sliding off its own text.
+   * The selection rectangle is painted by the textarea and the glyphs by the `<pre>`
+   * underneath, so any disagreement about scroll offset separates the two.
+   *
+   * Assigning `scrollTop`/`scrollLeft` guaranteed that disagreement at the edges,
+   * because a scroll offset is clamped to its own element's scrollable extent and the
+   * two elements do not have the same one:
+   *
+   * - The textarea has `overflow: auto`, so a horizontal scrollbar eats into its
+   *   client height and pushes its maximum `scrollTop` past the `<pre>`'s.
+   * - Elastic overscroll returns offsets beyond the maximum entirely, which the
+   *   `<pre>` silently clamps and the textarea does not.
+   *
+   * A transform is not clamped, so it tracks the textarea exactly — including past
+   * either edge — and the fractional offsets stay fractional instead of being
+   * rounded into a half-pixel drift.
+   */
   #syncScroll(): void {
-    if (!this.pre) return;
-    this.pre.scrollTop = this.area.scrollTop;
-    this.pre.scrollLeft = this.area.scrollLeft;
-    if (this.gutter) this.gutter.scrollTop = this.area.scrollTop;
+    const area = this.area;
+    if (!area) return;
+    const x = area.scrollLeft;
+    const y = area.scrollTop;
+    const code = this.pre?.firstElementChild as HTMLElement | null;
+    if (code) code.style.transform = `translate(${-x}px, ${-y}px)`;
+    const numbers = this.gutter?.firstElementChild as HTMLElement | null;
+    if (numbers) numbers.style.transform = `translateY(${-y}px)`;
   }
 
   #onKeyDown(event: KeyboardEvent): void {
@@ -775,6 +1093,218 @@ export class HeoCodeEditor extends LitElement {
 
 function modKey(): string {
   return navigator.platform.toLowerCase().includes('mac') ? '⌘' : 'Ctrl';
+}
+
+/* -------------------------------------------------------------------------- */
+/* Folding                                                                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Folding over a `<textarea>`.
+ *
+ * The textarea holds text, not a tree, so there is nothing to hide: collapsing has
+ * to mean *rewriting what the textarea contains*. So the editor keeps two strings —
+ * the full buffer, which is what `code` returns and what the host ever sees, and a
+ * projection of it with each collapsed range replaced by one marker line, which is
+ * what the textarea and the highlight layer show.
+ *
+ * That makes the marker lines load-bearing: the hidden text is stored beside them,
+ * in the order they appear, so a marker that vanished without the editor knowing
+ * would silently take a block of the document with it. `#onBeforeInput` is what
+ * makes that impossible — an edit that would touch a marker expands it first, and
+ * the sentinel character cannot be typed or pasted in.
+ */
+const FOLD_MARK = '⋯';
+
+/** A marker line, and nothing else, so a coincidental match is not possible. */
+const MARKER_RE = new RegExp(`^\\s*${FOLD_MARK} \\d+ lines? ${FOLD_MARK}$`);
+
+/** Tags with no closing tag, which therefore never open a foldable range. */
+const VOID_TAGS = new Set([
+  'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input',
+  'link', 'meta', 'param', 'source', 'track', 'wbr',
+]);
+
+/** Tags whose content is not markup, so tag scanning has to stop at them. */
+const RAW_TEXT_TAGS = new Set(['script', 'style', 'textarea', 'title']);
+
+/** A range that can be collapsed: line indices are 0-based and inclusive. */
+export interface FoldRange {
+  /** The line holding the opening tag or brace. */
+  open: number;
+  /**
+   * The line holding the close, always at least two below `open`.
+   *
+   * A close on the very next line leaves nothing between the two to hide, so it is not
+   * a range — offering a control there gives the user a chevron that does nothing.
+   */
+  close: number;
+  /** What is being folded, for the tooltip: a tag name, or `{…}`. */
+  label: string;
+}
+
+/** Every foldable range in `text`, outermost first. */
+export function foldRanges(text: string, language: CodeLanguage): FoldRange[] {
+  return language === 'html' ? htmlFoldRanges(text) : braceFoldRanges(text);
+}
+
+/**
+ * Ranges from matching tags, comments and raw-text elements.
+ *
+ * One pass with three states, because the three cannot be layered. Two things go wrong
+ * as soon as you try, and this file has hit both:
+ *
+ * - A comment is prose, and prose mentions tags. A fixture in this repository opens
+ *   with a comment containing the words "a plain `<script>` tag"; read as an element,
+ *   the scanner went looking for the matching close, found the page's last one, and
+ *   swallowed every fold in between — the whole document ended up with one fold
+ *   control, on a comment.
+ * - Script and style bodies are not markup either, and `<!--` inside one is not a
+ *   comment. Masking comments *before* scanning tags gets this exactly backwards: a
+ *   script containing the string `'<!--'` opened a comment that never closed, and
+ *   everything after it stopped being scanned at all.
+ *
+ * So comments and raw text are recognised in the same walk as tags, each state
+ * consuming its own terminator and nothing else. A tag opens a range only when its
+ * close is at least two lines below it, which is the "contains something" test: a tag
+ * whose content fits on one line has nothing worth hiding.
+ */
+function htmlFoldRanges(text: string): FoldRange[] {
+  const out: FoldRange[] = [];
+  const stack: Array<{ tag: string; line: number }> = [];
+  // Matched against a lowercased copy so tag names and terminators are case-insensitive
+  // without per-comparison allocation. Same length, so offsets are interchangeable.
+  const lower = text.toLowerCase();
+  const tagRe = /<(\/?)([a-zA-Z][\w:-]*)((?:"[^"]*"|'[^']*'|[^>"'])*)(\/?)>/y;
+
+  let index = 0;
+  let line = 0;
+  let mode: 'normal' | 'comment' | 'raw' = 'normal';
+  let openLine = 0;
+  let rawTag = '';
+
+  const advance = (length: number): void => {
+    for (let i = index; i < index + length; i += 1) if (text[i] === '\n') line += 1;
+    index += length;
+  };
+
+  while (index < text.length) {
+    if (mode === 'comment') {
+      if (lower.startsWith('-->', index)) {
+        if (line > openLine + 1) out.push({ open: openLine, close: line, label: 'comment' });
+        mode = 'normal';
+        advance(3);
+        continue;
+      }
+      advance(1);
+      continue;
+    }
+
+    if (mode === 'raw') {
+      if (lower.startsWith(`</${rawTag}`, index)) {
+        if (line > openLine + 1) out.push({ open: openLine, close: line, label: rawTag });
+        mode = 'normal';
+        advance(rawTag.length + 2);
+        continue;
+      }
+      advance(1);
+      continue;
+    }
+
+    if (text[index] !== '<') {
+      advance(1);
+      continue;
+    }
+    if (lower.startsWith('<!--', index)) {
+      openLine = line;
+      mode = 'comment';
+      advance(4);
+      continue;
+    }
+
+    tagRe.lastIndex = index;
+    const match = tagRe.exec(text);
+    if (!match) {
+      advance(1);
+      continue;
+    }
+    const closing = match[1] === '/';
+    const tag = match[2].toLowerCase();
+    const selfClosing = match[4] === '/' || VOID_TAGS.has(tag);
+    const startedAt = line;
+    advance(match[0].length);
+
+    if (selfClosing) continue;
+    if (!closing) {
+      if (RAW_TEXT_TAGS.has(tag)) {
+        openLine = startedAt;
+        rawTag = tag;
+        mode = 'raw';
+        continue;
+      }
+      stack.push({ tag, line: startedAt });
+      continue;
+    }
+    for (let depth = stack.length - 1; depth >= 0; depth -= 1) {
+      if (stack[depth].tag !== tag) continue;
+      const open = stack[depth].line;
+      stack.length = depth;
+      if (startedAt > open + 1) out.push({ open, close: startedAt, label: tag });
+      break;
+    }
+  }
+  return out.sort((a, b) => a.open - b.open);
+}
+
+/**
+ * Ranges from matching braces, for CSS and JavaScript.
+ *
+ * Braces inside strings and comments are not excluded, so a range can occasionally be
+ * off. Worth the simplicity: folding only changes what is displayed, an odd range is
+ * visible immediately, and expanding it restores the text exactly.
+ */
+function braceFoldRanges(text: string): FoldRange[] {
+  const lines = text.split('\n');
+  const out: FoldRange[] = [];
+  const stack: number[] = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    for (const char of lines[i]) {
+      if (char === '{') stack.push(i);
+      else if (char === '}') {
+        const open = stack.pop();
+        if (open !== undefined && i > open + 1) out.push({ open, close: i, label: '{…}' });
+      }
+    }
+  }
+  return out.sort((a, b) => a.open - b.open);
+}
+
+/** True when this line is a collapsed-range marker. */
+export function isMarkerLine(line: string): boolean {
+  return MARKER_RE.test(line);
+}
+
+/** How many markers appear before `line`, which is that line's index into the store. */
+function markersBefore(lines: readonly string[], line: number): number {
+  let count = 0;
+  for (let i = 0; i < line && i < lines.length; i += 1) if (isMarkerLine(lines[i])) count += 1;
+  return count;
+}
+
+/** The full text a projection stands for, with every marker put back. */
+export function expandProjection(projection: string, hidden: readonly string[]): string {
+  let index = 0;
+  const out: string[] = [];
+  for (const line of projection.split('\n')) {
+    if (!isMarkerLine(line)) {
+      out.push(line);
+      continue;
+    }
+    const block = hidden[index];
+    index += 1;
+    if (block !== undefined) out.push(...block.split('\n'));
+  }
+  return out.join('\n');
 }
 
 declare global {
