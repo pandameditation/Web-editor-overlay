@@ -18,8 +18,7 @@ export type PanelId =
   | 'props'
   | 'media'
   | 'code'
-  | 'css'
-  | 'js';
+  | 'seo';
 
 /** A design token. `value` is the raw CSS value; `name` excludes the leading `--`. */
 export interface DesignToken {

@@ -148,15 +148,8 @@ export interface BlockExtraction {
 
 export type Extraction = ClassExtraction | BlockExtraction;
 
-/** Which language the fullscreen code view is showing. */
-export type CodeWorkspaceTab = 'html' | 'css' | 'js';
-
-/** The dock panel that owns each language, so the two stay in step. */
-const DOCK_TAB_FOR_CODE: Record<CodeWorkspaceTab, PanelId> = {
-  html: 'code',
-  css: 'css',
-  js: 'js',
-};
+/** Which language the Code panel is showing. */
+export type CodeTab = 'html' | 'css' | 'js';
 
 /** Everything a block draft starts as, before an entry point fills in what it knows. */
 function emptyBlockDraft(): BlockExtraction {
@@ -200,14 +193,15 @@ export interface EditorState {
   insertAnchor: InsertAnchor | null;
   extraction: Extraction | null;
   /**
-   * The fullscreen code view, and which language it is showing.
+   * Which language the Code panel is showing, in the dock and expanded alike.
    *
-   * At the store rather than inside a panel because it has to outlive them: the three
-   * code panels each live in the dock, and switching dock tabs destroys the one you
-   * came from. An expanded editor owned by a panel therefore closed the moment you
-   * reached for another language, which is exactly when you wanted it open.
+   * One value for both, so expanding does not land you somewhere else and collapsing
+   * brings you back to what you were reading. It lives here rather than in a panel
+   * because the fullscreen view has to outlive the panel that opened it.
    */
-  codeWorkspace: CodeWorkspaceTab | null;
+  codeTab: CodeTab;
+  /** Whether the fullscreen code view is open. */
+  codeWorkspace: boolean;
   toast: ToastMessage | null;
   canUndo: boolean;
   canRedo: boolean;
@@ -304,7 +298,8 @@ export class EditorEngine {
       quickMenuOpen: false,
       insertAnchor: null,
       extraction: null,
-      codeWorkspace: null,
+      codeTab: 'html',
+      codeWorkspace: false,
       toast: null,
       canUndo: false,
       canRedo: false,
@@ -1106,23 +1101,23 @@ export class EditorEngine {
     return id ? this.library.get(id)?.props : undefined;
   }
 
-  /**
-   * Open the fullscreen code view.
-   *
-   * The dock tab follows, so collapsing leaves the user where the code they were
-   * editing lives rather than back where they started two languages ago.
-   */
-  openCodeWorkspace(tab: CodeWorkspaceTab = 'html'): void {
-    this.store.patch({ codeWorkspace: tab, dockTab: DOCK_TAB_FOR_CODE[tab], dockOpen: true });
+  /** Show a language, wherever the Code panel currently is. */
+  setCodeTab(tab: CodeTab): void {
+    if (this.store.value.codeTab !== tab) this.store.patch({ codeTab: tab });
   }
 
-  setCodeWorkspaceTab(tab: CodeWorkspaceTab): void {
-    if (!this.store.value.codeWorkspace) return;
-    this.store.patch({ codeWorkspace: tab, dockTab: DOCK_TAB_FOR_CODE[tab] });
+  /** Open the Code panel in the dock, on a given language. */
+  openCode(tab: CodeTab = 'html'): void {
+    this.store.patch({ codeTab: tab, dockTab: 'code', dockOpen: true });
+  }
+
+  /** Open the fullscreen code view. The language carries over both ways. */
+  openCodeWorkspace(tab: CodeTab = this.store.value.codeTab): void {
+    this.store.patch({ codeTab: tab, codeWorkspace: true, dockTab: 'code', dockOpen: true });
   }
 
   closeCodeWorkspace(): void {
-    if (this.store.value.codeWorkspace) this.store.patch({ codeWorkspace: null });
+    if (this.store.value.codeWorkspace) this.store.patch({ codeWorkspace: false });
   }
 
   /** Step back to the markup without losing the props reviewed so far. */

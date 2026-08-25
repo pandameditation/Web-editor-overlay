@@ -3,7 +3,7 @@ import { customElement, property, query, state } from 'lit/decorators.js';
 import { HOST_TAG } from '../../core/constants.js';
 import { labelFor, nearestSourceRef } from '../../core/dom.js';
 import { copyToClipboard } from '../../core/design-system.js';
-import { formatHTML, sanitizeFragment } from '../../core/sanitize.js';
+import { formatHTML, sanitizeFragment, scrubElement } from '../../core/sanitize.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
@@ -11,19 +11,28 @@ import { baseStyles } from '../theme.js';
 import type { HeoCodeEditor } from '../controls/code-editor.js';
 import '../controls/code-editor.js';
 import '../controls/segmented.js';
-import './seo-form.js';
 
 /**
  * The HTML editor.
  *
- * Editing markup by hand is the escape hatch for everything the panels do not
- * cover, so it has to be trustworthy. Three things make it so: the buffer is
- * validated as you type and reports exactly what is wrong, applying is explicit
- * rather than live, and the result goes through the same sanitiser as every other
- * insertion so a paste cannot smuggle in a script.
+ * With an element selected, this edits that element's markup — outer or inner,
+ * validated as you type, applied explicitly. With nothing selected, there is no
+ * "select an element" dead end any more: it shows the whole file, doctype to
+ * closing `</html>`, and applying rewrites the live document.
  *
- * Outer mode replaces the element, inner mode replaces its children — the
- * distinction matters when the element itself is what a framework owns.
+ * That second mode is the one worth being careful about. It touches `<head>` and
+ * `<body>` in one commit, so four things it must never do by accident: delete the
+ * overlay along with the body it lives in, orphan the token/class/block
+ * stylesheets the rest of the editor writes through, drop the attribute that makes
+ * edit-mode CSS apply, or delete a script that was already running because it
+ * happened to be caught inside a much smaller edit. All four are guarded
+ * explicitly rather than left to chance — see `#applyDocument`.
+ *
+ * Editing markup by hand is the escape hatch for everything the panels do not
+ * cover, so it has to be trustworthy. The buffer is validated as you type and
+ * reports exactly what is wrong, applying is explicit rather than live, and the
+ * result goes through the same sanitiser as every other insertion so a paste
+ * cannot smuggle in a script — the JS panel is where a script actually belongs.
  */
 @customElement('heo-code-panel')
 export class HeoCodePanel extends HeoElement {
@@ -66,25 +75,9 @@ export class HeoCodePanel extends HeoElement {
         min-height: 0;
         padding: 10px 12px;
       }
-      /* The fixed matter above the buffer — a path, a note — keeps its own height. */
-      .body > .where,
-      .body > .note {
-        flex: 0 0 auto;
-      }
       .body > heo-code-editor {
         flex: 1 1 auto;
         min-height: 0;
-      }
-      /* The head form is a document, not a buffer: it scrolls. */
-      .body.scrolls {
-        display: block;
-        overflow-y: auto;
-      }
-      .where {
-        margin: 0;
-        color: var(--heo-text-faint);
-        font-size: 10.5px;
-        line-height: 1.45;
       }
       .foot {
         display: flex;
@@ -100,7 +93,6 @@ export class HeoCodePanel extends HeoElement {
         display: flex;
         align-items: flex-start;
         gap: 7px;
-        margin-top: 9px;
         padding: 8px 9px;
         border: 1px solid color-mix(in oklab, var(--heo-warn) 40%, transparent);
         border-radius: var(--heo-r-sm);
@@ -131,12 +123,6 @@ export class HeoCodePanel extends HeoElement {
    */
   @property({ type: Boolean }) embedded = false;
 
-  /**
-   * Which half of the document view is showing, when nothing is selected.
-   *
-   * Head by default: it is the part of a page no click can reach.
-   */
-  @state() private docTab: 'head' | 'body' = 'head';
   @state() private draft = '';
   @state() private error = '';
   @state() private dirty = false;
@@ -166,117 +152,39 @@ export class HeoCodePanel extends HeoElement {
    * deriving state from other state.
    */
   override willUpdate(): void {
-    const el = this.#target();
-    if (!el || !el.isConnected) {
-      this.#loadedFor = null;
-      return;
-    }
-    this.#syncBuffer(el);
+    this.#syncBuffer(this.#target());
   }
 
   /**
    * The element this panel is editing.
    *
-   * With nothing selected it is the document body, so the panel has something to show
-   * instead of an instruction to go and click something. That is also the only way to
-   * reach the parts of a page no element selection can cover — the body's own
-   * attributes, and everything in the head, which the other tab handles.
+   * With nothing selected it is the whole document, so the panel always has
+   * something real to show instead of an instruction to go and click something —
+   * and it is the only way to reach the parts of a page no element selection can
+   * cover, such as `<head>` and the attributes on `<html>` and `<body>`.
    */
-  #target(): HTMLElement | null {
+  #target(): HTMLElement {
     const selected = this.editor.selected;
-    if (selected?.isConnected) return selected;
-    return this.docTab === 'body' ? document.body : null;
+    return selected?.isConnected ? selected : document.documentElement;
   }
 
   override render(): TemplateResult {
-    const selected = this.editor.selected;
-    // Nothing selected means the document itself is the subject, which is two very
-    // different jobs: the head is a form, the body is markup.
-    if (!selected?.isConnected) return this.#renderDocument();
-    return this.#renderElement(selected);
+    return this.#renderTarget(this.#target());
   }
 
-  /**
-   * The document view: head as a form, body as markup.
-   *
-   * Head first, because it is the part with no other way in — every element in the
-   * body can be reached by clicking it, and nothing in the head can be reached at all.
-   */
-  #renderDocument(): TemplateResult {
-    const onHead = this.docTab === 'head';
+  #renderTarget(el: HTMLElement): TemplateResult {
+    const isDoc = isWholeDocument(el);
+    const source = isDoc ? null : nearestSourceRef(el);
+
     return html`
       <div class="top">
         <div class="meta">
-          <span class="chip">${icon('code', 11)} ${documentLabel()}</span>
-          ${this.dirty && !onHead
+          <span class="chip">
+            ${icon('code', 11)} ${isDoc ? `Whole document · ${documentLabel()}` : labelFor(el)}
+          </span>
+          ${this.dirty
         ? html`<span class="chip" style="color:var(--heo-warn)">unapplied</span>`
         : nothing}
-          <span class="spacer"></span>
-          <span class="src">nothing selected — editing the document</span>
-        </div>
-        <heo-segmented
-          .options=${[
-        { value: 'head', label: 'Head & SEO' },
-        { value: 'body', label: 'Body markup' },
-      ]}
-          .value=${this.docTab}
-          label="Document scope"
-          @segment-change=${(event: CustomEvent<{ value: string }>) => {
-        this.docTab = (event.detail.value || 'head') as 'head' | 'body';
-        this.#loadedFor = null;
-      }}
-        ></heo-segmented>
-      </div>
-      ${onHead
-        ? html`<div class="body scrolls"><heo-seo-form></heo-seo-form></div>`
-        : this.#renderBodyMarkup()}
-    `;
-  }
-
-  #renderBodyMarkup(): TemplateResult {
-    const el = document.body;
-    return html`
-      <div class="body">
-        <p class="where">
-          The whole body, overlay excluded. Applying replaces its contents.
-        </p>
-        <heo-code-editor
-          fill
-          .expandable=${!this.embedded}
-          expandTarget=${this.embedded ? '' : 'html'}
-          @code-expand=${() => this.editor.openCodeWorkspace('html')}
-          language="html"
-          heading="HTML · body"
-          .value=${this.draft}
-          .error=${this.error}
-          @code-input=${(event: CustomEvent<{ value: string }>) => this.#onInput(event.detail.value)}
-          @code-submit=${() => this.#apply(el)}
-          @code-cancel=${() => this.#reset(el)}
-        ></heo-code-editor>
-      </div>
-      <div class="foot">
-        ${this.#renderRevert(el)}
-        <span class="spacer"></span>
-        <button
-          class="btn primary"
-          type="button"
-          ?disabled=${!this.dirty || Boolean(this.error)}
-          @click=${() => this.#apply(el)}
-        >
-          ${icon('check', 12)} Apply
-        </button>
-      </div>
-    `;
-  }
-
-  #renderElement(el: HTMLElement): TemplateResult {
-    const source = nearestSourceRef(el);
-
-    return html`
-      <div class="top">
-        <div class="meta">
-          <span class="chip">${icon('code', 11)} ${labelFor(el)}</span>
-          ${this.dirty ? html`<span class="chip" style="color:var(--heo-warn)">unapplied</span>` : nothing}
           <span class="spacer"></span>
           <button
             class="btn icon ghost sm"
@@ -297,18 +205,23 @@ export class HeoCodePanel extends HeoElement {
             ${icon('sparkle', 12)}
           </button>
         </div>
-        <heo-segmented
-          .options=${[
-        { value: 'outer', label: 'Whole element' },
-        { value: 'inner', label: 'Contents only' },
-      ]}
-          .value=${this.mode}
-          label="Edit scope"
-          @segment-change=${(event: CustomEvent<{ value: string }>) => {
-        this.mode = (event.detail.value || 'outer') as 'outer' | 'inner';
-        this.#loadedFor = null;
-      }}
-        ></heo-segmented>
+        ${isDoc
+        ? html`<span class="src"
+            >Nothing selected — this is the whole file. Click an element on the page to edit it
+            directly instead.</span
+          >`
+        : html`<heo-segmented
+              .options=${[
+            { value: 'outer', label: 'Whole element' },
+            { value: 'inner', label: 'Contents only' },
+          ]}
+              .value=${this.mode}
+              label="Edit scope"
+              @segment-change=${(event: CustomEvent<{ value: string }>) => {
+            this.mode = (event.detail.value || 'outer') as 'outer' | 'inner';
+            this.#loadedFor = null;
+          }}
+            ></heo-segmented>`}
         ${source
         ? html`<span class="src">${source.file}:${source.line}:${source.column}</span>`
         : nothing}
@@ -316,13 +229,14 @@ export class HeoCodePanel extends HeoElement {
 
       <div class="body">
         <heo-code-editor
-        fill
-        .expandable=${!this.embedded}
-        expandTarget=${this.embedded ? '' : 'html'}
-        @code-expand=${() => this.editor.openCodeWorkspace('html')}
+          fill
+          .expandable=${!this.embedded}
+          expandTarget=${this.embedded ? '' : 'html'}
+          @code-expand=${() => this.editor.openCodeWorkspace('html')}
           language="html"
-          rows="16"
-          heading=${`HTML · ${labelFor(el)} · ${this.mode === 'outer' ? 'whole element' : 'contents only'}`}
+          heading=${isDoc
+        ? 'HTML · full document'
+        : `HTML · ${labelFor(el)} · ${this.mode === 'outer' ? 'whole element' : 'contents only'}`}
           .value=${this.draft}
           .error=${this.error}
           @code-input=${(event: CustomEvent<{ value: string }>) => this.#onInput(event.detail.value)}
@@ -335,13 +249,14 @@ export class HeoCodePanel extends HeoElement {
               <span class="g">${icon('lock', 12)}</span>
               <span>
                 Removed on parse: ${this.stripped.join(', ')}. Scripts and inline event handlers
-                cannot be added from here — add them in source instead.
+                cannot be added from here — edit a running script from the JS panel instead.
               </span>
             </div>`
         : nothing}
       </div>
 
-      <div class="foot">${this.#renderRevert(el)}
+      <div class="foot">
+        ${this.#renderRevert(el)}
         <span class="spacer"></span>
         <button
           class="btn primary"
@@ -406,7 +321,7 @@ export class HeoCodePanel extends HeoElement {
   }
 
   /**
-   * Reload the buffer when it no longer describes the element — but never mid-edit.
+   * Reload the buffer when it no longer describes the target — but never mid-edit.
    *
    * Three triggers: a different element, a different scope, or the markup having
    * changed underneath. That third one matters more than it sounds: styling from the
@@ -415,13 +330,13 @@ export class HeoCodePanel extends HeoElement {
    * "restored" markup that no longer existed.
    *
    * Unapplied edits still win — they are the one thing that cannot be recovered — and
-   * the raw source is compared before reformatting, so an unchanged element costs a
+   * the raw source is compared before reformatting, so an unchanged target costs a
    * string comparison rather than a re-pretty-print on every revision bump.
    */
   #syncBuffer(el: HTMLElement): void {
-    const source = isBody(el) ? bodyMarkup() : this.mode === 'outer' ? el.outerHTML : el.innerHTML;
-    const sameTarget =
-      this.#loadedFor === el && (isBody(el) || this.#loadedMode === this.mode);
+    const doc = isWholeDocument(el);
+    const source = doc ? wholeDocumentMarkup() : this.mode === 'outer' ? el.outerHTML : el.innerHTML;
+    const sameTarget = this.#loadedFor === el && (doc || this.#loadedMode === this.mode);
     if (sameTarget && (this.dirty || source === this.#loadedSource)) return;
     this.#loadedFor = el;
     this.#loadedMode = this.mode;
@@ -448,16 +363,32 @@ export class HeoCodePanel extends HeoElement {
   #validate(): void {
     const text = this.draft.trim();
     this.stripped = [];
+
+    const removed: string[] = [];
+    if (/\son[a-z]+\s*=/i.test(text)) removed.push('inline event handlers');
+    if (/(?:href|src)\s*=\s*["']?\s*javascript:/i.test(text)) removed.push('javascript: URLs');
+
+    if (this.#loadedFor && isWholeDocument(this.#loadedFor)) {
+      // Scripts here are shown, but Apply carries the page's existing ones over
+      // unchanged rather than risking deletion — see `#applyDocument`. That means an
+      // edit made *inside* a `<script>` tag in this buffer has nowhere to go, which
+      // is worth disclosing precisely rather than folding into "removed", since
+      // nothing is actually being removed.
+      if (/<script\b/i.test(text)) removed.push("edits inside <script> tags won't apply — use the JS panel");
+      this.stripped = removed;
+      // Emptying the buffer here would wipe the entire live page in one apply — the
+      // one mistake worth blocking outright rather than warning about after the fact.
+      this.error = text ? '' : 'The document cannot be emptied from here.';
+      return;
+    }
+
+    if (/<script\b/i.test(text)) removed.push('<script> tags');
+    this.stripped = removed;
+
     if (!text) {
       this.error = this.mode === 'outer' ? 'The element markup cannot be empty.' : '';
       return;
     }
-
-    const removed: string[] = [];
-    if (/<script\b/i.test(text)) removed.push('<script> tags');
-    if (/\son[a-z]+\s*=/i.test(text)) removed.push('inline event handlers');
-    if (/(?:href|src)\s*=\s*["']?\s*javascript:/i.test(text)) removed.push('javascript: URLs');
-    this.stripped = removed;
 
     if (this.mode === 'inner') {
       this.error = '';
@@ -481,8 +412,8 @@ export class HeoCodePanel extends HeoElement {
     this.#validate();
     if (this.error) return;
 
-    if (isBody(el)) {
-      this.#applyBody();
+    if (isWholeDocument(el)) {
+      this.#applyDocument();
       return;
     }
 
@@ -534,36 +465,98 @@ export class HeoCodePanel extends HeoElement {
   }
 
   /**
-   * Replace the body's contents while leaving the overlay standing.
+   * Rewrite the live document from the buffer, in one undoable step.
    *
-   * The overlay mounts into the body, so a plain `innerHTML =` would delete the editor
-   * doing the deleting — the panel would vanish mid-edit and the page would be left
-   * with no way back. The host is set aside and put back on both apply and revert.
+   * `<head>` and `<body>` are replaced by content, `<html>` and `<body>` keep
+   * their attributes in sync too — but four things are never left to whatever the
+   * user's buffer happened to say, because losing any of them breaks the page or
+   * the editor rather than doing what the user meant:
+   *
+   * - The overlay host. It lives inside `<body>`, so a plain `innerHTML =` would
+   *   delete the editor doing the deleting.
+   * - The token, class and block stylesheets. They are managed elsewhere and
+   *   written through their own API; this view shows their *effect*, not their
+   *   markup, so they are left out of the buffer entirely and reattached after.
+   * - `data-heo-edit`. The page-level CSS that makes edit mode behave — cursors,
+   *   text selection, the drag preview — is keyed off this attribute on `<html>`.
+   * - Every existing `<script>`. This is the one that matters most: a script has
+   *   already run, and this view is a document editor, not the disclosed,
+   *   run-it-again place that scripts get — the JS panel. Sanitizing them out of
+   *   *new* markup, the way every insertion elsewhere in the editor does, is right
+   *   for markup being typed fresh. Applying that same rule to the whole document
+   *   would mean pressing Apply after fixing a typo in the title also deletes
+   *   every script already running on the page, silently, with no way to notice
+   *   before it happens. So existing scripts are carried over exactly as they
+   *   were, in their original position, whatever the buffer says about them.
+   *
+   * All four are captured before the buffer is parsed and restored after, in both
+   * directions, so undo is exactly as safe as the apply.
    */
-  #applyBody(): void {
-    const body = document.body;
-    const host = body.querySelector(HOST_TAG);
-    const before = bodyMarkup();
-    const holder = document.createElement('div');
-    holder.append(sanitizeFragment(this.draft));
-    const after = holder.innerHTML;
-    if (after.trim() === before.trim()) {
+  #applyDocument(): void {
+    const doc = document;
+    const host = doc.querySelector(HOST_TAG);
+    const managed = Array.from(doc.head.querySelectorAll('[data-heo-generated]'));
+    const editingAttr = doc.documentElement.getAttribute('data-heo-edit');
+    // Cloned rather than moved: the live nodes stay exactly where they are and keep
+    // running. Which parent held each one is kept too, since "in the head" versus
+    // "in the body" is the one part of a script's position worth being exact about;
+    // where it fell relative to content the buffer just rewrote has no stable
+    // meaning any more; each clone is appended at the end of its original parent.
+    const scripts = Array.from(doc.querySelectorAll('script')).map((script) => ({
+      clone: script.cloneNode(true) as HTMLScriptElement,
+      inHead: script.closest('head') === doc.head,
+    }));
+
+    // A full document, not a fragment: DOMParser gives it a real head/body the way
+    // `<template>` fragment parsing does not, and — like every parser-inserted
+    // script — nothing it contains executes.
+    const incoming = new DOMParser().parseFromString(this.draft, 'text/html');
+    for (const script of Array.from(incoming.querySelectorAll('script'))) script.remove();
+    scrubElement(incoming.documentElement);
+
+    const before = {
+      htmlAttrs: attributeMap(doc.documentElement),
+      headHTML: headMarkupExcludingManagedAndScripts(),
+      bodyAttrs: attributeMap(doc.body),
+      bodyHTML: bodyMarkup(),
+    };
+    const after = {
+      htmlAttrs: attributeMap(incoming.documentElement),
+      headHTML: incoming.head.innerHTML,
+      bodyAttrs: attributeMap(incoming.body),
+      bodyHTML: incoming.body.innerHTML,
+    };
+    if (JSON.stringify(before) === JSON.stringify(after)) {
       this.dirty = false;
       return;
     }
-    const write = (markup: string): void => {
-      body.innerHTML = markup;
-      if (host) body.appendChild(host);
+
+    const write = (state: typeof before): void => {
+      applyAttributeMap(doc.documentElement, state.htmlAttrs);
+      if (editingAttr !== null) doc.documentElement.setAttribute('data-heo-edit', editingAttr);
+      else doc.documentElement.removeAttribute('data-heo-edit');
+      doc.head.innerHTML = state.headHTML;
+      for (const el of managed) doc.head.appendChild(el);
+      applyAttributeMap(doc.body, state.bodyAttrs);
+      doc.body.innerHTML = state.bodyHTML;
+      if (host) doc.body.appendChild(host);
+      // Scripts are excluded from both `state.headHTML` and `state.bodyHTML`
+      // (`headMarkupExcludingManagedAndScripts` / `bodyMarkup`), so this is the one
+      // and only place they land — appended, in their original order, to whichever
+      // parent held them. `innerHTML =` above never executed anything anyway; this
+      // is the same "no re-run" contract the JS panel documents.
+      for (const { clone, inHead } of scripts) (inHead ? doc.head : doc.body).appendChild(clone);
     };
+
     this.editor.history.commit({
-      label: 'Edit the body markup',
-      subject: 'markup:body',
+      label: 'Edit the full document',
+      subject: 'markup:document',
       record: {
         id: `h${Date.now().toString(36)}`,
         kind: 'replace',
-        summary: 'Rewrite the contents of <body>',
-        target: 'body',
-        detail: { html: after, scope: 'document body' },
+        summary: 'Rewrite the HTML document',
+        target: 'document',
+        detail: { html: this.draft, scope: 'document' },
         at: Date.now(),
       },
       apply: () => write(after),
@@ -571,10 +564,12 @@ export class HeoCodePanel extends HeoElement {
     });
     this.dirty = false;
     this.#loadedFor = null;
+    // Nothing to re-select afterwards: "the document" is not a node undo can hand
+    // back, unlike an element that whole-mode swapped out.
     this.#appliedAt = this.editor.history.size;
     this.#appliedTo = null;
     this.#refocus();
-    this.editor.notify('Body markup replaced.', 'success', {
+    this.editor.notify('Document updated.', 'success', {
       label: 'Undo',
       run: () => this.editor.undo(),
     });
@@ -612,8 +607,8 @@ function documentLabel(): string {
   return `${location.host}${path}`;
 }
 
-function isBody(el: HTMLElement): boolean {
-  return el === document.body;
+function isWholeDocument(el: HTMLElement): boolean {
+  return el === document.documentElement;
 }
 
 /**
@@ -625,6 +620,12 @@ function isBody(el: HTMLElement): boolean {
 function bodyMarkup(): string {
   const clone = document.body.cloneNode(true) as HTMLElement;
   for (const host of Array.from(clone.querySelectorAll(HOST_TAG))) host.remove();
+  // Excluded here for the whole-document view for the same reason as the head:
+  // `#applyDocument` carries every existing script over untouched and reattaches
+  // it separately, rather than risking one being silently dropped by an edit that
+  // had nothing to do with it. `#apply`'s per-element path never reaches a
+  // `<script>` in the first place, so this has no effect there.
+  for (const script of Array.from(clone.querySelectorAll('script'))) script.remove();
   for (const node of [clone, ...Array.from(clone.querySelectorAll('*'))]) {
     for (const attribute of Array.from(node.attributes)) {
       if (attribute.name.startsWith('data-heo-') || attribute.name === 'contenteditable') {
@@ -633,4 +634,64 @@ function bodyMarkup(): string {
     }
   }
   return clone.innerHTML;
+}
+
+/**
+ * `<head>`'s markup, with the editor's own generated stylesheets and every
+ * `<script>` left out.
+ *
+ * The stylesheets hold the live output of the Tokens and Classes panels, not
+ * something meant to be hand-edited here. Scripts are excluded for the reason
+ * `#applyDocument` explains: they are carried over and reattached separately so a
+ * document apply can never delete a script that was already running. Since that
+ * reattachment always happens afterward, leaving text copies of either in this
+ * string would only leave behind an inert duplicate every time the document is
+ * saved.
+ */
+function headMarkupExcludingManagedAndScripts(): string {
+  const clone = document.head.cloneNode(true) as HTMLElement;
+  for (const generated of Array.from(clone.querySelectorAll('[data-heo-generated]'))) {
+    generated.remove();
+  }
+  for (const script of Array.from(clone.querySelectorAll('script'))) script.remove();
+  return clone.innerHTML;
+}
+
+/**
+ * The whole file, doctype included, as something safe to show and re-parse.
+ *
+ * Everything the live page did not author is left out — the overlay itself, its
+ * generated stylesheets, and the `data-heo-*` bookkeeping attributes it leaves on
+ * elements — the same standard `bodyMarkup` holds `<body>` to, extended to the
+ * whole tree.
+ */
+function wholeDocumentMarkup(): string {
+  const clone = document.documentElement.cloneNode(true) as HTMLElement;
+  for (const host of Array.from(clone.querySelectorAll(HOST_TAG))) host.remove();
+  for (const generated of Array.from(clone.querySelectorAll('[data-heo-generated]'))) {
+    generated.remove();
+  }
+  for (const node of [clone, ...Array.from(clone.querySelectorAll('*'))]) {
+    for (const attribute of Array.from(node.attributes)) {
+      if (attribute.name.startsWith('data-heo-') || attribute.name === 'contenteditable') {
+        node.removeAttribute(attribute.name);
+      }
+    }
+  }
+  const doctype = document.doctype ? `<!DOCTYPE ${document.doctype.name}>` : '<!DOCTYPE html>';
+  return `${doctype}\n${clone.outerHTML}`;
+}
+
+function attributeMap(el: Element): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const attribute of Array.from(el.attributes)) out[attribute.name] = attribute.value;
+  return out;
+}
+
+/** Make `el`'s attributes match `attrs` exactly: added, changed and removed alike. */
+function applyAttributeMap(el: Element, attrs: Record<string, string>): void {
+  for (const name of Array.from(el.attributes, (attribute) => attribute.name)) {
+    if (!(name in attrs)) el.removeAttribute(name);
+  }
+  for (const [name, value] of Object.entries(attrs)) el.setAttribute(name, value);
 }

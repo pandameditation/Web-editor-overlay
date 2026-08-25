@@ -1,13 +1,11 @@
 import { css, html, nothing, type TemplateResult } from 'lit';
 import { customElement, query } from 'lit/decorators.js';
-import type { CodeWorkspaceTab } from '../../core/editor.js';
+import type { CodeTab } from '../../core/editor.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
 import { baseStyles, surfaceStyles } from '../theme.js';
-import '../panels/code-panel.js';
-import '../panels/css-panel.js';
-import '../panels/js-panel.js';
+import { CODE_TABS, paneFor } from '../panels/code-tabs.js';
 
 /**
  * The fullscreen code view: HTML, CSS and JS in one place.
@@ -23,11 +21,7 @@ import '../panels/js-panel.js';
  * when the view is collapsed, and a buffer edited in either place is the same buffer.
  * Two views of one thing, not two things.
  */
-const TABS: Array<{ id: CodeWorkspaceTab; label: string; glyph: string }> = [
-  { id: 'html', label: 'HTML', glyph: 'code' },
-  { id: 'css', label: 'CSS', glyph: 'styles' },
-  { id: 'js', label: 'JS', glyph: 'play' },
-];
+const TABS = CODE_TABS;
 
 @customElement('heo-code-workspace')
 export class HeoCodeWorkspace extends HeoElement {
@@ -131,14 +125,14 @@ export class HeoCodeWorkspace extends HeoElement {
   protected state = new StoreController(
     this,
     this.editor.store,
-    (s) => [s.codeWorkspace] as const,
+    (s) => [s.codeWorkspace, s.codeTab] as const,
     shallowArrayEquals,
   );
 
   @query('dialog') private dialog?: HTMLDialogElement;
 
   override updated(): void {
-    const open = this.state.value.codeWorkspace !== null;
+    const open = this.state.value.codeWorkspace;
     const dialog = this.dialog;
     if (!dialog) return;
     if (open && !dialog.open) dialog.showModal();
@@ -153,7 +147,7 @@ export class HeoCodeWorkspace extends HeoElement {
   }
 
   override render(): TemplateResult {
-    const active = this.state.value.codeWorkspace;
+    const active = this.state.value.codeTab;
     return html`<dialog
       class="shell"
       aria-label="Code"
@@ -165,11 +159,11 @@ export class HeoCodeWorkspace extends HeoElement {
       @close=${() => this.editor.closeCodeWorkspace()}
       @keydown=${(event: KeyboardEvent) => this.#onKeyDown(event)}
     >
-      ${active ? this.#renderBody(active) : nothing}
+      ${this.state.value.codeWorkspace ? this.#renderBody(active) : nothing}
     </dialog>`;
   }
 
-  #renderBody(active: CodeWorkspaceTab): TemplateResult {
+  #renderBody(active: CodeTab): TemplateResult {
     return html`
       <header>
         ${icon('code', 14)}
@@ -181,7 +175,7 @@ export class HeoCodeWorkspace extends HeoElement {
               role="tab"
               aria-selected=${tab.id === active}
               ?data-on=${tab.id === active}
-              @click=${() => this.editor.setCodeWorkspaceTab(tab.id)}
+              @click=${() => this.editor.setCodeTab(tab.id)}
             >
               ${icon(tab.glyph, 11)} ${tab.label}
             </button>`,
@@ -198,7 +192,7 @@ export class HeoCodeWorkspace extends HeoElement {
           ${icon('collapse', 12)} Collapse
         </button>
       </header>
-      <div class="pane">${paneFor(active)}</div>
+      <div class="pane">${paneFor(active, true)}</div>
     `;
   }
 
@@ -220,20 +214,10 @@ export class HeoCodeWorkspace extends HeoElement {
     const index = ['1', '2', '3'].indexOf(event.key);
     if (index === -1) return;
     event.preventDefault();
-    this.editor.setCodeWorkspaceTab(TABS[index].id);
+    this.editor.setCodeTab(TABS[index].id);
   }
 }
 
-function paneFor(tab: CodeWorkspaceTab): TemplateResult {
-  switch (tab) {
-    case 'css':
-      return html`<heo-css-panel embedded></heo-css-panel>`;
-    case 'js':
-      return html`<heo-js-panel embedded></heo-js-panel>`;
-    default:
-      return html`<heo-code-panel embedded></heo-code-panel>`;
-  }
-}
 
 function modKey(): string {
   return navigator.platform.toLowerCase().includes('mac') ? '⌘' : 'Ctrl';

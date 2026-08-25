@@ -81,6 +81,14 @@
       const overlayRoot = () => document.querySelector('html-editor-overlay > heo-overlay');
       const dockEl = () => overlayRoot().shadowRoot.querySelector('heo-dock');
       const dockPanel = (name) => dockEl().shadowRoot.querySelector('heo-' + name + '-panel');
+      /**
+       * HTML, CSS and JS are one dock tab now (`heo-code-tabs`) hosting three
+       * language panels rather than three separate tabs, so reaching one of them
+       * needs an extra step down. `lang` defaults to HTML, which is what
+       * `heo-code-tabs` shows first.
+       */
+      const codeTabs = () => dockEl().shadowRoot.querySelector('heo-code-tabs');
+      const langPanel = (lang = 'code') => codeTabs()?.shadowRoot.querySelector('heo-' + lang + '-panel');
       const frame = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
       const wait = (ms) => new Promise((r) => setTimeout(r, ms));
       /** Rows currently rendered by the tree panel, as `tag#id` strings. */
@@ -287,7 +295,7 @@
         return panel.shadowRoot.querySelectorAll('heo-section').length;
       });
 
-      for (const tab of ['tokens', 'tree', 'library', 'props', 'media', 'code']) {
+      for (const tab of ['tokens', 'tree', 'library', 'props', 'media', 'seo']) {
         api.openPanel(tab);
         await new Promise((r) => setTimeout(r, 50));
         check('panel_' + tab, () => {
@@ -297,6 +305,17 @@
           return !!(panel && panel.shadowRoot && panel.shadowRoot.childElementCount > 0);
         });
       }
+      // The Code tab hosts HTML/CSS/JS behind a strip rather than being its own
+      // panel directly under the dock, so it gets its own shape of check.
+      api.openPanel('code');
+      await new Promise((r) => setTimeout(r, 50));
+      check('panel_code', () => {
+        const root = document.querySelector('html-editor-overlay > heo-overlay');
+        const dock = root.shadowRoot.querySelector('heo-dock');
+        const tabs = dock.shadowRoot.querySelector('heo-code-tabs');
+        const langPanel = tabs?.shadowRoot?.querySelector('heo-code-panel');
+        return !!(langPanel && langPanel.shadowRoot && langPanel.shadowRoot.childElementCount > 0);
+      });
 
       // The suggestion ordering the whole token story depends on: tokens the
       // selected component already uses have to come first in every value picker.
@@ -572,15 +591,15 @@
       engine.history.clear();
       para.removeAttribute('style');
 
-      /* The HTML panel renders on first open, without toggling the mode. */
+      /* The Code panel renders on first open, on the HTML tab, without toggling anything. */
       api.openPanel('code');
       await new Promise((r) => setTimeout(r, 250));
       check('codePanelPopulatedOnFirstOpen', () => {
-        const editor = dockPanel('code').shadowRoot.querySelector('heo-code-editor');
+        const editor = langPanel().shadowRoot.querySelector('heo-code-editor');
         return editor.shadowRoot.querySelector('textarea').value.startsWith('<p');
       });
       check('codeEditorScrollsItself', () => {
-        const editor = dockPanel('code').shadowRoot.querySelector('heo-code-editor');
+        const editor = langPanel().shadowRoot.querySelector('heo-code-editor');
         const shell = editor.shadowRoot.querySelector('.shell');
         const area = editor.shadowRoot.querySelector('textarea');
         return area.getBoundingClientRect().height <= shell.getBoundingClientRect().height + 1;
@@ -1449,9 +1468,9 @@
       api.openPanel('code');
       await frame();
       const codeArea = () =>
-        dockPanel('code').shadowRoot.querySelector('heo-code-editor')
+        langPanel().shadowRoot.querySelector('heo-code-editor')
           ?.shadowRoot.querySelector('textarea');
-      const codeEditorEl = () => dockPanel('code').shadowRoot.querySelector('heo-code-editor');
+      const codeEditorEl = () => langPanel().shadowRoot.querySelector('heo-code-editor');
       codeArea().dispatchEvent(
         new PointerEvent('pointerdown', { bubbles: true, composed: true, cancelable: true }),
       );
@@ -1484,7 +1503,7 @@
 
       /* Revert reloads the buffer and keeps the caret in the panel. */
       const codeFoot = () =>
-        Array.from(dockPanel('code').shadowRoot.querySelectorAll('.foot .btn'));
+        Array.from(langPanel().shadowRoot.querySelectorAll('.foot .btn'));
       const revertBtn = () => codeFoot().find((b) => !b.classList.contains('primary'));
       const applyBtn = () => codeFoot().find((b) => b.classList.contains('primary'));
       const pristine = codeEditorEl().code;
@@ -1961,11 +1980,16 @@
       engine.history.clear();
 
       /* ------------------------------------------------------------------ *
-       * The CSS panel lists the page's stylesheets and edits one.
+       * The CSS tab lists the page's stylesheets and edits one.
+       *
+       * HTML, CSS and JS are one Code dock tab now, switched by a strip inside it
+       * rather than three separate dock tabs — so this opens Code and switches.
        * ------------------------------------------------------------------ */
-      api.openPanel('css');
+      api.openPanel('code');
       await frame();
-      const cssPanel = dockPanel('css');
+      codeTabs().shadowRoot.querySelectorAll('.strip button')[1].click();
+      await frame();
+      const cssPanel = langPanel('css');
       check('cssPanelListsSheets', () =>
         Array.from(cssPanel.shadowRoot.querySelectorAll('.sheet .name')).map((n) => n.textContent).join(','));
       check('cssPanelShowsRuleCounts', () =>
@@ -2001,6 +2025,9 @@
       await frame();
       check('cssPanelEditUndone', () => !styleTag.textContent.includes('injected-by-panel'));
       engine.history.clear();
+      // Leave the Code tab where later checks expect to find it: on HTML.
+      engine.setCodeTab('html');
+      await frame();
 
       /* ------------------------------------------------------------------ *
        * Reordering may only move siblings; changing parent needs a held gesture.
@@ -2210,14 +2237,14 @@
        * button, expand, and the three could not be compared at all. Worse, the modal
        * died with its panel, which is precisely what switching language does.
        * ------------------------------------------------------------------ */
-      api.openPanel('code');
       api.select(document.getElementById('para'));
+      api.openPanel('code');
       await frame();
       await wait(140);
       const workspace = () => overlayRoot().shadowRoot.querySelector('heo-code-workspace');
       check('noSharedViewUntilAsked', () => workspace() === null);
 
-      const htmlEditor = dockPanel('code').shadowRoot.querySelector('heo-code-editor');
+      const htmlEditor = langPanel().shadowRoot.querySelector('heo-code-editor');
       const bufferBefore = htmlEditor.code;
       htmlEditor.shadowRoot.querySelector('.grow')
         .dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
@@ -2288,28 +2315,93 @@
       await frame();
       check('escapeCollapsesWithoutDiscarding', () => ({
         closed: workspace() === null,
-        kept: dockPanel('code').shadowRoot.querySelector('heo-code-editor').code === bufferBefore,
+        kept: langPanel().shadowRoot.querySelector('heo-code-editor').code === bufferBefore,
       }));
 
       /* ------------------------------------------------------------------ *
-       * With nothing selected, the HTML panel is the document.
+       * With nothing selected, the HTML tab is the whole document.
        *
-       * It used to say "select an element" and stop, which left the head — the part of
-       * a page no click can reach — with no way in at all. Head first, as a form with
-       * the previews its values are for; body markup on the other tab.
+       * It used to say "select an element" and stop; then it grew a two-tab
+       * head-or-body split of its own. Both are gone: the HTML tab now always shows
+       * the full file, doctype to </html>, whether or not anything is selected — one
+       * fewer decision, and nothing this editor can reach is hidden behind a click
+       * that was never obvious to make. SEO moved out to its own dock tab, since it
+       * is a different job with different fields, not a way of looking at markup.
        * ------------------------------------------------------------------ */
       api.select(null);
       api.openPanel('code');
       await frame();
       await wait(180);
-      const docPanel = () => dockPanel('code');
-      const docTabs = () => docPanel().shadowRoot.querySelector('heo-segmented');
-      check('nothingSelectedOffersTheDocument', () =>
-        (docTabs()?.options ?? []).map((o) => o.label).join(','));
-      check('theHeadIsTheDefaultTab', () => docTabs()?.value);
+      const docPanel = () => langPanel();
+      check('nothingSelectedShowsTheWholeDocument', () => {
+        const area = docPanel().shadowRoot.querySelector('heo-code-editor')
+          .shadowRoot.querySelector('textarea');
+        return /<!DOCTYPE html>/i.test(area.value) && /<head>/i.test(area.value) &&
+          /id="para"/.test(area.value);
+      });
+      check('noEditScopeSegmentedForTheWholeDocument', () =>
+        docPanel().shadowRoot.querySelector('heo-segmented') === null);
 
-      const seoForm = () => docPanel().shadowRoot.querySelector('heo-seo-form');
-      check('theHeadIsAForm', () => Boolean(seoForm()));
+      /*
+       * Applying a whole-document edit must never delete a script that was already
+       * running, even when the edit has nothing to do with scripts.
+       *
+       * `#applyDocument` strips every `<script>` out of both the live head/body
+       * snapshot *and* the incoming buffer, then reattaches the live ones — cloned,
+       * in their original parent — after the write. Get that wrong in either
+       * direction and a change to, say, the page title silently deletes every script
+       * on the page. Undo has to restore the exact same guarantee.
+       */
+      window.__docApplyProbe = 0;
+      const probeScript = document.createElement('script');
+      probeScript.id = 'doc-apply-script-probe';
+      probeScript.textContent = 'window.__docApplyProbe = 1;';
+      document.head.appendChild(probeScript);
+      await frame();
+      check('theProbeScriptRanOnceWhenAppended', () => window.__docApplyProbe === 1);
+      const wholeDocEditor = () =>
+        docPanel().shadowRoot.querySelector('heo-code-editor').shadowRoot.querySelector('textarea');
+      const beforeDocEdit = wholeDocEditor().value;
+      const docEditInput = wholeDocEditor();
+      docEditInput.focus();
+      docEditInput.value = beforeDocEdit.replace(
+        /<title>[^<]*<\/title>/,
+        '<title>Retitled by the whole-document editor</title>',
+      );
+      docEditInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      await frame();
+      const docApplyDepth = engine.history.size;
+      Array.from(docPanel().shadowRoot.querySelectorAll('.foot .btn'))
+        .find((b) => /apply/i.test(b.textContent)).click();
+      await wait(260);
+      await frame();
+      check('applyingAnUnrelatedDocEditRetitles', () => document.title);
+      check('anUnrelatedDocEditDoesNotDeleteAnExistingScript', () => ({
+        stillInDocument: document.getElementById('doc-apply-script-probe') !== null,
+        stillRan: window.__docApplyProbe === 1,
+      }));
+      check('theWholeDocumentEditIsOneHistoryStep', () => engine.history.size === docApplyDepth + 1);
+      const preUndoTitle = document.title;
+      engine.undo();
+      await wait(200);
+      await frame();
+      check('undoingAWholeDocumentEditRestoresTheTitle', () =>
+        document.title !== preUndoTitle && document.getElementById('para') !== null);
+      check('theProbeScriptSurvivesUndoToo', () =>
+        document.getElementById('doc-apply-script-probe') !== null);
+      probeScript.remove();
+      delete window.__docApplyProbe;
+      engine.history.clear();
+
+      api.openPanel('seo');
+      await frame();
+      await wait(160);
+      const seoPanel = () => dockPanel('seo');
+      check('seoIsItsOwnDockPanel', () => Boolean(seoPanel()));
+      const seoForm = () => seoPanel().shadowRoot.querySelector('heo-seo-form');
+      check('theSeoPanelHostsTheForm', () => Boolean(seoForm()));
+      check('theSeoPanelHasNoExpandAffordance', () =>
+        seoPanel().shadowRoot.querySelector('.grow') === null);
 
       // Seed the head so the previews and the fallback chains have something to show.
       document.title = 'Pricing that scales with you';
@@ -2374,18 +2466,15 @@
       check('andUndoTakesThatTagAwayAgain', () =>
         document.querySelector('meta[property="og:image"]') === null);
 
-      /* The body tab: the whole body, overlay excluded, applied without self-harm. */
-      docTabs().dispatchEvent(new CustomEvent('segment-change', {
-        detail: { value: 'body' }, bubbles: true, composed: true,
-      }));
-      await wait(240);
+      /* The whole-document buffer leaves the overlay out of it, applied without self-harm. */
+      api.openPanel('code');
       await frame();
+      await wait(160);
       const bodyArea = () =>
         docPanel().shadowRoot.querySelector('heo-code-editor')?.shadowRoot.querySelector('textarea');
-      check('theBodyTabShowsTheWholeBody', () => /id="para"/.test(bodyArea()?.value ?? ''));
       check('andLeavesTheOverlayOutOfIt', () => {
         // Parsed rather than string-matched: this page's own results element is inside
-        // the body being serialized, and it quotes the tag name.
+        // the document being serialized, and it quotes the tag name.
         const parsed = document.createElement('template');
         parsed.innerHTML = bodyArea()?.value ?? '';
         return parsed.content.querySelector('html-editor-overlay') === null;
@@ -2425,10 +2514,12 @@
       const pageScript = document.createElement('script');
       pageScript.textContent = 'window.__probeRan = 1;';
       document.body.append(pageScript);
-      api.openPanel('js');
+      api.openPanel('code');
+      await frame();
+      codeTabs().shadowRoot.querySelectorAll('.strip button')[2].click();
       await frame();
       await wait(200);
-      const jsPanel = () => dockPanel('js');
+      const jsPanel = () => langPanel('js');
       const scriptRows = () => Array.from(jsPanel().shadowRoot.querySelectorAll('.file'));
       check('theJsPanelListsThePagesScripts', () => scriptRows().length > 0);
       check('andExcludesTheOverlaysOwnBundle', () =>

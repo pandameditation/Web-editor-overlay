@@ -13,9 +13,8 @@ import '../panels/tree-panel.js';
 import '../panels/library-panel.js';
 import '../panels/props-panel.js';
 import '../panels/media-panel.js';
-import '../panels/code-panel.js';
-import '../panels/css-panel.js';
-import '../panels/js-panel.js';
+import '../panels/code-tabs.js';
+import '../panels/seo-panel.js';
 
 const TABS: Array<{ id: PanelId; label: string; glyph: string }> = [
   { id: 'styles', label: 'Styles', glyph: 'styles' },
@@ -24,9 +23,8 @@ const TABS: Array<{ id: PanelId; label: string; glyph: string }> = [
   { id: 'library', label: 'Library', glyph: 'blocks' },
   { id: 'props', label: 'Props', glyph: 'sliders' },
   { id: 'media', label: 'Media', glyph: 'image' },
-  { id: 'code', label: 'HTML', glyph: 'code' },
-  { id: 'css', label: 'CSS', glyph: 'styles' },
-  { id: 'js', label: 'JS', glyph: 'play' },
+  { id: 'code', label: 'Code', glyph: 'code' },
+  { id: 'seo', label: 'SEO', glyph: 'search' },
 ];
 
 /**
@@ -275,11 +273,9 @@ export class HeoDock extends HeoElement {
       case 'media':
         return html`<heo-media-panel></heo-media-panel>`;
       case 'code':
-        return html`<heo-code-panel></heo-code-panel>`;
-      case 'css':
-        return html`<heo-css-panel></heo-css-panel>`;
-      case 'js':
-        return html`<heo-js-panel></heo-js-panel>`;
+        return html`<heo-code-tabs></heo-code-tabs>`;
+      case 'seo':
+        return html`<heo-seo-panel></heo-seo-panel>`;
       default:
         return html`<div class="empty">Unknown panel.</div>`;
     }

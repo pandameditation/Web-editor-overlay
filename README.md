@@ -304,7 +304,7 @@ strip of the field opens the list.
 
 ## Panels
 
-One dock, seven tabs, resizable by its left edge.
+One dock, eight tabs, resizable by its left edge.
 
 **Styles** — opens with **Modified**: everything the element itself declares via
 its `style` attribute, in one list, each row resettable to the value it had before
@@ -354,10 +354,27 @@ accessibility attributes with a specific note rather than generic advice.
 `cover` versus `contain` is only obvious on the real asset. Object-position is a
 nine-point grid. Plus source, alt text, srcset, ratio presets and rendering.
 
-**HTML** — a syntax-highlighted editor over the element's markup, in whole-element
-or contents-only mode. The buffer is validated as you type and says exactly what
-is wrong; applying is explicit, and everything goes through the same sanitizer as
-every other insertion.
+**Code** — the page's source, as three tabs over one subject instead of three
+separate tools. **HTML** is a syntax-highlighted editor: with an element selected
+it edits that element's markup, whole-element or contents-only; with nothing
+selected it shows the entire document, doctype to `</html>`, and applying rewrites
+the live page in one undoable step — the overlay, the design-system stylesheets and
+`data-heo-edit` are all preserved through it rather than left to what the buffer
+happens to contain. **CSS** lists every stylesheet the page loads and edits it
+through the CSSOM. **JS** lists every script and lets you edit its source; since a
+script has already run, applying records the change without re-executing it, and
+**Run** is the separate, explicit way to do that. All three share one expand button:
+the fullscreen view keeps whichever language you were on and lets you switch
+between them without losing your place. The buffer is validated as you type and
+says exactly what is wrong; applying is explicit, and HTML goes through the same
+sanitizer as every other insertion.
+
+**SEO** — the document head as a form instead of markup, because a `<head>` is a
+dozen tags in three notations for four things anyone actually cares about. Editing
+the description or the Open Graph image updates a live preview of how the page will
+look as a search result and as a shared link, resolved through the same fallback
+chain the platforms use — so an empty `og:title` shows as "falls back to the page
+title" rather than as a blank field with no explanation.
 
 ---
 
@@ -412,7 +429,7 @@ api.getState();                    // { editing, dirty, selected, canUndo, chang
 api.setEditing(true);
 api.toggleEditing();
 api.select(document.querySelector('.card'));
-api.openPanel('styles');           // styles|tokens|tree|library|props|media|code
+api.openPanel('styles');           // styles|tokens|tree|library|props|media|code|seo
 api.closePanel();
 
 api.undo();
