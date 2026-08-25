@@ -183,16 +183,24 @@ export function valueKindFor(property: string): ValueKind {
   }
 }
 
-/** Suggestions for a class-name input: project classes, most used first. */
+/**
+ * Suggestions for a class-name input: project classes, most used first.
+ *
+ * The hint carries both numbers, because the two questions asked of this list are
+ * different: adding a class to an element wants to know how widely it is already
+ * used, while extracting into an existing one wants to know how much it holds — how
+ * much would come along with the name.
+ */
 export function classSuggestions(engine: EditorEngine, query = ''): ValueSuggestion[] {
   const usage = engine.classes.usage();
   const matches = engine.classes.search(query, 24);
   return matches.map((entry) => {
     const count = usage.get(entry.name) ?? 0;
+    const rules = Object.keys(entry.declarations).length;
     return {
       value: entry.name,
       label: entry.name,
-      hint: count ? `${count}×` : Object.keys(entry.declarations).length + ' rules',
+      hint: count ? `${rules} rules · ${count}×` : `${rules} rules`,
       group: count > 0 ? 'Used in this project' : 'Available classes',
     };
   });

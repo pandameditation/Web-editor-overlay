@@ -327,6 +327,19 @@ declarations that do not belong in every use, and see the resulting rule before
 anything is committed. What the class absorbs is removed from the element; what you
 left behind stays.
 
+The name field is an autocomplete over the project's classes, so a group of
+declarations can go into a class that already exists rather than a new one. Naming
+an existing class folds the declarations into it — everything it already held
+survives, the incoming values win where they clash — and the dialog names every
+value the merge would move, on every element wearing the class, before you commit.
+Replace is the other answer, chosen deliberately rather than by accident.
+
+Both operations run in reverse. In **Styles → Classes**, opening a class offers
+"Just this element", which either copies the class under a new name and swaps it in
+here alone, or moves its declarations onto the element as inline styles and takes
+the class off — the exact inverse of extracting it, dropping the rule too when
+nothing else was using it.
+
 The dock is docked to the right edge by default and can be dragged anywhere by its
 header; the button beside the close button sends it back to the edge.
 

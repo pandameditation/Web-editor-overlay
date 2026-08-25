@@ -17,6 +17,7 @@ import {
 } from '../../core/css.js';
 import { labelFor, selectableParent } from '../../core/dom.js';
 import { normalizeClassName } from '../../core/classes.js';
+import type { DesignClass } from '../../core/types.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
@@ -420,6 +421,62 @@ export class HeoStylesPanel extends HeoElement {
         color: var(--heo-text);
       }
 
+      /* Leaving a shared class, for one element. Two routes, each stating what it
+         does to the class and to everything else wearing it — the question that
+         decides between them, and one nobody should have to work out from a label. */
+      .detach {
+        display: grid;
+        gap: 7px;
+        margin: 0 0 8px;
+        padding: 9px;
+        border: 1px solid var(--heo-accent-line);
+        border-radius: var(--heo-r-sm);
+        background: var(--heo-accent-soft);
+      }
+      .detach .lede {
+        margin: 0;
+        color: var(--heo-text-dim);
+        font-size: 10.5px;
+        line-height: 1.45;
+      }
+      .detach .choice {
+        display: grid;
+        gap: 6px;
+        padding: 8px 9px;
+        border-radius: var(--heo-r-sm);
+        background: var(--heo-bg);
+      }
+      .detach .choice .head {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        color: var(--heo-text);
+        font-size: 11.5px;
+      }
+      .detach .choice .head b {
+        font-weight: 600;
+      }
+      .detach .choice > p {
+        margin: 0;
+        color: var(--heo-text-faint);
+        font-size: 10.5px;
+        line-height: 1.5;
+      }
+      .detach .choice .row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .detach .choice .row .input {
+        flex: 1 1 auto;
+        min-width: 0;
+        height: 24px;
+        font-size: 11px;
+      }
+      .detach .choice .row .spacer {
+        flex: 1 1 auto;
+      }
+
       /* Cascade inspector */
       .rule {
         margin-bottom: 8px;
@@ -546,6 +603,10 @@ export class HeoStylesPanel extends HeoElement {
   @state() private classDraft = '';
   /** Which class chip is expanded into its definition, if any. */
   @state() private openClass: string | null = null;
+  /** Which class has its "just this element" options showing, if any. */
+  @state() private detachOpen: string | null = null;
+  /** Name typed for the copy, empty while the suggested one will do. */
+  @state() private forkDraft = '';
   @state() private classProperty = '';
   @state() private newProperty = '';
   /** The element whose size cap has already auto-opened the parent section. */
@@ -1046,6 +1107,10 @@ export class HeoStylesPanel extends HeoElement {
                   aria-expanded=${open}
                   @click=${() => {
                 this.openClass = open ? null : name;
+                // Whatever was half-answered about the last class does not carry
+                // over to this one.
+                this.detachOpen = null;
+                this.forkDraft = '';
               }}
                 >
                   ${icon(open ? 'chevronDown' : 'chevronRight', 8)} ${name}
@@ -1131,17 +1196,139 @@ export class HeoStylesPanel extends HeoElement {
         >
           Manage it in Tokens
         </button>
+        ·
+        <button
+          class="link"
+          type="button"
+          aria-expanded=${this.detachOpen === name}
+          title=${uses > 1
+        ? `Style this element on its own, without affecting the other ${uses - 1} using .${name}`
+        : `Style this element on its own, without .${name}`}
+          @click=${() => {
+        this.detachOpen = this.detachOpen === name ? null : name;
+      }}
+        >
+          ${this.detachOpen === name ? 'Never mind' : 'Just this element…'}
+        </button>
       </p>
+      ${this.detachOpen === name ? this.#renderDetach(entry, el, uses) : nothing}
       ${ClassEditor.render(entry, {
-          expanded: true,
-          uses,
-          bare: true,
-          onToggle: () => {
-            this.openClass = null;
-          },
-          host,
-        })}
+        expanded: true,
+        uses,
+        bare: true,
+        onToggle: () => {
+          this.openClass = null;
+        },
+        host,
+      })}
     `;
+  }
+
+  /**
+   * The way back out of a shared class, for one element.
+   *
+   * Extracting into a class is a one-way door as things stand: past that point the
+   * only ways to make a single element differ were to pile an inline override on top
+   * of the class — which leaves the class in the markup, still claiming to describe
+   * the element — or to retype every declaration by hand and remember to remove it.
+   * Neither is what "just change this one" means, and both are worse than the state
+   * before the extraction happened.
+   *
+   * Two routes rather than one, because the two answers to "is this still a thing
+   * worth naming" lead different places. Inlining is the exact inverse of extraction
+   * and the right move for values that were only ever this element's. Forking keeps a
+   * reusable rule and is the right move for a variant, which is most of the time —
+   * so it leads, and it is the one Enter would take.
+   */
+  #renderDetach(entry: DesignClass, el: HTMLElement, uses: number): TemplateResult {
+    const count = Object.keys(entry.declarations).length;
+    const others = Math.max(0, uses - 1);
+    const suggestion = this.editor.classes.uniqueName(entry.name);
+    const forkName = this.forkDraft.trim() || suggestion;
+    // Dropped with the last element wearing it, unless the page authored it: an
+    // overlay-owned rule with no users is dead weight in the export.
+    const orphans = others === 0 && entry.origin !== 'stylesheet';
+
+    return html`<div class="detach">
+      <p class="lede">
+        ${others
+        ? html`<code class="mono">.${entry.name}</code> is on ${uses} elements. Both options leave
+            the other ${others} alone.`
+        : html`Only this element uses <code class="mono">.${entry.name}</code>.`}
+      </p>
+
+      <div class="choice">
+        <div class="head">
+          ${icon('duplicate', 12)}
+          <b>Copy it for this element</b>
+        </div>
+        <p>
+          Makes <code class="mono">.${forkName}</code> with the same ${count}
+          declaration${count === 1 ? '' : 's'} and swaps it in here. Still a class you can reuse,
+          just not a shared one.
+        </p>
+        <div class="row">
+          <input
+            class="input mono fork-input"
+            type="text"
+            .value=${this.forkDraft}
+            placeholder=${suggestion}
+            spellcheck="false"
+            autocomplete="off"
+            aria-label="Name for the copy"
+            @input=${(event: Event) => {
+        this.forkDraft = (event.target as HTMLInputElement).value;
+      }}
+            @keydown=${(event: KeyboardEvent) => {
+        if (event.key !== 'Enter') return;
+        event.preventDefault();
+        this.#fork(entry.name, el);
+      }}
+          />
+          <button class="btn sm primary" type="button" @click=${() => this.#fork(entry.name, el)}>
+            ${icon('duplicate', 12)} Copy
+          </button>
+        </div>
+      </div>
+
+      <div class="choice">
+        <div class="head">
+          ${icon('unlink', 12)}
+          <b>Move the styles onto the element</b>
+        </div>
+        <p>
+          The exact opposite of extracting a class: the ${count}
+          declaration${count === 1 ? '' : 's'} become this element's own inline styles and
+          <code class="mono">.${entry.name}</code>
+          comes off it${orphans
+        ? html`. Nothing else uses it, so the rule goes too.`
+        : html`, but stays defined for the rest.`}
+        </p>
+        <div class="row">
+          <span class="spacer"></span>
+          <button
+            class="btn sm"
+            type="button"
+            @click=${() => {
+        if (!this.editor.inlineClass(entry.name, el)) return;
+        this.detachOpen = null;
+        this.openClass = null;
+      }}
+          >
+            ${icon('unlink', 12)} Move to this element
+          </button>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  /** Fork the class, then follow it: the panel should be editing the copy. */
+  #fork(name: string, el: HTMLElement): void {
+    const forked = this.editor.forkClass(name, el, this.forkDraft.trim() || undefined);
+    if (!forked) return;
+    this.forkDraft = '';
+    this.detachOpen = null;
+    this.openClass = forked;
   }
 
   /**

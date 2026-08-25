@@ -139,6 +139,43 @@
         engine.setStyle('border-color', 'var(--accent)');
         await wait(60);
         engine.beginClassExtraction(document.getElementById('card-two'));
+      } else if (state === 'extract-merge') {
+        // Extraction aimed at a class the page already defines, so the merge
+        // review has an override to report and both cards are affected by it.
+        engine.setStyle('padding', 'var(--space-xl)');
+        engine.setStyle('gap', '18px');
+        engine.setStyle('outline', '2px solid var(--accent)');
+        await wait(60);
+        engine.beginClassExtraction(document.getElementById('card-two'));
+        await wait(60);
+        engine.updateExtraction({ name: 'card' });
+      } else if (state === 'extract-list') {
+        // The class-name combobox open, so the list's placement over the modal can
+        // be reviewed — it is a popover in the top layer, not an in-flow panel.
+        engine.setStyle('padding', 'var(--space-xl)');
+        await wait(60);
+        engine.beginClassExtraction(document.getElementById('card-two'));
+        await wait(120);
+        const dialog = document.querySelector('html-editor-overlay > heo-overlay')
+          .shadowRoot.querySelector('heo-extract-dialog');
+        dialog.shadowRoot.querySelector('.combo .chev').click();
+      } else if (state === 'detach') {
+        // The inverse: a class two elements share, with its editor open and the
+        // "just this element" options expanded.
+        api.openPanel('styles');
+        await wait(220);
+        const dockNode = document.querySelector('html-editor-overlay > heo-overlay')
+          .shadowRoot.querySelector('heo-dock');
+        const panel = dockNode.shadowRoot.querySelector('heo-styles-panel');
+        const chip = Array.from(panel.shadowRoot.querySelectorAll('.chip .name'))
+          .find((b) => b.textContent.trim() === 'card');
+        chip?.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+        await wait(160);
+        const link = Array.from(panel.shadowRoot.querySelectorAll('.link'))
+          .find((b) => b.textContent.includes('Just this element'));
+        link?.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+        await wait(160);
+        panel.shadowRoot.querySelector('.detach')?.scrollIntoView({ block: 'center' });
       } else if (state === 'extract-block') {
         engine.beginBlockExtraction(document.getElementById('card-two'));
       } else if (state === 'modified') {

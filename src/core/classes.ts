@@ -120,6 +120,22 @@ export class ClassRegistry {
     return scored.slice(0, limit);
   }
 
+  /**
+   * A name derived from `base` that no class holds yet.
+   *
+   * Forking `.card` for one element has to produce a second class, not silently
+   * rewrite the first — which is exactly what a bare name would do.
+   */
+  uniqueName(base: string): string {
+    const root = normalizeClassName(base) || 'style';
+    if (!this.#classes.has(root)) return root;
+    for (let n = 2; n < 1000; n += 1) {
+      const candidate = `${root}-${n}`;
+      if (!this.#classes.has(candidate)) return candidate;
+    }
+    return `${root}-${Date.now().toString(36)}`;
+  }
+
   upsert(entry: DesignClass): DesignClass {
     const name = normalizeClassName(entry.name);
     if (!name) throw new Error('A class needs a valid name.');
@@ -260,6 +276,71 @@ export function normalizeClassName(name: string): string {
 export function prettifyClassName(name: string): string {
   const text = name.replace(/[-_]+/g, ' ').trim();
   return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+/** How an extraction resolves a name that is already taken. */
+export type ClassCollision = 'merge' | 'replace';
+
+/**
+ * What writing a set of declarations into an existing class would do.
+ *
+ * Extraction used to be create-only: naming it after a class that already existed
+ * replaced that class outright, taking every declaration it held with it and
+ * changing every element wearing it, with nothing said beforehand. Since reaching
+ * for an existing name is usually a request to *add* to it, the outcome now has to
+ * be describable before it happens — which is what this is. Split out as a pure
+ * function so the review UI and the command that applies it cannot disagree about
+ * what is about to change.
+ */
+export interface ClassMergePlan {
+  /** The class being written into, or null when this name is new. */
+  existing: DesignClass | null;
+  /** Properties the class does not set yet. */
+  added: string[];
+  /** Properties whose value changes, with what it changes from. */
+  replaced: Array<{ property: string; from: string; to: string }>;
+  /** Properties the class already sets to exactly this value. */
+  unchanged: string[];
+  /** The class's own declarations this leaves alone. Empty when replacing. */
+  kept: string[];
+  /** What the class ends up holding. */
+  result: Record<string, string>;
+  /** True when the class would come out exactly as it went in. */
+  noop: boolean;
+}
+
+export function planClassMerge(
+  existing: DesignClass | null | undefined,
+  declarations: Record<string, string>,
+  mode: ClassCollision = 'merge',
+): ClassMergePlan {
+  const previous = existing?.declarations ?? {};
+  const added: string[] = [];
+  const replaced: ClassMergePlan['replaced'] = [];
+  const unchanged: string[] = [];
+
+  for (const [property, value] of Object.entries(declarations)) {
+    const from = previous[property];
+    if (from === undefined) added.push(property);
+    else if (from.trim() === value.trim()) unchanged.push(property);
+    else replaced.push({ property, from, to: value });
+  }
+
+  const kept =
+    mode === 'replace'
+      ? []
+      : Object.keys(previous).filter((property) => declarations[property] === undefined);
+
+  // Merging spreads the incoming declarations last, which is what makes "add these,
+  // and let them win where they clash" true. Replacing drops everything else.
+  const result = mode === 'replace' ? { ...declarations } : { ...previous, ...declarations };
+
+  const noop =
+    Boolean(existing) &&
+    Object.keys(result).length === Object.keys(previous).length &&
+    Object.entries(result).every(([property, value]) => previous[property]?.trim() === value.trim());
+
+  return { existing: existing ?? null, added, replaced, unchanged, kept, result, noop };
 }
 
 /**

@@ -1,4 +1,12 @@
-import { ClassRegistry, normalizeClassName, suggestClassName } from './classes.js';
+import {
+  ClassRegistry,
+  normalizeClassName,
+  planClassMerge,
+  prettifyClassName,
+  suggestClassName,
+  type ClassCollision,
+  type ClassMergePlan,
+} from './classes.js';
 import { DRAGGING_ATTR, DRAG_TIMING, EDIT_DISCARDED_EVENT, HOST_TAG, IGNORE_ATTR, VERSION } from './constants.js';
 import { inlineDeclarations } from './css.js';
 import { planDrag, samePlacement, type DropPlacement } from './drop-target.js';
@@ -106,6 +114,16 @@ export interface ClassExtraction {
   include: Record<string, boolean>;
   /** Remove the absorbed declarations from the element's style attribute. */
   stripInline: boolean;
+  /**
+   * What to do when `name` already belongs to a class. Ignored when it does not.
+   *
+   * Naming an existing class is nearly always a request to add to it — "these two
+   * declarations belong on `.card` too" — so merging is the default, and the
+   * dialog spells out which of the class's values the merge would replace before
+   * anything is committed. `replace` is the old, silent behaviour, kept because
+   * "this class is now exactly these declarations" is occasionally what is meant.
+   */
+  collision: ClassCollision;
   error: string;
 }
 
@@ -921,6 +939,7 @@ export class EditorEngine {
         // Only meaningful when the values came from the style attribute; token
         // declarations inherited from a rule are not ours to remove.
         stripInline: Object.keys(inline).length > 0,
+        collision: 'merge',
         error: '',
       },
     });
@@ -1007,7 +1026,13 @@ export class EditorEngine {
         this.updateExtraction({ error: 'Keep at least one declaration.' });
         return false;
       }
-      this.#commitClass(pending.element, name, declarations, pending.stripInline);
+      this.#commitClass(
+        pending.element,
+        name,
+        declarations,
+        pending.stripInline,
+        pending.collision,
+      );
       this.store.patch({ extraction: null });
       return true;
     }
@@ -1182,17 +1207,26 @@ export class EditorEngine {
    * together — leaving one of the two behind would be worse than not undoing at
    * all. The registry write is inside the command too, so undo also removes the
    * class definition.
+   *
+   * An existing name is folded into rather than overwritten, unless `collision`
+   * says otherwise: the incoming declarations win where they clash and everything
+   * else the class holds survives. The alternative — what this did before — quietly
+   * discarded the rest of a shared class, which is a large change to make on the
+   * strength of a name someone typed.
    */
   #commitClass(
     el: HTMLElement,
     className: string,
     declarations: Record<string, string>,
     stripInline: boolean,
+    collision: ClassCollision = 'merge',
   ): void {
     const previousEntry = this.classes.get(className);
+    const plan = planClassMerge(previousEntry, declarations, collision);
     const previousStyle = el.getAttribute('style');
     const previousClass = el.getAttribute('class');
     const nextClass = [...new Set([...Array.from(el.classList), className])].join(' ');
+    const count = Object.keys(declarations).length;
 
     // Only remove the declarations the class now carries; anything the user chose
     // to leave behind stays on the element.
@@ -1202,21 +1236,31 @@ export class EditorEngine {
       .map(([property, value]) => `${property}: ${value}`)
       .join('; ');
 
+    const verb = !previousEntry ? 'Extract' : collision === 'replace' ? 'Replace' : 'Merge into';
     this.history.commit({
-      label: `Extract .${className}`,
+      label: `${verb} .${className}`,
       subject: `class-extract:${className}`,
       record: {
         id: nextChangeId(),
         kind: 'token-class',
-        summary: `Extract ${Object.keys(declarations).length} declarations from ${labelFor(el)} into .${className}`,
+        summary: previousEntry
+          ? `${collision === 'replace' ? 'Replace' : 'Merge'} ${count} declarations from ${labelFor(el)} into the existing .${className}`
+          : `Extract ${count} declarations from ${labelFor(el)} into .${className}`,
         target: selectorFor(el),
         source: nearestSourceRef(el),
         after: className,
-        detail: Object.fromEntries(Object.entries(declarations)),
+        detail: Object.fromEntries(Object.entries(plan.result)),
         at: Date.now(),
       },
       apply: () => {
-        this.classes.upsert({ name: className, declarations, origin: 'user' });
+        // Spread the previous entry so a class that already had a label or a
+        // description keeps them; only the declarations are being decided here.
+        this.classes.upsert({
+          ...previousEntry,
+          name: className,
+          declarations: plan.result,
+          origin: 'user',
+        });
         el.setAttribute('class', nextClass);
         if (!stripInline) return;
         if (remainingCss) el.setAttribute('style', remainingCss);
@@ -1232,7 +1276,206 @@ export class EditorEngine {
       },
     });
     this.#bumpRevision();
-    this.notify(`Created .${className} and applied it.`, 'success');
+    this.notify(this.#extractionToast(className, plan, collision), 'success', {
+      label: 'Undo',
+      run: () => this.undo(),
+    });
+  }
+
+  /** What actually happened, in one line: created, merged, or replaced. */
+  #extractionToast(
+    className: string,
+    plan: ClassMergePlan,
+    collision: ClassCollision,
+  ): string {
+    if (!plan.existing) return `Created .${className} and applied it.`;
+    if (collision === 'replace') {
+      return `.${className} now holds only these ${Object.keys(plan.result).length} declarations.`;
+    }
+    const parts = [
+      plan.added.length ? `added ${plan.added.length}` : '',
+      plan.replaced.length ? `replaced ${plan.replaced.length}` : '',
+    ].filter(Boolean);
+    return parts.length
+      ? `Merged into .${className}: ${parts.join(', ')}.`
+      : `.${className} already set all of these, so only the class was applied.`;
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Un-extraction                                                          */
+  /* ---------------------------------------------------------------------- */
+
+  /**
+   * Pull a class's declarations back onto one element and take the class off it.
+   *
+   * The exact inverse of extract-to-class, and the honest answer to "I only want to
+   * change this one". Sharing a class is the right default, but it is a commitment
+   * made at extraction time, and until now there was no way out of it other than
+   * retyping every declaration by hand and remembering to remove the class.
+   *
+   * The element's own inline values stay on top of what is copied down, because they
+   * already beat the class in the cascade — inlining must not change how the element
+   * looks. A definition the overlay owns and nothing else wears is dropped with it,
+   * so the export does not carry a rule with no users.
+   */
+  inlineClass(name: string, el = this.store.value.selected): boolean {
+    if (!el) return false;
+    const entry = this.classes.get(name);
+    if (!entry || !Object.keys(entry.declarations).length) {
+      this.notify(
+        `No readable rule defines .${name}, so there is nothing to bring onto this element.`,
+        'error',
+      );
+      return false;
+    }
+    if (!el.classList.contains(entry.name)) {
+      this.notify(`${labelFor(el)} does not have .${entry.name}.`, 'error');
+      return false;
+    }
+
+    const className = entry.name;
+    const count = Object.keys(entry.declarations).length;
+    const previousClass = el.getAttribute('class');
+    const previousStyle = el.getAttribute('style');
+    const nextClass = Array.from(el.classList)
+      .filter((item) => item !== className)
+      .join(' ');
+    const merged = { ...entry.declarations, ...inlineDeclarations(el) };
+    const nextStyle = Object.entries(merged)
+      .filter(([, value]) => value.trim() !== '')
+      .map(([property, value]) => `${property}: ${value}`)
+      .join('; ');
+    // Counted before the command runs: applying it invalidates the usage cache, and
+    // the answer that matters is how many elements wear the class right now.
+    const orphaned =
+      entry.origin !== 'stylesheet' && (this.classes.usage().get(className) ?? 0) <= 1;
+    const snapshot: DesignClass = { ...entry, declarations: { ...entry.declarations } };
+
+    this.history.commit({
+      label: `Inline .${className}`,
+      subject: `class-inline:${className}:${selectorFor(el)}`,
+      record: {
+        id: nextChangeId(),
+        kind: 'token-class',
+        summary: `Move ${count} declarations from .${className} onto ${labelFor(el)}${orphaned ? ', and drop the now-unused class' : ''}`,
+        target: selectorFor(el),
+        source: nearestSourceRef(el),
+        before: className,
+        detail: Object.fromEntries(Object.entries(entry.declarations)),
+        at: Date.now(),
+      },
+      apply: () => {
+        if (nextClass) el.setAttribute('class', nextClass);
+        else el.removeAttribute('class');
+        if (nextStyle) el.setAttribute('style', nextStyle);
+        else el.removeAttribute('style');
+        if (orphaned) this.classes.remove(className);
+      },
+      revert: () => {
+        if (orphaned) this.classes.upsert(snapshot);
+        if (previousClass === null) el.removeAttribute('class');
+        else el.setAttribute('class', previousClass);
+        if (previousStyle === null) el.removeAttribute('style');
+        else el.setAttribute('style', previousStyle);
+      },
+    });
+    this.#bumpRevision();
+    this.notify(
+      orphaned
+        ? `Moved ${count} declarations onto ${labelFor(el)} and removed .${className}.`
+        : `Moved ${count} declarations onto ${labelFor(el)}. .${className} still applies elsewhere.`,
+      'success',
+      { label: 'Undo', run: () => this.undo() },
+    );
+    return true;
+  }
+
+  /**
+   * Copy a shared class under a new name and swap it in on one element.
+   *
+   * The other half of "stop sharing this". Inlining gives up the class entirely;
+   * forking keeps a named, reusable rule but makes it this element's own, which is
+   * what you want when the declarations are still a coherent thing — a variant —
+   * rather than a handful of one-off values.
+   *
+   * Returns the new name so a panel showing the old one can follow it.
+   */
+  forkClass(name: string, el = this.store.value.selected, requested?: string): string | null {
+    if (!el) return null;
+    const entry = this.classes.get(name);
+    if (!entry) {
+      this.notify(`No readable rule defines .${name}, so there is nothing to copy.`, 'error');
+      return null;
+    }
+    if (!el.classList.contains(entry.name)) {
+      this.notify(`${labelFor(el)} does not have .${entry.name}.`, 'error');
+      return null;
+    }
+
+    const className = entry.name;
+    const asked = requested === undefined ? '' : normalizeClassName(requested);
+    if (requested !== undefined && requested.trim() && !asked) {
+      this.notify(`"${requested}" is not a valid class name.`, 'error');
+      return null;
+    }
+    const forkName = asked || this.classes.uniqueName(className);
+    if (forkName === className) {
+      this.notify('The copy needs a different name.', 'error');
+      return null;
+    }
+    if (this.classes.get(forkName)) {
+      this.notify(`.${forkName} already exists. Pick another name.`, 'error');
+      return null;
+    }
+
+    const previousClass = el.getAttribute('class');
+    // In place of the original rather than appended, so the order of the element's
+    // classes — and with it any specificity the author relied on — is preserved.
+    const nextClass = Array.from(el.classList)
+      .map((item) => (item === className ? forkName : item))
+      .join(' ');
+    const copy: DesignClass = {
+      name: forkName,
+      declarations: { ...entry.declarations },
+      label: prettifyClassName(forkName),
+      description: entry.description,
+      origin: 'user',
+    };
+    const others = Math.max(0, (this.classes.usage().get(className) ?? 1) - 1);
+
+    this.history.commit({
+      label: `Fork .${className} as .${forkName}`,
+      subject: `class-fork:${forkName}`,
+      record: {
+        id: nextChangeId(),
+        kind: 'token-class',
+        summary: `Copy .${className} to .${forkName} and use it on ${labelFor(el)} alone`,
+        target: selectorFor(el),
+        source: nearestSourceRef(el),
+        before: className,
+        after: forkName,
+        detail: Object.fromEntries(Object.entries(copy.declarations)),
+        at: Date.now(),
+      },
+      apply: () => {
+        this.classes.upsert(copy);
+        el.setAttribute('class', nextClass);
+      },
+      revert: () => {
+        this.classes.remove(forkName);
+        if (previousClass === null) el.removeAttribute('class');
+        else el.setAttribute('class', previousClass);
+      },
+    });
+    this.#bumpRevision();
+    this.notify(
+      others
+        ? `Now on .${forkName}. Editing it no longer touches the ${others} other element${others === 1 ? '' : 's'} using .${className}.`
+        : `Now on .${forkName}, a copy of .${className}.`,
+      'success',
+      { label: 'Undo', run: () => this.undo() },
+    );
+    return forkName;
   }
 
   /* ---------------------------------------------------------------------- */

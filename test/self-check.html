@@ -670,6 +670,154 @@
       check('extractedClassApplied', () => para.classList.contains('promo-card'));
       check('unselectedDeclarationKept', () => para.style.color !== '');
 
+      /* ------------------------------------------------------------------ *
+       * Naming a class that already exists adds to it.
+       *
+       * Extraction used to replace it outright, silently discarding everything else
+       * it held and changing every element wearing it. Reaching for an existing name
+       * is nearly always a request to add, so the dialog now names the class, lists
+       * the values the merge would move, and lets replace be chosen deliberately.
+       * ------------------------------------------------------------------ */
+      engine.classes.upsert({
+        name: 'promo-card',
+        declarations: { padding: '4px', display: 'flex' },
+        origin: 'user',
+      });
+      para.setAttribute('style', 'padding: 24px; gap: 8px');
+      api.select(para);
+      engine.beginClassExtraction(para);
+      await wait(150);
+      engine.updateExtraction({ name: 'promo-card' });
+      await wait(100);
+      await frame();
+      const extractRoot = () =>
+        overlayRoot().shadowRoot.querySelector('heo-extract-dialog').shadowRoot;
+      check('mergeIsOfferedForAnExistingName', () => Boolean(extractRoot().querySelector('.merge')));
+      check('mergeListsEveryOverride', () =>
+        Array.from(extractRoot().querySelectorAll('.merge .warn li'))
+          .map(
+            (li) =>
+              `${li.querySelector('.p').textContent}:${li.querySelector('.from').textContent}>${li.querySelector('.to').textContent}`,
+          )
+          .join(','),
+      );
+      check('mergeTallies', () =>
+        Array.from(extractRoot().querySelectorAll('.merge .tally .t'))
+          .map((t) => t.textContent.replace(/\s+/g, ' ').trim())
+          .join(' · '),
+      );
+      check('confirmSaysMerge', () =>
+        extractRoot().querySelector('footer .btn.primary').textContent.replace(/\s+/g, ' ').trim(),
+      );
+      check('theNameFieldOffersProjectClasses', () => {
+        const input = extractRoot().querySelector('.name-input');
+        extractRoot().querySelector('.combo .chev').click();
+        return Boolean(input);
+      });
+      await frame();
+      check('theClassListRenders', () =>
+        extractRoot().querySelectorAll('.options .option').length > 0);
+      check('mergeCommits', () => engine.commitExtraction());
+      await wait(120);
+      check('mergeKeptWhatTheClassAlreadyHeld', () =>
+        Object.entries(engine.classes.get('promo-card').declarations)
+          .map(([property, value]) => `${property}:${value}`)
+          .sort()
+          .join(','),
+      );
+
+      /* Replace is the other answer, and it drops what it does not mention. */
+      para.setAttribute('style', 'gap: 12px');
+      engine.beginClassExtraction(para);
+      await wait(150);
+      engine.updateExtraction({ name: 'promo-card', collision: 'replace' });
+      await wait(100);
+      check('replaceCommits', () => engine.commitExtraction());
+      await wait(120);
+      check('replaceLeavesOnlyWhatWasSelected', () =>
+        Object.keys(engine.classes.get('promo-card').declarations).sort().join(','),
+      );
+
+      /* ------------------------------------------------------------------ *
+       * And the way back out: one element leaving a shared class.
+       *
+       * Extraction was a one-way door. Forking keeps a reusable rule but makes it
+       * this element's own; inlining is the exact inverse of extracting, and takes
+       * the now-unused definition with it.
+       * ------------------------------------------------------------------ */
+      const sharedA = document.createElement('div');
+      const sharedB = document.createElement('div');
+      sharedA.className = 'shared-look';
+      sharedB.className = 'shared-look';
+      document.body.append(sharedA, sharedB);
+      engine.classes.upsert({
+        name: 'shared-look',
+        declarations: { color: 'rgb(1, 2, 3)', padding: '5px' },
+        origin: 'user',
+      });
+      check('forkNamesTheCopy', () => engine.forkClass('shared-look', sharedA));
+      check('forkSwapsItInPlace', () => sharedA.className);
+      check('forkLeavesTheOtherElementAlone', () => sharedB.className);
+      check('forkCopiedTheDeclarations', () =>
+        Object.keys(engine.classes.get('shared-look-2').declarations).sort().join(','),
+      );
+      check('inlineMovesTheDeclarationsDown', () => engine.inlineClass('shared-look', sharedB));
+      check('inlinedElementKeepsItsLook', () => sharedB.getAttribute('style'));
+      check('inlinedElementDroppedTheClass', () => sharedB.className === '');
+      check('theOrphanedRuleWentWithIt', () => !engine.classes.get('shared-look'));
+      check('undoPutsTheSharedClassBack', () => {
+        engine.undo();
+        return sharedB.className === 'shared-look' && !!engine.classes.get('shared-look');
+      });
+
+      /* It is reachable where the class is edited, not only from the API. */
+      const detachHost = document.createElement('div');
+      detachHost.className = 'detach-look';
+      document.body.append(detachHost);
+      engine.classes.upsert({
+        name: 'detach-look',
+        declarations: { gap: '3px' },
+        origin: 'user',
+      });
+      api.openPanel('styles');
+      api.select(detachHost);
+      await frame();
+      const detachPanel = () => dockPanel('styles').shadowRoot;
+      check('theClassChipOpensItsEditor', () => {
+        const chip = Array.from(detachPanel().querySelectorAll('.chip .name')).find(
+          (b) => b.textContent.trim() === 'detach-look',
+        );
+        if (!chip) return 'no chip';
+        chip.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+        return true;
+      });
+      await frame();
+      check('theSharedClassNoticeOffersAWayOut', () => {
+        const link = Array.from(detachPanel().querySelectorAll('.link')).find((b) =>
+          b.textContent.includes('Just this element'),
+        );
+        if (!link) return 'missing';
+        link.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+        return true;
+      });
+      await frame();
+      check('bothRoutesAreSpeltOut', () =>
+        Array.from(detachPanel().querySelectorAll('.detach .choice .head b'))
+          .map((b) => b.textContent.trim())
+          .join(' / '),
+      );
+      check('theCopyIsPrefilledWithAFreeName', () =>
+        detachPanel().querySelector('.detach .fork-input')?.placeholder,
+      );
+      sharedA.remove();
+      sharedB.remove();
+      detachHost.remove();
+      engine.classes.remove('shared-look');
+      engine.classes.remove('shared-look-2');
+      engine.classes.remove('detach-look');
+      api.select(para);
+      engine.history.clear();
+
       /* An element can be captured as a reusable block. */
       const blocksBefore = engine.library.list().length;
       engine.beginBlockExtraction(para);
