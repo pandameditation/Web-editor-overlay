@@ -1,6 +1,7 @@
 import { css, html, LitElement, nothing, type PropertyValues, type TemplateResult } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
+import { enterModal, exitModal } from '../../core/modal.js';
 import { highlight, type CodeLanguage } from './highlight.js';
 import { icon } from '../icons.js';
 import { baseStyles } from '../theme.js';
@@ -542,6 +543,7 @@ export class HeoCodeEditor extends LitElement {
     const dialog = this.renderRoot?.querySelector('dialog');
     if (dialog?.open) dialog.close();
     this.expanded = false;
+    exitModal(this);
     this.#carry = null;
   }
 
@@ -767,6 +769,11 @@ export class HeoCodeEditor extends LitElement {
     if (this.expanded) return;
     this.#remember();
     this.expanded = true;
+    // Claimed imperatively rather than through `ModalController`: this component
+    // stays connected either way, so its modal life is bounded by `expanded` and not
+    // by its own lifecycle. `showModal` already contains focus; what it does not do
+    // is stop the page scrolling behind the dialog.
+    enterModal(this);
   }
 
   #collapse(): void {
@@ -775,6 +782,7 @@ export class HeoCodeEditor extends LitElement {
     const dialog = this.renderRoot.querySelector('dialog');
     if (dialog?.open) dialog.close();
     this.expanded = false;
+    exitModal(this);
   }
 
   /** Note where the caret is, so the move between containers is not felt. */

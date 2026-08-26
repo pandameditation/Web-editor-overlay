@@ -233,6 +233,46 @@
         engine.extractClassFromSelection('card-featured');
         await wait(80);
         engine.previewSave();
+      } else if (state === 'insert-html') {
+        // The insert menu with the HTML primitives section showing.
+        engine.setInsertAnchor({ reference: document.getElementById('card-two'), position: 'after' });
+        await wait(220);
+      } else if (state === 'insert-html-old') {
+        // The deprecated corner of the catalogue, labelled for what it is.
+        engine.setInsertAnchor({ reference: document.getElementById('card-two'), position: 'after' });
+        await wait(220);
+        const oldMenu = document.querySelector('html-editor-overlay > heo-overlay')
+          .shadowRoot.querySelector('heo-insert-menu');
+        const oldInput = oldMenu.shadowRoot.querySelector('.top input');
+        oldInput.value = 'old web';
+        oldInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        await wait(220);
+      } else if (state === 'insert-html-all') {
+        // Same menu, switched to the HTML primitives.
+        engine.setInsertAnchor({ reference: document.getElementById('card-two'), position: 'after' });
+        await wait(220);
+        const menu = document.querySelector('html-editor-overlay > heo-overlay')
+          .shadowRoot.querySelector('heo-insert-menu');
+        const scope = menu.shadowRoot.querySelector('.scope heo-segmented');
+        Array.from(scope.shadowRoot.querySelectorAll('button'))
+          .find((b) => b.textContent.trim() === 'HTML')
+          ?.click();
+        await wait(240);
+      } else if (state === 'save-transfer') {
+        // The save dialog's follow-up step: the same Share & import surface the
+        // Tokens panel offers, reached from the Design system button.
+        engine.setStyle('padding', 'var(--space-xl)');
+        engine.tokens.upsert({ name: 'accent-hover', value: '#4338ca', group: 'color' });
+        engine.extractClassFromSelection('card-featured');
+        await wait(80);
+        engine.previewSave();
+        await wait(220);
+        const saveDialog = document.querySelector('html-editor-overlay > heo-overlay')
+          .shadowRoot.querySelector('heo-save-dialog');
+        Array.from(saveDialog.shadowRoot.querySelectorAll('footer .btn'))
+          .find((b) => b.textContent.includes('Design system'))
+          ?.click();
+        await wait(260);
       } else if (state === 'text') {
         engine.beginTextEdit(document.getElementById('card-two').querySelector('h2'));
       } else if (state === 'drag') {

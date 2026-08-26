@@ -1,4 +1,4 @@
-import { HOST_TAG, INSERTED_ATTR, SOURCE_ATTR } from './constants.js';
+import { HOST_TAG, INSERTED_ATTR, MODAL_ATTR, SOURCE_ATTR } from './constants.js';
 import type { ClassRegistry } from './classes.js';
 import type { BlockLibrary } from './library.js';
 import type { TokenRegistry } from './tokens.js';
@@ -159,6 +159,20 @@ export function exportHTML(): string {
   const clone = document.documentElement.cloneNode(true) as HTMLElement;
 
   for (const host of Array.from(clone.querySelectorAll(HOST_TAG))) host.remove();
+
+  /*
+   * The editor's own machinery goes; the user's design system stays.
+   *
+   * Both are `[data-heo-generated]` style elements, and the difference is exactly
+   * what `internal` means on a managed sheet: the tokens, classes and block CSS
+   * written during a session are the point of the export, while the rules that make
+   * edit mode work — the selection reset, the drag preview, the modal scroll lock —
+   * describe an editor that will not be there. They used to be exported too, which
+   * put `html[data-heo-edit]` rules into a file that has no editor.
+   */
+  for (const internal of Array.from(clone.querySelectorAll('[data-heo-internal]'))) {
+    internal.remove();
+  }
   for (const generated of Array.from(clone.querySelectorAll('[data-heo-generated]'))) {
     // Keep the CSS, drop the marker: the exported page should still look right.
     generated.removeAttribute('data-heo-generated');
@@ -180,6 +194,12 @@ export function exportHTML(): string {
   for (const el of Array.from(clone.querySelectorAll('[data-heo-editing]'))) {
     el.removeAttribute('data-heo-editing');
   }
+
+  // The scroll lock, which is on `<html>` itself — and `<html>` is what was cloned,
+  // so it is not reachable by `querySelectorAll`. Exporting from the save dialog's
+  // own footer happens with a modal open by definition, which is exactly when this
+  // is set.
+  clone.removeAttribute(MODAL_ATTR);
 
   const doctype = document.doctype
     ? `<!DOCTYPE ${document.doctype.name}>\n`

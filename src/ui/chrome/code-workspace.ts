@@ -1,6 +1,7 @@
 import { css, html, nothing, type TemplateResult } from 'lit';
 import { customElement, query } from 'lit/decorators.js';
 import type { CodeTab } from '../../core/editor.js';
+import { ModalController } from '../../core/modal.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
@@ -130,6 +131,14 @@ export class HeoCodeWorkspace extends HeoElement {
   );
 
   @query('dialog') private dialog?: HTMLDialogElement;
+
+  /**
+   * `native` because `showModal()` already contains focus and makes the document
+   * inert. What the platform does not do is stop the page scrolling underneath, so
+   * this joins the stack for the lock and to keep the overlay's own Tab handling
+   * out of the way.
+   */
+  protected modal = new ModalController(this, { native: true });
 
   override updated(): void {
     const open = this.state.value.codeWorkspace;

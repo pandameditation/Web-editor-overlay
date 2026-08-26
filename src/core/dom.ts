@@ -8,6 +8,20 @@ import {
 } from './constants.js';
 import type { SourceRef } from './types.js';
 
+/**
+ * The really-focused element, following the chain down through shadow roots.
+ *
+ * `document.activeElement` stops at the outermost shadow host, which for this
+ * overlay is almost always `<html-editor-overlay>` — accurate and useless. Lives
+ * here rather than with the focus-containment code so both that and the modal
+ * controller can reach it without importing each other.
+ */
+export function deepActiveElement(): HTMLElement | null {
+  let node: Element | null = document.activeElement;
+  while (node?.shadowRoot?.activeElement) node = node.shadowRoot.activeElement;
+  return node instanceof HTMLElement ? node : null;
+}
+
 export interface Box {
   top: number;
   left: number;

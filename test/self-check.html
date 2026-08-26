@@ -340,6 +340,12 @@
         const styles = Array.from(parsed.querySelectorAll('style')).map((s) => s.textContent).join('');
         return styles.includes('--space-2xl') && styles.includes('.card-tokens');
       });
+      // The design system is the point of the export; the rules that make edit mode
+      // work describe an editor the exported file will not have.
+      check('exportDropsEditorInternalCss', () => {
+        const styles = Array.from(parsed.querySelectorAll('style')).map((s) => s.textContent).join('');
+        return !styles.includes('data-heo-edit]') && !styles.includes('data-heo-modal]');
+      });
       check('exportHasContent', () => !!parsed.getElementById('para'));
 
       // Panels render
@@ -2097,6 +2103,204 @@
         typedList ? getComputedStyle(typedList).listStyleType : 'no list');
       if (typedList) engine.remove(typedList);
       await frame();
+      engine.history.clear();
+
+      /* ------------------------------------------------------------------ *
+       * The insert menu offers the language itself, not only assembled blocks.
+       *
+       * The library is a curated set of patterns, which is the better answer most of
+       * the time and the wrong one when what you want is a paragraph. Both live in
+       * one list, so one search and one set of arrow keys reach either.
+       * ------------------------------------------------------------------ */
+      const htmlHost = document.getElementById('title');
+      api.select(htmlHost);
+      engine.setInsertAnchor({ reference: htmlHost, position: 'after' });
+      await frame();
+      const menu = () => overlayRoot().shadowRoot.querySelector('heo-insert-menu');
+      const menuRows = () => Array.from(menu().shadowRoot.querySelectorAll('.row'));
+      const menuGroups = () =>
+        Array.from(menu().shadowRoot.querySelectorAll('.group')).map((g) => g.textContent.trim());
+      const scopeButton = (label) =>
+        Array.from(menu().shadowRoot.querySelector('.scope heo-segmented')
+          .shadowRoot.querySelectorAll('button')).find((b) => b.textContent.trim() === label);
+
+      check('theMenuOffersBothKinds', () => menuGroups().includes('HTML elements'));
+      check('andSaysSoInTheSearchField', () =>
+        menu().shadowRoot.querySelector('.top input').placeholder);
+      check('everydayTagsShowWithoutSearching', () =>
+        menuRows()
+          .map((r) => r.querySelector('.kind.tag')?.textContent.trim())
+          .filter(Boolean)
+          .join(','));
+      check('andTheRestAreOneRowAway', () =>
+        Boolean(menu().shadowRoot.querySelector('.row.more')));
+
+      /* Switching scope shows the catalogue grouped by concern. */
+      scopeButton('HTML').click();
+      await wait(160);
+      check('theHtmlScopeDropsTheBlocks', () => menuGroups().join(','));
+      check('andEveryRowCarriesItsTag', () => {
+        const rows = menuRows();
+        return rows.length > 30 && rows.every((r) => Boolean(r.querySelector('.kind.tag')));
+      });
+      check('eachOneExplainsItself', () =>
+        menuRows()[0]?.querySelector('.desc')?.textContent.trim());
+
+      /* Typing a tag name finds it, ranked ahead of anything merely mentioning it. */
+      const typeMenu = (value) => {
+        const input = menu().shadowRoot.querySelector('.top input');
+        input.value = value;
+        input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      };
+      scopeButton('All').click();
+      await wait(140);
+      typeMenu('p');
+      await wait(140);
+      check('anExactTagWinsTheSearch', () =>
+        menuRows().map((r) => r.querySelector('.kind.tag')?.textContent.trim() ?? 'block')[0]);
+      typeMenu('marquee');
+      await wait(140);
+      check('evenTheDeprecatedOnesAreFindable', () =>
+        menuRows().map((r) => `${r.querySelector('.name').textContent.trim()}:${r.querySelector('.kind.tag')?.textContent.trim()}`).join(','));
+
+      /* And it inserts. `<marquee>` is the test because nothing in the sanitizer
+         knows about it: an allowlist would have silently dropped it. */
+      menuRows()[0].dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+      await wait(240);
+      const marquee = document.querySelector('#wrap marquee, marquee');
+      check('theElementLandsOnThePage', () => Boolean(marquee));
+      check('andKeptItsTagThroughSanitization', () => marquee?.tagName.toLowerCase());
+      check('andIsSelectedReadyToEdit', () => engine.selected === marquee);
+      check('andIsRecordedAsOneChange', () => {
+        const record = engine.records.at(-1);
+        return record ? `${record.kind}: ${record.summary}` : 'none';
+      });
+      check('andUndoTakesItBackOut', () => {
+        engine.undo();
+        return !document.querySelector('marquee');
+      });
+      // A plain paragraph is the request that started this, so check it too — and
+      // typing one letter is the case where an exact tag has to outrank the blocks
+      // that merely mention it.
+      engine.setInsertAnchor({ reference: htmlHost, position: 'after' });
+      await frame();
+      typeMenu('p');
+      await wait(140);
+      menuRows()[0].dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+      await wait(240);
+      check('aBareParagraphInsertsToo', () => {
+        const p = engine.selected;
+        return p ? `${p.tagName.toLowerCase()} "${p.textContent.trim()}"` : 'none';
+      });
+      // The primitives stay out of the library, so the Library panel and every
+      // exported seed keep to the curated set.
+      check('theyDoNotJoinTheLibrary', () =>
+        !engine.library.get('html-p') && !engine.library.get('html-marquee'));
+      if (engine.selected?.tagName === 'P') engine.remove(engine.selected);
+      engine.setInsertAnchor(null);
+      await frame();
+      engine.history.clear();
+
+      /* ------------------------------------------------------------------ *
+       * A modal is actually modal: focus stays in, the page stops scrolling.
+       *
+       * Both dialogs painted a backdrop and declared `aria-modal`, which looked right
+       * and was not — Tab walked out into the panels behind them and the page kept
+       * scrolling under the blur. One controller fixes both for every dialog.
+       * ------------------------------------------------------------------ */
+      // `deepActive` is declared further up this file, alongside the panel focus tests.
+      const inOverlay = (node) => {
+        let c = node;
+        while (c) {
+          if (c.tagName && c.tagName.toLowerCase() === 'html-editor-overlay') return true;
+          c = c.parentNode instanceof ShadowRoot ? c.parentNode.host : c.parentNode;
+        }
+        return false;
+      };
+      const pressTab = (shift) =>
+        document.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'Tab', shiftKey: Boolean(shift), bubbles: true, composed: true, cancelable: true,
+        }));
+
+      const outsideButton = document.createElement('button');
+      outsideButton.id = 'page-button';
+      outsideButton.textContent = 'On the page';
+      document.getElementById('wrap').appendChild(outsideButton);
+      outsideButton.focus();
+      check('focusStartsOutOnThePage', () => deepActive()?.id);
+      check('thePageScrollsBeforeAnyModal', () =>
+        getComputedStyle(document.documentElement).overflow);
+
+      engine.setStyle('outline', '1px solid rgb(9, 9, 9)', document.getElementById('para'));
+      await frame();
+      engine.previewSave();
+      await wait(220);
+      check('theDocumentIsMarkedWhileTheModalIsOpen', () =>
+        document.documentElement.hasAttribute('data-heo-modal'));
+      check('andStopsScrolling', () => getComputedStyle(document.documentElement).overflow);
+      check('focusMovedIntoTheDialog', () => {
+        const active = deepActive();
+        return active ? `${active.className} inOverlay=${inOverlay(active)}` : 'none';
+      });
+
+      let escapedTo = null;
+      const visited = new Set();
+      for (let i = 0; i < 24 && escapedTo === null; i += 1) {
+        pressTab();
+        await frame();
+        const active = deepActive();
+        if (!active || !inOverlay(active)) escapedTo = active ? active.id || active.tagName : 'null';
+        else visited.add(active.getRootNode().host?.tagName.toLowerCase() ?? '?');
+      }
+      check('tabNeverLeavesTheDialog', () => escapedTo ?? true);
+      check('andEveryStopBelongsToIt', () => [...visited].join(','));
+      let escapedBack = null;
+      for (let i = 0; i < 24 && escapedBack === null; i += 1) {
+        pressTab(true);
+        await frame();
+        const active = deepActive();
+        if (!active || !inOverlay(active)) escapedBack = active ? active.id || active.tagName : 'null';
+      }
+      check('norDoesShiftTab', () => escapedBack ?? true);
+
+      /* The design system is a step inside this dialog now, not a download button. */
+      const saveDialog = () => overlayRoot().shadowRoot.querySelector('heo-save-dialog');
+      const footerButton = (text) =>
+        Array.from(saveDialog().shadowRoot.querySelectorAll('footer .btn'))
+          .find((b) => b.textContent.includes(text));
+      footerButton('Design system').dispatchEvent(
+        new MouseEvent('click', { bubbles: true, composed: true }));
+      await wait(220);
+      check('theSaveModalCanShareTheDesignSystem', () =>
+        Boolean(saveDialog().shadowRoot.querySelector('.transfer')));
+      check('andItIsTheSameSurfaceTheTokensPanelUses', () => {
+        const root = saveDialog().shadowRoot;
+        return [
+          root.querySelector('.transfer .tally') ? 'tally' : '',
+          root.querySelector('.transfer .targets') ? 'targets' : '',
+          root.querySelector('.transfer .snippet pre') ? 'snippet' : '',
+          root.querySelector('.transfer textarea.paste') ? 'paste' : '',
+        ].filter(Boolean).join(',');
+      });
+      check('theSeedIsAlreadyBuilt', () => {
+        const code = saveDialog().shadowRoot.querySelector('.transfer .snippet pre')?.textContent ?? '';
+        return code.includes('heo1');
+      });
+      check('savingIsStillOneClickAway', () => Boolean(footerButton('Save changes')));
+      footerButton('Back to the changes').dispatchEvent(
+        new MouseEvent('click', { bubbles: true, composed: true }));
+      await wait(180);
+      check('andThereIsAWayBack', () =>
+        Boolean(saveDialog().shadowRoot.querySelector('.tabs .tab')) &&
+        !saveDialog().shadowRoot.querySelector('.transfer'));
+
+      engine.closeSavePreview();
+      await wait(200);
+      check('theLockIsReleasedOnClose', () =>
+        !document.documentElement.hasAttribute('data-heo-modal'));
+      check('andThePageScrollsAgain', () => getComputedStyle(document.documentElement).overflow);
+      check('andFocusWentBackWhereItCameFrom', () => deepActive()?.id);
+      outsideButton.remove();
       engine.history.clear();
 
       /* ------------------------------------------------------------------ *

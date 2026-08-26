@@ -1,9 +1,12 @@
 import { css, html, nothing, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
+import { ModalController } from '../../core/modal.js';
+import type { SeedTarget } from '../../core/seed.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import type { ChangeRecord } from '../../core/types.js';
 import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
+import { DesignTransfer, type DesignTransferHost } from '../panels/design-transfer.js';
 import { baseStyles, surfaceStyles } from '../theme.js';
 
 /**
@@ -57,6 +60,11 @@ export class HeoSaveDialog extends HeoElement {
       }
       header .body {
         flex: 1 1 auto;
+      }
+      /* Nudged down so the chevron lines up with the heading rather than with the
+         cap height of the line above it. */
+      header .back {
+        margin-top: 1px;
       }
       h2 {
         margin: 0 0 3px;
@@ -134,6 +142,12 @@ export class HeoSaveDialog extends HeoElement {
         background: var(--heo-raised);
         margin-bottom: 5px;
       }
+      /* The transfer step's own scroller wants the same padding the review body
+         has, but the fragment brings its own vertical rhythm. */
+      .content .transfer {
+        padding-bottom: 4px;
+      }
+
       .change .kind {
         flex: 0 0 auto;
         min-width: 62px;
@@ -193,6 +207,7 @@ export class HeoSaveDialog extends HeoElement {
         font-size: 10.5px;
       }
     `,
+    DesignTransfer.styles,
   ];
 
   protected state = new StoreController(
@@ -204,26 +219,143 @@ export class HeoSaveDialog extends HeoElement {
 
   @state() private tab: 'changes' | 'prompt' = 'changes';
 
+  /**
+   * Which half of the dialog is showing.
+   *
+   * Handing the design system over used to be a download button in this footer,
+   * which answered the wrong question: a file has to be hosted somewhere before
+   * another page can use it, and the moment you finish a session is exactly when you
+   * want to carry the system to the next page rather than archive it. So the button
+   * became a step, and the step is the same surface the Tokens panel offers.
+   */
+  @state() private view: 'review' | 'transfer' = 'review';
+
+  /** State the shared transfer surface reads back from its host. */
+  @state() private seedTarget: SeedTarget | null = null;
+  @state() private incoming = '';
+  @state() private overwrite = false;
+
+  /**
+   * Focus starts on the active tab rather than the close button.
+   *
+   * This dialog is read before it is acted on, and the tabs are where reading
+   * starts. Landing on Close would put the first keystroke on the way out.
+   */
+  protected modal = new ModalController(this, { initialFocus: '.tab[aria-selected="true"]' });
+
   override render(): TemplateResult | typeof nothing {
     const preview = this.state.value.savePreview;
     if (preview == null) return nothing;
-    const records = this.editor.records;
-    const instrumented = records.some((record) => record.source);
 
     return html`<div
       class="dialog surface"
       role="dialog"
       aria-modal="true"
-      aria-label="Review and save changes"
+      aria-label=${this.view === 'transfer'
+        ? 'Share this design system'
+        : 'Review and save changes'}
       @pointerdown=${(event: Event) => event.stopPropagation()}
     >
+      ${this.view === 'transfer' ? this.#renderTransfer() : this.#renderReview(preview)}
+    </div>`;
+  }
+
+  /**
+   * The design system, on its way somewhere else.
+   *
+   * A step rather than a second dialog: it belongs to the same act of finishing up,
+   * and stacking a modal on a modal to show one panel would be a lot of ceremony
+   * for a screen you arrive at by clicking one button and leave by clicking another.
+   */
+  #renderTransfer(): TemplateResult {
+    return html`
+      <header>
+        <button
+          class="btn icon ghost back"
+          type="button"
+          aria-label="Back to the changes"
+          title="Back to the changes"
+          @click=${() => {
+        this.view = 'review';
+      }}
+        >
+          ${icon('chevronLeft', 14)}
+        </button>
+        <div class="body">
+          <h2>Take this design system with you</h2>
+          <p>
+            Everything this session defined — tokens, reusable classes and blocks — ready to paste
+            into the next page, or to bring one in from another.
+          </p>
+        </div>
+        <button
+          class="btn icon ghost"
+          type="button"
+          aria-label="Close"
+          @click=${() => this.editor.closeSavePreview()}
+        >
+          ${icon('close', 14)}
+        </button>
+      </header>
+
+      <div class="content">${DesignTransfer.render(this.#transfer())}</div>
+
+      <footer>
+        <button
+          class="btn"
+          type="button"
+          @click=${() => {
+        this.view = 'review';
+      }}
+        >
+          ${icon('chevronLeft', 12)} Back to the changes
+        </button>
+        <span class="spacer"></span>
+        <button
+          class="btn primary"
+          type="button"
+          ?disabled=${this.state.value.saving}
+          @click=${() => void this.editor.save()}
+        >
+          ${icon('save', 12)} Save changes
+        </button>
+      </footer>
+    `;
+  }
+
+  #transfer(): DesignTransferHost {
+    return {
+      engine: this.editor,
+      target: this.seedTarget,
+      onTarget: (target) => {
+        this.seedTarget = target;
+      },
+      incoming: this.incoming,
+      onIncoming: (text) => {
+        this.incoming = text;
+      },
+      overwrite: this.overwrite,
+      onOverwrite: (value) => {
+        this.overwrite = value;
+      },
+      onSeed: () => {
+        this.requestUpdate();
+      },
+    };
+  }
+
+  #renderReview(preview: string): TemplateResult {
+    const records = this.editor.records;
+    const instrumented = records.some((record) => record.source);
+
+    return html`
       <header>
         <div class="body">
           <h2>${records.length} change${records.length === 1 ? '' : 's'} ready to hand off</h2>
           <p>
             ${instrumented
-              ? 'Every change is tied to a source file and line, so the instructions point straight at the code.'
-              : 'This page was not instrumented, so changes are described by CSS selector. Add the Vite plugin to get exact file and line references.'}
+        ? 'Every change is tied to a source file and line, so the instructions point straight at the code.'
+        : 'This page was not instrumented, so changes are described by CSS selector. Add the Vite plugin to get exact file and line references.'}
           </p>
         </div>
         <button
@@ -242,8 +374,8 @@ export class HeoSaveDialog extends HeoElement {
           role="tab"
           aria-selected=${this.tab === 'changes'}
           @click=${() => {
-            this.tab = 'changes';
-          }}
+        this.tab = 'changes';
+      }}
         >
           Changes
         </button>
@@ -252,8 +384,8 @@ export class HeoSaveDialog extends HeoElement {
           role="tab"
           aria-selected=${this.tab === 'prompt'}
           @click=${() => {
-            this.tab = 'prompt';
-          }}
+        this.tab = 'prompt';
+      }}
         >
           Generated prompt
         </button>
@@ -271,8 +403,15 @@ export class HeoSaveDialog extends HeoElement {
           new classes
         </span>
         <span class="spacer"></span>
-        <button class="btn" type="button" @click=${() => this.editor.exportDesignSystemFile()}>
-          ${icon('download', 12)} Design system
+        <button
+          class="btn"
+          type="button"
+          title="Copy this system as a seed, download it, or bring another one in"
+          @click=${() => {
+        this.view = 'transfer';
+      }}
+        >
+          ${icon('blocks', 12)} Design system ${icon('chevronRight', 11)}
         </button>
         <button class="btn" type="button" @click=${() => this.editor.exportPageHTML()}>
           ${icon('code', 12)} HTML
@@ -289,7 +428,7 @@ export class HeoSaveDialog extends HeoElement {
           ${icon('save', 12)} Save changes
         </button>
       </footer>
-    </div>`;
+    `;
   }
 
   #renderChanges(records: ChangeRecord[]): TemplateResult {
@@ -308,7 +447,7 @@ export class HeoSaveDialog extends HeoElement {
       ([file, entries]) => html`<div class="file">
         <h3>${icon(file === 'Matched by selector' ? 'search' : 'code', 12)} ${file}</h3>
         ${entries.map(
-          (record) => html`<div class="change">
+        (record) => html`<div class="change">
             <span class="kind">${record.kind}</span>
             <span class="detail">
               <span class="summary">${record.summary}</span>
@@ -316,14 +455,14 @@ export class HeoSaveDialog extends HeoElement {
                 ${record.target}${record.source ? ` · line ${record.source.line}` : ''}
               </span>
               ${record.before || record.after
-                ? html`<span class="diff">
+            ? html`<span class="diff">
                     ${record.before ? html`<span class="before">${record.before}</span>` : nothing}
                     ${record.after ? html`<span class="after">${record.after}</span>` : nothing}
                   </span>`
-                : nothing}
+            : nothing}
             </span>
           </div>`,
-        )}
+      )}
       </div>`,
     )}`;
   }

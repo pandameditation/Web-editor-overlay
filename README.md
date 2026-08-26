@@ -33,6 +33,8 @@ root, no build step required on the consuming side.
 - [Vite plugin options](#vite-plugin-options)
 - [Design system format](#design-system-format)
 - [Design system seeds](#design-system-seeds)
+- [Inserting HTML elements](#inserting-html-elements)
+- [Modal behaviour](#modal-behaviour)
 - [Authoring blocks](#authoring-blocks)
 - [Architecture](#architecture)
 - [Development](#development)
@@ -382,6 +384,9 @@ Invalid custom element names are corrected rather than rejected late: `myfooter`
 and `my@footer` both become `my-footer`, in the tag field and in the module
 source.
 
+The `+` affordances on a selected element open the same catalogue plus the HTML
+primitives — see [Inserting HTML elements](#inserting-html-elements).
+
 **Props** — for a custom element, the class's declared reactive properties, read
 from Lit's `elementProperties` or `observedAttributes` with their types. For
 everything else, the attributes that actually matter for that tag, plus the
@@ -478,6 +483,7 @@ await api.save();                  // run the onSave handler
 api.getPrompt();                   // the prompt save() would hand over
 api.getChanges();                  // the structured change records
 api.exportHTML();                  // page serialized, every trace of the editor removed
+                                   // (design system CSS stays; edit-mode CSS does not)
 
 api.exportDesignSystem();          // a DesignSystemDocument
 await api.exportSeed();            // the same thing as one string: 'heo1z.…'
@@ -663,6 +669,70 @@ const api = mount({ seed: 'heo1z.ZZDBas…' });
 await api.whenReady();
 api.exportDesignSystem().tokens.length; // now populated
 ```
+
+The same surface is reachable from the save dialog: **Design system** in its footer
+steps into it, so the moment you finish a session is the moment you can carry the
+system to the next page. Downloading the JSON file is a button inside that step.
+
+---
+
+## Inserting HTML elements
+
+The `+` affordances on a selected element open a picker with two halves. The block
+library leads, because an assembled pattern is the better answer more often than a
+bare tag is. Below it sit the primitives — a paragraph, a heading, a list, a table,
+a `<marquee>` — each with its tag and a line saying what it is for.
+
+A switch at the top narrows to one or the other:
+
+| Scope | Shows |
+| --- | --- |
+| **All** (default) | Blocks first, then the everyday tags, then one row revealing the rest. |
+| **Blocks** | Only the Library. |
+| **HTML** | Only the primitives, grouped: Text, Structure, Lists, Media, Interactive, Forms, Code & data, Old web. |
+
+Search spans both halves and ranks by how directly you named the thing: an exact
+tag wins outright, then a tag that starts with what you typed, then labels, then
+anything mentioning it. That ordering is what makes typing `p` insert a paragraph
+rather than the six blocks whose descriptions happen to contain the letter — and
+when a query names a tag exactly, the primitives move above the blocks for that
+search only.
+
+Everything about the insertion is the block path: the same command, the same undo
+label, the same selection afterwards. Elements arrive with starter content and
+`var(--token, fallback)` values, so an inserted `<section>` adopts the page's design
+language and an inserted `<div>` is visible rather than a zero-height nothing.
+`<details>` and `<dialog>` come in open, and `<table>` comes with a full skeleton,
+because the alternative in each case is an insert that looks like it did nothing.
+
+Nothing here is filtered by a tag allowlist, which is why `<marquee>`, `<blink>` and
+`<center>` are on offer under **Old web** — deprecated, labelled as such, and still
+one click away. The primitives deliberately stay out of the block library, so the
+Library panel, the quick menu's wrap list and every exported seed keep to the
+curated set.
+
+---
+
+## Modal behaviour
+
+Every modal in the overlay — the save dialog, the extract dialog, the code
+workspace and an expanded code editor — traps focus and locks page scrolling for as
+long as it is open:
+
+- Focus moves into the dialog when it opens, to the field that matters rather than
+  to the close button, and returns to whatever had it when the dialog closes.
+- Tab and Shift+Tab cycle within the dialog. They cannot reach the panels behind
+  the backdrop, and they cannot reach the page.
+- The page stops scrolling, with the scrollbar's width compensated so nothing
+  shifts. This is an attribute on `<html>` plus a rule in the overlay's own
+  stylesheet, so a page exported while a dialog is open carries neither.
+- Escape closes the topmost dialog. Dialogs stack: expanding a code editor inside
+  the extract dialog is two deep, and closing the inner one hands control back to
+  the outer one rather than to the page.
+
+Real `<dialog>` elements opened with `showModal()` keep the platform's own focus
+trap; they join the stack only for the scroll lock, since the platform does not
+stop the page scrolling behind them.
 
 ---
 

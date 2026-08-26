@@ -3,6 +3,12 @@ import { customElement, query, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 import { acceptsChildren, isMutable, labelFor, visualBox } from '../../core/dom.js';
 import type { InsertAnchor } from '../../core/editor.js';
+import {
+  elementBlock,
+  HTML_ELEMENTS,
+  searchElements,
+  type HtmlElementSpec,
+} from '../../core/elements.js';
 import { INSERT_POSITION_LABELS, type InsertPosition } from '../../core/mutations.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import type { LibraryBlock } from '../../core/types.js';
@@ -19,7 +25,24 @@ import '../controls/segmented.js';
  * results and Enter inserts. A block with declared props switches the popover to
  * a small form instead of inserting immediately, so the first render is already
  * configured rather than something to fix afterwards.
+ *
+ * Below the blocks sit the HTML primitives — a paragraph, a list, a table, a
+ * marquee. The library is a set of assembled patterns, which is the right vocabulary
+ * most of the time and the wrong one when what you want is a `<p>`; both live in one
+ * list so one search and one set of arrow keys reach either.
  */
+
+/**
+ * One offer in the list.
+ *
+ * Flat and tagged rather than two parallel lists, because the keyboard indexes a
+ * single array — which is what lets arrows and Enter cross from a block to an
+ * element without either side knowing about the other.
+ */
+type InsertEntry =
+  | { id: string; kind: 'block'; block: LibraryBlock }
+  | { id: string; kind: 'element'; spec: HtmlElementSpec }
+  | { id: string; kind: 'more'; hidden: number };
 @customElement('heo-insert-menu')
 export class HeoInsertMenu extends HeoElement {
   static override styles = [
@@ -152,6 +175,33 @@ export class HeoInsertMenu extends HeoElement {
         letter-spacing: 0.05em;
         text-transform: uppercase;
       }
+      /* The tag itself, which is more use than a category badge would be: it is what
+         the element is called, what gets inserted, and what you would have typed. */
+      .row .kind.tag {
+        padding: 1px 5px;
+        border: 1px solid var(--heo-line);
+        border-radius: 4px;
+        background: var(--heo-sunken);
+        color: var(--heo-text-dim);
+        font-family: var(--heo-mono);
+        font-size: 9.5px;
+        letter-spacing: 0;
+        text-transform: none;
+      }
+      .row[aria-selected='true'] .kind.tag {
+        border-color: var(--heo-accent-line);
+        color: var(--heo-accent);
+      }
+      .row.more .name {
+        color: var(--heo-accent);
+      }
+
+      /* Blocks or primitives. Sits with the search rather than with the position
+         switch below it: both are about *what* is being inserted. */
+      .scope {
+        padding: 0 9px 8px;
+        border-bottom: 1px solid var(--heo-line);
+      }
 
       .configure {
         display: flex;
@@ -218,6 +268,25 @@ export class HeoInsertMenu extends HeoElement {
   @state() private highlight = 0;
   @state() private configuring: LibraryBlock | null = null;
   @state() private props: Record<string, string> = {};
+  /**
+   * Whether the whole HTML catalogue is showing, or just the everyday tags.
+   *
+   * Forty-odd primitives listed unconditionally would bury the curated blocks that
+   * are the better answer most of the time. A dozen common ones plus one row that
+   * reveals the rest keeps both reachable, and searching ignores the distinction
+   * because someone typing `marquee` has already said what they want.
+   */
+  @state() private allElements = false;
+  /**
+   * Which half of the catalogue is on offer.
+   *
+   * `all` leads with the blocks, because an assembled pattern is the better answer
+   * more often than a bare tag is. But "more often" is not "always", and a list of
+   * seventeen blocks above the primitives meant nobody scrolled far enough to learn
+   * the primitives were there. One switch, and the same one the Library panel uses
+   * for its own two kinds.
+   */
+  @state() private scope: 'all' | 'blocks' | 'html' = 'all';
 
   @query('.top input') private search?: HTMLInputElement;
 
@@ -245,8 +314,50 @@ export class HeoInsertMenu extends HeoElement {
     }
   }
 
-  private get results(): LibraryBlock[] {
-    return this.editor.library.search(this.query);
+  /**
+   * Everything on offer, flat, in the order it is drawn.
+   *
+   * One list rather than two because the keyboard indexes it: `highlight` is a
+   * position in this array, so arrows and Enter cross from a block to an element
+   * without knowing there is a boundary. `more` is an entry rather than a bare row
+   * for the same reason — a reveal you can only click is a reveal a keyboard user
+   * does not have.
+   */
+  private get entries(): InsertEntry[] {
+    const blocks: InsertEntry[] =
+      this.scope === 'html'
+        ? []
+        : this.editor.library
+          .search(this.query)
+          .map((block) => ({ id: `b:${block.id}`, kind: 'block', block }));
+
+    if (this.scope === 'blocks') return blocks;
+
+    // Browsing the primitives deliberately means wanting all of them; the short
+    // list exists to stop them crowding the blocks, which is not a concern here.
+    const everything = this.scope === 'html' || this.allElements;
+    const shown = searchElements(this.query, everything);
+    const elements: InsertEntry[] = shown.map((spec) => ({
+      id: `e:${spec.tag}`,
+      kind: 'element',
+      spec,
+    }));
+
+    const hidden = this.query.trim() || everything ? 0 : HTML_ELEMENTS.length - shown.length;
+    if (hidden > 0) elements.push({ id: 'e:more', kind: 'more', hidden });
+
+    /*
+     * Blocks lead, except when the query names a tag outright.
+     *
+     * Browsing wants the assembled patterns first. Typing `p` does not: it is an
+     * unambiguous request for a paragraph, and blocks match a bare letter far too
+     * easily — "p" appears in half the block descriptions, so `<p>` ended up below
+     * six things nobody asked for. An exact tag is the one signal strong enough to
+     * reorder on; anything vaguer keeps the browsing order.
+     */
+    const typed = this.query.trim().toLowerCase().replace(/^<|>$/g, '');
+    const exact = typed && shown[0]?.tag === typed;
+    return exact ? [...elements, ...blocks] : [...blocks, ...elements];
   }
 
   override render(): TemplateResult | typeof nothing {
@@ -264,14 +375,28 @@ export class HeoInsertMenu extends HeoElement {
 
   #renderList(): TemplateResult {
     const anchor = this.state.value.insertAnchor!;
-    const results = this.results;
+    const entries = this.entries;
 
-    const groups: Array<{ name: string; blocks: LibraryBlock[] }> = [];
-    for (const block of results) {
-      const name = block.category ?? (block.kind === 'container' ? 'Layout' : 'Components');
+    /*
+     * Blocks by category, then the primitives under one heading.
+     *
+     * The elements stay in a single section rather than being split by concern:
+     * eight sub-headings over the dozen everyday tags would be more chrome than
+     * content, and the catalogue is already ordered text → structure → lists →
+     * media → interactive → forms → code → old web, which reads as grouped without
+     * saying so.
+     */
+    const groups: Array<{ name: string; entries: InsertEntry[] }> = [];
+    for (const entry of entries) {
+      const name =
+        entry.kind === 'block'
+          ? entry.block.category ?? (entry.block.kind === 'container' ? 'Layout' : 'Components')
+          : entry.kind === 'element' && this.scope === 'html'
+            ? entry.spec.group
+            : 'HTML elements';
       const existing = groups.find((group) => group.name === name);
-      if (existing) existing.blocks.push(block);
-      else groups.push({ name, blocks: [block] });
+      if (existing) existing.entries.push(entry);
+      else groups.push({ name, entries: [entry] });
     }
 
     let index = -1;
@@ -280,11 +405,11 @@ export class HeoInsertMenu extends HeoElement {
         ${icon('search', 13)}
         <input
           type="text"
-          placeholder="Search blocks…"
+          placeholder="Search blocks and HTML…"
           .value=${this.query}
           spellcheck="false"
           autocomplete="off"
-          aria-label="Search blocks"
+          aria-label="Search blocks and HTML elements"
           @input=${(event: Event) => {
         this.query = (event.target as HTMLInputElement).value;
         this.highlight = 0;
@@ -292,11 +417,27 @@ export class HeoInsertMenu extends HeoElement {
           @keydown=${this.#onSearchKey}
         />
       </div>
+      <div class="scope">
+        <heo-segmented
+          label="What to insert"
+          .value=${this.scope}
+          .options=${[
+        { value: 'all', label: 'All', title: 'Blocks first, then the HTML primitives' },
+        { value: 'blocks', label: 'Blocks', title: 'Assembled patterns from the Library' },
+        { value: 'html', label: 'HTML', title: 'Plain elements: paragraphs, lists, tables' },
+      ]}
+          @segment-change=${(event: CustomEvent<{ value: string }>) => {
+        this.scope = (event.detail.value || 'all') as 'all' | 'blocks' | 'html';
+        this.highlight = 0;
+      }}
+        ></heo-segmented>
+      </div>
       ${this.#renderWhere(anchor)}
       <div class="list" role="listbox">
-        ${results.length === 0
+        ${entries.length === 0
         ? html`<div class="empty">
-              No block matches “${this.query}”. Create one in the Library panel.
+              Nothing matches “${this.query}”. Try a tag name, or create a block in the Library
+              panel.
             </div>`
         : repeat(
           groups,
@@ -304,34 +445,79 @@ export class HeoInsertMenu extends HeoElement {
           (group) => html`
                 <div class="group">${group.name}</div>
                 ${repeat(
-            group.blocks,
-            (block) => block.id,
-            (block) => {
+            group.entries,
+            (entry) => entry.id,
+            (entry) => {
               index += 1;
-              const current = index;
-              return html`<button
-                      class="row"
-                      type="button"
-                      role="option"
-                      aria-selected=${current === this.highlight}
-                      @pointerenter=${() => {
-                  this.highlight = current;
-                }}
-                      @click=${() => this.#pick(block)}
-                    >
-                      <span class="glyph">${icon(block.icon ?? 'blocks', 14)}</span>
-                      <span class="body">
-                        <span class="name">${block.name}</span>
-                        <span class="desc">${block.description ?? ''}</span>
-                      </span>
-                      <span class="kind">${block.kind === 'container' ? 'box' : 'cmp'}</span>
-                    </button>`;
+              return this.#renderRow(entry, index);
             },
           )}
               `,
         )}
       </div>
     `;
+  }
+
+  /** One row, whichever kind of thing it stands for. */
+  #renderRow(entry: InsertEntry, current: number): TemplateResult {
+    const selected = current === this.highlight;
+    const onEnter = (): void => {
+      this.highlight = current;
+    };
+
+    if (entry.kind === 'more') {
+      return html`<button
+        class="row more"
+        type="button"
+        role="option"
+        aria-selected=${selected}
+        @pointerenter=${onEnter}
+        @click=${() => this.#pick(entry)}
+      >
+        <span class="glyph">${icon('plus', 14)}</span>
+        <span class="body">
+          <span class="name">${entry.hidden} more element${entry.hidden === 1 ? '' : 's'}</span>
+          <span class="desc">Tables, forms, embeds, and a marquee.</span>
+        </span>
+      </button>`;
+    }
+
+    if (entry.kind === 'element') {
+      const { spec } = entry;
+      return html`<button
+        class="row"
+        type="button"
+        role="option"
+        aria-selected=${selected}
+        title=${`<${spec.tag}> — ${spec.description}`}
+        @pointerenter=${onEnter}
+        @click=${() => this.#pick(entry)}
+      >
+        <span class="glyph">${icon(spec.icon, 14)}</span>
+        <span class="body">
+          <span class="name">${spec.label}</span>
+          <span class="desc">${spec.description}</span>
+        </span>
+        <span class="kind tag">${spec.tag}</span>
+      </button>`;
+    }
+
+    const { block } = entry;
+    return html`<button
+      class="row"
+      type="button"
+      role="option"
+      aria-selected=${selected}
+      @pointerenter=${onEnter}
+      @click=${() => this.#pick(entry)}
+    >
+      <span class="glyph">${icon(block.icon ?? 'blocks', 14)}</span>
+      <span class="body">
+        <span class="name">${block.name}</span>
+        <span class="desc">${block.description ?? ''}</span>
+      </span>
+      <span class="kind">${block.kind === 'container' ? 'box' : 'cmp'}</span>
+    </button>`;
   }
 
   /**
@@ -387,20 +573,20 @@ export class HeoInsertMenu extends HeoElement {
         ? html`<p class="hint selectable" style="margin:0 0 10px">${block.description}</p>`
         : nothing}
         ${PropForm.render(
-        block.props ?? {},
-        this.props,
-        (name, value) => {
-          this.props = { ...this.props, [name]: value };
-        },
-        this.editor,
-        // Track every keystroke: Insert is one click away and would otherwise fire
-        // before the field's blur debounce had handed over what was typed.
-        {
-          onInput: (name, value) => {
+          block.props ?? {},
+          this.props,
+          (name, value) => {
             this.props = { ...this.props, [name]: value };
           },
-        },
-      )}
+          this.editor,
+          // Track every keystroke: Insert is one click away and would otherwise fire
+          // before the field's blur debounce had handed over what was typed.
+          {
+            onInput: (name, value) => {
+              this.props = { ...this.props, [name]: value };
+            },
+          },
+        )}
       </div>
       <div class="cfoot">
         <button class="btn" type="button" @click=${() => {
@@ -416,7 +602,7 @@ export class HeoInsertMenu extends HeoElement {
   }
 
   #onSearchKey(event: KeyboardEvent): void {
-    const results = this.results;
+    const entries = this.entries;
     if (event.key === 'Escape') {
       event.preventDefault();
       event.stopPropagation();
@@ -427,17 +613,32 @@ export class HeoInsertMenu extends HeoElement {
       event.preventDefault();
       const delta = event.key === 'ArrowDown' ? 1 : -1;
       const next = this.highlight + delta;
-      this.highlight = next < 0 ? results.length - 1 : next >= results.length ? 0 : next;
+      this.highlight = next < 0 ? entries.length - 1 : next >= entries.length ? 0 : next;
       return;
     }
     if (event.key === 'Enter') {
       event.preventDefault();
-      const block = results[this.highlight];
-      if (block) this.#pick(block);
+      const entry = entries[this.highlight];
+      if (entry) this.#pick(entry);
     }
   }
 
-  #pick(block: LibraryBlock): void {
+  #pick(entry: InsertEntry): void {
+    if (entry.kind === 'more') {
+      this.allElements = true;
+      // The reveal replaces the row that was highlighted, so hold the position
+      // rather than jumping the selection to whatever slid into that slot.
+      this.highlight = Math.max(0, this.highlight);
+      return;
+    }
+    // An element is a bare tag with nothing to configure, so it goes straight in.
+    // Everything about the insertion is the block path: same command, same undo
+    // label, same selection afterwards.
+    if (entry.kind === 'element') {
+      void this.#insert(elementBlock(entry.spec));
+      return;
+    }
+    const { block } = entry;
     if (block.props && Object.keys(block.props).length) {
       this.props = this.editor.library.defaultProps(block);
       this.configuring = block;

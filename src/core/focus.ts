@@ -1,4 +1,6 @@
 import { HOST_TAG } from './constants.js';
+import { deepActiveElement } from './dom.js';
+import { topModal } from './modal.js';
 
 /**
  * Keeping focus on one side of the fence.
@@ -27,11 +29,9 @@ const FOCUSABLE = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(',');
 
-/** The really-focused element, following the chain down through shadow roots. */
-export function deepActiveElement(): HTMLElement | null {
-  let node: Element | null = document.activeElement;
-  while (node?.shadowRoot?.activeElement) node = node.shadowRoot.activeElement;
-  return node instanceof HTMLElement ? node : null;
+/** True when the keystroke came from inside an open native modal. */
+function insideNativeModal(event: KeyboardEvent): boolean {
+  return event.composedPath().some((node) => node instanceof HTMLDialogElement && node.open);
 }
 
 /** True when the node sits inside the overlay's host element. */
@@ -57,12 +57,29 @@ export function containTab(event: KeyboardEvent): boolean {
   // that would take the caret away from the value just committed.
   if (event.defaultPrevented) return false;
 
+  // A real `<dialog>` opened with `showModal()` already contains focus and has made
+  // the rest of the document inert. Cycling the whole overlay on top of that is how
+  // Tab used to escape the expanded code editor into the panels behind it.
+  if (insideNativeModal(event)) return false;
+
   const host = document.querySelector(HOST_TAG);
   if (!host) return false;
-  const origin = event.composedPath().find((node): node is HTMLElement => node instanceof HTMLElement);
-  if (!origin || !insideOverlay(origin)) return false;
 
-  const stops = focusableWithin(host);
+  /*
+   * A modal owns Tab outright.
+   *
+   * Everywhere else containment is a convenience — it keeps the keyboard in the
+   * chrome once it is there, and leaves the page alone otherwise. A modal is the one
+   * case where "focus is currently elsewhere" is not a reason to stand aside but the
+   * bug itself: nothing moved focus into these dialogs, so Tab walked the page
+   * underneath a backdrop that claimed to have taken over.
+   */
+  const modal = topModal();
+  const origin = event.composedPath().find((node): node is HTMLElement => node instanceof HTMLElement);
+  if (!modal && (!origin || !insideOverlay(origin))) return false;
+
+  const scope = modal?.shadowRoot ?? modal ?? host;
+  const stops = focusableWithin(scope);
   if (stops.length === 0) return false;
 
   const active = deepActiveElement();

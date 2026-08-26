@@ -2,6 +2,7 @@ import { DRAGGING_ATTR, HOST_TAG, IGNORE_ATTR, VERSION, Z_BASE } from './core/co
 import { exportHTML as serializePage } from './core/design-system.js';
 import { normalizeCustomElementTag } from './core/library.js';
 import { EditorEngine } from './core/editor.js';
+import { releaseModals } from './core/modal.js';
 import { ManagedStyleSheet } from './core/stylesheet.js';
 import { publishLit } from './core/lit-bridge.js';
 import { autoMountFromScriptTag } from './integrations/script-tag.js';
@@ -269,6 +270,9 @@ export function unmount(): void {
   host.remove();
   setEngine(null);
   sheet.destroy();
+  // Any dialog open at unmount never gets its own teardown, so the page would be
+  // left locked with nothing on screen to explain why.
+  releaseModals();
   document.documentElement.removeAttribute('data-heo-edit');
   document.documentElement.style.removeProperty('--heo-drag-accent');
 }

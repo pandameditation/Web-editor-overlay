@@ -36,6 +36,15 @@ export const INSERTED_ATTR = 'data-heo-inserted';
 export const DRAGGING_ATTR = 'data-heo-dragging';
 
 /**
+ * Set on `<html>` while a modal is open, so the page stops scrolling behind it.
+ *
+ * An attribute rather than an inline style because `exportHTML` clones `<html>`:
+ * a style set while a dialog was open would be baked into a page exported from
+ * that dialog's own footer. An attribute is one thing to strip.
+ */
+export const MODAL_ATTR = 'data-heo-modal';
+
+/**
  * Timings for the reorder gesture, in milliseconds.
  *
  * `dwell` is the heart of it: a candidate position has to persist before the DOM

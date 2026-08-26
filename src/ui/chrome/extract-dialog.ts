@@ -5,6 +5,7 @@ import { normalizeClassName, planClassMerge, type ClassMergePlan } from '../../c
 import { labelFor } from '../../core/dom.js';
 import { normalizeCustomElementTag, PROP_TYPES, type BlockPropRow } from '../../core/library.js';
 import type { BlockExtraction, ClassExtraction } from '../../core/editor.js';
+import { ModalController } from '../../core/modal.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import type { BlockKind, PropSpec } from '../../core/types.js';
 import { HeoElement } from '../context.js';
@@ -585,13 +586,13 @@ export class HeoExtractDialog extends HeoElement {
   /** The rows the list is currently offering, so key handling and render agree. */
   #nameOptions: ValueSuggestion[] = [];
   /**
-   * Set while the dialog hands the name field its opening focus.
-   *
-   * Clicking into the field should offer the project's classes, but the focus the
-   * dialog takes for you should not — opening with a list of classes over a name
-   * that was suggested for you buries the thing you came here to read.
+   * Naming is the point of this dialog, so the name field takes the opening focus,
+   * with its suggested value selected for typing over.
    */
-  #autoFocusing = false;
+  protected modal = new ModalController(this, {
+    initialFocus: '.name-input',
+    initialSelect: true,
+  });
   /**
    * Keep the list under its field when the page moves beneath it.
    *
@@ -616,16 +617,6 @@ export class HeoExtractDialog extends HeoElement {
   }
 
   override updated(): void {
-    // Naming is the point of this dialog, so the name field takes focus.
-    if (this.nameInput && this.shadowRoot?.activeElement !== this.nameInput) {
-      if (!this.nameInput.dataset.touched) {
-        this.nameInput.dataset.touched = 'yes';
-        this.#autoFocusing = true;
-        this.nameInput.focus();
-        this.nameInput.select();
-        this.#autoFocusing = false;
-      }
-    }
     this.#placeNameOptions();
   }
 
@@ -686,7 +677,16 @@ export class HeoExtractDialog extends HeoElement {
               @input=${this.#onNameInput}
               @keydown=${this.#onNameKeyDown}
               @focus=${() => {
-        if (this.#autoFocusing) return;
+        // The opening focus belongs to the dialog, not to the user. Clicking into
+        // the field should offer the project's classes; a list thrown over a name
+        // that was suggested for you buries what you came here to read. The first
+        // focus is consumed rather than timed, which is what makes it reliable
+        // whichever pass the modal controller lands on.
+        const input = this.nameInput;
+        if (input && !input.dataset.touched) {
+          input.dataset.touched = 'yes';
+          return;
+        }
         this.nameOpen = true;
         this.nameFilter = false;
         this.nameHighlight = -1;
