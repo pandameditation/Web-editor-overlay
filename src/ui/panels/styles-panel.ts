@@ -633,18 +633,32 @@ export class HeoStylesPanel extends HeoElement {
     }
 
     const computed = getComputedStyle(el);
+    const inFlight = this.editor.previewTarget;
+    const preview = inFlight && inFlight.el === el ? inFlight : null;
     const rules = appliedRules(el);
     const cascade = cascadedDeclarations(rules);
-    const { values: declared, origins } = declaredMap(el, cascade);
+    const inline = authoredInline(el, preview);
+    const { values: declared, origins } = declaredMap(cascade, inline);
     // Subtract any live preview. It is painted onto the style attribute, so the cascade
     // read above cannot tell it apart from a value the user actually set — and feeding
     // it back into the row it came from would tell that row its half-typed text is
     // already committed. Undo then has nothing to take back, and the commit that
     // follows looks like a no-op.
-    const preview = this.editor.previewTarget;
-    if (preview && preview.el === el) {
-      if (preview.before) declared.set(preview.property, preview.before);
-      else declared.delete(preview.property);
+    //
+    // The origin is put back along with the value, and that is the part that keeps
+    // backspace from being destructive. Emptying a field takes the property out of the
+    // style attribute, so the row read as "this element declares nothing here" and was
+    // dropped from "Set on this element" on the keystroke that blanked it — taking the
+    // caret, and the value being replaced, with it. The declaration is still there as
+    // far as the user and the undo stack are concerned, so the row stays until the
+    // empty value is actually committed, which is to say until focus leaves.
+    if (preview) {
+      if (preview.before) {
+        declared.set(preview.property, preview.before);
+        origins.set(preview.property, { kind: 'inline', selector: 'style attribute' });
+      } else {
+        declared.delete(preview.property);
+      }
     }
 
     return html`
@@ -661,7 +675,7 @@ export class HeoStylesPanel extends HeoElement {
         </button>
       </div>
 
-      ${this.#renderModified(el, computed, declared, origins)}
+      ${this.#renderModified(el, computed, declared, origins, inline)}
       ${this.#renderClasses(el)} ${this.#renderCssRules(el, rules, cascade)}
       ${this.#renderSpacing(el, computed, declared, origins)}
       ${SECTIONS.filter((section) => !section.when || section.when(computed)).map((section) =>
@@ -851,8 +865,8 @@ export class HeoStylesPanel extends HeoElement {
     computed: CSSStyleDeclaration,
     declared: Map<string, string>,
     origins: Map<string, DeclarationOrigin>,
+    inline: Record<string, string>,
   ): TemplateResult {
-    const inline = inlineDeclarations(el);
     const properties = [...declared.keys()]
       // Longhands synthesised from a box shorthand are already represented by the
       // shorthand itself; listing both would double every margin and padding.
@@ -1600,6 +1614,31 @@ export class HeoStylesPanel extends HeoElement {
   }
 }
 
+/** An in-flight live preview, as the panel needs to see it. */
+type StylePreview = { property: string; before: string; priority: string };
+
+/**
+ * The element's inline declarations, as authored rather than as painted.
+ *
+ * A preview writes the value being typed straight onto the style attribute, so
+ * reading the attribute back mid-edit describes the exploration instead of what the
+ * user has: a half-deleted value, or — once the field is empty — no declaration at
+ * all, which is what used to make the row vanish out from under the caret. The
+ * property the preview owns is put back to the value it had when the edit started,
+ * or dropped if the edit started from nothing.
+ */
+function authoredInline(el: HTMLElement, preview: StylePreview | null): Record<string, string> {
+  const inline = inlineDeclarations(el);
+  if (!preview) return inline;
+  if (preview.before) {
+    inline[preview.property] =
+      preview.priority === 'important' ? `${preview.before} !important` : preview.before;
+  } else {
+    delete inline[preview.property];
+  }
+  return inline;
+}
+
 /**
  * What this element declares, as opposed to what it computes to.
  *
@@ -1615,8 +1654,8 @@ export interface DeclarationOrigin {
 }
 
 function declaredMap(
-  el: HTMLElement,
   cascade: Map<string, { property: string; value: string; from: AppliedRule }>,
+  inline: Record<string, string>,
 ): { values: Map<string, string>; origins: Map<string, DeclarationOrigin> } {
   const out = new Map<string, string>();
   const origins = new Map<string, DeclarationOrigin>();
@@ -1633,7 +1672,7 @@ function declaredMap(
   }
   // Parsed from cssText so a shorthand holding a var() — which does not
   // enumerate as its longhands — is still shown as set on this element.
-  for (const [property, value] of Object.entries(inlineDeclarations(el))) {
+  for (const [property, value] of Object.entries(inline)) {
     out.set(property, value);
     origins.set(property, { kind: 'inline', selector: 'style attribute' });
   }

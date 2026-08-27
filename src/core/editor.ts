@@ -661,9 +661,21 @@ export class EditorEngine {
    * What an in-flight preview is painting over, for readers that build their own view
    * of the cascade and need to subtract the paint from it.
    */
-  get previewTarget(): { el: HTMLElement; property: string; before: string } | null {
+  get previewTarget(): {
+    el: HTMLElement;
+    property: string;
+    before: string;
+    priority: string;
+  } | null {
     const preview = this.#preview;
-    return preview ? { el: preview.el, property: preview.property, before: preview.before } : null;
+    return preview
+      ? {
+        el: preview.el,
+        property: preview.property,
+        before: preview.before,
+        priority: preview.priority,
+      }
+      : null;
   }
 
   /**

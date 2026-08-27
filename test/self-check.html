@@ -1361,8 +1361,9 @@
       const k1 = document.getElementById('k1');
       api.select(k1);
       await frame();
-      // Last match: a set property also appears in the Set section, and that row is
-      // removed the moment the value is cleared.
+      // Last match: a set property also appears in the Set section, and that row goes
+      // away with the declaration itself. The grouped section's row is the one that
+      // stays put whatever the value does.
       const keyRow = (property) =>
         Array.from(dockPanel('styles').shadowRoot.querySelectorAll('.row'))
           .filter((r) => r.dataset.property === property).pop();
@@ -1488,6 +1489,67 @@
       engine.redo();
       await frame();
       check('redoMirrorsThatUndoExactly', () => styleOf());
+
+      /*
+       * Emptying a field is not, by itself, a request to remove the declaration.
+       *
+       * Backspacing the last character out of a row under "Set on this element" used
+       * to delete the row on the spot: the preview is painted onto the style attribute,
+       * so an empty field read back as "this element sets nothing", the row lost its
+       * inline origin and was dropped from the section mid-keystroke — taking the caret
+       * with it, and taking the value being replaced with it too. Removal now waits for
+       * the empty value to actually be committed, which is to say for focus to leave.
+       */
+      engine.history.clear();
+      const styleBeforeEmptying = k1.getAttribute('style');
+      engine.setStyle('opacity', '0.4', k1);
+      await frame();
+      await wait(140);
+      const setSection = () =>
+        Array.from(dockPanel('styles').shadowRoot.querySelectorAll('heo-section'))
+          .find((s) => s.heading === 'Set on this element');
+      const setRows = () =>
+        Array.from(setSection()?.querySelectorAll('.rows .row') ?? []).map((r) => r.dataset.property);
+      const setRowField = (property) =>
+        Array.from(setSection()?.querySelectorAll('.rows .row') ?? [])
+          .find((r) => r.dataset.property === property)
+          ?.querySelector('heo-value-field');
+      check('theSetSectionListsTheDeclaration', () => setRows().join(','));
+      const emptied = setRowField('opacity');
+      const emptiedInput = emptied.shadowRoot.querySelector('input[type=text]');
+      emptiedInput.focus();
+      emptiedInput.value = '';
+      emptiedInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      await wait(140);
+      await frame();
+      check('emptyingAFieldKeepsItsRow', () => setRows().includes('opacity'));
+      check('emptyingAFieldKeepsTheCaretInIt', () => deepActive() === emptiedInput);
+      check('emptyingAFieldStillShowsWhatIsCommitted', () => emptied.value);
+      check('emptyingAFieldCommitsNothingYet', () =>
+        `${engine.inlineStyle('opacity', k1)} history=${engine.history.size}`);
+      // Retyping without looking away is the case this protects: nothing was lost.
+      emptiedInput.value = '0.9';
+      emptiedInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      press(emptiedInput, 'Enter');
+      await wait(140);
+      await frame();
+      check('retypingAfterEmptyingKeepsTheRowAndCommits', () =>
+        `${k1.style.opacity} rows=${setRows().join(',')}`);
+      // Emptying it and then looking away is what removes it.
+      await wait(2600);
+      const leaving = setRowField('opacity').shadowRoot.querySelector('input[type=text]');
+      leaving.focus();
+      leaving.value = '';
+      leaving.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      await frame();
+      leaving.blur();
+      await wait(280);
+      await frame();
+      check('lookingAwayFromAnEmptiedFieldRemovesTheRow', () =>
+        `${setRows().includes('opacity')} style=${JSON.stringify(k1.style.opacity)}`);
+      engine.history.clear();
+      k1.setAttribute('style', styleBeforeEmptying ?? '');
+      await frame();
 
       /* Duplicating is a page action, so it stays out of reach from inside a field. */
       const cardCount = () => keyStack.children.length;
