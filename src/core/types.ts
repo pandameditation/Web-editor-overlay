@@ -153,7 +153,28 @@ export interface ChangeRecord {
   group?: string;
   before?: string;
   after?: string;
-  /** Extra structured detail merged into the prompt. */
+  /**
+   * Extra structured detail, read by the prompt and by the write plan.
+   *
+   * Most keys are prose the prompt interpolates. A few are a contract, because a
+   * change that has to be written to a file needs to say which file and where in it:
+   *
+   * - `writeTo` — `'document'` when serializing the page already carries this
+   *   change, or the URL of the file that has to be written on its own. Absent means
+   *   `'document'`. This is the field that separates an edit the exported HTML
+   *   captures from one it cannot.
+   * - `scope` — what kind of thing was edited: `'stylesheet'`, `'stylesheet rule'`,
+   *   `'inline script'`, `'external script'`, `'document head'`.
+   * - `css` / `script` — the complete new contents, for a whole-file replacement.
+   * - `rulePath` — a dotted index chain locating a rule in its sheet, e.g. `'4.1'`.
+   *   Position rather than selector, so replaying an edit into a file does not
+   *   depend on the file and the CSSOM spelling a selector the same way.
+   * - `ruleContext` — JSON array of enclosing at-rule preludes, outermost first.
+   * - `property`, `value`, `priority`, `selector` — one declaration, for a rule edit.
+   *
+   * Carried on the record rather than in a side table so an `onSave` handler gets
+   * the same description the built-in write path works from.
+   */
   detail?: Record<string, string>;
   at: number;
 }
@@ -200,6 +221,33 @@ export interface MountOptions {
   accent?: string;
   /** `'dark'` (default) or `'light'` overlay chrome. */
   theme?: 'dark' | 'light';
+  /**
+   * URL of a dev-server endpoint that can read and write the project's files.
+   *
+   * Set by the Vite plugin, which knows the project root and can therefore offer
+   * this safely; it is confined to that root on the server side, because a page is
+   * not in a position to decide where it may write. Given one, the editor connects on
+   * mount and saving writes files instead of producing a prompt.
+   *
+   * Without it — and without a folder handed over through the picker — nothing is
+   * ever written, which is the default and the historical behaviour.
+   *
+   * The endpoint answers `GET` with `{ ok, root, base }`, `GET ?path=` with a file's
+   * text, and `PUT ?path=` by writing the body to that file.
+   */
+  sourceEndpoint?: string;
+  /**
+   * Shared secret for `sourceEndpoint`, sent as `x-heo-token` on every request.
+   *
+   * A dev server is sometimes reachable from the network, and a `PUT` carrying a
+   * plain-text body is a request a browser will send cross-origin without asking
+   * first — so an endpoint that writes files cannot be left open to whoever finds it.
+   * The token is generated per server start and inlined into a same-origin module,
+   * which is somewhere another origin cannot read from. Requiring it in a header
+   * rather than the URL also makes such a request non-simple, so it is stopped by the
+   * preflight before it reaches the handler.
+   */
+  sourceToken?: string;
 }
 
 export interface SavePayload {

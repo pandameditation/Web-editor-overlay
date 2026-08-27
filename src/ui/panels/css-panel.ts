@@ -5,6 +5,7 @@ import { copyToClipboard } from '../../core/design-system.js';
 import {
   collectStyleSources,
   countRules,
+  fetchStyleSource,
   readStyleSource,
   writeStyleSource,
   type StyleSource,
@@ -361,13 +362,34 @@ export class HeoCssPanel extends HeoElement {
     requestAnimationFrame(() => this.codeEditor?.focusEditor());
   }
 
-  /** Load the buffer when the selection changes, but never mid-edit. */
+  /**
+   * Load the buffer when the selection changes, but never mid-edit.
+   *
+   * The CSSOM's version of the sheet goes in immediately so the editor is never
+   * blank, then the file's own text replaces it once it arrives. The two differ in
+   * ways that matter here: the file has the author's comments, colour notation and
+   * line breaks, and the CSSOM has none of them. Whatever is in this buffer becomes
+   * the new contents of the file when applied, so it had better have started as the
+   * file.
+   */
   #syncBuffer(source: StyleSource): void {
     if (this.#loadedId === source.id) return;
     this.#loadedId = source.id;
     this.draft = readStyleSource(source);
     this.dirty = false;
     this.error = '';
+
+    if (!source.href || source.readOnly) {
+      source.pendingBefore = this.draft;
+      return;
+    }
+    void fetchStyleSource(source).then((text) => {
+      // Only when the user is still looking at this sheet and has not started
+      // typing: replacing a buffer under a caret loses work.
+      if (this.#loadedId !== source.id || this.dirty) return;
+      source.pendingBefore = text;
+      this.draft = text;
+    });
   }
 
   #onInput(value: string): void {

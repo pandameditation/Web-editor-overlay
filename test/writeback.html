@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Editor overlay — writing back to a page's own files</title>
+  <!--
+    The fixture for the multi-file case.
+
+    This page keeps its CSS and its JS in separate files, which used to be the end of
+    the story: edits to a linked stylesheet lived in the CSSOM, edits to an external
+    script lived in a change record, and neither appeared in the exported HTML because
+    neither was ever in the HTML.
+
+    What is checked here is that a connected project turns those into file writes, and
+    that the writes are surgical — a one-line edit produces a one-line diff, with the
+    author's comments and notation intact.
+
+    The folder picker cannot be driven from a headless browser, so the project is an
+    in-memory `FileHost` handed to `engine.attachProject()`. That is the same seam a
+    real integration would use for its own transport, so the code under test is the
+    code that ships; only the disk is a stand-in.
+
+    Run `npm run build:lib` first.
+  -->
+  <link rel="stylesheet" href="./writeback.css">
+  <style id="inline-sheet">
+    /* An inline sheet, in the same page as a linked one. */
+    .hero {
+      color: #123456;
+      letter-spacing: -0.01em;
+    }
+  </style>
+</head>
+
+<body>
+  <main>
+    <h1 class="hero">Writing back</h1>
+    <div class="card">
+      <h2>A card</h2>
+      <p id="copy">Its padding comes from a file.</p>
+    </div>
+  </main>
+
+  <pre id="out">pending</pre>
+  <script src="./writeback.js"></script>
+
+  <script type="module">
+    const out = [];
+    const check = (name, fn) => {
+      try { out.push(` "${name}": ${JSON.stringify(fn())},`); }
+      catch (e) { out.push(` "${name}": "THREW ${e.message}",`); }
+    };
+    const report = (errors = []) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{\n' + out.join('\n') + '\n "__errors": ' + JSON.stringify(errors) + '\n}:END';
+    };
+
+    (async () => {
+      const { mount } = await import('../dist/html-editor-overlay.js');
+
+      /* ------------------------------------------------------------------ */
+      /* A project that lives in a Map                                       */
+      /* ------------------------------------------------------------------ */
+
+      /**
+       * The directory this page sits in, which is what a folder handed over through
+       * the picker would correspond to. Resolving a URL against it is the same job
+       * `DirectoryHost` does after calibrating, reduced to the one line it needs here.
+       */
+      const directory = decodeURIComponent(location.pathname).replace(/[^/]*$/, '');
+
+      function memoryProject(seed) {
+        const files = new Map(Object.entries(seed));
+        const written = [];
+        return {
+          kind: 'directory',
+          label: 'memory',
+          resolve(url) {
+            const parsed = new URL(url, location.href);
+            const local = parsed.origin === location.origin || parsed.protocol === 'file:';
+            if (!local) return null;
+            const path = decodeURIComponent(parsed.pathname);
+            return path.startsWith(directory) ? path.slice(directory.length) : null;
+          },
+          read: async (path) => (files.has(path) ? files.get(path) : null),
+          write: async (path, text) => { files.set(path, text); written.push(path); },
+          ensureWritable: async () => true,
+          release: async () => { },
+          files,
+          written,
+        };
+      }
+
+      // Seeded from the real files, so `before` is genuinely what is on disk.
+      const [css, js, html] = await Promise.all([
+        fetch('./writeback.css').then((r) => r.text()),
+        fetch('./writeback.js').then((r) => r.text()),
+        fetch(location.href).then((r) => r.text()),
+      ]);
+      const originalCSS = css;
+      const project = memoryProject({
+        'writeback.css': css,
+        'writeback.js': js,
+        'writeback.html': html,
+      });
+
+      const api = mount({});
+      const engine = api.engine;
+      check('theExternalScriptDidRun', () => document.documentElement.dataset.writebackScriptRan);
+
+      /* ------------------------------------------------------------------ */
+      /* Edits                                                              */
+      /* ------------------------------------------------------------------ */
+
+      const linkedSheet = [...document.styleSheets].find((s) => (s.href ?? '').endsWith('writeback.css'));
+      const inlineSheet = document.getElementById('inline-sheet').sheet;
+      const cardRule = [...linkedSheet.cssRules].find((r) => r.selectorText === '.card');
+      const heroRule = [...inlineSheet.cssRules].find((r) => r.selectorText === '.hero');
+
+      // 1. A declaration in a linked file, edited through the cascade inspector.
+      engine.setRuleDeclaration(cardRule, 'padding', '40px');
+      // 2. A declaration in an inline <style>, which the export used to lose.
+      engine.setRuleDeclaration(heroRule, 'color', 'rebeccapurple');
+      // 3. An ordinary element edit, which the document write carries.
+      engine.setStyle('opacity', '0.9', document.getElementById('copy'));
+      // 4. A design token, which is new vocabulary rather than a change to a file.
+      engine.tokens.upsert({ name: 'brand-accent', value: '#ff0055', origin: 'user' });
+
+      /*
+       * 5. An external script edit, and 6. a stylesheet on another origin.
+       *
+       * Committed as records directly. Both normally come from a panel, and driving a
+       * code editor headlessly would test the panel rather than the write plan — while
+       * the record is exactly what the plan reads. The shapes here are the ones
+       * `writeScriptSource` and `writeStyleSource` produce.
+       */
+      const nextJS = js.replace("'yes'", "'edited'");
+      engine.history.commit({
+        label: 'Edit writeback.js',
+        subject: 'script:ext-1',
+        record: {
+          id: 'test-script', kind: 'attribute',
+          summary: 'Edit the JavaScript in writeback.js',
+          target: new URL('./writeback.js', location.href).href,
+          // `before` and `after` are not decoration. The change set is reduced to net
+          // differences, and a record whose two ends agree — including one where both
+          // are absent — is discarded as a round trip. Leaving them off is how this
+          // fixture first managed to test nothing.
+          before: js,
+          after: nextJS,
+          detail: {
+            file: 'writeback.js', scope: 'external script', script: nextJS,
+            writeTo: new URL('./writeback.js', location.href).href,
+          },
+          at: Date.now(),
+        },
+        apply: () => { }, revert: () => { },
+      });
+      engine.history.commit({
+        label: 'Edit vendor.css',
+        subject: 'sheet:vendor',
+        record: {
+          id: 'test-vendor', kind: 'style',
+          summary: 'Edit the CSS in vendor.css',
+          target: 'https://cdn.example.com/vendor.css',
+          before: '.vendor { color: blue; }',
+          after: '.vendor { color: red; }',
+          detail: {
+            file: 'vendor.css', scope: 'stylesheet', css: '.vendor { color: red; }',
+            writeTo: 'https://cdn.example.com/vendor.css',
+          },
+          at: Date.now(),
+        },
+        apply: () => { }, revert: () => { },
+      });
+
+      check('everyEditIsOnTheChangeList', () => engine.records.length);
+
+      /* ------------------------------------------------------------------ */
+      /* The plan, before anything is written                               */
+      /* ------------------------------------------------------------------ */
+
+      check('noProjectIsConnectedByDefault', () => engine.project === null);
+      const attached = await engine.attachProject(project, { quiet: true });
+      check('attachingAProjectSucceeds', () => attached);
+      check('theStateNamesTheProject', () => engine.store.value.project?.label);
+
+      const plan = await engine.previewWritePlan();
+      const paths = plan.writes.map((w) => w.path).sort();
+      check('thePlanNamesEveryFileItWillTouch', () => paths);
+      check('nothingIsWrittenYet', () => project.written.length);
+
+      const cssWrite = plan.writes.find((w) => w.path === 'writeback.css');
+      /*
+       * The headline claim, checked byte for byte.
+       *
+       * The design-system block is appended after the file's own contents, so it is
+       * sliced off and everything before it has to equal the original with exactly one
+       * substring replaced. Any reformatting anywhere in the file fails this.
+       */
+      check('theStylesheetWriteIsSurgical', () => {
+        const own = cssWrite.after.slice(0, cssWrite.after.indexOf('/* heo:design-system start'));
+        return own.trimEnd() === originalCSS.replace('padding: 16px;', 'padding: 40px;').trimEnd();
+      });
+      check('theStylesheetKeepsItsComments', () =>
+        cssWrite.after.includes('a trailing comment, tied to this declaration'));
+      check('theStylesheetKeepsShortHexAndUnitlessZero', () =>
+        cssWrite.after.includes('background: #fff;') && cssWrite.after.includes('margin: 0;'));
+      check('theMediaQueryRuleIsUntouched', () => /@media[^{]*\{\s*\.card\s*\{\s*padding: 24px;/.test(cssWrite.after));
+      check('theNewTokenLandedInTheStylesheetNotTheMarkup', () =>
+        cssWrite.after.includes('--brand-accent: #ff0055') &&
+        cssWrite.after.includes('heo:design-system start'));
+
+      check('theCrossOriginSheetIsReportedRatherThanWritten', () =>
+        plan.unwritable.map((entry) => entry.reason));
+
+      /* ------------------------------------------------------------------ */
+      /* Unticking a change keeps it out of the file                        */
+      /* ------------------------------------------------------------------ */
+
+      const cardRecord = engine.records.find((r) => r.detail?.scope === 'stylesheet rule'
+        && r.detail?.writeTo?.endsWith('writeback.css'));
+      engine.setChangeIncluded(cardRecord.id, false);
+      const trimmed = await engine.previewWritePlan();
+      check('untickingTheRuleEditDropsItsPaddingChange', () => {
+        const write = trimmed.writes.find((w) => w.path === 'writeback.css');
+        // The file is still written, because the design-system section belongs to it.
+        return write.after.includes('padding: 16px;') && !write.after.includes('padding: 40px;');
+      });
+      engine.includeAllChanges();
+
+      /* ------------------------------------------------------------------ */
+      /* Writing                                                            */
+      /* ------------------------------------------------------------------ */
+
+      const result = await engine.writeToProject();
+      check('everyPlannedFileWasWritten', () => result.written.slice().sort());
+      check('nothingFailed', () => result.failed);
+
+      check('theStylesheetOnDiskHasTheNewPadding', () =>
+        project.files.get('writeback.css').includes('padding: 40px;'));
+      check('andStillHasItsComments', () =>
+        project.files.get('writeback.css').includes('Every comment in this file'));
+      check('theScriptOnDiskWasReplaced', () =>
+        project.files.get('writeback.js').includes("'edited'"));
+      check('theDocumentOnDiskCarriesTheInlineRuleEdit', () =>
+        project.files.get('writeback.html').includes('rebeccapurple'));
+      check('theDocumentOnDiskDroppedTheStaleInlineValue', () =>
+        !project.files.get('writeback.html').replace(/<script[\s\S]*?<\/script>/gi, '').includes('#123456'));
+      check('theDocumentOnDiskKeepsItsLinkAndScriptTags', () =>
+        project.files.get('writeback.html').includes('href="./writeback.css"') &&
+        project.files.get('writeback.html').includes('src="./writeback.js"'));
+
+      /* ------------------------------------------------------------------ */
+      /* A second save has nothing to do                                    */
+      /* ------------------------------------------------------------------ */
+
+      const again = await engine.previewWritePlan();
+      check('savingTwiceWritesNothingTheSecondTime', () => again.writes.map((w) => w.path));
+      check('andDoesNotStackASecondDesignSystemBlock', () =>
+        project.files.get('writeback.css').split('heo:design-system start').length - 1);
+
+      /* ------------------------------------------------------------------ */
+      /* The export, which is the single-file half of the same fix          */
+      /* ------------------------------------------------------------------ */
+
+      const exported = api.exportHTML().replace(/<script[\s\S]*?<\/script>/gi, '');
+      check('theExportCarriesTheInlineRuleEdit', () => exported.includes('rebeccapurple'));
+      check('theExportNoLongerCarriesTheStaleValue', () => !exported.includes('#123456'));
+      check('theExportKeepsTheInlineSheetsComment', () =>
+        exported.includes('An inline sheet, in the same page as a linked one'));
+      check('theExportStillLinksOutRatherThanInlining', () =>
+        exported.includes('./writeback.css'));
+
+      /* ------------------------------------------------------------------ */
+      /* Disconnecting puts saving back the way it was                       */
+      /* ------------------------------------------------------------------ */
+
+      await engine.disconnectProject();
+      check('disconnectingClearsTheProject', () => engine.project === null);
+      check('andClearsThePlan', () => engine.store.value.writePlan === null);
+
+      report();
+    })().catch((e) => report([e.message]));
+  </script>
+</body>
+
+</html>

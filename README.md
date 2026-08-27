@@ -10,9 +10,14 @@ root, no build step required on the consuming side.
 - **Token-first styling.** Every value picker proposes the design tokens the
   selected component already uses, then the ones the project uses, before
   offering a literal.
-- **Saves to instructions, not to HTML.** The overlay never writes your source.
-  It describes what changed — with file and line numbers when the page is
-  instrumented — so the edit is applied by whoever knows the architecture.
+- **Saves to instructions by default.** Out of the box the overlay does not touch
+  your source. It describes what changed — with file and line numbers when the
+  page is instrumented — so the edit is applied by whoever knows the architecture.
+- **Or writes the files, if you hand them over.** Point it at the folder holding
+  the page, or run the Vite plugin, and saving edits the real files — including the
+  CSS and JS the page links out to. Edits are replayed against each file's own
+  text, so a one-line change is a one-line diff. See
+  [Writing to files](#writing-to-files).
 - **Carries a design system.** Tokens, reusable classes and blocks export to one
   JSON file and import into the next page or project.
 
@@ -26,6 +31,7 @@ root, no build step required on the consuming side.
   - [Bookmarklet](#2-bookmarklet)
   - [Vite plugin](#3-vite-plugin)
 - [The workflow](#the-workflow)
+- [Writing to files](#writing-to-files)
 - [Keyboard shortcuts](#keyboard-shortcuts)
 - [Panels](#panels)
 - [`mount()` options](#mount-options)
@@ -84,7 +90,7 @@ import 'html-editor-overlay/standalone';               // IIFE, sets the global
 | --- | --- | --- |
 | [One script tag](#1-one-script-tag) | You can edit the page's HTML | One line, no JavaScript |
 | [Bookmarklet](#2-bookmarklet) | You cannot edit the page at all | Paste a URL into a bookmark |
-| [Vite plugin](#3-vite-plugin) | You want file and line numbers in the prompt | One plugin entry |
+| [Vite plugin](#3-vite-plugin) | You want saving to edit your files | One plugin entry |
 
 ### 1. One script tag
 
@@ -202,15 +208,24 @@ Three limits to expect on sites you do not control:
   rules, so tokens defined in CSS served from another origin are not discovered.
   This degrades quietly — you get the editor with fewer tokens offered, not an
   error — and tokens on `:root` in a same-origin or inline stylesheet still work.
-- **Nothing is written back.** Saving produces the prompt and the markdown file,
-  the same as everywhere else. The overlay never writes to the site.
+- **Nothing is written back, and here there is nothing to write to.** Saving
+  produces the prompt and the markdown file. [Writing to files](#writing-to-files)
+  needs the folder that holds the page, which for someone else's site you do not have.
 
 ### 3. Vite plugin
 
-Adds one thing the script tag cannot: **source locations**. The plugin stamps
-every opening tag — in HTML files and inside `html` / `svg` tagged templates —
-with `data-heo-src="file:line:column"`. That is what turns the save prompt from
-"find the element matching this selector" into "edit line 42 of this file".
+Adds two things the script tag cannot.
+
+**Source locations.** The plugin stamps every opening tag — in HTML files and inside
+`html` / `svg` tagged templates — with `data-heo-src="file:line:column"`. That is what
+turns the save prompt from "find the element matching this selector" into "edit line 42
+of this file".
+
+**File writes.** The dev server knows the project root, so it serves a read/write
+endpoint and the overlay connects to it on mount. Saving edits your files instead of
+describing them, in every browser, with no folder to pick. See
+[Writing to files](#writing-to-files), which also covers what guards the endpoint and
+how to turn it off.
 
 ```ts
 // vite.config.ts
@@ -255,6 +270,10 @@ window.HtmlEditorOverlay.configure({
 5. **Apply.** Give the prompt to a coding agent or a developer. It names the
    files, the lines, the declarations, the tokens to reuse, and the CSS to add.
 
+Steps 4 and 5 collapse into one if you let the overlay reach your files — see
+[Writing to files](#writing-to-files). Everything below describes the default, where
+it cannot.
+
 The change set is the **net difference** between how the page started and how it
 stands now, not a log of what you did on the way there. Nudging a margin from 0 to
 1 to 2 is one change, `0 → 2`. Setting a value and putting it back is no change at
@@ -264,32 +283,203 @@ step; the count and the prompt only report outcomes.
 ### What the prompt looks like
 
 ````markdown
-## Changes by source file
+# Apply 2 visual edits to the source code
 
-### `src/pages/pricing.astro`
-- **Style** — Set padding to var(--space-xl) on article#c2.card _(line 7, column 5)_
-  - Element: `#c2`
-  - Declaration: `padding: var(--space-xl);`
-  - Keep the token reference exactly as written.
+A designer made these edits directly in the rendered page at `http://localhost:5180/pricing`.
+The page was not saved, so this document is the only record of them.
+Apply every edit in the "Edits" section to the source code. Apply nothing else.
 
-- **Reusable class** — Extract 3 declarations from article#c2.card into .card-featured
-  - Padding: `var(--space-xl)`
-  - Border color: `var(--accent)`
-  - Box shadow: `var(--card-featured-ring)`
+Summary: 1 style, 1 reusable class.
+
+## Rules
+
+1. Edit the existing files that render this page. Do not add a CSS framework, a
+   component library, or a new styling approach.
+2. Copy every value exactly as written. A value written as `var(--name)` must stay
+   `var(--name)`; do not replace it with the colour or size it resolves to.
+…
 
 ## Reusable classes
+
+Add this class to this project's stylesheet. The edits below say which elements use it.
+
 ```css
 .card-featured {
   padding: var(--space-xl);
   border-color: var(--accent);
-  box-shadow: var(--card-featured-ring);
 }
 ```
+
+## Edits
+
+### Edit 1 — `article#c2.card`
+
+File: `src/pages/pricing.astro` — line 7, column 5
+
+1. Set `padding` to `var(--space-xl)`.
+2. Add the class `card-featured`, and remove the declarations it now carries from the
+   `style` attribute.
+
+## Check before you finish
+
+- [ ] Every value written as `var(--name)` is still written that way.
 ````
 
-It also carries ground rules ("edit the class rather than adding inline styles",
-"reuse existing tokens"), the tokens the project already defines, any web
-components that were injected, and a completion checklist.
+One element is one entry, however many things happened to it, and each entry says where
+it is: a file, line and column when the page was instrumented, and a CSS selector to
+search for when it was not. Payloads too big for a sentence — markup, whole-file
+contents — go in numbered blocks the steps point at, rather than fenced inside a list
+item where cheaper models mangle them.
+
+The prompt also carries the tokens the project already defines, any web components that
+were injected, and a completion checklist. `src/core/prompt.ts` documents the three
+format decisions behind it, all of them lessons from watching models fail on earlier
+shapes.
+
+---
+
+## Writing to files
+
+Everything above assumes the overlay cannot reach your source. For a page that keeps
+its CSS and JS inline that assumption costs nothing — the document *is* the project,
+so exporting the HTML is saving it. The moment a page links out it stops being true:
+
+```html
+<link rel="stylesheet" href="theme.css">
+<script src="main.js"></script>
+```
+
+Edits to `theme.css` live in the CSSOM. Edits to `main.js` live in a change record.
+Neither is in the HTML, so neither survives an HTML export — and that is the gap this
+closes. Hand the overlay the files and saving writes them.
+
+### Two ways to hand them over
+
+| | Setup | Browsers | Paths |
+| --- | --- | --- | --- |
+| **A folder** | Click **Write to files…** in the save dialog | Chrome, Edge, Opera | Worked out from the page's own URL |
+| **The Vite plugin** | Already done, if you use it | All | Exact, from the project root |
+
+**A folder.** The save dialog offers *Write to files…*, which opens the browser's
+directory picker. Pick the folder holding the page — or any parent of it — and the
+overlay works out the rest by finding the page's own file inside it. No server, no
+build step, no configuration: the folder is the grant, and it lasts until you close
+the tab. The handle is remembered so the next session offers to reconnect rather than
+making you find the project again, but the permission is not, so reconnecting is
+always a deliberate click.
+
+**The Vite plugin.** Nothing to do. The dev server knows the project root, so the
+plugin serves a small read/write endpoint and the overlay connects to it on mount.
+This is the path that works in every browser, and the paths are exact rather than
+inferred. Turn it off with `write: false` — see
+[Vite plugin options](#vite-plugin-options).
+
+Neither ever happens on its own. The picker needs a click, the endpoint only exists
+because you added the plugin, and with neither connected saving does exactly what it
+did before.
+
+### What gets written
+
+The save dialog grows a **Files** step listing every file, why it is in the list, and
+how its size changes — before anything is written.
+
+- **The page's own file** carries everything the HTML already held: text, attributes,
+  classes, structure, inline `<style>` and `<script>`.
+- **Linked stylesheets** get the declarations that changed, and nothing else.
+- **External scripts** are replaced outright. Nothing else is possible: the editor
+  knows the new text, never which part of it is the change.
+- **New tokens and reusable classes** go into the first writable stylesheet, inside a
+  marked block so the next save replaces it rather than adding another. A page with no
+  stylesheet keeps them in the `<style>` block they are already rendering from. Change
+  the destination in the Files step.
+
+**Edits are replayed against each file's own text.** This matters more than it
+sounds. Reading a stylesheet back out of the CSSOM gives you the browser's
+re-serialization — `#fff` rewritten as `rgb(255, 255, 255)`, `margin: 0` as
+`margin: 0px`, every comment gone, every line break the author chose replaced. Writing
+that back would reformat a file nobody asked to reformat and bury the one changed line
+in a whole-file diff. So the change is applied to the original text instead, and every
+byte outside the edited declaration is left where it was.
+
+### What still will not be written
+
+Named in the Files step rather than swallowed, and still carried by the generated
+prompt:
+
+- **Cross-origin stylesheets and scripts.** The browser will not let the page read
+  them, and they are not in your project anyway.
+- **Anything outside the folder you handed over.** Pick a higher folder if you meant
+  to include it.
+- **An edit whose rule is no longer in the file**, because the file changed since the
+  session started. *Recheck* re-reads and usually resolves it.
+
+### Saving, once a project is connected
+
+`save()` writes the files. The dialog's primary button says so — it reads
+**Write 3 files** rather than *Save changes*, because there should be no ambiguity
+about what pressing it does.
+
+A connected project takes precedence over an `onSave` handler. Two things have claimed
+to own persistence, and the more specific one is the folder you picked during this
+session rather than the option the page was configured with. Disconnect in the Files
+step to put `onSave` back in charge.
+
+With the dev-server path, writing the page's HTML makes Vite reload it — the files are
+on disk before that happens, and the toast says it is coming.
+
+### From code
+
+```ts
+// Opens the picker, so it needs a user gesture. False means cancelled, not failed.
+await api.connectProject();
+api.getProject();          // { kind: 'directory' | 'server', label: string } | null
+await api.previewWrites();  // { writes: [...], unwritable: [...] } — reads, writes nothing
+await api.save();           // writes the files
+await api.disconnectProject();
+```
+
+`FileHost` is exported, and the two built-in transports are not the only ones that
+make sense. A project with its own idea of where files live can implement the
+interface and hand it over:
+
+```ts
+import type { FileHost } from 'html-editor-overlay';
+
+const host: FileHost = {
+  kind: 'server',
+  label: 'my project',
+  resolve: (url) => new URL(url).pathname.slice(1),
+  read: (path) => fetch(`/api/file/${path}`).then((r) => (r.ok ? r.text() : null)),
+  write: (path, text) => fetch(`/api/file/${path}`, { method: 'PUT', body: text }),
+  ensureWritable: async () => true,
+  release: async () => {},
+};
+
+await api.engine.attachProject(host);
+```
+
+### The dev-server endpoint, and why it is safe to run
+
+A dev server that writes arbitrary files deserves scrutiny, so here is exactly what
+guards it:
+
+- **A token.** Generated at every server start and inlined into the overlay's
+  bootstrap module — a same-origin ES module, which is somewhere another origin cannot
+  read from. Every request carries it as `x-heo-token`. Requiring it in a header rather
+  than the URL also makes such a request non-simple, so a cross-origin attempt is
+  stopped by a preflight that is never answered.
+- **Confined to the Vite root.** Paths that climb out, and absolute paths, are refused
+  rather than resolved.
+- **An extension allowlist.** Markup, styles, scripts and a few siblings. `.env`,
+  lockfiles, certificates and anything without an extension are refused.
+  `node_modules` and `.git` are refused outright.
+- **Off when the server is not local.** `vite --host` puts the dev server on every
+  interface, which is a different proposition from localhost, so writing is disabled
+  and says so in the log. `allowRemote: true` is how you opt back in.
+- **No CORS headers, ever.** Another origin may manage to send a request; it will
+  never read the answer.
+
+`test/fs-endpoint.test.mjs` asserts each of these against a real dev server.
 
 ---
 
@@ -403,9 +593,11 @@ selected it shows the entire document, doctype to `</html>`, and applying rewrit
 the live page in one undoable step — the overlay, the design-system stylesheets and
 `data-heo-edit` are all preserved through it rather than left to what the buffer
 happens to contain. **CSS** lists every stylesheet the page loads and edits it
-through the CSSOM. **JS** lists every script and lets you edit its source; since a
-script has already run, applying records the change without re-executing it, and
-**Run** is the separate, explicit way to do that. All three share one expand button:
+through the CSSOM, so the preview is live and undoable; a linked sheet opens as the
+file's own text rather than the browser's re-serialization of it, which is what makes
+applying one a real diff instead of a reformat. **JS** lists every script and lets you
+edit its source; since a script has already run, applying records the change without
+re-executing it, and **Run** is the separate, explicit way to do that. All three share one expand button:
 the fullscreen view keeps whichever language you were on and lets you switch
 between them without losing your place. The buffer is validated as you type and
 says exactly what is wrong; applying is explicit, and HTML goes through the same
@@ -449,11 +641,21 @@ const api = mount({
   },
   onChange(records) {              // fires on every committed change
   },
+
+  // Set by the Vite plugin, not usually by hand. A dev-server endpoint that can
+  // read and write the project's files, plus the token every request carries.
+  sourceEndpoint: undefined,       // e.g. '/__heo/fs'
+  sourceToken: undefined,
 });
 ```
 
 Tokens already declared in the page's stylesheets are discovered automatically,
 so `tokens` is only for values that do not exist in CSS yet.
+
+`sourceEndpoint` is the only option that lets the overlay write your source without
+someone clicking a picker, which is why it is normally the plugin's job rather than
+yours. See [Writing to files](#writing-to-files) for the endpoint's contract and the
+reasoning behind the token.
 
 Calling `mount()` twice returns the existing instance rather than stacking
 overlays.
@@ -479,11 +681,17 @@ api.undo();
 api.redo();
 api.reset();                       // revert every change, newest first
 
-await api.save();                  // run the onSave handler
+await api.save();                  // write the files, or run onSave, or copy the prompt
 api.getPrompt();                   // the prompt save() would hand over
 api.getChanges();                  // the structured change records
 api.exportHTML();                  // page serialized, every trace of the editor removed
                                    // (design system CSS stays; edit-mode CSS does not)
+
+// Writing to files. See that section for what each one means.
+await api.connectProject();        // opens the folder picker; needs a user gesture
+api.getProject();                  // { kind, label } | null
+await api.previewWrites();         // which files a save would write, writing none
+await api.disconnectProject();
 
 api.exportDesignSystem();          // a DesignSystemDocument
 await api.exportSeed();            // the same thing as one string: 'heo1z.…'
@@ -515,6 +723,9 @@ editorOverlay({
   inject: true,          // add the overlay script to HTML entry points
   filter: (id) => true,  // extra per-module filter
 
+  write: true,           // let the editor write this project's files
+  allowRemote: false,    // …even when the dev server is not on localhost
+
   // Forwarded to mount()
   startInEditMode: false,
   theme: 'dark',
@@ -531,6 +742,22 @@ editorOverlay({
 
 `apply` defaults to `'serve'` deliberately: shipping a visual editor to
 production is rarely intended, and the markers add weight to every element.
+
+`write` defaults to `true`, because a visual editor in a dev server that cannot save
+is half a tool, and because the plugin only runs while serving anyway. It is still a
+real capability, so it announces itself in the startup log rather than waiting to be
+discovered:
+
+```
+[html-editor-overlay] editing writes to /Users/you/project (set write: false to turn this off)
+```
+
+`allowRemote` defaults to `false`. `vite --host` puts the dev server on every
+interface, and a file-writing endpoint on a shared network is a different proposition
+from one on localhost — the token still guards it, but a mistake stops being confined
+to your own machine. Bind to a non-loopback address without this and writing turns
+itself off with a warning. The full set of guards is in
+[Writing to files](#writing-to-files).
 
 A `designSystem` path is read from disk when the config resolves and inlined into
 the bootstrap module, so the browser makes no request and no page is ever mounted
@@ -831,6 +1058,9 @@ src/
 │   ├── library.ts         BlockLibrary + presets.ts
 │   ├── props.ts           reactive-property and attribute introspection
 │   ├── prompt.ts          change set → markdown instructions
+│   ├── writeback.ts       change set → a reviewable set of file writes
+│   ├── file-host.ts       one writable-file interface, two transports
+│   ├── css-patch.ts       surgical edits to CSS text, comments intact
 │   ├── keymap.ts          the whole keymap as a dispatch table
 │   ├── drop-target.ts     drag hit-testing
 │   └── design-system.ts   import, export, HTML serialization
@@ -880,9 +1110,23 @@ page built from web components.
 npm run dev            # demo fixture with the Vite plugin, port 5180
 npm run typecheck      # tsc --noEmit
 npm run build          # library + plugin + type declarations
-npm run check          # build, then 300+ assertions in headless Chrome
+npm run check          # build, then every test below
 npm run check:plugin   # verify source markers (needs `npm run dev` running)
+
+npm run test:css         # CSS text patching
+npm run test:instrument  # build-time source marking
+npm run test:endpoint    # the dev-server file endpoint, against a real Vite server
 ```
+
+The `test:*` suites run outside the browser because none of their subjects needs one.
+Two of them run under Node's `--experimental-strip-types`, which is also what keeps
+"this module has no DOM dependencies" honest rather than aspirational.
+
+`npm run check:plugin` covers the plugin path against a live dev server: source
+markers on HTML and on Lit templates, the design system inlined at config time, and
+the write endpoint being connected on mount. It builds a write plan and asserts it
+names real project paths — without writing any of them, which is what makes it safe to
+run against the demo.
 
 `scripts/browser-check.mjs` drives headless Chrome over the DevTools protocol. It
 polls a page for a completion marker, reports the last step reached on timeout,
@@ -895,13 +1139,19 @@ node scripts/browser-check.mjs test/visual.html 25000 --shot /tmp/overlay.png
 node scripts/browser-check.mjs "file://$PWD/test/visual.html?state=tokens" 25000 --shot /tmp/tokens.png
 ```
 
-`npm run check` runs three pages:
+`npm run check` runs four pages:
 
 | Page | Covers |
 | --- | --- |
 | `test/self-check.html` | The regression suite: mounting, selection, styles, classes, structure, drag, tokens, undo/redo depth, prompt generation, export, unmount, and every panel rendering. |
+| `test/writeback.html` | The multi-file case, with a linked stylesheet and an external script. Asserts that a stylesheet write is surgical byte for byte, that comments and `#fff` and `margin: 0` survive it, that a rule edited in an inline `<style>` reaches the exported HTML, that unticking a change keeps it out of the file, and that saving twice writes nothing the second time. |
 | `test/script-tag.html` | The one-tag integration. Its whole setup is a single `<script>`, so the file is both the fixture and the example. Asserts every `data-*` attribute lands. |
 | `test/script-tag-manual.html` | That a bundle *without* `data-heo` mounts nothing, and that `mount()` and `unmount()` still behave. |
+
+`test/writeback.html` hands the engine an in-memory `FileHost` rather than a real
+folder, because a directory picker cannot be driven from a headless browser. That is
+the same seam a custom integration uses, so the code under test is the code that
+ships; only the disk is a stand-in.
 
 `test/visual.html` renders the chrome in a given state for review: any panel id
 (`styles`, `tokens`, `tree`, `library`, `props`, `media`, `code`) plus `menu`,
@@ -923,8 +1173,18 @@ Lit uses. Pages themselves can be anything.
 
 Known limits, stated plainly:
 
-- **The overlay does not write your source.** It cannot know your architecture.
-  It produces instructions; applying them is a separate, deliberate step.
+- **The overlay does not write your source until you let it.** By default it
+  produces instructions and applying them is a separate, deliberate step. Hand over a
+  folder or run the Vite plugin and it writes the files — but only the ones it can
+  reason about: markup, stylesheets and scripts. It still cannot restructure a
+  component or move a declaration into the layer your architecture would put it in,
+  which is what the prompt is for.
+- **A framework's templates are not written.** Source locations reach into `.jsx`,
+  `.ts` and Lit templates, and the prompt uses them; file writes do not. The overlay
+  can replay a CSS declaration into a stylesheet safely because CSS text has a
+  structure it can find its way around. Splicing markup back into a component, past
+  interpolations and conditionals, is source transformation — the previous
+  implementation tried it by string offsets and it was too fragile to keep.
 - **Elements are not resizable by dragging.** Corner handles produce hard-coded
   pixel dimensions, which is the opposite of what a token-driven system wants.
   Size is edited in the Styles panel, where it can be a token, a percentage or a

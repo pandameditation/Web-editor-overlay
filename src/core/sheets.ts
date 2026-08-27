@@ -34,6 +34,15 @@ export interface StyleSource {
   sheet?: CSSStyleSheet;
   /** The owning `<style>` element, when the source is an inline sheet. */
   element?: HTMLStyleElement;
+  /**
+   * The file's own text, once it has been fetched.
+   *
+   * The panel fills this in from `fetchStyleSource`, so an edit is recorded as a
+   * change to what is on disk rather than to the browser's re-serialization of it.
+   * Without it, `before` would be a reformatted copy and every save would look like
+   * the whole file changed.
+   */
+  pendingBefore?: string;
 }
 
 /**
@@ -131,6 +140,182 @@ export function readStyleSource(source: StyleSource): string {
 }
 
 /**
+ * The sheet's text as its author wrote it.
+ *
+ * `readStyleSource` reassembles a linked sheet from `rule.cssText`, which is the
+ * browser's re-serialization: no comments, `#fff` rewritten as `rgb(255, 255, 255)`,
+ * `0` as `0px`, every line break the author chose replaced by the browser's. That is
+ * fine for looking at and wrong for editing, because whatever the user applies
+ * becomes the new contents of the file — so the thing they started from had better
+ * be the file.
+ *
+ * One same-origin fetch, which in practice is a cache hit: the browser downloaded
+ * this stylesheet to render the page. Falls back to the CSSOM when there is no file
+ * to read, so a caller never has to branch on it.
+ */
+export async function fetchStyleSource(source: StyleSource): Promise<string> {
+  if (source.element) return source.element.textContent ?? '';
+  if (!source.href || source.readOnly) return readStyleSource(source);
+  try {
+    const response = await fetch(source.href, { credentials: 'same-origin' });
+    if (!response.ok) return readStyleSource(source);
+    const text = await response.text();
+    return text || readStyleSource(source);
+  } catch {
+    return readStyleSource(source);
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Locating a live rule in its file                                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Where the change has to land when it is not the document.
+ *
+ * `'document'` means the edit is already captured by serializing the page — an
+ * inline `<style>`, an inline `<script>`, an element's attributes. Anything else is a
+ * URL that has to be written on its own.
+ */
+export const DOCUMENT_TARGET = 'document';
+
+export interface RuleLocation {
+  /** A file URL, or `DOCUMENT_TARGET` for a rule in an inline `<style>`. */
+  writeTo: string;
+  /**
+   * Stable id of the sheet, for a change record to refer to it by.
+   *
+   * A record cannot hold a `CSSStyleSheet`, and `writeTo` does not identify one: two
+   * inline `<style>` elements both write to the document. So the sheet gets an id
+   * that lasts the session, the record carries the id, and whoever needs the live
+   * sheet again asks for it by name.
+   */
+  sheetId: string;
+  /** Human label for the sheet holding the rule. */
+  label: string;
+  /**
+   * Index chain from the sheet root: `[4, 1]` is the second rule inside the fifth.
+   *
+   * The precise way to name a rule in a file. Both the browser and the text scanner
+   * walk a stylesheet in the same order, so a position identifies a rule without the
+   * two of them having to agree on how a selector is spelled.
+   */
+  path: number[];
+  /** Enclosing at-rule preludes, outermost first. */
+  context: string[];
+  /** The owning `<style>` element, when the rule is in one. */
+  element?: HTMLStyleElement;
+  sheet: CSSStyleSheet;
+}
+
+/**
+ * Locate a live rule precisely enough to find it again in a file.
+ *
+ * Walks up through `parentRule` so a rule inside `@media` inside `@supports` reports
+ * both its position and its conditions. Returns null for a rule whose sheet cannot
+ * be reached — a constructed sheet, or one the browser detached — because a location
+ * that cannot be verified is worse than none.
+ */
+export function describeRule(rule: CSSRule): RuleLocation | null {
+  const sheet = rule.parentStyleSheet;
+  if (!sheet) return null;
+
+  const path: number[] = [];
+  const context: string[] = [];
+  let current: CSSRule | null = rule;
+
+  while (current) {
+    const parent: CSSRule | null = current.parentRule;
+    let list: CSSRuleList;
+    try {
+      list = parent ? (parent as CSSGroupingRule).cssRules : sheet.cssRules;
+    } catch {
+      return null;
+    }
+    const index = indexOfRule(list, current);
+    if (index === -1) return null;
+    path.unshift(index);
+    if (parent) context.unshift(preludeOf(parent));
+    current = parent;
+  }
+
+  const node = sheet.ownerNode;
+  const element = node instanceof HTMLStyleElement ? node : undefined;
+  const href = sheet.href ?? undefined;
+
+  return {
+    writeTo: element ? DOCUMENT_TARGET : (href ?? DOCUMENT_TARGET),
+    sheetId: sheetIdFor(sheet),
+    label: element ? element.id || 'inline <style>' : (fileName(href) ?? 'stylesheet'),
+    path,
+    context,
+    element,
+    sheet,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Naming sheets so records can refer to them                                  */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * Ids are handed out on first use and last for the session.
+ *
+ * The reverse map holds sheets strongly, which is a leak in principle — bounded by
+ * the number of stylesheets a page has, and cleared on unmount. The alternative, a
+ * `WeakRef`, would let an id go dead while a change record still names it, turning a
+ * write that should work into one that quietly cannot find its sheet.
+ */
+const sheetIds = new WeakMap<CSSStyleSheet, string>();
+const sheetsById = new Map<string, CSSStyleSheet>();
+let sheetSequence = 0;
+
+function sheetIdFor(sheet: CSSStyleSheet): string {
+  const existing = sheetIds.get(sheet);
+  if (existing) return existing;
+  sheetSequence += 1;
+  const id = `s${sheetSequence}`;
+  sheetIds.set(sheet, id);
+  sheetsById.set(id, sheet);
+  return id;
+}
+
+export function sheetById(id: string): CSSStyleSheet | null {
+  return sheetsById.get(id) ?? null;
+}
+
+/** The `<style>` element owning a named sheet, when it is an inline one. */
+export function styleElementById(id: string): HTMLStyleElement | null {
+  const node = sheetsById.get(id)?.ownerNode;
+  return node instanceof HTMLStyleElement ? node : null;
+}
+
+/** Drop the id table. Called on unmount, so nothing outlives the editor. */
+export function resetSheetIds(): void {
+  sheetsById.clear();
+  sheetSequence = 0;
+}
+
+function indexOfRule(list: CSSRuleList, rule: CSSRule): number {
+  for (let i = 0; i < list.length; i += 1) {
+    if (list.item(i) === rule) return i;
+  }
+  return -1;
+}
+
+/** An at-rule's prelude: everything before its opening brace. */
+function preludeOf(rule: CSSRule): string {
+  let text = '';
+  try {
+    text = rule.cssText ?? '';
+  } catch {
+    return '';
+  }
+  const brace = text.indexOf('{');
+  return (brace === -1 ? text : text.slice(0, brace)).trim();
+}
+
+/**
  * Replace a sheet's contents, reversibly.
  *
  * A `<style>` element is written through `textContent`, which the browser reparses
@@ -143,7 +328,9 @@ export function readStyleSource(source: StyleSource): string {
  */
 export function writeStyleSource(source: StyleSource, css: string): Command | null {
   if (source.readOnly) return null;
-  const before = readStyleSource(source);
+  // The file's text when the panel has it, so the recorded change is a diff against
+  // the file rather than against the CSSOM's rewrite of it.
+  const before = source.pendingBefore ?? readStyleSource(source);
   const after = css;
   if (before.trim() === after.trim()) return null;
 
@@ -183,6 +370,9 @@ export function writeStyleSource(source: StyleSource, css: string): Command | nu
         file: source.href ?? source.label,
         scope: 'stylesheet',
         css: after,
+        // An inline sheet is already part of the page, so serializing the document
+        // carries this edit; a linked one has a file of its own to be written.
+        writeTo: source.element ? DOCUMENT_TARGET : (source.href ?? DOCUMENT_TARGET),
       },
       at: Date.now(),
     },

@@ -1,5 +1,6 @@
 import { IGNORE_ATTR } from './constants.js';
 import { nextChangeId, type Command } from './history.js';
+import { DOCUMENT_TARGET } from './sheets.js';
 
 /**
  * The page's JavaScript, as editable sources.
@@ -192,6 +193,10 @@ export function writeScriptSource(source: ScriptSource, code: string): Command |
         file: source.href ?? source.label,
         scope: source.remote ? 'external script' : 'inline script',
         script: after,
+        // An inline script's text was rewritten in the DOM, so serializing the page
+        // carries it. An external one has a file of its own, and nothing in the page
+        // to carry it at all.
+        writeTo: source.remote ? (source.href ?? DOCUMENT_TARGET) : DOCUMENT_TARGET,
       },
       at: Date.now(),
     },

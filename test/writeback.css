@@ -1,0 +1,29 @@
+/*
+ * The linked stylesheet.
+ *
+ * Every comment in this file, and every choice of notation below, exists to be
+ * checked after a write: the whole promise of the write-back path is that editing one
+ * declaration changes one line and leaves the rest of the file alone.
+ */
+
+:root {
+  --ink: #172033;
+  --space-md: 16px;
+}
+
+.card {
+  padding: 16px;          /* a trailing comment, tied to this declaration */
+  border-radius: 12px;
+  background: #fff;       /* short hex, which the CSSOM would rewrite as rgb() */
+  margin: 0;              /* unitless zero, which the CSSOM would rewrite as 0px */
+}
+
+.card h2 {
+  color: var(--ink);
+}
+
+@media (min-width: 40em) {
+  .card {
+    padding: 24px;
+  }
+}

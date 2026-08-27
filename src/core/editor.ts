@@ -68,6 +68,24 @@ import {
 } from './mutations.js';
 import { buildPrompt } from './prompt.js';
 import { formatHTML } from './sanitize.js';
+import {
+  connectDirectory,
+  connectServer,
+  hostAvailability,
+  restoreDirectory,
+  type FileHost,
+  type FileHostKind,
+  type HostAvailability,
+} from './file-host.js';
+import { collectStyleSources, describeRule, DOCUMENT_TARGET, resetSheetIds } from './sheets.js';
+import {
+  applyWritePlan,
+  buildWritePlan,
+  inlineStyleEdits,
+  type WritePlan,
+  type WriteResult,
+  type WriteSubject,
+} from './writeback.js';
 import { decodeSeed, decodeSeedSync, encodeSeed } from './seed.js';
 import { Store } from './store.js';
 import { TokenRegistry } from './tokens.js';
@@ -236,6 +254,18 @@ export interface EditorState {
   accent: string;
   saving: boolean;
   savePreview: string | null;
+  /** The connected project, when the editor can reach the page's files. */
+  project: ProjectInfo | null;
+  /** The files the next save would write, once it has been worked out. */
+  writePlan: WritePlan | null;
+  /** True while the plan is being built, which needs to read from disk. */
+  planning: boolean;
+}
+
+/** What the UI needs to know about a connected project. */
+export interface ProjectInfo {
+  kind: FileHostKind;
+  label: string;
 }
 
 const DEFAULT_TOOLBAR = { x: 24, y: 24 };
@@ -333,6 +363,9 @@ export class EditorEngine {
       accent: options.accent ?? '#6366f1',
       saving: false,
       savePreview: null,
+      project: null,
+      writePlan: null,
+      planning: false,
     });
   }
 
@@ -362,6 +395,25 @@ export class EditorEngine {
 
     this.#bindPageEvents();
     this.#observePage();
+
+    /*
+     * Look for a project without asking for one.
+     *
+     * A dev server that offered a write endpoint has already given consent on the
+     * project's behalf — it only exists because someone added the plugin — so
+     * connecting to it is not a decision to put to the user. A folder granted earlier
+     * in this browser is the same grant, still live. Neither prompts, and both are
+     * tracked so `whenReady()` covers them.
+     *
+     * The picker is the one thing that never happens on its own: it needs a gesture,
+     * and a permission dialog nobody asked for is exactly the behaviour this project
+     * has avoided everywhere else.
+     */
+    this.track(
+      this.connectProjectServer().then(async (connected) => {
+        if (!connected) await this.restoreProjectFolder();
+      }),
+    );
   }
 
   destroy(): void {
@@ -384,6 +436,10 @@ export class EditorEngine {
     this.tokens.destroy();
     this.classes.destroy();
     this.library.destroy();
+    // The sheet id table holds stylesheets strongly so a change record can name one.
+    // Nothing should outlive the editor that handed the names out.
+    resetSheetIds();
+    this.#project = null;
   }
 
   #seedFromOptions(): void {
@@ -1001,6 +1057,18 @@ export class EditorEngine {
     const selector = rule.selectorText;
     const target = this.store.value.selected;
 
+    /*
+     * Where this rule lives, recorded now rather than worked out later.
+     *
+     * A CSSOM edit is invisible from outside the CSSOM: mutating `rule.style` changes
+     * what renders but leaves the `<style>` element's text and the linked file
+     * untouched, so this edit exists nowhere except in the change record. The
+     * location is what lets it be replayed against the file's own text — and it has
+     * to be captured while the rule is still where it was, because a later edit to
+     * the same sheet can renumber everything after it.
+     */
+    const at = describeRule(rule);
+
     this.history.commit({
       label: `Set ${property} on ${selector}`,
       mergeKey: `rule:${selector}:${property}`,
@@ -1013,7 +1081,22 @@ export class EditorEngine {
         group: `rule:${selector}`,
         before: before || undefined,
         after: after || undefined,
-        detail: { property, value: after, selector, scope: 'stylesheet rule' },
+        detail: {
+          property,
+          value: after,
+          selector,
+          scope: 'stylesheet rule',
+          priority: beforePriority,
+          ...(at
+            ? {
+              file: at.label,
+              writeTo: at.writeTo,
+              sheet: at.sheetId,
+              rulePath: at.path.join('.'),
+              ruleContext: JSON.stringify(at.context),
+            }
+            : {}),
+        },
         at: Date.now(),
       },
       apply: () => {
@@ -2341,6 +2424,236 @@ export class EditorEngine {
   }
 
   /* ---------------------------------------------------------------------- */
+  /* The project: reaching the page's own files                              */
+  /* ---------------------------------------------------------------------- */
+
+  /**
+   * A writable view of the files behind the page, when one has been connected.
+   *
+   * Null is the normal state and the default. The overlay was built on the premise
+   * that it cannot reach your source, and that premise is worth keeping as the
+   * default even now that it can: writing files is something the user asks for, once,
+   * out loud, by handing over a folder or by running a dev server that offers to do
+   * it. Everything else about saving stays exactly as it was.
+   */
+  #project: FileHost | null = null;
+
+  get project(): FileHost | null {
+    return this.#project;
+  }
+
+  /**
+   * Where new tokens and reusable classes should be written.
+   *
+   * `'document'` leaves them in the `<style>` block the page already renders them
+   * from, which is right for a single-file page and wrong for a project that keeps
+   * its CSS in files — nobody wants their design tokens in the markup. So it is a
+   * choice, defaulting to the page's first writable stylesheet when there is one.
+   */
+  #designSystemTarget: string | null = null;
+
+  get designSystemTarget(): string {
+    this.#designSystemTarget ??= this.styleTargets()[1]?.value ?? DOCUMENT_TARGET;
+    return this.#designSystemTarget;
+  }
+
+  setDesignSystemTarget(target: string): void {
+    if (this.#designSystemTarget === target) return;
+    this.#designSystemTarget = target;
+    // The plan named a file; it has to be rebuilt before it can name a different one.
+    if (this.store.value.writePlan) void this.previewWritePlan();
+    else this.#bumpRegistry();
+  }
+
+  /** Places the design system could be written, the page itself included. */
+  styleTargets(): Array<{ value: string; label: string }> {
+    const out = [{ value: DOCUMENT_TARGET, label: 'Keep in the page' }];
+    for (const source of collectStyleSources()) {
+      if (source.kind !== 'link' || source.readOnly || !source.href) continue;
+      out.push({ value: source.href, label: source.label });
+    }
+    return out;
+  }
+
+  /** What this browser and page can offer, for the UI to explain itself. */
+  hostOptions(): Promise<HostAvailability> {
+    return hostAvailability(this.options.sourceEndpoint, this.options.sourceToken);
+  }
+
+  /**
+   * Ask the user for the folder holding this page. Must run from a user gesture.
+   *
+   * The picker is the grant, so there is nothing to configure and nothing to trust:
+   * the page can reach exactly the folder it was handed, and only until the tab is
+   * closed.
+   */
+  async connectProjectFolder(): Promise<boolean> {
+    try {
+      const host = await connectDirectory();
+      // A cancelled picker is not a failure. It is also how someone backs out.
+      if (!host) return false;
+      return await this.attachProject(host);
+    } catch (error) {
+      this.notify(error instanceof Error ? error.message : String(error), 'error');
+      return false;
+    }
+  }
+
+  /**
+   * Connect to a dev server that offered to write files, if one did.
+   *
+   * Silent when there is none: this runs on mount, and a page served statically
+   * should not report the absence of something it never asked for.
+   */
+  async connectProjectServer(): Promise<boolean> {
+    const host = await connectServer(this.options.sourceEndpoint, this.options.sourceToken);
+    return host ? this.attachProject(host, { quiet: true }) : false;
+  }
+
+  /**
+   * Pick up a folder granted earlier in this browser, if the grant survived.
+   *
+   * Quiet for the same reason: a reload should not announce what it found, and a
+   * grant that lapsed should leave the UI offering to reconnect rather than
+   * explaining itself.
+   */
+  async restoreProjectFolder(): Promise<boolean> {
+    const host = await restoreDirectory();
+    return host ? this.attachProject(host, { quiet: true }) : false;
+  }
+
+  /**
+   * Adopt any file host, including one the page brings itself.
+   *
+   * Public because the two built-in transports are not the only ones that make
+   * sense — a project with its own dev server, or its own idea of where files live,
+   * can implement `FileHost` and hand it over. It is also how this gets tested
+   * without a file picker.
+   */
+  async attachProject(host: FileHost, options: { quiet?: boolean } = {}): Promise<boolean> {
+    if (!(await host.ensureWritable())) {
+      if (!options.quiet) {
+        this.notify(`Cannot write to ${host.label}. The permission was refused.`, 'error');
+      }
+      return false;
+    }
+    this.#project = host;
+    this.store.patch({ project: { kind: host.kind, label: host.label } });
+    if (!options.quiet) {
+      this.notify(`Connected to ${host.label}. Saving will write these files.`, 'success');
+    }
+    // A plan already on screen is now answerable, so answer it.
+    if (this.store.value.savePreview != null) void this.previewWritePlan();
+    return true;
+  }
+
+  async disconnectProject(): Promise<void> {
+    const host = this.#project;
+    this.#project = null;
+    this.store.patch({ project: null, writePlan: null });
+    await host?.release();
+    if (host) this.notify(`Disconnected from ${host.label}.`, 'info');
+  }
+
+  /**
+   * Work out which files a save would write, without writing any of them.
+   *
+   * Reads from disk, so it is asynchronous and worth showing progress for. Doing it
+   * as a separate step is the whole safety story: the user sees the list of files and
+   * the size of each change while it is still a proposal.
+   */
+  async previewWritePlan(): Promise<WritePlan | null> {
+    const host = this.#project;
+    if (!host) return null;
+    this.store.patch({ planning: true });
+    try {
+      const plan = await buildWritePlan(host, this.#writeSubject());
+      this.store.patch({ writePlan: plan });
+      return plan;
+    } catch (error) {
+      console.error('[html-editor-overlay] could not work out what to write', error);
+      this.notify('Could not read the project files. See the console for details.', 'error');
+      this.store.patch({ writePlan: null });
+      return null;
+    } finally {
+      this.store.patch({ planning: false });
+    }
+  }
+
+  #writeSubject(): WriteSubject {
+    const target = this.designSystemTarget;
+    return {
+      records: this.handoffRecords,
+      html: this.exportHTML(),
+      fileName: this.options.fileName ?? 'edited-page.html',
+      // Only the vocabulary this session authored. Tokens read out of the page's own
+      // stylesheets are already in a file, and writing them back would turn a diff
+      // into a copy of the theme.
+      designSystemCSS: [this.tokens.toCSS(), this.classes.toCSS()].filter(Boolean).join('\n\n'),
+      designSystemTarget: target,
+    };
+  }
+
+  /**
+   * Write the files. Returns null when there is no project to write to.
+   *
+   * Rebuilds the plan first rather than trusting the one on screen: between showing
+   * it and pressing the button the user may have unticked a change, and the file that
+   * gets written has to be the file that was described.
+   */
+  async writeToProject(): Promise<WriteResult | null> {
+    const host = this.#project;
+    if (!host) return null;
+    if (!(await host.ensureWritable())) {
+      this.notify(`Lost write access to ${host.label}. Connect it again.`, 'error');
+      return null;
+    }
+    const plan = await this.previewWritePlan();
+    if (!plan) return null;
+    if (!plan.writes.length) {
+      this.notify('Every change is already in the files.', 'info');
+      return { written: [], failed: [], unplaced: [] };
+    }
+
+    const result = await applyWritePlan(host, plan);
+    this.#reportWrite(result, plan);
+    return result;
+  }
+
+  #reportWrite(result: WriteResult, plan: WritePlan): void {
+    const wrote = result.written.length;
+    if (result.failed.length) {
+      const first = result.failed[0];
+      this.notify(
+        `Wrote ${wrote} of ${plan.writes.length} files. ${first.path} failed: ${first.reason}`,
+        'error',
+      );
+      return;
+    }
+    // Named rather than counted when there is something left over, because "3 files
+    // written" beside a change that was not is the sentence that gets misread.
+    const leftOver = plan.unwritable.length + result.unplaced.length;
+    if (leftOver) {
+      this.notify(
+        `Wrote ${wrote} file${wrote === 1 ? '' : 's'}. ${leftOver} change${leftOver === 1 ? '' : 's'
+        } could not be filed and stayed in the prompt.`,
+        'info',
+      );
+      return;
+    }
+    // A dev server watches what it serves, so writing the page is about to reload it.
+    // Said out loud because the session is what disappears, and a reload nobody
+    // predicted reads as a crash rather than as the save having worked.
+    const reloads =
+      this.#project?.kind === 'server' && plan.writes.some((entry) => entry.kind === 'document');
+    this.notify(
+      `Wrote ${wrote} file${wrote === 1 ? '' : 's'} to ${this.#project?.label ?? 'the project'}.${reloads ? ' The dev server will reload the page.' : ''
+      }`,
+      'success',
+    );
+  }
+
+  /* ---------------------------------------------------------------------- */
   /* Save and export                                                        */
   /* ---------------------------------------------------------------------- */
 
@@ -2366,10 +2679,26 @@ export class EditorEngine {
     }
     this.endTextEdit(true);
     this.store.patch({ savePreview: this.buildSavePrompt() });
+    // Work out the files while the user is reading the change list, so the primary
+    // button can say how many it will write rather than finding out afterwards.
+    if (this.#project) void this.previewWritePlan();
   }
 
   closeSavePreview(): void {
     this.store.patch({ savePreview: null });
+  }
+
+  /**
+   * The page, serialized, with the overlay stripped and rule edits folded in.
+   *
+   * The only place `exportHTML` should be reached from. Editing a rule from the
+   * cascade inspector changes the CSSOM and not the `<style>` element's text, so an
+   * export that skips the reconciliation carries the value the page had before the
+   * session while the screen shows the one after it. Routing every caller through
+   * here is what stops that being something to remember.
+   */
+  exportHTML(): string {
+    return exportHTML(inlineStyleEdits(this.handoffRecords));
   }
 
   async save(): Promise<boolean> {
@@ -2388,11 +2717,27 @@ export class EditorEngine {
       prompt: this.buildSavePrompt(),
       records: handoff,
       designSystem: this.designSystem(),
-      html: exportHTML(),
+      html: this.exportHTML(),
       fileName: this.options.fileName ?? 'edited-page.html',
     };
 
     try {
+      /*
+       * A connected project is what "save" means.
+       *
+       * It takes precedence over `onSave` deliberately, and the dialog says so —
+       * its primary button reads "Write 3 files" rather than "Save changes" once a
+       * project is attached. Two things have claimed to own persistence, and the one
+       * the user chose in this session, by handing over a folder, is the more
+       * specific answer than the one the page was configured with.
+       */
+      if (this.#project) {
+        const result = await this.writeToProject();
+        if (!result || result.failed.length) return false;
+        this.store.patch({ savePreview: null, writePlan: null });
+        return true;
+      }
+
       if (this.options.onSave) {
         const result = await this.options.onSave(payload);
         if (result === false) {
@@ -2430,7 +2775,7 @@ export class EditorEngine {
   }
 
   exportPageHTML(): void {
-    downloadText(this.options.fileName ?? 'edited-page.html', exportHTML(), 'text/html');
+    downloadText(this.options.fileName ?? 'edited-page.html', this.exportHTML(), 'text/html');
     this.notify('Exported the page as HTML.', 'success');
   }
 

@@ -75,7 +75,7 @@
       const record = api.getChanges()[0];
       return record && record.source ? record.source.file + ':' + record.source.line : null;
     });
-    step('promptGroupsByFile', () => api.getPrompt().includes('Changes by source file'));
+    step('promptGroupsByFile', () => api.getPrompt().includes('## Edits'));
     step('promptNamesFile', () => api.getPrompt().includes('probe.html'));
     step('promptKeepsToken', () => api.getPrompt().includes('var(--accent)'));
 
@@ -94,6 +94,26 @@
     // And the seed this page would hand over is the string the plugin option takes.
     const seed = await api.exportSeed();
     step('theSeedIsPasteable', () => seed.startsWith('heo1z.') && !/[\s"'<>&]/.test(seed));
+
+    /*
+     * The dev server offers a write endpoint, so the overlay connects to it on mount.
+     * No picker, no gesture: the endpoint only exists because the plugin was added.
+     *
+     * Only the plan is built here. `previewWrites()` reads the project and writes
+     * nothing, which is the point of it being a separate step — and is what keeps this
+     * probe from rewriting the demo every time it runs.
+     */
+    await api.whenReady();
+    step('connectedToTheDevServer', () => api.getProject() && api.getProject().kind);
+    step('theProjectIsNamedAfterItsRoot', () => api.getProject() && api.getProject().label);
+
+    const plan = await api.previewWrites();
+    step('theWritePlanNamesRealProjectPaths', () => plan && plan.writes.map((w) => w.path));
+    step('theStyleEditIsCarriedByTheDocumentWrite', () => {
+      const write = plan.writes.find((w) => w.kind === 'document');
+      return !!write && write.after.includes('var(--accent)');
+    });
+    step('nothingWasActuallyWritten', () => plan.writes.every((w) => w.before !== w.after));
 
     // Selecting inside a shadow root should work through the flattened tree.
     const stat = document.getElementById('stat');

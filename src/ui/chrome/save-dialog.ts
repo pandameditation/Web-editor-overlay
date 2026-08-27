@@ -8,6 +8,7 @@ import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
 import { DesignTransfer, type DesignTransferHost } from '../panels/design-transfer.js';
 import { baseStyles, surfaceStyles } from '../theme.js';
+import type { PlannedWrite } from '../../core/writeback.js';
 
 /**
  * The save review dialog.
@@ -186,6 +187,138 @@ export class HeoSaveDialog extends HeoElement {
         padding-bottom: 4px;
       }
 
+      /* ---- The write plan ---- */
+
+      .write {
+        display: flex;
+        align-items: flex-start;
+        gap: 9px;
+        padding: 8px 10px;
+        border: 1px solid var(--heo-line);
+        border-radius: var(--heo-r-sm);
+        background: var(--heo-raised);
+        margin-bottom: 5px;
+      }
+      .write .glyph {
+        flex: 0 0 auto;
+        margin-top: 1px;
+        color: var(--heo-accent);
+      }
+      .write .detail {
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+      .write .path {
+        display: block;
+        overflow: hidden;
+        color: var(--heo-text);
+        font-family: var(--heo-mono);
+        font-size: 11.5px;
+        font-weight: 550;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .write .why {
+        color: var(--heo-text-faint);
+        font-size: 10.5px;
+      }
+      .write .size {
+        flex: 0 0 auto;
+        margin-top: 1px;
+        color: var(--heo-text-faint);
+        font-family: var(--heo-mono);
+        font-size: 10px;
+        white-space: nowrap;
+      }
+      .write .size .grew {
+        color: var(--heo-success);
+      }
+      .write .size .shrank {
+        color: var(--heo-danger);
+      }
+
+      /* Changes with nowhere to go. Stated, never hidden: this is the difference
+         between "saved" and "saved except for the bit you cared about". */
+      .stranded {
+        margin-top: 14px;
+        padding: 10px 11px;
+        border: 1px dashed var(--heo-line-strong);
+        border-radius: var(--heo-r-sm);
+      }
+      .stranded h3 {
+        margin: 0 0 7px;
+        color: var(--heo-text);
+        font-size: 11.5px;
+        font-weight: 600;
+      }
+      .stranded p {
+        margin: 0 0 8px;
+        color: var(--heo-text-dim);
+        font-size: 10.5px;
+        line-height: 1.5;
+      }
+      .stranded li {
+        margin-bottom: 5px;
+        color: var(--heo-text-dim);
+        font-size: 10.5px;
+        line-height: 1.5;
+      }
+      .stranded ul {
+        margin: 0;
+        padding-left: 16px;
+      }
+      .stranded .what {
+        color: var(--heo-text);
+      }
+
+      .destination {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 12px;
+        padding: 9px 11px;
+        border: 1px solid var(--heo-line);
+        border-radius: var(--heo-r-sm);
+        background: var(--heo-raised);
+      }
+      .destination label {
+        color: var(--heo-text-dim);
+        font-size: 11px;
+      }
+      .destination select {
+        height: 25px;
+        max-width: 220px;
+        padding: 0 6px;
+        border: 1px solid var(--heo-line-strong);
+        border-radius: var(--heo-r-sm);
+        background: var(--heo-sunken);
+        color: var(--heo-text);
+        font-family: var(--heo-mono);
+        font-size: 11px;
+      }
+      .destination .hint {
+        flex: 1 1 100%;
+        color: var(--heo-text-faint);
+        font-size: 10.5px;
+        line-height: 1.45;
+      }
+
+      .where {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      header .where {
+        margin-top: 5px;
+        color: var(--heo-text-faint);
+        font-size: 10.5px;
+      }
+      header .where code {
+        color: var(--heo-text-dim);
+        font-family: var(--heo-mono);
+      }
+
       .change .kind {
         flex: 0 0 auto;
         min-width: 62px;
@@ -279,11 +412,20 @@ export class HeoSaveDialog extends HeoElement {
     // `registry` is in here for the include/exclude checkboxes: toggling one bumps it,
     // and without that the row would keep drawing its old state while the preview
     // beside it had already changed.
-    (s) => [s.savePreview, s.saving, s.registry] as const,
+    (s) => [s.savePreview, s.saving, s.registry, s.project, s.writePlan, s.planning] as const,
     shallowArrayEquals,
   );
 
   @state() private tab: 'changes' | 'prompt' = 'changes';
+
+  /**
+   * Whether this browser could offer a folder at all.
+   *
+   * Asked once, because the answer cannot change while the page is open, and because
+   * the button that depends on it should not appear in a browser that has no picker —
+   * an affordance that does nothing is worse than no affordance.
+   */
+  @state() private canPickFolder = false;
 
   /**
    * Which half of the dialog is showing.
@@ -294,7 +436,7 @@ export class HeoSaveDialog extends HeoElement {
    * want to carry the system to the next page rather than archive it. So the button
    * became a step, and the step is the same surface the Tokens panel offers.
    */
-  @state() private view: 'review' | 'transfer' = 'review';
+  @state() private view: 'review' | 'transfer' | 'files' = 'review';
 
   /** State the shared transfer surface reads back from its host. */
   @state() private seedTarget: SeedTarget | null = null;
@@ -309,6 +451,19 @@ export class HeoSaveDialog extends HeoElement {
    */
   protected modal = new ModalController(this, { initialFocus: '.tab[aria-selected="true"]' });
 
+  override connectedCallback(): void {
+    super.connectedCallback();
+    void this.editor.hostOptions().then((options) => {
+      this.canPickFolder = options.picker;
+    });
+  }
+
+  private static readonly LABEL = {
+    transfer: 'Share this design system',
+    files: 'Review the files this will write',
+    review: 'Review and save changes',
+  } as const;
+
   override render(): TemplateResult | typeof nothing {
     const preview = this.state.value.savePreview;
     if (preview == null) return nothing;
@@ -317,13 +472,251 @@ export class HeoSaveDialog extends HeoElement {
       class="dialog surface"
       role="dialog"
       aria-modal="true"
-      aria-label=${this.view === 'transfer'
-        ? 'Share this design system'
-        : 'Review and save changes'}
+      aria-label=${HeoSaveDialog.LABEL[this.view]}
       @pointerdown=${(event: Event) => event.stopPropagation()}
     >
-      ${this.view === 'transfer' ? this.#renderTransfer() : this.#renderReview(preview)}
+      ${this.view === 'transfer'
+        ? this.#renderTransfer()
+        : this.view === 'files'
+          ? this.#renderFiles()
+          : this.#renderReview(preview)}
     </div>`;
+  }
+
+  /**
+   * The files a save would write, before it writes them.
+   *
+   * The whole reason this is a step rather than a confidence: the overlay is about to
+   * change files the user has open in an editor, and the honest way to do that is to
+   * name every one of them first, with the reason it is in the list. Changes that
+   * could not be filed are named here too — a save that reports success while
+   * quietly dropping an edit is the failure mode worth designing against.
+   */
+  #renderFiles(): TemplateResult {
+    const { project, writePlan, planning } = this.state.value;
+    const targets = this.editor.styleTargets();
+    const chosen = this.editor.designSystemTarget;
+    const hasSystem = Boolean(this.#designSystemCSS());
+
+    return html`
+      <header>
+        <button
+          class="btn icon ghost back"
+          type="button"
+          aria-label="Back to the changes"
+          title="Back to the changes"
+          @click=${() => {
+        this.view = 'review';
+      }}
+        >
+          ${icon('chevronLeft', 14)}
+        </button>
+        <div class="body">
+          <h2>
+            ${planning
+        ? 'Working out what to write…'
+        : writePlan
+          ? `${writePlan.writes.length} file${writePlan.writes.length === 1 ? '' : 's'} to write`
+          : 'Nothing to write'}
+          </h2>
+          <p>
+            Every edit is replayed against the file's own text, so a one-line change is a
+            one-line diff. Comments and formatting are left where they are.
+          </p>
+          ${project
+        ? html`<span class="where">
+                ${icon(project.kind === 'server' ? 'server' : 'folder', 11)}
+                <span>${project.kind === 'server' ? 'Dev server' : 'Folder'}</span>
+                <code>${project.label}</code>
+              </span>`
+        : nothing}
+        </div>
+        <button
+          class="btn icon ghost"
+          type="button"
+          aria-label="Close"
+          @click=${() => this.editor.closeSavePreview()}
+        >
+          ${icon('close', 14)}
+        </button>
+      </header>
+
+      <div class="content">
+        ${hasSystem && targets.length > 1
+        ? html`<div class="destination">
+              <label for="heo-ds-target">New tokens and classes go in</label>
+              <select
+                id="heo-ds-target"
+                .value=${chosen}
+                @change=${(event: Event) =>
+            this.editor.setDesignSystemTarget((event.target as HTMLSelectElement).value)}
+              >
+                ${targets.map(
+              (target) => html`<option value=${target.value} ?selected=${target.value === chosen}>
+                      ${target.label}
+                    </option>`,
+            )}
+              </select>
+              <span class="hint">
+                A page that keeps its CSS in files should keep its tokens there too. "Keep in the
+                page" leaves them in the &lt;style&gt; block they are rendering from now.
+              </span>
+            </div>`
+        : nothing}
+        ${planning
+        ? html`<div class="empty">Reading the project files…</div>`
+        : this.#renderPlan()}
+      </div>
+
+      <footer>
+        <button
+          class="btn"
+          type="button"
+          @click=${() => {
+        this.view = 'review';
+      }}
+        >
+          ${icon('chevronLeft', 12)} Back
+        </button>
+        <span class="spacer"></span>
+        ${project
+        ? html`<button
+              class="btn"
+              type="button"
+              title="Stop writing files. Saving goes back to producing a prompt."
+              @click=${() => void this.editor.disconnectProject()}
+            >
+              ${icon('unlink', 12)} Disconnect
+            </button>`
+        : nothing}
+        <button
+          class="btn"
+          type="button"
+          title="Read the files again and rebuild the list"
+          ?disabled=${planning}
+          @click=${() => void this.editor.previewWritePlan()}
+        >
+          ${icon('refresh', 12)} Recheck
+        </button>
+        ${this.#renderPrimary()}
+      </footer>
+    `;
+  }
+
+  #renderPlan(): TemplateResult {
+    const plan = this.state.value.writePlan;
+    if (!plan) {
+      return html`<div class="empty">
+        Could not read the project files. Try Recheck, or reconnect the folder.
+      </div>`;
+    }
+    if (!plan.writes.length && !plan.unwritable.length) {
+      return html`<div class="empty">Every change is already in the files.</div>`;
+    }
+
+    return html`
+      ${plan.writes.map(
+      (write) => html`<div class="write">
+          <span class="glyph">${icon(GLYPH[write.kind], 13)}</span>
+          <span class="detail">
+            <span class="path">${write.path}</span>
+            <span class="why">${write.reason}</span>
+          </span>
+          <span class="size">${sizeChange(write.before, write.after)}</span>
+        </div>`,
+    )}
+      ${this.#renderStranded()}
+    `;
+  }
+
+  /**
+   * Changes that will not reach a file, and why.
+   *
+   * Two distinct kinds, kept apart because the answer differs. Something unreachable —
+   * a cross-origin stylesheet, a file outside the folder — is a limit to accept. An
+   * edit that could not be placed in a file this *is* writing means the file moved on
+   * since the session started, and rechecking may well fix it.
+   */
+  #renderStranded(): TemplateResult | typeof nothing {
+    const plan = this.state.value.writePlan;
+    if (!plan) return nothing;
+    const unplaced = plan.writes.flatMap((write) =>
+      write.unplaced.map((failure) => ({ path: write.path, failure })),
+    );
+    if (!plan.unwritable.length && !unplaced.length) return nothing;
+
+    return html`<div class="stranded">
+      <h3>
+        ${plan.unwritable.length + unplaced.length} change${plan.unwritable.length + unplaced.length === 1 ? '' : 's'
+      } will not reach a file
+      </h3>
+      <p>
+        These stay on the page and stay in the generated prompt, so nothing is lost — they
+        just have to be applied by hand or by an agent.
+      </p>
+      <ul>
+        ${plan.unwritable.map(
+        (entry) => html`<li>
+            <span class="what">${entry.record.summary}</span> — ${entry.reason}
+          </li>`,
+      )}
+        ${unplaced.map(
+        (entry) => html`<li>
+            <span class="what">
+              ${entry.failure.patch.property} on ${entry.failure.patch.selector}
+            </span>
+            — ${entry.failure.reason || `no such rule in ${entry.path}`}
+          </li>`,
+      )}
+      </ul>
+    </div>`;
+  }
+
+  /** New tokens and classes, as CSS. Empty when the session authored none. */
+  #designSystemCSS(): string {
+    return [this.editor.tokens.toCSS(), this.editor.classes.toCSS()].filter(Boolean).join('\n');
+  }
+
+  /**
+   * The one button that commits, drawn the same wherever it appears.
+   *
+   * Its label is the answer to "what happens if I press this", which changes with the
+   * connection: a project makes saving a write to named files, and calling that "Save
+   * changes" would be the one place this dialog was coy about what it does.
+   */
+  #renderPrimary(): TemplateResult {
+    const { saving, project, writePlan, planning } = this.state.value;
+    const records = this.editor.records;
+    const dropped = records.length - this.editor.handoffRecords.length;
+    const everythingDropped = dropped === records.length && records.length > 0;
+    const count = writePlan?.writes.length;
+
+    if (!project) {
+      return html`<button
+        class="btn primary"
+        type="button"
+        ?disabled=${saving || everythingDropped}
+        title=${everythingDropped
+          ? 'Every change is unchecked, so there is nothing to hand off'
+          : 'Hand these changes off'}
+        @click=${() => void this.editor.save()}
+      >
+        ${icon('save', 12)} Save changes
+      </button>`;
+    }
+
+    return html`<button
+      class="btn primary"
+      type="button"
+      ?disabled=${saving || planning || everythingDropped || count === 0}
+      title=${count === 0
+        ? 'Every change is already in the files'
+        : `Write these files in ${project.label}`}
+      @click=${() => void this.editor.save()}
+    >
+      ${icon('save', 12)}
+      ${count === undefined ? 'Write files' : `Write ${count} file${count === 1 ? '' : 's'}`}
+    </button>`;
   }
 
   /**
@@ -377,14 +770,7 @@ export class HeoSaveDialog extends HeoElement {
           ${icon('chevronLeft', 12)} Back to the changes
         </button>
         <span class="spacer"></span>
-        <button
-          class="btn primary"
-          type="button"
-          ?disabled=${this.state.value.saving}
-          @click=${() => void this.editor.save()}
-        >
-          ${icon('save', 12)} Save changes
-        </button>
+        ${this.#renderPrimary()}
       </footer>
     `;
   }
@@ -502,19 +888,52 @@ export class HeoSaveDialog extends HeoElement {
         <button class="btn" type="button" @click=${() => void this.editor.copyPrompt()}>
           ${icon('copy', 12)} Copy prompt
         </button>
-        <button
-          class="btn primary"
-          type="button"
-          ?disabled=${this.state.value.saving || dropped === records.length}
-          title=${dropped === records.length
-        ? 'Every change is unchecked, so there is nothing to hand off'
-        : 'Hand these changes off'}
-          @click=${() => void this.editor.save()}
-        >
-          ${icon('save', 12)} Save changes
-        </button>
+        ${this.#renderFilesEntry()}
+        ${this.#renderPrimary()}
       </footer>
     `;
+  }
+
+  /**
+   * The way in to writing files, or the offer to make it possible.
+   *
+   * Only ever an offer. Nothing here connects on its own and nothing writes without a
+   * second, named action — the overlay's default is still that it cannot reach your
+   * source, and a folder is something you hand over rather than something it takes.
+   */
+  #renderFilesEntry(): TemplateResult | typeof nothing {
+    const project = this.state.value.project;
+    if (project) {
+      const count = this.state.value.writePlan?.writes.length;
+      return html`<button
+        class="btn"
+        type="button"
+        title=${`Review the files this will write in ${project.label}`}
+        @click=${() => {
+          this.view = 'files';
+          if (!this.state.value.writePlan) void this.editor.previewWritePlan();
+        }}
+      >
+        ${icon(project.kind === 'server' ? 'server' : 'folder', 12)}
+        ${count === undefined ? 'Files' : `${count} file${count === 1 ? '' : 's'}`}
+        ${icon('chevronRight', 11)}
+      </button>`;
+    }
+
+    // No picker and no server means there is nothing to offer, so nothing is offered.
+    // A button that can only explain why it does not work is worse than its absence.
+    if (!this.canPickFolder) return nothing;
+
+    return html`<button
+      class="btn"
+      type="button"
+      title="Hand over the folder holding this page, so saving edits its files instead of describing them"
+      @click=${async () => {
+        if (await this.editor.connectProjectFolder()) this.view = 'files';
+      }}
+    >
+      ${icon('folder', 12)} Write to files…
+    </button>`;
   }
 
   /**
@@ -576,6 +995,30 @@ export class HeoSaveDialog extends HeoElement {
       </div>`,
     )}`;
   }
+}
+
+const GLYPH: Record<PlannedWrite['kind'], string> = {
+  document: 'file',
+  stylesheet: 'droplet',
+  script: 'code',
+};
+
+/**
+ * How much the file grows or shrinks, as the thing a reviewer actually checks.
+ *
+ * A byte count is a crude proxy for a diff, and deliberately so: the point is to catch
+ * the case that should never happen — a file about to lose most of itself — without
+ * pretending to be a diff viewer inside a save dialog.
+ */
+function sizeChange(before: string | null, after: string): string {
+  if (before === null) return `new · ${bytes(after.length)}`;
+  const delta = after.length - before.length;
+  if (delta === 0) return bytes(after.length);
+  return `${bytes(before.length)} → ${bytes(after.length)}`;
+}
+
+function bytes(count: number): string {
+  return count < 1024 ? `${count} B` : `${(count / 1024).toFixed(1)} kB`;
 }
 
 declare global {

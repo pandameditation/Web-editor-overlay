@@ -190,7 +190,25 @@ export function instrumentTemplates(
   tagNames: readonly string[] = ['html', 'svg'],
 ): string {
   const injections: Injection[] = [];
-  const pattern = new RegExp(String.raw`\b(?:${tagNames.join('|')})\s*` + '`', 'g');
+  /*
+   * A tag name has to be a whole identifier, not the end of one.
+   *
+   * `\b` is not enough, and the difference is not academic: a comment or a string
+   * mentioning `` `styles/site.html` `` ends in the characters `html` followed by a
+   * backtick, so `\bhtml\s*\`` matched it, the rest of the file was read as template
+   * content, and `data-heo-src` attributes were injected into the middle of the
+   * TypeScript. The file then failed to parse, with an error pointing at a line
+   * nowhere near the comment that caused it.
+   *
+   * Anything word-like, a `$`, or a `.` before the name rules it out — which covers
+   * file extensions, property access, and names like `xhtml` or `myHtml`. A real
+   * tagged template is always preceded by whitespace or punctuation that is none of
+   * those.
+   */
+  const pattern = new RegExp(
+    String.raw`(?<![\w$.])(?:${tagNames.join('|')})\s*` + '`',
+    'g',
+  );
   let match: RegExpExecArray | null;
 
   while ((match = pattern.exec(source)) !== null) {

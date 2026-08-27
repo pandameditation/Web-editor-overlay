@@ -1,7 +1,8 @@
 import { DRAGGING_ATTR, HOST_TAG, IGNORE_ATTR, VERSION, Z_BASE } from './core/constants.js';
-import { exportHTML as serializePage } from './core/design-system.js';
 import { normalizeCustomElementTag } from './core/library.js';
-import { EditorEngine } from './core/editor.js';
+import { EditorEngine, type ProjectInfo } from './core/editor.js';
+import type { FileHost } from './core/file-host.js';
+import type { PlannedWrite, WritePlan, WriteResult } from './core/writeback.js';
 import { releaseModals } from './core/modal.js';
 import { ManagedStyleSheet } from './core/stylesheet.js';
 import { publishLit } from './core/lit-bridge.js';
@@ -32,6 +33,15 @@ export type {
   PanelId,
   SavePayload,
 };
+/**
+ * The write-back surface.
+ *
+ * `FileHost` is exported because the two built-in transports — a folder from the
+ * picker, a dev-server endpoint — are not the only ones that make sense. A project
+ * with its own idea of where files live can implement the interface and hand it to
+ * `api.engine.attachProject()`.
+ */
+export type { FileHost, PlannedWrite, ProjectInfo, WritePlan, WriteResult };
 export { VERSION };
 
 /**
@@ -134,6 +144,22 @@ export interface OverlayAPI {
   getPrompt(): string;
   getChanges(): ChangeRecord[];
   exportHTML(): string;
+
+  /**
+   * Hand over the folder holding this page, so saving writes its files.
+   *
+   * Opens the browser's directory picker, so it has to be called from a user gesture.
+   * Resolves false when the user cancels, which is not an error.
+   *
+   * With the Vite plugin this is unnecessary: the dev server offers a write endpoint
+   * and the editor connects to it on mount.
+   */
+  connectProject(): Promise<boolean>;
+  disconnectProject(): Promise<void>;
+  /** The connected project, or null when saving still produces a prompt. */
+  getProject(): ProjectInfo | null;
+  /** Which files a save would write, and which changes have nowhere to go. */
+  previewWrites(): Promise<WritePlan | null>;
   exportDesignSystem(): DesignSystemDocument;
   /** The whole design system as one copy-pasteable seed string. */
   exportSeed(): Promise<string>;
@@ -214,7 +240,11 @@ export function mount(options: MountOptions = {}): OverlayAPI {
     save: () => engine.save(),
     getPrompt: () => engine.buildSavePrompt(),
     getChanges: () => engine.records,
-    exportHTML: () => serializePage(),
+    exportHTML: () => engine.exportHTML(),
+    connectProject: () => engine.connectProjectFolder(),
+    disconnectProject: () => engine.disconnectProject(),
+    getProject: () => engine.store.value.project,
+    previewWrites: () => engine.previewWritePlan(),
     exportDesignSystem: () => engine.designSystem(),
     exportSeed: () => engine.designSystemSeed(),
     importDesignSystem: (document_, overwrite = false) =>

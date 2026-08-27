@@ -1,5 +1,6 @@
 import { HOST_TAG, INSERTED_ATTR, MODAL_ATTR, SOURCE_ATTR } from './constants.js';
 import type { ClassRegistry } from './classes.js';
+import { patchCSS, type DeclarationPatch } from './css-patch.js';
 import type { BlockLibrary } from './library.js';
 import type { TokenRegistry } from './tokens.js';
 import type { DesignSystemDocument } from './types.js';
@@ -155,8 +156,16 @@ export async function copyToClipboard(text: string): Promise<boolean> {
  * instrumentation attributes and the editor's own generated stylesheets all come
  * out, leaving markup that stands on its own.
  */
-export function exportHTML(): string {
+/** A `<style>` element whose text has to catch up with edits made through the CSSOM. */
+export interface InlineStyleReconciliation {
+  element: HTMLStyleElement;
+  patches: DeclarationPatch[];
+}
+
+export function exportHTML(styleEdits: readonly InlineStyleReconciliation[] = []): string {
   const clone = document.documentElement.cloneNode(true) as HTMLElement;
+
+  reconcileInlineStyles(clone, styleEdits);
 
   for (const host of Array.from(clone.querySelectorAll(HOST_TAG))) host.remove();
 
@@ -205,4 +214,38 @@ export function exportHTML(): string {
     ? `<!DOCTYPE ${document.doctype.name}>\n`
     : '<!DOCTYPE html>\n';
   return `${doctype}${clone.outerHTML}\n`;
+}
+
+/**
+ * Bring inline `<style>` text up to date with edits made through the CSSOM.
+ *
+ * Editing a rule from the cascade inspector mutates `rule.style`, which changes what
+ * the page renders and changes nothing else: the `<style>` element's `textContent`
+ * still holds the CSS the author wrote. Serializing the document therefore used to
+ * export the *old* value while the screen showed the new one — an edit made, visibly
+ * applied, and silently absent from the file.
+ *
+ * The declarations are replayed against the element's own text rather than the sheet
+ * being re-serialized, so the author's comments and formatting come through and the
+ * diff is the line that changed.
+ *
+ * Elements are paired by position between the live tree and the clone. Identity is
+ * not available across a `cloneNode`, and this runs before anything is removed, so
+ * the two `<style>` lists are the same list.
+ */
+function reconcileInlineStyles(
+  clone: HTMLElement,
+  edits: readonly InlineStyleReconciliation[],
+): void {
+  if (!edits.length) return;
+  const live = Array.from(document.documentElement.querySelectorAll('style'));
+  const copies = Array.from(clone.querySelectorAll('style'));
+
+  for (const edit of edits) {
+    const index = live.indexOf(edit.element);
+    const copy = index === -1 ? null : copies[index];
+    if (!copy) continue;
+    const result = patchCSS(copy.textContent ?? '', edit.patches);
+    copy.textContent = result.css;
+  }
 }
