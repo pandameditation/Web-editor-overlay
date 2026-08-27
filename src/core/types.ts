@@ -140,6 +140,17 @@ export interface ChangeRecord {
   target: string;
   /** Source location when the page was instrumented. */
   source?: SourceRef;
+  /**
+   * Opaque identity of the thing this change is about.
+   *
+   * Records sharing it describe successive edits to one element, stylesheet or
+   * class, and the save prompt reports them as a single ordered unit. Without it,
+   * duplicating a block and then moving the copy came out as two unrelated entries
+   * that could sit pages apart — and `target` cannot stand in, because the
+   * duplicate is recorded against the original's selector while the move is
+   * recorded against the copy's.
+   */
+  group?: string;
   before?: string;
   after?: string;
   /** Extra structured detail merged into the prompt. */

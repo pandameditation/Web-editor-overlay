@@ -185,6 +185,7 @@ export function writeScriptSource(source: ScriptSource, code: string): Command |
         ? `Edit the JavaScript in ${source.label} (not applied to the running page)`
         : `Edit the JavaScript in ${source.label}`,
       target: source.href ?? source.label,
+      group: `script:${source.id}`,
       before: summarize(before),
       after: summarize(after),
       detail: {
@@ -234,9 +235,14 @@ export function runScriptSource(source: ScriptSource, code: string): string | nu
   return failure;
 }
 
-/** First and last of a long source, so a change record stays readable. */
+/**
+ * The script's text as recorded, in full.
+ *
+ * This used to keep the first 90 characters and the last 50 with an ellipsis between
+ * them, which is the worst shape a truncation can take: the result looks like valid
+ * code and is not, so a reader cannot tell that the middle is missing. The whole
+ * source is recorded and the prompt emits it as a block.
+ */
 function summarize(text: string): string {
-  const trimmed = text.trim();
-  if (trimmed.length <= 160) return trimmed;
-  return `${trimmed.slice(0, 90)} … ${trimmed.slice(-50)}`;
+  return text;
 }

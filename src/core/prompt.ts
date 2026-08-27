@@ -5,10 +5,24 @@ import type { ChangeRecord, DesignClass, DesignToken, LibraryBlock } from './typ
  *
  * The overlay edits a rendered page, not source files. Rather than guess at a
  * source transformation, it describes exactly what changed and where, then hands
- * that to whoever owns the codebase. Two things make the output actionable:
- * changes are grouped by source file when the page was instrumented, and the
- * design system travels with them so new values land as tokens instead of
- * hard-coded literals.
+ * that to whoever owns the codebase.
+ *
+ * Three things shape the output, all of them lessons from watching models fail on
+ * it:
+ *
+ * - **One element, one entry.** Records are grouped by what they are about, so
+ *   duplicating a block and then moving the copy reads as two ordered steps in one
+ *   place instead of two entries that could sit pages apart. Split up, a model
+ *   applied the duplicate, lost track, and moved the original.
+ * - **`from X to Y`, never `Before:`/`After:`.** Labelled fields were read as
+ *   two independent facts often enough to matter; a single directional sentence
+ *   cannot be.
+ * - **Payloads live in addressable blocks.** Markup and whole-file contents are not
+ *   nested inside list items — cheaper models mangle indented fences — and are not
+ *   truncated. Each block has a number the step refers to.
+ *
+ * Prose is kept to a minimum for the same reason. Every sentence that is not an
+ * instruction is a sentence that can be mistaken for one.
  */
 
 export interface PromptInput {
@@ -24,32 +38,39 @@ export interface PromptInput {
 }
 
 const KIND_LABEL: Record<ChangeRecord['kind'], string> = {
-  text: 'Text',
-  style: 'Style',
-  class: 'Classes',
-  attribute: 'Attribute',
-  insert: 'Insert',
-  delete: 'Delete',
-  move: 'Move',
-  wrap: 'Wrap',
-  duplicate: 'Duplicate',
-  replace: 'Markup',
-  token: 'Design token',
-  'token-class': 'Reusable class',
+  text: 'text',
+  style: 'style',
+  class: 'class',
+  attribute: 'attribute',
+  insert: 'insert',
+  delete: 'delete',
+  move: 'move',
+  wrap: 'wrap',
+  duplicate: 'duplicate',
+  replace: 'markup',
+  token: 'design token',
+  'token-class': 'reusable class',
 };
+
+/** A payload too large for a sentence, given a number the steps can point at. */
+interface Attachment {
+  id: number;
+  kind: 'markup' | 'text' | 'file';
+  language: string;
+  title: string;
+  body: string;
+}
 
 export function buildPrompt(input: PromptInput): string {
   const { records } = input;
-  if (!records.length) {
-    return 'No changes were made in this editing session.';
-  }
+  if (!records.length) return 'No changes were made in this editing session.';
 
-  const instrumented = records.filter((record) => record.source);
-  const anonymous = records.filter((record) => !record.source);
-  const sections: string[] = [];
-
-  sections.push(header(input, instrumented.length, anonymous.length));
-  sections.push(groundRules(input, instrumented.length > 0));
+  const attachments: Attachment[] = [];
+  const groups = groupRecords(records);
+  const sections: string[] = [
+    header(input),
+    rules(input, records),
+  ];
 
   const tokenSection = tokenChanges(input);
   if (tokenSection) sections.push(tokenSection);
@@ -57,37 +78,92 @@ export function buildPrompt(input: PromptInput): string {
   const classSection = classChanges(input);
   if (classSection) sections.push(classSection);
 
-  if (instrumented.length) sections.push(byFile(instrumented));
-  if (anonymous.length) sections.push(bySelector(anonymous, instrumented.length > 0));
+  // Built before the attachment sections, because rendering a step is what
+  // registers the attachment it refers to.
+  sections.push(editSection(groups, attachments));
 
-  const markupSection = newMarkup(records);
-  if (markupSection) sections.push(markupSection);
+  const markup = attachments.filter((item) => item.kind === 'markup');
+  if (markup.length) sections.push(attachmentSection('Markup', markup));
+
+  const texts = attachments.filter((item) => item.kind === 'text');
+  if (texts.length) sections.push(attachmentSection('Text', texts));
+
+  const files = attachments.filter((item) => item.kind === 'file');
+  if (files.length) sections.push(attachmentSection('Full file contents', files));
 
   const componentSection = injectedComponents(input);
   if (componentSection) sections.push(componentSection);
 
-  sections.push(checklist(input));
+  sections.push(checklist(records));
 
   return sections.filter(Boolean).join('\n\n');
 }
 
 /* -------------------------------------------------------------------------- */
+/* Grouping                                                                    */
+/* -------------------------------------------------------------------------- */
 
-function header(input: PromptInput, located: number, unlocated: number): string {
+interface EditGroup {
+  records: ChangeRecord[];
+  /** First source location any record in the group carries. */
+  source: ChangeRecord['source'];
+}
+
+/**
+ * One group per thing edited, in the order each was first touched.
+ *
+ * `group` is the record's own identity for what it is about; `target` is the
+ * fallback for records minted before that field existed or by paths that have no
+ * element. Chronological order within a group is what makes the steps replayable —
+ * a move after a duplicate has to be read second or it moves the wrong node.
+ */
+function groupRecords(records: ChangeRecord[]): EditGroup[] {
+  const byKey = new Map<string, EditGroup>();
+  for (const record of records) {
+    const key = record.group ?? record.target;
+    const existing = byKey.get(key);
+    if (existing) {
+      existing.records.push(record);
+      existing.source ??= record.source;
+    } else {
+      byKey.set(key, { records: [record], source: record.source });
+    }
+  }
+
+  // File and line order, so the agent walks each file once. Groups with no source
+  // location come last; among equals, the order they were edited in.
+  const groups = [...byKey.values()];
+  return groups
+    .map((group, index) => ({ group, index }))
+    .sort((a, b) => {
+      const fileA = a.group.source?.file ?? '\uffff';
+      const fileB = b.group.source?.file ?? '\uffff';
+      if (fileA !== fileB) return fileA.localeCompare(fileB);
+      const lineA = a.group.source?.line ?? 0;
+      const lineB = b.group.source?.line ?? 0;
+      if (lineA !== lineB) return lineA - lineB;
+      const columnA = a.group.source?.column ?? 0;
+      const columnB = b.group.source?.column ?? 0;
+      if (columnA !== columnB) return columnA - columnB;
+      return a.index - b.index;
+    })
+    .map((entry) => entry.group);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Sections                                                                    */
+/* -------------------------------------------------------------------------- */
+
+function header(input: PromptInput): string {
   const total = input.records.length;
-  const counts = summarise(input.records);
   return [
-    '# Apply visual edits from an editor-overlay session',
+    `# Apply ${total} visual edit${total === 1 ? '' : 's'} to the source code`,
     '',
-    `A designer made ${total} change${total === 1 ? '' : 's'} directly in the rendered page at \`${input.pageURL}\`.`,
-    'Reproduce those changes in the source code. The page itself was not saved; this document is the source of truth.',
+    `A designer made these edits directly in the rendered page at \`${input.pageURL}\`.`,
+    'The page was not saved, so this document is the only record of them.',
+    'Apply every edit in the "Edits" section to the source code. Apply nothing else.',
     '',
-    `**What changed:** ${counts}`,
-    located && unlocated
-      ? `**Locations:** ${located} change${located === 1 ? '' : 's'} carry an exact source location; ${unlocated} must be matched by CSS selector.`
-      : located
-        ? '**Locations:** every change carries an exact source location (file, line, column).'
-        : '**Locations:** the page was not instrumented, so changes are identified by CSS selector.',
+    `Summary: ${summarise(input.records)}.`,
   ].join('\n');
 }
 
@@ -96,72 +172,62 @@ function summarise(records: ChangeRecord[]): string {
   for (const record of records) counts.set(record.kind, (counts.get(record.kind) ?? 0) + 1);
   return [...counts.entries()]
     .sort((a, b) => b[1] - a[1])
-    .map(([kind, count]) => `${count} ${KIND_LABEL[kind].toLowerCase()}`)
+    .map(([kind, count]) => `${count} ${KIND_LABEL[kind]}`)
     .join(', ');
 }
 
-function groundRules(input: PromptInput, instrumented: boolean): string {
-  const rules = [
-    'Keep the existing architecture. Edit the components and stylesheets that already render this markup; do not introduce a new styling approach, CSS framework or component library.',
-    'Prefer design tokens over literals. Where a change below uses a `var(--token)` value, keep it as a token reference. Where it uses a raw value that matches an existing token, substitute the token.',
-    'Put declarations where the project already puts them. If the element is styled by a class in a stylesheet, update that rule rather than adding an inline `style` attribute.',
-    'Do not reformat surrounding code, reorder imports, or make changes beyond the ones listed.',
-    'Preserve accessibility attributes and semantics. If a change alters an interactive element, keep its label, role and keyboard behaviour intact.',
+/**
+ * The rules, as numbered imperatives.
+ *
+ * Only rules that apply to this session are included: a page with no instrumented
+ * records must not be told how to read line numbers, and a session that defined no
+ * tokens must not be told to prefer them. An inapplicable rule is noise, and noise
+ * is what small models spend their attention on.
+ */
+function rules(input: PromptInput, records: ChangeRecord[]): string {
+  const items = [
+    'Edit the existing files that render this page. Do not add a CSS framework, a component library, or a new styling approach.',
+    'Copy every value exactly as written. A value written as `var(--name)` must stay `var(--name)`; do not replace it with the colour or size it resolves to.',
+    'Put each declaration where this project already puts them. If a stylesheet rule or a class styles the element, change that rule. Add an inline `style` attribute only where the element already has one.',
+    'Change only what is listed below. Do not reformat code, reorder imports, rename anything, or alter nearby code.',
   ];
-  if (instrumented) {
-    rules.push(
-      'Line and column numbers refer to the state of the file at the time of the session. Treat them as a starting point and confirm the element identity by tag name and nearby attributes before editing.',
+
+  if (records.some((record) => record.source)) {
+    items.push(
+      'A `line` and `column` locate the element in the file as it was during the session. Use them to find it, then confirm it by its tag name and attributes before editing. If they disagree, trust the tag name and attributes.',
     );
-  } else {
-    rules.push(
-      'Each change gives a CSS selector. Search the codebase for the markup that produces it — including template loops and component props — and edit the source of truth rather than a duplicate.',
+  }
+  if (records.some((record) => !record.source)) {
+    items.push(
+      'Where an edit gives only a CSS selector, find the code that renders that element — including loops, partials and components — and edit that source, not one copy of its output.',
+    );
+  }
+  if (input.tokens.some((token) => token.origin && token.origin !== 'stylesheet')) {
+    items.push(
+      'Add the tokens in "Design tokens" before applying edits that reference them.',
     );
   }
 
-  if (input.tokens.length) {
-    rules.push(
-      'The design tokens listed below are the project vocabulary for this session. Reuse them; only add a new token when no existing one fits.',
-    );
-  }
-  return ['## Ground rules', '', rules.map((rule) => `- ${rule}`).join('\n')].join('\n');
+  return [
+    '## Rules',
+    '',
+    items.map((item, index) => `${index + 1}. ${item}`).join('\n'),
+  ].join('\n');
 }
 
 function tokenChanges(input: PromptInput): string | null {
   const authored = input.tokens.filter((token) => token.origin && token.origin !== 'stylesheet');
-  if (!authored.length && !input.tokenCSS.trim()) return null;
+  if (!authored.length) return null;
 
-  const lines = ['## Design tokens', ''];
-  if (authored.length) {
-    lines.push(
-      `${authored.length} token${authored.length === 1 ? ' was' : 's were'} added or changed during the session. Add ${authored.length === 1 ? 'it' : 'them'} to wherever the project declares its custom properties (a theme file, \`:root\` block or design-token module) rather than to the page:`,
-      '',
-      '```css',
-      input.tokenCSS.trim() || renderTokenCSS(authored),
-      '```',
-      '',
-    );
-    lines.push('| Token | Value | Group | Origin |', '| --- | --- | --- | --- |');
-    for (const token of authored) {
-      lines.push(
-        `| \`--${token.name}\` | \`${token.value}\` | ${token.group} | ${token.origin ?? 'user'} |`,
-      );
-    }
-  }
-
-  const existing = input.tokens.filter((token) => token.origin === 'stylesheet');
-  if (existing.length) {
-    lines.push(
-      '',
-      `The project already defines ${existing.length} token${existing.length === 1 ? '' : 's'}. Reuse ${existing.length === 1 ? 'it' : 'these'} instead of inventing new values:`,
-      '',
-      existing
-        .slice(0, 40)
-        .map((token) => `- \`--${token.name}\`: \`${token.value}\``)
-        .join('\n'),
-    );
-    if (existing.length > 40) lines.push(`- …and ${existing.length - 40} more.`);
-  }
-  return lines.join('\n');
+  return [
+    '## Design tokens',
+    '',
+    `Add ${authored.length === 1 ? 'this custom property' : `these ${authored.length} custom properties`} wherever this project declares its tokens — a theme file, a \`:root\` block, or a token module. Do not add them to the page itself.`,
+    '',
+    '```css',
+    input.tokenCSS.trim() || renderTokenCSS(authored),
+    '```',
+  ].join('\n');
 }
 
 function renderTokenCSS(tokens: DesignToken[]): string {
@@ -171,113 +237,372 @@ function renderTokenCSS(tokens: DesignToken[]): string {
 function classChanges(input: PromptInput): string | null {
   const authored = input.classes.filter((entry) => entry.origin && entry.origin !== 'stylesheet');
   if (!authored.length) return null;
+
   return [
     '## Reusable classes',
     '',
-    `${authored.length} class${authored.length === 1 ? '' : 'es'} ${authored.length === 1 ? 'was' : 'were'} defined during the session, each grouping declarations that were repeated across elements. Add ${authored.length === 1 ? 'it' : 'them'} to the project's stylesheet and apply the class where the changes below say so:`,
+    `Add ${authored.length === 1 ? 'this class' : `these ${authored.length} classes`} to this project's stylesheet. The edits below say which elements use ${authored.length === 1 ? 'it' : 'them'}.`,
     '',
     '```css',
-    input.classCSS.trim() ||
-      authored
-        .map(
-          (entry) =>
-            `.${entry.name} {\n${Object.entries(entry.declarations)
-              .map(([property, value]) => `  ${property}: ${value};`)
-              .join('\n')}\n}`,
-        )
-        .join('\n\n'),
+    input.classCSS.trim() || renderClassCSS(authored),
     '```',
   ].join('\n');
 }
 
-function byFile(records: ChangeRecord[]): string {
-  const files = new Map<string, ChangeRecord[]>();
-  for (const record of records) {
-    const file = record.source!.file;
-    const bucket = files.get(file);
-    if (bucket) bucket.push(record);
-    else files.set(file, [record]);
-  }
+function renderClassCSS(classes: DesignClass[]): string {
+  return classes
+    .map(
+      (entry) =>
+        `.${entry.name} {\n${Object.entries(entry.declarations)
+          .map(([property, value]) => `  ${property}: ${value};`)
+          .join('\n')}\n}`,
+    )
+    .join('\n\n');
+}
 
-  const lines = ['## Changes by source file'];
-  for (const [file, entries] of [...files.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
-    lines.push('', `### \`${file}\``, '');
-    entries.sort((a, b) => (a.source!.line - b.source!.line) || (a.source!.column - b.source!.column));
-    for (const record of entries) {
-      const { line, column } = record.source!;
-      lines.push(...describeChange(record, `line ${line}, column ${column}`));
+function editSection(groups: EditGroup[], attachments: Attachment[]): string {
+  const lines = ['## Edits'];
+
+  groups.forEach((group, index) => {
+    const steps = group.records.flatMap((record) => stepsFor(record, attachments));
+    lines.push('', `### Edit ${index + 1} — ${groupTitle(group)}`, '');
+    lines.push(locationLine(group));
+    if (steps.length > 1) {
+      lines.push(
+        `${steps.length} operations on the same target. Apply them in this order.`,
+      );
     }
-  }
+    lines.push('');
+    lines.push(steps.map((step, position) => `${position + 1}. ${step}`).join('\n'));
+  });
+
   return lines.join('\n');
 }
 
-function bySelector(records: ChangeRecord[], hasInstrumented: boolean): string {
-  const lines = [
-    hasInstrumented ? '## Changes without a source location' : '## Changes',
-    '',
-  ];
-  if (hasInstrumented) {
+/**
+ * What this group of records is about, named the way the agent has to find it.
+ *
+ * The last record's target rather than the first: after a duplicate the group is
+ * about the copy, and the copy's selector is the one recorded last. Where the two
+ * disagree the original is named too, because "the second `.card`" is only findable
+ * if you know which one it was copied from.
+ */
+function groupTitle(group: EditGroup): string {
+  const first = group.records[0];
+  const last = group.records[group.records.length - 1];
+  const scope = first.detail?.scope;
+
+  if (scope === 'stylesheet') return `the stylesheet ${code(first.target)}`;
+  if (scope === 'external script' || scope === 'inline script') {
+    return `the script ${code(first.target)}`;
+  }
+  if (scope === 'stylesheet rule') return `the CSS rule ${code(first.target)}`;
+  if (scope === 'document head') return 'the document head';
+  if (first.kind === 'token' || first.kind === 'token-class') {
+    return `the design system (${code(first.target)})`;
+  }
+
+  if (last.target !== first.target) {
+    return `${code(last.target)} (created from ${code(first.target)})`;
+  }
+  return code(last.target);
+}
+
+function locationLine(group: EditGroup): string {
+  const source = group.source;
+  if (source) {
+    return `File: \`${source.file}\` — line ${source.line}, column ${source.column}`;
+  }
+  const first = group.records[0];
+  if (first.detail?.file) return `File: \`${first.detail.file}\``;
+  return `No source location was recorded. Find this by its selector: ${code(first.target)}`;
+}
+
+/* -------------------------------------------------------------------------- */
+/* One record as one instruction                                               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A record as one or more imperative sentences.
+ *
+ * Directional throughout: `from X to Y`, never a `Before:` line beside an `After:`
+ * line. The two-field form was read as two separate states to produce as often as
+ * it was read as a transition.
+ */
+function stepsFor(record: ChangeRecord, attachments: Attachment[]): string[] {
+  const detail = record.detail ?? {};
+  const scope = detail.scope;
+
+  // Whole-file replacements: the text is the instruction, so it goes in a block.
+  if (scope === 'stylesheet' && detail.css) {
+    const ref = attach(attachments, 'file', 'css', `\`${detail.file ?? record.target}\``, detail.css);
+    return [
+      `Replace the entire contents of \`${detail.file ?? record.target}\` with ${ref}. Keep the file's existing comments and formatting where the new contents match the old.`,
+    ];
+  }
+  if ((scope === 'external script' || scope === 'inline script') && detail.script) {
+    const ref = attach(attachments, 'file', 'js', `\`${detail.file ?? record.target}\``, detail.script);
+    const note =
+      scope === 'external script'
+        ? ' This was never executed in the page, so it has not been verified at runtime.'
+        : '';
+    return [`Replace the entire contents of \`${detail.file ?? record.target}\` with ${ref}.${note}`];
+  }
+
+  switch (record.kind) {
+    case 'style':
+      return [styleStep(record, detail, attachments)];
+
+    case 'text': {
+      const to = record.after ?? '';
+      if (!to.trim()) {
+        return [
+          `Remove the text content of this element, leaving it empty${record.before ? `. It was ${valueOf(record.before, attachments, `previous text of ${code(record.target)}`)}` : ''}.`,
+        ];
+      }
+      const after = valueOf(to, attachments, `new text for ${code(record.target)}`);
+      return [
+        record.before
+          ? `Change the text content from ${valueOf(record.before, attachments, `previous text of ${code(record.target)}`)} to ${after}.`
+          : `Set the text content to ${after}.`,
+      ];
+    }
+
+    case 'class':
+      return [
+        `Change the \`class\` attribute from ${valueOf(record.before ?? '', attachments, 'previous class attribute')} to ${valueOf(record.after ?? '', attachments, 'new class attribute')}.`,
+      ];
+
+    case 'attribute': {
+      if (scope === 'document head') {
+        const tag = detail.tag ?? record.target;
+        const was = record.before
+          ? ` It was ${valueOf(record.before, attachments, `previous ${tag}`)}.`
+          : '';
+        return [
+          record.after
+            ? `In the document \`<head>\`, set \`${tag}\` to ${valueOf(record.after, attachments, `new ${tag}`)}.${was}`
+            : `Remove \`${tag}\` from the document \`<head>\`.${was}`,
+        ];
+      }
+      const name = attributeName(record);
+      const was = record.before
+        ? ` It was ${valueOf(record.before, attachments, `previous ${name} value`)}.`
+        : '';
+      if (!record.after) return [`Remove the \`${name}\` attribute.${was}`];
+      const to = valueOf(record.after, attachments, `new ${name} value`);
+      return [
+        record.before
+          ? `Change the \`${name}\` attribute from ${valueOf(record.before, attachments, `previous ${name} value`)} to ${to}.`
+          : `Add the \`${name}\` attribute with the value ${to}.`,
+      ];
+    }
+
+    case 'insert': {
+      const where = POSITION_PHRASE[detail.position ?? 'lastChild'] ?? 'inside';
+      const ref = detail.html
+        ? attach(attachments, 'markup', 'html', `inserted ${where} ${code(record.target)}`, detail.html)
+        : null;
+      return [`Insert new markup ${where} ${code(record.target)}${ref ? `. The markup is ${ref}` : ''}.`];
+    }
+
+    case 'delete': {
+      // Recorded through `valueOf`, not as Markup. The Markup section means "produce
+      // this"; a deleted element's markup is the opposite — it is there so the agent
+      // can recognise what to take out, and filing it under an instruction to
+      // reproduce it inverted the edit.
+      const was = record.before
+        ? ` It was ${valueOf(record.before, attachments, `deleted from ${code(record.target)}`)}.`
+        : '';
+      return [
+        `Delete this element and its contents.${was} Also remove any styles, assets, handlers or imports that nothing else uses once it is gone.`,
+      ];
+    }
+
+    case 'duplicate':
+      return [
+        `Add a second copy of ${code(record.target)} immediately after it, identical except that it must not repeat the \`id\`. Every step below applies to the copy, not to the original.`,
+      ];
+
+    case 'move':
+      return [moveStep(record, detail)];
+
+    case 'wrap': {
+      const ref = detail.wrapper
+        ? attach(attachments, 'markup', 'html', `wrapper for ${code(record.target)}`, detail.wrapper)
+        : null;
+      return [
+        `Wrap this element in a new parent${ref ? `, shown in ${ref}` : ''}. Keep this element and its contents unchanged inside it, in the same position among its siblings.`,
+      ];
+    }
+
+    case 'replace': {
+      if (detail.html) {
+        const ref = attach(attachments, 'markup', 'html', `replaces ${code(record.target)}`, detail.html);
+        return [`Replace this element with the markup in ${ref}.`];
+      }
+      // A tag swap: both sides are bare tag names, so they cannot be markup.
+      if (record.before && record.after && !/[<>\s]/.test(record.before + record.after)) {
+        return [
+          `Change the tag from \`<${record.before}>\` to \`<${record.after}>\`, keeping every attribute and child unchanged.`,
+        ];
+      }
+      if (record.before) {
+        const was = valueOf(record.before, attachments, `previous markup of ${code(record.target)}`);
+        const to = record.after
+          ? valueOf(record.after, attachments, `new markup of ${code(record.target)}`)
+          : null;
+        return [
+          to
+            ? `Change this element's markup from ${was} to ${to}.`
+            : `${sentence(record.summary)}. It was ${was}.`,
+        ];
+      }
+      return [`${sentence(record.summary)}.`];
+    }
+
+    case 'token':
+      return [
+        record.before
+          ? `Change the \`--${detail.name ?? record.target}\` token from ${valueOf(record.before, attachments, 'previous token value')} to ${valueOf(record.after ?? '', attachments, 'new token value')}.`
+          : `${sentence(record.summary)}. See "Design tokens" above.`,
+      ];
+
+    case 'token-class':
+      return [`${sentence(record.summary)}. See "Reusable classes" above.`];
+
+    default:
+      return [`${sentence(record.summary)}.`];
+  }
+}
+
+function styleStep(
+  record: ChangeRecord,
+  detail: Record<string, string>,
+  attachments: Attachment[],
+): string {
+  const property = detail.property;
+  const inRule =
+    detail.scope === 'stylesheet rule' && detail.selector
+      ? `In the \`${detail.selector}\` rule, `
+      : '';
+
+  if (!property) {
+    // A multi-property edit (the box editor). The summary names the group; before and
+    // after carry the declaration lists.
+    return record.before
+      ? `${inRule}${sentence(record.summary)}: from ${valueOf(record.before, attachments, 'previous declarations')} to ${valueOf(record.after ?? '', attachments, 'new declarations')}.`
+      : `${inRule}${sentence(record.summary)}: set to ${valueOf(record.after ?? '', attachments, 'new declarations')}.`;
+  }
+
+  const next = detail.value || record.after || '';
+  if (!next) {
+    return `${inRule}Remove the \`${property}\` declaration${record.before ? `. It was \`${property}: ${record.before}\`` : ''}.`;
+  }
+  if (record.before) {
+    return `${inRule}Change \`${property}\` from ${valueOf(record.before, attachments, `previous ${property} value`)} to ${valueOf(next, attachments, `new ${property} value`)}.`;
+  }
+  return `${inRule}Add the declaration \`${property}: ${next}\`.`;
+}
+
+/**
+ * A move, stated as two positions in plain words.
+ *
+ * Indices count element children from zero, and that has to be said rather than
+ * implied: the recorded position deliberately ignores text nodes, because the reader
+ * is looking at source where the whitespace between tags is invisible.
+ */
+function moveStep(record: ChangeRecord, detail: Record<string, string>): string {
+  const parent = detail.newParent;
+  const index = detail.newIndex;
+  const rule = 'Change its position in the markup. Do not reposition it with CSS.';
+
+  if (parent && index !== undefined) {
+    const wasIn = detail.previousParent;
+    const wasAt = detail.previousIndex;
+    const from =
+      wasIn && wasAt !== undefined
+        ? wasIn === parent
+          ? ` It was at position ${wasAt} in the same parent.`
+          : ` It was at position ${wasAt} inside \`${wasIn}\`.`
+        : '';
+    return `Move this element to position ${index} inside \`${parent}\`, counting element children from 0 and ignoring whitespace.${from} ${rule}`;
+  }
+  return `Move this element from \`${record.before ?? 'its original position'}\` to \`${record.after ?? 'its new position'}\`. ${rule}`;
+}
+
+/** The attribute an `attribute` record is about, dug out of its summary. */
+function attributeName(record: ChangeRecord): string {
+  return record.detail?.name ?? /Set (\S+?)=/.exec(record.summary)?.[1] ?? 'attribute';
+}
+
+const POSITION_PHRASE: Record<string, string> = {
+  before: 'immediately before',
+  after: 'immediately after',
+  firstChild: 'as the first child of',
+  lastChild: 'as the last child of',
+  replace: 'in place of',
+};
+
+/* -------------------------------------------------------------------------- */
+/* Attachments                                                                 */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Register a payload and return the reference a step should cite.
+ *
+ * Deliberately not inlined into the step. A fenced block indented inside a
+ * numbered list item is the single most reliably mangled construct in this
+ * document, and truncating the payload instead — which is what used to happen at
+ * 240 characters — silently handed over a stylesheet with its middle missing.
+ */
+function attach(
+  attachments: Attachment[],
+  kind: Attachment['kind'],
+  language: string,
+  title: string,
+  body: string,
+  options: { trim?: boolean } = {},
+): string {
+  // Markup and file contents are trimmed because their surrounding blank lines are an
+  // artefact of how they were read. A text value is not: leading and trailing
+  // whitespace is part of what the user typed, and a fenced block is the only place it
+  // survives at all.
+  const content = options.trim === false ? body : body.trim();
+  const existing = attachments.find((item) => item.kind === kind && item.body === content);
+  if (existing) return `${label(kind)} ${existing.id}`;
+  const id = attachments.filter((item) => item.kind === kind).length + 1;
+  attachments.push({ id, kind, language, title, body: content });
+  return `${label(kind)} ${id}`;
+}
+
+const ATTACHMENT_LABEL: Record<Attachment['kind'], string> = {
+  markup: 'Markup',
+  text: 'Text',
+  file: 'File',
+};
+
+function label(kind: Attachment['kind']): string {
+  return ATTACHMENT_LABEL[kind];
+}
+
+function attachmentSection(heading: string, items: Attachment[]): string {
+  const lines = [`## ${heading}`];
+  if (heading === 'Markup') {
     lines.push(
-      'These elements had no source marker, most likely because they were created during the session or rendered at runtime. Locate them by selector.',
       '',
+      'This markup was generated by the editor. Reproduce what it renders, using this project\'s own components and conventions: extract repeated structure into a component, and move inline styles into the stylesheet or token system where this project keeps them.',
     );
   }
-  const groups = new Map<string, ChangeRecord[]>();
-  for (const record of records) {
-    const bucket = groups.get(record.target);
-    if (bucket) bucket.push(record);
-    else groups.set(record.target, [record]);
-  }
-
-  for (const [target, entries] of groups) {
-    lines.push(`### \`${target}\``, '');
-    for (const record of entries) lines.push(...describeChange(record, null));
-  }
-  return lines.join('\n');
-}
-
-/** One change as a numbered instruction with before/after detail. */
-function describeChange(record: ChangeRecord, location: string | null): string[] {
-  const lines: string[] = [];
-  const where = location ? ` _(${location})_` : '';
-  lines.push(`- **${KIND_LABEL[record.kind]}** — ${record.summary}${where}`);
-  lines.push(`  - Element: \`${record.target}\``);
-
-  if (record.kind === 'style' && record.detail?.property) {
+  for (const item of items) {
     lines.push(
-      `  - Declaration: \`${record.detail.property}: ${record.detail.value || 'unset'};\``,
-      record.detail.value?.includes('var(--')
-        ? '  - Keep the token reference exactly as written.'
-        : '  - If a token already carries this value, use the token instead.',
+      '',
+      `### ${label(item.kind)} ${item.id} — ${item.title}`,
+      '',
+      `\`\`\`${item.language}`,
+      item.body,
+      '```',
     );
-  }
-
-  if (record.before != null && record.before !== '') lines.push(`  - Before: \`${clip(record.before)}\``);
-  if (record.after != null && record.after !== '') lines.push(`  - After: \`${clip(record.after)}\``);
-
-  if (record.detail) {
-    for (const [key, value] of Object.entries(record.detail)) {
-      if (key === 'property' || key === 'value' || key === 'html' || key === 'wrapper') continue;
-      lines.push(`  - ${prettifyKey(key)}: \`${clip(String(value))}\``);
-    }
-  }
-  lines.push('');
-  return lines;
-}
-
-function newMarkup(records: ChangeRecord[]): string | null {
-  const withMarkup = records.filter(
-    (record) => record.detail?.html || record.detail?.wrapper,
-  );
-  if (!withMarkup.length) return null;
-
-  const lines = [
-    '## Markup to add',
-    '',
-    'The overlay generated the following markup. Adapt it to the project\'s component conventions — extract repeated structure into a component, and move inline styles into the stylesheet or token system where the project would normally put them.',
-  ];
-  for (const record of withMarkup) {
-    lines.push('', `### ${record.summary}`, '', `Target: \`${record.target}\``, '', '```html', (record.detail!.html ?? record.detail!.wrapper ?? '').trim(), '```');
   }
   return lines.join('\n');
 }
@@ -289,53 +614,88 @@ function injectedComponents(input: PromptInput): string | null {
   if (!used.length) return null;
 
   const lines = [
-    '## Web components used',
+    '## Web components',
     '',
-    'These custom elements were inserted into the page. Add each one to the codebase as a real component file and import it where the markup above is rendered.',
+    'These custom elements were inserted into the page. Add each one to the codebase as a real component file and import it where the markup that uses it is rendered.',
   ];
   for (const block of used) {
-    lines.push(
-      '',
-      `### \`<${block.element!.tag}>\` — ${block.name}`,
-      '',
-      block.description ?? '',
-      '',
-      '```js',
-      (block.element!.module ?? block.element!.script ?? '').trim(),
-      '```',
-    );
+    lines.push('', `### \`<${block.element!.tag}>\` — ${block.name}`);
+    if (block.description) lines.push('', block.description);
+    lines.push('', '```js', (block.element!.module ?? block.element!.script ?? '').trim(), '```');
     if (block.css) lines.push('', '```css', block.css.trim(), '```');
   }
   return lines.join('\n');
 }
 
-function checklist(input: PromptInput): string {
+function checklist(records: ChangeRecord[]): string {
   const items = [
-    'Every change above is reflected in source, and none of them remain as one-off inline styles unless the project already styles that element inline.',
-    'New values reuse existing design tokens where one matched; genuinely new values were added as tokens.',
-    'The page renders identically to the description above at desktop and mobile widths.',
-    'No unrelated files changed, and the build, type check and linter all pass.',
+    'Every edit above is applied, and no other file changed.',
+    'Every `var(--token)` value is still a token reference, not a resolved value.',
   ];
-  if (input.records.some((record) => record.kind === 'delete')) {
-    items.push('Deleted elements are gone from the source, along with any now-unused styles, assets or handlers they owned.');
+  if (records.some((record) => record.kind === 'move')) {
+    items.push('Moved elements changed position in the markup, not via CSS `order` or `flex-direction`.');
   }
+  if (records.some((record) => record.kind === 'text')) {
+    items.push('Text went into wherever this project keeps copy, including any i18n catalogue.');
+  }
+  if (records.some((record) => record.kind === 'delete')) {
+    items.push('Nothing still references the deleted elements.');
+  }
+  items.push('The build, type check and linter pass.');
 
-  if (input.records.some((record) => record.kind === 'move')) {
-    items.push('Reordered elements keep their DOM order in source rather than being repositioned with CSS `order` or `flex-direction`.');
-  }
-
-  if (input.records.some((record) => record.kind === 'text')) {
-    items.push('Text changes went into the same place the project stores copy, including any i18n catalogue.');
-  }
-  return ['## Before you finish', '', items.map((item) => `- [ ] ${item}`).join('\n')].join('\n');
+  return [
+    '## Check before you finish',
+    '',
+    items.map((item) => `- [ ] ${item}`).join('\n'),
+  ].join('\n');
 }
 
-function clip(value: string, max = 240): string {
-  const text = value.replace(/\s+/g, ' ').trim();
-  return text.length > max ? `${text.slice(0, max)}…` : text;
+/* -------------------------------------------------------------------------- */
+/* Formatting                                                                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A literal as inline code: a selector, a property name, a file name.
+ *
+ * The fence grows past the longest run of backticks inside, so a value that is
+ * itself code — a `calc()` expression, a snippet of markup — cannot break out of it
+ * and turn the rest of the line into prose.
+ *
+ * Never truncates, and never collapses whitespace. For anything that came out of a
+ * record, go through `valueOf` instead: it is the one that knows a multi-line value
+ * cannot live in an inline span.
+ */
+function code(text: string): string {
+  if (!text) return '`` ``';
+  const longest = Math.max(0, ...[...text.matchAll(/`+/g)].map((match) => match[0].length));
+  const fence = '`'.repeat(longest + 1);
+  const pad = text.startsWith('`') || text.endsWith('`') ? ' ' : '';
+  return `${fence}${pad}${text}${pad}${fence}`;
 }
 
-function prettifyKey(key: string): string {
-  const text = key.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[-_]+/g, ' ');
+/**
+ * A recorded value, rendered so it can be copied exactly.
+ *
+ * Nothing is elided. An earlier version clipped at 300 characters and appended an
+ * ellipsis, which left the agent to invent the rest of a paragraph or a stylesheet —
+ * and an ellipsis is a legal character in copy, so it could not even be relied on as
+ * a marker of "there was more here". Every value now appears in full.
+ *
+ * Single-line values go inline at any length; an inline code span has no length
+ * limit. A value holding a line break becomes a numbered block, because a span cannot
+ * carry a newline and collapsing the whitespace to fit would change the value being
+ * asked for.
+ */
+function valueOf(raw: string, attachments: Attachment[], title: string): string {
+  const text = raw.replace(/\r\n/g, '\n');
+  if (!text.includes('\n')) return code(text);
+  const isMarkup = /^\s*<[a-zA-Z!/]/.test(text);
+  const ref = attach(attachments, 'text', isMarkup ? 'html' : 'text', title, text, { trim: false });
+  return `exactly ${isMarkup ? 'the markup' : 'the text'} in ${ref}`;
+}
+
+/** A summary reused as a sentence: capitalised, with any trailing stop removed. */
+function sentence(summary: string): string {
+  const text = summary.trim().replace(/[.\s]+$/, '');
   return text.charAt(0).toUpperCase() + text.slice(1);
 }

@@ -313,6 +313,7 @@ export function setHeadField(id: HeadFieldId, value: string): Command | null {
         ? `Set ${field.tag} to "${truncate(after)}"`
         : `Remove ${field.tag}`,
       target: field.tag,
+      group: 'document-head',
       before: before || undefined,
       after: after || undefined,
       detail: { scope: 'document head', tag: field.tag, value: after },

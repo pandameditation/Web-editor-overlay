@@ -141,6 +141,44 @@ export class HeoSaveDialog extends HeoElement {
         border-radius: var(--heo-r-sm);
         background: var(--heo-raised);
         margin-bottom: 5px;
+        transition:
+          opacity var(--heo-fast),
+          border-color var(--heo-fast);
+      }
+      /* Dropped, but still legible: this is the state you have to be able to
+         recognise in order to change your mind about it. */
+      .change.dropped {
+        opacity: 0.5;
+        border-style: dashed;
+      }
+      .change.dropped .summary {
+        text-decoration: line-through;
+        text-decoration-color: var(--heo-text-faint);
+      }
+      .change .pick {
+        flex: 0 0 auto;
+        display: grid;
+        place-items: center;
+        width: 16px;
+        height: 16px;
+        margin-top: 1px;
+        padding: 0;
+        border: 1px solid var(--heo-line-strong);
+        border-radius: 4px;
+        background: var(--heo-sunken);
+        color: var(--heo-accent-ink);
+        cursor: pointer;
+      }
+      .change .pick[aria-checked='true'] {
+        border-color: var(--heo-accent);
+        background: var(--heo-accent);
+      }
+      .change .pick:hover {
+        border-color: var(--heo-accent);
+      }
+      .change .pick:focus-visible {
+        outline: 2px solid var(--heo-accent);
+        outline-offset: 1px;
       }
       /* The transfer step's own scroller wants the same padding the review body
          has, but the fragment brings its own vertical rhythm. */
@@ -183,6 +221,20 @@ export class HeoSaveDialog extends HeoElement {
         font-family: var(--heo-mono);
         font-size: 10px;
       }
+      /* Clamped here rather than in the data. Change records hold the full value now —
+         a whole stylesheet, or a paragraph with its line breaks — because the prompt
+         must hand over exactly what changed. That is the wrong length for a review row,
+         so the row limits what it draws and the value stays intact underneath. */
+      .change .before,
+      .change .after {
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 3;
+        max-width: 100%;
+        overflow: hidden;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
       .change .before {
         color: var(--heo-danger);
         text-decoration: line-through;
@@ -203,8 +255,19 @@ export class HeoSaveDialog extends HeoElement {
         flex: 1 1 auto;
       }
       .note {
+        max-width: 300px;
         color: var(--heo-text-faint);
         font-size: 10.5px;
+        line-height: 1.45;
+      }
+      .note .link {
+        padding: 0;
+        border: 0;
+        background: none;
+        color: var(--heo-accent);
+        font: inherit;
+        text-decoration: underline;
+        cursor: pointer;
       }
     `,
     DesignTransfer.styles,
@@ -213,7 +276,10 @@ export class HeoSaveDialog extends HeoElement {
   protected state = new StoreController(
     this,
     this.editor.store,
-    (s) => [s.savePreview, s.saving] as const,
+    // `registry` is in here for the include/exclude checkboxes: toggling one bumps it,
+    // and without that the row would keep drawing its old state while the preview
+    // beside it had already changed.
+    (s) => [s.savePreview, s.saving, s.registry] as const,
     shallowArrayEquals,
   );
 
@@ -347,11 +413,16 @@ export class HeoSaveDialog extends HeoElement {
   #renderReview(preview: string): TemplateResult {
     const records = this.editor.records;
     const instrumented = records.some((record) => record.source);
+    const dropped = records.length - this.editor.handoffRecords.length;
 
     return html`
       <header>
         <div class="body">
-          <h2>${records.length} change${records.length === 1 ? '' : 's'} ready to hand off</h2>
+          <h2>
+            ${dropped
+        ? `${records.length - dropped} of ${records.length} changes ready to hand off`
+        : `${records.length} change${records.length === 1 ? '' : 's'} ready to hand off`}
+          </h2>
           <p>
             ${instrumented
         ? 'Every change is tied to a source file and line, so the instructions point straight at the code.'
@@ -397,10 +468,22 @@ export class HeoSaveDialog extends HeoElement {
 
       <footer>
         <span class="note">
-          ${this.editor.tokens.export().filter((token) => token.origin !== 'stylesheet').length}
-          new tokens ·
-          ${this.editor.classes.export().filter((entry) => entry.origin !== 'stylesheet').length}
-          new classes
+          ${dropped
+        ? html`${dropped} unchecked, left out of the prompt. ${dropped === 1 ? 'It stays' : 'They stay'
+          } on the page — undo takes ${dropped === 1 ? 'it' : 'them'} back.
+              <button
+                class="link"
+                type="button"
+                @click=${() => this.editor.includeAllChanges()}
+              >
+                Include all
+              </button>`
+        : html`${this.editor.tokens.export().filter((token) => token.origin !== 'stylesheet')
+          .length}
+              new tokens ·
+              ${this.editor.classes.export().filter((entry) => entry.origin !== 'stylesheet')
+            .length}
+              new classes`}
         </span>
         <span class="spacer"></span>
         <button
@@ -422,7 +505,10 @@ export class HeoSaveDialog extends HeoElement {
         <button
           class="btn primary"
           type="button"
-          ?disabled=${this.state.value.saving}
+          ?disabled=${this.state.value.saving || dropped === records.length}
+          title=${dropped === records.length
+        ? 'Every change is unchecked, so there is nothing to hand off'
+        : 'Hand these changes off'}
           @click=${() => void this.editor.save()}
         >
           ${icon('save', 12)} Save changes
@@ -431,8 +517,18 @@ export class HeoSaveDialog extends HeoElement {
     `;
   }
 
+  /**
+   * The change set, with a checkbox per entry.
+   *
+   * Unchecking takes the change out of the prompt and out of the payload, and the
+   * preview updates as you go — the two must never disagree about what is being
+   * handed over. It does not take the change off the page; the note in the footer
+   * says so, because a reviewer who assumes otherwise would hand over instructions
+   * that do not match what they are looking at.
+   */
   #renderChanges(records: ChangeRecord[]): TemplateResult {
     if (!records.length) return html`<div class="empty">No changes yet.</div>`;
+    const excluded = this.editor.excludedChanges;
 
     // Group by file so the reviewer reads it the way they will apply it.
     const groups = new Map<string, ChangeRecord[]>();
@@ -446,8 +542,22 @@ export class HeoSaveDialog extends HeoElement {
     return html`${[...groups.entries()].map(
       ([file, entries]) => html`<div class="file">
         <h3>${icon(file === 'Matched by selector' ? 'search' : 'code', 12)} ${file}</h3>
-        ${entries.map(
-        (record) => html`<div class="change">
+        ${entries.map((record) => {
+        const included = !excluded.has(record.id);
+        return html`<div class=${`change${included ? '' : ' dropped'}`}>
+            <button
+              class="pick"
+              type="button"
+              role="checkbox"
+              aria-checked=${included}
+              title=${included
+            ? 'Leave this change out of the hand-off'
+            : 'Put this change back in the hand-off'}
+              aria-label=${`${included ? 'Exclude' : 'Include'}: ${record.summary}`}
+              @click=${() => this.editor.setChangeIncluded(record.id, !included)}
+            >
+              ${included ? icon('check', 11) : nothing}
+            </button>
             <span class="kind">${record.kind}</span>
             <span class="detail">
               <span class="summary">${record.summary}</span>
@@ -461,8 +571,8 @@ export class HeoSaveDialog extends HeoElement {
                   </span>`
             : nothing}
             </span>
-          </div>`,
-      )}
+          </div>`;
+      })}
       </div>`,
     )}`;
   }

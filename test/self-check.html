@@ -257,10 +257,97 @@
       const prompt = api.getPrompt();
       check('promptHasNoInstrumentation', () => !prompt.includes('data-heo-'));
       check('promptLength', () => prompt.length > 400);
-      check('promptHasGroundRules', () => prompt.includes('Ground rules'));
+      check('promptHasRules', () => prompt.includes('## Rules'));
       check('promptHasTokens', () => prompt.includes('--space-2xl'));
-      check('promptHasChecklist', () => prompt.includes('Before you finish'));
+      check('promptHasChecklist', () => prompt.includes('Check before you finish'));
       check('promptMentionsSelector', () => prompt.includes('#para') || prompt.includes('.card'));
+      /*
+       * Phrasing the models actually read correctly.
+       *
+       * A `Before:` line beside an `After:` line was taken as two states to produce
+       * about as often as it was taken as one transition, so the direction is now in
+       * the sentence and the labelled form must not come back.
+       */
+      check('promptStatesChangesAsATransition', () => /from `[^`]*` to `[^`]*`/.test(prompt));
+      check('promptHasNoBeforeAfterLabels', () => !/(^|\n)\s*-\s*(Before|After):/.test(prompt));
+      check('promptNumbersItsEdits', () => /### Edit 1 — /.test(prompt));
+      /*
+       * Nothing in the prompt is elided.
+       *
+       * An ellipsis in a value the agent has to reproduce is unrecoverable — and it is
+       * a legal character in copy, so it cannot even be relied on as a marker that
+       * something is missing. Values are recorded and emitted in full; anything holding
+       * a line break becomes a fenced block rather than being squeezed into a span.
+       */
+      check('promptElidesNothing', () => !prompt.includes('\u2026'));
+      check('theChangeRecordsElideNothingEither', () =>
+        !engine.records.some((r) =>
+          `${r.before ?? ''}${r.after ?? ''}${JSON.stringify(r.detail ?? {})}`.includes('\u2026')));
+
+      /* ------------------------------------------------------------------ *
+       * Duplicating a block and then moving the copy is one edit, not two.
+       *
+       * Split across the document, a model applied the duplicate, lost the thread,
+       * and moved the original instead. The copy carries its own group identity, so
+       * everything done to it afterwards lands in the same numbered entry, in order.
+       * ------------------------------------------------------------------ */
+      engine.history.clear();
+      engine.includeAllChanges();
+      // Duplicating selects the copy, and reverting at the end of this block deletes
+      // it — so the selection has to be put back or every later panel check reads an
+      // empty panel.
+      const selectionBeforeGrouping = engine.selected;
+      const dupTarget = document.getElementById('link');
+      api.select(dupTarget);
+      engine.duplicate(dupTarget);
+      await frame();
+      // The copy lands directly after the original, which is what makes it findable
+      // without the engine handing it back.
+      const dupCopy = dupTarget.nextElementSibling;
+      engine.move('down', dupCopy);
+      await frame();
+      engine.setStyle('opacity', '0.5', dupCopy);
+      await frame();
+      const grouped = api.getPrompt();
+      check('duplicateAndItsFollowUpsAreOneEntry', () => {
+        const entries = grouped.match(/^### Edit \d+ — .*$/gm) ?? [];
+        const body = grouped.slice(grouped.indexOf('## Edits'));
+        const steps = body.match(/^\d+\. /gm) ?? [];
+        return `entries=${entries.length} steps=${steps.length}`;
+      });
+      check('theCopyIsNamedAsComingFromTheOriginal', () =>
+        /### Edit 1 — .*created from/.test(grouped));
+      check('theCopysOperationsAreOrdered', () => {
+        const body = grouped.slice(grouped.indexOf('### Edit 1'));
+        const copy = body.indexOf('Add a second copy');
+        const move = body.indexOf('Move this element');
+        const style = body.indexOf('opacity');
+        return copy >= 0 && copy < move && move < style;
+      });
+      check('theMovePositionIsPlainAndInRange', () => {
+        const line = /Move this element to position (\d+) inside `([^`]+)`/.exec(grouped);
+        if (!line) return 'no move line';
+        const parent = document.querySelector(line[2]);
+        return `${line[1]} of ${parent ? parent.children.length : '?'} children`;
+      });
+
+      /* Unchecking a change takes it out of the hand-off, and nothing else. */
+      const firstRecord = engine.records[0];
+      engine.setChangeIncluded(firstRecord.id, false);
+      check('excludingDropsItFromTheHandoff', () =>
+        `${engine.handoffRecords.length} of ${engine.records.length}`);
+      check('excludingDropsItFromThePrompt', () => {
+        const trimmed = api.getPrompt();
+        return !trimmed.includes(firstRecord.summary) && /^# Apply 2 visual edits/m.test(trimmed);
+      });
+      check('excludingLeavesThePageAlone', () => document.getElementById('wrap').children.length);
+      engine.includeAllChanges();
+      check('includeAllPutsItBack', () => engine.handoffRecords.length === engine.records.length);
+      engine.resetAll();
+      await frame();
+      engine.history.clear();
+      api.select(selectionBeforeGrouping?.isConnected ? selectionBeforeGrouping : para);
+      await frame();
 
       // Design system round-trip
       const ds = api.exportDesignSystem();
@@ -2476,6 +2563,46 @@
         Boolean(saveDialog().shadowRoot.querySelector('.tabs .tab')) &&
         !saveDialog().shadowRoot.querySelector('.transfer'));
 
+      /*
+       * A change can be dropped from the hand-off by unchecking it.
+       *
+       * The preview has to move with the checkbox: those two disagreeing about what is
+       * being handed over is the one thing this dialog exists to prevent.
+       */
+      const changeRows = () => Array.from(saveDialog().shadowRoot.querySelectorAll('.change'));
+      check('everyChangeHasACheckbox', () =>
+        changeRows().length > 0 &&
+        changeRows().every((row) => row.querySelector('.pick[role=checkbox]')));
+      check('theyStartChecked', () =>
+        changeRows().every((row) => row.querySelector('.pick').getAttribute('aria-checked') === 'true'));
+      const droppedSummary = changeRows()[0].querySelector('.summary').textContent.trim();
+      changeRows()[0].querySelector('.pick').dispatchEvent(
+        new MouseEvent('click', { bubbles: true, composed: true }));
+      await wait(200);
+      check('uncheckingMarksTheRow', () => {
+        const row = changeRows()[0];
+        return `${row.classList.contains('dropped')} checked=${row.querySelector('.pick').getAttribute('aria-checked')}`;
+      });
+      check('uncheckingUpdatesThePreviewInPlace', () => {
+        saveDialog().shadowRoot.querySelectorAll('.tabs .tab')[1].dispatchEvent(
+          new MouseEvent('click', { bubbles: true, composed: true }));
+        return true;
+      });
+      await wait(180);
+      check('thePreviewNoLongerAsksForIt', () => {
+        const text = saveDialog().shadowRoot.querySelector('pre')?.textContent ?? '';
+        return text.length > 0 && !text.includes(droppedSummary);
+      });
+      check('theHeaderCountsWhatIsLeft', () =>
+        /\d+ of \d+ changes ready to hand off/.test(
+          saveDialog().shadowRoot.querySelector('header h2').textContent));
+      check('andTheChangeIsStillOnThePage', () =>
+        document.getElementById('para').getAttribute('style')?.includes('outline'));
+      engine.includeAllChanges();
+      await wait(160);
+      check('includeAllClearsEveryDrop', () =>
+        changeRows().every((row) => !row.classList.contains('dropped')));
+
       engine.closeSavePreview();
       await wait(200);
       check('theLockIsReleasedOnClose', () =>
@@ -2661,9 +2788,19 @@
         probe.remove();
         return applied;
       });
+      /*
+       * The sheet edit reaches the change set at all.
+       *
+       * It used not to, and the failure was invisible: this check returned `undefined`,
+       * which `JSON.stringify` drops, so the report simply had no line for it. The cause
+       * was the recorder clipping a sheet's before and after text to 300 characters —
+       * an edit appended to a stylesheet longer than that produced two identical clips,
+       * and the net-change reduction concluded nothing had changed and discarded the
+       * record. Values are recorded in full now, so the difference is visible again.
+       */
       check('cssPanelRecordedTheFile', () => {
         const record = engine.records.find((r) => r.summary.startsWith('Edit the CSS'));
-        return record && record.detail.scope;
+        return record ? record.detail.scope : 'MISSING: the sheet edit was dropped';
       });
       api.undo();
       await frame();

@@ -24,6 +24,11 @@ function record(
     summary,
     target: selectorFor(el),
     source: nearestSourceRef(el),
+    // Every change about this element, tied together for the prompt. Overridden by
+    // the commands whose subject is a node they create rather than the one they were
+    // called on — insert, duplicate and wrap — so the follow-up edits to the new
+    // element group with the operation that produced it.
+    group: elementKey(el),
     at: Date.now(),
     ...extra,
   };
@@ -46,8 +51,8 @@ export function setInnerHTML(el: HTMLElement, before: string, after: string): Co
     mergeKey: `text:${elementKey(el)}`,
     subject: `text:${elementKey(el)}`,
     record: record(el, 'text', `Change text of ${labelFor(el)}`, {
-      before: truncate(stripTags(before)),
-      after: truncate(stripTags(after)),
+      before: exact(stripTags(before)),
+      after: exact(stripTags(after)),
     }),
     apply: () => {
       el.innerHTML = after;
@@ -66,8 +71,8 @@ export function setTextContent(el: HTMLElement, after: string): Command {
     mergeKey: `text:${elementKey(el)}`,
     subject: `text:${elementKey(el)}`,
     record: record(el, 'text', `Change text of ${labelFor(el)}`, {
-      before: truncate(before),
-      after: truncate(after),
+      before: exact(before),
+      after: exact(after),
     }),
     apply: () => {
       el.textContent = after;
@@ -301,8 +306,9 @@ export function insertNodes(
       'insert',
       `${label} ${INSERT_POSITION_LABELS[position]} ${labelFor(reference)}`,
       {
-        after: truncate(nodes.map(cleanMarkup).join('')),
+        after: exact(nodes.map(cleanMarkup).join('')),
         detail: { position, html: nodes.map(cleanMarkup).join('\n') },
+        group: elementKey(nodes[0]),
       },
     ),
     apply: () => {
@@ -352,8 +358,8 @@ function replaceWithNodes(
     // the prompt reads the same whether the replacement came from the block
     // library, the code panel or the public API.
     record: record(reference, 'replace', `Replace ${labelFor(reference)} with ${labelFor(nodes[0])}`, {
-      before: truncate(cleanMarkup(reference)),
-      after: truncate(markup),
+      before: exact(cleanMarkup(reference)),
+      after: exact(markup),
       detail: { position: 'replace', html: markup },
     }),
     apply: () => {
@@ -380,7 +386,7 @@ export function removeElement(el: HTMLElement): Command | null {
     label: `Delete ${labelFor(el)}`,
     subject: `node:${elementKey(el)}`,
     record: record(el, 'delete', `Delete ${labelFor(el)}`, {
-      before: truncate(cleanMarkup(el)),
+      before: exact(cleanMarkup(el)),
     }),
     apply: () => {
       el.remove();
@@ -402,7 +408,10 @@ export function duplicateElement(el: HTMLElement): { command: Command; node: HTM
     label: `Duplicate ${labelFor(el)}`,
     subject: `node:${elementKey(clone)}`,
     record: record(el, 'duplicate', `Duplicate ${labelFor(el)}`, {
-      after: truncate(cleanMarkup(clone)),
+      after: exact(cleanMarkup(clone)),
+      // The copy, not the original: whatever the user does to it next belongs with
+      // this operation, which is the whole reason the group exists.
+      group: elementKey(clone),
     }),
     apply: () => {
       parent.insertBefore(clone, before);
@@ -432,12 +441,15 @@ export function moveElement(
     record: record(el, 'move', `${describe} ${labelFor(el)}`, {
       // Positions as comparable strings, so moving an element and moving it back
       // reduces to no change at all.
-      before: describePosition(originParent, originBefore),
-      after: describePosition(targetParent, targetBefore),
+      before: describePosition(originParent, originBefore, el),
+      after: describePosition(targetParent, targetBefore, el),
       detail: {
         newParent:
           targetParent instanceof HTMLElement ? selectorFor(targetParent) : 'shadow root',
-        newIndex: String(indexWithin(targetParent, targetBefore)),
+        newIndex: String(indexWithin(targetParent, targetBefore, el)),
+        previousParent:
+          originParent instanceof HTMLElement ? selectorFor(originParent) : 'shadow root',
+        previousIndex: String(indexWithin(originParent, originBefore, el)),
       },
     }),
     apply: () => {
@@ -450,9 +462,9 @@ export function moveElement(
 }
 
 /** A position as a stable string: parent selector plus index among elements. */
-function describePosition(parent: Node, before: Node | null): string {
+function describePosition(parent: Node, before: Node | null, moving?: Node): string {
   const where = parent instanceof HTMLElement ? selectorFor(parent) : 'shadow root';
-  return `${where}[${indexWithin(parent, before)}]`;
+  return `${where}[${indexWithin(parent, before, moving)}]`;
 }
 
 /**
@@ -478,13 +490,14 @@ export function moveCommandFromOrigin(
     label: `${describe} ${labelFor(el)}`,
     subject: `move:${elementKey(el)}`,
     record: record(el, 'move', `${describe} ${labelFor(el)}`, {
-      before: describePosition(origin.parent, origin.nextSibling),
-      after: describePosition(targetParent, targetBefore),
+      before: describePosition(origin.parent, origin.nextSibling, el),
+      after: describePosition(targetParent, targetBefore, el),
       detail: {
         newParent: targetParent instanceof HTMLElement ? selectorFor(targetParent) : 'shadow root',
-        newIndex: String(indexWithin(targetParent, targetBefore)),
+        newIndex: String(indexWithin(targetParent, targetBefore, el)),
         previousParent:
           origin.parent instanceof HTMLElement ? selectorFor(origin.parent) : 'shadow root',
+        previousIndex: String(indexWithin(origin.parent, origin.nextSibling, el)),
       },
     }),
     apply: () => {
@@ -525,8 +538,9 @@ export function wrapElement(
     label: `Wrap ${labelFor(el)}`,
     subject: `node:${elementKey(wrapper)}`,
     record: record(el, 'wrap', `Wrap ${labelFor(el)} in <${wrapper.tagName.toLowerCase()}>`, {
-      after: truncate(cleanMarkup(wrapper)),
+      after: exact(cleanMarkup(wrapper)),
       detail: { wrapper: cleanMarkup(wrapper) },
+      group: elementKey(wrapper),
     }),
     apply: () => {
       parent.insertBefore(wrapper, before);
@@ -585,8 +599,8 @@ export function replaceElement(
     // node key would make successive markup edits look like unrelated changes.
     subject: `markup:${selectorFor(el)}`,
     record: record(el, 'replace', `Rewrite markup of ${labelFor(el)}`, {
-      before: truncate(cleanMarkup(el)),
-      after: truncate(cleanMarkup(replacement)),
+      before: exact(cleanMarkup(el)),
+      after: exact(cleanMarkup(replacement)),
       detail: { html: cleanMarkup(replacement) },
     }),
     apply: () => {
@@ -657,10 +671,17 @@ export function elementKey(el: HTMLElement): string {
  *
  * The prompt is read by a person or an agent looking at source, where whitespace
  * text nodes are invisible; a childNodes index would not match what they count.
+ *
+ * `moving` is left out of the count. Positions are computed before the move is
+ * applied, so an element on its way forward within its own parent was still
+ * occupying a slot ahead of its destination and every such move was reported one
+ * place too far along — "move it to position 4" in a list that only has four
+ * elements. Excluding it gives the index the element will actually hold, which is
+ * both what the reader needs and what makes a move and its reverse compare equal.
  */
-function indexWithin(parent: Node, before: Node | null): number {
+function indexWithin(parent: Node, before: Node | null, moving?: Node): number {
   const elements = Array.from(parent.childNodes).filter(
-    (node): node is Element => node.nodeType === Node.ELEMENT_NODE,
+    (node): node is Element => node.nodeType === Node.ELEMENT_NODE && node !== moving,
   );
   if (!before) return elements.length;
   // `before` is an `insertBefore` anchor, which is very often the whitespace text
@@ -704,7 +725,19 @@ export function cleanMarkup(el: HTMLElement): string {
   return clone.outerHTML;
 }
 
-function truncate(value: string, max = 400): string {
-  const text = value.replace(/\s+/g, ' ').trim();
-  return text.length > max ? `${text.slice(0, max)}…` : text;
+/**
+ * A recorded value, verbatim.
+ *
+ * This used to collapse whitespace and cut the value off at 400 characters with an
+ * ellipsis. For markup that was survivable, since `detail.html` carries the full copy
+ * — but for a text edit and for a deletion, `before` and `after` are the *only* record
+ * of what the value was, so the save prompt asked an agent to reproduce a paragraph it
+ * had only been shown the first 400 characters of. Whitespace mattered too: collapsing
+ * it silently rewrote the value that was being asked for.
+ *
+ * Kept as a named function rather than deleted so the intent stays visible at every
+ * call site: these are values, and values are recorded as they are.
+ */
+function exact(value: string): string {
+  return value;
 }

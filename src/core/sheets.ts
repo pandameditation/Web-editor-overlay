@@ -176,6 +176,7 @@ export function writeStyleSource(source: StyleSource, css: string): Command | nu
       kind: 'style',
       summary: `Edit the CSS in ${source.label}`,
       target: source.href ?? source.label,
+      group: `sheet:${source.id}`,
       before: summarize(before),
       after: summarize(after),
       detail: {
@@ -238,7 +239,14 @@ export function countRules(css: string): number {
   return parseRules(css).length;
 }
 
+/**
+ * The sheet's text as recorded, in full.
+ *
+ * This used to clip at 300 characters with an ellipsis. `detail.css` carries the whole
+ * new sheet, so the prompt was never short of the *new* text — but `before` was the
+ * only record of the old one, and half a stylesheet is not something a reader can
+ * reason about. Nothing that describes a change gets elided.
+ */
 function summarize(css: string): string {
-  const text = css.replace(/\s+/g, ' ').trim();
-  return text.length > 300 ? `${text.slice(0, 300)}…` : text;
+  return css;
 }

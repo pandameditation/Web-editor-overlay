@@ -1010,6 +1010,7 @@ export class EditorEngine {
         kind: 'style',
         summary: `Set ${property} to ${after || '(removed)'} in the ${selector} rule`,
         target: selector,
+        group: `rule:${selector}`,
         before: before || undefined,
         after: after || undefined,
         detail: { property, value: after, selector, scope: 'stylesheet rule' },
@@ -2277,6 +2278,9 @@ export class EditorEngine {
     this.endTextEdit(false);
     const selected = this.store.value.selected;
     this.history.reset();
+    // The ids they referred to are gone; keeping them would silently exclude a later
+    // change that happened to reuse one.
+    this.#excludedChanges.clear();
     // Keep the selection if the element survived the revert; losing it after an
     // undo-all is disorienting and there is no reason for it.
     this.store.patch({
@@ -2291,13 +2295,58 @@ export class EditorEngine {
     return this.history.records;
   }
 
+  /**
+   * Changes the user has unchecked in the save dialog.
+   *
+   * Held here rather than in the dialog because three consumers have to agree about
+   * it: the prompt preview, the clipboard copy and the payload handed to `onSave`.
+   *
+   * Unchecking leaves the edit on the page. That asymmetry is deliberate — reverting
+   * one command from the middle of the stack is not safe, since the commands after it
+   * hold live references to what it produced, and re-applying them without it would
+   * quietly aim at a detached node. So this excludes the change from the hand-off and
+   * says so; taking it off the page is what undo is for.
+   */
+  #excludedChanges = new Set<string>();
+
+  get excludedChanges(): ReadonlySet<string> {
+    return this.#excludedChanges;
+  }
+
+  /** The change set that will actually be handed off, in order. */
+  get handoffRecords(): ChangeRecord[] {
+    if (!this.#excludedChanges.size) return this.history.records;
+    return this.history.records.filter((record) => !this.#excludedChanges.has(record.id));
+  }
+
+  setChangeIncluded(id: string, included: boolean): void {
+    if (included) this.#excludedChanges.delete(id);
+    else this.#excludedChanges.add(id);
+    // The preview is the text that will be handed over, so it cannot lag behind the
+    // checkbox that decides what goes into it.
+    if (this.store.value.savePreview != null) {
+      this.store.patch({ savePreview: this.buildSavePrompt() });
+    }
+    this.#bumpRegistry();
+  }
+
+  /** Put every change back in the hand-off. */
+  includeAllChanges(): void {
+    if (!this.#excludedChanges.size) return;
+    this.#excludedChanges.clear();
+    if (this.store.value.savePreview != null) {
+      this.store.patch({ savePreview: this.buildSavePrompt() });
+    }
+    this.#bumpRegistry();
+  }
+
   /* ---------------------------------------------------------------------- */
   /* Save and export                                                        */
   /* ---------------------------------------------------------------------- */
 
   buildSavePrompt(): string {
     return buildPrompt({
-      records: this.history.records,
+      records: this.handoffRecords,
       tokens: this.tokens.export(),
       classes: this.classes.export(),
       blocks: this.library.list(),
@@ -2328,11 +2377,16 @@ export class EditorEngine {
       this.notify('Nothing has changed yet.', 'info');
       return false;
     }
+    const handoff = this.handoffRecords;
+    if (!handoff.length) {
+      this.notify('Every change is unchecked, so there is nothing to hand off.', 'info');
+      return false;
+    }
     this.endTextEdit(true);
     this.store.patch({ saving: true });
     const payload: SavePayload = {
       prompt: this.buildSavePrompt(),
-      records: this.history.records,
+      records: handoff,
       designSystem: this.designSystem(),
       html: exportHTML(),
       fileName: this.options.fileName ?? 'edited-page.html',
