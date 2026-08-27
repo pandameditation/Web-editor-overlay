@@ -1,4 +1,5 @@
 import { IGNORE_ATTR } from './constants.js';
+import type { FileHost } from './file-host.js';
 import { nextChangeId, type Command } from './history.js';
 import { DOCUMENT_TARGET } from './sheets.js';
 
@@ -34,6 +35,8 @@ export interface ScriptSource {
   lines: number;
   /** Whether the source can be written back. */
   readOnly?: string;
+  /** Project-relative path, when a connected project can reach this file. */
+  path?: string;
   /** True when the text has to be fetched before it can be shown. */
   remote?: boolean;
   element?: HTMLScriptElement;
@@ -58,7 +61,7 @@ const JS_TYPES = new Set(['', 'text/javascript', 'application/javascript', 'modu
  * part of the page's code, and offering it for editing would be an invitation to
  * break the editor from inside itself.
  */
-export function collectScriptSources(): ScriptSource[] {
+export function collectScriptSources(project?: FileHost | null): ScriptSource[] {
   const out: ScriptSource[] = [];
   let inlineCount = 0;
   let externalCount = 0;
@@ -76,6 +79,11 @@ export function collectScriptSources(): ScriptSource[] {
     if (src) {
       externalCount += 1;
       const sameOrigin = isSameOrigin(element.src);
+      // A connected project can read the file straight off disk, which is the only way
+      // this works at all over `file://` — there every file is its own opaque origin, so
+      // a script sitting next to the page is "another origin" as far as fetch is
+      // concerned.
+      const path = project ? (project.resolve(element.src) ?? undefined) : undefined;
       out.push({
         id: `script-ext-${externalCount}`,
         kind: type === 'module' ? 'module' : isData ? 'json' : 'external',
@@ -85,10 +93,12 @@ export function collectScriptSources(): ScriptSource[] {
         lines: 0,
         remote: true,
         element,
+        path,
         loading: element.defer ? 'defer' : element.async ? 'async' : undefined,
-        readOnly: sameOrigin
-          ? undefined
-          : 'Served from another origin, so its text cannot be read from this page.',
+        readOnly:
+          sameOrigin || path
+            ? undefined
+            : 'Served from another origin, so its text cannot be read from this page.',
       });
       continue;
     }
@@ -142,7 +152,17 @@ export function readScriptSource(source: ScriptSource): string {
  * it would produce an empty editor with no explanation. `collectScriptSources` has
  * already said so in `readOnly`.
  */
-export async function fetchScriptSource(source: ScriptSource): Promise<string> {
+export async function fetchScriptSource(
+  source: ScriptSource,
+  project?: FileHost | null,
+): Promise<string> {
+  // Disk first, for the same two reasons the stylesheets have: over `file://` it is the
+  // only thing that works, and behind a dev server a request can return a transformed
+  // copy of a file this buffer will later be written back over.
+  if (source.path && project) {
+    const text = await project.read(source.path);
+    if (text !== null) return text;
+  }
   if (!source.href || source.readOnly) return '';
   const response = await fetch(source.href, { credentials: 'same-origin' });
   if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);

@@ -53,7 +53,18 @@ const chrome = spawn(
     '--disable-component-update',
     '--disable-background-networking',
     '--disable-sync',
-    '--allow-file-access-from-files',
+    /*
+     * File access, on by default and switchable off.
+     *
+     * The flag makes every `file://` document share one origin, which is what lets the
+     * fixtures import the ES bundle and fetch their own assets. Real users get the
+     * default: each file is its own opaque origin, so a stylesheet next to the page is
+     * unreadable and a sibling `fetch` fails. `HEO_FILE_ACCESS=strict` drops the flag so
+     * that condition can be tested rather than assumed — a fixture doing so has to load
+     * the IIFE bundle with a classic `<script src>`, since a module import would be
+     * blocked along with everything else.
+     */
+    ...(process.env.HEO_FILE_ACCESS === 'strict' ? [] : ['--allow-file-access-from-files']),
     `--user-data-dir=${profile}`,
     `--remote-debugging-port=${port}`,
     'about:blank',

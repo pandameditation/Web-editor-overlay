@@ -14,6 +14,7 @@ import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
 import { baseStyles } from '../theme.js';
+import { canOfferFolder, fileAccessStyles, renderFileAccess } from './file-access.js';
 import type { HeoCodeEditor } from '../controls/code-editor.js';
 import '../controls/code-editor.js';
 
@@ -176,14 +177,27 @@ export class HeoJsPanel extends HeoElement {
         line-height: 1.6;
       }
     `,
+    fileAccessStyles,
   ];
 
   protected state = new StoreController(
     this,
     this.editor.store,
-    (s) => [s.revision, s.changeCount] as const,
+    // `project` is in here because connecting a folder is what makes an external script
+    // readable at all on a page opened from disk.
+    (s) => [s.revision, s.changeCount, s.project] as const,
     shallowArrayEquals,
   );
+
+  /** Whether this browser can offer a folder, for the unreadable-file notice. */
+  @state() private canPickFolder = false;
+
+  override connectedCallback(): void {
+    super.connectedCallback();
+    void canOfferFolder(this.editor).then((can) => {
+      this.canPickFolder = can;
+    });
+  }
 
   /**
    * True for the copy hosted inside the fullscreen code view.
@@ -208,7 +222,7 @@ export class HeoJsPanel extends HeoElement {
   @query('heo-code-editor') private codeEditor?: HeoCodeEditor;
 
   override render(): TemplateResult {
-    const sources = collectScriptSources();
+    const sources = collectScriptSources(this.editor.project);
     if (!sources.length) {
       return html`<div class="empty">
         This page has no scripts of its own. Anything the overlay loaded is excluded, since editing
@@ -245,13 +259,19 @@ export class HeoJsPanel extends HeoElement {
       <div class="foot">
         ${this.#renderRevert(current)}
         <span class="spacer"></span>
-        ${current.readOnly || current.remote
+        <!--
+          Run is offered for any source whose text is in hand, external files included.
+          It executes the buffer, not the file, so it works the same either way — and for
+          an external script it is the only way to see an edit take effect at all, since
+          writing the file cannot reach the copy that already ran.
+        -->
+        ${current.readOnly
         ? nothing
         : html`<button
               class="btn"
               type="button"
               title="Execute this source again. Anything it declares or attaches happens a second time."
-              ?disabled=${Boolean(this.error)}
+              ?disabled=${Boolean(this.error) || !this.draft.trim() || this.loading}
               @click=${() => this.#run(current)}
             >
               ${icon('play', 12)} Run
@@ -291,19 +311,38 @@ export class HeoJsPanel extends HeoElement {
   }
 
   #renderSource(source: ScriptSource): TemplateResult {
-    if (source.readOnly) {
+    // A script that cannot be read, and a script whose read failed, are the same dead
+    // end from here: the file is out of reach. Both get the same way out.
+    const unreachable = source.readOnly ?? (source.remote && this.error && !this.dirty ? this.error : '');
+    if (unreachable) {
       return html`
         ${source.href ? html`<p class="where">${source.href}</p>` : nothing}
         <div class="note">
           <span class="g">${icon('lock', 12)}</span>
-          <span>${source.readOnly}</span>
+          <span>${unreachable}</span>
         </div>
+        ${renderFileAccess(
+        {
+          engine: this.editor,
+          what: 'script',
+          reason: unreachable,
+          // Readable now, so drop the buffer and let it load from disk.
+          onConnected: () => {
+            this.#loadedId = null;
+            this.error = '';
+          },
+        },
+        this.canPickFolder,
+      )}
       `;
     }
     return html`
       ${source.href
         ? html`<p class="where">
-            ${source.href}${this.loading ? ' — loading…' : ''}
+            ${source.path
+            ? html`${source.path} — read from ${this.state.value.project?.label}, and written back
+                there when you save.`
+            : html`${source.href}`}${this.loading ? ' — loading…' : ''}
           </p>`
         : nothing}
       <!--
@@ -314,10 +353,14 @@ export class HeoJsPanel extends HeoElement {
       <div class="note">
         <span class="g">${icon('sparkle', 12)}</span>
         <span>
-          ${source.remote
-        ? html`This file is not writable from the page. Applying records the change and the
+          ${source.path
+        ? html`This file has already run, so applying records the change and writes the file
+              when you save — it does not re-execute. <strong>Run</strong> does that,
+              deliberately.`
+        : source.remote
+          ? html`This file is not writable from the page. Applying records the change and the
               save prompt names the file, so it can be made in source.`
-        : html`This script has already run, so applying updates its source and records the
+          : html`This script has already run, so applying updates its source and records the
               change — it does not re-execute. <strong>Run</strong> does that, deliberately.`}
         </span>
       </div>
@@ -391,7 +434,7 @@ export class HeoJsPanel extends HeoElement {
     // script's text is never shown under this one's name.
     this.draft = '';
     this.loading = true;
-    void fetchScriptSource(source)
+    void fetchScriptSource(source, this.editor.project)
       .then((text) => {
         // Only if the user is still looking at this source, and has not started typing.
         if (this.#loadedId !== source.id || this.dirty) return;
@@ -402,9 +445,8 @@ export class HeoJsPanel extends HeoElement {
       .catch((error: unknown) => {
         if (this.#loadedId !== source.id) return;
         this.loading = false;
-        this.error = `Could not read ${source.label}: ${
-          error instanceof Error ? error.message : String(error)
-        }`;
+        this.error = `Could not read ${source.label}: ${error instanceof Error ? error.message : String(error)
+          }`;
       });
   }
 

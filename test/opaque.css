@@ -1,0 +1,5 @@
+/* Unreadable through the CSSOM over file://, and perfectly readable from disk. */
+.panel {
+  padding: 12px;
+  background: #eef;
+}

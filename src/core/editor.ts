@@ -260,6 +260,14 @@ export interface EditorState {
   writePlan: WritePlan | null;
   /** True while the plan is being built, which needs to read from disk. */
   planning: boolean;
+  /**
+   * Which step the save dialog should open on.
+   *
+   * Read once when the dialog mounts, so somewhere else in the UI can send the user
+   * straight to the file plan — the CSS and JS panels do, when a file they cannot read
+   * is exactly the thing the plan would explain.
+   */
+  saveView: 'review' | 'files';
 }
 
 /** What the UI needs to know about a connected project. */
@@ -366,6 +374,7 @@ export class EditorEngine {
       project: null,
       writePlan: null,
       planning: false,
+      saveView: 'review',
     });
   }
 
@@ -2465,10 +2474,16 @@ export class EditorEngine {
     else this.#bumpRegistry();
   }
 
-  /** Places the design system could be written, the page itself included. */
+  /**
+   * Places the design system could be written, the page itself included.
+   *
+   * Asked with the project in hand, so a stylesheet the browser refuses to read still
+   * counts when its file can be reached — which on a page opened from disk is every
+   * stylesheet it has.
+   */
   styleTargets(): Array<{ value: string; label: string }> {
     const out = [{ value: DOCUMENT_TARGET, label: 'Keep in the page' }];
-    for (const source of collectStyleSources()) {
+    for (const source of collectStyleSources(this.#project)) {
       if (source.kind !== 'link' || source.readOnly || !source.href) continue;
       out.push({ value: source.href, label: source.label });
     }
@@ -2707,9 +2722,9 @@ export class EditorEngine {
    * because the count is zero withholds all of that to prevent a no-op, and a dialog
    * saying "nothing to save" is clearer than a toast saying the same thing anyway.
    */
-  previewSave(): void {
+  previewSave(view: EditorState['saveView'] = 'review'): void {
     this.endTextEdit(true);
-    this.store.patch({ savePreview: this.buildSavePrompt() });
+    this.store.patch({ savePreview: this.buildSavePrompt(), saveView: view });
     // Work out the files while the user is reading the change list, so the primary
     // button can say how many it will write rather than finding out afterwards.
     if (this.#project) void this.previewWritePlan();

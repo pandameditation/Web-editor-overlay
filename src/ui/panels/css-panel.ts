@@ -14,6 +14,7 @@ import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
 import { baseStyles } from '../theme.js';
+import { canOfferFolder, fileAccessStyles, renderFileAccess } from './file-access.js';
 import type { HeoCodeEditor } from '../controls/code-editor.js';
 import '../controls/code-editor.js';
 
@@ -168,16 +169,29 @@ export class HeoCssPanel extends HeoElement {
         flex: 1 1 auto;
       }
     `,
+    fileAccessStyles,
   ];
 
   protected state = new StoreController(
     this,
     this.editor.store,
-    (s) => [s.revision, s.registry] as const,
+    // `project` is in here because connecting a folder changes which sheets are
+    // readable: a file the browser refused becomes editable the moment its folder is
+    // handed over, and the list has to redraw to say so.
+    (s) => [s.revision, s.registry, s.project] as const,
     shallowArrayEquals,
   );
 
   @state() private selectedId: string | null = null;
+  /** Whether this browser can offer a folder, for the unreadable-file notice. */
+  @state() private canPickFolder = false;
+
+  override connectedCallback(): void {
+    super.connectedCallback();
+    void canOfferFolder(this.editor).then((can) => {
+      this.canPickFolder = can;
+    });
+  }
   /**
    * True for the copy hosted inside the fullscreen code view.
    *
@@ -202,7 +216,7 @@ export class HeoCssPanel extends HeoElement {
   @query('heo-code-editor') private codeEditor?: HeoCodeEditor;
 
   override render(): TemplateResult {
-    const sources = collectStyleSources();
+    const sources = collectStyleSources(this.editor.project);
     if (!sources.length) {
       return html`<div class="empty">This page has no stylesheets the editor can see.</div>`;
     }
@@ -280,6 +294,20 @@ export class HeoCssPanel extends HeoElement {
           <span class="g">${icon('lock', 12)}</span>
           <span>${source.readOnly}</span>
         </div>
+        ${source.href
+          ? renderFileAccess(
+            {
+              engine: this.editor,
+              what: 'stylesheet',
+              reason: source.readOnly,
+              // The sheet is readable now, so drop the buffer and let it reload.
+              onConnected: () => {
+                this.#loadedId = null;
+              },
+            },
+            this.canPickFolder,
+          )
+          : nothing}
         ${this.draft
           ? html`<heo-code-editor
               fill
@@ -299,9 +327,24 @@ export class HeoCssPanel extends HeoElement {
     return html`
       ${source.href
         ? html`<p class="where">
-            ${source.href} — edits preview live here; the save prompt names this file so the change
-            can be made in source.
+            ${source.path
+            ? html`${source.path} — read from ${this.state.value.project?.label}, and written
+                back there when you save.`
+            : html`${source.href} — edits preview live here; the save prompt names this file so
+                the change can be made in source.`}
           </p>`
+        : nothing}
+      <!--
+        The one case a connected folder creates: editable, but not previewable. The
+        browser is withholding the CSSOM, which is what a live preview needs, while the
+        file itself is perfectly readable from disk. Saying so is the difference between
+        an editor that looks broken and one whose limits are understood.
+      -->
+      ${source.unpreviewable
+        ? html`<div class="note">
+            <span class="g">${icon('eye', 12)}</span>
+            <span>${source.unpreviewable}</span>
+          </div>`
         : nothing}
       <heo-code-editor
         fill
@@ -383,7 +426,7 @@ export class HeoCssPanel extends HeoElement {
       source.pendingBefore = this.draft;
       return;
     }
-    void fetchStyleSource(source).then((text) => {
+    void fetchStyleSource(source, this.editor.project).then((text) => {
       // Only when the user is still looking at this sheet and has not started
       // typing: replacing a buffer under a caret loses work.
       if (this.#loadedId !== source.id || this.dirty) return;

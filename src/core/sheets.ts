@@ -1,3 +1,4 @@
+import type { FileHost } from './file-host.js';
 import { nextChangeId, type Command } from './history.js';
 
 /**
@@ -30,6 +31,18 @@ export interface StyleSource {
   rules: number;
   /** Why the sheet cannot be edited, when it cannot. */
   readOnly?: string;
+  /**
+   * Why edits to this sheet cannot be shown on screen, when they cannot.
+   *
+   * Distinct from `readOnly`, and the distinction only exists because a connected
+   * project changed what is possible. A sheet the browser refuses to expose used to be
+   * simply off limits; now its file can still be read and written, so it is editable —
+   * just not previewable, because the live preview needs the CSSOM and that is the part
+   * the browser is withholding.
+   */
+  unpreviewable?: string;
+  /** Project-relative path, when a connected project can reach this file. */
+  path?: string;
   /** The live sheet, absent when it could not be reached. */
   sheet?: CSSStyleSheet;
   /** The owning `<style>` element, when the source is an inline sheet. */
@@ -52,7 +65,7 @@ export interface StyleSource {
  * make the token and class output look like it comes from nowhere, while letting
  * them be hand-edited here would fight the registries that own them.
  */
-export function collectStyleSources(): StyleSource[] {
+export function collectStyleSources(project?: FileHost | null): StyleSource[] {
   const out: StyleSource[] = [];
   let styleIndex = 0;
   let adoptedIndex = 0;
@@ -63,16 +76,20 @@ export function collectStyleSources(): StyleSource[] {
 
     if (node instanceof HTMLStyleElement) {
       styleIndex += 1;
-      out.push(describe(sheet, 'style', node.id || `<style> #${styleIndex}`, { element: node }));
+      out.push(
+        describe(sheet, 'style', node.id || `<style> #${styleIndex}`, { element: node }, project),
+      );
       continue;
     }
     const href = sheet.href ?? undefined;
-    out.push(describe(sheet, 'link', fileName(href) ?? `<link> #${out.length + 1}`, { href }));
+    out.push(
+      describe(sheet, 'link', fileName(href) ?? `<link> #${out.length + 1}`, { href }, project),
+    );
   }
 
   for (const sheet of document.adoptedStyleSheets ?? []) {
     adoptedIndex += 1;
-    out.push(describe(sheet, 'adopted', `adopted #${adoptedIndex}`));
+    out.push(describe(sheet, 'adopted', `adopted #${adoptedIndex}`, {}, project));
   }
   return out;
 }
@@ -82,17 +99,36 @@ function describe(
   kind: SheetKind,
   label: string,
   extra: { href?: string; element?: HTMLStyleElement } = {},
+  project?: FileHost | null,
 ): StyleSource {
   const generated =
     sheet.ownerNode instanceof Element && sheet.ownerNode.hasAttribute('data-heo-generated');
+  const path = extra.href && project ? (project.resolve(extra.href) ?? undefined) : undefined;
 
   let rules = 0;
   let readOnly: string | undefined;
+  let unpreviewable: string | undefined;
   try {
     rules = sheet.cssRules.length;
   } catch {
-    readOnly =
-      'This sheet is served from another origin, so the browser will not let the page read it.';
+    /*
+     * The browser will not expose the rules, and there are two quite different reasons
+     * it might not. A stylesheet on someone else's CDN is genuinely out of reach. A
+     * local file opened over `file://` is not — each file is its own opaque origin, so
+     * the browser refuses to read it even though it is sitting next to the page.
+     *
+     * A connected project tells the two apart: if the file resolves inside the folder
+     * that was handed over, its text can be read from disk and written back. What stays
+     * impossible is the live preview, because that needs the CSSOM.
+     */
+    if (path) {
+      unpreviewable =
+        `The browser will not let this page read ${label}, so edits cannot be previewed on screen. ` +
+        `They will still be written to the file.`;
+    } else {
+      readOnly =
+        'This sheet is served from another origin, so the browser will not let the page read it.';
+    }
   }
   if (!readOnly && generated) {
     readOnly = 'The editor owns this sheet. Edit the tokens and classes it is built from instead.';
@@ -111,6 +147,8 @@ function describe(
     media: sheet.media?.mediaText || undefined,
     rules,
     readOnly,
+    unpreviewable,
+    path,
     sheet,
     element: extra.element,
   };
@@ -153,8 +191,26 @@ export function readStyleSource(source: StyleSource): string {
  * this stylesheet to render the page. Falls back to the CSSOM when there is no file
  * to read, so a caller never has to branch on it.
  */
-export async function fetchStyleSource(source: StyleSource): Promise<string> {
+export async function fetchStyleSource(
+  source: StyleSource,
+  project?: FileHost | null,
+): Promise<string> {
   if (source.element) return source.element.textContent ?? '';
+
+  /*
+   * The project comes first, and not only as a fallback.
+   *
+   * Disk is the source of truth in a way a request is not. Over `file://` the fetch
+   * fails for the same origin reason `cssRules` did, so it is the only thing that works
+   * at all. Behind a dev server it *would* work, but it can hand back a transformed
+   * copy — and since whatever ends up in this buffer is what gets written to the file,
+   * starting from a transformed copy means writing one back over the source.
+   */
+  if (source.path && project) {
+    const text = await project.read(source.path);
+    if (text !== null) return text;
+  }
+
   if (!source.href || source.readOnly) return readStyleSource(source);
   try {
     const response = await fetch(source.href, { credentials: 'same-origin' });
@@ -338,20 +394,27 @@ export function writeStyleSource(source: StyleSource, css: string): Command | nu
   const sheet = source.sheet;
   if (!element && !sheet) return null;
 
-  const apply = (): void => {
+  /*
+   * A sheet the browser refuses to expose cannot be updated live, so the write is the
+   * record and the file. Swallowing the failure is right here: the caller has already
+   * been told, through `unpreviewable`, that the page will not change — turning that
+   * into a thrown error would make an edit that is about to be written to disk look
+   * like it failed.
+   */
+  const paint = (css: string): void => {
     if (element) {
-      element.textContent = after;
+      element.textContent = css;
       return;
     }
-    replaceRules(sheet!, after);
-  };
-  const revert = (): void => {
-    if (element) {
-      element.textContent = before;
-      return;
+    if (!sheet) return;
+    try {
+      replaceRules(sheet, css);
+    } catch {
+      /* Unreadable sheet. The change lives in the record and reaches the file. */
     }
-    replaceRules(sheet!, before);
   };
+  const apply = (): void => paint(after);
+  const revert = (): void => paint(before);
 
   return {
     label: `Edit ${source.label}`,

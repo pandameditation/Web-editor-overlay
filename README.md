@@ -441,13 +441,38 @@ External scripts are still described as whole-file replacements. JavaScript has 
 structure this can exploit the way CSS does, and guessing at which part of a rewritten
 function is "the change" would be worse than saying plainly that the file was replaced.
 
+### A page opened straight from disk
+
+Double-click an HTML file and the browser gives every file its own opaque origin. A
+stylesheet sitting next to the page cannot be read through the CSSOM, and a script next
+to it cannot be fetched, so the Code panel says so:
+
+> This sheet is served from another origin, so the browser will not let the page read it.
+
+Technically accurate and, on its own, a dead end. Connecting the folder resolves it,
+because the file can then be read from disk — so the offer to connect appears **in the
+panel showing the error**, next to the file it will unlock. Opening the picker needs a
+click, and that is the only place the click can sensibly come from while you are looking
+at the file in question.
+
+Once connected, those files are read from disk and written back on save. One thing stays
+impossible: a **live preview** of a stylesheet the browser refuses to expose. The preview
+needs the CSSOM and that is exactly what is being withheld, so the panel says the edit
+will not appear on screen but will reach the file. Editing that same rule through the
+Styles panel's cascade inspector is unaffected, since that never needed the sheet's text.
+
+Reading from disk rather than over the network is the default even when the network
+would work. A dev server can hand back a transformed copy of a file, and whatever is in
+the buffer is what gets written back — so starting from a transformed copy would mean
+writing one over your source.
+
 ### What still will not be written
 
 Named in the Files step rather than swallowed, and still carried by the generated
 prompt:
 
-- **Cross-origin stylesheets and scripts.** The browser will not let the page read
-  them, and they are not in your project anyway.
+- **Genuinely cross-origin stylesheets and scripts.** Something on a CDN is not in your
+  project, and no folder will make it reachable.
 - **Anything outside the folder you handed over.** Pick a higher folder if you meant
   to include it.
 - **An edit whose rule is no longer in the file**, because the file changed since the
@@ -1156,6 +1181,7 @@ npm run check:plugin   # verify source markers (needs `npm run dev` running)
 npm run test:css         # CSS text patching
 npm run test:instrument  # build-time source marking
 npm run test:endpoint    # the dev-server file endpoint, against a real Vite server
+npm run check:opaque     # a page opened from disk, with real opaque origins
 ```
 
 The `test:*` suites run outside the browser because none of their subjects needs one.
@@ -1168,6 +1194,12 @@ the write endpoint being connected on mount. It builds a write plan and asserts 
 names real project paths — without writing any of them, which is what makes it safe to
 run against the demo.
 
+Every fixture but one runs with `--allow-file-access-from-files`, which makes local files
+share an origin so they can import the ES bundle and fetch their own assets. Setting
+`HEO_FILE_ACCESS=strict` drops that flag, which is how the opaque-origin case gets tested
+rather than assumed — a fixture doing so has to load the IIFE bundle through a classic
+`<script src>`, since a module import would be blocked along with everything else.
+
 `scripts/browser-check.mjs` drives headless Chrome over the DevTools protocol. It
 polls a page for a completion marker, reports the last step reached on timeout,
 and interrupts a stuck renderer to print its call stack — which is how a
@@ -1179,7 +1211,7 @@ node scripts/browser-check.mjs test/visual.html 25000 --shot /tmp/overlay.png
 node scripts/browser-check.mjs "file://$PWD/test/visual.html?state=tokens" 25000 --shot /tmp/tokens.png
 ```
 
-`npm run check` runs four pages:
+`npm run check` runs five pages:
 
 | Page | Covers |
 | --- | --- |
@@ -1187,6 +1219,7 @@ node scripts/browser-check.mjs "file://$PWD/test/visual.html?state=tokens" 25000
 | `test/writeback.html` | The multi-file case, with a linked stylesheet and an external script. Asserts that a stylesheet write is surgical byte for byte, that comments and `#fff` and `margin: 0` survive it, that a rule edited in an inline `<style>` reaches the exported HTML, that unticking a change keeps it out of the file, that saving twice writes nothing the second time, that a whole-buffer CSS edit is described as the one declaration that changed while still being written in full, and that writing sets the baseline the change count is measured from — including that undoing a saved change reappears on the count as a rollback. |
 | `test/script-tag.html` | The one-tag integration. Its whole setup is a single `<script>`, so the file is both the fixture and the example. Asserts every `data-*` attribute lands. |
 | `test/script-tag-manual.html` | That a bundle *without* `data-heo` mounts nothing, and that `mount()` and `unmount()` still behave. |
+| `test/opaque-origin.html` | A page opened from disk, run **without** `--allow-file-access-from-files` so the origins are genuinely opaque. Confirms the stylesheet's rules really are refused and a sibling `fetch` really does fail, then that connecting a folder makes both files readable, offers the stylesheet as a design-system target, and says the preview cannot update. |
 
 `test/writeback.html` hands the engine an in-memory `FileHost` rather than a real
 folder, because a directory picker cannot be driven from a headless browser. That is
@@ -1234,8 +1267,11 @@ Known limits, stated plainly:
   changed, not on values that came with the page. Use the field's clear button to
   remove one of those outright.
 - **Cross-origin stylesheets are unreadable**, so their rules do not appear in the
-  cascade inspector and their tokens are not discovered. This is a browser
-  security boundary, not something to work around.
+  cascade inspector and their tokens are not discovered. This is a browser security
+  boundary, not something to work around. It also catches local files opened over
+  `file://`, where each file is its own origin — there,
+  [connecting the folder](#a-page-opened-straight-from-disk) gets the text back, though
+  not the live preview.
 - **The chrome sits in the top layer**, entered with a `manual` popover, so no page
   `z-index`, stacking context, `overflow: hidden` or ancestor `filter` can cover it.
   Where the top layer is unavailable the host falls back to `z-index: 2147482000`,

@@ -456,6 +456,13 @@ export class HeoSaveDialog extends HeoElement {
     void this.editor.hostOptions().then((options) => {
       this.canPickFolder = options.picker;
     });
+    // The dialog is created fresh each time it opens, so whoever opened it gets to say
+    // which step it lands on. The CSS and JS panels use that to send someone straight to
+    // the file plan when a file they cannot read is what they came to ask about.
+    if (this.editor.store.value.saveView === 'files' && this.state.value.project) {
+      this.view = 'files';
+      if (!this.state.value.writePlan) void this.editor.previewWritePlan();
+    }
   }
 
   private static readonly LABEL = {

@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Editor overlay — a page opened straight from disk</title>
+  <!--
+    The `file://` case, tested under the conditions a real user gets.
+
+    Every other fixture runs with `--allow-file-access-from-files`, which makes all local
+    files share one origin. Without it — the default, and what happens when someone
+    double-clicks an HTML file — each file is its own opaque origin. A stylesheet sitting
+    beside the page cannot be read through the CSSOM, and a script beside it cannot be
+    fetched. That is the state this fixture reproduces and then fixes.
+
+    Run with:
+        npm run build:lib && npm run check:opaque
+
+    The bundle is loaded with a classic `<script src>` rather than a module import, on
+    purpose: module imports are CORS-checked and would be blocked along with everything
+    else, so a fixture about opaque origins cannot use one.
+  -->
+  <link rel="stylesheet" href="./opaque.css">
+</head>
+
+<body>
+  <main>
+    <div class="panel">Opened from disk.</div>
+  </main>
+
+  <pre id="out">pending</pre>
+
+  <script src="./opaque.js"></script>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+
+  <script>
+    (async () => {
+      const out = [];
+      const check = (name, fn) => {
+        try { out.push(' "' + name + '": ' + JSON.stringify(fn()) + ','); }
+        catch (e) { out.push(' "' + name + '": "THREW ' + e.message + '",'); }
+      };
+      const report = (errors) => {
+        document.getElementById('out').textContent =
+          'RESULTS:{\n' + out.join('\n') + '\n "__errors": ' + JSON.stringify(errors || []) + '\n}:END';
+      };
+
+      /* ---- The conditions, confirmed rather than assumed ---- */
+
+      const sheet = [...document.styleSheets].find((s) => (s.href || '').endsWith('opaque.css'));
+      check('theStylesheetLoadedAndRenders', () =>
+        getComputedStyle(document.querySelector('.panel')).padding);
+      check('butItsRulesCannotBeRead', () => {
+        try { return sheet.cssRules.length === 0 ? 'empty' : 'readable'; }
+        catch { return 'refused'; }
+      });
+      check('theScriptRanEvenSo', () => document.documentElement.dataset.opaqueScriptRan);
+      let fetchFailed = false;
+      try { await fetch('./opaque.js'); } catch { fetchFailed = true; }
+      check('aSiblingFetchIsRefused', () => fetchFailed);
+
+      const api = window.HtmlEditorOverlay.mount({});
+      const engine = api.engine;
+
+      /* ---- Before a folder is connected: an honest dead end ---- */
+
+      check('withNoFolderTheStylesheetIsNotAWritableTarget', () =>
+        engine.styleTargets().map((target) => target.label));
+
+      /* ---- A folder, handed over ---- */
+
+      const directory = decodeURIComponent(location.pathname).replace(/[^/]*$/, '');
+      const disk = new Map([
+        ['opaque.css', '/* from disk */\n.panel {\n  padding: 12px;\n  background: #eef;\n}\n'],
+        ['opaque.js', '/* from disk */\ndocument.documentElement.dataset.opaqueScriptRan = "yes";\n'],
+      ]);
+      const project = {
+        kind: 'directory',
+        label: 'memory',
+        resolve(url) {
+          const parsed = new URL(url, location.href);
+          const path = decodeURIComponent(parsed.pathname);
+          return path.startsWith(directory) ? path.slice(directory.length) : null;
+        },
+        read: async (path) => (disk.has(path) ? disk.get(path) : null),
+        write: async (path, text) => { disk.set(path, text); },
+        ensureWritable: async () => true,
+        release: async () => { },
+      };
+      const attached = await engine.attachProject(project, { quiet: true });
+      check('theFolderAttaches', () => attached);
+
+      /* ---- Now the same files are reachable ---- */
+
+      check('theStylesheetBecomesAWritableTarget', () =>
+        engine.styleTargets().map((target) => target.label));
+
+      /*
+       * The panels are what read these files, so the panels are what is driven: opening
+       * the Code panel is the path a user takes, and it exercises collectStyleSources,
+       * collectScriptSources and both `fetch*Source` helpers with the project in hand.
+       */
+      api.setEditing(true);
+      engine.openCode('css');
+
+      /** Find an element by selector, crossing shadow boundaries. */
+      const deep = (root, selector) => {
+        const found = root.querySelector(selector);
+        if (found) return found;
+        for (const element of root.querySelectorAll('*')) {
+          if (!element.shadowRoot) continue;
+          const inner = deep(element.shadowRoot, selector);
+          if (inner) return inner;
+        }
+        return null;
+      };
+      const settle = (ms) => new Promise((r) => setTimeout(r, ms));
+      const textOf = (panel) => (panel ? panel.shadowRoot.textContent : '');
+
+      await settle(600);
+      const cssPanel = deep(document, 'heo-css-panel');
+      check('theCssPanelIsOpen', () => Boolean(cssPanel));
+      check('theCssPanelNoLongerSaysAnotherOrigin', () =>
+        !/served from another origin/.test(textOf(cssPanel)));
+      check('theCssPanelSaysThePreviewCannotUpdate', () =>
+        /cannot be previewed/.test(textOf(cssPanel)));
+      check('theCssPanelNamesWhereItReadTheFileFrom', () =>
+        /opaque\.css — read from memory/.test(textOf(cssPanel)));
+      // Read off the editor rather than scraped from text: the buffer lives in the code
+      // editor's own shadow root, and its `value` is exactly what an Apply would record.
+      const bufferIn = (panel) => {
+        const editor = panel && deep(panel.shadowRoot, 'heo-code-editor');
+        return editor ? editor.value : '';
+      };
+      check('theCssBufferHoldsTheTextFromDisk', () => bufferIn(cssPanel).includes('from disk'));
+
+      engine.setCodeTab('js');
+      await settle(600);
+      const jsPanel = deep(document, 'heo-js-panel');
+      check('theJsPanelIsOpen', () => Boolean(jsPanel));
+      check('theJsPanelNoLongerSaysAnotherOrigin', () =>
+        !/another origin/.test(textOf(jsPanel)));
+      check('theJsBufferHoldsTheTextFromDisk', () => bufferIn(jsPanel).includes('from disk'));
+      check('theJsPanelOffersToRunIt', () => /Run/.test(textOf(jsPanel)));
+
+      report();
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{\n "__errors": ["' + e.message + '"]\n}:END';
+    });
+  </script>
+</body>
+
+</html>
