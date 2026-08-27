@@ -679,6 +679,46 @@ export class EditorEngine {
   }
 
   /**
+   * The rule declaration an in-flight preview is painting over.
+   *
+   * The counterpart of `previewTarget` for a stylesheet rule, and needed for the same
+   * reason: a preview writes straight into the live `CSSStyleRule`, so any panel that
+   * reads its declarations back is reading the exploration rather than the state. A
+   * row told that its own half-typed text is already committed cannot tell it holds an
+   * uncommitted edit, and the commit that follows compares equal and does nothing —
+   * after which looking away reverts the preview and the edit is simply lost.
+   */
+  get rulePreviewTarget(): {
+    rule: CSSStyleRule;
+    property: string;
+    before: string;
+    priority: string;
+  } | null {
+    const preview = this.#rulePreview;
+    return preview
+      ? {
+        rule: preview.rule,
+        property: preview.property,
+        before: preview.before,
+        priority: preview.priority,
+      }
+      : null;
+  }
+
+  /**
+   * The declarations a class had before its live preview started.
+   *
+   * Same contract as `previewTarget`, for the third place a value can be previewed.
+   * A class preview is written into the registry the editor reads from, so the whole
+   * pre-preview map is handed back rather than one property: that is the shape the
+   * declaration editor needs, and it keeps the substitution a single assignment.
+   */
+  get classPreviewTarget(): { name: string; declarations: Record<string, string> } | null {
+    const preview = this.#classPreview;
+    return preview ? { name: preview.name, declarations: { ...preview.declarations } } : null;
+  }
+
+  /**
    * Put back whatever the preview painted over.
    *
    * Called before every commit so the command records the value the property had

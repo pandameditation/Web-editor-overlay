@@ -1005,6 +1005,22 @@ export class HeoStylesPanel extends HeoElement {
     for (const one of rule.declarations) declarations[one.property] = one.value;
     const live = rule.rule;
 
+    // Subtract any live preview, exactly as the element's own rows do with an inline
+    // one. `rule.declarations` was read off the live rule, and a preview is painted
+    // into that rule — so without this the row is handed its own half-typed text as
+    // its committed value. Nothing then looks like it changed: the commit dedupes to
+    // a no-op, and the focus-out that follows reverts the preview instead, which read
+    // as the edit being rolled back to whatever the stylesheet said.
+    //
+    // An emptied field restores the value it started from rather than dropping the
+    // property, so backspacing to retype cannot delete the declaration out from under
+    // the caret. Removing it is what the commit does, once it is asked for.
+    const preview = this.editor.rulePreviewTarget;
+    if (live && preview && preview.rule === live) {
+      if (preview.before) declarations[preview.property] = preview.before;
+      else delete declarations[preview.property];
+    }
+
     const target: DeclarationTarget = {
       label: shown,
       id: key.replace(/[^\w-]/g, '_'),

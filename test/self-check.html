@@ -1695,6 +1695,86 @@
       await wait(140);
       check('undoingARuleEditPutsTheRuleBack', () => getComputedStyle(rsibling).letterSpacing);
 
+      /*
+       * And the edit survives a render landing between the keystroke and Enter.
+       *
+       * That gap is not hypothetical — changing a rule reflows the page, the resize
+       * observer bumps geometry, and the panel re-reads the rule. It used to re-read
+       * the *preview*, because a preview is painted straight into the live
+       * CSSStyleRule: the row was handed its own half-typed text as its committed
+       * value, so Enter compared equal and committed nothing, and the focus-out that
+       * followed reverted the preview. From the user's seat, confirming a value that
+       * came from a stylesheet rolled it straight back to what the stylesheet said.
+       *
+       * The test above sidesteps all of this by pressing Enter in the same tick. This
+       * one does what a person does: type, pause, confirm, look away.
+       */
+      const opBefore = getComputedStyle(rsibling).opacity;
+      const opField = () => figGroup.querySelector('heo-value-field[data-property="opacity"]');
+      const firstOpField = opField();
+      const opInput = firstOpField.shadowRoot.querySelector('input[type=text]');
+      opInput.focus();
+      opInput.value = '0.5';
+      opInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      await wait(200);
+      await frame();
+      check('theRulePreviewReachesEveryElementItMatches', () =>
+        `${opBefore} -> ${getComputedStyle(rsibling).opacity}`);
+      // The row has to survive the re-render, or the caret goes with it.
+      check('theRuleRowSurvivesThePreviewRender', () => opField() === firstOpField);
+      check('aPreviewedRuleFieldStillShowsWhatIsCommitted', () => firstOpField.value);
+      check('aPreviewedRuleFieldSaysItIsUncommitted', () =>
+        firstOpField.hasAttribute('data-heo-dirty'));
+      press(opInput, 'Enter');
+      await wait(180);
+      check('confirmingARuleEditAfterARenderCommits', () => getComputedStyle(rsibling).opacity);
+      opInput.blur();
+      await wait(340);
+      await frame();
+      check('andLookingAwayDoesNotRollItBack', () => getComputedStyle(rsibling).opacity);
+      check('theRuleEditIsInTheChangeSet', () =>
+        engine.records.filter((r) => r.detail?.scope === 'stylesheet rule').length);
+      api.undo();
+      await wait(140);
+      check('undoStillReachesThatRuleEdit', () => getComputedStyle(rsibling).opacity);
+
+      /* Backspacing the value is not a request to delete the declaration, either. */
+      const opInputNow = () => opField().shadowRoot.querySelector('input[type=text]');
+      const typeIntoField = (input, text) => {
+        input.focus();
+        input.value = text;
+        input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      };
+      const opFieldBeforeEmptying = opField();
+      typeIntoField(opInputNow(), '');
+      await wait(200);
+      await frame();
+      check('emptyingARuleFieldKeepsItsRow', () => Boolean(opField()));
+      check('emptyingARuleFieldKeepsTheCommittedValue', () => opField().value);
+      /*
+       * And it is still the *same* row element, which is what keeps the caret in it.
+       *
+       * Emptying a value takes the declaration out of the rule and the panel puts it
+       * back, at the end — so the order of the list changes mid-edit. Rendered
+       * positionally, that re-labelled every row from there on rather than moving it:
+       * the field being typed into became a different property's field, and the next
+       * keystroke edited that one. Keying the rows on the property name is what stops
+       * it. (Focus itself cannot be asserted here: this section is closed at this
+       * point in the suite, so its rows are in the DOM but not rendered.)
+       */
+      check('emptyingARuleFieldKeepsTheSameRowElement', () =>
+        opField() === opFieldBeforeEmptying);
+      const retype = opInputNow();
+      typeIntoField(retype, '0.65');
+      press(retype, 'Enter');
+      await wait(200);
+      await frame();
+      check('retypingAfterEmptyingARuleFieldCommits', () =>
+        `${getComputedStyle(rsibling).opacity} records=${engine.records.length} field=${opField()?.value}`);
+      api.undo();
+      await wait(140);
+      engine.history.clear();
+
       /* State and pseudo-element rules are reachable, and say what they are. */
       check('stateAndPseudoElementRulesAreOffered', () => {
         const names = groupHeaders().map((h) => h.querySelector('.n').textContent.trim());
@@ -1757,6 +1837,46 @@
       tokensHeader.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
       await frame();
       check('bothPanelsShareTheClassRowLayout', () => columnsIn('tokens') === stylesColumns);
+
+      /*
+       * A class declaration commits the same way, and for the same reason.
+       *
+       * A class preview is written into the registry the editor reads back from, and
+       * the write notifies every panel — so the re-render is guaranteed here rather
+       * than merely likely. Same failure as a stylesheet rule: the field was told its
+       * own draft was committed, Enter did nothing, and looking away reverted it.
+       */
+      const cardEl = document.getElementById('para');
+      const cardPadField = () => dockPanel('tokens').shadowRoot
+        .querySelector('heo-value-field[data-property="padding"]');
+      const cardPadBefore = getComputedStyle(cardEl).padding;
+      const cardPadInput = cardPadField().shadowRoot.querySelector('input[type=text]');
+      cardPadInput.focus();
+      cardPadInput.value = '27px';
+      cardPadInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      await wait(200);
+      await frame();
+      // The preview writes into the registry, so that is where it is observed. Asserting
+      // on computed style instead would be measuring the cascade, and `#para` carries
+      // inline padding from earlier tests that would mask the class either way.
+      check('theClassPreviewIsLiveInTheRegistry', () =>
+        `${cardPadBefore} -> ${engine.classes.get('card').declarations.padding}`);
+      check('aPreviewedClassFieldStillShowsWhatIsCommitted', () => cardPadField().value);
+      check('aPreviewedClassFieldSaysItIsUncommitted', () =>
+        cardPadField().hasAttribute('data-heo-dirty'));
+      press(cardPadInput, 'Enter');
+      await wait(180);
+      cardPadInput.blur();
+      await wait(340);
+      await frame();
+      check('confirmingAClassEditSurvivesLookingAway', () =>
+        `${engine.classes.get('card').declarations.padding} records=${engine.records.length}`);
+      api.undo();
+      await wait(160);
+      await frame();
+      check('undoPutsTheClassDeclarationBack', () =>
+        engine.classes.get('card').declarations.padding);
+      engine.history.clear();
 
       /* A newly added property arrives focused with its value preselected. */
       const tokensAdder = dockPanel('tokens').shadowRoot.querySelector('.cls .decl .pair input');

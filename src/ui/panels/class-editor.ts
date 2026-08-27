@@ -1,4 +1,5 @@
 import { css, html, nothing, type CSSResult, type TemplateResult } from 'lit';
+import { repeat } from 'lit/directives/repeat.js';
 import { propertyMeta, resolveValue, searchProperties } from '../../core/css.js';
 import type { EditorEngine } from '../../core/editor.js';
 import type { DesignClass } from '../../core/types.js';
@@ -278,13 +279,20 @@ export const ClassEditor = {
   renderBody(entry: DesignClass, host: ClassEditorHost): TemplateResult {
     const { engine, element } = host;
     const applied = element?.classList.contains(entry.name) ?? false;
+    // Read the declarations as they were before any in-flight preview. A class preview
+    // is written into the registry `entry` came from, so reading it back would tell the
+    // field its own draft was already committed — after which committing compares equal
+    // and does nothing, and looking away reverts the preview, losing the edit.
+    const preview = engine.classPreviewTarget;
+    const declarations =
+      preview && preview.name === entry.name ? preview.declarations : entry.declarations;
 
     return html`
       ${ClassEditor.renderDeclarations(
       {
         label: `.${entry.name}`,
         id: `class-${entry.name}`,
-        declarations: entry.declarations,
+        declarations,
         empty: 'No declarations yet. Add a property below to give this class something to do.',
         preview: (property, value) =>
           engine.previewClassDeclaration(entry.name, property, value),
@@ -367,8 +375,19 @@ export const ClassEditor = {
         ${properties.length === 0
         ? html`<p class="hint" style="margin:0">${target.empty}</p>`
         : nothing}
-        ${properties.map(
-          (property) => html`<div
+        ${/*
+         * Keyed on the property, because these rows are not interchangeable.
+         *
+         * Rendered positionally, a change in the order of the declarations re-labels
+         * every row from that point on rather than moving it: the field the caret was
+         * in became a different property's field mid-edit, and the next keystroke
+         * edited that one instead. Emptying a value is enough to trigger it, since the
+         * declaration briefly leaves the rule and comes back at the end.
+         */
+      repeat(
+        properties,
+        (property) => property,
+        (property) => html`<div
             class=${`decl${target.overridden?.(property) ? ' overridden' : ''}`}
           >
             <span
@@ -378,17 +397,17 @@ export const ClassEditor = {
             <heo-value-field
               data-property=${property}
               .computed=${target.resolve?.(property) ??
-            resolvedValue(target.declarations[property], element)}
+          resolvedValue(target.declarations[property], element)}
               .value=${target.declarations[property]}
               .kind=${valueKindFor(property)}
               .property=${property}
               .suggestions=${buildSuggestions(engine, property, element)}
               clearable
               @value-input=${(event: CustomEvent<{ value: string }>) =>
-              target.preview(property, event.detail.value)}
+            target.preview(property, event.detail.value)}
               @value-revert=${() => engine.cancelPreview()}
               @value-change=${(event: CustomEvent<{ value: string }>) =>
-              target.commit(property, event.detail.value)}
+            target.commit(property, event.detail.value)}
             ></heo-value-field>
             <button
               class="drop"
@@ -400,7 +419,7 @@ export const ClassEditor = {
               ${icon('close', 10)}
             </button>
           </div>`,
-        )}
+      )}
         <div class="decl">
           <span class="p">add</span>
           <div class="pair">
