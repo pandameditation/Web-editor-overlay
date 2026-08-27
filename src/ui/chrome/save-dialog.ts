@@ -688,27 +688,54 @@ export class HeoSaveDialog extends HeoElement {
     const { saving, project, writePlan, planning } = this.state.value;
     const records = this.editor.records;
     const dropped = records.length - this.editor.handoffRecords.length;
-    const everythingDropped = dropped === records.length && records.length > 0;
-    const count = writePlan?.writes.length;
+    const nothingToDo = records.length === 0 || dropped === records.length;
 
     if (!project) {
       return html`<button
         class="btn primary"
         type="button"
-        ?disabled=${saving || everythingDropped}
-        title=${everythingDropped
-          ? 'Every change is unchecked, so there is nothing to hand off'
-          : 'Hand these changes off'}
+        ?disabled=${saving || nothingToDo}
+        title=${records.length === 0
+          ? 'Nothing has changed since the last save'
+          : nothingToDo
+            ? 'Every change is unchecked, so there is nothing to hand off'
+            : 'Hand these changes off'}
         @click=${() => void this.editor.save()}
       >
         ${icon('save', 12)} Save changes
       </button>`;
     }
 
+    const count = writePlan?.writes.length;
+
+    /*
+     * Away from the Files step, this goes *to* it rather than writing.
+     *
+     * Writing files is the one irreversible thing the overlay does, and the step that
+     * says which files, why each one, and where the design system is heading is one
+     * click away — so putting it on the way through costs a click and buys the review.
+     * The label says where the button leads, not what it eventually does.
+     */
+    if (this.view !== 'files') {
+      return html`<button
+        class="btn primary"
+        type="button"
+        ?disabled=${saving || nothingToDo}
+        title=${nothingToDo
+          ? 'Nothing to write'
+          : `Review the files this will write in ${project.label}`}
+        @click=${() => this.#openFiles()}
+      >
+        ${icon('folder', 12)}
+        ${count === undefined ? 'Write to files' : `Write ${count} file${count === 1 ? '' : 's'}`}
+        ${icon('chevronRight', 11)}
+      </button>`;
+    }
+
     return html`<button
       class="btn primary"
       type="button"
-      ?disabled=${saving || planning || everythingDropped || count === 0}
+      ?disabled=${saving || planning || nothingToDo || count === 0}
       title=${count === 0
         ? 'Every change is already in the files'
         : `Write these files in ${project.label}`}
@@ -717,6 +744,12 @@ export class HeoSaveDialog extends HeoElement {
       ${icon('save', 12)}
       ${count === undefined ? 'Write files' : `Write ${count} file${count === 1 ? '' : 's'}`}
     </button>`;
+  }
+
+  /** Show the plan, building it first if it is not already there. */
+  #openFiles(): void {
+    this.view = 'files';
+    if (!this.state.value.writePlan) void this.editor.previewWritePlan();
   }
 
   /**
@@ -805,14 +838,20 @@ export class HeoSaveDialog extends HeoElement {
       <header>
         <div class="body">
           <h2>
-            ${dropped
-        ? `${records.length - dropped} of ${records.length} changes ready to hand off`
-        : `${records.length} change${records.length === 1 ? '' : 's'} ready to hand off`}
+            ${records.length === 0
+        ? this.editor.history.hasSavePoint
+          ? 'Everything is saved'
+          : 'Nothing has changed yet'
+        : dropped
+          ? `${records.length - dropped} of ${records.length} changes ready to hand off`
+          : `${records.length} change${records.length === 1 ? '' : 's'} ready to hand off`}
           </h2>
           <p>
-            ${instrumented
-        ? 'Every change is tied to a source file and line, so the instructions point straight at the code.'
-        : 'This page was not instrumented, so changes are described by CSS selector. Add the Vite plugin to get exact file and line references.'}
+            ${records.length === 0
+        ? this.#renderIdleNote()
+        : instrumented
+          ? 'Every change is tied to a source file and line, so the instructions point straight at the code.'
+          : 'This page was not instrumented, so changes are described by CSS selector. Add the Vite plugin to get exact file and line references.'}
           </p>
         </div>
         <button
@@ -904,20 +943,12 @@ export class HeoSaveDialog extends HeoElement {
   #renderFilesEntry(): TemplateResult | typeof nothing {
     const project = this.state.value.project;
     if (project) {
-      const count = this.state.value.writePlan?.writes.length;
-      return html`<button
-        class="btn"
-        type="button"
-        title=${`Review the files this will write in ${project.label}`}
-        @click=${() => {
-          this.view = 'files';
-          if (!this.state.value.writePlan) void this.editor.previewWritePlan();
-        }}
-      >
-        ${icon(project.kind === 'server' ? 'server' : 'folder', 12)}
-        ${count === undefined ? 'Files' : `${count} file${count === 1 ? '' : 's'}`}
-        ${icon('chevronRight', 11)}
-      </button>`;
+      // The primary button already leads to the Files step, so this only has to say
+      // where the files are going.
+      return html`<span class="where" title=${`Connected to ${project.label}`}>
+        ${icon(project.kind === 'server' ? 'server' : 'folder', 11)}
+        <code>${project.label}</code>
+      </span>`;
     }
 
     // No picker and no server means there is nothing to offer, so nothing is offered.
@@ -934,6 +965,23 @@ export class HeoSaveDialog extends HeoElement {
     >
       ${icon('folder', 12)} Write to files…
     </button>`;
+  }
+
+  /**
+   * What to say when there is nothing pending.
+   *
+   * After a write the interesting fact is not "no changes" but that undo still works
+   * and would put changes back on the counter — because the files have moved on, so
+   * rolling one back is something that needs saving again.
+   */
+  #renderIdleNote(): string {
+    if (!this.editor.history.hasSavePoint) {
+      return 'Edit something on the page and it will be listed here, with the file and line it came from.';
+    }
+    const project = this.state.value.project;
+    return this.editor.store.value.canUndo
+      ? `The page and ${project?.label ?? 'the files'} agree. Undo still works — rolling a saved change back counts as a change again, so it will reappear here.`
+      : `The page and ${project?.label ?? 'the files'} agree.`;
   }
 
   /**

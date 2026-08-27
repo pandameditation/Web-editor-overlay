@@ -1,3 +1,4 @@
+import { diffCSS, type CssChange, type CssDeclaration } from './css-patch.js';
 import type { ChangeRecord, DesignClass, DesignToken, LibraryBlock } from './types.js';
 
 /**
@@ -319,6 +320,47 @@ function locationLine(group: EditGroup): string {
 }
 
 /* -------------------------------------------------------------------------- */
+/* A stylesheet edit, as declarations                                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Above this many declaration changes, replacing the file is the clearer instruction.
+ *
+ * Not a performance limit. A list of forty edits to one stylesheet is a rewrite
+ * described as a diff, and reading it back to check the result is harder than reading
+ * the file it should end up as.
+ */
+const MAX_CSS_STEPS = 20;
+
+/** One declaration-level change, as a sentence naming the file and the rule. */
+function cssStep(file: string, change: CssChange): string {
+  const where = `in \`${file}\`${change.context.length ? ` inside ${code(change.context.join(' → '))}` : ''}`;
+  const rule = code(change.selector);
+
+  switch (change.kind) {
+    case 'set':
+      return change.from === undefined
+        ? `Add ${code(`${change.property}: ${change.to}`)} to the ${rule} rule ${where}.`
+        : `Change ${code(change.property)} on the ${rule} rule ${where} from ${code(change.from)} to ${code(change.to)}.`;
+
+    case 'remove':
+      return `Remove ${code(change.property)} from the ${rule} rule ${where}. It was ${code(change.from)}.`;
+
+    case 'add-rule':
+      return change.declarations.length
+        ? `Add a ${rule} rule ${where}, with ${code(declarationList(change.declarations))}.`
+        : `Add ${code(change.selector)} ${where}.`;
+
+    case 'remove-rule':
+      return `Remove the ${rule} rule ${where}. It held ${code(declarationList(change.declarations))}.`;
+  }
+}
+
+function declarationList(declarations: CssDeclaration[]): string {
+  return declarations.map((entry) => `${entry.property}: ${entry.value}`).join('; ');
+}
+
+/* -------------------------------------------------------------------------- */
 /* One record as one instruction                                               */
 /* -------------------------------------------------------------------------- */
 
@@ -333,11 +375,27 @@ function stepsFor(record: ChangeRecord, attachments: Attachment[]): string[] {
   const detail = record.detail ?? {};
   const scope = detail.scope;
 
-  // Whole-file replacements: the text is the instruction, so it goes in a block.
+  /*
+   * A stylesheet edited in the CSS panel.
+   *
+   * The panel hands over a whole buffer, which is the right thing to write to a file
+   * and the wrong thing to put in a prompt: "replace the entire contents of theme.css"
+   * says nothing about what changed, and gives a reader no way to check the result.
+   * Almost always the answer is one declaration, so the two texts are compared and the
+   * difference is what gets described.
+   *
+   * The whole file is still the fallback, for a rewrite too large to read as a list of
+   * declarations — at which point replacing it really is the clearest instruction.
+   */
   if (scope === 'stylesheet' && detail.css) {
-    const ref = attach(attachments, 'file', 'css', `\`${detail.file ?? record.target}\``, detail.css);
+    const file = detail.file ?? record.target;
+    const changes = record.before === undefined ? [] : diffCSS(record.before, detail.css);
+    if (changes.length && changes.length <= MAX_CSS_STEPS) {
+      return changes.map((change) => cssStep(file, change));
+    }
+    const ref = attach(attachments, 'file', 'css', `\`${file}\``, detail.css);
     return [
-      `Replace the entire contents of \`${detail.file ?? record.target}\` with ${ref}. Keep the file's existing comments and formatting where the new contents match the old.`,
+      `Replace the entire contents of \`${file}\` with ${ref}. Keep the file's existing comments and formatting where the new contents match the old.`,
     ];
   }
   if ((scope === 'external script' || scope === 'inline script') && detail.script) {

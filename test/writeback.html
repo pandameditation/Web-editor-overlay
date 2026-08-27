@@ -260,6 +260,11 @@
       check('savingTwiceWritesNothingTheSecondTime', () => again.writes.map((w) => w.path));
       check('andDoesNotStackASecondDesignSystemBlock', () =>
         project.files.get('writeback.css').split('heo:design-system start').length - 1);
+      // The regression this guards: the export's inline-<style> reconciliation is built
+      // from what is applied, not what is pending. Built from the pending set it would
+      // be empty here, and the document write would put the stale colour back.
+      check('theSecondPlanDoesNotUndoTheInlineRuleEdit', () =>
+        engine.exportHTML().includes('rebeccapurple'));
 
       /* ------------------------------------------------------------------ */
       /* The export, which is the single-file half of the same fix          */
@@ -272,6 +277,95 @@
         exported.includes('An inline sheet, in the same page as a linked one'));
       check('theExportStillLinksOutRatherThanInlining', () =>
         exported.includes('./writeback.css'));
+
+      /* ------------------------------------------------------------------ */
+      /* A whole-buffer CSS edit is described as the declarations it changed */
+      /* ------------------------------------------------------------------ */
+
+      /*
+       * The shape the CSS panel produces: the whole file, as the user typed it. Written
+       * to disk in full, because that is what they wrote — but described in the prompt
+       * as the one declaration that differs, because "replace the entire contents of
+       * writeback.css" tells a reader nothing and cannot be checked.
+       */
+      const editedCSS = project.files
+        .get('writeback.css')
+        .replace('border-radius: 12px;', 'border-radius: 999px;');
+      engine.history.commit({
+        label: 'Edit writeback.css',
+        subject: 'sheet:panel',
+        record: {
+          id: 'test-sheet', kind: 'style',
+          summary: 'Edit the CSS in writeback.css',
+          target: new URL('./writeback.css', location.href).href,
+          before: project.files.get('writeback.css'),
+          after: editedCSS,
+          detail: {
+            file: 'writeback.css', scope: 'stylesheet', css: editedCSS,
+            writeTo: new URL('./writeback.css', location.href).href,
+          },
+          at: Date.now(),
+        },
+        apply: () => { }, revert: () => { },
+      });
+
+      const prompt = engine.buildSavePrompt();
+      check('thePromptDoesNotProposeReplacingTheWholeStylesheet', () =>
+        !prompt.includes('Replace the entire contents of `writeback.css`'));
+      check('thePromptNamesTheExactDeclaration', () =>
+        /Change `border-radius` on the `\.card` rule in `writeback\.css` from `12px` to `999px`/.test(prompt));
+      check('thePromptDoesNotAttachTheWholeFile', () =>
+        !prompt.includes('## Full file contents'));
+      const cssPlan = await engine.previewWritePlan();
+      check('theWriteCarriesTheWholeFile', () => {
+        const write = cssPlan.writes.find((w) => w.path === 'writeback.css');
+        return !!write && write.after.includes('border-radius: 999px;');
+      });
+      engine.undo();
+
+      /* ------------------------------------------------------------------ */
+      /* Writing is the baseline the counter is measured from               */
+      /* ------------------------------------------------------------------ */
+
+      check('theCounterIsBackToZeroAfterWriting', () => engine.records.length);
+      check('andSoIsTheCountInState', () => engine.store.value.changeCount);
+      check('butTheUndoStackIsUntouched', () => engine.store.value.canUndo);
+      check('andTheEditorKnowsItHasSavedOnce', () => engine.history.hasSavePoint);
+
+      /*
+       * Rolling back a saved change is itself an unsaved change: the file on disk still
+       * holds the value the page no longer shows.
+       */
+      engine.undo();
+      check('undoingASavedChangePutsItBackOnTheCounter', () => engine.records.length);
+      check('andDescribesItAsARollback', () => engine.records[0].summary.startsWith('Roll back:'));
+      check('andReversesTheDirection', () => {
+        const record = engine.records[0];
+        return `${record.before} -> ${record.after}`;
+      });
+
+      engine.redo();
+      check('redoingItClearsTheCounterAgain', () => engine.records.length);
+
+      /*
+       * Undoing a saved change and then editing the same thing has to read as one net
+       * change from what is on disk, not as a rollback plus a fresh edit.
+       */
+      const savedRule = [...linkedSheet.cssRules].find((r) => r.selectorText === '.card');
+      engine.setRuleDeclaration(savedRule, 'padding', '77px');
+      check('editingAfterASaveIsOneChangeFromWhatIsOnDisk', () => {
+        const record = engine.records.find((r) => r.detail?.property === 'padding');
+        return record ? `${record.before} -> ${record.after}` : null;
+      });
+      check('andOnlyOneChangeIsPending', () => engine.records.length);
+      engine.undo();
+      check('undoingThatIsBackToZero', () => engine.records.length);
+
+      // Reverting everything after a save should show every saved change as pending.
+      engine.resetAll();
+      check('revertingEverythingAfterASaveCountsEveryChange', () => engine.records.length > 0);
+      check('andEveryOneOfThemIsARollback', () =>
+        engine.records.every((r) => r.summary.startsWith('Roll back:')));
 
       /* ------------------------------------------------------------------ */
       /* Disconnecting puts saving back the way it was                       */

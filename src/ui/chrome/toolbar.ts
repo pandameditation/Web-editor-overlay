@@ -303,10 +303,16 @@ export class HeoToolbar extends HeoElement {
 
       <span class="sep"></span>
 
+      <!--
+        Never disabled by the change count. The dialog behind this button holds the
+        change list, the file plan, the design-system hand-off and the way to connect a
+        folder in the first place — none of which stop being worth reaching just because
+        there is nothing pending right now.
+      -->
       <button
         class="btn primary"
         type="button"
-        ?disabled=${changes === 0 || state.saving}
+        ?disabled=${state.saving}
         title=${`Review and save changes (${modLabel()}+S)`}
         @click=${() => this.editor.previewSave()}
       >

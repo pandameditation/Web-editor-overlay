@@ -8,6 +8,7 @@
  */
 import assert from 'node:assert/strict';
 import {
+  diffCSS,
   normalizeSelector,
   patchCSS,
   upsertSection,
@@ -360,6 +361,140 @@ test('an emptied section leaves the file as it started', () => {
 
 test('a section written into an empty file does not start with blank lines', () => {
   assert.ok(!upsertSection('', ':root { --a: 1px; }').startsWith('\n'));
+});
+
+/* -------------------------------------------------------------------------- */
+/* Diffing, which is what the save prompt describes                            */
+/* -------------------------------------------------------------------------- */
+
+test('a changed value is one change, directionally', () => {
+  const changes = diffCSS('.card {\n  padding: 16px;\n}\n', '.card {\n  padding: 40px;\n}\n');
+  assert.deepEqual(changes, [
+    { kind: 'set', selector: '.card', context: [], property: 'padding', from: '16px', to: '40px' },
+  ]);
+});
+
+test('an added declaration reports no previous value', () => {
+  const changes = diffCSS('.card {\n  padding: 16px;\n}\n', '.card {\n  padding: 16px;\n  color: red;\n}\n');
+  assert.equal(changes.length, 1);
+  assert.equal(changes[0].kind, 'set');
+  assert.ok(!('from' in changes[0]), 'a new declaration has nothing to change from');
+});
+
+test('a removed declaration is reported with what it held', () => {
+  const changes = diffCSS('.card {\n  padding: 16px;\n  color: red;\n}\n', '.card {\n  padding: 16px;\n}\n');
+  assert.deepEqual(changes, [
+    { kind: 'remove', selector: '.card', context: [], property: 'color', from: 'red' },
+  ]);
+});
+
+test('reformatting is not a change', () => {
+  const before = '/* a note */\n.card {\n  padding: 16px;\n  color: red;\n}\n';
+  const after = '.card{padding:16px;color:red}';
+  assert.deepEqual(diffCSS(before, after), []);
+});
+
+test('rewriting a comment is not a change', () => {
+  const before = '/* old note */\n.card { padding: 16px; }\n';
+  const after = '/* a completely different note */\n.card { padding: 16px; }\n';
+  assert.deepEqual(diffCSS(before, after), []);
+});
+
+test('reordering declarations within a rule is not a change', () => {
+  const before = '.card { padding: 1px; color: red; }';
+  const after = '.card { color: red; padding: 1px; }';
+  assert.deepEqual(diffCSS(before, after), []);
+});
+
+test('a new rule arrives with its declarations', () => {
+  const changes = diffCSS('.a { color: red; }', '.a { color: red; }\n.b { padding: 2px; margin: 0; }');
+  assert.equal(changes.length, 1);
+  assert.deepEqual(changes[0], {
+    kind: 'add-rule',
+    selector: '.b',
+    context: [],
+    declarations: [
+      { property: 'padding', value: '2px' },
+      { property: 'margin', value: '0' },
+    ],
+  });
+});
+
+test('a deleted rule is reported last, with what it held', () => {
+  const changes = diffCSS('.a { color: red; }\n.b { padding: 2px; }', '.a { color: blue; }');
+  assert.equal(changes.length, 2);
+  assert.equal(changes[0].kind, 'set', 'changes come before deletions');
+  assert.equal(changes[1].kind, 'remove-rule');
+});
+
+test('a rule inside a media query carries it as context', () => {
+  const before = '@media (min-width: 40em) {\n  .card { padding: 24px; }\n}\n';
+  const after = '@media (min-width: 40em) {\n  .card { padding: 48px; }\n}\n';
+  const changes = diffCSS(before, after);
+  assert.equal(changes.length, 1);
+  assert.deepEqual(changes[0].context, ['@media (min-width: 40em)']);
+});
+
+test('the same selector inside and outside a media query is not confused', () => {
+  const before = '.card { padding: 1px; }\n@media print {\n  .card { padding: 2px; }\n}\n';
+  const after = '.card { padding: 1px; }\n@media print {\n  .card { padding: 9px; }\n}\n';
+  const changes = diffCSS(before, after);
+  assert.equal(changes.length, 1);
+  assert.deepEqual(changes[0].context, ['@media print']);
+  assert.equal(changes[0].kind === 'set' && changes[0].from, '2px');
+});
+
+test('two rules with the same selector are told apart by position', () => {
+  const before = '.card { padding: 1px; }\n.card { padding: 2px; }';
+  const after = '.card { padding: 1px; }\n.card { padding: 9px; }';
+  const changes = diffCSS(before, after);
+  assert.equal(changes.length, 1);
+  assert.equal(changes[0].kind === 'set' && changes[0].from, '2px');
+});
+
+test('a nested rule carries its parent as context', () => {
+  const before = '.card {\n  padding: 1px;\n  &:hover { color: red; }\n}\n';
+  const after = '.card {\n  padding: 1px;\n  &:hover { color: blue; }\n}\n';
+  const changes = diffCSS(before, after);
+  assert.equal(changes.length, 1);
+  assert.deepEqual(changes[0].context, ['.card']);
+});
+
+test('adding a whole media block reads as adding the rules inside it', () => {
+  const changes = diffCSS('.a { color: red; }', '.a { color: red; }\n@media print {\n  .a { color: black; }\n}\n');
+  assert.equal(changes.length, 1);
+  assert.equal(changes[0].kind, 'add-rule');
+  assert.deepEqual(changes[0].context, ['@media print']);
+});
+
+test('an @import is tracked even though it has no declarations', () => {
+  const changes = diffCSS('.a { color: red; }', "@import url('reset.css');\n.a { color: red; }");
+  assert.equal(changes.length, 1);
+  assert.equal(changes[0].kind, 'add-rule');
+  assert.match(changes[0].selector, /@import/);
+});
+
+test('gaining or losing !important is a change', () => {
+  const gained = diffCSS('.a { color: red; }', '.a { color: red !important; }');
+  assert.equal(gained.length, 1);
+  assert.equal(gained[0].kind === 'set' && gained[0].to, 'red !important');
+  assert.deepEqual(diffCSS('.a { color: red !important; }', '.a { color: red !important; }'), []);
+});
+
+test('custom properties are compared case-sensitively, others are not', () => {
+  assert.deepEqual(diffCSS('.a { COLOR: red; }', '.a { color: red; }'), []);
+  assert.equal(diffCSS(':root { --a: 1px; }', ':root { --A: 1px; }').length, 2);
+});
+
+test('an unchanged file yields nothing', () => {
+  assert.deepEqual(diffCSS(FIXTURE, FIXTURE), []);
+});
+
+test('a whole-file rewrite still comes back as a diff, however long', () => {
+  const before = Array.from({ length: 30 }, (_, i) => `.r${i} { padding: ${i}px; }`).join('\n');
+  const after = Array.from({ length: 30 }, (_, i) => `.r${i} { padding: ${i + 1}px; }`).join('\n');
+  // Deciding that 30 changes is too many to read belongs to the prompt, not here.
+  assert.equal(diffCSS(before, after).length, 30);
 });
 
 /* -------------------------------------------------------------------------- */

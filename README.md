@@ -280,6 +280,17 @@ stands now, not a log of what you did on the way there. Nudging a margin from 0 
 all, and so is inserting an element and deleting it again. Undo history keeps every
 step; the count and the prompt only report outcomes.
 
+Once you have written to files, "how the page started" becomes **how it stood at that
+write**. The count goes back to zero and undo still works — and undoing a saved change
+puts it back on the count, described as a rollback, because the file on disk still holds
+the value the page no longer shows. Undo one, then edit the same thing again, and the
+two collapse into the single change that is true of the file: `2 → 7`, not `2 → 0` and
+`0 → 7`.
+
+The save dialog opens whether or not anything is pending. It is also where the change
+list, the file plan, the design-system hand-off and the folder connection live, and none
+of those stop being worth reaching because the count is zero.
+
 ### What the prompt looks like
 
 ````markdown
@@ -400,6 +411,35 @@ re-serialization — `#fff` rewritten as `rgb(255, 255, 255)`, `margin: 0` as
 that back would reformat a file nobody asked to reformat and bury the one changed line
 in a whole-file diff. So the change is applied to the original text instead, and every
 byte outside the edited declaration is left where it was.
+
+**Writing sets the baseline.** The count resets, the undo stack does not. See
+[The workflow](#the-workflow).
+
+### The CSS panel, written and described differently
+
+Editing a stylesheet in the **Code → CSS** tab hands over a whole buffer, because that
+is what you typed. That makes it the right thing to write — the file ends up as the text
+you wrote, byte for byte — and the wrong thing to put in a prompt. "Replace the entire
+contents of `theme.css`" says nothing about what changed and gives a reader no way to
+check the result.
+
+So the prompt gets the difference instead. The two versions are compared structurally,
+not by line, and only what changed is described:
+
+```markdown
+1. Change `border-radius` on the `.card` rule in `theme.css` from `12px` to `999px`.
+2. Add `letter-spacing: -0.01em` to the `.hero` rule in `theme.css`.
+3. Remove `float` from the `.sidebar` rule in `theme.css` inside `@media print`. It was `left`.
+```
+
+Reformatting, reordering declarations within a rule, and rewriting comments produce no
+steps at all, because none of them change what the stylesheet does. A rewrite too large
+to read as a list of declarations falls back to replacing the file, at which point that
+really is the clearest instruction.
+
+External scripts are still described as whole-file replacements. JavaScript has no
+structure this can exploit the way CSS does, and guessing at which part of a rewritten
+function is "the change" would be worse than saying plainly that the file was replaced.
 
 ### What still will not be written
 
@@ -1144,7 +1184,7 @@ node scripts/browser-check.mjs "file://$PWD/test/visual.html?state=tokens" 25000
 | Page | Covers |
 | --- | --- |
 | `test/self-check.html` | The regression suite: mounting, selection, styles, classes, structure, drag, tokens, undo/redo depth, prompt generation, export, unmount, and every panel rendering. |
-| `test/writeback.html` | The multi-file case, with a linked stylesheet and an external script. Asserts that a stylesheet write is surgical byte for byte, that comments and `#fff` and `margin: 0` survive it, that a rule edited in an inline `<style>` reaches the exported HTML, that unticking a change keeps it out of the file, and that saving twice writes nothing the second time. |
+| `test/writeback.html` | The multi-file case, with a linked stylesheet and an external script. Asserts that a stylesheet write is surgical byte for byte, that comments and `#fff` and `margin: 0` survive it, that a rule edited in an inline `<style>` reaches the exported HTML, that unticking a change keeps it out of the file, that saving twice writes nothing the second time, that a whole-buffer CSS edit is described as the one declaration that changed while still being written in full, and that writing sets the baseline the change count is measured from — including that undoing a saved change reappears on the count as a rollback. |
 | `test/script-tag.html` | The one-tag integration. Its whole setup is a single `<script>`, so the file is both the fixture and the example. Asserts every `data-*` attribute lands. |
 | `test/script-tag-manual.html` | That a bundle *without* `data-heo` mounts nothing, and that `mount()` and `unmount()` still behave. |
 

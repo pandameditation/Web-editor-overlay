@@ -53,6 +53,18 @@ export class History {
   #lastCommitAt = 0;
   #listeners = new Set<() => void>();
   #limit: number;
+  /**
+   * The stack as it stood the last time the changes were written to disk.
+   *
+   * Held as commands rather than a depth, because a depth cannot answer the question
+   * that matters after a save: *which* commands were persisted. Undo moves commands
+   * off the stack and a later edit discards them entirely, so the only way to still
+   * describe "you have rolled back something that was saved" is to have kept a
+   * reference to it.
+   *
+   * Null means nothing has been written, which is the state every session starts in.
+   */
+  #saved: Map<string, Command> | null = null;
 
   constructor(limit = 200) {
     this.#limit = limit;
@@ -89,6 +101,65 @@ export class History {
    * Undo history is untouched by this: the granular steps remain on the stack.
    */
   get records(): ChangeRecord[] {
+    const saved = this.#saved;
+    if (!saved) return netRecords(this.#past);
+
+    /*
+     * Measured from the last write, not from the start of the session.
+     *
+     * Two things can be pending. A command committed since the write, obviously. And
+     * a command that *was* written and has since been undone — rolling back a saved
+     * change is itself an unsaved change, and the file on disk still holds the value
+     * the page no longer shows.
+     *
+     * Both go through `netRecords` together, and they have to, because they can
+     * concern the same thing. Save `padding: 0 → 2`, undo it, then set padding to 7:
+     * reported separately that reads as "put 2 back to 0" plus "set 0 to 7", the
+     * first of which is not true of anything. Sharing the subject reduces the pair to
+     * the one change that is: `2 → 7`.
+     */
+    const present = new Set(this.#past.map((command) => command.record.id));
+    const timeline: Command[] = [];
+    for (const command of saved.values()) {
+      if (!present.has(command.record.id)) timeline.push(asRolledBack(command));
+    }
+    for (const command of this.#past) {
+      if (!saved.has(command.record.id)) timeline.push(command);
+    }
+    return netRecords(timeline);
+  }
+
+  /**
+   * Take the current stack as written, so nothing is pending until it changes again.
+   *
+   * The stack itself is untouched: everything stays undoable, and undoing past this
+   * point puts the rolled-back changes back on the pending count rather than pretending
+   * the page and the files still agree.
+   */
+  markSaved(): void {
+    this.#saved = new Map(this.#past.map((command) => [command.record.id, command]));
+    this.#emit();
+  }
+
+  /** True once anything has been written, so the count means "since that write". */
+  get hasSavePoint(): boolean {
+    return this.#saved !== null;
+  }
+
+  /**
+   * Everything currently applied to the page, measured from the start of the session.
+   *
+   * Distinct from `records`, which is measured from the last write and is what a save
+   * hands off. This is for the callers that describe the page rather than the pending
+   * work — notably the HTML export, which has to replay every CSSOM edit still in
+   * effect into the `<style>` text it serializes, whether or not that edit has already
+   * been written to a file. Using the pending set there would export the value the page
+   * had before the session the moment a save reset the count.
+   *
+   * Exclusions do not apply here either, for the same reason: unticking a change leaves
+   * it on the page, and this is the page.
+   */
+  get appliedRecords(): ChangeRecord[] {
     return netRecords(this.#past);
   }
 
@@ -194,10 +265,16 @@ export class History {
     this.#emit();
   }
 
-  /** Forget history without touching the DOM. Used after a successful save. */
+  /**
+   * Forget history without touching the DOM.
+   *
+   * Not what a save should do — that is `markSaved`, which leaves the stack intact so
+   * the work stays undoable. This is for tearing a session down.
+   */
   clear(): void {
     this.#past = [];
     this.#future = [];
+    this.#saved = null;
     this.#lastCommitAt = 0;
     this.#emit();
   }
@@ -269,4 +346,53 @@ function netRecords(commands: readonly Command[]): ChangeRecord[] {
 /** Absent and empty are the same thing when deciding whether anything changed. */
 function normalize(value: string | undefined): string {
   return (value ?? '').trim();
+}
+
+/**
+ * A saved command, described as the rollback it has become.
+ *
+ * Only ever reported, never run: whatever this describes has already happened, because
+ * the undo that took the command off the stack is what created the need to describe it.
+ * `apply` and `revert` exist to satisfy the shape and would be a bug to call.
+ *
+ * The `subject` is carried over deliberately. It is what lets a rollback and a
+ * subsequent edit to the same thing collapse into one net change.
+ */
+function asRolledBack(command: Command): Command {
+  return {
+    label: `Roll back ${command.label}`,
+    subject: command.subject,
+    apply: () => { },
+    revert: () => { },
+    record: invertRecord(command.record),
+  };
+}
+
+/**
+ * A change record, turned around.
+ *
+ * `before` and `after` swap, and so does anything in `detail` that carries a payload
+ * rather than a description — a whole stylesheet, a whole script, one declaration's
+ * value. Those are what a consumer would write or hand to an agent, so leaving them
+ * pointing at the new state while the sentence says "roll back" would produce
+ * instructions that do the opposite of what they claim.
+ */
+function invertRecord(record: ChangeRecord): ChangeRecord {
+  const detail = record.detail ? { ...record.detail } : undefined;
+  if (detail) {
+    const previous = record.before ?? '';
+    if (detail.scope === 'stylesheet rule') detail.value = previous;
+    if (detail.css !== undefined) detail.css = previous;
+    if (detail.script !== undefined) detail.script = previous;
+  }
+  return {
+    ...record,
+    // Derived from the original rather than freshly minted, so the id is stable across
+    // re-reads and the save dialog's checkboxes keep pointing at the same row.
+    id: `${record.id}~`,
+    summary: `Roll back: ${record.summary}`,
+    before: record.after,
+    after: record.before,
+    detail,
+  };
 }

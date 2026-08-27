@@ -2611,13 +2611,40 @@ export class EditorEngine {
     const plan = await this.previewWritePlan();
     if (!plan) return null;
     if (!plan.writes.length) {
+      // Nothing to do, and nothing to correct: the files already say what the page
+      // says, which is exactly the state a save is trying to reach.
+      this.#markSaved();
       this.notify('Every change is already in the files.', 'info');
       return { written: [], failed: [], unplaced: [] };
     }
 
     const result = await applyWritePlan(host, plan);
+    if (!result.failed.length) this.#markSaved();
     this.#reportWrite(result, plan);
     return result;
+  }
+
+  /**
+   * The page and the files now agree, so the pending count starts again from here.
+   *
+   * Undo history is deliberately left alone. Writing a file is not a reason to lose
+   * the ability to take it back — and taking it back is itself an unsaved change,
+   * which is why the count is measured from this point rather than reset to a
+   * permanent zero.
+   *
+   * Changes the plan could not file are folded in too. They are not on disk, but they
+   * never can be — a cross-origin stylesheet does not become writable by being counted
+   * forever — and the Files step names them every time it opens. Leaving them on the
+   * counter would mean it never rests, which makes it useless as a signal.
+   */
+  #markSaved(): void {
+    this.history.markSaved();
+    // The ids these referred to are no longer in the pending set.
+    this.#excludedChanges.clear();
+    this.store.patch({ writePlan: null });
+    if (this.store.value.savePreview != null) {
+      this.store.patch({ savePreview: this.buildSavePrompt() });
+    }
   }
 
   #reportWrite(result: WriteResult, plan: WritePlan): void {
@@ -2670,13 +2697,17 @@ export class EditorEngine {
     });
   }
 
+  /**
+   * Open the save dialog. Always opens, even with nothing to save.
+   *
+   * It used to refuse and show a toast instead, which was the wrong trade: the dialog
+   * is not only a commit button. It is where the change list lives, where the design
+   * system travels from, where the file plan and its destination control are, and where
+   * you go to find out that a folder can be connected at all. Refusing to open it
+   * because the count is zero withholds all of that to prevent a no-op, and a dialog
+   * saying "nothing to save" is clearer than a toast saying the same thing anyway.
+   */
   previewSave(): void {
-    // Net size, not stack depth: a page whose edits all cancelled out has nothing
-    // worth handing off even though undo history is not empty.
-    if (!this.history.netSize) {
-      this.notify('Nothing has changed yet.', 'info');
-      return;
-    }
     this.endTextEdit(true);
     this.store.patch({ savePreview: this.buildSavePrompt() });
     // Work out the files while the user is reading the change list, so the primary
@@ -2696,19 +2727,26 @@ export class EditorEngine {
    * export that skips the reconciliation carries the value the page had before the
    * session while the screen shows the one after it. Routing every caller through
    * here is what stops that being something to remember.
+   *
+   * Built from what is *applied*, not from what is pending. A `<style>` element's text
+   * is still the text the session started with however many times the page has been
+   * saved, so the reconciliation has to replay every rule edit still in effect. Using
+   * the pending set would make the first save after a rule edit write the file
+   * correctly and the second one put the stale value back.
    */
   exportHTML(): string {
-    return exportHTML(inlineStyleEdits(this.handoffRecords));
+    return exportHTML(inlineStyleEdits(this.history.appliedRecords));
   }
 
   async save(): Promise<boolean> {
-    if (!this.history.netSize) {
-      this.notify('Nothing has changed yet.', 'info');
-      return false;
-    }
     const handoff = this.handoffRecords;
     if (!handoff.length) {
-      this.notify('Every change is unchecked, so there is nothing to hand off.', 'info');
+      this.notify(
+        this.history.netSize
+          ? 'Every change is unchecked, so there is nothing to hand off.'
+          : 'Nothing has changed since the last save.',
+        'info',
+      );
       return false;
     }
     this.endTextEdit(true);

@@ -160,6 +160,172 @@ export function hasSection(source: string): boolean {
   return source.includes(SECTION_START);
 }
 
+/* -------------------------------------------------------------------------- */
+/* Diffing two stylesheets                                                     */
+/* -------------------------------------------------------------------------- */
+
+/** One declaration, as written. */
+export interface CssDeclaration {
+  property: string;
+  value: string;
+}
+
+/** What changed between two versions of a stylesheet. */
+export type CssChange =
+  | {
+    kind: 'set';
+    selector: string;
+    context: string[];
+    property: string;
+    /** Absent when the declaration is new to the rule. */
+    from?: string;
+    to: string;
+  }
+  | { kind: 'remove'; selector: string; context: string[]; property: string; from: string }
+  | { kind: 'add-rule'; selector: string; context: string[]; declarations: CssDeclaration[] }
+  | { kind: 'remove-rule'; selector: string; context: string[]; declarations: CssDeclaration[] };
+
+/**
+ * What actually changed between two stylesheets, declaration by declaration.
+ *
+ * The CSS panel hands over a whole buffer, because that is what the user edited. That
+ * makes it the right thing to *write* — it is literally the file they typed — and the
+ * wrong thing to *describe*. "Replace the entire contents of theme.css" tells a reader
+ * nothing about what changed and gives an agent no way to check its work, while the
+ * truth is usually one declaration.
+ *
+ * So the two texts are compared structurally rather than as lines. Reformatting,
+ * reordering declarations within a rule, and rewriting comments all produce no changes
+ * here, which is the point: none of them change what the stylesheet does.
+ *
+ * Rules are matched by selector within their at-rule context, and by occurrence when a
+ * selector appears more than once — the same locator the patcher uses, for the same
+ * reason. A restructuring too large to express this way is better handed over as a
+ * whole file, so the caller is left to decide that by looking at how much came back.
+ */
+export function diffCSS(before: string, after: string): CssChange[] {
+  const old = flatten(before);
+  const next = flatten(after);
+  const changes: CssChange[] = [];
+
+  for (const rule of [...next.values()].sort((a, b) => a.order - b.order)) {
+    const previous = old.get(rule.key);
+
+    if (!previous) {
+      changes.push({
+        kind: 'add-rule',
+        selector: rule.selector,
+        context: rule.context,
+        declarations: [...rule.declarations.values()],
+      });
+      continue;
+    }
+
+    for (const [key, entry] of rule.declarations) {
+      const was = previous.declarations.get(key);
+      if (was && was.value === entry.value) continue;
+      changes.push({
+        kind: 'set',
+        selector: rule.selector,
+        context: rule.context,
+        property: entry.property,
+        ...(was ? { from: was.value } : {}),
+        to: entry.value,
+      });
+    }
+
+    for (const [key, entry] of previous.declarations) {
+      if (rule.declarations.has(key)) continue;
+      changes.push({
+        kind: 'remove',
+        selector: rule.selector,
+        context: rule.context,
+        property: entry.property,
+        from: entry.value,
+      });
+    }
+  }
+
+  // Whole-rule deletions last: read as a list of things to take out, after everything
+  // that is being changed or added.
+  for (const rule of [...old.values()].sort((a, b) => a.order - b.order)) {
+    if (next.has(rule.key)) continue;
+    changes.push({
+      kind: 'remove-rule',
+      selector: rule.selector,
+      context: rule.context,
+      declarations: [...rule.declarations.values()],
+    });
+  }
+
+  return changes;
+}
+
+interface FlatRule {
+  key: string;
+  selector: string;
+  context: string[];
+  /** Keyed the way `sameProperty` compares, valued as written. */
+  declarations: Map<string, CssDeclaration>;
+  order: number;
+}
+
+/**
+ * Every rule in a stylesheet, flattened to a lookup.
+ *
+ * At-rule blocks become context on their children rather than entries of their own, so
+ * adding a whole `@media` block reads as adding the rules inside it — which is what a
+ * reader has to act on. Statement at-rules like `@import` have no children to carry
+ * them, so they are recorded as rules with no declarations.
+ */
+function flatten(source: string): Map<string, FlatRule> {
+  const rules = new Map<string, FlatRule>();
+  const occurrences = new Map<string, number>();
+  let order = 0;
+
+  const record = (
+    selector: string,
+    context: string[],
+    declarations: Map<string, CssDeclaration>,
+  ): void => {
+    const base = `${context.join(' > ')}||${selector}`;
+    const seen = occurrences.get(base) ?? 0;
+    occurrences.set(base, seen + 1);
+    order += 1;
+    const key = `${base}#${seen}`;
+    rules.set(key, { key, selector, context, declarations, order });
+  };
+
+  const walk = (blocks: Block[], context: string[]): void => {
+    for (const block of blocks) {
+      if (block.atRule) {
+        if (block.bodyStart === -1) record(block.prelude, context, new Map());
+        else walk(block.children, [...context, block.prelude]);
+        continue;
+      }
+      const declarations = new Map<string, CssDeclaration>();
+      for (const entry of parseDeclarations(source, block.bodyStart, block.bodyEnd)) {
+        declarations.set(propertyKey(entry.property), {
+          property: entry.property,
+          // Through `priorityEnd`, so `!important` is part of the value here: adding or
+          // dropping it changes what the rule does and has to show up as a change.
+          value: source.slice(entry.valueStart, entry.priorityEnd).trim(),
+        });
+      }
+      record(block.prelude, context, declarations);
+      // A nested rule is a rule, with its parent's selector as context.
+      walk(block.children, [...context, block.prelude]);
+    }
+  };
+
+  walk(scanBlocks(source, 0, source.length), []);
+  return rules;
+}
+
+function propertyKey(property: string): string {
+  return property.startsWith('--') ? property : property.toLowerCase();
+}
+
 /**
  * A selector in the shape the CSSOM would report it.
  *
