@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+  <meta charset="utf-8">
+  <TITLE>Downloading without a folder</TITLE>
+  <style>
+    body { margin: 0; padding: 24px; font-family: system-ui, sans-serif; }
+  </style>
+</head>
+<body>
+  <!-- The same author-written quirks the patch fixture uses: single quotes, an unquoted
+       attribute, uppercase tags, a self-closed void element. A download that serializes the
+       DOM normalises every one of them, so their survival is what proves the download went
+       through the file rather than through the page. -->
+  <h1 id="hero">Original heading</h1>
+  <p id="body" class=lead data-note='kept'>Original copy with &apos;entities&apos; in it.</p>
+  <br />
+  <img id="shot" src="a.png" alt="Self closed" />
+  <section id="cards">
+    <article class="card">One</article>
+    <article class="card">Two</article>
+  </section>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const errors = [];
+      window.addEventListener('error', (e) => errors.push('error: ' + e.message));
+      window.addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+      const results = {};
+      const step = (name) => {
+        document.getElementById('progress').textContent = name;
+      };
+      const check = (name, fn) => {
+        step(name);
+        try {
+          results[name] = fn();
+        } catch (e) {
+          results[name] = 'threw: ' + String(e && e.message);
+          errors.push(name + ': ' + String(e && e.message));
+        }
+      };
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const byId = (id) => document.getElementById(id);
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark' });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+
+      /*
+       * No project is attached, on purpose. This is the Firefox-on-file:// shape: no directory
+       * picker, an opaque origin so the page cannot fetch itself, and the download as the only
+       * way out.
+       */
+      check('thereIsNoConnectedFolder', () => engine.store.value.project ?? null);
+
+      // The file's own text, standing in for what the user hands over in the file dialog.
+      const page = decodeURIComponent(location.pathname).split('/').pop();
+      const source = await (await fetch('./' + page)).text();
+
+      /* ---- Every kind of edit the earlier work made patchable ---- */
+      const heading = byId('hero');
+      engine.beginTextEdit(heading);
+      await frames();
+      heading.firstChild.data = 'Patched heading';
+      engine.endTextEdit(true);
+      await frames();
+      api.select(byId('body'));
+      engine.setStyle('padding', '12px');
+      engine.setAttribute('alt', 'Patched alt', byId('shot'));
+      // A nameless element, reached by its position among its siblings.
+      api.select(document.querySelectorAll('#cards .card')[1]);
+      engine.setStyle('color', 'teal');
+      // And a structural change, which rebuilds its container.
+      engine.insertMarkup('<article class="card">Three</article>', {
+        reference: document.querySelector('#cards .card'),
+        position: 'after',
+      });
+      await frames();
+
+      /* ------------------------------------------------------------------ *
+       * With the file in hand, the download is a patch of it.
+       * ------------------------------------------------------------------ */
+      const patched = engine.exportPatchedHTML(source);
+      check('withTheFileInHandTheDownloadIsPatched', () => ({
+        patched: patched.patched,
+        why: patched.why,
+      }));
+
+      /*
+       * The point of all of it: the author's formatting is still there. A serialized download
+       * would have normalised every one of these.
+       */
+      check('andTheAuthorsFormattingSurvives', () => ({
+        unquotedClass: /class=lead/.test(patched.html),
+        singleQuotedData: /data-note='kept'/.test(patched.html),
+        uppercaseTitle: /<TITLE>/.test(patched.html),
+        selfClosedBr: /<br \/>/.test(patched.html),
+        entities: /&apos;/.test(patched.html),
+        authorsComment: /the same author-written quirks/i.test(patched.html),
+      }));
+
+      // And every edit reached it, read back through a parser rather than by regex.
+      check('whileEveryEditReachedIt', () => {
+        const doc = new DOMParser().parseFromString(patched.html, 'text/html');
+        const cards = Array.from(doc.querySelectorAll('#cards .card'));
+        return {
+          heading: doc.getElementById('hero')?.textContent ?? null,
+          style: doc.getElementById('body')?.getAttribute('style') ?? null,
+          alt: doc.getElementById('shot')?.getAttribute('alt') ?? null,
+          cards: cards.map((el) => el.textContent).join(','),
+          styledCard: cards.map((el) => el.getAttribute('style') ?? '-').join(','),
+        };
+      });
+
+      // The download carries no trace of the editor, the same as the file write.
+      check('andCarriesNoEditorTrace', () => {
+        const doc = new DOMParser().parseFromString(patched.html, 'text/html');
+        return {
+          editorAttributes: doc.querySelectorAll('[data-heo-src],[data-heo-inserted],[data-heo-edit]').length,
+          overlayHost: doc.querySelectorAll('html-editor-overlay').length,
+        };
+      });
+
+      // A patch of the file, not a copy of the DOM: the size moves by the edits, not the page.
+      check('soTheDownloadIsTheFilePlusTheEdits', () => {
+        const grew = patched.html.length - source.length;
+        return { grewBy: grew, underOneKilobyte: Math.abs(grew) < 1024 };
+      });
+
+      /* ------------------------------------------------------------------ *
+       * Without it, the download still happens — and says what it is.
+       * ------------------------------------------------------------------ */
+      const blind = engine.exportPatchedHTML(null);
+      check('withoutTheFileItStillExports', () => ({
+        patched: blind.patched,
+        hasHtml: blind.html.length > 0,
+        saysWhy: blind.why,
+      }));
+      // The unreadable case is the one worth offering a file for, so it names that cause.
+      check('andNamesTheMissingFileAsTheReason', () =>
+        /could not read its own file/.test(blind.why[0] ?? ''));
+
+      /* ------------------------------------------------------------------ *
+       * A stranger's file is refused rather than patched.
+       * ------------------------------------------------------------------ */
+      const stranger = engine.exportPatchedHTML(
+        '<!doctype html><html><body><h2>Someone else\'s page</h2></body></html>',
+      );
+      check('aStrangersFileIsRefused', () => ({
+        patched: stranger.patched,
+        gaveAReason: (stranger.why[0] ?? '').length > 0,
+      }));
+
+      results.__errors = errors;
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"__errors":["' + String(e && e.message) + '"]}:END';
+    });
+  </script>
+</body>
+</html>

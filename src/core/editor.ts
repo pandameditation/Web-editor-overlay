@@ -42,6 +42,7 @@ import {
   exportDesignSystem,
   exportHTML,
   importDesignSystem,
+  pickTextFile,
 } from './design-system.js';
 import { containTab } from './focus.js';
 import { History, nextChangeId, type Command } from './history.js';
@@ -84,6 +85,7 @@ import {
   type FileHost,
   type FileHostKind,
   type HostAvailability,
+  documentPath,
 } from './file-host.js';
 import {
   sourceTargetOf,
@@ -121,6 +123,7 @@ import {
   type WritePlan,
   type WriteResult,
   type WriteSubject,
+  patchDocumentSource,
 } from './writeback.js';
 import { decodeSeed, decodeSeedSync, encodeSeed } from './seed.js';
 import { Store } from './store.js';
@@ -3460,9 +3463,108 @@ export class EditorEngine {
     downloadText('apply-visual-edits.md', this.buildSavePrompt(), 'text/markdown');
   }
 
-  exportPageHTML(): void {
-    downloadText(this.options.fileName ?? 'edited-page.html', this.exportHTML(), 'text/html');
-    this.notify('Exported the page as HTML.', 'success');
+  /**
+   * The download, patched from the file when the file can be had.
+   *
+   * A download is the save route for a page with no folder behind it — every local file opened
+   * straight from disk in a browser without the directory picker. It used to be the one path
+   * that always serialized, which is the destructive outcome the whole patching effort exists
+   * to avoid: the user opens the downloaded file expecting three changed attributes and finds
+   * every quote, void tag and letter case in the document rewritten around them.
+   *
+   * So the same patch pipeline runs here, against whatever copy of the source can be reached.
+   * When none can, the export still happens — a button that sometimes produces nothing is
+   * worse than one that explains what it produced — and the offer to do better comes with it.
+   */
+  async exportPageHTML(): Promise<void> {
+    const name = this.options.fileName ?? 'edited-page.html';
+    const source = await this.#readOwnDocument();
+    const result = this.exportPatchedHTML(source);
+    downloadText(name, result.html, 'text/html');
+
+    if (result.patched) {
+      this.notify(`Exported ${name}, patched in place. The rest of the file is untouched.`, 'success');
+      return;
+    }
+    /*
+     * Rewritten, and the reason decides whether there is anything to offer.
+     *
+     * No source at all is worth an offer: the file is on the user's disk and they can hand it
+     * over. A source that was read but could not be patched is not — the offer would fail the
+     * same way a second time, so the honest thing is to name the cause.
+     */
+    if (source === null) {
+      this.notify(
+        'Exported the page as HTML, rewritten from the DOM, so quoting and formatting are ' +
+        'normalised throughout. Hand over the original file and the export keeps it.',
+        'warn',
+        { label: 'Use the original file', run: () => void this.exportFromPickedFile() },
+      );
+      return;
+    }
+    this.notify(
+      `Exported the page as HTML, rewritten because ${result.why[0] ?? 'a change could not be placed in the file'}.`,
+      'warn',
+    );
+  }
+
+  /**
+   * Export again, this time from a file the user hands over.
+   *
+   * The picker is the only way to read the page's own source on a `file://` URL: its origin is
+   * opaque, so fetching itself is refused, and Firefox has no directory picker to offer
+   * instead. A file the user chooses in a dialog arrives with none of that in the way.
+   */
+  async exportFromPickedFile(): Promise<void> {
+    const picked = await pickTextFile('text/html,.html,.htm');
+    if (picked === null) return;
+
+    const name = this.options.fileName ?? 'edited-page.html';
+    const expected = documentPath()?.split('/').pop();
+    if (!/<html|<body|<!doctype/i.test(picked)) {
+      this.notify('That file is not an HTML document, so there is nothing to patch in it.', 'error');
+      return;
+    }
+
+    /*
+     * Whether it is *this* page's file is settled by the patch attempt, not guessed at here.
+     *
+     * Every change has to resolve to an element in the text or the attempt fails as a whole, so
+     * the wrong file is refused by the same rule that refuses one which has moved on since. That
+     * is a stronger check than comparing names — a renamed copy passes and a same-named stranger
+     * does not — and it needs no second heuristic kept in step with the first.
+     */
+
+    const result = this.exportPatchedHTML(picked);
+    if (!result.patched) {
+      this.notify(
+        `That file could not be patched: ${result.why[0] ?? 'no change could be placed in it'}. ` +
+        `${expected ? `Is it the ${expected} this page was opened from?` : ''}`,
+        'error',
+      );
+      return;
+    }
+    downloadText(name, result.html, 'text/html');
+    this.notify(`Exported ${name} from your file, patched in place.`, 'success');
+  }
+
+  /**
+   * The export's text: the source with this session's edits patched into it, or the DOM.
+   *
+   * Split out from the download so the decision is testable without a file dialog in the way.
+   */
+  exportPatchedHTML(source: string | null): { html: string; patched: boolean; why: string[] } {
+    const path = documentPath();
+    if (source !== null && path) {
+      const attempt = patchDocumentSource(source, this.#writeSubject(), path);
+      if ('html' in attempt) return { html: attempt.html, patched: true, why: [] };
+      return { html: this.exportHTML(), patched: false, why: attempt.why };
+    }
+    return {
+      html: this.exportHTML(),
+      patched: false,
+      why: [path ? 'the page could not read its own file' : 'this page has no file path'],
+    };
   }
 
   designSystem(): DesignSystemDocument {

@@ -964,7 +964,12 @@ export class HeoSaveDialog extends HeoElement {
           >
             ${icon('blocks', 12)} Design system ${icon('chevronRight', 11)}
           </button>
-          <button class="btn" type="button" @click=${() => this.editor.exportPageHTML()}>
+          <button
+            class="btn"
+            type="button"
+            title="Download this page as HTML. The original file is patched where it can be read, so only the lines you changed change."
+            @click=${() => void this.editor.exportPageHTML()}
+          >
             ${icon('code', 12)} HTML
           </button>
           <button class="btn" type="button" @click=${() => void this.editor.copyPrompt()}>

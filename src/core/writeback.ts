@@ -519,6 +519,40 @@ export async function buildWritePlan(
 }
 
 /**
+ * Patch a copy of the document's own source, for a save that has nowhere to write.
+ *
+ * The same work as the document step of `buildWritePlan`, reachable without a `FileHost`. With
+ * no folder connected there is still a file the page came from, and a download that reproduces
+ * it with three attributes changed is worth much more than one serialized out of the DOM — the
+ * user has to reconcile the result with what is on disk either way, and a diff of three lines
+ * is a different proposition from a diff of the whole file.
+ *
+ * Returns the reasons rather than a string when it cannot be done, so the caller can say so
+ * instead of quietly handing over a rewrite.
+ */
+export function patchDocumentSource(
+  source: string,
+  subject: WriteSubject,
+  documentPath: string,
+): { html: string } | { why: string[] } {
+  const systemInDocument = subject.designSystemTarget === DOCUMENT_TARGET;
+  const regions = subject.generatedRegions ?? [];
+  const isGenerated = (el: HTMLElement): boolean =>
+    regions.some((region) => region === el || region.contains(el));
+
+  // The same selection the write path makes: what the markup can carry, minus what the
+  // page's own code owns.
+  const documentRecords = subject.records.filter(
+    (record) => isDocumentChange(record, systemInDocument) && !record.detail?.rendered,
+  );
+  if (!documentRecords.length) return { why: ['nothing in this change set belongs to the markup'] };
+
+  const why: string[] = [];
+  const patched = tryPatchDocument(source, documentRecords, documentPath, isGenerated, why);
+  return patched ?? { why: why.length ? why : ['no change could be placed in the file'] };
+}
+
+/**
  * The change kinds that can be expressed as an edit to the file's text.
  *
  * Attribute, class and style edits rewrite one attribute; a text edit replaces one
@@ -613,7 +647,7 @@ function reconcileContainers(
     let host = el.parentElement;
     let hostAnchor: ElementAnchor | undefined;
     while (host) {
-      const candidate = anchorOf(host);
+      const candidate = containerAnchorOf(host);
       if (canResolve(html, candidate)) {
         hostAnchor = candidate;
         break;
@@ -730,13 +764,37 @@ function reconcileContainers(
 function anchorOf(el: HTMLElement): ElementAnchor {
   const text = (el.textContent ?? '').trim();
   /*
-   * Built by the same function the records use, so both describe an element the same way.
+   * Identity only: no position. That restriction is the point of this one.
    *
-   * It was a shorter description here — id, marker, unique text — with no positional route at
-   * all. That was enough for looking a child up during a rebuild, but not for a *container*:
-   * a nameless `<tr>` had nothing left to try, so a move inside one gave up and rewrote the
-   * whole file. Sharing the builder means anything a record can point at, this can too.
+   * A rebuild exists precisely because the live order and the file order have diverged, so
+   * asking the file for "the second `article.card`" during one gives a confidently wrong
+   * answer. Worse, an element the user just added has no position in the file at all, and
+   * counting siblings happily found it an existing element to be — the new card came out of
+   * the rebuild as a second copy of its neighbour, carrying that neighbour's edits with it.
+   *
+   * So a child is matched here only by something that is *about* it — its id, its build
+   * marker, or text the file holds exactly once. Anything else is serialized from the live
+   * page instead, which is correct if wordier.
    */
+  return {
+    tag: el.tagName.toLowerCase(),
+    id: el.id || undefined,
+    src: el.getAttribute(SOURCE_ATTR) ?? undefined,
+    text: text.length >= 8 ? text : undefined,
+  };
+}
+
+/**
+ * How to find this element in the file when it is a *container*, position included.
+ *
+ * The opposite trade from `anchorOf`, and for the opposite job. A container is being looked up
+ * to find the range its children occupy, not to copy its own bytes, so landing on the wrong
+ * `<tr>` is caught by everything downstream failing to fit — whereas refusing to look for it
+ * positionally meant a nameless row could not be found at all, and a move inside one rewrote
+ * the whole file.
+ */
+function containerAnchorOf(el: HTMLElement): ElementAnchor {
+  const text = (el.textContent ?? '').trim();
   return { ...anchorFor(el), text: text.length >= 8 ? text : undefined };
 }
 

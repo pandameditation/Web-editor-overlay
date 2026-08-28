@@ -132,7 +132,7 @@ export function normalizePath(path: string): string | null {
 }
 
 /** The path of the document itself, which is the one file guaranteed to exist. */
-function documentPath(): string | null {
+export function documentPath(): string | null {
   return projectPathOf(location.href);
 }
 
