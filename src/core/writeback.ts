@@ -12,7 +12,7 @@ import {
   type DeclarationPatch,
   type PatchFailure,
 } from './css-patch.js';
-import { cleanMarkup, elementOfRecord } from './mutations.js';
+import { cleanMarkup, elementOfRecord, anchorFor } from './mutations.js';
 import {
   canResolve,
   elementText,
@@ -584,20 +584,55 @@ function reconcileContainers(
    * has to be in the text before the outer one reads it, or the outer rebuild copies the stale
    * version and the inner change is quietly undone.
    */
-  const ordered = [...containers.values()]
-    .map((anchor) => ({ anchor, el: liveElementFor(anchor) }))
-    .sort((a, b) => depthOf(b.el) - depthOf(a.el));
-
-  let current = html;
-  for (const { anchor, el } of ordered) {
+  /*
+   * A container the file has not got yet is rebuilt through the nearest ancestor it has.
+   *
+   * Moving a cell inside a `<tr>` the user added a moment ago is the plain case: the row is not
+   * in the file, so there is nothing there to patch, and demanding one meant giving up on the
+   * whole save. The row's own container is not in the file either, and nor is the table, so the
+   * search walks out until something is — `<body>` at the very latest.
+   *
+   * The child on the path down to the missing container is then marked: the ancestor's rebuild
+   * has to serialize that branch from the live page rather than copy the file's bytes for it,
+   * because the file's bytes are the version without the move. Nothing is lost by serializing
+   * it, either — a subtree the file has never seen has no formatting in it to preserve.
+   */
+  const fromLive = new Set<HTMLElement>();
+  const targets = new Map<string, { anchor: ElementAnchor; el: HTMLElement }>();
+  for (const anchor of containers.values()) {
+    const el = liveElementFor(anchor);
     if (!el) {
       why.push(`the <${anchor.tag}> holding a moved element is no longer in the page`);
       return null;
     }
-    if (!canResolve(current, anchor)) {
-      why.push(`the <${anchor.tag}> holding a moved element could not be found in the file`);
+    if (canResolve(html, anchor)) {
+      targets.set(anchorKey(anchor), { anchor, el });
+      continue;
+    }
+    let branch = el;
+    let host = el.parentElement;
+    let hostAnchor: ElementAnchor | undefined;
+    while (host) {
+      const candidate = anchorOf(host);
+      if (canResolve(html, candidate)) {
+        hostAnchor = candidate;
+        break;
+      }
+      branch = host;
+      host = host.parentElement;
+    }
+    if (!host || !hostAnchor) {
+      why.push(`neither the <${anchor.tag}> holding a moved element nor anything around it is in the file`);
       return null;
     }
+    fromLive.add(branch);
+    targets.set(anchorKey(hostAnchor), { anchor: hostAnchor, el: host });
+  }
+
+  const ordered = [...targets.values()].sort((a, b) => depthOf(b.el) - depthOf(a.el));
+
+  let current = html;
+  for (const { anchor, el } of ordered) {
 
     /*
      * A container that mixes text with its elements is rebuilt inline instead.
@@ -637,7 +672,8 @@ function reconcileContainers(
       if (isEditorNode(child)) continue;
       // Content the page renders is not the file's to carry, here as everywhere else.
       if (generated(child)) continue;
-      const original = elementText(current, anchorOf(child));
+      // A branch holding a container the file has not got has to come from the live page.
+      const original = fromLive.has(child) ? null : elementText(current, anchorOf(child));
       /*
        * `cleanMarkup` rather than `outerHTML`, and this is the one place in the patch path
        * where it matters.
@@ -693,12 +729,15 @@ function reconcileContainers(
  */
 function anchorOf(el: HTMLElement): ElementAnchor {
   const text = (el.textContent ?? '').trim();
-  return {
-    tag: el.tagName.toLowerCase(),
-    id: el.id || undefined,
-    src: el.getAttribute(SOURCE_ATTR) ?? undefined,
-    text: text.length >= 8 ? text : undefined,
-  };
+  /*
+   * Built by the same function the records use, so both describe an element the same way.
+   *
+   * It was a shorter description here — id, marker, unique text — with no positional route at
+   * all. That was enough for looking a child up during a rebuild, but not for a *container*:
+   * a nameless `<tr>` had nothing left to try, so a move inside one gave up and rewrote the
+   * whole file. Sharing the builder means anything a record can point at, this can too.
+   */
+  return { ...anchorFor(el), text: text.length >= 8 ? text : undefined };
 }
 
 /** How far down the tree an element sits, for rebuilding the innermost container first. */

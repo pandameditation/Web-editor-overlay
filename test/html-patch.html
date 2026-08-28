@@ -376,6 +376,52 @@
           order: Array.from(art?.children ?? []).map((el) => el.localName).join(','),
         };
       });
+      /*
+       * A move whose container is not in the file at all, because the user built the container
+       * a moment ago. The table is the reported shape — the browser adds a `<tbody>` nobody
+       * wrote, so nothing in that row can be looked up in a file that has never seen it.
+       */
+      engine.insertMarkup(
+        '<table id="grid"><tr><td class="a">A</td><td class="b">B</td></tr></table>',
+        { reference: byId('title'), position: 'after' },
+      );
+      await frames();
+      const row = document.querySelector('#grid tr');
+      engine.move('down', row.querySelector('td.a'));
+      await frames();
+      // The move has to have happened, or this proves nothing about the container.
+      check('theCellReallyMovedInThePage', () => ({
+        order: Array.from(document.querySelectorAll('#grid td')).map((td) => td.className).join(','),
+        recordedContainer: engine.records.at(-1)?.anchor?.parent?.tag ?? null,
+        recordKind: engine.records.at(-1)?.kind ?? null,
+      }));
+      const newPlan = await engine.previewWritePlan();
+      const newDoc = (newPlan?.writes ?? []).find((w) => w.kind === 'document');
+      check('aMoveInsideJustAddedMarkupIsPatchedToo', () => ({
+        patched: /patched in place/.test(newDoc?.reason ?? ''),
+        withNoRewriteWarning: (newDoc?.warnings ?? []).filter((w) =>
+          /whole file is rewritten/.test(w),
+        ),
+      }));
+      // The new table reaches the file, in the order the page shows, and carries no editor marks.
+      check('andTheNewTableLandsInTheOrderThePageShows', () => {
+        const d = new DOMParser().parseFromString(newDoc?.after ?? '', 'text/html');
+        const grid = d.getElementById('grid');
+        return {
+          cells: Array.from(grid?.querySelectorAll('td') ?? []).map((td) => td.className).join(','),
+          liveCells: Array.from(document.querySelectorAll('#grid td')).map((td) => td.className).join(','),
+          noEditorAttributes: (grid?.outerHTML.match(/data-heo-/g) ?? []).length,
+        };
+      });
+      // And the rest of the file is still the author's bytes, not a reserialization.
+      check('whileTheRestOfTheFileIsUntouched', () => {
+        const after3 = newDoc?.after ?? '';
+        return {
+          unquotedClassStillThere: /class=lead/.test(after3),
+          uppercaseTitleStillThere: /<TITLE>/.test(after3),
+          selfClosedBrStillThere: /<br \/>/.test(after3),
+        };
+      });
       check('theFileDoesNotBalloon', () => {
         const grew = (movedDoc?.after ?? '').length - source.length;
         return { grewBy: grew, underOneKilobyte: Math.abs(grew) < 1024 };

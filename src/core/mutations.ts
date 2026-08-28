@@ -79,7 +79,7 @@ function record(
  * It stops as soon as an ancestor names itself outright, so the common case stays short: one
  * link for anything inside an element with an id.
  */
-function anchorFor(el: HTMLElement, depth = 6): ElementAnchor {
+export function anchorFor(el: HTMLElement, depth = 6): ElementAnchor {
   return {
     tag: el.tagName.toLowerCase(),
     id: el.id || undefined,
