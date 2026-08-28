@@ -74,6 +74,7 @@ import {
   unwrapElement,
   wrapElement,
   type InsertPosition,
+  elementKey,
 } from './mutations.js';
 import { buildPrompt } from './prompt.js';
 import { formatHTML } from './sanitize.js';
@@ -108,6 +109,7 @@ import {
   watchEditDurability,
   withoutProvenance,
   type Provenance,
+  forgetProvenance,
 } from './provenance.js';
 import {
   collectStyleSources,
@@ -2094,6 +2096,19 @@ export class EditorEngine {
      */
     if (this.options.detectScriptContent !== false) this.#warnScriptOwned(el);
     this.endTextEdit(true);
+    /*
+     * Stop watching this element for as long as the user is the one changing it.
+     *
+     * The durability watcher left armed by the previous commit cannot tell typing from a
+     * re-render — both arrive as character-data mutations it did not make — so editing the
+     * same text a second time was reported as the page having replaced the first edit. The
+     * `depth` guard does not help here: nothing wraps a keystroke.
+     *
+     * It is re-armed by `endTextEdit` against the text the user ends up with, which is the
+     * only value worth watching anyway.
+     */
+    this.#editWatchers.get(el)?.();
+    this.#editWatchers.delete(el);
     this.#textEditSnapshot = el.innerHTML;
     el.setAttribute('contenteditable', 'true');
     el.setAttribute('data-heo-editing', '');
@@ -2502,8 +2517,37 @@ export class EditorEngine {
      * the plan and the page from disagreeing about what a save will do.
      */
     const command = setInnerHTML(el, before, after);
+    /*
+     * A revert observed earlier does not get to outlive being contradicted.
+     *
+     * `markObservedRevert` promotes a guess to `certain` and takes the element's user-owned
+     * exemption away, and from then on every edit to it is listed as unable to reach a file.
+     * That is the right answer when the page really does re-render — and an inescapable dead
+     * end when it does not, which is what a single observation cannot distinguish. So editing
+     * the same text again clears the verdict and lets the watcher settle it afresh: if the page
+     * does take this edit back, the observation repeats within moments and the mark returns; if
+     * it does not, the element goes back to being writable, as it should always have been.
+     */
+    if (provenanceOf(el)?.kind === 'observed') {
+      forgetProvenance(el);
+      this.#clearRenderedNotes(el);
+    }
     const rendered = this.provenanceOf(el);
-    if (rendered) {
+    /*
+     * Only evidence stops a change reaching a file. A guess says so and stands aside.
+     *
+     * `possible` is the confidence for "this content changed after the page loaded" and for a
+     * value that happens to match an attribute — inferences about what *might* be going on,
+     * and the same inferences the editor's own activity can provoke. Stamping the note for
+     * those made the plan refuse to write an ordinary paragraph on a suspicion, with no way for
+     * the user to overrule it: the element stayed editable and stopped being saveable, which is
+     * the worst of both. `certain` and `likely` are different — a template, a script literal, a
+     * revert that was watched happening, or content absent from the served HTML — and those
+     * still keep the change out of a file it genuinely cannot reach.
+     *
+     * The warning is unchanged either way. What changes is that a warning is all a guess gets.
+     */
+    if (rendered && rendered.confidence !== 'possible') {
       command.record.detail = {
         ...command.record.detail,
         rendered: describeProvenance(rendered),
@@ -2518,6 +2562,25 @@ export class EditorEngine {
     // happen to this edit; this one waits for it.
     this.#watchEdit(el, el.textContent ?? '');
     this.#bumpRevision();
+  }
+
+  /**
+   * Drop the "cannot reach a file" note from changes already recorded for this element.
+   *
+   * Clearing the verdict is not enough on its own. The note is stamped onto each record when it
+   * is made, and the save plan reads it from there — so a change recorded while the wrong
+   * verdict stood went on being listed as unwritable no matter what was learned afterwards.
+   * That is the state the user hit: an element they could edit freely and never save.
+   *
+   * Only ever called just after the verdict behind those notes has been withdrawn.
+   */
+  #clearRenderedNotes(el: HTMLElement): void {
+    const key = elementKey(el);
+    for (const record of this.history.records) {
+      if (record.elementRef !== key || !record.detail?.rendered) continue;
+      const { rendered: _dropped, ...rest } = record.detail;
+      record.detail = rest;
+    }
   }
 
   /**

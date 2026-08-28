@@ -25,6 +25,7 @@
   <h1 id="authored">Written in the HTML</h1>
   <p id="cached-copy">This copy is authored here and cached into an attribute by the script.</p>
   <p id="plain-copy">This copy is authored here and nothing touches it.</p>
+  <p id="owned">Text is here</p>
   <section id="all-stories"></section>
 
   <script src="./stories.js"></script>
@@ -170,6 +171,62 @@
         };
       });
       engine.closeSourceEdit();
+
+      /* ------------------------------------------------------------------ *
+       * Editing the same ordinary text twice is not the page fighting back.
+       * ------------------------------------------------------------------ */
+      const twice = q('plain-copy');
+      const editText = async (el, text) => {
+        engine.beginTextEdit(el);
+        await frames();
+        el.firstChild.data = text;
+        engine.endTextEdit(true);
+        await frames();
+      };
+      await editText(twice, 'Edited once');
+      await settle(140);
+      check('theFirstEditSaysNothing', () => toastText());
+
+      // The second edit arrives as the same kind of mutation a re-render would. It is not one.
+      await editText(twice, 'Edited twice');
+      await settle(220);
+      check('andEditingItAgainIsNotReportedAsAReplacement', () => ({
+        said: toastText(),
+        blamedThePage: /replaced your edit|rebuilt this element/.test(toastText()),
+      }));
+      // Nothing was concluded about it, so it is still the user's to write.
+      check('soTheTextIsStillWritable', () => ({
+        provenance: engine.provenanceOf(twice) ?? null,
+        rendered: engine.records.filter((r) => r.detail?.rendered).length,
+      }));
+      check('andTheTextIsWhatWasTyped', () => twice.textContent);
+
+      /* ------------------------------------------------------------------ *
+       * A real revert is still caught — and can still be argued with.
+       * ------------------------------------------------------------------ */
+      const disputed = q('owned');
+      await editText(disputed, 'First pass');
+      // The page, writing over the edit. Not through the editor, so this is the real signal.
+      disputed.textContent = 'Text is here';
+      await settle(260);
+      check('aRealRevertIsStillCaught', () => {
+        const p = engine.provenanceOf(disputed);
+        return {
+          kind: p?.kind ?? null,
+          confidence: p?.confidence ?? null,
+          said: /replaced your edit/.test(toastText()),
+        };
+      });
+      // Which does block the write, as it should while that is what is believed.
+      await editText(disputed, 'Second pass');
+      check('andTheVerdictIsClearedByEditingItAgain', () => ({
+        provenance: engine.provenanceOf(disputed) ?? null,
+      }));
+      // So the change can reach a file again rather than being permanently unwritable.
+      check('soTheChangeIsWritableAgain', () => {
+        const mine = engine.records.filter((r) => (r.target ?? '').includes('owned'));
+        return { records: mine.length, blocked: mine.filter((r) => r.detail?.rendered).length };
+      });
 
       results.__errors = errors;
       document.getElementById('out').textContent =

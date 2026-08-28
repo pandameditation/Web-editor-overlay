@@ -848,6 +848,19 @@ export function markObservedRevert(el: HTMLElement): Provenance {
   return provenance;
 }
 
+/**
+ * Drop what was attributed to one element, so it can be judged again from scratch.
+ *
+ * The way back out of `markObservedRevert`. One observation is enough to conclude the page
+ * owns an element, and has to be — but it is not enough to conclude it forever, because the
+ * observation cannot tell a re-render apart from the editor's own second write. Editing the
+ * element again is the user contradicting the verdict, and this is what makes that possible
+ * instead of leaving them with an element they can edit and never save.
+ */
+export function forgetProvenance(el: Element): void {
+  records.delete(el);
+}
+
 /** Forget everything attributed so far. Called on unmount. */
 export function resetProvenance(): void {
   captured = 0;
