@@ -11,6 +11,7 @@ import {
   type DeclarationPatch,
   type PatchFailure,
 } from './css-patch.js';
+import { cleanMarkup } from './mutations.js';
 import {
   canResolve,
   elementText,
@@ -601,7 +602,18 @@ function reconcileContainers(
       // Content the page renders is not the file's to carry, here as everywhere else.
       if (generated(child)) continue;
       const original = elementText(html, anchorOf(child));
-      parts.push(original ?? `${inner}${child.outerHTML}`);
+      /*
+       * `cleanMarkup` rather than `outerHTML`, and this is the one place in the patch path
+       * where it matters.
+       *
+       * Everything else here comes out of the file, so it is already clean. A child the file
+       * has never seen has to be serialized from the live DOM instead — and the live DOM is
+       * stamped with `data-heo-src` by the build, `data-heo-inserted` by the editor, and
+       * whatever else was on it. Serializing it raw wrote all of that into the markup, on the
+       * new element and on every descendant. `cleanMarkup` is the same clone-and-strip the
+       * save prompt already uses, for the same reason: none of it belongs in a codebase.
+       */
+      parts.push(original ?? `${inner}${cleanMarkup(child)}`);
     }
     patches.push({
       anchor,

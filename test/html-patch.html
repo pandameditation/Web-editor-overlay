@@ -45,6 +45,10 @@
       const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
       const byId = (id) => document.getElementById(id);
 
+      // As the Vite plugin does: markers exist in the served DOM and never in the file.
+      byId('title').setAttribute('data-heo-src', 'html-patch.html:18:3');
+      byId('copy').setAttribute('data-heo-src', 'html-patch.html:19:3');
+
       const api = window.HtmlEditorOverlay.mount({ theme: 'dark' });
       const engine = api.engine;
       api.setEditing(true);
@@ -95,6 +99,18 @@
       engine.setAttribute('alt', 'Patched alt', byId('pic'));
       await frames();
 
+      /*
+       * Inserted markup with a subtree, which is the case that leaked.
+       *
+       * A new child cannot come from the file, so it is serialized from the live DOM — where
+       * the build has stamped `data-heo-src` on it and on every element inside it.
+       */
+      engine.insertMarkup(
+        '<div class="sec" id="inserted-sec"><span class="n">01</span><em>deep</em></div>',
+        { reference: byId('title'), position: 'after' },
+      );
+      await frames();
+
       const plan = await engine.previewWritePlan();
       const doc = (plan?.writes ?? []).find((w) => w.kind === 'document');
       results.thePlanWritesTheDocument = Boolean(doc);
@@ -114,6 +130,38 @@
       // Two style edits to one element collapse into one attribute, not two.
       check('bothStyleEditsAreInOneAttribute', () =>
         (after.match(/<p id="copy"[^>]*style=/g) || []).length);
+
+      /* ------------------------------------------------------------------ *
+       * And no editor bookkeeping travels with it.
+       * ------------------------------------------------------------------ */
+      check('theInsertedMarkupIsInTheFile', () => /<div class="sec" id="inserted-sec">/.test(after));
+      check('butCarriesNoEditorAttributes', () => {
+        const doc2 = new DOMParser().parseFromString(after, 'text/html');
+        const marked = Array.from(doc2.querySelectorAll('*')).filter((el) =>
+          Array.from(el.attributes).some(
+            (a) => a.name.startsWith('data-heo-') || a.name === 'contenteditable',
+          ),
+        );
+        return {
+          elementsWithEditorAttributes: marked.length,
+          // Including the subtree, which is where they were most visible.
+          insideTheInsertedSubtree: Array.from(
+            doc2.getElementById('inserted-sec')?.querySelectorAll('*') ?? [],
+          ).filter((el) => el.hasAttribute('data-heo-src')).length,
+        };
+      });
+      /*
+       * And no build marker reaches the file at all — not on the new element, and not on the
+       * ones that merely sat there. Those come out of the file, which never had a marker,
+       * because the plugin stamps the HTML it serves rather than the HTML on disk.
+       */
+      // Parsed, not counted in the text: this fixture's own script names the attribute.
+      check('noBuildMarkerReachesTheFile', () => ({
+        inTheLivePage: document.querySelectorAll('[data-heo-src]').length,
+        inTheWrite: new DOMParser()
+          .parseFromString(after, 'text/html')
+          .querySelectorAll('[data-heo-src]').length,
+      }));
 
       /* ------------------------------------------------------------------ *
        * And nothing else did. Every one of these would be normalised away by
