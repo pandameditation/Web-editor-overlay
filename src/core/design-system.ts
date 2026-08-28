@@ -1,4 +1,4 @@
-import { HOST_TAG, INSERTED_ATTR, MODAL_ATTR, SOURCE_ATTR } from './constants.js';
+import { HOST_TAG, INSERTED_ATTR, MIRROR_ATTR, MODAL_ATTR, SOURCE_ATTR } from './constants.js';
 import type { ClassRegistry } from './classes.js';
 import { patchCSS, type DeclarationPatch } from './css-patch.js';
 import type { BlockLibrary } from './library.js';
@@ -181,6 +181,19 @@ export function exportHTML(styleEdits: readonly InlineStyleReconciliation[] = []
    */
   for (const internal of Array.from(clone.querySelectorAll('[data-heo-internal]'))) {
     internal.remove();
+  }
+
+  /*
+   * The stand-ins go, and the `<link>`s they stood in for come back.
+   *
+   * A mirror is a copy of a file the exported page still links to, so leaving it in
+   * would inline the stylesheet twice — and leaving the `<link>` disabled would ship a
+   * page whose CSS never loads. Edits made through a mirror belong to the `.css` file
+   * and reach it through the write plan, not through this HTML.
+   */
+  for (const mirror of Array.from(clone.querySelectorAll(`[${MIRROR_ATTR}]`))) mirror.remove();
+  for (const link of Array.from(clone.querySelectorAll('link[disabled]'))) {
+    link.removeAttribute('disabled');
   }
   for (const generated of Array.from(clone.querySelectorAll('[data-heo-generated]'))) {
     // Keep the CSS, drop the marker: the exported page should still look right.

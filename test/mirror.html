@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Editor overlay — standing in for a stylesheet the browser will not read</title>
+  <!--
+    A page opened from disk with its CSS one folder down.
+
+    Run under real opaque origins, so `cssRules` genuinely throws:
+
+        npm run build:lib && npm run check:mirror
+
+    The subfolder is deliberate. `nested/theme.css` uses `url(dot.svg)`, which resolves
+    beside the stylesheet for a `<link>` and beside the *document* for a `<style>` — so
+    a stand-in that does not rewrite it points at a file that is not there. The witness
+    check in mirror.ts is supposed to catch exactly that, and this fixture is where the
+    claim gets tested rather than asserted.
+  -->
+  <link rel="stylesheet" href="./nested/theme.css">
+  <style id="page-inline">
+    /* After the link, so it must keep winning this tie once the link is stood in for. */
+    .sec h2 {
+      letter-spacing: 0.05em;
+    }
+  </style>
+</head>
+
+<body>
+  <section class="sec">
+    <h2>Heading</h2>
+    <p>Copy.</p>
+    <div class="wide">Wide</div>
+  </section>
+
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+
+  <script>
+    (async () => {
+      const errors = [];
+      window.addEventListener('error', (e) => errors.push('error: ' + e.message));
+      window.addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+
+      const results = {};
+      const progress = document.getElementById('progress');
+      const step = (name) => { progress.textContent = name; };
+      const check = (name, fn) => {
+        step(name);
+        try { results[name] = fn(); }
+        catch (err) { results[name] = 'THREW: ' + (err && err.message ? err.message : String(err)); }
+      };
+      const settle = (ms) => new Promise((r) => setTimeout(r, ms));
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+      const deep = (root, selector) => {
+        const found = root.querySelector(selector);
+        if (found) return found;
+        for (const element of root.querySelectorAll('*')) {
+          if (!element.shadowRoot) continue;
+          const inner = deep(element.shadowRoot, selector);
+          if (inner) return inner;
+        }
+        return null;
+      };
+      const textOf = (node) => (node ? node.shadowRoot.textContent.replace(/\s+/g, ' ') : '');
+
+      const h2 = document.querySelector('.sec h2');
+      const wide = document.querySelector('.sec .wide');
+      const link = document.querySelector('link[rel=stylesheet]');
+      const shot = (el) => {
+        const cs = getComputedStyle(el);
+        return {
+          color: cs.color,
+          background: cs.backgroundImage,
+          padding: cs.paddingTop,
+          letterSpacing: cs.letterSpacing,
+        };
+      };
+
+      /* ------------------------------------------------------------------ *
+       * The conditions, confirmed rather than assumed.
+       * ------------------------------------------------------------------ */
+      check('theBrowserRefusesTheLinkedSheet', () => {
+        try { return link.sheet.cssRules.length === 0 ? 'empty' : 'readable'; }
+        catch { return 'refused'; }
+      });
+      const before = shot(h2);
+      results.theSheetIsNonethelessApplying = before;
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark' });
+      const engine = api.engine;
+      api.setEditing(true);
+      await frames();
+
+      check('withNoFolderTheDesignSystemSeesNothing', () => ({
+        tokens: engine.tokens.size,
+        classes: engine.classes.size,
+      }));
+
+      /* ------------------------------------------------------------------ *
+       * The folder, handed over. `read` serves the same bytes as the file.
+       * ------------------------------------------------------------------ */
+      step('connect');
+      const directory = decodeURIComponent(location.pathname).replace(/[^/]*$/, '');
+      const disk = new Map([
+        ['nested/theme.css', await (async () => {
+          // Read through the overlay's own probe rather than hard-coding a copy: the
+          // point is that the stand-in matches the file the browser already loaded.
+          return `:root {\n  --brand: #3355ff;\n  --gap: 18px;\n}\n\n`
+            + `.sec {\n  padding: var(--gap);\n}\n\n`
+            + `.sec h2 {\n  color: var(--brand);\n  background-image: url(dot.svg);\n  letter-spacing: 0.02em;\n}\n\n`
+            + `.sec p {\n  color: #445;\n}\n\n`
+            + `@media (min-width: 200px) {\n  .sec .wide {\n    padding: 32px;\n  }\n}\n`;
+        })()],
+      ]);
+      const project = {
+        kind: 'directory',
+        label: 'memory',
+        resolve(url) {
+          const path = decodeURIComponent(new URL(url, location.href).pathname);
+          return path.startsWith(directory) ? path.slice(directory.length) : null;
+        },
+        read: async (path) => (disk.has(path) ? disk.get(path) : null),
+        write: async (path, text) => { disk.set(path, text); },
+        ensureWritable: async () => true,
+        release: async () => { },
+      };
+      await engine.attachProject(project, { quiet: true });
+      await frames();
+
+      /* ------------------------------------------------------------------ *
+       * The page must render exactly as it did. This is the whole safety
+       * story: the editor disabled a `<link>` and put its own `<style>` in
+       * that place, and nothing on screen is allowed to have moved.
+       * ------------------------------------------------------------------ */
+      check('theStandInLeavesThePageLookingIdentical', () => {
+        const now = shot(h2);
+        const same = JSON.stringify(now) === JSON.stringify(before);
+        return same ? true : { before, now };
+      });
+      // The `@media` rule too, which only a recursive walk of the stand-in reaches.
+      check('theMediaRuleStillApplies', () => getComputedStyle(wide).paddingTop);
+      // The relative url resolved against the stylesheet, not against the document.
+      check('theRelativeUrlStillPointsAtTheFile', () =>
+        /nested\/dot\.svg/.test(getComputedStyle(h2).backgroundImage));
+      // The page's own inline sheet sits after the link, so it still wins this tie.
+      check('theCascadeOrderSurvives', () => getComputedStyle(h2).letterSpacing);
+
+      check('theLinkIsStoodInFor', () => ({
+        linkDisabled: link.disabled,
+        mirrorPresent: document.querySelectorAll('style[data-heo-mirror]').length,
+      }));
+
+      /* ------------------------------------------------------------------ *
+       * Now readable: the design system, and the rules in the panel.
+       * ------------------------------------------------------------------ */
+      check('theDesignSystemReadTheFile', () => ({
+        brand: engine.tokens.get('brand')?.value ?? null,
+        gap: engine.tokens.get('gap')?.value ?? null,
+        classes: engine.classes.size,
+      }));
+
+      step('cssRulesSection');
+      engine.setDockTab('styles');
+      api.select(h2);
+      await settle(400);
+      const stylesPanel = deep(document, 'heo-styles-panel');
+      const panelText = () => textOf(stylesPanel);
+      check('theDescendantRuleIsListed', () => /\.sec h2/.test(panelText()));
+      // Named by the file it came from rather than as "embedded", which is what a
+      // `<style>` with no href would otherwise report.
+      check('theRuleSaysWhichFileItCameFrom', () => /theme\.css/.test(panelText()));
+      check('theCssRulesSectionIsNotEmpty', () =>
+        !/No stylesheet rule beyond this element's own classes reaches it/.test(panelText()));
+
+      /* ------------------------------------------------------------------ *
+       * A rule edit has to preview AND be filed against the .css file.
+       * ------------------------------------------------------------------ */
+      step('ruleEdit');
+      const ruleFor = (selector) => {
+        for (const sheet of document.styleSheets) {
+          let rules;
+          try { rules = sheet.cssRules; } catch { continue; }
+          for (const rule of rules) {
+            if (rule.selectorText === selector) return rule;
+          }
+        }
+        return null;
+      };
+      const h2Rule = ruleFor('.sec h2');
+      results.theRuleIsReachableThroughTheCssom = Boolean(h2Rule);
+      engine.setRuleDeclaration(h2Rule, 'color', 'rgb(9, 9, 9)');
+      await frames();
+      check('editingTheRulePaintsThePage', () => getComputedStyle(h2).color);
+      check('andIsFiledAgainstTheStylesheetNotTheDocument', () => {
+        const record = engine.records.find((r) => /color/.test(r.summary ?? ''));
+        return record ? String(record.detail?.writeTo ?? '').replace(/^.*\//, '') : 'no record';
+      });
+      engine.undo();
+      await frames();
+      check('undoingTheRuleEditRepaints', () => getComputedStyle(h2).color);
+
+      /* ------------------------------------------------------------------ *
+       * A token edit, driven the way the panel drives it.
+       * ------------------------------------------------------------------ */
+      step('tokenEdit');
+      engine.setDockTab('tokens');
+      await settle(400);
+      const tokensPanel = deep(document, 'heo-tokens-panel');
+      const brandField = Array.from(
+        tokensPanel.shadowRoot.querySelectorAll('heo-value-field'),
+      ).find((f) => f.getAttribute('label') === 'brand');
+      results.theBrandTokenHasAField = Boolean(brandField);
+      brandField?.dispatchEvent(
+        new CustomEvent('value-change', { detail: { value: '#cc0022' }, bubbles: true }),
+      );
+      await frames();
+      check('changingATokenRepaintsTheElementsUsingIt', () => getComputedStyle(h2).color);
+      check('andTheTokenIsNowThisSessionsWork', () => ({
+        origin: engine.tokens.get('brand')?.origin ?? null,
+        emitted: engine.tokens.toCSS().includes('--brand: #cc0022'),
+      }));
+      engine.undo();
+      await frames();
+      check('undoingATokenEditPutsTheFilesValueBack', () => ({
+        color: getComputedStyle(h2).color,
+        emitted: engine.tokens.toCSS().includes('brand'),
+      }));
+
+      /* ------------------------------------------------------------------ *
+       * Whole-sheet text edits, including a removal — the case the CSSOM
+       * rule-swap could never show.
+       * ------------------------------------------------------------------ */
+      step('sheetEdit');
+      engine.openCode('css');
+      await settle(500);
+      const cssPanel = deep(document, 'heo-css-panel');
+      check('theCannotPreviewNoteIsGone', () =>
+        !/cannot be shown on screen|cannot be previewed/.test(textOf(cssPanel)));
+      check('theRuleCountIsReal', () => {
+        const row = Array.from(cssPanel.shadowRoot.querySelectorAll('.sheet')).find((r) =>
+          /theme\.css/.test(r.querySelector('.name')?.textContent ?? ''),
+        );
+        return row ? row.querySelector('.count')?.textContent?.trim() : 'no row';
+      });
+      check('theBufferHoldsTheFilesOwnText', () => {
+        const editor = deep(cssPanel.shadowRoot, 'heo-code-editor');
+        return (editor?.value ?? '').includes('--gap: 18px');
+      });
+
+      // Drop `.sec p` entirely and change the gap: a removal and a change at once.
+      const edited = disk.get('nested/theme.css')
+        .replace(/\.sec p \{[^}]*\}\n\n/, '')
+        .replace('--gap: 18px', '--gap: 40px');
+      const codeEditor = deep(cssPanel.shadowRoot, 'heo-code-editor');
+      codeEditor.dispatchEvent(
+        new CustomEvent('code-input', { detail: { value: edited }, bubbles: true }),
+      );
+      await frames();
+      const applyButton = Array.from(cssPanel.shadowRoot.querySelectorAll('.btn')).find((b) =>
+        /Apply/.test(b.textContent),
+      );
+      results.applyIsOffered = Boolean(applyButton) && !applyButton.disabled;
+      applyButton?.click();
+      await frames();
+      check('applyingNewTextRepaints', () =>
+        getComputedStyle(document.querySelector('.sec')).paddingTop);
+      check('andARemovedRuleStopsApplying', () =>
+        getComputedStyle(document.querySelector('.sec p')).color);
+
+      /* ------------------------------------------------------------------ *
+       * The export hands the page back: no stand-in, no disabled link.
+       * ------------------------------------------------------------------ */
+      step('export');
+      const html = engine.exportHTML();
+      // Parsed rather than pattern-matched: this fixture's own script mentions the
+      // marker, so a regex over the text would match the test instead of the export.
+      const exported = new DOMParser().parseFromString(html, 'text/html');
+      check('theExportDropsTheStandIn', () =>
+        exported.querySelectorAll('[data-heo-mirror]').length);
+      check('theExportReEnablesTheLink', () =>
+        exported.querySelectorAll('link[disabled]').length);
+      check('theExportStillLinksTheStylesheet', () =>
+        Array.from(exported.querySelectorAll('link[rel~=stylesheet]')).map((l) =>
+          l.getAttribute('href'),
+        ));
+
+      /* ------------------------------------------------------------------ *
+       * And unmounting gives the `<link>` its job back.
+       * ------------------------------------------------------------------ */
+      step('unmount');
+      api.unmount();
+      await frames();
+      check('unmountingRestoresTheLink', () => ({
+        disabled: link.disabled,
+        attribute: link.hasAttribute('disabled'),
+        standIns: document.querySelectorAll('style[data-heo-mirror]').length,
+      }));
+      // The page renders from its own file again. `--gap` is back to the file's value
+      // because the edit lived in the stand-in, and the file has not been saved.
+      check('andThePageStillHasItsStyles', () => shot(h2));
+
+      results.__errors = errors;
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"__errors":["' + String(e && e.message) + '"]}:END';
+    });
+  </script>
+</body>
+
+</html>

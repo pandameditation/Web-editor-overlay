@@ -533,7 +533,23 @@ export class HeoTokensPanel extends HeoElement {
         detail: { token: `--${token.name}`, group: token.group },
         at: Date.now(),
       },
-      apply: () => this.editor.tokens.upsert({ ...token, value }),
+      /*
+       * `origin: 'user'`, and that word is doing the work here.
+       *
+       * A token read out of the page's stylesheets is `'stylesheet'`, and `toCSS()`
+       * leaves those out of the generated sheet on purpose — emitting the page's whole
+       * theme back at it would turn a diff into a copy. But that filter also meant a
+       * token the user *changed* was left out, so the map held the new colour, the row
+       * showed the new colour, and the page went on rendering the old one.
+       *
+       * Once it has been edited it is this session's value, not the file's, so it is
+       * emitted, exported, counted as new and offered in the save prompt — which is
+       * what every other `origin` check in the codebase is asking about. Undo restores
+       * `previous` verbatim, origin included, so taking the edit back also takes the
+       * declaration out of the generated sheet and lets the file's own value show
+       * through again.
+       */
+      apply: () => this.editor.tokens.upsert({ ...token, value, origin: 'user' }),
       revert: () => this.editor.tokens.upsert(previous),
     });
   }

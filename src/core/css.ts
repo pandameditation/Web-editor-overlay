@@ -1,3 +1,4 @@
+import { styleMirrorFor } from './mirror.js';
 import type { TokenGroup } from './types.js';
 
 /**
@@ -362,9 +363,13 @@ function collectSheets(el: HTMLElement): LabelledSheet[] {
 }
 
 function sheetLabel(sheet: CSSStyleSheet, fallback: string): string {
-  if (!sheet.href) return fallback;
+  // A stand-in is a `<style>` with no href of its own, and reporting a rule's source
+  // as "embedded" when it came out of `theme.css` would misdirect anyone reading the
+  // cascade to find where a declaration lives.
+  const href = styleMirrorFor(sheet)?.href ?? sheet.href;
+  if (!href) return fallback;
   try {
-    return new URL(sheet.href).pathname.split('/').pop() || fallback;
+    return new URL(href).pathname.split('/').pop() || fallback;
   } catch {
     return fallback;
   }

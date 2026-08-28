@@ -67,6 +67,7 @@
       check('withNoFolderTheStylesheetIsNotAWritableTarget', () =>
         engine.styleTargets().map((target) => target.label));
 
+
       /*
        * And the design system is empty, because the only stylesheet this page has is
        * one the browser refuses to read. This is the baseline the checks after the
@@ -111,6 +112,19 @@
 
       check('theStylesheetBecomesAWritableTarget', () =>
         engine.styleTargets().map((target) => target.label));
+      /*
+       * This fixture's in-memory `read` deliberately serves text that is *not* what the
+       * browser loaded — `.panel` gets 18px of padding here and 12px in the real file —
+       * which makes it the case that proves the stand-in's safety check works. The
+       * editor tries to take the sheet over, sees the page move, and puts it back. So
+       * the rules stay unreadable, the design system still comes from the text, and the
+       * `<link>` is left exactly as it was found.
+       */
+      check('aStandInThatWouldChangeThePageIsRefused', () => ({
+        standIns: document.querySelectorAll('style[data-heo-mirror]').length,
+        linkUntouched: document.querySelector('link[rel=stylesheet]').disabled === false,
+        stillRendersTheRealFile: getComputedStyle(document.querySelector('.panel')).paddingTop,
+      }));
 
       /*
        * Connecting the folder has to re-read the design system, not just unlock saving.
@@ -174,7 +188,7 @@
       check('theCssPanelNoLongerSaysAnotherOrigin', () =>
         !/served from another origin/.test(textOf(cssPanel)));
       check('theCssPanelSaysThePreviewCannotUpdate', () =>
-        /cannot be previewed/.test(textOf(cssPanel)));
+        /could not stand in for it, so edits cannot be shown on screen/.test(textOf(cssPanel)));
       check('theCssPanelNamesWhereItReadTheFileFrom', () =>
         /opaque\.css — read from memory/.test(textOf(cssPanel)));
       // Read off the editor rather than scraped from text: the buffer lives in the code

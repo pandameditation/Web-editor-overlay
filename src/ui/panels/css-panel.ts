@@ -427,6 +427,20 @@ export class HeoCssPanel extends HeoElement {
       source.pendingBefore = this.draft;
       return;
     }
+
+    /*
+     * Already known, so do not go back to disk for it.
+     *
+     * The remembered text is this sheet's text as it stands: read from the file when
+     * the folder was connected, and replaced by whatever an Apply put there since.
+     * Re-fetching would hand back the copy on disk, which after an unsaved edit is the
+     * version *before* it — silently reverting the buffer to what the user had already
+     * changed away from.
+     */
+    if (source.pendingBefore !== undefined) {
+      this.draft = source.pendingBefore;
+      return;
+    }
     void fetchStyleSource(source, this.editor.project).then((text) => {
       // Kept where the next render can find it. A `StyleSource` is rebuilt from
       // scratch every render, so a field on this one is gone by the time an Apply
@@ -458,7 +472,9 @@ export class HeoCssPanel extends HeoElement {
     }
     this.editor.history.commit(command);
     this.dirty = false;
-    this.#loadedId = null;
+    // The buffer is already exactly what was applied, so there is nothing to reload.
+    // Dropping it here used to re-read the sheet, which for a file-backed one meant
+    // fetching the pre-edit copy off disk and overwriting the edit that just landed.
     this.#appliedAt = this.editor.history.size;
     this.#refocus();
     this.editor.notify(`Applied ${source.label}.`, 'success', {

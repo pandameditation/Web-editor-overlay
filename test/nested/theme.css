@@ -1,0 +1,27 @@
+/* Lives one folder below the page, so every relative url here resolves against
+   this file rather than against the document. A mirror that gets that wrong shows
+   up as a different computed background-image. */
+:root {
+  --brand: #3355ff;
+  --gap: 18px;
+}
+
+.sec {
+  padding: var(--gap);
+}
+
+.sec h2 {
+  color: var(--brand);
+  background-image: url(dot.svg);
+  letter-spacing: 0.02em;
+}
+
+.sec p {
+  color: #445;
+}
+
+@media (min-width: 200px) {
+  .sec .wide {
+    padding: 32px;
+  }
+}

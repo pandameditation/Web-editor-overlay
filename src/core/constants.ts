@@ -8,6 +8,17 @@ export const HOST_TAG = 'html-editor-overlay';
 export const IGNORE_ATTR = 'data-heo-ignore';
 
 /**
+ * A `<style>` standing in for a `<link>` the browser will not let the page read.
+ *
+ * Its own marker rather than one of the two that already exist, because it needs the
+ * opposite of both: `data-heo-internal` hides a sheet from the cascade inspector,
+ * which is the one place this sheet exists to be seen, and `data-heo-generated`
+ * survives the export, which would bake a copy of the linked file into the HTML.
+ * This one means "visible to the editor, absent from the export".
+ */
+export const MIRROR_ATTR = 'data-heo-mirror';
+
+/**
  * Marks a control holding an edit the user has not committed.
  *
  * Read as a plain attribute so the keymap can tell that a keystroke belongs to the

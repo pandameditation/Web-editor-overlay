@@ -1,5 +1,11 @@
 import type { FileHost } from './file-host.js';
 import { nextChangeId, type Command } from './history.js';
+import {
+  isMirroredLink,
+  paintStyleMirror,
+  styleMirrorFor,
+  styleMirrorOfNode,
+} from './mirror.js';
 
 /**
  * The page's stylesheets, as editable sources.
@@ -74,6 +80,28 @@ export function collectStyleSources(project?: FileHost | null): StyleSource[] {
     const node = sheet.ownerNode;
     if (node instanceof Element && node.hasAttribute('data-heo-internal')) continue;
 
+    /*
+     * A stand-in is listed as the file it stands in for, not as the `<style>` it
+     * happens to be.
+     *
+     * Everything downstream keys off this: the href decides which file a save writes,
+     * and calling it an inline `<style>` would send the edit into the exported HTML
+     * instead. The original `<link>` is disabled and so has already dropped out of
+     * `document.styleSheets`, which is why this does not produce two entries.
+     */
+    // A `<link>` that has been stood in for is normally gone from `document.styleSheets`
+    // already, disabling having removed it. Skipped explicitly all the same, so the one
+    // file cannot be listed twice if the browser is slower to drop it than to run this.
+    if (isMirroredLink(node)) continue;
+
+    const mirror = styleMirrorOfNode(node);
+    if (mirror) {
+      out.push(
+        describe(sheet, 'link', fileName(mirror.href) ?? mirror.href, { href: mirror.href }, project),
+      );
+      continue;
+    }
+
     if (node instanceof HTMLStyleElement) {
       styleIndex += 1;
       out.push(
@@ -105,12 +133,18 @@ function describe(
     sheet.ownerNode instanceof Element && sheet.ownerNode.hasAttribute('data-heo-generated');
   const path = extra.href && project ? (project.resolve(extra.href) ?? undefined) : undefined;
   const id = `${kind}:${extra.href ?? extra.element?.id ?? label}`;
+  /*
+   * The file's text, when it has been read. Used as `pendingBefore` for every source
+   * that has one, so an edit is recorded as a diff against the file rather than
+   * against the browser's re-serialization of it — no comments, `#fff` rewritten to
+   * `rgb(...)`, every line break the author chose replaced.
+   */
   const known = styleTexts.get(id);
+  let pendingBefore = known;
 
   let rules = 0;
   let readOnly: string | undefined;
   let unpreviewable: string | undefined;
-  let pendingBefore: string | undefined;
   try {
     rules = sheet.cssRules.length;
   } catch {
@@ -125,24 +159,18 @@ function describe(
      * impossible is the live preview, because that needs the CSSOM.
      */
     if (path) {
-      unpreviewable =
-        `The browser will not let this page read ${label}, so edits cannot be previewed on screen. ` +
-        `They will still be written to the file.`;
       /*
-       * Everything measurable about this sheet comes from the file, not the CSSOM.
-       *
-       * The rule count used to stay at 0 for the whole session once the folder was
-       * connected, which read as "the editor cannot see anything in here" at the exact
-       * moment it could see all of it — and it was the honest report of a count taken
-       * from a sheet the browser refuses to expose. Counting the file's own text says
-       * what is actually known. `pendingBefore` comes from the same place, so an edit
-       * to this sheet is recorded as a diff against the file instead of against the
-       * empty string `readStyleSource` has to return here.
+       * Readable from disk, and the page is still rendering from a sheet nobody can
+       * touch. This is the state a mirror exists to get out of, and reaching it means
+       * the mirror could not be installed — the text would not parse, or installing it
+       * changed how the page looked. Rare, and worth saying plainly rather than
+       * pretending the edit will show.
        */
-      if (known !== undefined) {
-        rules = countRules(known);
-        pendingBefore = known;
-      }
+      unpreviewable =
+        `The browser will not let this page read ${label}, and the editor could not stand in for ` +
+        `it, so edits cannot be shown on screen. They will still be written to the file.`;
+      // Everything measurable about this sheet comes from the file, not the CSSOM.
+      if (known !== undefined) rules = countRules(known);
     } else {
       readOnly =
         'This sheet is served from another origin, so the browser will not let the page read it.';
@@ -315,6 +343,26 @@ export function describeRule(rule: CSSRule): RuleLocation | null {
   }
 
   const node = sheet.ownerNode;
+  /*
+   * A stand-in is a `<style>` in the document and a file on disk, and this is the
+   * question that has to answer "file". `element` being set means two things at once
+   * here — paint through `textContent`, and *this edit is captured by serializing the
+   * page* — and the second is false for a mirror: the rule belongs to a `.css` file
+   * that the save has to write. Reading it as an inline style would quietly move
+   * every rule edit out of the stylesheet and into the exported HTML.
+   */
+  const mirror = styleMirrorOfNode(node);
+  if (mirror) {
+    return {
+      writeTo: mirror.href,
+      sheetId: sheetIdFor(sheet),
+      label: fileName(mirror.href) ?? 'stylesheet',
+      path,
+      context,
+      sheet,
+    };
+  }
+
   const element = node instanceof HTMLStyleElement ? node : undefined;
   const href = sheet.href ?? undefined;
 
@@ -434,13 +482,26 @@ export function writeStyleSource(source: StyleSource, css: string): Command | nu
   if (!element && !sheet) return null;
 
   /*
-   * A sheet the browser refuses to expose cannot be updated live, so the write is the
-   * record and the file. Swallowing the failure is right here: the caller has already
-   * been told, through `unpreviewable`, that the page will not change — turning that
-   * into a thrown error would make an edit that is about to be written to disk look
-   * like it failed.
+   * Painting, in the order of what the sheet actually is.
+   *
+   * A stand-in is written as text, because reparsing is what makes a *removal* show up
+   * — swapping rules through the CSSOM can add and change but never notices that the
+   * new text is missing something the old one had. It also keeps the remembered text
+   * in step, so the next edit to this sheet diffs against what is on screen rather
+   * than against the copy that was on disk before this session started.
+   *
+   * A sheet the browser refuses to expose and could not be stood in for cannot be
+   * updated at all, so the write is the record and the file. Swallowing that failure
+   * is right: the caller has been told through `unpreviewable` that the page will not
+   * change, and throwing would make an edit that is about to reach disk look failed.
    */
   const paint = (css: string): void => {
+    rememberStyleText(source.id, css);
+    const mirror = styleMirrorFor(sheet);
+    if (mirror) {
+      paintStyleMirror(mirror, css);
+      return;
+    }
     if (element) {
       element.textContent = css;
       return;

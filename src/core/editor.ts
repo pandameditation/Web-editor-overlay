@@ -77,6 +77,7 @@ import {
   type FileHostKind,
   type HostAvailability,
 } from './file-host.js';
+import { installStyleMirror, releaseStyleMirrors } from './mirror.js';
 import {
   collectStyleSources,
   describeRule,
@@ -457,6 +458,9 @@ export class EditorEngine {
     this.tokens.destroy();
     this.classes.destroy();
     this.library.destroy();
+    // Every `<link>` the editor stood in for goes back to loading its own file. A page
+    // the editor has left must not be rendering from a `<style>` the editor put there.
+    releaseStyleMirrors();
     // The sheet id table holds stylesheets strongly so a change record can name one.
     // Nothing should outlive the editor that handed the names out.
     resetSheetIds();
@@ -2594,42 +2598,75 @@ export class EditorEngine {
    * everywhere: re-read everything, from wherever it can be read.
    */
   async rescanStyles(): Promise<void> {
+    const project = this.#project;
+    if (project) await this.#mirrorUnreadableSheets(project);
     this.tokens.scanDocument();
     this.classes.scanDocument();
+  }
 
-    const project = this.#project;
-    if (!project) return;
-
+  /**
+   * Give the page back its own CSS through a channel the editor can read.
+   *
+   * The files are read from disk and stood in for by `installStyleMirror`, after which
+   * the sheets are ordinary readable ones: `appliedRules` finds `.sec h2`, the token
+   * and class scans see the whole file, and an edit to any of it shows on screen. That
+   * last part is why this is worth doing rather than just parsing the text on the side
+   * — a scan can be done from text, a preview cannot.
+   *
+   * A sheet that could not be stood in for is still scanned from its text, so the
+   * design system is picked up either way. It keeps `unpreviewable`, which is then a
+   * true statement about that sheet rather than about the whole feature.
+   */
+  async #mirrorUnreadableSheets(project: FileHost): Promise<void> {
     // `unpreviewable` is precisely the condition worth a disk read: the CSSOM refused
     // this sheet *and* the connected project can resolve its href to a file.
-    const files: Array<{ id: string; path: string }> = [];
+    const wanted: Array<{ id: string; path: string; href: string }> = [];
     for (const source of collectStyleSources(project)) {
-      if (source.unpreviewable && source.path) files.push({ id: source.id, path: source.path });
+      if (source.unpreviewable && source.path && source.href) {
+        wanted.push({ id: source.id, path: source.path, href: source.href });
+      }
     }
-    if (!files.length) return;
+    if (!wanted.length) return;
 
     // A failed read is one file the design system will not know about, not a reason to
     // abandon the others: a folder can be handed over with a stylesheet missing from it.
-    const texts = await Promise.all(
-      files.map(async (file) => ({
-        id: file.id,
+    const files = await Promise.all(
+      wanted.map(async (file) => ({
+        ...file,
         text: await project.read(file.path).catch(() => null),
       })),
     );
     // Unmounted while the reads were in flight. The text cache went with it.
     if (this.#destroyed) return;
 
-    let adopted = false;
-    for (const { id, text } of texts) {
-      if (text === null) continue;
-      rememberStyleText(id, text);
-      this.tokens.scanCSS(text);
-      this.classes.scanCSS(text);
-      adopted = true;
+    let changed = false;
+    let unmirrored = 0;
+    for (const file of files) {
+      if (file.text === null) continue;
+      rememberStyleText(file.id, file.text);
+      changed = true;
+
+      const link = linkElementFor(file.href);
+      const mirror = link ? installStyleMirror(link, file.text) : null;
+      if (mirror) continue;
+
+      // No stand-in, so the registries have to read the text directly — there is no
+      // readable sheet for `scanDocument` to walk.
+      unmirrored += 1;
+      this.tokens.scanCSS(file.text);
+      this.classes.scanCSS(file.text);
     }
-    // The rule counts in the CSS panel come off the remembered text, so the panel has
-    // to redraw even when the files held no tokens or classes at all.
-    if (adopted) this.#bumpRegistry();
+
+    if (unmirrored) {
+      this.notify(
+        `${unmirrored} stylesheet${unmirrored === 1 ? '' : 's'} could not be shown live. Edits to ` +
+        `${unmirrored === 1 ? 'it' : 'them'} will still be written to file.`,
+        'info',
+      );
+    }
+    // The CSS panel's rule counts come off the remembered text, so it has to redraw
+    // even when the files held no tokens or classes at all.
+    if (changed) this.#bumpRegistry();
   }
 
   async disconnectProject(): Promise<void> {
@@ -3196,6 +3233,20 @@ export class EditorEngine {
 /* -------------------------------------------------------------------------- */
 /* Helpers                                                                    */
 /* -------------------------------------------------------------------------- */
+
+/**
+ * The `<link>` that loaded a stylesheet, found by the URL it resolved to.
+ *
+ * Matched on `link.href` rather than the attribute, because that is the property the
+ * browser resolved and the same value `sheet.href` reports — comparing the raw
+ * attribute would miss `./theme.css` against the absolute URL the sheet carries.
+ */
+function linkElementFor(href: string): HTMLLinkElement | null {
+  for (const link of Array.from(document.querySelectorAll('link[rel~="stylesheet"]'))) {
+    if (link instanceof HTMLLinkElement && link.href === href) return link;
+  }
+  return null;
+}
 
 function isOverlayChrome(node: EventTarget): boolean {
   return node instanceof Element && node.tagName.toLowerCase() === 'html-editor-overlay';
