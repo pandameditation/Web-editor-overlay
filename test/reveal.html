@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Revealing a selection without moving the page for nothing</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: system-ui, sans-serif;
+    }
+
+    /* Taller than any viewport the harness runs at, so it can never fit on screen. */
+    #tall {
+      min-height: 4000px;
+      padding: 20px;
+      background: #eef;
+    }
+
+    #short {
+      height: 120px;
+      background: #efe;
+    }
+
+    #far {
+      height: 120px;
+      background: #fee;
+      margin-top: 3000px;
+    }
+
+    #tail {
+      height: 120px;
+      background: #ffe;
+    }
+
+    pre {
+      margin: 0;
+    }
+  </style>
+</head>
+
+<body>
+  <section id="tall">
+    <h2 id="inner">Inside the tall section</h2>
+    <p id="deep">A paragraph a long way down it.</p>
+  </section>
+  <div id="short">Shorter than the window</div>
+  <div id="far">A long way below</div>
+  <div id="tail">The end</div>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const errors = [];
+      window.addEventListener('error', (e) => errors.push('error: ' + e.message));
+      window.addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+      const results = {};
+      /*
+       * Awaited, one at a time. Every measurement here is "how far did the page move", which
+       * only means anything if nothing else is scrolling at the same time — a version of this
+       * that let the checks overlap reported no movement for cases that plainly move.
+       */
+      const check = async (name, fn) => {
+        document.getElementById('progress').textContent = name;
+        try { results[name] = await fn(); }
+        catch (err) { results[name] = 'THREW: ' + String(err && err.message); }
+      };
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      /*
+       * Smooth scrolling is asynchronous, so settling is what makes "did it move" answerable —
+       * and generously, because these distances are thousands of pixels and a short wait
+       * measures a scroll still in progress rather than where it ended up.
+       */
+      const settle = (ms = 1300) => new Promise((r) => setTimeout(r, ms));
+      const byId = (id) => document.getElementById(id);
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark' });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+
+      /** Put the page at a known offset with nothing selected, ready to measure. */
+      const at = async (top) => {
+        api.select(null);
+        await frames();
+        scrollTo({ top, behavior: 'instant' });
+        await settle(150);
+      };
+      /** Select something and report how far the page moved doing it. */
+      const moveOnSelect = async (el) => {
+        const before = scrollY;
+        api.select(el);
+        await frames();
+        await settle();
+        return Math.round(Math.abs(scrollY - before));
+      };
+
+      await check('theSectionIsTallerThanTheWindow', () => ({
+        viewport: innerHeight,
+        section: Math.round(byId('tall').getBoundingClientRect().height),
+        taller: byId('tall').getBoundingClientRect().height > innerHeight,
+      }));
+
+      /* ------------------------------------------------------------------ *
+       * The reported case: a wrapper you are already looking at.
+       * ------------------------------------------------------------------ */
+      await at(0);
+      await check('selectingATallSectionFromItsTopDoesNotScroll', () => moveOnSelect(byId('tall')));
+
+      // And from the middle of it, which is where the old centring landed you.
+      await at(1500);
+      await check('norFromTheMiddleOfIt', () => moveOnSelect(byId('tall')));
+
+      /*
+       * Arrowing from a child up to the tall parent is the same act by another route, and it
+       * used to move the page too.
+       */
+      await at(0);
+      api.select(byId('inner'));
+      await frames();
+      await settle();
+      await check('andArrowingUpToItDoesNotScrollEither', async () => {
+        const before = scrollY;
+        engine.navigate('parent');
+        await frames();
+        await settle();
+        return {
+          landedOnTheSection: engine.store.value.selected?.id ?? null,
+          moved: Math.round(Math.abs(scrollY - before)),
+        };
+      });
+
+      /* ------------------------------------------------------------------ *
+       * What still scrolls, because it still needs to.
+       * ------------------------------------------------------------------ */
+      await at(0);
+      await check('somethingFarBelowStillGetsRevealed', () => moveOnSelect(byId('far')));
+
+      /*
+       * A tall element clipping the top of the screen by a few pixels is not on screen in any
+       * useful sense, so it is still brought into view.
+       */
+      const tall = byId('tall');
+      await at(tall.offsetTop + tall.offsetHeight - 40);
+      await check('aTallElementShowingOnlyItsLastPixelsIsRevealed', () => moveOnSelect(tall));
+
+      /*
+       * And an element that fits on screen is untouched by any of this: off screen, it is
+       * centred exactly as before.
+       */
+      await at(0);
+      await check('aShortElementOffScreenIsStillCentred', async () => {
+        const moved = await moveOnSelect(byId('short'));
+        const box = byId('short').getBoundingClientRect();
+        return {
+          moved: moved > 0,
+          roughlyCentred: Math.abs(box.top + box.height / 2 - innerHeight / 2) < 80,
+        };
+      });
+
+      // Nothing moves for an element already sitting comfortably in view.
+      await at(0);
+      await check('andNothingMovesForSomethingAlreadyInView', () => moveOnSelect(byId('inner')));
+
+      results.__errors = errors;
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"__errors":["' + String(e && e.message) + '"]}:END';
+    });
+  </script>
+</body>
+
+</html>

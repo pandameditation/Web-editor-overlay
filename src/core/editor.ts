@@ -754,8 +754,31 @@ export class EditorEngine {
   #revealIfNeeded(el: HTMLElement): void {
     const box = visualBox(el);
     const margin = 80;
-    const offTop = box.top < margin;
-    const offBottom = box.top + box.height > innerHeight - margin;
+    const start = box.top;
+    const end = box.top + box.height;
+    const band = innerHeight - margin * 2;
+
+    /*
+     * An element too big to fit on screen is left where it is once enough of it is on screen.
+     *
+     * The test below asks whether the element's *end* is past the fold, which is true of every
+     * element taller than the window — so selecting a `<main>` or a section wrapper always
+     * counted as off screen, and the answer, centring, means scrolling to the middle of it.
+     * Clicking a wrapper around what you were reading therefore threw you into the middle of
+     * the page, and arrowing up to a parent did the same. Neither had anything to reveal.
+     *
+     * Half a screenful is the bar for "enough". Something has to be, because an element can
+     * technically intersect the viewport by a single pixel of its final line, and that is a
+     * case where scrolling really does help; sitting inside a tall element, which is what this
+     * is here for, clears the bar by a wide margin.
+     */
+    if (box.height > band) {
+      const onScreen = Math.min(end, innerHeight) - Math.max(start, 0);
+      if (onScreen >= innerHeight / 2) return;
+    }
+
+    const offTop = start < margin;
+    const offBottom = end > innerHeight - margin;
     if (offTop || offBottom) {
       el.scrollIntoView({ block: 'center', behavior: 'smooth' });
     }
