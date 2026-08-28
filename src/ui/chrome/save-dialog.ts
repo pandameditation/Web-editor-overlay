@@ -379,13 +379,31 @@ export class HeoSaveDialog extends HeoElement {
 
       footer {
         display: flex;
+        flex-wrap: wrap;
         align-items: center;
-        gap: 8px;
+        gap: 8px 12px;
         padding: 12px 18px;
         border-top: 1px solid var(--heo-line);
       }
-      footer .spacer {
+      /*
+       * The actions are a group of their own, not a row of siblings after a spacer.
+       *
+       * The row grows with the connection — a connected project adds the folder name and
+       * Disconnect to everything already there — and the dialog is only ever as wide as
+       * the window. A spacer right-aligns one line and has nothing to push against on a
+       * second, which stranded the primary button at the left. Grouping them means they
+       * wrap as a block and stay right-aligned however many lines they take.
+       */
+      footer .actions {
+        display: flex;
         flex: 1 1 auto;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 8px;
+      }
+      footer .actions > .btn {
+        flex: 0 0 auto;
       }
       .note {
         max-width: 300px;
@@ -585,27 +603,19 @@ export class HeoSaveDialog extends HeoElement {
         >
           ${icon('chevronLeft', 12)} Back
         </button>
-        <span class="spacer"></span>
-        ${project
-        ? html`<button
-              class="btn"
-              type="button"
-              title="Stop writing files. Saving goes back to producing a prompt."
-              @click=${() => void this.editor.disconnectProject()}
-            >
-              ${icon('unlink', 12)} Disconnect
-            </button>`
-        : nothing}
-        <button
-          class="btn"
-          type="button"
-          title="Read the files again and rebuild the list"
-          ?disabled=${planning}
-          @click=${() => void this.editor.previewWritePlan()}
-        >
-          ${icon('refresh', 12)} Recheck
-        </button>
-        ${this.#renderPrimary()}
+        <div class="actions">
+          ${this.#renderDisconnect()}
+          <button
+            class="btn"
+            type="button"
+            title="Read the files again and rebuild the list"
+            ?disabled=${planning}
+            @click=${() => void this.editor.previewWritePlan()}
+          >
+            ${icon('refresh', 12)} Recheck
+          </button>
+          ${this.#renderPrimary()}
+        </div>
       </footer>
     `;
   }
@@ -809,8 +819,7 @@ export class HeoSaveDialog extends HeoElement {
         >
           ${icon('chevronLeft', 12)} Back to the changes
         </button>
-        <span class="spacer"></span>
-        ${this.#renderPrimary()}
+        <div class="actions">${this.#renderPrimary()}</div>
       </footer>
     `;
   }
@@ -917,25 +926,26 @@ export class HeoSaveDialog extends HeoElement {
             .length}
               new classes`}
         </span>
-        <span class="spacer"></span>
-        <button
-          class="btn"
-          type="button"
-          title="Copy this system as a seed, download it, or bring another one in"
-          @click=${() => {
+        <div class="actions">
+          <button
+            class="btn"
+            type="button"
+            title="Copy this system as a seed, download it, or bring another one in"
+            @click=${() => {
         this.view = 'transfer';
       }}
-        >
-          ${icon('blocks', 12)} Design system ${icon('chevronRight', 11)}
-        </button>
-        <button class="btn" type="button" @click=${() => this.editor.exportPageHTML()}>
-          ${icon('code', 12)} HTML
-        </button>
-        <button class="btn" type="button" @click=${() => void this.editor.copyPrompt()}>
-          ${icon('copy', 12)} Copy prompt
-        </button>
-        ${this.#renderFilesEntry()}
-        ${this.#renderPrimary()}
+          >
+            ${icon('blocks', 12)} Design system ${icon('chevronRight', 11)}
+          </button>
+          <button class="btn" type="button" @click=${() => this.editor.exportPageHTML()}>
+            ${icon('code', 12)} HTML
+          </button>
+          <button class="btn" type="button" @click=${() => void this.editor.copyPrompt()}>
+            ${icon('copy', 12)} Copy prompt
+          </button>
+          ${this.#renderFilesEntry()}
+          ${this.#renderPrimary()}
+        </div>
       </footer>
     `;
   }
@@ -950,12 +960,24 @@ export class HeoSaveDialog extends HeoElement {
   #renderFilesEntry(): TemplateResult | typeof nothing {
     const project = this.state.value.project;
     if (project) {
-      // The primary button already leads to the Files step, so this only has to say
-      // where the files are going.
-      return html`<span class="where" title=${`Connected to ${project.label}`}>
-        ${icon(project.kind === 'server' ? 'server' : 'folder', 11)}
-        <code>${project.label}</code>
-      </span>`;
+      /*
+       * Connected: name the folder, and put the way back out in the slot the way in
+       * was in.
+       *
+       * Disconnecting used to live one step deeper, in the Files footer, which meant
+       * the only route to it was to open a review of the files you had just decided not
+       * to write. A connection is made from here, so it is unmade from here. The label
+       * still says where the files are going, because that is the fact the button is
+       * about — and the primary button beside it already leads to the Files step, so
+       * this slot does not have to.
+       */
+      return html`
+        <span class="where" title=${`Connected to ${project.label}`}>
+          ${icon(project.kind === 'server' ? 'server' : 'folder', 11)}
+          <code>${project.label}</code>
+        </span>
+        ${this.#renderDisconnect()}
+      `;
     }
 
     // No picker and no server means there is nothing to offer, so nothing is offered.
@@ -971,6 +993,31 @@ export class HeoSaveDialog extends HeoElement {
       }}
     >
       ${icon('folder', 12)} Write to files…
+    </button>`;
+  }
+
+  /**
+   * Hand the folder back, drawn the same in both footers.
+   *
+   * Leaving the Files step on the way out is part of the action rather than a courtesy:
+   * that step is a list of files in a project, and without the project there is no list
+   * — staying there would leave the user looking at "could not read the project files"
+   * as though something had gone wrong.
+   */
+  #renderDisconnect(): TemplateResult | typeof nothing {
+    const project = this.state.value.project;
+    if (!project) return nothing;
+
+    return html`<button
+      class="btn"
+      type="button"
+      title=${`Hand ${project.label} back. Saving goes back to producing a prompt.`}
+      @click=${() => {
+        this.view = 'review';
+        void this.editor.disconnectProject();
+      }}
+    >
+      ${icon('unlink', 12)} Disconnect
     </button>`;
   }
 

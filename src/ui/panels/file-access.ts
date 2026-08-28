@@ -42,14 +42,34 @@ export const fileAccessStyles = css`
     font-size: 10.5px;
     line-height: 1.5;
   }
+
+  /* The variant with no action in it. Drawn as a notice rather than as an offer,
+     because there is nothing here to press — the way out is another browser. */
+  .access.blocked {
+    flex-wrap: nowrap;
+    align-items: flex-start;
+    gap: 7px;
+    padding: 9px 10px;
+    border: 1px solid var(--heo-warn);
+    border-radius: var(--heo-r-sm);
+    background: var(--heo-sunken);
+  }
+  .access.blocked p {
+    flex: 1 1 auto;
+  }
+  .access.blocked .g {
+    flex: 0 0 auto;
+    margin-top: 1px;
+    color: var(--heo-warn);
+  }
 `;
 
 /**
- * Render the offer, or nothing when there is nothing to offer.
+ * Render the offer, or the reason there is not one.
  *
- * Returns `nothing` in a browser without the directory picker and without a dev-server
- * endpoint, because a button whose only possible outcome is a further explanation is
- * worse than the absence of one.
+ * No button is drawn in a browser without the directory picker, because a button whose
+ * only possible outcome is a further explanation is worse than the absence of one. What
+ * replaces it is the explanation itself, and only where it leads somewhere.
  */
 export function renderFileAccess(host: FileAccessHost, canPickFolder: boolean): unknown {
   const project = host.engine.store.value.project;
@@ -72,7 +92,7 @@ export function renderFileAccess(host: FileAccessHost, canPickFolder: boolean): 
     `;
   }
 
-  if (!canPickFolder) return nothing;
+  if (!canPickFolder) return renderBrowserLimit(host);
 
   return html`
     <div class="access">
@@ -90,6 +110,37 @@ export function renderFileAccess(host: FileAccessHost, canPickFolder: boolean): 
       >
         ${icon('folder', 11)} Connect the project folder
       </button>
+    </div>
+  `;
+}
+
+/**
+ * The dead end, named, when the browser is the thing in the way.
+ *
+ * Only for a page opened from disk, and that restriction is the whole point. A
+ * cross-origin stylesheet on a served page is out of reach in every browser, so
+ * pointing at Chrome there would be a false lead. A local file is the opposite case:
+ * it is sitting right next to the page, unreadable only because `file://` gives every
+ * file its own opaque origin — and handing the folder over is the way around that,
+ * which Chromium is currently the only family to implement.
+ *
+ * Without this, Firefox and Safari showed the browser's refusal and then stopped,
+ * which reads as the editor being broken rather than as one browser being short a
+ * capability that two others have.
+ */
+function renderBrowserLimit(host: FileAccessHost): unknown {
+  if (location.protocol !== 'file:') return nothing;
+
+  return html`
+    <div class="access blocked">
+      <span class="g">${icon('alert', 12)}</span>
+      <p>
+        This page was opened from disk, so every file beside it is its own origin and no
+        browser will read this ${host.what} through the page. Getting at it needs the folder
+        handed over, and this browser cannot do that — Chrome and Edge can. Serving the page
+        through the Vite plugin instead reaches the same files in any browser, Firefox
+        included.
+      </p>
     </div>
   `;
 }

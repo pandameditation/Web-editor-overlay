@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Editor overlay — reaching files, and saying so when it cannot</title>
+  <!--
+    Two surfaces that only exist because a page cannot always reach its own files.
+
+    Run under real opaque origins, like `check:opaque`, because that is the only way to
+    get a genuinely unreadable stylesheet without a network:
+
+        npm run build:lib && npm run check:access
+
+    The bundle loads through a classic `<script src>` rather than a module import, since
+    a module import is CORS-checked and would be blocked along with everything else.
+  -->
+  <link rel="stylesheet" href="./opaque.css">
+</head>
+
+<body>
+  <main>
+    <div class="panel">Opened from disk.</div>
+  </main>
+
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+
+  <!-- A sibling script, so the JS panel hits the same wall the CSS panel does. -->
+  <script src="./opaque.js"></script>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+
+  <script>
+    (async () => {
+      const errors = [];
+      window.addEventListener('error', (e) => errors.push('error: ' + e.message));
+      window.addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+
+      const results = {};
+      const progress = document.getElementById('progress');
+      const step = (name) => { progress.textContent = name; };
+      const check = (name, fn) => {
+        step(name);
+        try { results[name] = fn(); }
+        catch (err) { results[name] = 'THREW: ' + (err && err.message ? err.message : String(err)); }
+      };
+      const settle = (ms) => new Promise((r) => setTimeout(r, ms));
+
+      /** Find an element by selector, crossing shadow boundaries. */
+      const deep = (root, selector) => {
+        const found = root.querySelector(selector);
+        if (found) return found;
+        for (const element of root.querySelectorAll('*')) {
+          if (!element.shadowRoot) continue;
+          const inner = deep(element.shadowRoot, selector);
+          if (inner) return inner;
+        }
+        return null;
+      };
+      const textOf = (node) => (node ? node.shadowRoot.textContent.replace(/\s+/g, ' ') : '');
+      /** Buttons in a shadow root, by their visible label. */
+      const buttonLabels = (node, selector) =>
+        node
+          ? Array.from(node.shadowRoot.querySelectorAll(selector)).map((b) =>
+            b.textContent.replace(/\s+/g, ' ').trim(),
+          )
+          : [];
+
+      const pickerDescriptor = Object.getOwnPropertyDescriptor(window, 'showDirectoryPicker');
+      results.thisBrowserHasThePicker = typeof window.showDirectoryPicker === 'function';
+
+      /* ------------------------------------------------------------------ *
+       * A browser without the directory picker — Firefox, Safari.
+       *
+       * The file is right beside the page and every browser refuses to read it,
+       * because `file://` gives each file its own origin. Chromium can be handed the
+       * folder to get around that; the others cannot, and used to be shown the
+       * refusal followed by nothing at all.
+       * ------------------------------------------------------------------ */
+      step('withoutAPicker');
+      Object.defineProperty(window, 'showDirectoryPicker', {
+        value: undefined,
+        configurable: true,
+        writable: true,
+      });
+
+      const limited = window.HtmlEditorOverlay.mount({});
+      limited.setEditing(true);
+      limited.engine.openCode('css');
+      await settle(600);
+
+      const cssPanel = deep(document, 'heo-css-panel');
+      results.theCssPanelIsOpen = Boolean(cssPanel);
+      const limitText = textOf(cssPanel);
+
+      check('theBrowserRefusalIsStillReported', () =>
+        /will not let the page read it/.test(limitText));
+      check('withoutAPickerTheLimitIsExplained', () =>
+        /this browser cannot do that/i.test(limitText));
+      check('andTheBrowsersThatCanAreNamed', () => /Chrome and Edge/.test(limitText));
+      check('andTheVitePluginIsOfferedAsTheOtherRoute', () => /Vite plugin/.test(limitText));
+      check('andFirefoxIsNamedRatherThanLeftGuessing', () => /Firefox/.test(limitText));
+      // No button, because there is nothing here that could work.
+      check('noConnectButtonIsOffered', () =>
+        !/Connect the project folder/.test(limitText));
+
+      // The JS panel shares the surface, so a sibling script gets the same answer with
+      // its own noun rather than the stylesheet's.
+      step('theJsPanelSaysTheSame');
+      limited.engine.setCodeTab('js');
+      await settle(600);
+      const jsText = textOf(deep(document, 'heo-js-panel'));
+      check('theJsPanelExplainsTheSameLimit', () => ({
+        namesTheScript: /read this script through the page/.test(jsText),
+        namesTheBrowsers: /Chrome and Edge/.test(jsText),
+        offersVite: /Vite plugin/.test(jsText),
+      }));
+
+      /* ------------------------------------------------------------------ *
+       * With the picker back, the offer returns rather than the notice.
+       * ------------------------------------------------------------------ */
+      step('withThePickerBack');
+      limited.unmount();
+      if (pickerDescriptor) Object.defineProperty(window, 'showDirectoryPicker', pickerDescriptor);
+      else delete window.showDirectoryPicker;
+      // Something callable, so availability reports true without a picker ever opening.
+      if (typeof window.showDirectoryPicker !== 'function') {
+        window.showDirectoryPicker = () => Promise.reject(new Error('not in this test'));
+      }
+
+      const api = window.HtmlEditorOverlay.mount({});
+      const engine = api.engine;
+      api.setEditing(true);
+      engine.openCode('css');
+      await settle(600);
+      check('withAPickerTheOfferIsAButtonAgain', () => {
+        const panel = deep(document, 'heo-css-panel');
+        const text = textOf(panel);
+        return {
+          offersToConnect: /Connect the project folder/.test(text),
+          dropsTheNotice: !/Chrome and Edge/.test(text),
+        };
+      });
+
+      /* ------------------------------------------------------------------ *
+       * The save dialog: connecting is undone where it was done.
+       * ------------------------------------------------------------------ */
+      step('theSaveFooterBeforeConnecting');
+      // One change, so the dialog has something to review.
+      engine.select(document.querySelector('.panel'));
+      engine.setStyle('outline', '2px solid red');
+      await settle(60);
+
+      engine.previewSave();
+      await settle(300);
+      const dialog = () => deep(document, 'heo-save-dialog');
+      const footerLabels = () => buttonLabels(dialog(), 'footer .btn');
+      /** Which step the dialog is on, as it announces itself to a screen reader. */
+      const dialogStep = () =>
+        dialog()?.shadowRoot.querySelector('.dialog')?.getAttribute('aria-label') ?? null;
+
+      check('beforeConnectingTheFooterOffersToWriteFiles', () => footerLabels());
+
+      step('theSaveFooterAfterConnecting');
+      const directory = decodeURIComponent(location.pathname).replace(/[^/]*$/, '');
+      const disk = new Map([['opaque.css', '/* from disk */\n.panel { padding: 12px; }\n']]);
+      await engine.attachProject({
+        kind: 'directory',
+        label: 'memory',
+        resolve(url) {
+          const path = decodeURIComponent(new URL(url, location.href).pathname);
+          return path.startsWith(directory) ? path.slice(directory.length) : null;
+        },
+        read: async (path) => (disk.has(path) ? disk.get(path) : null),
+        write: async (path, text) => { disk.set(path, text); },
+        ensureWritable: async () => true,
+        release: async () => { },
+      }, { quiet: true });
+      await settle(300);
+
+      check('connectingSwapsTheWriteButtonForDisconnect', () => footerLabels());
+      // The name has to survive the swap: it is the answer to "connected to what".
+      check('theConnectedFolderIsStillNamed', () => {
+        const where = dialog()?.shadowRoot.querySelector('footer .where code');
+        return where ? where.textContent.trim() : null;
+      });
+
+      /* ------------------------------------------------------------------ *
+       * And pressing it hands the folder back, from this footer.
+       * ------------------------------------------------------------------ */
+      step('disconnectingFromTheReviewFooter');
+      const disconnect = Array.from(dialog().shadowRoot.querySelectorAll('footer .btn')).find(
+        (b) => /Disconnect/.test(b.textContent),
+      );
+      results.theDisconnectButtonIsInTheReviewFooter = Boolean(disconnect);
+      disconnect?.click();
+      await settle(300);
+
+      check('disconnectingClearsTheProject', () => engine.store.value.project === null);
+      check('andTheFooterOffersToConnectAgain', () => footerLabels());
+      // Still on the review step, not stranded on a file plan with no project behind it.
+      check('andTheDialogIsStillOnTheReviewStep', () => dialogStep());
+
+      /* ------------------------------------------------------------------ *
+       * The Files step keeps its own Disconnect, and leaving it goes back.
+       * ------------------------------------------------------------------ */
+      step('disconnectingFromTheFilesFooter');
+      await engine.attachProject({
+        kind: 'directory',
+        label: 'memory',
+        resolve: () => null,
+        read: async () => null,
+        write: async () => { },
+        ensureWritable: async () => true,
+        release: async () => { },
+      }, { quiet: true });
+      engine.closeSavePreview();
+      await settle(120);
+      engine.previewSave('files');
+      await settle(400);
+
+      check('theFilesStepIsOpen', () => dialogStep());
+      check('theFilesStepAlsoOffersDisconnect', () => footerLabels());
+      const fromFiles = Array.from(dialog().shadowRoot.querySelectorAll('footer .btn')).find(
+        (b) => /Disconnect/.test(b.textContent),
+      );
+      fromFiles?.click();
+      await settle(300);
+      // Leaving the step is part of the action: a file plan with no project behind it
+      // can only report that it could not read anything.
+      check('disconnectingFromTheFilesStepReturnsToReview', () => ({
+        project: engine.store.value.project,
+        step: dialogStep(),
+        footer: footerLabels(),
+      }));
+
+      results.__errors = errors;
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"__errors":["' + String(e && e.message) + '"]}:END';
+    });
+  </script>
+</body>
+
+</html>
