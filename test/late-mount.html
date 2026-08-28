@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Editor overlay — content rendered before the editor existed</title>
+  <!--
+    The arrangement that defeats every timing-based signal, and the common one.
+
+    `stories.js` runs while the document is parsing and fills `#all-stories` with
+    `innerHTML`. The overlay bundle is at the end of `<body>`, so by the time it is
+    evaluated the write has already happened: the DOM wrappers were not installed, and
+    the observer that backs them up had nothing to observe. A bookmarklet is later
+    still.
+
+    Nothing about *when* things ran can recover this. What can is the page's own file:
+    `#all-stories` is empty in the HTML and full on screen, and that comparison holds no
+    matter what order anything loaded in.
+
+        npm run build:lib && npm run check:late
+  -->
+  <style>
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: system-ui, sans-serif;
+    }
+
+    .story {
+      display: block;
+      padding: 8px 0;
+    }
+  </style>
+</head>
+
+<body data-story-num="1">
+  <h1 id="authored">Written in the HTML</h1>
+  <p id="authored-copy">This paragraph is in the file.</p>
+
+  <section id="all-stories"></section>
+
+  <ul id="mixed">
+    <li class="static">Authored item</li>
+  </ul>
+
+  <script src="./stories.js"></script>
+  <script>
+    // Appends to a list that already has authored children, so matching has to line the
+    // two up rather than assume a container is all-or-nothing.
+    var mixed = document.getElementById('mixed');
+    var extra = document.createElement('li');
+    extra.className = 'grown';
+    extra.textContent = 'Added by script';
+    mixed.appendChild(extra);
+  </script>
+
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+
+  <!-- After everything the page does, which is the whole point. -->
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+
+  <script>
+    (async () => {
+      const errors = [];
+      window.addEventListener('error', (e) => errors.push('error: ' + e.message));
+      window.addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+
+      const results = {};
+      const progress = document.getElementById('progress');
+      const check = (name, fn) => {
+        progress.textContent = name;
+        try { results[name] = fn(); }
+        catch (err) { results[name] = 'THREW: ' + (err && err.message ? err.message : String(err)); }
+      };
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const deep = (root, selector) => {
+        const found = root.querySelector(selector);
+        if (found) return found;
+        for (const element of root.querySelectorAll('*')) {
+          if (!element.shadowRoot) continue;
+          const inner = deep(element.shadowRoot, selector);
+          if (inner) return inner;
+        }
+        return null;
+      };
+      const textOf = (node) => (node ? node.shadowRoot.textContent.replace(/\s+/g, ' ') : '');
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark' });
+      const engine = api.engine;
+      api.setEditing(true);
+      // The baseline needs the page's own file, which is a fetch.
+      await engine.whenReady();
+      await frames();
+
+      const kindOf = (el) => {
+        const found = engine.provenanceOf(el);
+        return found ? found.kind : null;
+      };
+      const q = (selector) => document.querySelector(selector);
+
+      /* ------------------------------------------------------------------ *
+       * The container was in the file and empty; its contents were not.
+       * ------------------------------------------------------------------ */
+      check('theAuthoredContainerIsStillTheUsers', () => kindOf(q('#all-stories')));
+      check('theCardWrittenIntoItIsDetected', () => kindOf(q('#leading')));
+      /*
+       * The one that matters most. `innerHTML` landed on `#all-stories`, but the text a
+       * user reaches for is the heading three levels down — so detection that only
+       * marks the nodes named in the write leaves every piece of text inside them
+       * editable, which is exactly the hole this fixture was written for.
+       */
+      check('andSoIsTheHeadingInsideIt', () => kindOf(q('#leading .story-title')));
+      check('andTheParagraphInsideIt', () => kindOf(q('#leading .story-meta')));
+      check('andTheSpanInsideIt', () => kindOf(q('#leading .story-num')));
+
+      /* ------------------------------------------------------------------ *
+       * A list with both authored and appended children has to be told apart.
+       * ------------------------------------------------------------------ */
+      check('theAuthoredListItemIsStillTheUsers', () => kindOf(q('#mixed .static')));
+      check('theAppendedListItemIsDetected', () => kindOf(q('#mixed .grown')));
+
+      /* ------------------------------------------------------------------ *
+       * Authored content is untouched by any of this.
+       * ------------------------------------------------------------------ */
+      check('authoredContentIsUnaffected', () => ({
+        heading: kindOf(q('#authored')),
+        copy: kindOf(q('#authored-copy')),
+      }));
+
+      /* ------------------------------------------------------------------ *
+       * And the gate holds where it counts: on the text itself.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'theGate';
+      engine.beginTextEdit(q('#leading .story-title'));
+      await frames();
+      check('editingTheRenderedHeadingIsRefused', () => ({
+        started: engine.store.value.textEditing !== null,
+        stillSaysWhatTheScriptSaid: q('#leading .story-title').textContent,
+      }));
+      check('andTheRefusalExplainsItself', () =>
+        /would be undone/.test(textOf(deep(document, 'heo-toast'))));
+
+      engine.beginTextEdit(q('#authored-copy'));
+      await frames();
+      check('authoredTextIsStillEditableInPlace', () =>
+        engine.store.value.textEditing === q('#authored-copy'));
+      engine.endTextEdit(false);
+      await frames();
+      check('andDiscardingLeavesItEditable', () => kindOf(q('#authored-copy')));
+
+      /* ------------------------------------------------------------------ *
+       * And the offer is real, even though the comparison that caught this
+       * names no script: the text is searched for in the page's own scripts.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'theOffer';
+      const opened = await engine.openSourceEdit(q('#leading .story-title'));
+      await frames();
+      results.theSourceDialogOpened = opened;
+      const dialog = deep(document, 'heo-source-dialog');
+      check('itFoundTheScriptThatBuildsTheList', () =>
+        dialog?.shadowRoot.querySelector('.where code')?.textContent?.trim() ?? null);
+      check('andWindowedItOnTheDataThatProducesTheText', () => {
+        const buffer = deep(dialog.shadowRoot, 'heo-code-editor')?.value ?? '';
+        return {
+          matchedTheLiteral: /Found .*Leading.* in this file/.test(textOf(dialog)),
+          showsTheStoryData: /'story-title': 'Leading'/.test(buffer),
+        };
+      });
+
+      // Editing it records a write against the script, not against the HTML — which is
+      // the whole point: the HTML has no copy of this text to change.
+      progress.textContent = 'theEdit';
+      const codeEditor = deep(dialog.shadowRoot, 'heo-code-editor');
+      codeEditor.dispatchEvent(new CustomEvent('code-input', {
+        detail: { value: codeEditor.value.replace("'Leading'", "'Renamed'") },
+        bubbles: true,
+      }));
+      await frames();
+      results.recorded = engine.commitSourceEdit();
+      check('theEditIsFiledAgainstTheScript', () => {
+        const record = engine.records.find((r) => r.detail?.scope === 'rendered source');
+        if (!record) return 'no record';
+        return {
+          file: String(record.detail.file ?? '').replace(/^.*\//, ''),
+          carriesTheChange: (record.detail.script ?? '').includes("'Renamed'"),
+          keepsTheRest: (record.detail.script ?? '').includes('escapeHtml'),
+        };
+      });
+      engine.closeSourceEdit();
+
+      results.__errors = errors;
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"__errors":["' + String(e && e.message) + '"]}:END';
+    });
+  </script>
+</body>
+
+</html>

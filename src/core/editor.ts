@@ -77,7 +77,26 @@ import {
   type FileHostKind,
   type HostAvailability,
 } from './file-host.js';
+import {
+  sourceTargetOf,
+  sourceWindow,
+  writeSourceEdit,
+  type SourceTarget,
+  type SourceWindow,
+} from './js-edit.js';
 import { installStyleMirror, releaseStyleMirrors } from './mirror.js';
+import { collectScriptSources, fetchScriptSource } from './scripts.js';
+import {
+  describeProvenance,
+  establishBaseline,
+  isScriptOwned,
+  markUserOwned,
+  observeRuntimeContent,
+  provenanceOf,
+  resetProvenance,
+  withoutProvenance,
+  type Provenance,
+} from './provenance.js';
 import {
   collectStyleSources,
   describeRule,
@@ -275,6 +294,31 @@ export interface EditorState {
    * is exactly the thing the plan would explain.
    */
   saveView: 'review' | 'files';
+  /** The open targeted-source edit, when one is open. */
+  sourceEdit: SourceEdit | null;
+}
+
+/**
+ * A targeted edit to the code that renders a piece of the page.
+ *
+ * Holds the whole file as well as the window, because the window is only meaningful
+ * spliced back into it, and re-reading on commit would mean writing against a file
+ * that may have moved on since it was shown.
+ */
+export interface SourceEdit {
+  element: HTMLElement;
+  provenance: Provenance;
+  target: SourceTarget;
+  /** The file as read. `null` while the read is in flight. */
+  file: string | null;
+  window: SourceWindow | null;
+  /** The buffer, which starts as the window's own text. */
+  draft: string;
+  /** What the element showed, so the dialog can say what it went looking for. */
+  text: string;
+  error: string;
+  /** Set once the edit has been recorded, so the dialog can say it landed. */
+  recorded: boolean;
 }
 
 /** What the UI needs to know about a connected project. */
@@ -385,6 +429,7 @@ export class EditorEngine {
       writePlan: null,
       planning: false,
       saveView: 'review',
+      sourceEdit: null,
     });
   }
 
@@ -414,6 +459,20 @@ export class EditorEngine {
 
     this.#bindPageEvents();
     this.#observePage();
+    /*
+     * The floor under the two better provenance signals.
+     *
+     * Whatever the wrappers missed by being installed late, and whatever leaves no
+     * usable stack, is still knowable from the fact that it appeared after the page
+     * parsed. Registered here rather than at module load because it costs an observer
+     * and only matters once there is an editor to refuse an edit.
+     */
+    if (this.options.detectScriptContent !== false) {
+      this.#listeners.push(observeRuntimeContent());
+      // Tracked, because it is a fetch and because a test — or a user — asking "is this
+      // text mine to edit" before it lands would get the wrong answer.
+      this.track(this.establishContentBaseline());
+    }
 
     /*
      * Look for a project without asking for one.
@@ -461,6 +520,7 @@ export class EditorEngine {
     // Every `<link>` the editor stood in for goes back to loading its own file. A page
     // the editor has left must not be rendering from a `<style>` the editor put there.
     releaseStyleMirrors();
+    resetProvenance();
     // The sheet id table holds stylesheets strongly so a change record can name one.
     // Nothing should outlive the editor that handed the names out.
     resetSheetIds();
@@ -1994,6 +2054,20 @@ export class EditorEngine {
   beginTextEdit(el = this.store.value.selected, caret?: { x: number; y: number }): void {
     if (!el || this.store.value.textEditing === el) return;
     if (!acceptsChildren(el)) return;
+    /*
+     * Content the page renders is not content this editor can change.
+     *
+     * Refusing looks unhelpful for exactly as long as it takes to read why. The
+     * alternative is worse in a way that is hard to recover from: the edit lands, looks
+     * committed, and is silently replaced by the next render — possibly minutes later,
+     * after several more edits have been made on top of a value that was never real.
+     * So the refusal comes with the reason and, where the code can be located, with the
+     * only edit that would actually hold.
+     */
+    if (this.options.detectScriptContent !== false && isScriptOwned(el)) {
+      this.#refuseTextEdit(el);
+      return;
+    }
     this.endTextEdit(true);
     this.#textEditSnapshot = el.innerHTML;
     el.setAttribute('contenteditable', 'true');
@@ -2022,6 +2096,261 @@ export class EditorEngine {
     });
   }
 
+  /**
+   * Work out which content is not in the page's own HTML file.
+   *
+   * The signal that does not care when the editor arrived, and therefore the one that
+   * catches the common case: a script in `<body>` that fills a container while the
+   * document is still parsing has finished before any wrapper or observer could have
+   * been installed. Comparing against the file is the only way back.
+   *
+   * Read through a connected project first and fetched otherwise, the same order the
+   * stylesheets use and for the same reasons: over `file://` a fetch of the page is
+   * refused, and behind a dev server a request can return something other than the
+   * file. Silent when neither works — this sharpens the answer where it can and the
+   * other tiers still stand on their own.
+   */
+  async establishContentBaseline(): Promise<number> {
+    if (this.options.detectScriptContent === false) return 0;
+    const source = await this.#readOwnDocument();
+    if (source === null || this.#destroyed) return 0;
+    const marked = establishBaseline(source);
+    if (marked) this.#bumpRevision();
+    return marked;
+  }
+
+  /** The page's own HTML as served, from disk when possible. */
+  async #readOwnDocument(): Promise<string | null> {
+    const host = this.#project;
+    if (host) {
+      const path = host.resolve(location.href);
+      if (path) {
+        const text = await host.read(path).catch(() => null);
+        if (text !== null) return text;
+      }
+    }
+    try {
+      const response = await fetch(location.href, { credentials: 'same-origin' });
+      return response.ok ? await response.text() : null;
+    } catch {
+      // An opaque origin, which is every local file opened directly. The folder is the
+      // way through, and connecting one runs this again.
+      return null;
+    }
+  }
+
+  /**
+   * What is known about who renders this element's content, if anything.
+   *
+   * `undefined` means the content was authored in the markup as far as the editor can
+   * tell, which is the answer that lets it be edited in place.
+   */
+  provenanceOf(el = this.store.value.selected): Provenance | undefined {
+    if (!el || this.options.detectScriptContent === false) return undefined;
+    return isScriptOwned(el) ? provenanceOf(el) : undefined;
+  }
+
+  /**
+   * Say no to an in-place edit, and offer the edit that would work instead.
+   *
+   * The toast carries the action rather than the explanation carrying it, because the
+   * user's intent was "change this text" and the useful reply is a way to still do
+   * that — not a lecture with a dead end at the end of it. Where no location is known
+   * the offer is dropped rather than faked; a button that opens an empty file would be
+   * worse than none.
+   */
+  #refuseTextEdit(el: HTMLElement): void {
+    const provenance = provenanceOf(el);
+    if (!provenance) return;
+    /*
+     * Offered whenever there is anywhere to look, which is more often than there is a
+     * recorded location: a text search of the page's scripts can find the code that a
+     * comparison against the HTML could only tell us exists. A dependency is the one
+     * case worth declining outright — nobody wants to be sent into `node_modules`.
+     */
+    const canOpen = !provenance.vendor;
+    this.select(el);
+    this.notify(
+      describeProvenance(provenance),
+      'info',
+      canOpen ? { label: 'Edit the code', run: () => void this.openSourceEdit(el) } : undefined,
+    );
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Editing the code behind rendered content                               */
+  /* ---------------------------------------------------------------------- */
+
+  /**
+   * Open the code that renders this element, focused on the part that produces it.
+   *
+   * The dialog opens before the file has been read, holding what is already known —
+   * which file, which element, what it says. A disk read is not instant and an empty
+   * modal that fills in is far better than a button that appears to do nothing for a
+   * beat and then produces a window.
+   */
+  async openSourceEdit(el = this.store.value.selected): Promise<boolean> {
+    if (!el) return false;
+    const provenance = provenanceOf(el);
+    if (!provenance) {
+      this.notify('This content is not rendered by the page’s code, so it can be edited in place.', 'info');
+      return false;
+    }
+    const host = this.#project;
+    const text = (el.textContent ?? '').trim();
+    const fromProvenance = sourceTargetOf(provenance, (url) => host?.resolve(url) ?? null);
+
+    this.store.patch({
+      sourceEdit: {
+        element: el,
+        provenance,
+        target: fromProvenance ?? { label: 'the page’s JavaScript' },
+        file: null,
+        window: null,
+        draft: '',
+        text,
+        error: '',
+        recorded: false,
+      },
+    });
+
+    let target = fromProvenance;
+    let file = target ? await this.#readSource(target) : null;
+
+    /*
+     * No location, so go and look for one.
+     *
+     * The baseline comparison knows content is generated without knowing what generated
+     * it — it works by noticing an absence in the HTML, which names no script. But the
+     * text on screen usually appears verbatim in whichever file builds it, so searching
+     * the page's own scripts for it finds the file *and* the line, and does so however
+     * long ago the render happened. This is what makes the offer real for a page that
+     * had finished rendering before the editor loaded.
+     */
+    if (file === null) {
+      const found = await this.#findTextInScripts(text);
+      if (found) {
+        target = found.target;
+        file = found.file;
+      }
+    }
+
+    // Closed, or moved to another element, while the reads were in flight.
+    const open = this.store.value.sourceEdit;
+    if (!open || open.element !== el) return false;
+
+    if (!target || file === null) {
+      this.updateSourceEdit({
+        error: host
+          ? `Could not find the code that renders this in ${host.label}. Its text may be built from data, translated, or fetched.`
+          : 'Connect the project folder so the page’s scripts can be read, and this can point at the code that renders it.',
+      });
+      return false;
+    }
+
+    const window = sourceWindow(file, text, target.line);
+    this.updateSourceEdit({ target, file, window, draft: window.code });
+    return true;
+  }
+
+  /**
+   * Find the page's text in one of the page's own scripts.
+   *
+   * First match wins, in document order, and only an exact literal counts — a script
+   * that merely happens to be readable is not evidence of anything. The scripts are
+   * read in parallel because they are small and a serial walk of half a dozen files is
+   * a visible pause on a button press.
+   */
+  async #findTextInScripts(text: string): Promise<{ target: SourceTarget; file: string } | null> {
+    if (text.length < 4) return null;
+    const sources = collectScriptSources(this.#project).filter(
+      (source) => !source.readOnly && source.kind !== 'json',
+    );
+    if (!sources.length) return null;
+
+    const read = await Promise.all(
+      sources.map(async (source) => ({
+        source,
+        file: await fetchScriptSource(source, this.#project).catch(() => ''),
+      })),
+    );
+
+    for (const { source, file } of read) {
+      if (!file) continue;
+      const window = sourceWindow(file, text);
+      if (window.anchorKind !== 'literal') continue;
+      return {
+        file,
+        target: {
+          path: source.path,
+          url: source.href,
+          label: source.label,
+          line: window.anchor,
+        },
+      };
+    }
+    return null;
+  }
+
+  /**
+   * The file's text, from disk when a project is connected and from the network when
+   * the page can reach it.
+   *
+   * Disk first, and for the same reason the stylesheets read that way: a dev server can
+   * hand back a transformed copy, and whatever is shown here is what gets written back
+   * over the source.
+   */
+  async #readSource(target: SourceTarget): Promise<string | null> {
+    const host = this.#project;
+    if (host && target.path) {
+      const text = await host.read(target.path).catch(() => null);
+      if (text !== null) return text;
+    }
+    if (!target.url) return null;
+    try {
+      const response = await fetch(target.url, { credentials: 'same-origin' });
+      return response.ok ? await response.text() : null;
+    } catch {
+      return null;
+    }
+  }
+
+  updateSourceEdit(patch: Partial<SourceEdit>): void {
+    const current = this.store.value.sourceEdit;
+    if (!current) return;
+    this.store.patch({ sourceEdit: { ...current, ...patch } });
+  }
+
+  closeSourceEdit(): void {
+    if (this.store.value.sourceEdit) this.store.patch({ sourceEdit: null });
+  }
+
+  /**
+   * Record the edit. Returns false and sets an error when there is nothing to record.
+   *
+   * Nothing happens to the page, and the dialog says so rather than pretending: the
+   * file is what renders this content, so the screen keeps showing the old result until
+   * the file is written and the page reloads. Recording it is what puts it in the save
+   * plan and in the prompt, which is where it can actually take effect.
+   */
+  commitSourceEdit(): boolean {
+    const pending = this.store.value.sourceEdit;
+    if (!pending || !pending.file || !pending.window) return false;
+    const command = writeSourceEdit(pending.target, pending.file, pending.window, pending.draft);
+    if (!command) {
+      this.updateSourceEdit({ error: 'Nothing has changed in this window yet.' });
+      return false;
+    }
+    this.history.commit(command, { alreadyApplied: true });
+    this.updateSourceEdit({ recorded: true, error: '' });
+    this.notify(
+      `Recorded an edit to ${pending.target.label}. It reaches the page when the file is saved.`,
+      'success',
+      { label: 'Undo', run: () => this.undo() },
+    );
+    return true;
+  }
+
   /** Finish editing. `commit` false discards the edit. */
   endTextEdit(commit = true): void {
     const el = this.store.value.textEditing;
@@ -2036,10 +2365,17 @@ export class EditorEngine {
     if (before == null) return;
     const after = el.innerHTML;
     if (!commit) {
-      el.innerHTML = before;
+      // Not attributed: this is the editor putting the element back, not the page
+      // rendering it, and counting it would make a discarded edit the last one allowed.
+      withoutProvenance(() => {
+        el.innerHTML = before;
+      });
       return;
     }
     if (after === before) return;
+    // The user has taken this element over. Said once, here, so no later signal can
+    // decide the page generates content the user has just written by hand.
+    markUserOwned(el);
     this.history.commit(setInnerHTML(el, before, after), { alreadyApplied: true });
     this.#bumpRevision();
   }
@@ -2602,6 +2938,14 @@ export class EditorEngine {
     if (project) await this.#mirrorUnreadableSheets(project);
     this.tokens.scanDocument();
     this.classes.scanDocument();
+    /*
+     * A folder makes the page's own HTML readable, and over `file://` that is the only
+     * way it ever becomes readable — a fetch of the document is refused there for the
+     * same origin reason the stylesheets hit. So the content baseline is worth another
+     * go now: until this succeeds, script-rendered text on a page opened from disk looks
+     * like ordinary text.
+     */
+    if (project) await this.establishContentBaseline();
   }
 
   /**

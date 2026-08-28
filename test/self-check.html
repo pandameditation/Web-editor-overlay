@@ -52,6 +52,11 @@
     <a class="btn" id="link" href="#x">Action</a>
     <img id="pic" alt="placeholder"
       src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='20'%3E%3Crect width='40' height='20' fill='%23ccc'/%3E%3C/svg%3E">
+    <!-- The subject of the inline-text-edit checks below. Authored here rather than
+         built with `createElement`, because a script creating an element and writing its
+         text is exactly what provenance detection refuses to let be edited in place —
+         which is correct behaviour, and would silently make those checks vacuous. -->
+    <p id="code-target">Original copy.</p>
     <section id="holder">
       <svg id="glyph" width="24" height="24" viewBox="0 0 24 24">
         <defs id="glyph-defs"></defs>
@@ -1995,10 +2000,7 @@
       /* ------------------------------------------------------------------ *
        * The code editor owns its buffer, its caret and its undo.
        * ------------------------------------------------------------------ */
-      const codeTarget = document.createElement('p');
-      codeTarget.id = 'code-target';
-      codeTarget.textContent = 'Original copy.';
-      document.getElementById('wrap').appendChild(codeTarget);
+      const codeTarget = document.getElementById('code-target');
       api.select(codeTarget);
       engine.beginTextEdit(codeTarget);
       await frame();

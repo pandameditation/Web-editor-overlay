@@ -15,6 +15,7 @@ import './chrome/toast.js';
 import './chrome/save-dialog.js';
 import './chrome/code-workspace.js';
 import './chrome/extract-dialog.js';
+import './chrome/source-dialog.js';
 import './chrome/dock.js';
 
 /**
@@ -62,6 +63,7 @@ export class HeoOverlay extends HeoElement {
         s.toast,
         s.savePreview,
         s.extraction,
+        s.sourceEdit,
         s.codeWorkspace,
         s.theme,
         s.accent,
@@ -99,6 +101,7 @@ export class HeoOverlay extends HeoElement {
       ${state.toast ? html`<heo-toast></heo-toast>` : nothing}
       ${state.savePreview != null ? html`<heo-save-dialog></heo-save-dialog>` : nothing}
       ${state.extraction ? html`<heo-extract-dialog></heo-extract-dialog>` : nothing}
+      ${state.sourceEdit ? html`<heo-source-dialog></heo-source-dialog>` : nothing}
       ${state.codeWorkspace ? html`<heo-code-workspace></heo-code-workspace>` : nothing}
     `;
   }

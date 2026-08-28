@@ -4,6 +4,7 @@ import { EditorEngine, type ProjectInfo } from './core/editor.js';
 import type { FileHost } from './core/file-host.js';
 import type { PlannedWrite, WritePlan, WriteResult } from './core/writeback.js';
 import { releaseModals } from './core/modal.js';
+import { installProvenance } from './core/provenance.js';
 import { ManagedStyleSheet } from './core/stylesheet.js';
 import { publishLit } from './core/lit-bridge.js';
 import { autoMountFromScriptTag } from './integrations/script-tag.js';
@@ -384,6 +385,22 @@ if (typeof window !== 'undefined') {
  * Harmless for module consumers — `document.currentScript` is null inside a module,
  * and a bundled app has no marked tag to find.
  */
+/*
+ * Start watching DOM writes before the page makes them, if there is still time.
+ *
+ * At module evaluation, which is the earliest moment the overlay has, and deliberately
+ * ahead of `autoMountFromScriptTag` — that waits for `DOMContentLoaded`, by which point
+ * every classic and deferred script has already run and rendered. Anything missed here
+ * is still caught as runtime content once the engine mounts; what is gained by being
+ * early is the *location* of the code responsible, which is only knowable while the
+ * call that made the write is still on the stack.
+ *
+ * So load order is a real setup consideration rather than an implementation detail: a
+ * plain `<script src>` in `<head>` sees everything the page does, and a bundle loaded
+ * at the end of `<body>` sees only what happens after it.
+ */
+installProvenance();
+
 autoMountFromScriptTag(globalAPI);
 
 export default globalAPI;

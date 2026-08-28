@@ -1,6 +1,7 @@
 import { css, html, nothing, type TemplateResult } from 'lit';
 import { customElement } from 'lit/decorators.js';
 import { isHorizontalFlow, isMutable, labelFor, selectableParent, visualBox } from '../../core/dom.js';
+import { describeProvenance } from '../../core/provenance.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
@@ -74,6 +75,16 @@ export class HeoSelectionLayer extends HeoElement {
       }
       .badge .dim {
         opacity: 0.75;
+      }
+      /* Reads as part of the label rather than as an alert: this is a fact about the
+         element, not a problem with it. */
+      .badge .owned {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        padding: 0 4px;
+        border-radius: 3px;
+        background: color-mix(in oklab, var(--heo-accent-ink) 22%, transparent);
       }
 
       /* Notion-style thumb: sits just outside the leading edge and is the single
@@ -260,6 +271,7 @@ export class HeoSelectionLayer extends HeoElement {
     const parent = selectableParent(el);
     const horizontal = parent ? isHorizontalFlow(parent) : false;
     const canMove = isMutable(el);
+    const rendered = this.editor.provenanceOf(el);
 
     // Keep the badge inside the viewport: flip below the element when there is
     // no room above it.
@@ -279,6 +291,18 @@ export class HeoSelectionLayer extends HeoElement {
         ${editingText ? icon('text', 11) : icon('cursor', 11)}
         <span>${labelFor(el)}</span>
         <span class="dim">${Math.round(box.width)}×${Math.round(box.height)}</span>
+        <!--
+          Said on the outline, before anything is tried.
+          The refusal and the quick menu both explain this properly, but by then the
+          user has already reached for an edit. A mark on the selection is the one
+          place it can be known in advance, which is the difference between a rule
+          the editor enforces and a rule the user can work with.
+        -->
+        ${rendered
+        ? html`<span class="owned" title=${describeProvenance(rendered)}>
+              ${icon('code', 10)} rendered
+            </span>`
+        : nothing}
       </div>
 
       ${canMove ? this.#renderThumb(box) : nothing}

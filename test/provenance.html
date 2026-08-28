@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Editor overlay — content the page renders, and the code behind it</title>
+  <!--
+    The overlay loads in `<head>`, before the page's own script, which is the only
+    arrangement that lets the DOM-write wrappers see the writes as they happen. A
+    bundle at the end of `<body>` still detects the same content — the observer catches
+    anything that appeared after parsing — but without the stack there is no source
+    location to offer, so the offer degrades to a warning. That difference is the point
+    of loading it here.
+
+        npm run build:lib && npm run check:provenance
+  -->
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <style>
+    body {
+      margin: 0;
+      font-family: system-ui, sans-serif;
+      padding: 24px;
+    }
+
+    .row {
+      padding: 4px 0;
+    }
+  </style>
+</head>
+
+<body>
+  <main id="js-host">
+    <h1 id="authored">Written in the HTML</h1>
+    <p id="authored-copy">This paragraph is in the file, so it is the editor's to change.</p>
+
+    <h2 id="js-heading">placeholder</h2>
+    <ul id="js-list"></ul>
+    <p id="js-counted">placeholder</p>
+  </main>
+
+  <script src="./render.js"></script>
+
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+
+  <script>
+    (async () => {
+      const errors = [];
+      window.addEventListener('error', (e) => errors.push('error: ' + e.message));
+      window.addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+
+      const results = {};
+      const progress = document.getElementById('progress');
+      const step = (name) => { progress.textContent = name; };
+      const check = (name, fn) => {
+        step(name);
+        try { results[name] = fn(); }
+        catch (err) { results[name] = 'THREW: ' + (err && err.message ? err.message : String(err)); }
+      };
+      const settle = (ms) => new Promise((r) => setTimeout(r, ms));
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+      const deep = (root, selector) => {
+        const found = root.querySelector(selector);
+        if (found) return found;
+        for (const element of root.querySelectorAll('*')) {
+          if (!element.shadowRoot) continue;
+          const inner = deep(element.shadowRoot, selector);
+          if (inner) return inner;
+        }
+        return null;
+      };
+      const textOf = (node) => (node ? node.shadowRoot.textContent.replace(/\s+/g, ' ') : '');
+
+      const byId = (id) => document.getElementById(id);
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark' });
+      const engine = api.engine;
+      api.setEditing(true);
+      await frames();
+
+      /* ------------------------------------------------------------------ *
+       * Detection: which content the page renders, and which it declares.
+       * ------------------------------------------------------------------ */
+      const provenance = (id) => {
+        const found = engine.provenanceOf(byId(id));
+        return found ? { kind: found.kind, api: found.api ?? null, hasPlace: Boolean(found.url || found.file) } : null;
+      };
+
+      check('authoredContentIsTheEditorsToChange', () => ({
+        heading: provenance('authored'),
+        copy: provenance('authored-copy'),
+      }));
+      check('textContentWritesAreDetected', () => provenance('js-heading'));
+      check('innerHTMLWritesAreDetected', () => provenance('js-list'));
+      check('appendedElementsAreDetected', () => provenance('js-appended'));
+      // Every element inside an `innerHTML` write is equally the script's.
+      check('theSubtreeOfAnInnerHTMLWriteIsDetected', () => {
+        const row = document.querySelector('#js-list .row');
+        const found = engine.provenanceOf(row);
+        return found ? found.kind : null;
+      });
+
+      /* ------------------------------------------------------------------ *
+       * The gate: an in-place edit is refused, and says why.
+       * ------------------------------------------------------------------ */
+      step('theGate');
+      engine.beginTextEdit(byId('js-heading'));
+      await frames();
+      check('inPlaceEditingIsRefusedOnRenderedContent', () => ({
+        started: engine.store.value.textEditing !== null,
+        stillSaysWhatTheScriptSaid: byId('js-heading').textContent,
+      }));
+      check('andTheRefusalExplainsItself', () => {
+        const toast = deep(document, 'heo-toast');
+        const said = textOf(toast);
+        return {
+          namesTheCause: /would be undone the next time/.test(said),
+          offersTheCodeRoute: /Edit the code/.test(said),
+        };
+      });
+
+      // Authored content is untouched by any of this.
+      step('authoredStillWorks');
+      engine.beginTextEdit(byId('authored-copy'));
+      await frames();
+      check('authoredContentIsStillEditableInPlace', () =>
+        engine.store.value.textEditing === byId('authored-copy'));
+      engine.endTextEdit(false);
+      await frames();
+
+      /* ------------------------------------------------------------------ *
+       * The outline says so before anything is tried.
+       * ------------------------------------------------------------------ */
+      step('theBadge');
+      api.select(byId('js-heading'));
+      await frames();
+      check('theOutlineMarksRenderedContent', () =>
+        /rendered/.test(textOf(deep(document, 'heo-selection-layer'))));
+      api.select(byId('authored'));
+      await frames();
+      check('andLeavesAuthoredContentUnmarked', () =>
+        !/rendered/.test(textOf(deep(document, 'heo-selection-layer'))));
+
+      /* ------------------------------------------------------------------ *
+       * The offer: the code, windowed on the line that produces the text.
+       * ------------------------------------------------------------------ */
+      step('theSourceDialog');
+      const directory = decodeURIComponent(location.pathname).replace(/[^/]*$/, '');
+      const disk = new Map();
+      const project = {
+        kind: 'directory',
+        label: 'memory',
+        resolve(url) {
+          const path = decodeURIComponent(new URL(url, location.href).pathname);
+          return path.startsWith(directory) ? path.slice(directory.length) : null;
+        },
+        read: async (path) => {
+          if (disk.has(path)) return disk.get(path);
+          // Served straight from the page's own copy, which is what a real folder does.
+          if (path !== 'render.js') return null;
+          const text = await (await fetch('./render.js')).text();
+          disk.set(path, text);
+          return text;
+        },
+        write: async (path, text) => { disk.set(path, text); },
+        ensureWritable: async () => true,
+        release: async () => { },
+      };
+      await engine.attachProject(project, { quiet: true });
+
+      const opened = await engine.openSourceEdit(byId('js-heading'));
+      await frames();
+      results.theDialogOpened = opened;
+      const dialog = deep(document, 'heo-source-dialog');
+      const said = textOf(dialog);
+
+      check('theDialogNamesTheFileAndLine', () => {
+        const where = dialog?.shadowRoot.querySelector('.where code')?.textContent?.trim();
+        return where ?? null;
+      });
+      check('theDialogAnchoredOnThePagesOwnText', () => ({
+        // The window was found by matching the string, not by trusting a line number.
+        byLiteral: /Found .*Rendered by JavaScript.* in this file/.test(said),
+        showsTheWriteLine: /heading\.textContent/.test(
+          deep(dialog.shadowRoot, 'heo-code-editor')?.value ?? '',
+        ),
+      }));
+      check('theWindowIsAWindowNotTheWholeFile', () => {
+        const buffer = deep(dialog.shadowRoot, 'heo-code-editor')?.value ?? '';
+        const open = engine.store.value.sourceEdit;
+        return {
+          windowLines: buffer.split('\n').length,
+          fileLines: open?.window?.lines ?? null,
+          isNarrower: buffer.split('\n').length < (open?.window?.lines ?? 0),
+        };
+      });
+      check('andItSaysTheEditIsNotLive', () => /not live/.test(said));
+
+      /* ------------------------------------------------------------------ *
+       * A targeted edit records a write against the JS file.
+       * ------------------------------------------------------------------ */
+      step('theEdit');
+      const editor = deep(dialog.shadowRoot, 'heo-code-editor');
+      const edited = editor.value.replace('Rendered by JavaScript', 'Edited in the source');
+      editor.dispatchEvent(new CustomEvent('code-input', { detail: { value: edited }, bubbles: true }));
+      await frames();
+      results.recorded = engine.commitSourceEdit();
+      await frames();
+
+      check('theRecordTargetsTheJsFile', () => {
+        const record = engine.records.find((r) => r.detail?.scope === 'rendered source');
+        if (!record) return 'no record';
+        return {
+          file: String(record.detail.file ?? '').replace(/^.*\//, ''),
+          writesTheWholeFile: (record.detail.script ?? '').includes('Edited in the source'),
+          keepsTheRestOfTheFile: (record.detail.script ?? '').includes('Appended after load'),
+        };
+      });
+      const plan = await engine.previewWritePlan();
+      check('thePlanNamesTheFile', () =>
+        (plan?.writes ?? []).map((w) => `${w.path}|${w.kind}|${w.reason}`));
+
+      /* ------------------------------------------------------------------ *
+       * Computed values cannot be pinned to a literal, and say so.
+       * ------------------------------------------------------------------ */
+      step('computedValues');
+      engine.closeSourceEdit();
+      await engine.openSourceEdit(byId('js-counted'));
+      await frames();
+      check('aComputedValueIsReportedAsAGuess', () => {
+        const text = textOf(deep(document, 'heo-source-dialog'));
+        return {
+          saysItIsBuilt: /is not written literally in this file/.test(text),
+          stillShowsTheCode: /js-counted|Total/.test(
+            deep(deep(document, 'heo-source-dialog').shadowRoot, 'heo-code-editor')?.value ?? '',
+          ),
+        };
+      });
+      engine.closeSourceEdit();
+
+      /* ------------------------------------------------------------------ *
+       * The editor's own writes are never mistaken for the page's.
+       * ------------------------------------------------------------------ */
+      step('selfInflicted');
+      /*
+       * Typing is the browser mutating a text node on the user's behalf, with no
+       * JavaScript frame involved — so the wrappers never see it and only the observer
+       * does. If that counted, an element could be edited exactly once and would then
+       * report itself as script-rendered because it had been edited.
+       */
+      const authored = byId('authored-copy');
+      const cleanBeforeTyping = provenance('authored-copy');
+      engine.beginTextEdit(authored);
+      await frames();
+      const editing = engine.store.value.textEditing === authored;
+      authored.firstChild.data = 'Changed by typing';
+      await frames();
+      check('typingIntoAnElementDoesNotMakeItRendered', () => ({
+        cleanBeforeTyping,
+        editing,
+        after: provenance('authored-copy'),
+      }));
+      engine.endTextEdit(true);
+      await frames();
+      check('andItIsStillEditableAfterTheCommit', () => {
+        engine.beginTextEdit(byId('authored-copy'));
+        const started = engine.store.value.textEditing === byId('authored-copy');
+        engine.endTextEdit(false);
+        return started;
+      });
+      // Discarding an edit puts the element back through `innerHTML`, which is the
+      // editor writing to the page and must not be attributed to it either.
+      check('andDiscardingAnEditDoesNotEither', () => provenance('authored-copy'));
+      // And an element the overlay inserted belongs to the user, however it got there.
+      engine.insertMarkup('<p id="inserted">Inserted by the editor</p>', {
+        reference: byId('authored'),
+        position: 'after',
+      });
+      await frames();
+      check('anInsertedElementIsTheUsersToEdit', () => provenance('inserted'));
+
+      results.__errors = errors;
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"__errors":["' + String(e && e.message) + '"]}:END';
+    });
+  </script>
+</body>
+
+</html>

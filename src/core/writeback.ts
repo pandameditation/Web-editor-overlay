@@ -268,7 +268,15 @@ export async function buildWritePlan(
     const detail = record.detail;
     if (detail?.scope !== 'external script' || !detail.script) continue;
     const url = detail.writeTo ?? detail.file ?? '';
-    const path = url ? host.resolve(url) : null;
+    /*
+     * `sourcePath` skips resolution, and only build-time instrumentation sets it.
+     *
+     * That marker reports a path relative to the project root, which is already what a
+     * host wants — putting it through `resolve` would first have to turn it into a URL
+     * against the page, and a page served from a subdirectory would resolve it to the
+     * wrong file. A URL is the case `resolve` exists for.
+     */
+    const path = detail.sourcePath ?? (url ? host.resolve(url) : null);
     if (!path) {
       unwritable.push({ record, reason: reasonForUnreachable(url, host) });
       continue;
@@ -279,6 +287,29 @@ export async function buildWritePlan(
       path,
       kind: 'script',
       reason: 'replaced from the JS panel',
+      before,
+      after: detail.script,
+      records: [record],
+      unplaced: [],
+    });
+  }
+
+  /* ---- 2b. Source files behind rendered content ---- */
+
+  for (const record of records) {
+    const detail = record.detail;
+    if (detail?.scope !== 'rendered source' || !detail.script) continue;
+    const path = detail.sourcePath ?? (detail.writeTo ? host.resolve(detail.writeTo) : null);
+    if (!path) {
+      unwritable.push({ record, reason: reasonForUnreachable(detail.writeTo ?? '', host) });
+      continue;
+    }
+    const before = await host.read(path);
+    if (before === detail.script) continue;
+    writes.push({
+      path,
+      kind: 'script',
+      reason: 'the code that renders edited content',
       before,
       after: detail.script,
       records: [record],

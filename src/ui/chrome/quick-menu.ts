@@ -197,18 +197,38 @@ export class HeoQuickMenu extends HeoElement {
   #renderRoot(el: HTMLElement): TemplateResult {
     const state = this.state.value;
     const mutable = isMutable(el);
+    /*
+     * Content the page renders gets a different first item, not a disabled one.
+     *
+     * "Edit text" greyed out answers a question nobody asked. The user wants this text
+     * to say something else, and there is a way to make that happen — it is in a file
+     * rather than on the page — so the menu offers that instead and the label says
+     * where it goes.
+     */
+    const rendered = this.editor.provenanceOf(el);
 
     const content: MenuItem[] = [
-      {
-        id: 'text',
-        label: 'Edit text',
-        glyph: 'text',
-        hint: '↵',
-        run: () => {
-          this.editor.beginTextEdit(el);
-          this.editor.setQuickMenu(false);
+      rendered
+        ? {
+          id: 'source',
+          label: 'Edit the code that renders this',
+          glyph: 'code',
+          hint: '↵',
+          run: () => {
+            this.editor.setQuickMenu(false);
+            void this.editor.openSourceEdit(el);
+          },
+        }
+        : {
+          id: 'text',
+          label: 'Edit text',
+          glyph: 'text',
+          hint: '↵',
+          run: () => {
+            this.editor.beginTextEdit(el);
+            this.editor.setQuickMenu(false);
+          },
         },
-      },
       {
         id: 'html',
         label: 'Edit HTML',

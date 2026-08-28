@@ -1,3 +1,4 @@
+import { withoutProvenance } from './provenance.js';
 import type { ChangeRecord } from './types.js';
 
 /**
@@ -187,7 +188,10 @@ export class History {
    */
   commit(command: Command, options: { alreadyApplied?: boolean } = {}): void {
     if (!options.alreadyApplied) {
-      command.apply();
+      // Not attributed to the page. Every command in here writes to the document
+      // through the same DOM APIs `provenance` watches, and counting the editor's own
+      // work as the page's would make an element uneditable the moment it was edited.
+      withoutProvenance(() => command.apply());
     }
     this.#future = [];
 
@@ -226,7 +230,7 @@ export class History {
     const command = this.#past.pop();
     if (!command) return null;
     try {
-      command.revert();
+      withoutProvenance(() => command.revert());
     } catch (error) {
       console.error('[html-editor-overlay] undo failed', error);
     }
@@ -240,7 +244,7 @@ export class History {
     const command = this.#future.pop();
     if (!command) return null;
     try {
-      command.apply();
+      withoutProvenance(() => command.apply());
     } catch (error) {
       console.error('[html-editor-overlay] redo failed', error);
     }
@@ -255,7 +259,7 @@ export class History {
     while (this.#past.length) {
       const command = this.#past.pop()!;
       try {
-        command.revert();
+        withoutProvenance(() => command.revert());
       } catch (error) {
         console.error('[html-editor-overlay] reset failed', error);
       }

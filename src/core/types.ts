@@ -248,6 +248,19 @@ export interface MountOptions {
    * preflight before it reaches the handler.
    */
   sourceToken?: string;
+
+  /**
+   * Whether to work out which content the page's JavaScript renders. Defaults on.
+   *
+   * When it does, inline text editing is refused on that content and the code
+   * responsible is offered instead — because an edit there is thrown away by the next
+   * render, silently and much later, which is the least helpful moment to find out.
+   *
+   * Worth turning off in one situation: a page whose JavaScript rebuilds the DOM
+   * constantly, where the extra `MutationObserver` is measurable and the answer would
+   * be "all of it" anyway.
+   */
+  detectScriptContent?: boolean;
 }
 
 export interface SavePayload {
