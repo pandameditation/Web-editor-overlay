@@ -24,6 +24,10 @@
   </ul>
   <!-- Loose text alongside an element, which cannot be rebuilt without losing the words. -->
   <p id="mixed">Hello <b id="bold">world</b> again</p>
+  <div class="sec">
+    <span class="n">01</span>
+    <div class="plain">Nothing identifies this one</div>
+  </div>
 
   <script src="./stories.js"></script>
   <pre id="progress">start</pre>
@@ -99,6 +103,12 @@
       engine.setAttribute('alt', 'Patched alt', byId('pic'));
       await frames();
 
+      // The reported case: an inline style on an element nothing names.
+      const plain = document.querySelector('.sec .plain');
+      api.select(plain);
+      engine.setStyle('font-size', '48px');
+      await frames();
+
       /*
        * Inserted markup with a subtree, which is the case that leaked.
        *
@@ -127,6 +137,17 @@
         return match ? match[1] : null;
       });
       check('theAttributeEditLanded', () => /<img id="pic"[^>]*alt="Patched alt"/.test(after));
+      /*
+       * And the one that used to rewrite the file: a style on a nameless `<div>`, placed by its
+       * position inside a container that can be found.
+       */
+      check('aStyleOnANamelessDivIsPatchedInPlace', () => {
+        const doc5 = new DOMParser().parseFromString(after, 'text/html');
+        return doc5.querySelector('.sec .plain')?.getAttribute('style') ?? null;
+      });
+      // Its sibling, which nothing touched, keeps its own bytes.
+      check('andItsUntouchedSiblingIsUnchanged', () =>
+        /<span class="n">01<\/span>/.test(after));
       // Two style edits to one element collapse into one attribute, not two.
       check('bothStyleEditsAreInOneAttribute', () =>
         (after.match(/<p id="copy"[^>]*style=/g) || []).length);
@@ -292,13 +313,15 @@
       await frames();
       const loosePlan = await engine.previewWritePlan();
       const looseDoc = (loosePlan?.writes ?? []).find((w) => w.kind === 'document');
-      check('aContainerWithLooseTextFallsBack', () => ({
+      /*
+       * An element mixing prose with tags used to be the one shape that forced a rewrite.
+       * It is rebuilt inline now, with no whole-file fallback and nothing to warn about.
+       */
+      check('aContainerWithLooseTextIsPatchedInlineToo', () => ({
         patched: /patched in place/.test(looseDoc?.reason ?? ''),
-        explainsWhy: (looseDoc?.warnings ?? []).some((w) =>
-          /mixes text with other elements/.test(w),
-        ),
+        withNothingToWarnAbout: (looseDoc?.warnings ?? []).length,
       }));
-      // And the words either side of it are still there, which is what the bail protects.
+      // And the words either side of the new tag are all still there, in order.
       check('andTheLooseWordsAreNotLost', () => {
         const doc4 = new DOMParser().parseFromString(looseDoc?.after ?? '', 'text/html');
         return (doc4.getElementById('mixed')?.textContent ?? '').replace(/\s+/g, ' ').trim();

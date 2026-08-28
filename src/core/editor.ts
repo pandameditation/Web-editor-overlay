@@ -3219,14 +3219,19 @@ export class EditorEngine {
       const parent = el.parentElement;
       if (parent && provenanceOf(parent)?.kind === 'file') continue;
       /*
-       * Unless the user has put something inside it.
+       * Unless the user's own element is the region, is inside it, or contains it.
        *
        * Dropping the region would take their element with it, and an edit vanishing from the
        * file is a far worse outcome than some generated markup arriving in it. So the region
-       * stays whole and the plan's warning covers it. A rare trade: it needs someone to have
-       * inserted into a list the page renders.
+       * stays whole and the plan's warning covers it.
+       *
+       * `closest` as well as `querySelector`, because an element the user just inserted looks
+       * exactly like one a script built — it has no build marker and it appeared after load.
+       * Testing descendants alone left the inserted element itself classified as generated, and
+       * it was then left out of its container's rebuild: the insert reached the file only for
+       * as long as the file was being rewritten wholesale, which hid it.
        */
-      if (el.querySelector(`[${INSERTED_ATTR}]`)) continue;
+      if (el.closest(`[${INSERTED_ATTR}]`) || el.querySelector(`[${INSERTED_ATTR}]`)) continue;
       out.push(el);
     }
     return out;

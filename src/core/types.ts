@@ -185,6 +185,14 @@ export interface ChangeRecord {
    * anchor to, which is what makes the save fall back to writing the whole file.
    */
   anchor?: ElementAnchor;
+  /**
+   * Key of the element this change was made to.
+   *
+   * For reading the finished value back out of the page at save time: a style record holds one
+   * declaration rather than the whole `style` attribute, so the element has to be consulted.
+   * A key rather than the node, because records are copied and serialized as plain data.
+   */
+  elementRef?: string;
   at: number;
 }
 

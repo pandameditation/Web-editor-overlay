@@ -12,6 +12,22 @@ import type { ChangeRecord } from './types.js';
  * the save prompt come for free: the command carries both the inverse operation
  * and the semantic description of what changed.
  */
+/**
+ * The element each change was made to, if it is still in the page.
+ *
+ * A record's anchor describes where the element sits in the *file*, frozen at the moment of
+ * the edit. Reading a value back out of the page at save time needs the element itself, and
+ * re-deriving it from that frozen description goes wrong as soon as a later insert shifts the
+ * live tree — a font size on a plain `<div>` was placeable in the file yet unreadable from the
+ * page, and the file got rewritten over it.
+ *
+ * Carried as a string key rather than a node, because records are plain data: they are copied
+ * with spreads and passed through `JSON.stringify` for the prompt, either of which would drop
+ * a node reference or choke on it.
+ */
+export function elementOfRecord(record: ChangeRecord): HTMLElement | null {
+  return record.elementRef ? elementForKey(record.elementRef) : null;
+}
 
 function record(
   el: HTMLElement,
@@ -43,12 +59,27 @@ function record(
     // called on — insert, duplicate and wrap — so the follow-up edits to the new
     // element group with the operation that produced it.
     group: elementKey(el),
+    // The element this change was made to. Unlike `group`, never reassigned to a different
+    // node by the commands that create one, so it always names the element that was read.
+    elementRef: elementKey(el),
     at: Date.now(),
     ...extra,
   };
 }
 
-function anchorFor(el: HTMLElement, withParent = true): ElementAnchor {
+/**
+ * How to find this element in the HTML file.
+ *
+ * The parent chain is followed rather than recorded one level deep, and that is what makes an
+ * arbitrary element addressable. A nameless `<div>` is the nth child of a nameless `<div>`
+ * which is the nth child of `<body>` — and `<body>` names itself, so the chain always
+ * terminates somewhere resolvable. Stopping at the first parent meant a container without an
+ * id of its own broke the whole chain, and the file got rewritten because of a font size.
+ *
+ * It stops as soon as an ancestor names itself outright, so the common case stays short: one
+ * link for anything inside an element with an id.
+ */
+function anchorFor(el: HTMLElement, depth = 6): ElementAnchor {
   return {
     tag: el.tagName.toLowerCase(),
     id: el.id || undefined,
@@ -57,16 +88,54 @@ function anchorFor(el: HTMLElement, withParent = true): ElementAnchor {
      * says. Captured here because `record()` runs while the element is still attached — a
      * delete has not happened yet, and after it there is no parent left to ask.
      */
-    parent:
-      withParent && el.parentElement && el.parentElement !== document.documentElement
-        ? anchorFor(el.parentElement, false)
-        : undefined,
+    parent: parentAnchor(el, depth),
+    /*
+     * Where it sits among its siblings, and what it looks like.
+     *
+     * The anchor of last resort, and the one that makes a plain `<div>` addressable at all: an
+     * element with no id, no build marker and no distinctive text is still the third child of
+     * something findable. Resolution is scoped to that container's own range, so the index is
+     * being read against a handful of tags rather than the whole file — and the tag name and
+     * classes are checked before it is believed, so a file that has since diverged is refused
+     * rather than patched in the wrong place.
+     */
+    index: el.parentElement ? indexAmongSiblings(el) : undefined,
+    classes: classSignature(el),
     // The marker verbatim, which serves twice: it finds the element again in the live DOM,
     // and it names the file and position to patch. Kept raw rather than parsed because the
     // file half decides whether the position means anything — a marker pointing at a `.ts`
     // template says nothing about where the tag is in the HTML.
     src: el.getAttribute(SOURCE_ATTR) ?? undefined,
   };
+}
+
+/**
+ * The container's anchor, followed up until one of them names itself.
+ *
+ * `<body>` is the floor: it is unique in any document, so resolution can always land there.
+ * `<html>` is not included — nothing is ever a change to it.
+ */
+function parentAnchor(el: HTMLElement, depth: number): ElementAnchor | undefined {
+  const parent = el.parentElement;
+  if (depth <= 0 || !parent || parent === document.documentElement) return undefined;
+  // An ancestor with an id or a build marker is findable on its own, so the chain ends there.
+  const named = Boolean(parent.id) || parent.hasAttribute(SOURCE_ATTR) || parent === document.body;
+  return anchorFor(parent, named ? 0 : depth - 1);
+}
+
+function indexAmongSiblings(el: HTMLElement): number {
+  const parent = el.parentElement;
+  if (!parent) return 0;
+  // Counted over element children only, matching how the file's direct children are read.
+  return Array.prototype.indexOf.call(parent.children, el);
+}
+
+/** Classes the author wrote, sorted, so the order they appear in cannot matter. */
+function classSignature(el: HTMLElement): string | undefined {
+  const names = Array.from(el.classList)
+    .filter((name) => !name.startsWith('heo-'))
+    .sort();
+  return names.length ? names.join(' ') : undefined;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -688,6 +757,13 @@ export function retagElement(
 /* -------------------------------------------------------------------------- */
 
 const keys = new WeakMap<HTMLElement, string>();
+/*
+ * And the way back, so a record can name its element without holding it.
+ *
+ * Weakly, so an element the user deleted is still collectable — the map only has to answer
+ * for elements that are still on the page.
+ */
+const keyed = new Map<string, WeakRef<HTMLElement>>();
 let keySequence = 0;
 
 /** Stable per-element key, used to scope merge keys to one element. */
@@ -697,8 +773,19 @@ export function elementKey(el: HTMLElement): string {
     keySequence += 1;
     key = `e${keySequence.toString(36)}`;
     keys.set(el, key);
+    keyed.set(key, new WeakRef(el));
   }
   return key;
+}
+
+/** The element behind a key, if it is still in the page. */
+export function elementForKey(key: string): HTMLElement | null {
+  const el = keyed.get(key)?.deref();
+  if (!el) {
+    keyed.delete(key);
+    return null;
+  }
+  return el.isConnected ? el : null;
 }
 
 /**

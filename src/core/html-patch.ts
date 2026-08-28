@@ -69,6 +69,10 @@ export interface ElementAnchor {
   text?: string;
   /** The element's container, for a change about position rather than content. */
   parent?: ElementAnchor;
+  /** Index among the container's element children, for an element nothing else names. */
+  index?: number;
+  /** Sorted class list, checked before an index is trusted. */
+  classes?: string;
 }
 
 export type HtmlPatch =
@@ -95,7 +99,7 @@ export interface HtmlPatchResult {
  * offset out from under it.
  */
 export function patchHTML(html: string, patches: readonly HtmlPatch[]): HtmlPatchResult {
-  const edits: Array<{ start: number; end: number; text: string }> = [];
+  const edits: Array<{ start: number; end: number; text: string; patch: HtmlPatch }> = [];
   const failed: HtmlPatchFailure[] = [];
   let applied = 0;
 
@@ -116,18 +120,32 @@ export function patchHTML(html: string, patches: readonly HtmlPatch[]): HtmlPatc
     }
     applied += 1;
     // A patch the file already satisfies is applied and contributes nothing to write.
-    if (edit) edits.push(edit);
+    if (edit) edits.push({ ...edit, patch });
   }
 
   if (!edits.length) return { html, applied, failed };
 
   // Overlapping edits would corrupt each other, and two edits to one attribute is the
   // only way that happens — the last one recorded is the one the user last asked for.
+  // Applied back to front so that earlier offsets stay valid as the text changes under them.
   edits.sort((a, b) => b.start - a.start || b.end - a.end);
   let out = html;
   let previousStart = Number.POSITIVE_INFINITY;
   for (const edit of edits) {
-    if (edit.end > previousStart) continue;
+    /*
+     * Overlapping edits cannot both be applied, and the one that loses says so.
+     *
+     * Skipping it quietly is how a container rebuild went missing: the rebuild spans
+     * everything between its tags, so a one-attribute edit on a child overlapped it, won on
+     * position, and the rebuild was dropped — while still counted as applied, so the save
+     * reported patching an insert into the file that was not in it. Callers order their passes
+     * to keep this from arising; when it does arise it is a bug and has to surface as one.
+     */
+    if (edit.end > previousStart) {
+      failed.push({ patch: edit.patch, reason: 'this edit overlaps another one in the same pass' });
+      applied -= 1;
+      continue;
+    }
     out = out.slice(0, edit.start) + edit.text + out.slice(edit.end);
     previousStart = edit.start;
   }
@@ -195,7 +213,86 @@ function resolveAnchor(html: string, anchor: ElementAnchor): OpenTag | string {
   const unique = uniqueTag(html, wanted);
   if (unique) return unique;
 
+  /*
+   * Failing all that: the nth child of a container that can be found.
+   *
+   * This is what makes an ordinary `<div class="sec">` addressable. Reading an index against
+   * the whole file would be hopeless, but read against one container's direct children it is
+   * a short list — and the tag name and classes are compared before the answer is used, so a
+   * file whose shape no longer matches is declined instead of patched at the wrong element.
+   */
+  if (anchor.parent && anchor.index != null) {
+    const container = resolveAnchor(html, anchor.parent);
+    if (typeof container === 'string') return container;
+    const children = directChildTags(html, container);
+    const child = children[anchor.index];
+    if (!child) {
+      return `the file's <${container.name}> has ${children.length} children, so there is no #${anchor.index + 1}`;
+    }
+    if (child.name !== wanted) {
+      return `child #${anchor.index + 1} of that <${container.name}> is a <${child.name}> in the file, not a <${wanted}>`;
+    }
+    const classes = classSignatureOf(html.slice(child.start, child.end + 1));
+    if ((anchor.classes ?? '') !== classes) {
+      return `child #${anchor.index + 1} of that <${container.name}> does not match in the file`;
+    }
+    return child;
+  }
+
   return `could not find this <${wanted}> in the file`;
+}
+
+/**
+ * The direct element children of an open tag, in order.
+ *
+ * Each child is skipped past to its own close before looking for the next, so a nested tag is
+ * never mistaken for a sibling. Raw-text bodies are stepped over whole.
+ */
+export function directChildTags(html: string, container: OpenTag): OpenTag[] {
+  if (container.selfClosing) return [];
+  const end = matchingClose(html, container);
+  const limit = end === -1 ? html.length : end;
+  const out: OpenTag[] = [];
+  let i = container.end + 1;
+
+  while (i < limit) {
+    const lt = html.indexOf('<', i);
+    if (lt === -1 || lt >= limit) break;
+    // A close tag or a comment is not a child; step over it.
+    if (html.startsWith('</', lt) || html.startsWith('<!', lt)) {
+      const gt = html.indexOf('>', lt);
+      i = gt === -1 ? limit : gt + 1;
+      continue;
+    }
+    const tag = readOpenTag(html, lt);
+    if (!tag) {
+      i = lt + 1;
+      continue;
+    }
+    out.push(tag);
+    if (tag.selfClosing) {
+      i = tag.end + 1;
+      continue;
+    }
+    const close = matchingClose(html, tag);
+    i = close === -1 ? tag.end + 1 : close;
+  }
+  return out;
+}
+
+/** The `class` attribute of a raw opening tag, sorted to match how the anchor records it. */
+function classSignatureOf(raw: string): string {
+  const range = attributeRange(raw, 'class');
+  if (!range) return '';
+  const value = raw
+    .slice(range.start, range.end)
+    .replace(/^class\s*=\s*/i, '')
+    .replace(/^["']|["']$/g, '');
+  return value
+    .split(/\s+/)
+    .filter((name) => name && !name.startsWith('heo-'))
+    .sort()
+    .join(' ');
 }
 
 /** The only tag of this name in the file, or null when there are none or several. */

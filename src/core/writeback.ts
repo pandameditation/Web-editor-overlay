@@ -11,7 +11,7 @@ import {
   type DeclarationPatch,
   type PatchFailure,
 } from './css-patch.js';
-import { cleanMarkup } from './mutations.js';
+import { cleanMarkup, elementOfRecord } from './mutations.js';
 import {
   canResolve,
   elementText,
@@ -444,10 +444,16 @@ export async function buildWritePlan(
        * the file — in which case nothing else in it is touched, which is the entire point —
        * or the page is serialized exactly as before.
        */
+      /*
+       * Why the file had to be rewritten, if it did. Collected as it happens rather than
+       * reconstructed afterwards, because guessing at it produced a warning that named the
+       * wrong cause twice — and a caveat that misdescribes itself is worse than none.
+       */
+      const why: string[] = [];
       const patched =
         before === null
           ? null
-          : tryPatchDocument(before, documentRecords, documentPath, isGenerated);
+          : tryPatchDocument(before, documentRecords, documentPath, isGenerated, why);
       if (patched) {
         if (patched.html !== before) {
           writes.push({
@@ -465,13 +471,9 @@ export async function buildWritePlan(
         const generated = (subject.generatedRegions ?? []).length;
         // Only reached when a change could not be placed, so say which and why: this is
         // the difference between "the editor reformatted my file" and a known trade.
-        const blockers = documentRecords
-          .filter((record) => !anchorInFile(record, documentPath))
-          .map((record) => record.summary);
-        if (blockers.length) {
+        if (why.length) {
           warnings.push(
-            `The whole file is rewritten because ${blockers.length === 1 ? 'one change could' : `${blockers.length} changes could`} ` +
-            `not be located in it: ${blockers.slice(0, 3).join('; ')}${blockers.length > 3 ? '; …' : ''}.`,
+            `The whole file is rewritten because ${why.slice(0, 2).join('; and ')}${why.length > 2 ? `; and ${why.length - 2} more` : ''}.`,
           );
         } else {
           /*
@@ -556,7 +558,8 @@ function reconcileContainers(
   html: string,
   records: readonly ChangeRecord[],
   generated: (el: HTMLElement) => boolean,
-): HtmlPatch[] | null {
+  why: string[],
+): { html: string } | null {
   const containers = new Map<string, ElementAnchor>();
   for (const record of records) {
     if (!STRUCTURAL.has(record.kind)) continue;
@@ -564,29 +567,58 @@ function reconcileContainers(
     // No container recorded: not placeable. Whether it can be *found* is settled below,
     // where both the file and the live page get a say — a tag unique in both is enough,
     // which is what makes `<body>` a usable container.
-    if (!parent) return null;
+    if (!parent) {
+      why.push(`no container was recorded for “${record.summary}”`);
+      return null;
+    }
     containers.set(anchorKey(parent), parent);
   }
   if (!containers.size) return null;
 
-  const patches: HtmlPatch[] = [];
-  for (const anchor of containers.values()) {
-    const el = liveElementFor(anchor);
-    if (!el || !canResolve(html, anchor)) return null;
+  /*
+   * Deepest container first, each rebuilt against the text the previous one produced.
+   *
+   * Containers nest: a paragraph the user added a tag to sits inside the `<body>` they also
+   * moved something in. A rebuild copies its children's bytes out of the file, so the inner one
+   * has to be in the text before the outer one reads it, or the outer rebuild copies the stale
+   * version and the inner change is quietly undone.
+   */
+  const ordered = [...containers.values()]
+    .map((anchor) => ({ anchor, el: liveElementFor(anchor) }))
+    .sort((a, b) => depthOf(b.el) - depthOf(a.el));
+
+  let current = html;
+  for (const { anchor, el } of ordered) {
+    if (!el) {
+      why.push(`the <${anchor.tag}> holding a moved element is no longer in the page`);
+      return null;
+    }
+    if (!canResolve(current, anchor)) {
+      why.push(`the <${anchor.tag}> holding a moved element could not be found in the file`);
+      return null;
+    }
 
     /*
-     * Only containers whose children are the whole story.
+     * A container that mixes text with its elements is rebuilt inline instead.
      *
-     * Rebuilding emits elements, so loose text between them would be dropped —
-     * `<p>Hello <b>world</b> again</p>` would lose both halves of the sentence. A container
-     * mixing text and elements is left to serialization rather than quietly truncated.
+     * `<p>Hello <b>world</b> again</p>` cannot go back one child per indented line: that would
+     * push newlines into the middle of a sentence and change what the page renders. So in this
+     * mode the text nodes are copied out byte for byte and nothing is added between the parts —
+     * the spacing in the file is whatever the author's own text already says it is.
+     *
+     * Refusing these containers was the last thing that still forced a whole-file rewrite.
      */
-    if (looseText(el)) return null;
+    const inline = looseText(el);
 
-    const indent = indentOf(html, anchor);
-    const inner = `${indent}  `;
+    const indent = indentOf(current, anchor);
+    const inner = inline ? '' : `${indent}  `;
     const parts: string[] = [];
     for (const child of Array.from(el.childNodes)) {
+      // The author's prose. The words between the tags are the whole reason for the inline mode.
+      if (inline && child.nodeType === Node.TEXT_NODE) {
+        parts.push(child.nodeValue ?? '');
+        continue;
+      }
       /*
        * Comments come through. They are the author's, they sit between the children being
        * reordered, and emitting only elements would delete every one of them from the file —
@@ -597,11 +629,14 @@ function reconcileContainers(
         continue;
       }
       if (child.nodeType !== Node.ELEMENT_NODE) continue;
-      if (!(child instanceof HTMLElement)) return null;
+      if (!(child instanceof HTMLElement)) {
+        why.push(`<${anchor.tag}> holds a node the editor does not know how to write`);
+        return null;
+      }
       if (isEditorNode(child)) continue;
       // Content the page renders is not the file's to carry, here as everywhere else.
       if (generated(child)) continue;
-      const original = elementText(html, anchorOf(child));
+      const original = elementText(current, anchorOf(child));
       /*
        * `cleanMarkup` rather than `outerHTML`, and this is the one place in the patch path
        * where it matters.
@@ -613,15 +648,35 @@ function reconcileContainers(
        * new element and on every descendant. `cleanMarkup` is the same clone-and-strip the
        * save prompt already uses, for the same reason: none of it belongs in a codebase.
        */
-      parts.push(original ?? `${inner}${cleanMarkup(child)}`);
+      /*
+       * Inline, the file's bytes arrive with the indentation of the line they were found on,
+       * which would land in the middle of a sentence. The neighbouring text nodes already
+       * carry whatever spacing belongs there.
+       */
+      const verbatim = inline && original ? original.replace(/^[ \t]+/, '') : original;
+      parts.push(verbatim ?? `${inner}${cleanMarkup(child)}`);
     }
-    patches.push({
-      anchor,
-      kind: 'text',
-      value: parts.length ? `\n${parts.join('\n')}\n${indent}` : '',
-    });
+    /*
+     * Applied now rather than collected, so the next container out reads the result.
+     */
+    const rebuild = patchHTML(current, [
+      {
+        anchor,
+        kind: 'text',
+        value: inline
+          ? parts.join('')
+          : parts.length
+            ? `\n${parts.join('\n')}\n${indent}`
+            : '',
+      },
+    ]);
+    if (rebuild.failed.length) {
+      for (const failure of rebuild.failed) why.push(failure.reason);
+      return null;
+    }
+    current = rebuild.html;
   }
-  return patches;
+  return { html: current };
 }
 
 /**
@@ -643,6 +698,13 @@ function anchorOf(el: HTMLElement): ElementAnchor {
     src: el.getAttribute(SOURCE_ATTR) ?? undefined,
     text: text.length >= 8 ? text : undefined,
   };
+}
+
+/** How far down the tree an element sits, for rebuilding the innermost container first. */
+function depthOf(el: HTMLElement | null): number {
+  let depth = 0;
+  for (let node = el; node; node = node.parentElement) depth += 1;
+  return depth;
 }
 
 /** True when the element has text of its own alongside its child elements. */
@@ -692,8 +754,18 @@ function anchorInFile(record: ChangeRecord, documentPath: string): ElementAnchor
   // stand in, provided the file contains it once — which is what makes a plain page with
   // no ids and no build step patchable at all.
   if (record.kind === 'text' && record.before) {
-    return { tag: anchor.tag, text: record.before };
+    return { tag: anchor.tag, text: record.before, parent: anchor.parent, index: anchor.index, classes: anchor.classes };
   }
+  /*
+   * And otherwise, where it sits inside a container that can be found.
+   *
+   * This is the case that used to force a whole-file rewrite for something as ordinary as a
+   * font size on a plain `<div>` — no id, no build marker, no distinctive text, so nothing
+   * could say which div. Its position among its siblings can, and the resolution verifies the
+   * tag and classes before believing it, so the failure mode is a decline rather than an edit
+   * landing on the wrong element.
+   */
+  if (anchor.parent && anchor.index != null) return anchor;
   return null;
 }
 
@@ -715,7 +787,32 @@ function liveElementFor(anchor: ElementAnchor): HTMLElement | null {
   }
   // A tag with one instance in the page, matching what the file resolution allows.
   const all = document.getElementsByTagName(anchor.tag);
-  return all.length === 1 && all[0] instanceof HTMLElement ? all[0] : null;
+  if (all.length === 1 && all[0] instanceof HTMLElement) return all[0];
+
+  /*
+   * And otherwise by position, the same way the file resolution finds it.
+   *
+   * Both sides have to walk the same route or a change is placeable in the file but its live
+   * element cannot be read back — which is exactly how a font size on a plain `<div>` ended
+   * up rewriting the whole file even after the file side could find it.
+   */
+  if (anchor.parent && anchor.index != null) {
+    const parent = liveElementFor(anchor.parent);
+    const child = parent?.children[anchor.index];
+    if (!(child instanceof HTMLElement)) return null;
+    if (child.localName !== anchor.tag) return null;
+    if ((anchor.classes ?? '') !== liveClassSignature(child)) return null;
+    return child;
+  }
+  return null;
+}
+
+/** The element's author-written classes, sorted, matching how the anchor recorded them. */
+function liveClassSignature(el: HTMLElement): string {
+  return Array.from(el.classList)
+    .filter((name) => !name.startsWith('heo-'))
+    .sort()
+    .join(' ');
 }
 
 /**
@@ -730,23 +827,20 @@ function tryPatchDocument(
   records: readonly ChangeRecord[],
   documentPath: string,
   generated: (el: HTMLElement) => boolean,
+  why: string[],
 ): { html: string } | null {
   if (!records.length) return null;
 
   /*
-   * Structural changes first, because they own the whole container.
+   * Content edits first, containers second, and the order is the whole trick.
    *
-   * A container patch replaces everything between its tags, so an attribute or text patch on
-   * one of its children would be writing into a range that is about to be replaced. It does
-   * not need to: the rebuilt children come from the *live* elements, so any edit to them is
-   * already in the bytes being emitted. Their records are simply satisfied by the same patch.
+   * A container patch replaces everything between its tags, so it and an attribute edit on one
+   * of its children both want to write the same bytes — and only one of them can. Rebuilding
+   * afterwards settles it: the rebuild copies each child's bytes out of the text as it stands,
+   * so a child's new attribute is already in what gets copied. Doing it the other way round
+   * silently dropped the rebuild and reported the insert as written when it was not.
    */
   const structural = records.filter((record) => STRUCTURAL.has(record.kind));
-  const containerPatches = structural.length
-    ? reconcileContainers(html, structural, generated)
-    : [];
-  if (containerPatches === null) return null;
-  const rebuilt = new Set(containerPatches.map((patch) => anchorKey(patch.anchor)));
 
   /*
    * Values come from the live element, not from the record.
@@ -761,13 +855,13 @@ function tryPatchDocument(
 
   for (const record of records) {
     if (STRUCTURAL.has(record.kind)) continue;
-    // Inside a container being rebuilt from its live children, so already accounted for.
-    const parent = record.anchor?.parent;
-    if (parent && rebuilt.has(anchorKey(parent))) continue;
-
     const anchor = anchorInFile(record, documentPath);
-    if (!anchor) return null;
-    const el = liveElementFor(record.anchor ?? anchor);
+    if (!anchor) {
+      why.push(`“${record.summary}” could not be located in the file`);
+      return null;
+    }
+    // The element the change was made to, or failing that a lookup from its anchor.
+    const el = elementOfRecord(record) ?? liveElementFor(record.anchor ?? anchor);
 
     if (record.kind === 'text') {
       // No live element is fine here: the recorded `after` is the text, and for a text
@@ -779,7 +873,14 @@ function tryPatchDocument(
 
     const name =
       record.kind === 'style' ? 'style' : record.kind === 'class' ? 'class' : record.detail?.attribute;
-    if (!name || !el) return null;
+    if (!name || !el) {
+      why.push(
+        name
+          ? `the element behind “${record.summary}” is no longer in the page`
+          : `“${record.summary}” does not say which attribute it changed`,
+      );
+      return null;
+    }
     wanted.set(`${anchorKey(anchor)}|${name}`, {
       anchor,
       kind: 'attribute',
@@ -788,10 +889,14 @@ function tryPatchDocument(
     });
   }
 
-  const result = patchHTML(html, [...containerPatches, ...wanted.values()]);
+  const result = patchHTML(html, [...wanted.values()]);
   // One failure and the whole approach is off: the edit has to reach the file somehow.
-  if (result.failed.length) return null;
-  return { html: result.html };
+  if (result.failed.length) {
+    for (const failure of result.failed) why.push(failure.reason);
+    return null;
+  }
+  if (!structural.length) return { html: result.html };
+  return reconcileContainers(result.html, structural, generated, why);
 }
 
 function anchorKey(anchor: ElementAnchor): string {
