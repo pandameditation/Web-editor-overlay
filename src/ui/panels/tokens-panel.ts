@@ -169,7 +169,7 @@ export class HeoTokensPanel extends HeoElement {
           class="btn sm"
           type="button"
           title="Re-read tokens and classes from the page's stylesheets"
-          @click=${this.#rescan}
+          @click=${() => void this.#rescan()}
         >
           ${icon('refresh', 12)}
         </button>
@@ -505,9 +505,10 @@ export class HeoTokensPanel extends HeoElement {
 
   /* ---------------------------------------------------------------------- */
 
-  #rescan(): void {
-    this.editor.tokens.scanDocument();
-    this.editor.classes.scanDocument();
+  async #rescan(): Promise<void> {
+    // Through the engine rather than straight at the registries: a connected folder
+    // makes some stylesheets readable only from disk, and that read is asynchronous.
+    await this.editor.rescanStyles();
     this.editor.notify('Re-read the page stylesheets.', 'success');
   }
 

@@ -7,6 +7,7 @@ import {
   countRules,
   fetchStyleSource,
   readStyleSource,
+  rememberStyleText,
   writeStyleSource,
   type StyleSource,
 } from '../../core/sheets.js';
@@ -427,8 +428,13 @@ export class HeoCssPanel extends HeoElement {
       return;
     }
     void fetchStyleSource(source, this.editor.project).then((text) => {
-      // Only when the user is still looking at this sheet and has not started
-      // typing: replacing a buffer under a caret loses work.
+      // Kept where the next render can find it. A `StyleSource` is rebuilt from
+      // scratch every render, so a field on this one is gone by the time an Apply
+      // needs it — and for a sheet the CSSOM refuses, this text is also the only
+      // thing the rule count can be taken from.
+      rememberStyleText(source.id, text);
+      // Only replace the buffer while the user is still looking at this sheet and has
+      // not started typing: doing it under a caret loses work.
       if (this.#loadedId !== source.id || this.dirty) return;
       source.pendingBefore = text;
       this.draft = text;

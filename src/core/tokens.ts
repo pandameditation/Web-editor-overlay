@@ -1,6 +1,7 @@
 import { TOKEN_STYLE_ID } from './constants.js';
 import { appliedRules, isColorValue, tokensInValue } from './css.js';
 import { queryDeep } from './dom.js';
+import { withParsedSheet } from './sheets.js';
 import { ManagedStyleSheet } from './stylesheet.js';
 import type { DesignToken, TokenGroup } from './types.js';
 
@@ -107,51 +108,32 @@ export class TokenRegistry {
    */
   scanDocument(): void {
     const found: DesignToken[] = [];
-    const visit = (container: CSSStyleSheet | CSSGroupingRule): void => {
-      let list: CSSRuleList;
-      try {
-        list = container.cssRules;
-      } catch {
-        return;
-      }
-      for (const rule of Array.from(list)) {
-        if (rule instanceof CSSStyleRule) {
-          if (!isRootSelector(rule.selectorText)) continue;
-          for (let i = 0; i < rule.style.length; i += 1) {
-            const property = rule.style[i];
-            if (!property.startsWith('--')) continue;
-            const value = rule.style.getPropertyValue(property).trim();
-            if (!value) continue;
-            const name = property.slice(2);
-            found.push({
-              name,
-              value,
-              group: inferGroup(name, value),
-              label: prettifyTokenName(name),
-              origin: 'stylesheet',
-            });
-          }
-          continue;
-        }
-        if (
-          rule instanceof CSSMediaRule ||
-          rule instanceof CSSSupportsRule ||
-          (typeof CSSContainerRule !== 'undefined' && rule instanceof CSSContainerRule)
-        ) {
-          visit(rule);
-        }
-      }
-    };
-
     for (const sheet of Array.from(document.styleSheets)) {
       // Skip our own generated sheets so scanning is idempotent.
       if (sheet.ownerNode instanceof Element && sheet.ownerNode.hasAttribute('data-heo-generated')) {
         continue;
       }
-      visit(sheet);
+      collectTokens(sheet, found);
     }
-    for (const sheet of document.adoptedStyleSheets ?? []) visit(sheet);
+    for (const sheet of document.adoptedStyleSheets ?? []) collectTokens(sheet, found);
+    this.#adopt(found);
+  }
 
+  /**
+   * Read tokens out of CSS text rather than out of a live sheet.
+   *
+   * For a stylesheet the browser will not expose — a local file over `file://`, most
+   * often — `scanDocument` walks straight past it: `cssRules` throws and there is
+   * nothing to look at. Its text, once a connected project has read it off disk, is
+   * ordinary same-origin CSS, and this is how the tokens in it get in.
+   */
+  scanCSS(css: string): void {
+    const found: DesignToken[] = [];
+    withParsedSheet(css, (sheet) => collectTokens(sheet, found));
+    this.#adopt(found);
+  }
+
+  #adopt(found: DesignToken[]): void {
     for (const token of found) {
       // Never let a scan clobber a token the user has edited.
       const existing = this.#tokens.get(token.name);
@@ -397,6 +379,49 @@ export class TokenRegistry {
       } catch (error) {
         console.error('[html-editor-overlay] token listener failed', error);
       }
+    }
+  }
+}
+
+/**
+ * Every root-level custom property declared in a stylesheet or at-rule.
+ *
+ * Recursive, so a token declared inside `@media` or `@supports` counts. Unreadable
+ * containers are stepped over rather than thrown from: a page with one cross-origin
+ * sheet should still get the tokens from all the others.
+ */
+function collectTokens(container: CSSStyleSheet | CSSGroupingRule, found: DesignToken[]): void {
+  let list: CSSRuleList;
+  try {
+    list = container.cssRules;
+  } catch {
+    return;
+  }
+  for (const rule of Array.from(list)) {
+    if (rule instanceof CSSStyleRule) {
+      if (!isRootSelector(rule.selectorText)) continue;
+      for (let i = 0; i < rule.style.length; i += 1) {
+        const property = rule.style[i];
+        if (!property.startsWith('--')) continue;
+        const value = rule.style.getPropertyValue(property).trim();
+        if (!value) continue;
+        const name = property.slice(2);
+        found.push({
+          name,
+          value,
+          group: inferGroup(name, value),
+          label: prettifyTokenName(name),
+          origin: 'stylesheet',
+        });
+      }
+      continue;
+    }
+    if (
+      rule instanceof CSSMediaRule ||
+      rule instanceof CSSSupportsRule ||
+      (typeof CSSContainerRule !== 'undefined' && rule instanceof CSSContainerRule)
+    ) {
+      collectTokens(rule, found);
     }
   }
 }

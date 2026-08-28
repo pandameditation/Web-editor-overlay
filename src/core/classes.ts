@@ -1,6 +1,7 @@
 import { CLASS_STYLE_ID } from './constants.js';
 import { parseDeclarations } from './css.js';
 import { queryDeep } from './dom.js';
+import { withParsedSheet } from './sheets.js';
 import { declarationsToCSS, ManagedStyleSheet } from './stylesheet.js';
 import type { DesignClass } from './types.js';
 
@@ -26,49 +27,67 @@ export class ClassRegistry {
    * reusable class you can drop onto an element, so offering it would mislead.
    */
   scanDocument(): void {
-    const visit = (container: CSSStyleSheet | CSSGroupingRule): void => {
-      let list: CSSRuleList;
-      try {
-        list = container.cssRules;
-      } catch {
-        return;
-      }
-      for (const rule of Array.from(list)) {
-        if (rule instanceof CSSStyleRule) {
-          for (const selector of rule.selectorText.split(',')) {
-            const name = simpleClassName(selector);
-            if (!name) continue;
-            const declarations = readDeclarations(rule.style);
-            if (!Object.keys(declarations).length) continue;
-            const existing = this.#classes.get(name);
-            if (existing && existing.origin !== 'stylesheet') continue;
-            this.#classes.set(name, {
-              name,
-              declarations: { ...existing?.declarations, ...declarations },
-              label: prettifyClassName(name),
-              origin: 'stylesheet',
-            });
-          }
-          continue;
-        }
-        if (
-          rule instanceof CSSMediaRule ||
-          rule instanceof CSSSupportsRule ||
-          (typeof CSSContainerRule !== 'undefined' && rule instanceof CSSContainerRule)
-        ) {
-          visit(rule);
-        }
-      }
-    };
-
     for (const sheet of Array.from(document.styleSheets)) {
       if (sheet.ownerNode instanceof Element && sheet.ownerNode.hasAttribute('data-heo-generated')) {
         continue;
       }
-      visit(sheet);
+      this.#collect(sheet);
     }
-    for (const sheet of document.adoptedStyleSheets ?? []) visit(sheet);
+    for (const sheet of document.adoptedStyleSheets ?? []) this.#collect(sheet);
     this.#invalidate();
+  }
+
+  /**
+   * Collect classes from CSS text rather than from a live sheet.
+   *
+   * The counterpart to `TokenRegistry.scanCSS`, and for the same reason: a sheet the
+   * browser refuses to expose is invisible to `scanDocument`, but its text — read off
+   * disk by a connected project — parses like any other CSS.
+   */
+  scanCSS(css: string): void {
+    withParsedSheet(css, (sheet) => this.#collect(sheet));
+    this.#invalidate();
+  }
+
+  /**
+   * Walk a sheet or at-rule, taking every bare single-class rule.
+   *
+   * Recursive so a class declared inside `@media` counts, and tolerant of a
+   * container it cannot read so one cross-origin sheet does not stop the scan.
+   */
+  #collect(container: CSSStyleSheet | CSSGroupingRule): void {
+    let list: CSSRuleList;
+    try {
+      list = container.cssRules;
+    } catch {
+      return;
+    }
+    for (const rule of Array.from(list)) {
+      if (rule instanceof CSSStyleRule) {
+        for (const selector of rule.selectorText.split(',')) {
+          const name = simpleClassName(selector);
+          if (!name) continue;
+          const declarations = readDeclarations(rule.style);
+          if (!Object.keys(declarations).length) continue;
+          const existing = this.#classes.get(name);
+          if (existing && existing.origin !== 'stylesheet') continue;
+          this.#classes.set(name, {
+            name,
+            declarations: { ...existing?.declarations, ...declarations },
+            label: prettifyClassName(name),
+            origin: 'stylesheet',
+          });
+        }
+        continue;
+      }
+      if (
+        rule instanceof CSSMediaRule ||
+        rule instanceof CSSSupportsRule ||
+        (typeof CSSContainerRule !== 'undefined' && rule instanceof CSSContainerRule)
+      ) {
+        this.#collect(rule);
+      }
+    }
   }
 
   list(): DesignClass[] {

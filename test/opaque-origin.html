@@ -67,11 +67,28 @@
       check('withNoFolderTheStylesheetIsNotAWritableTarget', () =>
         engine.styleTargets().map((target) => target.label));
 
+      /*
+       * And the design system is empty, because the only stylesheet this page has is
+       * one the browser refuses to read. This is the baseline the checks after the
+       * connection are measured against.
+       */
+      check('withNoFolderTheDesignSystemSeesNothing', () => ({
+        tokens: engine.tokens.size,
+        classes: engine.classes.size,
+      }));
+
       /* ---- A folder, handed over ---- */
 
       const directory = decodeURIComponent(location.pathname).replace(/[^/]*$/, '');
       const disk = new Map([
-        ['opaque.css', '/* from disk */\n.panel {\n  padding: 12px;\n  background: #eef;\n}\n'],
+        // Tokens and classes, so connecting the folder has a design system to find.
+        // Nothing in here is reachable through the CSSOM: `cssRules` throws on this
+        // sheet and a sibling `fetch` is refused, so the file is the only source.
+        ['opaque.css',
+          '/* from disk */\n' +
+          ':root {\n  --opaque-brand: #3355ff;\n  --opaque-space: 18px;\n}\n\n' +
+          '.panel {\n  padding: var(--opaque-space);\n  background: #eef;\n}\n\n' +
+          '@media (min-width: 600px) {\n  .panel-wide {\n    padding: 32px;\n  }\n}\n'],
         ['opaque.js', '/* from disk */\ndocument.documentElement.dataset.opaqueScriptRan = "yes";\n'],
       ]);
       const project = {
@@ -94,6 +111,40 @@
 
       check('theStylesheetBecomesAWritableTarget', () =>
         engine.styleTargets().map((target) => target.label));
+
+      /*
+       * Connecting the folder has to re-read the design system, not just unlock saving.
+       *
+       * This is the whole point of handing a folder over for a page opened from disk:
+       * every linked stylesheet is its own opaque origin, so until the connection the
+       * editor knows of no tokens and no classes at all. `attachProject` awaits the
+       * re-scan, so these are checked immediately rather than after a delay — if they
+       * needed one, the connection would be reporting success before it was true.
+       */
+      check('connectingReadTheTokensOffDisk', () => ({
+        brand: engine.tokens.get('opaque-brand')?.value ?? null,
+        space: engine.tokens.get('opaque-space')?.value ?? null,
+        group: engine.tokens.get('opaque-brand')?.group ?? null,
+        origin: engine.tokens.get('opaque-brand')?.origin ?? null,
+      }));
+      check('connectingReadTheClassesOffDisk', () => ({
+        panel: engine.classes.get('panel')?.declarations ?? null,
+        // Inside `@media`, so this also proves the text is walked recursively rather
+        // than skimmed for top-level rules.
+        wide: engine.classes.get('panel-wide')?.declarations ?? null,
+      }));
+      // A token read from a file is a stylesheet token, not one this session authored,
+      // so saving must not offer to write the theme back over its own source.
+      check('theDiskTokensAreNotTreatedAsAuthoredHere', () =>
+        engine.tokens.toCSS().includes('opaque-brand'));
+
+      /* Re-scanning is idempotent: the manual refresh must not double up or reset. */
+      check('theEngineExposesARefreshStep', () => typeof engine.rescanStyles === 'function');
+      await (engine.rescanStyles?.() ?? Promise.resolve());
+      check('refreshingAgainChangesNothing', () => ({
+        tokens: engine.tokens.size,
+        classes: engine.classes.size,
+      }));
 
       /*
        * The panels are what read these files, so the panels are what is driven: opening
@@ -133,6 +184,23 @@
         return editor ? editor.value : '';
       };
       check('theCssBufferHoldsTheTextFromDisk', () => bufferIn(cssPanel).includes('from disk'));
+
+      /*
+       * The rule count is the visible half of the same fix.
+       *
+       * It is read from `sheet.cssRules.length`, which throws here, so it sat at
+       * "0 rules" for the whole session — the panel showing the entire file above a
+       * label claiming there was nothing in it. Counted from the file's own text it
+       * reports what is really there: three top-level rules, the `@media` being one.
+       */
+      const sheetRow = (panel, name) =>
+        Array.from(panel.shadowRoot.querySelectorAll('.sheet')).find(
+          (row) => row.querySelector('.name')?.textContent?.trim() === name,
+        );
+      check('theRuleCountComesFromTheFile', () => {
+        const row = sheetRow(cssPanel, 'opaque.css');
+        return row ? row.querySelector('.count')?.textContent?.trim() : 'no row';
+      });
 
       engine.setCodeTab('js');
       await settle(600);

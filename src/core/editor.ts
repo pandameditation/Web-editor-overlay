@@ -77,7 +77,13 @@ import {
   type FileHostKind,
   type HostAvailability,
 } from './file-host.js';
-import { collectStyleSources, describeRule, DOCUMENT_TARGET, resetSheetIds } from './sheets.js';
+import {
+  collectStyleSources,
+  describeRule,
+  DOCUMENT_TARGET,
+  rememberStyleText,
+  resetSheetIds,
+} from './sheets.js';
 import {
   applyWritePlan,
   buildWritePlan,
@@ -2565,9 +2571,65 @@ export class EditorEngine {
     if (!options.quiet) {
       this.notify(`Connected to ${host.label}. Saving will write these files.`, 'success');
     }
+    // Connecting changed what the editor can read, so what it has read is out of date.
+    // Stylesheets the browser refused are now files on disk, and the design system in
+    // them is the whole reason someone hands a folder over.
+    await this.rescanStyles();
     // A plan already on screen is now answerable, so answer it.
     if (this.store.value.savePreview != null) void this.previewWritePlan();
     return true;
+  }
+
+  /**
+   * Re-read the design system from every stylesheet the editor can reach.
+   *
+   * `scanDocument` covers the sheets the CSSOM exposes. It cannot cover the rest, and
+   * "the rest" is not an edge case: open a page from disk and *every* linked
+   * stylesheet is its own opaque origin, so the entire design system is invisible
+   * until a folder is connected. Those files are then read here and scanned as text,
+   * which is the step that was missing — the folder became readable and nothing went
+   * back to look.
+   *
+   * Also the manual refresh in the tokens panel, so that button means the same thing
+   * everywhere: re-read everything, from wherever it can be read.
+   */
+  async rescanStyles(): Promise<void> {
+    this.tokens.scanDocument();
+    this.classes.scanDocument();
+
+    const project = this.#project;
+    if (!project) return;
+
+    // `unpreviewable` is precisely the condition worth a disk read: the CSSOM refused
+    // this sheet *and* the connected project can resolve its href to a file.
+    const files: Array<{ id: string; path: string }> = [];
+    for (const source of collectStyleSources(project)) {
+      if (source.unpreviewable && source.path) files.push({ id: source.id, path: source.path });
+    }
+    if (!files.length) return;
+
+    // A failed read is one file the design system will not know about, not a reason to
+    // abandon the others: a folder can be handed over with a stylesheet missing from it.
+    const texts = await Promise.all(
+      files.map(async (file) => ({
+        id: file.id,
+        text: await project.read(file.path).catch(() => null),
+      })),
+    );
+    // Unmounted while the reads were in flight. The text cache went with it.
+    if (this.#destroyed) return;
+
+    let adopted = false;
+    for (const { id, text } of texts) {
+      if (text === null) continue;
+      rememberStyleText(id, text);
+      this.tokens.scanCSS(text);
+      this.classes.scanCSS(text);
+      adopted = true;
+    }
+    // The rule counts in the CSS panel come off the remembered text, so the panel has
+    // to redraw even when the files held no tokens or classes at all.
+    if (adopted) this.#bumpRegistry();
   }
 
   async disconnectProject(): Promise<void> {
@@ -3180,6 +3242,11 @@ function isEditorOwned(node: Node | null): boolean {
       if (tag === HOST_TAG) return true;
       if (current.hasAttribute(IGNORE_ATTR)) return true;
       if (current.hasAttribute('data-heo-generated')) return true;
+      // The throwaway `<style>` the CSS parsing helpers put in the head and take back
+      // out. It is in the document for less than a tick and belongs to the editor, so
+      // counting it as a page change would invalidate geometry on every keystroke in
+      // the CSS panel and on every stylesheet the design system reads.
+      if (current.hasAttribute('data-heo-internal')) return true;
     }
     current = current.parentNode;
   }

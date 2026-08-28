@@ -104,10 +104,13 @@ function describe(
   const generated =
     sheet.ownerNode instanceof Element && sheet.ownerNode.hasAttribute('data-heo-generated');
   const path = extra.href && project ? (project.resolve(extra.href) ?? undefined) : undefined;
+  const id = `${kind}:${extra.href ?? extra.element?.id ?? label}`;
+  const known = styleTexts.get(id);
 
   let rules = 0;
   let readOnly: string | undefined;
   let unpreviewable: string | undefined;
+  let pendingBefore: string | undefined;
   try {
     rules = sheet.cssRules.length;
   } catch {
@@ -125,6 +128,21 @@ function describe(
       unpreviewable =
         `The browser will not let this page read ${label}, so edits cannot be previewed on screen. ` +
         `They will still be written to the file.`;
+      /*
+       * Everything measurable about this sheet comes from the file, not the CSSOM.
+       *
+       * The rule count used to stay at 0 for the whole session once the folder was
+       * connected, which read as "the editor cannot see anything in here" at the exact
+       * moment it could see all of it — and it was the honest report of a count taken
+       * from a sheet the browser refuses to expose. Counting the file's own text says
+       * what is actually known. `pendingBefore` comes from the same place, so an edit
+       * to this sheet is recorded as a diff against the file instead of against the
+       * empty string `readStyleSource` has to return here.
+       */
+      if (known !== undefined) {
+        rules = countRules(known);
+        pendingBefore = known;
+      }
     } else {
       readOnly =
         'This sheet is served from another origin, so the browser will not let the page read it.';
@@ -140,7 +158,7 @@ function describe(
   }
 
   return {
-    id: `${kind}:${extra.href ?? extra.element?.id ?? label}`,
+    id,
     kind,
     label,
     href: extra.href,
@@ -151,6 +169,7 @@ function describe(
     path,
     sheet,
     element: extra.element,
+    pendingBefore,
   };
 }
 
@@ -326,6 +345,25 @@ const sheetIds = new WeakMap<CSSStyleSheet, string>();
 const sheetsById = new Map<string, CSSStyleSheet>();
 let sheetSequence = 0;
 
+/**
+ * Stylesheet text as last read from its file, keyed by `StyleSource.id`.
+ *
+ * A `StyleSource` is a description, rebuilt from scratch on every render, so it is
+ * the wrong place to keep something a disk read or a fetch went and got — the next
+ * render throws it away. This is the right place: keyed on the id, which derives
+ * from the sheet's href and so is stable for the session.
+ *
+ * For a sheet the browser refuses to expose it is the *only* view the page has.
+ * `cssRules` throws and a `file://` fetch is refused, so without this there is
+ * nothing to count rules from and nothing for the registries to read.
+ */
+const styleTexts = new Map<string, string>();
+
+/** Keep a stylesheet's own text, for whatever needs it after this render. */
+export function rememberStyleText(id: string, text: string): void {
+  styleTexts.set(id, text);
+}
+
 function sheetIdFor(sheet: CSSStyleSheet): string {
   const existing = sheetIds.get(sheet);
   if (existing) return existing;
@@ -349,6 +387,7 @@ export function styleElementById(id: string): HTMLStyleElement | null {
 /** Drop the id table. Called on unmount, so nothing outlives the editor. */
 export function resetSheetIds(): void {
   sheetsById.clear();
+  styleTexts.clear();
   sheetSequence = 0;
 }
 
@@ -470,21 +509,38 @@ function replaceRules(sheet: CSSStyleSheet, css: string): void {
   }
 }
 
-/** Top-level rule texts, via the browser's own parser. */
-export function parseRules(css: string): string[] {
+/**
+ * Hand CSS text to a visitor as a stylesheet this page is allowed to read.
+ *
+ * Text is same-origin wherever the file it came from was served from, so parsing it
+ * in a `<style>` this document owns turns a stylesheet the browser refused into
+ * rules that can be walked. That is what lets the design system read a file it can
+ * only reach through a connected folder.
+ *
+ * The probe carries `data-heo-internal`, so nothing that scans the page picks it up,
+ * and it is removed before this returns — the sheet is only valid inside `visit`,
+ * because a detached `<style>` has no `sheet` at all.
+ */
+export function withParsedSheet<T>(css: string, visit: (sheet: CSSStyleSheet) => T): T | null {
   const probe = document.createElement('style');
   probe.setAttribute('data-heo-internal', '');
   probe.textContent = css;
   document.head.appendChild(probe);
   try {
     const sheet = probe.sheet;
-    if (!sheet) return [];
-    return Array.from(sheet.cssRules).map((rule) => rule.cssText);
+    return sheet ? visit(sheet) : null;
   } catch {
-    return [];
+    return null;
   } finally {
     probe.remove();
   }
+}
+
+/** Top-level rule texts, via the browser's own parser. */
+export function parseRules(css: string): string[] {
+  return (
+    withParsedSheet(css, (sheet) => Array.from(sheet.cssRules).map((rule) => rule.cssText)) ?? []
+  );
 }
 
 /** How many rules the text parses to, for the editor's status line. */
