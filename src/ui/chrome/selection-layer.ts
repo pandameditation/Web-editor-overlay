@@ -300,7 +300,7 @@ export class HeoSelectionLayer extends HeoElement {
         -->
         ${rendered
         ? html`<span class="owned" title=${describeProvenance(rendered)}>
-              ${icon('code', 10)} rendered
+              ${icon('code', 10)} rendered${rendered.confidence === 'possible' ? '?' : ''}
             </span>`
         : nothing}
       </div>

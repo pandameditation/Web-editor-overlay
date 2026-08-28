@@ -39,17 +39,40 @@ import { HOST_TAG, IGNORE_ATTR, INSERTED_ATTR, SOURCE_ATTR } from './constants.j
  */
 
 export type ProvenanceKind =
+  /** An edit was made here and something on the page replaced it. Proof, not inference. */
+  | 'observed'
   /** A tagged template literal in a JS or TS file — Lit render output. */
   | 'template'
   /** A DOM write, caught in the act, with the calling frame recorded. */
   | 'script'
   /** Not in the page's own HTML file, whenever and however it got here. */
   | 'file'
+  /** An attribute on the element holds exactly its text, so that is the real source. */
+  | 'mirrored'
   /** Changed after the document parsed, by something that left no trace. */
   | 'runtime';
 
+/**
+ * How much the evidence actually supports.
+ *
+ * The distinction exists because these signals are not remotely equal, and pretending
+ * they are is what makes the feature untrustworthy. Having caught a write with the
+ * calling frame on the stack is a fact. Having found the same string somewhere in a
+ * script is a coincidence until corroborated. Both used to produce the same flat
+ * sentence, in the same tone, with the same consequence.
+ *
+ * - `certain` — observed happening, or named by the build. Say so plainly.
+ * - `likely` — provable structural difference from the file, but nothing says what did it.
+ * - `possible` — a pattern consistent with generated content, and with other things too.
+ */
+export type Confidence = 'certain' | 'likely' | 'possible';
+
 export interface Provenance {
   kind: ProvenanceKind;
+  /** How far the evidence goes. Drives the wording and nothing else — never a block. */
+  confidence: Confidence;
+  /** The attribute holding the text, for `mirrored`. */
+  attribute?: string;
   /**
    * True when this covers everything inside the element, not just the element.
    *
@@ -177,6 +200,11 @@ export function provenanceOf(node: Node): Provenance | undefined {
     }
   }
 
+  if (node instanceof HTMLElement) {
+    const mirrored = mirroredTextAttribute(node);
+    if (mirrored) return { kind: 'mirrored', confidence: 'possible', attribute: mirrored };
+  }
+
   /*
    * Inherited from whichever ancestor's content was written as a whole.
    *
@@ -208,20 +236,32 @@ export function isScriptOwned(el: HTMLElement): boolean {
   return provenanceOf(el) !== undefined;
 }
 
-/** A sentence naming what controls this element, for the UI to show as-is. */
+/**
+ * A sentence naming what controls this element, for the UI to show as-is.
+ *
+ * Written so the reader can tell how much is known. Only `certain` states an outcome;
+ * the rest hedge, and hedge specifically — naming the evidence rather than saying
+ * "maybe", so someone who knows their own page can judge it in a second. A build step
+ * that rewrites the HTML is invisible from in here, and so is an attribute read back on
+ * the next interaction, which is why none of this is ever phrased as a verdict.
+ */
 export function describeProvenance(provenance: Provenance): string {
   const where = locationLabel(provenance);
   switch (provenance.kind) {
+    case 'observed':
+      return `An edit here was replaced by the page a moment ago, so this text is set by code — ${where === 'the page’s JavaScript' ? 'somewhere in the page’s scripts' : where}. Editing the code is what will hold.`;
     case 'template':
-      return `This content is rendered by ${where}, so editing it here would be undone by the next render.`;
+      return `This content is rendered by ${where}, so an edit here is undone by the next render.`;
     case 'script':
       return provenance.vendor
-        ? `This content was written by a dependency (${where}), so editing it here would be undone the next time it runs.`
-        : `This content is written by ${where}, so editing it here would be undone the next time that code runs.`;
+        ? `A dependency wrote this content (${where}), so an edit here is undone the next time it runs.`
+        : `This content was written by ${where}, so an edit here is undone the next time that code runs.`;
     case 'file':
-      return 'This content is not in the page’s HTML file — the page’s own code builds it, so an edit here would be undone the next time it runs and would not survive a save.';
+      return 'This content is not in the page’s HTML file, so something on the page builds it. An edit here will most likely be replaced, and saving would write the generated markup into your HTML.';
+    case 'mirrored':
+      return `This element’s text is also in its ${provenance.attribute} attribute, which usually means the attribute is what renders it — if so, an edit here is replaced the next time that code runs.`;
     default:
-      return 'This content appeared after the page loaded, so something on the page is generating it — an edit here would be undone the next time that happens.';
+      return 'This content changed after the page loaded, so something on the page may be generating it. An edit here may not survive.';
   }
 }
 
@@ -241,6 +281,37 @@ function fileNameOf(url: string | undefined): string | undefined {
   }
 }
 
+/**
+ * An attribute holding exactly this element's text.
+ *
+ * The tell for a pattern no amount of file comparison can catch:
+ *
+ *     var text = el.getAttribute('data-text');
+ *     if (text === null) { text = el.textContent; el.setAttribute('data-text', text); }
+ *
+ * The text starts in the HTML, so every structural signal correctly says authored — and
+ * an edit to it is still lost, because the attribute is what gets read back and
+ * re-rendered later. What gives it away is the duplication: an attribute whose value is
+ * character-for-character the element's own text is not a coincidence, it is a cache.
+ *
+ * Only attributes that could plausibly carry copy, and only when the text is long
+ * enough to be worth caching — otherwise `title="OK"` on a button reading "OK" would
+ * report the button as generated, which is the sort of noise that makes a warning
+ * something people learn to ignore.
+ */
+const TEXT_ATTRIBUTES = /^(?:data-|aria-label$|title$|alt$|placeholder$|value$)/;
+
+function mirroredTextAttribute(el: HTMLElement): string | undefined {
+  const text = directTextOf(el);
+  if (text.length < 8) return undefined;
+  for (const attribute of Array.from(el.attributes)) {
+    if (attribute.name.startsWith('data-heo-')) continue;
+    if (!TEXT_ATTRIBUTES.test(attribute.name)) continue;
+    if (attribute.value.replace(/\s+/g, ' ').trim() === text) return attribute.name;
+  }
+  return undefined;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Tier 1: the template that declared it                                       */
 /* -------------------------------------------------------------------------- */
@@ -258,6 +329,7 @@ function templateProvenance(el: HTMLElement): Provenance | undefined {
   if (!file || !CODE_FILE.test(file)) return undefined;
   return {
     kind: 'template',
+    confidence: 'certain',
     file,
     line: Number.isFinite(line) ? line : undefined,
     column: Number.isFinite(column) ? column : undefined,
@@ -449,6 +521,20 @@ const OVERLAY_FILE = /html-editor-overlay|\/src\/(?:core|ui|integrations)\//;
 /** Dependency code: somewhere to name, never somewhere to send an edit. */
 const VENDOR_FILE = /node_modules|\/@(?:fs|id|vite)\/|\/deps\/|\.vendor\.|cdn\.|unpkg\.|jsdelivr\./;
 
+const writeListeners = new Set<(url: string) => void>();
+
+/**
+ * Be told which files are seen writing to the page.
+ *
+ * Corroboration for the weakest signal there is. Finding a string in a script proves
+ * only that the string is in the script; knowing that the same script has actually
+ * rendered something is the difference between a guess and a ranked answer.
+ */
+export function onScriptWrite(listener: (url: string) => void): () => void {
+  writeListeners.add(listener);
+  return () => writeListeners.delete(listener);
+}
+
 function capture(api: string): Provenance | undefined {
   if (depth > 0 || captured >= BUDGET) return undefined;
   const stack = new Error().stack;
@@ -464,8 +550,18 @@ function capture(api: string): Provenance | undefined {
 
   const authored = page.find((frame) => !VENDOR_FILE.test(frame.url));
   const frame = authored ?? page[0];
+  // Remembered as a file that renders, which later lets a text search prefer a script
+  // known to write to the page over one that merely contains the same string.
+  for (const listener of writeListeners) {
+    try {
+      listener(frame.url);
+    } catch {
+      /* a listener's problem, not this write's */
+    }
+  }
   return {
     kind: 'script',
+    confidence: 'certain',
     url: frame.url,
     line: frame.line,
     column: frame.column,
@@ -527,8 +623,8 @@ export function observeRuntimeContent(): () => void {
       if (entry.type === 'characterData') {
         const parent = entry.target.parentElement;
         if (parent && attributable(parent) && !records.has(parent)) {
-          records.set(entry.target, { kind: 'runtime' });
-          records.set(parent, { kind: 'runtime' });
+          records.set(entry.target, { kind: 'runtime', confidence: 'possible' });
+          records.set(parent, { kind: 'runtime', confidence: 'possible' });
         }
         continue;
       }
@@ -538,7 +634,7 @@ export function observeRuntimeContent(): () => void {
         if (records.has(node)) continue;
         // Covering the subtree, for the same reason the wrappers do: an inserted card
         // is not the text anyone clicks on, and its heading arrives with it.
-        records.set(node, { kind: 'runtime', subtree: true });
+        records.set(node, { kind: 'runtime', confidence: 'possible', subtree: true });
       }
     }
   });
@@ -609,12 +705,12 @@ export function establishBaseline(sourceHTML: string): number {
       const byId = child.id ? parsed.getElementById(child.id) : null;
       const match = byId ?? pool.get(signatureOf(child))?.shift() ?? null;
       if (!match) {
-        mark(child, { kind: 'file', subtree: true });
+        mark(child, { kind: 'file', confidence: 'likely', subtree: true });
         continue;
       }
       // Same element, different words: whatever rewrote them will do it again.
       if (directTextOf(child) !== directTextOf(match)) {
-        mark(child, { kind: 'file' });
+        mark(child, { kind: 'file', confidence: 'likely' });
       }
       walk(child, match);
     }
@@ -669,6 +765,87 @@ function directTextOf(el: Element): string {
     if (node.nodeType === Node.TEXT_NODE) text += node.nodeValue ?? '';
   }
   return text.replace(/\s+/g, ' ').trim();
+}
+
+/* -------------------------------------------------------------------------- */
+/* Proof: watch whether the edit survives                                      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Watch an element the user has just edited, and report if the page overwrites it.
+ *
+ * Every other signal in this file is inference: it looks at where content came from and
+ * reasons about what will happen to an edit. This one waits and finds out. That makes it
+ * the only signal that can catch code which reads its own DOM back and re-renders from
+ * somewhere else —
+ *
+ *     var text = el.getAttribute('data-text');
+ *
+ * — where the text is genuinely in the HTML, every structural check correctly says
+ * authored, and the edit is lost anyway on the next interaction. No amount of looking
+ * at files would ever have predicted it. Being overwritten, on the other hand, is not a
+ * prediction at all.
+ *
+ * It fires once and then stops. The point is to learn the fact and say it, not to
+ * narrate every subsequent render.
+ */
+export function watchEditDurability(
+  el: HTMLElement,
+  expected: string,
+  onReplaced: (found: string) => void,
+): () => void {
+  if (typeof MutationObserver === 'undefined') return () => { };
+  const wanted = expected.replace(/\s+/g, ' ').trim();
+  let done = false;
+
+  const observer = new MutationObserver(() => {
+    // The editor's own writes are not the page taking the edit back — undo, redo and a
+    // second edit all land here. `depth` survives into the microtask this runs in.
+    if (done || depth > 0) return;
+    if (!el.isConnected) {
+      // Replaced wholesale rather than rewritten, which is the same news.
+      done = true;
+      observer.disconnect();
+      onReplaced('');
+      return;
+    }
+    const now = (el.textContent ?? '').replace(/\s+/g, ' ').trim();
+    if (now === wanted) return;
+    done = true;
+    observer.disconnect();
+    onReplaced(now);
+  });
+
+  observer.observe(el, { subtree: true, childList: true, characterData: true });
+  // The parent too, so an element swapped out entirely is noticed rather than watched
+  // in silence after it has been detached.
+  if (el.parentNode) observer.observe(el.parentNode, { childList: true });
+  return () => {
+    done = true;
+    observer.disconnect();
+  };
+}
+
+/**
+ * Record, as fact, that the page took an edit back.
+ *
+ * Promoted to `certain` and given the subtree, and it deliberately overwrites whatever
+ * was there before: an inference has just been settled by an observation, and the
+ * observation wins. Anything already known about *where* the code lives is carried
+ * across, since that part was never in doubt.
+ */
+export function markObservedRevert(el: HTMLElement): Provenance {
+  const known = records.get(el);
+  const provenance: Provenance = {
+    ...known,
+    kind: 'observed',
+    confidence: 'certain',
+    subtree: true,
+  };
+  records.set(el, provenance);
+  // The user's earlier edit made this exempt. It has now earned its way back.
+  userOwned.delete(el);
+  return provenance;
 }
 
 /** Forget everything attributed so far. Called on unmount. */

@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Editor overlay — a warning that is advisory, and evidence that settles it</title>
+  <!--
+    The detection is inference, and inference is sometimes wrong. This fixture is about
+    what happens then.
+
+    Three things are checked. A flagged element can still be edited, because a build step
+    that rewrites the HTML is indistinguishable from hand-authored markup and blocking on
+    a guess costs the user a capability they cannot argue with. The warning grades itself
+    by the evidence behind it. And an edit that the page actually takes back is noticed
+    and reported as fact, which is the only way to catch text cached into an attribute.
+
+        npm run build:lib && npm run check:advisory
+  -->
+  <style>
+    body { margin: 0; padding: 24px; font-family: system-ui, sans-serif; }
+  </style>
+</head>
+
+<body>
+  <h1 id="authored">Written in the HTML</h1>
+  <p id="cached-copy">This copy is authored here and cached into an attribute by the script.</p>
+  <p id="plain-copy">This copy is authored here and nothing touches it.</p>
+  <section id="all-stories"></section>
+
+  <script src="./stories.js"></script>
+  <script src="./cached.js"></script>
+
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+
+  <script>
+    (async () => {
+      const errors = [];
+      window.addEventListener('error', (e) => errors.push('error: ' + e.message));
+      window.addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+
+      const results = {};
+      const progress = document.getElementById('progress');
+      const check = (name, fn) => {
+        progress.textContent = name;
+        try { results[name] = fn(); }
+        catch (err) { results[name] = 'THREW: ' + (err && err.message ? err.message : String(err)); }
+      };
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const settle = (ms) => new Promise((r) => setTimeout(r, ms));
+      const deep = (root, selector) => {
+        const found = root.querySelector(selector);
+        if (found) return found;
+        for (const element of root.querySelectorAll('*')) {
+          if (!element.shadowRoot) continue;
+          const inner = deep(element.shadowRoot, selector);
+          if (inner) return inner;
+        }
+        return null;
+      };
+      const toastText = () => {
+        const toast = deep(document, 'heo-toast');
+        return toast ? toast.shadowRoot.textContent.replace(/\s+/g, ' ').trim() : '';
+      };
+      const q = (id) => document.getElementById(id);
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark' });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+
+      const seen = (el) => {
+        const found = engine.provenanceOf(el);
+        return found ? { kind: found.kind, confidence: found.confidence, attribute: found.attribute ?? null } : null;
+      };
+
+      /* ------------------------------------------------------------------ *
+       * The evidence is graded rather than flattened.
+       * ------------------------------------------------------------------ */
+      check('contentAbsentFromTheFileIsLikely', () => seen(q('leading')));
+      check('textCachedIntoAnAttributeIsPossible', () => seen(q('cached-copy')));
+      check('untouchedAuthoredTextIsNotFlagged', () => seen(q('plain-copy')));
+
+      /* ------------------------------------------------------------------ *
+       * A flagged element can still be edited. This is the whole point: the
+       * detection cannot see a build step that rewrites the HTML, so it must
+       * not be the thing that decides.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'theWarningIsAdvisory';
+      engine.dismissToast();
+      await frames();
+      const heading = document.querySelector('#leading .story-title');
+      engine.beginTextEdit(heading);
+      await frames();
+      check('editingFlaggedContentIsAllowed', () =>
+        engine.store.value.textEditing === heading);
+      check('andIsWarnedAboutRatherThanBlocked', () => {
+        const said = toastText();
+        return {
+          saysWhatItKnows: /not in the page’s HTML file/.test(said),
+          hedges: /most likely/.test(said),
+          offersTheCodeRoute: /Edit the code/.test(said),
+        };
+      });
+      // Once per element: a notice that reappears on every click gets dismissed unread.
+      engine.endTextEdit(false);
+      engine.dismissToast();
+      await frames();
+      engine.beginTextEdit(heading);
+      await frames();
+      check('theWarningDoesNotRepeatForTheSameElement', () => toastText() === '');
+      engine.endTextEdit(false);
+      await frames();
+
+      /* ------------------------------------------------------------------ *
+       * And an edit the page takes back is reported as fact, not inference.
+       * This is the only signal that catches the cached-attribute pattern.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'durability';
+      const cached = q('cached-copy');
+      engine.beginTextEdit(cached);
+      await frames();
+      cached.firstChild.data = 'Edited by hand';
+      engine.endTextEdit(true);
+      await frames();
+      check('theEditLandsAndIsTheUsersForNow', () => ({
+        text: cached.textContent,
+        // A committed edit exempts the element, so nothing infers anything about it.
+        provenance: seen(cached),
+      }));
+
+      engine.dismissToast();
+      // What a later interaction does: re-render from the cached attribute.
+      window.rerenderFromCache();
+      await settle(200);
+      check('thePageTakingTheEditBackIsNoticed', () => ({
+        text: cached.textContent,
+        provenance: seen(cached),
+      }));
+      check('andIsReportedWithTheReceipt', () => {
+        const said = toastText();
+        return {
+          quotesWhatThePagePutBack: /replaced your edit with/.test(said),
+          statesItAsFact: /was replaced by the page/.test(said),
+          offersTheCodeRoute: /Edit the code/.test(said),
+        };
+      });
+
+      /* ------------------------------------------------------------------ *
+       * A found string is a candidate, and the dialog says so.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'candidates';
+      engine.dismissToast();
+      const opened = await engine.openSourceEdit(document.querySelector('#trailing .story-title'));
+      await frames();
+      results.theDialogOpened = opened;
+      check('aSearchedMatchIsPresentedAsAGuess', () => {
+        const dialog = deep(document, 'heo-source-dialog');
+        const said = dialog ? dialog.shadowRoot.textContent.replace(/\s+/g, ' ') : '';
+        const state = engine.store.value.sourceEdit;
+        return {
+          searched: state?.searched ?? null,
+          candidates: state?.candidates ?? null,
+          saysBestGuess: /Best guess/.test(said),
+          asksTheUserToCheck: /check this is the code that renders it/.test(said),
+          doesNotAssert: !/so this window is the code that produces/.test(said),
+        };
+      });
+      engine.closeSourceEdit();
+
+      results.__errors = errors;
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"__errors":["' + String(e && e.message) + '"]}:END';
+    });
+  </script>
+</body>
+
+</html>

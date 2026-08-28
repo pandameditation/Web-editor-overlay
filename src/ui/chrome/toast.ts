@@ -82,6 +82,9 @@ export class HeoToast extends HeoElement {
       .glyph.success {
         color: var(--heo-success);
       }
+      .glyph.warn {
+        color: var(--heo-warn);
+      }
       .glyph.error {
         color: var(--heo-danger);
       }
@@ -138,7 +141,14 @@ export class HeoToast extends HeoElement {
     const toast = this.state.value.toast;
     if (!toast) return nothing;
 
-    const glyph = toast.tone === 'success' ? 'check' : toast.tone === 'error' ? 'close' : 'sparkle';
+    const glyph =
+      toast.tone === 'success'
+        ? 'check'
+        : toast.tone === 'error'
+          ? 'close'
+          : toast.tone === 'warn'
+            ? 'alert'
+            : 'sparkle';
 
     return html`<div class="toast surface" popover="manual" role="status" aria-live="polite">
       <span class=${`glyph ${toast.tone}`}>${icon(glyph, 13)}</span>

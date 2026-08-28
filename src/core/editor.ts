@@ -89,11 +89,13 @@ import { collectScriptSources, fetchScriptSource } from './scripts.js';
 import {
   describeProvenance,
   establishBaseline,
-  isScriptOwned,
+  markObservedRevert,
   markUserOwned,
+  onScriptWrite,
   observeRuntimeContent,
   provenanceOf,
   resetProvenance,
+  watchEditDurability,
   withoutProvenance,
   type Provenance,
 } from './provenance.js';
@@ -132,7 +134,7 @@ import type {
 export interface ToastMessage {
   id: number;
   message: string;
-  tone: 'info' | 'success' | 'error';
+  tone: 'info' | 'success' | 'warn' | 'error';
   /** Optional action rendered as a button on the toast. */
   action?: { label: string; run: () => void };
 }
@@ -319,6 +321,10 @@ export interface SourceEdit {
   error: string;
   /** Set once the edit has been recorded, so the dialog can say it landed. */
   recorded: boolean;
+  /** True when the file was found by searching for the text rather than named outright. */
+  searched: boolean;
+  /** How many files the text was found in, when searching. */
+  candidates: number;
 }
 
 /** What the UI needs to know about a connected project. */
@@ -469,6 +475,11 @@ export class EditorEngine {
      */
     if (this.options.detectScriptContent !== false) {
       this.#listeners.push(observeRuntimeContent());
+      this.#listeners.push(
+        onScriptWrite((url) => {
+          this.#writingScripts.add(url);
+        }),
+      );
       // Tracked, because it is a fetch and because a test — or a user — asking "is this
       // text mine to edit" before it lands would get the wrong answer.
       this.track(this.establishContentBaseline());
@@ -2055,19 +2066,22 @@ export class EditorEngine {
     if (!el || this.store.value.textEditing === el) return;
     if (!acceptsChildren(el)) return;
     /*
-     * Content the page renders is not content this editor can change.
+     * Warned, and allowed anyway.
      *
-     * Refusing looks unhelpful for exactly as long as it takes to read why. The
-     * alternative is worse in a way that is hard to recover from: the edit lands, looks
-     * committed, and is silently replaced by the next render — possibly minutes later,
-     * after several more edits have been made on top of a value that was never real.
-     * So the refusal comes with the reason and, where the code can be located, with the
-     * only edit that would actually hold.
+     * This used to refuse, and refusing was the wrong trade. The evidence behind it is
+     * good but not conclusive, and it cannot be made conclusive: a build step that
+     * rewrites the HTML looks identical to hand-authored markup from inside the page,
+     * and an attribute read back on the next interaction looks identical to text nobody
+     * touches. So a block turns every wrong guess into a capability the user has lost,
+     * with no way to overrule it — and the guesses that matter most are exactly the ones
+     * nothing here can verify.
+     *
+     * Saying so and standing aside inverts the cost. A wrong warning is a sentence to
+     * disregard; a right one arrives before the work is done rather than after it is
+     * lost, and carries the edit that would actually hold. What the edit *does* is then
+     * watched, which is how a guess becomes a fact.
      */
-    if (this.options.detectScriptContent !== false && isScriptOwned(el)) {
-      this.#refuseTextEdit(el);
-      return;
-    }
+    if (this.options.detectScriptContent !== false) this.#warnScriptOwned(el);
     this.endTextEdit(true);
     this.#textEditSnapshot = el.innerHTML;
     el.setAttribute('contenteditable', 'true');
@@ -2147,35 +2161,75 @@ export class EditorEngine {
    */
   provenanceOf(el = this.store.value.selected): Provenance | undefined {
     if (!el || this.options.detectScriptContent === false) return undefined;
-    return isScriptOwned(el) ? provenanceOf(el) : undefined;
+    // Straight through: the overlay's own insertions and the user's own edits are
+    // exempted inside `provenanceOf` itself, so there is nothing to filter here.
+    return provenanceOf(el);
   }
 
   /**
-   * Say no to an in-place edit, and offer the edit that would work instead.
+   * Say what is known before the work is done, once per element per session.
    *
-   * The toast carries the action rather than the explanation carrying it, because the
-   * user's intent was "change this text" and the useful reply is a way to still do
-   * that — not a lecture with a dead end at the end of it. Where no location is known
-   * the offer is dropped rather than faked; a button that opens an empty file would be
-   * worse than none.
+   * Once, because a warning that reappears on every click is a warning that gets
+   * dismissed without reading — and the user has been told, and has chosen to continue,
+   * which is their call to make. The action matters more than the sentence: the intent
+   * was "change this text", so the useful reply is the edit that would hold rather than
+   * an explanation with a dead end after it.
+   *
+   * Offered whenever there is anywhere to look, which is more often than there is a
+   * recorded location: searching the page's scripts can find code that a comparison
+   * against the HTML could only tell us exists. A dependency is the one case worth
+   * declining — nobody wants to be sent into `node_modules`.
    */
-  #refuseTextEdit(el: HTMLElement): void {
+  #warnScriptOwned(el: HTMLElement): void {
+    if (this.#warnedAbout.has(el)) return;
     const provenance = provenanceOf(el);
     if (!provenance) return;
-    /*
-     * Offered whenever there is anywhere to look, which is more often than there is a
-     * recorded location: a text search of the page's scripts can find the code that a
-     * comparison against the HTML could only tell us exists. A dependency is the one
-     * case worth declining outright — nobody wants to be sent into `node_modules`.
-     */
-    const canOpen = !provenance.vendor;
-    this.select(el);
+    this.#warnedAbout.add(el);
     this.notify(
       describeProvenance(provenance),
-      'info',
-      canOpen ? { label: 'Edit the code', run: () => void this.openSourceEdit(el) } : undefined,
+      provenance.confidence === 'certain' ? 'warn' : 'info',
+      provenance.vendor
+        ? undefined
+        : { label: 'Edit the code', run: () => void this.openSourceEdit(el) },
     );
   }
+
+  /** Elements already warned about, so the notice is information and not nagging. */
+  #warnedAbout = new WeakSet<HTMLElement>();
+
+  /**
+   * Watch an edit, and speak up if the page takes it back.
+   *
+   * The one signal that is evidence rather than inference, and the only one that catches
+   * code reading its own DOM back to re-render from an attribute or a data store. When
+   * it fires, the guess is settled: the element is recorded at full confidence, the user
+   * is told what happened in the past tense, and the code route is offered — this time
+   * on the strength of something that actually occurred.
+   */
+  #watchEdit(el: HTMLElement, expected: string): void {
+    if (this.options.detectScriptContent === false) return;
+    this.#editWatchers.get(el)?.();
+    const stop = watchEditDurability(el, expected, (found) => {
+      this.#editWatchers.delete(el);
+      if (this.#destroyed) return;
+      const provenance = markObservedRevert(el);
+      this.#warnedAbout.add(el);
+      this.#bumpRevision();
+      this.notify(
+        found
+          ? `The page replaced your edit with “${clip(found)}”. ${describeProvenance(provenance)}`
+          : `The page rebuilt this element and your edit went with it. ${describeProvenance(provenance)}`,
+        'warn',
+        provenance.vendor
+          ? undefined
+          : { label: 'Edit the code', run: () => void this.openSourceEdit(el) },
+      );
+    });
+    this.#editWatchers.set(el, stop);
+    this.#listeners.push(stop);
+  }
+
+  #editWatchers = new Map<HTMLElement, () => void>();
 
   /* ---------------------------------------------------------------------- */
   /* Editing the code behind rendered content                               */
@@ -2211,11 +2265,21 @@ export class EditorEngine {
         text,
         error: '',
         recorded: false,
+        searched: false,
+        candidates: 0,
       },
     });
 
     let target = fromProvenance;
     let file = target ? await this.#readSource(target) : null;
+    /*
+     * Whether the file was named by evidence or found by looking for the text, and how
+     * many other files the text also appeared in. Both go to the dialog: a match that was
+     * chosen from four is a different claim from one the build pointed at, and the reader
+     * is the only one who can tell whether the pick is right.
+     */
+    let searched = false;
+    let candidates = 0;
 
     /*
      * No location, so go and look for one.
@@ -2228,10 +2292,12 @@ export class EditorEngine {
      * had finished rendering before the editor loaded.
      */
     if (file === null) {
-      const found = await this.#findTextInScripts(text);
+      const found = await this.#findTextInScripts(text, el);
       if (found) {
         target = found.target;
         file = found.file;
+        candidates = found.candidates;
+        searched = true;
       }
     }
 
@@ -2249,7 +2315,7 @@ export class EditorEngine {
     }
 
     const window = sourceWindow(file, text, target.line);
-    this.updateSourceEdit({ target, file, window, draft: window.code });
+    this.updateSourceEdit({ target, file, window, draft: window.code, searched, candidates });
     return true;
   }
 
@@ -2261,7 +2327,10 @@ export class EditorEngine {
    * read in parallel because they are small and a serial walk of half a dozen files is
    * a visible pause on a button press.
    */
-  async #findTextInScripts(text: string): Promise<{ target: SourceTarget; file: string } | null> {
+  async #findTextInScripts(
+    text: string,
+    el: HTMLElement,
+  ): Promise<{ target: SourceTarget; file: string; candidates: number } | null> {
     if (text.length < 4) return null;
     const sources = collectScriptSources(this.#project).filter(
       (source) => !source.readOnly && source.kind !== 'json',
@@ -2275,22 +2344,58 @@ export class EditorEngine {
       })),
     );
 
+    /*
+     * Every file the string appears in, ranked — because "it appears here" is a
+     * coincidence until something corroborates it.
+     *
+     * Taking the first match and calling it the source was the bug worth fixing: a
+     * string can live in a copy of the data, a test, a translation table or a comment,
+     * and the dialog then asserted the wrong file with total confidence. Scoring is what
+     * turns that into a defensible pick, and the count is what lets the dialog admit
+     * there were others.
+     */
+    const hits: Array<{ target: SourceTarget; file: string; score: number }> = [];
+    const identifiers = [el.id, ...Array.from(el.classList)]
+      .filter((name) => name && !name.startsWith('heo-'))
+      .map((name) => name.toLowerCase());
+
     for (const { source, file } of read) {
       if (!file) continue;
       const window = sourceWindow(file, text);
       if (window.anchorKind !== 'literal') continue;
-      return {
+
+      let score = 1;
+      const line = file.split('\n')[window.anchor - 1] ?? '';
+      // A quoted occurrence is a value the code uses. An unquoted one is prose about it.
+      if (/['"`]/.test(line)) score += 3;
+      if (/^\s*(?:\/\/|\/\*|\*)/.test(line)) score -= 3;
+      // The file also talks about this element, which is the corroboration that matters.
+      const haystack = file.toLowerCase();
+      if (identifiers.some((name) => haystack.includes(name))) score += 4;
+      // And we already caught this script writing to the page at some point.
+      if (source.href && this.#writingScripts.has(source.href)) score += 6;
+
+      hits.push({
         file,
-        target: {
-          path: source.path,
-          url: source.href,
-          label: source.label,
-          line: window.anchor,
-        },
-      };
+        score,
+        target: { path: source.path, url: source.href, label: source.label, line: window.anchor },
+      });
     }
-    return null;
+
+    if (!hits.length) return null;
+    hits.sort((a, b) => b.score - a.score);
+    return { ...hits[0], candidates: hits.length };
   }
+
+  /**
+   * Scripts seen writing to the page, by URL.
+   *
+   * Kept so a text search can prefer a file that has demonstrably rendered something
+   * over one that merely mentions the string. Fed by the wrappers, which means it is
+   * only populated when the overlay loaded early enough to install them — so it sharpens
+   * the ranking when available and costs nothing when not.
+   */
+  #writingScripts = new Set<string>();
 
   /**
    * The file's text, from disk when a project is connected and from the network when
@@ -2377,6 +2482,9 @@ export class EditorEngine {
     // decide the page generates content the user has just written by hand.
     markUserOwned(el);
     this.history.commit(setInnerHTML(el, before, after), { alreadyApplied: true });
+    // And now find out whether that was true. Every other signal predicts what will
+    // happen to this edit; this one waits for it.
+    this.#watchEdit(el, el.textContent ?? '');
     this.#bumpRevision();
   }
 
@@ -3590,6 +3698,12 @@ function linkElementFor(href: string): HTMLLinkElement | null {
     if (link instanceof HTMLLinkElement && link.href === href) return link;
   }
   return null;
+}
+
+/** Enough of a string to recognise in a sentence, and no more. */
+function clip(value: string, limit = 48): string {
+  const collapsed = value.replace(/\s+/g, ' ').trim();
+  return collapsed.length > limit ? `${collapsed.slice(0, limit - 1)}…` : collapsed;
 }
 
 function isOverlayChrome(node: EventTarget): boolean {

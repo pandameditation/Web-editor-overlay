@@ -106,18 +106,25 @@
       step('theGate');
       engine.beginTextEdit(byId('js-heading'));
       await frames();
-      check('inPlaceEditingIsRefusedOnRenderedContent', () => ({
-        started: engine.store.value.textEditing !== null,
-        stillSaysWhatTheScriptSaid: byId('js-heading').textContent,
+      /*
+       * Allowed, and warned about. The detection is inference and cannot be made
+       * otherwise — a build step that rewrites the HTML looks exactly like markup someone
+       * typed — so it advises and stands aside rather than removing a capability on a
+       * guess the user has no way to overrule.
+       */
+      check('editingRenderedContentIsAllowedButWarned', () => ({
+        started: engine.store.value.textEditing === byId('js-heading'),
       }));
-      check('andTheRefusalExplainsItself', () => {
+      check('andTheWarningExplainsItself', () => {
         const toast = deep(document, 'heo-toast');
         const said = textOf(toast);
         return {
-          namesTheCause: /would be undone the next time/.test(said),
+          namesTheCause: /undone the next time that code runs/.test(said),
           offersTheCodeRoute: /Edit the code/.test(said),
         };
       });
+      engine.endTextEdit(false);
+      await frames();
 
       // Authored content is untouched by any of this.
       step('authoredStillWorks');

@@ -132,14 +132,17 @@
        * And the gate holds where it counts: on the text itself.
        * ------------------------------------------------------------------ */
       progress.textContent = 'theGate';
-      engine.beginTextEdit(q('#leading .story-title'));
+      const rendered = q('#leading .story-title');
+      engine.beginTextEdit(rendered);
       await frames();
-      check('editingTheRenderedHeadingIsRefused', () => ({
-        started: engine.store.value.textEditing !== null,
-        stillSaysWhatTheScriptSaid: q('#leading .story-title').textContent,
+      // Advisory, not a block: see test/advisory.html for why that trade is the right
+      // way round. What matters here is that the warning is raised at all.
+      check('editingTheRenderedHeadingIsWarnedAbout', () => ({
+        started: engine.store.value.textEditing === rendered,
+        warned: /not in the page’s HTML file/.test(textOf(deep(document, 'heo-toast'))),
       }));
-      check('andTheRefusalExplainsItself', () =>
-        /would be undone/.test(textOf(deep(document, 'heo-toast'))));
+      engine.endTextEdit(false);
+      await frames();
 
       engine.beginTextEdit(q('#authored-copy'));
       await frames();

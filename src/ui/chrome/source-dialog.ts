@@ -231,7 +231,9 @@ export class HeoSourceDialog extends HeoElement {
               <span>${open.error}</span>
             </div>`
         : nothing}
-        ${span ? this.#renderAnchorNote(open.text, span.anchorKind, span.matched) : nothing}
+        ${span
+        ? this.#renderAnchorNote(open.text, span.anchorKind, span.matched, open.searched, open.candidates)
+        : nothing}
         ${span
         ? html`<heo-code-editor
               fill
@@ -302,13 +304,37 @@ export class HeoSourceDialog extends HeoElement {
     text: string,
     kind: 'literal' | 'line' | 'start',
     matched: string | undefined,
+    searched: boolean,
+    candidates: number,
   ): TemplateResult {
     if (kind === 'literal' && matched) {
+      /*
+       * A found string is a candidate, and the note says so when that is all it is.
+       *
+       * The old wording — "so this window is the code that produces what is on the
+       * page" — asserted a conclusion the evidence does not reach. A string can just as
+       * easily be in a second copy of the data, a test fixture, a translation table or a
+       * comment, and a reader given a confident sentence has no reason to check. Naming
+       * the search, and how many files matched, costs one clause and hands the judgement
+       * back to the only person who can make it.
+       */
+      if (searched) {
+        return html`<div class="note guess">
+          <span class="g">${icon('search', 12)}</span>
+          <span>
+            Best guess. <code>${clip(matched)}</code> appears here${candidates > 1
+            ? html`, and in ${candidates - 1} other
+                  ${candidates === 2 ? 'script' : 'scripts'}`
+            : ''}, and nothing pointed at a specific file — so check this is the code that
+            renders it before editing.
+          </span>
+        </div>`;
+      }
       return html`<div class="note">
         <span class="g">${icon('search', 12)}</span>
         <span>
-          Found <code>${clip(matched)}</code> in this file, so this window is the code that
-          produces what is on the page.
+          <code>${clip(matched)}</code> is here in the file this content was traced to, so this
+          window is very likely the code that produces it.
         </span>
       </div>`;
     }
