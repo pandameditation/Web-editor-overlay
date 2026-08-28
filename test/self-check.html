@@ -257,20 +257,24 @@
       const prompt = api.getPrompt();
       check('promptHasNoInstrumentation', () => !prompt.includes('data-heo-'));
       check('promptLength', () => prompt.length > 400);
-      check('promptHasRules', () => prompt.includes('## Rules'));
+      check('promptHasRules', () => prompt.includes('**Rules:**'));
       check('promptHasTokens', () => prompt.includes('--space-2xl'));
-      check('promptHasChecklist', () => prompt.includes('Check before you finish'));
+      check('promptHasChecklist', () => prompt.includes('**Check:**'));
       check('promptMentionsSelector', () => prompt.includes('#para') || prompt.includes('.card'));
       /*
        * Phrasing the models actually read correctly.
        *
-       * A `Before:` line beside an `After:` line was taken as two states to produce
-       * about as often as it was taken as one transition, so the direction is now in
-       * the sentence and the labelled form must not come back.
+       * A `Before:` line beside an `After:` line was taken as two states to produce about
+       * as often as it was taken as one transition. `from X to Y` fixed that and was still
+       * two facts where one would do — and the first of them, the old value, is already
+       * visible in the file being edited. Every step now names only the destination, and
+       * neither earlier form may come back.
        */
-      check('promptStatesChangesAsATransition', () => /from `[^`]*` to `[^`]*`/.test(prompt));
       check('promptHasNoBeforeAfterLabels', () => !/(^|\n)\s*-\s*(Before|After):/.test(prompt));
-      check('promptNumbersItsEdits', () => /### Edit 1 — /.test(prompt));
+      check('promptHasNoFromToPhrasing', () => !/\bfrom `[^`]*` to `/.test(prompt));
+      check('promptHasNoItWasAsides', () => !/It was /.test(prompt));
+      check('promptNumbersItsEdits', () => /^1\. /m.test(prompt.slice(prompt.indexOf('**Edits:**'))));
+      check('promptHasNoHeadings', () => !/^#/m.test(prompt));
       /*
        * Nothing in the prompt is elided.
        *
@@ -309,27 +313,29 @@
       engine.setStyle('opacity', '0.5', dupCopy);
       await frame();
       const grouped = api.getPrompt();
+      const editsBody = grouped.slice(grouped.indexOf('**Edits:**'));
       check('duplicateAndItsFollowUpsAreOneEntry', () => {
-        const entries = grouped.match(/^### Edit \d+ — .*$/gm) ?? [];
-        const body = grouped.slice(grouped.indexOf('## Edits'));
-        const steps = body.match(/^\d+\. /gm) ?? [];
+        // One numbered entry per target; the sub-steps under it are nested bullets.
+        const entries = editsBody.match(/^\d+\. /gm) ?? [];
+        const steps = editsBody.match(/^ {4}- /gm) ?? [];
         return `entries=${entries.length} steps=${steps.length}`;
       });
-      check('theCopyIsNamedAsComingFromTheOriginal', () =>
-        /### Edit 1 — .*created from/.test(grouped));
+      check('theCopyIsNamedAsComingFromTheOriginal', () => /Duplicate `[^`]+`/.test(grouped));
       check('theCopysOperationsAreOrdered', () => {
-        const body = grouped.slice(grouped.indexOf('### Edit 1'));
-        const copy = body.indexOf('Add a second copy');
-        const move = body.indexOf('Move this element');
-        const style = body.indexOf('opacity');
+        const copy = editsBody.indexOf('Duplicate `');
+        const move = editsBody.indexOf('Move to position');
+        const style = editsBody.indexOf('opacity');
         return copy >= 0 && copy < move && move < style;
       });
       check('theMovePositionIsPlainAndInRange', () => {
-        const line = /Move this element to position (\d+) inside `([^`]+)`/.exec(grouped);
+        const line = /Move to position (\d+)(?: in `([^`]+)`)?/.exec(editsBody);
         if (!line) return 'no move line';
-        const parent = document.querySelector(line[2]);
+        // Without a named parent the move stayed inside the one the entry already names.
+        const parent = line[2] ? document.querySelector(line[2]) : dupCopy.parentElement;
         return `${line[1]} of ${parent ? parent.children.length : '?'} children`;
       });
+      check('noStepSaysWhatTheValueUsedToBe', () =>
+        !/\bfrom `/.test(editsBody) && !/It was /.test(editsBody));
 
       /* Unchecking a change takes it out of the hand-off, and nothing else. */
       const firstRecord = engine.records[0];
@@ -338,7 +344,7 @@
         `${engine.handoffRecords.length} of ${engine.records.length}`);
       check('excludingDropsItFromThePrompt', () => {
         const trimmed = api.getPrompt();
-        return !trimmed.includes(firstRecord.summary) && /^# Apply 2 visual edits/m.test(trimmed);
+        return !trimmed.includes(firstRecord.summary) && /^\*\*Apply these 2 edits/m.test(trimmed);
       });
       check('excludingLeavesThePageAlone', () => document.getElementById('wrap').children.length);
       engine.includeAllChanges();

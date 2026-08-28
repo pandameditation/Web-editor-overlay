@@ -293,59 +293,54 @@ of those stop being worth reaching because the count is zero.
 
 ### What the prompt looks like
 
+An edit log, and nothing else:
+
 ````markdown
-# Apply 2 visual edits to the source code
+**Apply these 5 edits to the source of `test-page.html`. No other changes.**
 
-A designer made these edits directly in the rendered page at `http://localhost:5180/pricing`.
-The page was not saved, so this document is the only record of them.
-Apply every edit in the "Edits" section to the source code. Apply nothing else.
+**Rules:**
 
-Summary: 1 style, 1 reusable class.
+- Edit only existing files.
+- Copy values exactly (e.g. `var(--name)` stays as-is).
+- Use the project's existing styling patterns.
+- Change only what the Edits section lists.
+- Selectors describe rendered output; edit the source that produces it.
 
-## Rules
+**Edits:**
 
-1. Edit the existing files that render this page. Do not add a CSS framework, a
-   component library, or a new styling approach.
-2. Copy every value exactly as written. A value written as `var(--name)` must stay
-   `var(--name)`; do not replace it with the colour or size it resolves to.
-…
+1. `header > p:nth-of-type(2)`: Set text to `Press Cmd/Ctrl+E to turn on edit mode.`
+2. `#story-card > p:nth-of-type(2)`: Move to position 3 (0-based, ignoring whitespace).
+3. `#media-card > p:nth-of-type(2)`:
+    - Duplicate `#story-card > p:nth-of-type(2)` (no `id` on the copy). Later steps apply to the copy.
+    - Move to position 1 in `#media-card` (0-based, ignoring whitespace).
+    - Set text to `Here it is my change`.
+4. `.card` in `theme.css`: Set `padding` to `var(--space-xl)`.
 
-## Reusable classes
+**Check:**
 
-Add this class to this project's stylesheet. The edits below say which elements use it.
-
-```css
-.card-featured {
-  padding: var(--space-xl);
-  border-color: var(--accent);
-}
-```
-
-## Edits
-
-### Edit 1 — `article#c2.card`
-
-File: `src/pages/pricing.astro` — line 7, column 5
-
-1. Set `padding` to `var(--space-xl)`.
-2. Add the class `card-featured`, and remove the declarations it now carries from the
-   `style` attribute.
-
-## Check before you finish
-
-- [ ] Every value written as `var(--name)` is still written that way.
+- [ ] All edits applied, no extra changes.
+- [ ] `var(--token)` values untouched.
+- [ ] Moves are in markup, not CSS.
+- [ ] Text is in the project's copy or i18n catalogue.
+- [ ] Build, types and lint pass.
 ````
 
-One element is one entry, however many things happened to it, and each entry says where
-it is: a file, line and column when the page was instrumented, and a CSS selector to
-search for when it was not. Payloads too big for a sentence — markup, whole-file
-contents — go in numbered blocks the steps point at, rather than fenced inside a list
-item where cheaper models mangle them.
+Four decisions shape that, each one a lesson from watching models work from an earlier
+version:
 
-The prompt also carries the tokens the project already defines, any web components that
-were injected, and a completion checklist. `src/core/prompt.ts` documents the three
-format decisions behind it, all of them lessons from watching models fail on earlier
-shapes.
+- **Only the destination.** No step says what a value used to be. `from X to Y` was two
+  facts where one would do, and the old one is already visible in the file being edited.
+- **The selector leads.** An entry is useless until you have found the element, so what to
+  look for comes first. A `(file:line)` follows it when the page was instrumented.
+- **One target, one entry.** However many things happened to an element, they read as
+  ordered sub-steps in one place. Split apart, a model applied a duplicate, lost track,
+  and moved the original.
+- **Payloads go below.** Anything with a line break in it becomes `Code 1` and appears at
+  the end. A fenced block indented inside a numbered list item is the most reliably
+  mangled construct in a Markdown document, and truncating instead is worse.
+
+New tokens, new classes and any injected web components follow the edits as CSS and JS to
+add. `npm run prompt` prints a sample if you want to read the current output.
 
 ---
 
@@ -1180,13 +1175,18 @@ npm run check:plugin   # verify source markers (needs `npm run dev` running)
 
 npm run test:css         # CSS text patching
 npm run test:instrument  # build-time source marking
+npm run test:prompt      # the save prompt's format
 npm run test:endpoint    # the dev-server file endpoint, against a real Vite server
 npm run check:opaque     # a page opened from disk, with real opaque origins
+npm run prompt           # print a sample prompt instead of asserting on it
 ```
 
-The `test:*` suites run outside the browser because none of their subjects needs one.
-Two of them run under Node's `--experimental-strip-types`, which is also what keeps
-"this module has no DOM dependencies" honest rather than aspirational.
+The `test:*` suites run outside the browser because none of their subjects needs one,
+which is also what keeps "this module has no DOM dependencies" honest rather than
+aspirational. The ones with no imports run under Node's `--experimental-strip-types`
+directly; `scripts/run-node-test.mjs` covers the rest, because source files import each
+other as `./thing.js` — the convention TypeScript's resolver expects and Node's does not —
+so they are bundled through esbuild first.
 
 `npm run check:plugin` covers the plugin path against a live dev server: source
 markers on HTML and on Lit templates, the design system inlined at config time, and

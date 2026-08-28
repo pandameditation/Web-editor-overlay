@@ -75,7 +75,7 @@
       const record = api.getChanges()[0];
       return record && record.source ? record.source.file + ':' + record.source.line : null;
     });
-    step('promptGroupsByFile', () => api.getPrompt().includes('## Edits'));
+    step('promptHasAnEditsSection', () => api.getPrompt().includes('**Edits:**'));
     step('promptNamesFile', () => api.getPrompt().includes('probe.html'));
     step('promptKeepsToken', () => api.getPrompt().includes('var(--accent)'));
 

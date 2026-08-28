@@ -1,3 +1,13 @@
 {"timestamp":1787210301637,"command":"kirograph_context","originalTokens":15000,"compressedTokens":556,"strategy":"graph:kirograph_context","sessionId":"0feef6110342427d","source":"graph"}
 {"timestamp":1787667296706,"command":"kirograph_context","originalTokens":15000,"compressedTokens":721,"strategy":"graph:kirograph_context","sessionId":"0feef6110342427d","source":"graph"}
 {"timestamp":1787855393050,"command":"kirograph_context","originalTokens":15000,"compressedTokens":1211,"strategy":"graph:kirograph_context","sessionId":"0feef6110342427d","source":"graph"}
+{"timestamp":1787902849649,"command":"kirograph_context","originalTokens":15000,"compressedTokens":656,"strategy":"graph:kirograph_context","sessionId":"0feef6110342427d","source":"graph"}
+{"timestamp":1787902854304,"command":"kirograph_search","originalTokens":3300,"compressedTokens":177,"strategy":"graph:kirograph_search","sessionId":"0feef6110342427d","source":"graph"}
+{"timestamp":1787902854366,"command":"kirograph_search","originalTokens":3300,"compressedTokens":75,"strategy":"graph:kirograph_search","sessionId":"0feef6110342427d","source":"graph"}
+{"timestamp":1787902854421,"command":"kirograph_search","originalTokens":3300,"compressedTokens":440,"strategy":"graph:kirograph_search","sessionId":"0feef6110342427d","source":"graph"}
+{"timestamp":1787902857110,"command":"kirograph_node","originalTokens":1500,"compressedTokens":1179,"strategy":"graph:kirograph_node","sessionId":"0feef6110342427d","source":"graph"}
+{"timestamp":1787902857190,"command":"kirograph_node","originalTokens":1500,"compressedTokens":404,"strategy":"graph:kirograph_node","sessionId":"0feef6110342427d","source":"graph"}
+{"timestamp":1787902857281,"command":"kirograph_node","originalTokens":1500,"compressedTokens":55,"strategy":"graph:kirograph_node","sessionId":"0feef6110342427d","source":"graph"}
+{"timestamp":1787902863212,"command":"kirograph_search","originalTokens":3300,"compressedTokens":98,"strategy":"graph:kirograph_search","sessionId":"0feef6110342427d","source":"graph"}
+{"timestamp":1787902863286,"command":"kirograph_search","originalTokens":3300,"compressedTokens":12,"strategy":"graph:kirograph_search","sessionId":"0feef6110342427d","source":"graph"}
+{"timestamp":1787902863340,"command":"kirograph_search","originalTokens":3300,"compressedTokens":9,"strategy":"graph:kirograph_search","sessionId":"0feef6110342427d","source":"graph"}

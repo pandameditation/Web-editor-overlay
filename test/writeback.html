@@ -311,11 +311,14 @@
 
       const prompt = engine.buildSavePrompt();
       check('thePromptDoesNotProposeReplacingTheWholeStylesheet', () =>
-        !prompt.includes('Replace the entire contents of `writeback.css`'));
+        !prompt.includes('Replace the file with'));
       check('thePromptNamesTheExactDeclaration', () =>
-        /Change `border-radius` on the `\.card` rule in `writeback\.css` from `12px` to `999px`/.test(prompt));
-      check('thePromptDoesNotAttachTheWholeFile', () =>
-        !prompt.includes('## Full file contents'));
+        /`writeback\.css`: Set `border-radius` to `999px` in the `\.card` rule\./.test(prompt));
+      check('thePromptDoesNotAttachTheWholeFile', () => !prompt.includes('**Code'));
+      // Nothing the prompt reports is ever elided. An ellipsis would leave an agent to
+      // invent the rest of a value, and it is a legal character in copy, so its presence
+      // cannot even be relied on as a marker that something was removed.
+      check('thePromptElidesNothing', () => !prompt.includes('\u2026'));
       const cssPlan = await engine.previewWritePlan();
       check('theWriteCarriesTheWholeFile', () => {
         const write = cssPlan.writes.find((w) => w.path === 'writeback.css');

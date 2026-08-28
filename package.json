@@ -31,10 +31,12 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:css": "node --experimental-strip-types test/css-patch.test.ts",
     "test:instrument": "node --experimental-strip-types test/instrument.test.ts",
+    "test:prompt": "node scripts/run-node-test.mjs test/prompt.test.ts",
+    "prompt": "node scripts/run-node-test.mjs test/prompt.test.ts --print",
     "test:endpoint": "node test/fs-endpoint.test.mjs",
     "check:opaque": "HEO_FILE_ACCESS=strict node scripts/browser-check.mjs test/opaque-origin.html 45000",
     "preview": "vite preview --config vite.demo.config.ts",
-    "check": "npm run build:lib && npm run build:plugin && npm run test:css && npm run test:instrument && npm run test:endpoint && node scripts/browser-check.mjs test/self-check.html 60000 && node scripts/browser-check.mjs test/writeback.html 60000 && node scripts/browser-check.mjs test/script-tag.html 45000 && node scripts/browser-check.mjs test/script-tag-manual.html 45000 && npm run check:opaque",
+    "check": "npm run build:lib && npm run build:plugin && npm run test:css && npm run test:instrument && npm run test:prompt && npm run test:endpoint && node scripts/browser-check.mjs test/self-check.html 60000 && node scripts/browser-check.mjs test/writeback.html 60000 && node scripts/browser-check.mjs test/script-tag.html 45000 && node scripts/browser-check.mjs test/script-tag-manual.html 45000 && npm run check:opaque",
     "check:plugin": "node scripts/browser-check.mjs http://localhost:5180/probe.html 40000"
   },
   "dependencies": {
