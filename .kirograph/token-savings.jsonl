@@ -11,3 +11,5 @@
 {"timestamp":1787902863212,"command":"kirograph_search","originalTokens":3300,"compressedTokens":98,"strategy":"graph:kirograph_search","sessionId":"0feef6110342427d","source":"graph"}
 {"timestamp":1787902863286,"command":"kirograph_search","originalTokens":3300,"compressedTokens":12,"strategy":"graph:kirograph_search","sessionId":"0feef6110342427d","source":"graph"}
 {"timestamp":1787902863340,"command":"kirograph_search","originalTokens":3300,"compressedTokens":9,"strategy":"graph:kirograph_search","sessionId":"0feef6110342427d","source":"graph"}
+{"timestamp":1787906468236,"command":"kirograph_search","originalTokens":3300,"compressedTokens":35,"strategy":"graph:kirograph_search","sessionId":"0feef6110342427d","source":"graph"}
+{"timestamp":1787906468238,"command":"kirograph_context","originalTokens":15000,"compressedTokens":581,"strategy":"graph:kirograph_context","sessionId":"0feef6110342427d","source":"graph"}

@@ -298,6 +298,9 @@ export class EditorEngine {
   #listeners: Array<() => void> = [];
   #observers: Array<MutationObserver | ResizeObserver | IntersectionObserver> = [];
   #geometryFrame = 0;
+  /** The reflow glide currently on screen, and the loop tracking it. */
+  #glides = new Set<Animation>();
+  #glideFrame = 0;
   #toastTimer = 0;
   #toastId = 0;
   #textEditSnapshot: string | null = null;
@@ -441,6 +444,9 @@ export class EditorEngine {
     for (const observer of this.#observers) observer.disconnect();
     this.#observers = [];
     if (this.#geometryFrame) cancelAnimationFrame(this.#geometryFrame);
+    if (this.#glideFrame) cancelAnimationFrame(this.#glideFrame);
+    this.#glideFrame = 0;
+    this.#glides.clear();
     if (this.#toastTimer) clearTimeout(this.#toastTimer);
     this.tokens.destroy();
     this.classes.destroy();
@@ -1748,7 +1754,9 @@ export class EditorEngine {
     // element actually moved.
     const rects = captureRects(neighbourhood(el.parentNode, el.parentNode?.parentNode));
     this.history.commit(command);
-    playFlip(rects);
+    // The selection outline has to ride the glide rather than jump to where the
+    // element will end up, so the chrome is re-measured for its whole duration.
+    this.#followReflow(playFlip(rects));
     this.#bumpGeometry();
   }
 
@@ -2293,7 +2301,7 @@ export class EditorEngine {
       // wait for the pointer to reach somewhere valid.
       return false;
     }
-    playFlip(rects);
+    this.#followReflow(playFlip(rects));
     return true;
   }
 
@@ -3075,6 +3083,42 @@ export class EditorEngine {
       this.#geometryFrame = 0;
       this.store.patch({ geometry: this.store.value.geometry + 1 });
     });
+  }
+
+  /**
+   * Re-measure on every frame of a reflow glide.
+   *
+   * A structural edit is instant in the DOM but takes the length of a FLIP to
+   * land on screen: the moved element is already in its new place, drawn back at
+   * its old one under a transform that unwinds over ~190ms. Every piece of chrome
+   * is positioned from `getBoundingClientRect`, which reports that transformed
+   * box — so one invalidation after the edit measures the *start* of the glide and
+   * pins the outline there. During a drag the pointer hid this, because each
+   * pointer move re-rendered the layer anyway; on ⇧-arrow nothing else was moving,
+   * so the outline stayed behind until an unrelated scroll or mouse twitch
+   * happened to refresh it.
+   *
+   * Following the animations rather than a timer means the loop lasts exactly as
+   * long as the motion, ends on the resting position, and stops dead when the page
+   * is still. A second move mid-glide joins the loop already running instead of
+   * starting a competing one.
+   */
+  #followReflow(animations: Animation[]): void {
+    for (const animation of animations) this.#glides.add(animation);
+    if (!this.#glides.size || this.#glideFrame) return;
+
+    const tick = (): void => {
+      // Animations are advanced before rAF callbacks run, so anything no longer
+      // running has already painted its final frame. Cancelled ones — which is
+      // what chaining moves does to the previous glide — report `idle` and drop
+      // out here too.
+      for (const animation of this.#glides) {
+        if (animation.playState !== 'running') this.#glides.delete(animation);
+      }
+      this.store.patch({ geometry: this.store.value.geometry + 1 });
+      this.#glideFrame = this.#glides.size ? requestAnimationFrame(tick) : 0;
+    };
+    this.#glideFrame = requestAnimationFrame(tick);
   }
 
   #bumpRevision(): void {

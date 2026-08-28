@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Selection chrome tracks the element it is drawn from</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: system-ui, sans-serif;
+    }
+
+    .column {
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+      padding: 32px;
+    }
+
+    .row {
+      display: flex;
+      flex-direction: row;
+      gap: 24px;
+      padding: 32px;
+    }
+
+    .block {
+      height: 90px;
+      padding: 16px;
+      background: #eef;
+      border: 1px solid #99f;
+    }
+
+    .row .block {
+      width: 140px;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="column" id="column">
+    <div class="block" id="a">A</div>
+    <div class="block" id="b">B</div>
+    <div class="block" id="c">C</div>
+    <div class="block" id="d">D</div>
+  </div>
+  <div class="row" id="row">
+    <div class="block" id="r1">R1</div>
+    <div class="block" id="r2">R2</div>
+    <div class="block" id="r3">R3</div>
+  </div>
+
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    /*
+     * The selection chrome has to stay on the element for the whole of a reflow.
+     *
+     * A structural edit lands in the DOM instantly but takes a FLIP glide to land
+     * on screen: the moved element is already in its new place, drawn back at its
+     * old one under a transform that unwinds over ~190ms. Everything the overlay
+     * draws over it is positioned from `getBoundingClientRect`, which reports that
+     * transformed box — so the chrome can only sit on the element if it is
+     * re-measured on every frame of the glide.
+     *
+     * The regression this guards against measured exactly once, a frame after the
+     * edit. The outline then stayed at the *start* of the glide, more than a block
+     * height away from the element, and only caught up when some unrelated event —
+     * a pointer move, a scroll — happened to re-render the layer. Nothing here
+     * touches the pointer, so only real tracking can make it pass.
+     *
+     * Every `peak` below is the worst gap in pixels between what was drawn and
+     * what it claims to outline, sampled once per frame. A frame of slack is fine;
+     * anything approaching the 114px the element travels is the bug.
+     */
+    (async () => {
+      const errors = [];
+      window.addEventListener('error', (e) => errors.push('error: ' + e.message));
+      window.addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+
+      const results = {};
+      const progress = document.getElementById('progress');
+      const step = (name) => { progress.textContent = name; };
+      const frame = () => new Promise((r) => requestAnimationFrame(r));
+      const twoFrames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const settle = () => new Promise((r) => setTimeout(r, 280));
+
+      /** Drift small enough to be a rounding or single-frame difference. */
+      const TOLERANCE = 4;
+
+      const overlayRoot = () => document.querySelector('html-editor-overlay > heo-overlay');
+      const layer = () => overlayRoot().shadowRoot.querySelector('heo-selection-layer');
+      const partBox = (selector) => {
+        const node = layer()?.shadowRoot?.querySelector(selector);
+        return node ? node.getBoundingClientRect() : null;
+      };
+
+      /** How far a drawn part sits from the box it is measured from. */
+      const drift = (el, selector) => {
+        const drawn = partBox(selector);
+        if (!drawn) return Infinity;
+        const real = el.getBoundingClientRect();
+        return Math.max(Math.abs(drawn.top - real.top), Math.abs(drawn.left - real.left));
+      };
+
+      /**
+       * Sample the gap once per frame and report the worst of it.
+       *
+       * The peak is the measurement that matters: a layer that only re-measures
+       * once still ends up in the right place, it just spends the whole glide in
+       * the wrong one, which is exactly what the user sees.
+       */
+      const watch = async (el, selector, frames = 16) => {
+        const samples = [];
+        for (let i = 0; i < frames; i += 1) {
+          await frame();
+          samples.push(Math.round(drift(el, selector)));
+        }
+        return { tracks: Math.max(...samples) <= TOLERANCE, peak: Math.max(...samples), samples };
+      };
+
+      const press = (key, init = {}) => {
+        document.dispatchEvent(
+          new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...init }),
+        );
+      };
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark' });
+      api.setEditing(true);
+      await twoFrames();
+      const engine = api.engine;
+
+      // A glide only happens when motion is allowed; without it the whole file
+      // would pass by measuring instant jumps.
+      results.motionIsOnSoThereIsAGlideToTrack =
+        !matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+      /* ------------------------------------------------------------------ *
+       * ⇧↓ in a column: the outline rides the glide.
+       * ------------------------------------------------------------------ */
+      step('outlineFollowsAVerticalMove');
+      const b = document.getElementById('b');
+      api.select(b);
+      await twoFrames();
+      results.outlineStartsOnTheElement = Math.round(drift(b, '.select')) <= TOLERANCE;
+
+      press('ArrowDown', { shiftKey: true });
+      results.theMoveActuallyHappened =
+        document.getElementById('column').textContent.replace(/\s+/g, '') === 'ACBD';
+      results.outlineFollowsAVerticalMove = await watch(b, '.select');
+      await settle();
+      results.outlineRestsOnTheElement = Math.round(drift(b, '.select')) <= TOLERANCE;
+
+      /* ------------------------------------------------------------------ *
+       * The badge and the drag thumb come off the same box, so they travel
+       * with it. The badge sits 25px above the top edge, or just below the
+       * bottom one when there is no room above; the thumb 4px down from the top.
+       * ------------------------------------------------------------------ */
+      step('badgeAndThumbFollowTheMove');
+      await twoFrames();
+      press('ArrowUp', { shiftKey: true });
+      const badge = [];
+      const thumb = [];
+      for (let i = 0; i < 16; i += 1) {
+        await frame();
+        const real = b.getBoundingClientRect();
+        const badgeBox = partBox('.badge');
+        const thumbBox = partBox('.thumb');
+        if (badgeBox) {
+          badge.push(
+            Math.round(
+              Math.min(
+                Math.abs(badgeBox.top - (real.top - 25)),
+                Math.abs(badgeBox.top - (real.bottom + 4)),
+              ),
+            ),
+          );
+        }
+        if (thumbBox) thumb.push(Math.round(Math.abs(thumbBox.top - (real.top + 4))));
+      }
+      results.badgeFollowsTheMove = {
+        tracks: badge.length > 0 && Math.max(...badge) <= TOLERANCE,
+        peak: badge.length ? Math.max(...badge) : Infinity,
+      };
+      results.thumbFollowsTheMove = {
+        tracks: thumb.length > 0 && Math.max(...thumb) <= TOLERANCE,
+        peak: thumb.length ? Math.max(...thumb) : Infinity,
+      };
+
+      /* ------------------------------------------------------------------ *
+       * Holding the shortcut down: each press cancels the glide in flight and
+       * starts another. The tracking has to carry across the seam rather than
+       * stack up a second loop or stop at the first animation that ends.
+       * ------------------------------------------------------------------ */
+      step('outlineFollowsChainedMoves');
+      await settle();
+      const chained = [];
+      for (let i = 0; i < 18; i += 1) {
+        // Two frames of glide between presses, so every press interrupts one.
+        if (i % 3 === 0) press('ArrowDown', { shiftKey: true });
+        await frame();
+        chained.push(Math.round(drift(b, '.select')));
+      }
+      results.outlineFollowsChainedMoves = {
+        tracks: Math.max(...chained) <= TOLERANCE,
+        peak: Math.max(...chained),
+        samples: chained,
+      };
+
+      /* ------------------------------------------------------------------ *
+       * Horizontal flow, where the drift is on the other axis.
+       * ------------------------------------------------------------------ */
+      step('outlineFollowsAHorizontalMove');
+      await settle();
+      const r1 = document.getElementById('r1');
+      api.select(r1);
+      await twoFrames();
+      press('ArrowDown', { shiftKey: true });
+      results.outlineFollowsAHorizontalMove = await watch(r1, '.select');
+
+      /* ------------------------------------------------------------------ *
+       * Undo reflows the page as well, so the outline has to follow that too.
+       * ------------------------------------------------------------------ */
+      step('outlineFollowsUndo');
+      await settle();
+      press('z', { metaKey: true });
+      results.outlineFollowsUndo = await watch(r1, '.select');
+
+      /* ------------------------------------------------------------------ *
+       * And the loop has to stop once the page is still. A tracker that keeps
+       * ticking would re-render the whole overlay forever on an idle page.
+       * ------------------------------------------------------------------ */
+      step('trackingStopsWhenThePageIsStill');
+      await new Promise((r) => setTimeout(r, 400));
+      const before = engine.store.value.geometry;
+      await new Promise((r) => setTimeout(r, 400));
+      results.trackingStopsWhenThePageIsStill = engine.store.value.geometry - before === 0;
+
+      results.__errors = errors;
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })();
+  </script>
+</body>
+
+</html>

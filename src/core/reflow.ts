@@ -63,13 +63,22 @@ export function captureRects(elements: Iterable<HTMLElement>): Map<HTMLElement, 
   return rects;
 }
 
-/** Animate each element from its captured position to its current one. */
+/**
+ * Animate each element from its captured position to its current one.
+ *
+ * Returns the animations it started, because a glide is the one case where the
+ * DOM and the screen disagree for a while. Anything drawn *over* these elements
+ * is positioned from `getBoundingClientRect`, which reports the transformed box —
+ * so a caller that places chrome has to keep re-measuring until these are done,
+ * and these are what tell it when that is.
+ */
 export function playFlip(
   before: Map<HTMLElement, DOMRect>,
   options: { duration?: number } = {},
-): void {
-  if (!before.size || reducedMotion()) return;
+): Animation[] {
+  if (!before.size || reducedMotion()) return [];
   const duration = options.duration ?? DRAG_TIMING.flip;
+  const started: Animation[] = [];
 
   for (const [el, first] of before) {
     if (!el.isConnected) continue;
@@ -83,11 +92,15 @@ export function playFlip(
     const dy = first.top - last.top;
     if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) continue;
 
-    el.animate(
-      [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'translate(0px, 0px)' }],
-      { duration, easing: EASE, composite: 'add', id: FLIP_ID },
+    started.push(
+      el.animate(
+        [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'translate(0px, 0px)' }],
+        { duration, easing: EASE, composite: 'add', id: FLIP_ID },
+      ),
     );
   }
+
+  return started;
 }
 
 /**
