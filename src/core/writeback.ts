@@ -54,6 +54,15 @@ export interface PlannedWrite {
   records: ChangeRecord[];
   /** Edits that could not be placed in this file. The write still happens without them. */
   unplaced: PatchFailure[];
+  /**
+   * Things about this write worth knowing before agreeing to it.
+   *
+   * Distinct from `unplaced`, which is about edits that did not land. This is about the
+   * write itself doing more than the change list implies — most of all the document
+   * write, which is a serialization of the live page and therefore carries whatever the
+   * page's own code built, alongside the edits that were actually asked for.
+   */
+  warnings?: string[];
 }
 
 /** A change that cannot be written, and why. */
@@ -104,6 +113,18 @@ export interface WriteSubject {
    * So it is a choice with a sensible default rather than a rule.
    */
   designSystemTarget: string;
+  /**
+   * How many elements in `html` the page's own code built rather than the file declaring.
+   *
+   * `html` is the live page serialized, so for a page that renders part of itself the
+   * document write carries that rendered markup into the source — a list built from data
+   * arrives as a list of hand-written elements, and the script then overwrites it at
+   * runtime anyway. Counted here rather than worked out in the plan because only the
+   * engine can ask, and reported rather than silently removed: taking it out means
+   * reconstructing the file instead of serializing the page, which is a different and
+   * much larger change than saying what is about to happen.
+   */
+  generatedElements?: number;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -356,7 +377,25 @@ export async function buildWritePlan(
 
   // Last, so the reason can mention what is *not* in it, and so a page with no
   // document-level change at all does not get rewritten for nothing.
-  const documentRecords = records.filter((record) => isDocumentChange(record));
+  /*
+   * An edit to rendered content is reported, not written.
+   *
+   * The element it changes is not in the HTML file — the page builds it — so the document
+   * write cannot carry the edit, and the next render would replace it even if it could.
+   * Counting it as a change to the file would make the plan promise something it has no
+   * way to deliver, so it goes in the list of changes with nowhere to go, where the
+   * reason is stated and the prompt still carries it.
+   */
+  const documentRecords: ChangeRecord[] = [];
+  for (const record of records) {
+    if (!isDocumentChange(record)) continue;
+    const rendered = record.detail?.rendered;
+    if (rendered) {
+      unwritable.push({ record, reason: rendered });
+      continue;
+    }
+    documentRecords.push(record);
+  }
   if (documentRecords.length) {
     if (!documentPath) {
       for (const record of documentRecords) {
@@ -368,6 +407,20 @@ export async function buildWritePlan(
     } else {
       const before = await host.read(documentPath);
       if (before !== subject.html) {
+        const warnings: string[] = [];
+        const generated = subject.generatedElements ?? 0;
+        if (generated) {
+          warnings.push(
+            `This is the page as it stands, so ${generated} element${generated === 1 ? '' : 's'} ` +
+            `built by the page's own code ${generated === 1 ? 'is' : 'are'} written into the ` +
+            `markup as well. The code will rebuild ${generated === 1 ? 'it' : 'them'} on the ` +
+            `next load either way. Untick the changes below to leave this file alone.`,
+          );
+        }
+        warnings.push(
+          'The whole file is rewritten from the page, so quoting, self-closing tags and ' +
+          'letter case are normalised even on lines that did not change.',
+        );
         writes.push({
           path: documentPath,
           kind: 'document',
@@ -376,6 +429,7 @@ export async function buildWritePlan(
           after: subject.html,
           records: documentRecords,
           unplaced: [],
+          warnings,
         });
       }
     }

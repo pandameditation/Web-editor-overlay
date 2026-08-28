@@ -222,6 +222,21 @@ export class HeoSaveDialog extends HeoElement {
         color: var(--heo-text-faint);
         font-size: 10.5px;
       }
+      /* Distinct from the reason line above, which says what the write is for. This says
+         what else it does, so it reads as a caution rather than as more description. */
+      .write .caveat {
+        display: flex;
+        align-items: flex-start;
+        gap: 5px;
+        margin-top: 5px;
+        color: var(--heo-text-dim);
+        font-size: 10.5px;
+        line-height: 1.45;
+      }
+      .write .caveat svg {
+        margin-top: 1px;
+        color: var(--heo-warn);
+      }
       .write .size {
         flex: 0 0 auto;
         margin-top: 1px;
@@ -638,6 +653,18 @@ export class HeoSaveDialog extends HeoElement {
           <span class="detail">
             <span class="path">${write.path}</span>
             <span class="why">${write.reason}</span>
+            <!--
+              What the write does beyond what the change list says.
+              The byte delta was the only clue that the document write carries more than
+              the edits asked for, and a number is not an explanation — someone seeing
+              "+313 B" on a three-word change has no way to find out why.
+            -->
+            ${(write.warnings ?? []).map(
+        (warning) => html`<span class="caveat">
+                  ${icon('alert', 11)}
+                  <span>${warning}</span>
+                </span>`,
+      )}
           </span>
           <span class="size">${sizeChange(write.before, write.after)}</span>
         </div>`,

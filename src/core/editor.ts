@@ -2478,10 +2478,31 @@ export class EditorEngine {
       return;
     }
     if (after === before) return;
+    /*
+     * Stamped before the element is claimed, because claiming it hides the answer.
+     *
+     * An edit to content the page renders has nowhere to go in the HTML: the element it
+     * changes is not in that file, so writing the document cannot carry it and the next
+     * render replaces it regardless. Recording *that* on the change is what lets the save
+     * plan list it as unable to reach a file — which is honest — instead of quietly
+     * folding it into the markup, which is how it used to be lost.
+     *
+     * Now that these edits are allowed rather than refused, this is the thing that keeps
+     * the plan and the page from disagreeing about what a save will do.
+     */
+    const command = setInnerHTML(el, before, after);
+    const rendered = this.provenanceOf(el);
+    if (rendered) {
+      command.record.detail = {
+        ...command.record.detail,
+        rendered: describeProvenance(rendered),
+      };
+    }
+
     // The user has taken this element over. Said once, here, so no later signal can
     // decide the page generates content the user has just written by hand.
     markUserOwned(el);
-    this.history.commit(setInnerHTML(el, before, after), { alreadyApplied: true });
+    this.history.commit(command, { alreadyApplied: true });
     // And now find out whether that was true. Every other signal predicts what will
     // happen to this edit; this one waits for it.
     this.#watchEdit(el, el.textContent ?? '');
@@ -3165,7 +3186,33 @@ export class EditorEngine {
       // into a copy of the theme.
       designSystemCSS: [this.tokens.toCSS(), this.classes.toCSS()].filter(Boolean).join('\n\n'),
       designSystemTarget: target,
+      generatedElements: this.#countGeneratedElements(),
     };
+  }
+
+  /**
+   * How many elements on the page its own code built rather than the file declaring.
+   *
+   * Counted from the top of each generated region rather than per element: one write of
+   * `innerHTML` produces a card, a heading and three spans, and reporting five would
+   * describe the DOM rather than the thing about to be written into the markup. Only
+   * regions the file comparison found — that signal comes from the file itself, which is
+   * exactly the question being asked here, and it is the only one that does not depend on
+   * having been watching when the render happened.
+   */
+  #countGeneratedElements(): number {
+    if (this.options.detectScriptContent === false) return 0;
+    let count = 0;
+    for (const el of Array.from(document.body?.querySelectorAll('*') ?? [])) {
+      if (!(el instanceof HTMLElement)) continue;
+      const provenance = provenanceOf(el);
+      if (provenance?.kind !== 'file' || !provenance.subtree) continue;
+      // The outermost element of each region: a parent already counted covers this one.
+      const parent = el.parentElement;
+      if (parent && provenanceOf(parent)?.kind === 'file') continue;
+      count += 1;
+    }
+    return count;
   }
 
   /**

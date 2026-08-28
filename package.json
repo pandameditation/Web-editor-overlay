@@ -38,12 +38,13 @@
     "check:access": "HEO_FILE_ACCESS=strict node scripts/browser-check.mjs test/file-access.html 45000",
     "check:mirror": "HEO_FILE_ACCESS=strict node scripts/browser-check.mjs test/mirror.html 45000",
     "preview": "vite preview --config vite.demo.config.ts",
-    "check": "npm run build:lib && npm run build:plugin && npm run test:css && npm run test:instrument && npm run test:prompt && npm run test:endpoint && node scripts/browser-check.mjs test/self-check.html 60000 && node scripts/browser-check.mjs test/writeback.html 60000 && node scripts/browser-check.mjs test/chrome-tracking.html 45000 && node scripts/browser-check.mjs test/script-tag.html 45000 && node scripts/browser-check.mjs test/script-tag-manual.html 45000 && npm run check:opaque && npm run check:access && npm run check:mirror && npm run check:provenance && npm run check:late && npm run check:advisory && npm run check:export",
+    "check": "npm run build:lib && npm run build:plugin && npm run test:css && npm run test:instrument && npm run test:prompt && npm run test:endpoint && node scripts/browser-check.mjs test/self-check.html 60000 && node scripts/browser-check.mjs test/writeback.html 60000 && node scripts/browser-check.mjs test/chrome-tracking.html 45000 && node scripts/browser-check.mjs test/script-tag.html 45000 && node scripts/browser-check.mjs test/script-tag-manual.html 45000 && npm run check:opaque && npm run check:access && npm run check:mirror && npm run check:provenance && npm run check:late && npm run check:advisory && npm run check:export && npm run check:plan",
     "check:plugin": "node scripts/browser-check.mjs http://localhost:5180/probe.html 40000",
     "check:provenance": "node scripts/browser-check.mjs test/provenance.html 45000",
     "check:late": "node scripts/browser-check.mjs test/late-mount.html 45000",
     "check:advisory": "node scripts/browser-check.mjs test/advisory.html 45000",
-    "check:export": "node scripts/browser-check.mjs test/export.html 45000"
+    "check:export": "node scripts/browser-check.mjs test/export.html 45000",
+    "check:plan": "node scripts/browser-check.mjs test/plan-honesty.html 45000"
   },
   "dependencies": {
     "lit": "3.3.3"

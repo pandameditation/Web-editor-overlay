@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Editor overlay — the plan says what the save will actually do</title>
+  <!--
+    The document write is the live page serialized, which is not the same thing as the
+    file plus the user's edits. Two consequences, both reported here rather than hidden.
+
+    An edit to content the page renders has nowhere to go in the HTML — the element is not
+    in that file — so it is listed as unable to reach a file instead of being counted as a
+    change to it. And the document write carries the page's generated markup along with the
+    edits that were asked for, so it says so, with a count and a way out.
+
+        npm run build:lib && npm run check:plan
+  -->
+  <style>
+    body { margin: 0; padding: 24px; font-family: system-ui, sans-serif; }
+  </style>
+</head>
+
+<body>
+  <h1 id="authored">Written in the HTML</h1>
+  <p id="copy">Authored copy, and the editor's to change.</p>
+  <section id="all-stories"></section>
+
+  <script src="./stories.js"></script>
+
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+
+  <script>
+    (async () => {
+      const errors = [];
+      window.addEventListener('error', (e) => errors.push('error: ' + e.message));
+      window.addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+
+      const results = {};
+      const progress = document.getElementById('progress');
+      const check = (name, fn) => {
+        progress.textContent = name;
+        try { results[name] = fn(); }
+        catch (err) { results[name] = 'THREW: ' + (err && err.message ? err.message : String(err)); }
+      };
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const q = (selector) => document.querySelector(selector);
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark' });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+
+      // A folder, so there is a plan to build at all.
+      const directory = decodeURIComponent(location.pathname).replace(/[^/]*$/, '');
+      const disk = new Map();
+      const project = {
+        kind: 'directory',
+        label: 'memory',
+        resolve(url) {
+          const path = decodeURIComponent(new URL(url, location.href).pathname);
+          return path.startsWith(directory) ? path.slice(directory.length) : null;
+        },
+        read: async (path) => {
+          if (disk.has(path)) return disk.get(path);
+          try {
+            const text = await (await fetch('./' + path)).text();
+            disk.set(path, text);
+            return text;
+          } catch { return null; }
+        },
+        write: async (path, text) => { disk.set(path, text); },
+        ensureWritable: async () => true,
+        release: async () => { },
+      };
+      await engine.attachProject(project, { quiet: true });
+      await frames();
+
+      /* ------------------------------------------------------------------ *
+       * Two edits: one on authored copy, one on content the page renders.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'twoEdits';
+      const authored = q('#copy');
+      engine.beginTextEdit(authored);
+      await frames();
+      authored.firstChild.data = 'Edited authored copy';
+      engine.endTextEdit(true);
+      await frames();
+
+      const rendered = q('#leading .story-title');
+      engine.dismissToast();
+      engine.beginTextEdit(rendered);
+      await frames();
+      rendered.firstChild.data = 'Edited rendered text';
+      engine.endTextEdit(true);
+      await frames();
+
+      check('bothEditsWereRecorded', () => engine.records.length);
+      check('theRenderedOneCarriesItsReason', () => {
+        const record = engine.records.find((r) => r.detail?.rendered);
+        return record ? { has: true, reason: String(record.detail.rendered).slice(0, 60) } : { has: false };
+      });
+
+      /* ------------------------------------------------------------------ *
+       * The plan separates what can reach a file from what cannot.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'thePlan';
+      const plan = await engine.previewWritePlan();
+      const doc = (plan?.writes ?? []).find((w) => w.kind === 'document');
+
+      check('theDocumentWriteCountsOnlyTheEditsItCanCarry', () => ({
+        reason: doc?.reason ?? null,
+        records: (doc?.records ?? []).length,
+      }));
+      check('theRenderedEditIsListedAsUnableToReachAFile', () =>
+        (plan?.unwritable ?? []).map((entry) => ({
+          summary: entry.record.summary.slice(0, 40),
+          reason: entry.reason.slice(0, 50),
+        })));
+
+      /* ------------------------------------------------------------------ *
+       * And the write says what else it brings in.
+       * ------------------------------------------------------------------ */
+      check('theDocumentWriteWarnsAboutGeneratedMarkup', () => {
+        const warnings = doc?.warnings ?? [];
+        return {
+          count: warnings.length,
+          namesTheGeneratedMarkup: warnings.some((w) => /built by the page's own code/.test(w)),
+          countsThem: warnings.some((w) => /\b2 elements\b/.test(w)),
+          offersAWayOut: warnings.some((w) => /Untick the changes below/.test(w)),
+          warnsAboutReformatting: warnings.some((w) => /normalised even on lines that did not change/.test(w)),
+        };
+      });
+      /*
+       * Which is true: the generated cards really are in the bytes about to be written.
+       * Parsed rather than pattern-matched — this fixture's own script mentions the class,
+       * so a regex over the text counts the test as well as the export.
+       */
+      check('andThatWarningIsAccurate', () => {
+        const written = new DOMParser().parseFromString(doc?.after ?? '', 'text/html');
+        return {
+          generatedCardsInTheBytes: written.querySelectorAll('#all-stories .story').length,
+          matchesTheWarning: written.querySelectorAll('#all-stories .story').length === 2,
+        };
+      });
+
+      /* ------------------------------------------------------------------ *
+       * The way out works: untick the document changes and the file is left
+       * alone, while the rest of the plan carries on.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'theWayOut';
+      for (const record of engine.records) engine.setChangeIncluded(record.id, false);
+      const trimmed = await engine.previewWritePlan();
+      check('untickingEverythingLeavesTheHtmlAlone', () =>
+        (trimmed?.writes ?? []).filter((w) => w.kind === 'document').length);
+
+      engine.includeAllChanges();
+      const restored = await engine.previewWritePlan();
+      check('andIncludingThemAgainBringsItBack', () =>
+        (restored?.writes ?? []).filter((w) => w.kind === 'document').length);
+
+      /* ------------------------------------------------------------------ *
+       * The prompt still carries the edit that could not be filed, so it is
+       * reported rather than dropped.
+       * ------------------------------------------------------------------ */
+      check('thePromptStillCarriesTheRenderedEdit', () =>
+        /Edited rendered text/.test(engine.buildSavePrompt()));
+
+      results.__errors = errors;
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"__errors":["' + String(e && e.message) + '"]}:END';
+    });
+  </script>
+</body>
+
+</html>
