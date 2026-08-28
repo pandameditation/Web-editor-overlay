@@ -7,7 +7,15 @@ import {
   type ClassCollision,
   type ClassMergePlan,
 } from './classes.js';
-import { DRAGGING_ATTR, DRAG_TIMING, EDIT_DISCARDED_EVENT, HOST_TAG, IGNORE_ATTR, VERSION } from './constants.js';
+import {
+  DRAGGING_ATTR,
+  DRAG_TIMING,
+  EDIT_DISCARDED_EVENT,
+  HOST_TAG,
+  IGNORE_ATTR,
+  INSERTED_ATTR,
+  VERSION,
+} from './constants.js';
 import { inlineDeclarations } from './css.js';
 import { planDrag, samePlacement, type DropPlacement } from './drop-target.js';
 import { captureRects, neighbourhood, playFlip, settleDrop } from './reflow.js';
@@ -3186,7 +3194,7 @@ export class EditorEngine {
       // into a copy of the theme.
       designSystemCSS: [this.tokens.toCSS(), this.classes.toCSS()].filter(Boolean).join('\n\n'),
       designSystemTarget: target,
-      generatedElements: this.#countGeneratedElements(),
+      generatedElements: this.#generatedRegions().length,
     };
   }
 
@@ -3200,19 +3208,28 @@ export class EditorEngine {
    * exactly the question being asked here, and it is the only one that does not depend on
    * having been watching when the render happened.
    */
-  #countGeneratedElements(): number {
-    if (this.options.detectScriptContent === false) return 0;
-    let count = 0;
+  #generatedRegions(): HTMLElement[] {
+    if (this.options.detectScriptContent === false) return [];
+    const out: HTMLElement[] = [];
     for (const el of Array.from(document.body?.querySelectorAll('*') ?? [])) {
       if (!(el instanceof HTMLElement)) continue;
       const provenance = provenanceOf(el);
       if (provenance?.kind !== 'file' || !provenance.subtree) continue;
-      // The outermost element of each region: a parent already counted covers this one.
+      // The outermost element of each region: a parent already listed covers this one.
       const parent = el.parentElement;
       if (parent && provenanceOf(parent)?.kind === 'file') continue;
-      count += 1;
+      /*
+       * Unless the user has put something inside it.
+       *
+       * Dropping the region would take their element with it, and an edit vanishing from the
+       * file is a far worse outcome than some generated markup arriving in it. So the region
+       * stays whole and the plan's warning covers it. A rare trade: it needs someone to have
+       * inserted into a list the page renders.
+       */
+      if (el.querySelector(`[${INSERTED_ATTR}]`)) continue;
+      out.push(el);
     }
-    return count;
+    return out;
   }
 
   /**
@@ -3356,7 +3373,7 @@ export class EditorEngine {
    * correctly and the second one put the stale value back.
    */
   exportHTML(): string {
-    return exportHTML(inlineStyleEdits(this.history.appliedRecords));
+    return exportHTML(inlineStyleEdits(this.history.appliedRecords), this.#generatedRegions());
   }
 
   async save(): Promise<boolean> {

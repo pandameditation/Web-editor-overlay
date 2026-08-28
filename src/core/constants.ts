@@ -34,6 +34,16 @@ export const MIRROR_ATTR = 'data-heo-mirror';
 export const INJECTED_ATTR = 'data-heo-injected';
 
 /**
+ * Marks a region the page's own code built, for the length of one export.
+ *
+ * Set just before the document is cloned and removed immediately after, so it rides along
+ * with `cloneNode` and can be stripped from the copy. It never survives a tick of the live
+ * page and never reaches a file — pairing the two trees up by position afterwards was the
+ * alternative, and that is index arithmetic waiting to meet an implied `<tbody>`.
+ */
+export const RENDERED_ATTR = 'data-heo-rendered';
+
+/**
  * Marks a control holding an edit the user has not committed.
  *
  * Read as a plain attribute so the keymap can tell that a keystroke belongs to the

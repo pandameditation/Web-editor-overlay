@@ -4,8 +4,10 @@ import {
   INSERTED_ATTR,
   MIRROR_ATTR,
   MODAL_ATTR,
+  RENDERED_ATTR,
   SOURCE_ATTR,
 } from './constants.js';
+import { withoutProvenance } from './provenance.js';
 import type { ClassRegistry } from './classes.js';
 import { patchCSS, type DeclarationPatch } from './css-patch.js';
 import type { BlockLibrary } from './library.js';
@@ -169,8 +171,43 @@ export interface InlineStyleReconciliation {
   patches: DeclarationPatch[];
 }
 
-export function exportHTML(styleEdits: readonly InlineStyleReconciliation[] = []): string {
+export function exportHTML(
+  styleEdits: readonly InlineStyleReconciliation[] = [],
+  generated: readonly HTMLElement[] = [],
+): string {
+  /*
+   * Content the page built is marked before the clone is taken, and unmarked after.
+   *
+   * The alternative is pairing two trees up after the fact, which is exactly the kind of
+   * index arithmetic that goes wrong the first time a browser inserts an implied `<tbody>`.
+   * An attribute travels with `cloneNode` for free, and the live page carries it for less
+   * than one synchronous block — no render, no observer notification, nothing else can see
+   * it. Attribution is suspended anyway, because an attribute written onto the page is
+   * precisely the kind of thing this editor otherwise pays attention to.
+   */
+  const marked: HTMLElement[] = [];
+  withoutProvenance(() => {
+    for (const el of generated) {
+      if (!el.isConnected) continue;
+      el.setAttribute(RENDERED_ATTR, '');
+      marked.push(el);
+    }
+  });
   const clone = document.documentElement.cloneNode(true) as HTMLElement;
+  withoutProvenance(() => {
+    for (const el of marked) el.removeAttribute(RENDERED_ATTR);
+  });
+
+  /*
+   * And out it comes.
+   *
+   * This is the whole reason the export can be trusted as a file: what is on screen is the
+   * page's own code having run, and writing that back turns a container the file declares
+   * empty into a list of hand-written elements — which the code then overwrites on the next
+   * load, having grown the file by however much it renders. Only the outermost element of
+   * each region is passed in, so removing it takes the region with it.
+   */
+  for (const el of Array.from(clone.querySelectorAll(`[${RENDERED_ATTR}]`))) el.remove();
 
   reconcileInlineStyles(clone, styleEdits);
 

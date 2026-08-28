@@ -176,6 +176,46 @@
         return doc2.querySelectorAll('p.lead').length;
       });
 
+      /*
+       * And the serialized path is clean too, which is the point of pruning at the source
+       * rather than only in the patcher: a structural edit has to be allowed to fall back to
+       * serialization, and serialization must not write the page's rendered markup into the
+       * file whichever way it was reached.
+       */
+      progress.textContent = 'fallbackIsClean';
+      engine.move('down', byId('title'));
+      engine.insertMarkup('<p id="added">Added by the user</p>', {
+        reference: byId('copy'),
+        position: 'after',
+      });
+      await frames();
+      const movedPlan = await engine.previewWritePlan();
+      const movedDoc = (movedPlan?.writes ?? []).find((w) => w.kind === 'document');
+      check('movingAndAddingStillFallsBack', () =>
+        !/patched in place/.test(movedDoc?.reason ?? ''));
+      check('butTheGeneratedListIsStillLeftOut', () => {
+        const doc3 = new DOMParser().parseFromString(movedDoc?.after ?? '', 'text/html');
+        return {
+          inTheLivePage: document.querySelectorAll('#all-stories .story').length,
+          inTheWrite: doc3.querySelectorAll('#all-stories .story').length,
+          containerStillDeclaredEmpty:
+            (doc3.getElementById('all-stories')?.innerHTML ?? 'x').trim() === '',
+        };
+      });
+      check('andTheUsersOwnAdditionsAndMovesAreThere', () => {
+        const doc3 = new DOMParser().parseFromString(movedDoc?.after ?? '', 'text/html');
+        const order = Array.from(doc3.body.querySelectorAll('h1, p[id]')).map((el) => el.id);
+        return { added: Boolean(doc3.getElementById('added')), order };
+      });
+      /*
+       * The size test the user actually cares about: a save must not grow the file by the
+       * amount the page renders. Compared against the source, which had the container empty.
+       */
+      check('theFileDoesNotBalloon', () => {
+        const grew = (movedDoc?.after ?? '').length - source.length;
+        return { grewBy: grew, underOneKilobyte: Math.abs(grew) < 1024 };
+      });
+
       results.__errors = errors;
       document.getElementById('out').textContent =
         'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
