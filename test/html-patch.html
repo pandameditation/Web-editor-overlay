@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+  <meta charset="utf-8">
+  <TITLE>Patching the file instead of replacing it</TITLE>
+  <style>
+    body { margin: 0; padding: 24px; font-family: system-ui, sans-serif; }
+  </style>
+</head>
+<body>
+  <!-- Deliberately written the way a person writes HTML: single quotes, an unquoted
+       attribute, uppercase tags, a self-closed void element, entities. Serializing the DOM
+       normalises every one of them, so if any of this survives a save, the file was
+       patched rather than rewritten. -->
+  <h1 id="title">Original heading</h1>
+  <p id="copy" class=lead data-note='kept'>Original copy with &apos;entities&apos; in it.</p>
+  <br />
+  <img id="pic" src="a.png" alt="Self closed" />
+  <section id="all-stories"></section>
+  <ul id="list">
+    <li class="static">Authored item</li>
+  </ul>
+
+  <script src="./stories.js"></script>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const errors = [];
+      window.addEventListener('error', (e) => errors.push('error: ' + e.message));
+      window.addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+
+      const results = {};
+      const progress = document.getElementById('progress');
+      const check = (name, fn) => {
+        progress.textContent = name;
+        try { results[name] = fn(); }
+        catch (err) { results[name] = 'THREW: ' + (err && err.message ? err.message : String(err)); }
+      };
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const byId = (id) => document.getElementById(id);
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark' });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+
+      const page = decodeURIComponent(location.pathname).split('/').pop();
+      const directory = decodeURIComponent(location.pathname).replace(/[^/]*$/, '');
+      const disk = new Map();
+      const project = {
+        kind: 'directory',
+        label: 'memory',
+        resolve(url) {
+          const path = decodeURIComponent(new URL(url, location.href).pathname);
+          return path.startsWith(directory) ? path.slice(directory.length) : null;
+        },
+        read: async (path) => {
+          if (disk.has(path)) return disk.get(path);
+          try {
+            const text = await (await fetch('./' + path)).text();
+            disk.set(path, text);
+            return text;
+          } catch { return null; }
+        },
+        write: async (path, text) => { disk.set(path, text); },
+        ensureWritable: async () => true,
+        release: async () => { },
+      };
+      await engine.attachProject(project, { quiet: true });
+      await frames();
+      const source = await project.read(page);
+
+      /* ------------------------------------------------------------------ *
+       * Three patchable edits: text, style and an attribute.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'edits';
+      const heading = byId('title');
+      engine.beginTextEdit(heading);
+      await frames();
+      heading.firstChild.data = 'Patched heading';
+      engine.endTextEdit(true);
+      await frames();
+
+      api.select(byId('copy'));
+      engine.setStyle('padding', '12px');
+      engine.setStyle('color', 'rebeccapurple');
+      await frames();
+      engine.setAttribute('alt', 'Patched alt', byId('pic'));
+      await frames();
+
+      const plan = await engine.previewWritePlan();
+      const doc = (plan?.writes ?? []).find((w) => w.kind === 'document');
+      results.thePlanWritesTheDocument = Boolean(doc);
+      check('andSaysItPatchedRatherThanRewrote', () => doc?.reason ?? null);
+
+      const after = doc?.after ?? '';
+
+      /* ------------------------------------------------------------------ *
+       * The edits landed.
+       * ------------------------------------------------------------------ */
+      check('theTextEditLanded', () => /<h1 id="title">Patched heading<\/h1>/.test(after));
+      check('theStyleEditLanded', () => {
+        const match = /<p id="copy"[^>]*style="([^"]*)"/.exec(after);
+        return match ? match[1] : null;
+      });
+      check('theAttributeEditLanded', () => /<img id="pic"[^>]*alt="Patched alt"/.test(after));
+      // Two style edits to one element collapse into one attribute, not two.
+      check('bothStyleEditsAreInOneAttribute', () =>
+        (after.match(/<p id="copy"[^>]*style=/g) || []).length);
+
+      /* ------------------------------------------------------------------ *
+       * And nothing else did. Every one of these would be normalised away by
+       * serializing the DOM, so their survival is the whole point.
+       * ------------------------------------------------------------------ */
+      const kept = (name, re) => { results[name] = { inSource: re.test(source), inWrite: re.test(after) }; };
+      kept('theAuthorsSingleQuotedHtmlLang', /<html lang='en'>/);
+      kept('theAuthorsUnquotedClass', /class=lead/);
+      kept('theAuthorsSingleQuotedDataAttribute', /data-note='kept'/);
+      kept('theAuthorsUppercaseTitleTag', /<TITLE>/);
+      kept('theAuthorsSelfClosedBr', /<br \/>/);
+      kept('theAuthorsEntities', /&apos;entities&apos;/);
+      kept('theAuthorsComment', /Deliberately written the way a person writes HTML/);
+
+      /*
+       * The two bugs this was really for.
+       *
+       * The rendered list must not be written into the markup, and the container the file
+       * declares must come back exactly as the file declares it — empty.
+       */
+      // Parsed, not pattern-matched: this fixture's own script mentions the class, so a
+      // regex over the text would count the test alongside the file.
+      const written = () => new DOMParser().parseFromString(after, 'text/html');
+      check('theGeneratedListIsNotWrittenIn', () => ({
+        inTheLivePage: document.querySelectorAll('#all-stories .story').length,
+        inTheWrite: written().querySelectorAll('#all-stories .story').length,
+        containerUntouched: /<section id="all-stories"><\/section>/.test(after),
+      }));
+
+      /* ------------------------------------------------------------------ *
+       * The diff is the size of the change, not the size of the file.
+       * ------------------------------------------------------------------ */
+      check('theDiffIsSmall', () => {
+        const a = source.split('\n');
+        const b = after.split('\n');
+        let changed = 0;
+        for (let i = 0; i < Math.max(a.length, b.length); i += 1) if (a[i] !== b[i]) changed += 1;
+        return { changedLines: changed, totalLines: a.length, sameLineCount: a.length === b.length };
+      });
+
+      /* ------------------------------------------------------------------ *
+       * A structural change cannot be placed, so the file is serialized as
+       * before — nothing that used to reach the file stops reaching it.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'fallback';
+      engine.duplicate(byId('copy'));
+      await frames();
+      const fallbackPlan = await engine.previewWritePlan();
+      const fallbackDoc = (fallbackPlan?.writes ?? []).find((w) => w.kind === 'document');
+      check('aStructuralChangeFallsBackToRewriting', () => ({
+        reason: fallbackDoc?.reason ?? null,
+        patched: /patched in place/.test(fallbackDoc?.reason ?? ''),
+      }));
+      check('andSaysWhyTheWholeFileIsBeingRewritten', () => {
+        const warnings = fallbackDoc?.warnings ?? [];
+        return {
+          namesTheBlocker: warnings.some((w) => /could not be located in it/.test(w)),
+          stillWarnsAboutGeneratedMarkup: warnings.some((w) => /built by the page's own code/.test(w)),
+        };
+      });
+      // But the duplicate really is in the bytes, so the edit is not lost.
+      check('andTheStructuralEditStillReachesTheFile', () => {
+        const doc2 = new DOMParser().parseFromString(fallbackDoc?.after ?? '', 'text/html');
+        return doc2.querySelectorAll('p.lead').length;
+      });
+
+      results.__errors = errors;
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"__errors":["' + String(e && e.message) + '"]}:END';
+    });
+  </script>
+</body>
+</html>

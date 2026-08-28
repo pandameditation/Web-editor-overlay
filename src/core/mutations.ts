@@ -1,5 +1,6 @@
-import { INSERTED_ATTR } from './constants.js';
+import { INSERTED_ATTR, SOURCE_ATTR } from './constants.js';
 import { directText, labelFor, nearestSourceRef, selectorFor } from './dom.js';
+import type { ElementAnchor } from './html-patch.js';
 import { nextChangeId, type Command } from './history.js';
 import { sanitizeFragment } from './sanitize.js';
 import type { ChangeRecord } from './types.js';
@@ -24,6 +25,19 @@ function record(
     summary,
     target: selectorFor(el),
     source: nearestSourceRef(el),
+    /*
+     * How to find this element in the HTML file, captured now.
+     *
+     * Now rather than at save time, for the same reason `describeRule` captures a CSS
+     * rule's position when the edit is made: by the time a plan is built the user has
+     * inserted, moved and deleted things, so nothing positional still means what it meant.
+     * An id and a build-time marker both survive all of that.
+     *
+     * `sourceRefOf` rather than `nearestSourceRef` — the nearest marker may belong to an
+     * ancestor, and an anchor that resolves to the wrong element is worse than no anchor,
+     * which merely falls back to writing the whole file.
+     */
+    anchor: anchorFor(el),
     // Every change about this element, tied together for the prompt. Overridden by
     // the commands whose subject is a node they create rather than the one they were
     // called on — insert, duplicate and wrap — so the follow-up edits to the new
@@ -31,6 +45,18 @@ function record(
     group: elementKey(el),
     at: Date.now(),
     ...extra,
+  };
+}
+
+function anchorFor(el: HTMLElement): ElementAnchor {
+  return {
+    tag: el.tagName.toLowerCase(),
+    id: el.id || undefined,
+    // The marker verbatim, which serves twice: it finds the element again in the live DOM,
+    // and it names the file and position to patch. Kept raw rather than parsed because the
+    // file half decides whether the position means anything — a marker pointing at a `.ts`
+    // template says nothing about where the tag is in the HTML.
+    src: el.getAttribute(SOURCE_ATTR) ?? undefined,
   };
 }
 

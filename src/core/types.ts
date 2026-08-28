@@ -1,3 +1,4 @@
+import type { ElementAnchor } from './html-patch.js';
 /**
  * Shared types for the editor overlay.
  *
@@ -176,6 +177,14 @@ export interface ChangeRecord {
    * the same description the built-in write path works from.
    */
   detail?: Record<string, string>;
+  /**
+   * How to find this change's element in the HTML file.
+   *
+   * Captured when the edit is made, because by save time the DOM has moved on and nothing
+   * positional means what it meant. Absent when the element offered nothing durable to
+   * anchor to, which is what makes the save fall back to writing the whole file.
+   */
+  anchor?: ElementAnchor;
   at: number;
 }
 

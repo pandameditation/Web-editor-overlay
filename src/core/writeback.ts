@@ -1,9 +1,16 @@
+import { SOURCE_ATTR } from './constants.js';
 import {
   patchCSS,
   upsertSection,
   type DeclarationPatch,
   type PatchFailure,
 } from './css-patch.js';
+import {
+  parseSourceMarker,
+  patchHTML,
+  type ElementAnchor,
+  type HtmlPatch,
+} from './html-patch.js';
 import type { FileHost } from './file-host.js';
 import { DOCUMENT_TARGET, styleElementById } from './sheets.js';
 import type { ChangeRecord } from './types.js';
@@ -406,9 +413,45 @@ export async function buildWritePlan(
       }
     } else {
       const before = await host.read(documentPath);
-      if (before !== subject.html) {
+
+      /*
+       * Patch the file where every change can be placed in it.
+       *
+       * All or nothing, deliberately. Patching some changes and serializing for the rest
+       * would mean writing the serialized page anyway, so the patches would be pointless;
+       * and patching some and dropping the rest would silently stop writing edits that
+       * used to reach the file. So either the whole change set can be expressed as edits to
+       * the file — in which case nothing else in it is touched, which is the entire point —
+       * or the page is serialized exactly as before.
+       */
+      const patched =
+        before === null ? null : tryPatchDocument(before, documentRecords, documentPath);
+      if (patched) {
+        if (patched.html !== before) {
+          writes.push({
+            path: documentPath,
+            kind: 'document',
+            reason: `${plural(documentRecords.length, 'change')}, patched in place`,
+            before,
+            after: patched.html,
+            records: documentRecords,
+            unplaced: [],
+          });
+        }
+      } else if (before !== subject.html) {
         const warnings: string[] = [];
         const generated = subject.generatedElements ?? 0;
+        // Only reached when a change could not be placed, so say which and why: this is
+        // the difference between "the editor reformatted my file" and a known trade.
+        const blockers = documentRecords
+          .filter((record) => !anchorInFile(record, documentPath))
+          .map((record) => record.summary);
+        if (blockers.length) {
+          warnings.push(
+            `The whole file is rewritten because ${blockers.length === 1 ? 'one change could' : `${blockers.length} changes could`} ` +
+            `not be located in it: ${blockers.slice(0, 3).join('; ')}${blockers.length > 3 ? '; …' : ''}.`,
+          );
+        }
         if (generated) {
           warnings.push(
             `This is the page as it stands, so ${generated} element${generated === 1 ? '' : 's'} ` +
@@ -436,6 +479,122 @@ export async function buildWritePlan(
   }
 
   return { writes, unwritable };
+}
+
+/**
+ * The change kinds that can be expressed as an edit to the file's text.
+ *
+ * Attribute, class and style edits rewrite one attribute; a text edit replaces one
+ * element's content. Structural change — inserting, deleting, moving, wrapping — is a
+ * different problem: it needs the file's own indentation and sibling layout reproduced, and
+ * getting that subtly wrong makes a mess of a file rather than a wrong value in it. Those
+ * still go through serialization, which handles them correctly.
+ */
+const PATCHABLE = new Set<ChangeRecord['kind']>(['text', 'attribute', 'class', 'style']);
+
+/**
+ * The anchor to use for this record against this file, or null when there is none.
+ *
+ * The source marker is only honoured when it names the file being patched. On a page built
+ * from components it names a template instead, and its line number describes a position in
+ * that template — following it into the HTML would land somewhere arbitrary and patch the
+ * wrong element, which is the one outcome worth more care than a reformatted file.
+ */
+function anchorInFile(record: ChangeRecord, documentPath: string): ElementAnchor | null {
+  const anchor = record.anchor;
+  if (!anchor || !PATCHABLE.has(record.kind)) return null;
+
+  const marker = anchor.src ? parseSourceMarker(anchor.src) : null;
+  const inThisFile = marker != null && samePath(marker.file, documentPath);
+  if (inThisFile && marker) {
+    return { ...anchor, line: marker.line, column: marker.column };
+  }
+  if (anchor.id) return { tag: anchor.tag, id: anchor.id };
+  // Nothing durable on the element itself. For a text edit the text being replaced can
+  // stand in, provided the file contains it once — which is what makes a plain page with
+  // no ids and no build step patchable at all.
+  if (record.kind === 'text' && record.before) {
+    return { tag: anchor.tag, text: record.before };
+  }
+  return null;
+}
+
+/** Two paths for the same file, allowing for one being root-relative and one not. */
+function samePath(a: string, b: string): boolean {
+  const clean = (value: string): string => value.replace(/^\.?\//, '');
+  return clean(a) === clean(b) || clean(b).endsWith(`/${clean(a)}`) || clean(a).endsWith(`/${clean(b)}`);
+}
+
+/** The element a record refers to, still in the page, or null. */
+function liveElementFor(anchor: ElementAnchor): HTMLElement | null {
+  if (anchor.id) {
+    const byId = document.getElementById(anchor.id);
+    if (byId) return byId;
+  }
+  if (anchor.src) {
+    const found = document.querySelector(`[${SOURCE_ATTR}="${CSS.escape(anchor.src)}"]`);
+    if (found instanceof HTMLElement) return found;
+  }
+  return null;
+}
+
+/**
+ * Turn the document changes into edits to the file, or return null.
+ *
+ * Null means "not every change fits", and the caller then serializes as it always did.
+ * Nothing here is best-effort: a patch that resolved to the wrong element would write an
+ * edit into unrelated markup, which is worse than the reformatting this avoids.
+ */
+function tryPatchDocument(
+  html: string,
+  records: readonly ChangeRecord[],
+  documentPath: string,
+): { html: string } | null {
+  if (!records.length) return null;
+
+  /*
+   * Values come from the live element, not from the record.
+   *
+   * A style record's `after` is one declaration's value and a class record's is one class
+   * name, so writing either into the attribute it belongs to would produce `padding="12px"`.
+   * The element itself has the finished attribute, which is also what makes several edits to
+   * one attribute collapse into a single patch carrying the value the user ended up with.
+   * Keyed on the anchor and the attribute so that collapsing happens by construction.
+   */
+  const wanted = new Map<string, HtmlPatch>();
+
+  for (const record of records) {
+    const anchor = anchorInFile(record, documentPath);
+    if (!anchor) return null;
+    const el = liveElementFor(record.anchor ?? anchor);
+
+    if (record.kind === 'text') {
+      // No live element is fine here: the recorded `after` is the text, and for a text
+      // anchor there is nothing else to read anyway.
+      const value = el ? el.innerHTML : (record.after ?? '');
+      wanted.set(`${anchorKey(anchor)}|#text`, { anchor, kind: 'text', value });
+      continue;
+    }
+
+    const name =
+      record.kind === 'style' ? 'style' : record.kind === 'class' ? 'class' : record.detail?.attribute;
+    if (!name || !el) return null;
+    wanted.set(`${anchorKey(anchor)}|${name}`, {
+      anchor,
+      kind: 'attribute',
+      name,
+      value: el.getAttribute(name),
+    });
+  }
+
+  const result = patchHTML(html, [...wanted.values()]);
+  // One failure and the whole approach is off: the edit has to reach the file somehow.
+  if (result.failed.length) return null;
+  return { html: result.html };
+}
+
+function anchorKey(anchor: ElementAnchor): string {
+  return `${anchor.tag}|${anchor.id ?? ''}|${anchor.line ?? ''}|${anchor.column ?? ''}|${anchor.text ?? ''}`;
 }
 
 function groupFor(
