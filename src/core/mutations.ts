@@ -99,7 +99,8 @@ function anchorFor(el: HTMLElement, depth = 6): ElementAnchor {
      * classes are checked before it is believed, so a file that has since diverged is refused
      * rather than patched in the wrong place.
      */
-    index: el.parentElement ? indexAmongSiblings(el) : undefined,
+    nth: el.parentElement ? nthAmongLike(el, true) : undefined,
+    nthTag: el.parentElement ? nthAmongLike(el, false) : undefined,
     classes: classSignature(el),
     // The marker verbatim, which serves twice: it finds the element again in the live DOM,
     // and it names the file and position to patch. Kept raw rather than parsed because the
@@ -123,11 +124,27 @@ function parentAnchor(el: HTMLElement, depth: number): ElementAnchor | undefined
   return anchorFor(parent, named ? 0 : depth - 1);
 }
 
-function indexAmongSiblings(el: HTMLElement): number {
+/**
+ * Which one it is among the siblings that look like it, rather than among all of them.
+ *
+ * Counting every sibling meant that inserting or moving anything ahead of the element shifted
+ * it: the file's seventh child was a `<div>` where the page now had a `<p>`, and the save gave
+ * up and rewrote the file. Counting only the siblings of the same tag — and, first, the same
+ * tag *and* classes — makes the position survive edits to everything unlike it.
+ */
+function nthAmongLike(el: HTMLElement, withClasses: boolean): number {
   const parent = el.parentElement;
   if (!parent) return 0;
-  // Counted over element children only, matching how the file's direct children are read.
-  return Array.prototype.indexOf.call(parent.children, el);
+  const classes = classSignature(el) ?? '';
+  let seen = 0;
+  for (const sibling of Array.from(parent.children)) {
+    if (sibling === el) return seen;
+    if (!(sibling instanceof HTMLElement)) continue;
+    if (sibling.localName !== el.localName) continue;
+    if (withClasses && (classSignature(sibling) ?? '') !== classes) continue;
+    seen += 1;
+  }
+  return seen;
 }
 
 /** Classes the author wrote, sorted, so the order they appear in cannot matter. */

@@ -1,6 +1,7 @@
 import {
   HOST_TAG,
   IGNORE_ATTR,
+  INSERTED_ATTR,
   INJECTED_ATTR,
   MIRROR_ATTR,
   SOURCE_ATTR,
@@ -754,7 +755,7 @@ function anchorInFile(record: ChangeRecord, documentPath: string): ElementAnchor
   // stand in, provided the file contains it once — which is what makes a plain page with
   // no ids and no build step patchable at all.
   if (record.kind === 'text' && record.before) {
-    return { tag: anchor.tag, text: record.before, parent: anchor.parent, index: anchor.index, classes: anchor.classes };
+    return { ...anchor, text: record.before };
   }
   /*
    * And otherwise, where it sits inside a container that can be found.
@@ -765,7 +766,7 @@ function anchorInFile(record: ChangeRecord, documentPath: string): ElementAnchor
    * tag and classes before believing it, so the failure mode is a decline rather than an edit
    * landing on the wrong element.
    */
-  if (anchor.parent && anchor.index != null) return anchor;
+  if (anchor.parent && (anchor.nth != null || anchor.nthTag != null)) return anchor;
   return null;
 }
 
@@ -796,13 +797,16 @@ function liveElementFor(anchor: ElementAnchor): HTMLElement | null {
    * element cannot be read back — which is exactly how a font size on a plain `<div>` ended
    * up rewriting the whole file even after the file side could find it.
    */
-  if (anchor.parent && anchor.index != null) {
+  if (anchor.parent && (anchor.nth != null || anchor.nthTag != null)) {
     const parent = liveElementFor(anchor.parent);
-    const child = parent?.children[anchor.index];
-    if (!(child instanceof HTMLElement)) return null;
-    if (child.localName !== anchor.tag) return null;
-    if ((anchor.classes ?? '') !== liveClassSignature(child)) return null;
-    return child;
+    if (!parent) return null;
+    const children = Array.from(parent.children).filter(
+      (child): child is HTMLElement => child instanceof HTMLElement && child.localName === anchor.tag,
+    );
+    // Class first, then tag alone, in step with how the file side narrows it.
+    const sameClass = children.filter((child) => liveClassSignature(child) === (anchor.classes ?? ''));
+    if (anchor.nth != null && sameClass.length > anchor.nth) return sameClass[anchor.nth];
+    if (anchor.nthTag != null && children.length > anchor.nthTag) return children[anchor.nthTag];
   }
   return null;
 }
@@ -855,6 +859,16 @@ function tryPatchDocument(
 
   for (const record of records) {
     if (STRUCTURAL.has(record.kind)) continue;
+    /*
+     * An edit to something the user just added needs no patch of its own.
+     *
+     * The element is not in the file yet, so there is nothing to patch — its container's
+     * rebuild serializes it from the live page, edits and all. Trying to place it anyway
+     * failed to resolve and took the whole save down to a rewrite.
+     */
+    const live = elementOfRecord(record);
+    if (structural.length && live?.closest(`[${INSERTED_ATTR}]`)) continue;
+
     const anchor = anchorInFile(record, documentPath);
     if (!anchor) {
       why.push(`“${record.summary}” could not be located in the file`);

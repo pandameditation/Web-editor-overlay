@@ -69,9 +69,11 @@ export interface ElementAnchor {
   text?: string;
   /** The element's container, for a change about position rather than content. */
   parent?: ElementAnchor;
-  /** Index among the container's element children, for an element nothing else names. */
-  index?: number;
-  /** Sorted class list, checked before an index is trusted. */
+  /** Which one it is among the container's children of the same tag and classes. */
+  nth?: number;
+  /** Which one it is among the container's children of the same tag, whatever their classes. */
+  nthTag?: number;
+  /** Sorted class list, used to narrow the siblings before counting. */
   classes?: string;
 }
 
@@ -221,22 +223,29 @@ function resolveAnchor(html: string, anchor: ElementAnchor): OpenTag | string {
    * a short list — and the tag name and classes are compared before the answer is used, so a
    * file whose shape no longer matches is declined instead of patched at the wrong element.
    */
-  if (anchor.parent && anchor.index != null) {
+  if (anchor.parent && (anchor.nth != null || anchor.nthTag != null)) {
     const container = resolveAnchor(html, anchor.parent);
     if (typeof container === 'string') return container;
-    const children = directChildTags(html, container);
-    const child = children[anchor.index];
-    if (!child) {
-      return `the file's <${container.name}> has ${children.length} children, so there is no #${anchor.index + 1}`;
-    }
-    if (child.name !== wanted) {
-      return `child #${anchor.index + 1} of that <${container.name}> is a <${child.name}> in the file, not a <${wanted}>`;
-    }
-    const classes = classSignatureOf(html.slice(child.start, child.end + 1));
-    if ((anchor.classes ?? '') !== classes) {
-      return `child #${anchor.index + 1} of that <${container.name}> does not match in the file`;
-    }
-    return child;
+    const children = directChildTags(html, container).filter((child) => child.name === wanted);
+
+    /*
+     * Narrowed by class first, then by tag alone.
+     *
+     * Two passes because the classes may be the thing that changed: an edit that adds a class
+     * is recorded after the fact, so the anchor describes classes the file has not got yet.
+     * Falling back to the tag keeps that edit placeable instead of rewriting the file over it.
+     */
+    const sameClass = children.filter(
+      (child) => classSignatureOf(html.slice(child.start, child.end + 1)) === (anchor.classes ?? ''),
+    );
+    if (anchor.nth != null && sameClass.length > anchor.nth) return sameClass[anchor.nth];
+    if (anchor.nthTag != null && children.length > anchor.nthTag) return children[anchor.nthTag];
+
+    const described = anchor.classes ? `<${wanted} class="${anchor.classes}">` : `<${wanted}>`;
+    return (
+      `the file's <${container.name}> has ${children.length} <${wanted}> ` +
+      `${children.length === 1 ? 'child' : 'children'}, not enough to reach the ${described} this changed`
+    );
   }
 
   return `could not find this <${wanted}> in the file`;

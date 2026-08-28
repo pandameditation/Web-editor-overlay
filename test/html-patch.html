@@ -28,6 +28,16 @@
     <span class="n">01</span>
     <div class="plain">Nothing identifies this one</div>
   </div>
+  <article>
+    <p>One</p>
+    <p>Two</p>
+    <div class="box">Three</div>
+    <p>Four</p>
+    <p class="note">Five</p>
+    <div class="box">Six</div>
+    <p>Seven</p>
+    <div class="box">Eight</div>
+  </article>
 
   <script src="./stories.js"></script>
   <pre id="progress">start</pre>
@@ -327,6 +337,45 @@
         return (doc4.getElementById('mixed')?.textContent ?? '').replace(/\s+/g, ' ').trim();
       });
 
+      /*
+       * The reported failure: a container of unnamed children, edited after its shape had
+       * already moved on. An insert shifts every later sibling, so the file's seventh child is
+       * a `<div>` where the page has a `<p>` — and counting children was enough to give up and
+       * rewrite the whole file. Counting only the siblings of the same tag survives it.
+       */
+      const article = document.querySelector('article');
+      api.select(article.children[6]);
+      engine.insertMarkup('<p>Inserted ahead of the rest</p>', {
+        reference: article.children[1],
+        position: 'after',
+      });
+      await frames();
+      api.select(article.querySelector('p.note'));
+      engine.setStyle('color', 'teal');
+      api.select(article.querySelectorAll('div.box')[2]);
+      engine.setStyle('outline', '2px solid red');
+      await frames();
+      const shiftedPlan = await engine.previewWritePlan();
+      const shiftedDoc = (shiftedPlan?.writes ?? []).find((w) => w.kind === 'document');
+      check('aShiftedContainerIsStillPatchedInPlace', () => ({
+        patched: /patched in place/.test(shiftedDoc?.reason ?? ''),
+        withNoRewriteWarning: (shiftedDoc?.warnings ?? []).filter((w) =>
+          /whole file is rewritten/.test(w),
+        ),
+      }));
+      // And both edits landed on the elements they were made on, not on their neighbours.
+      check('andBothEditsLandedOnTheRightChildren', () => {
+        const d = new DOMParser().parseFromString(shiftedDoc?.after ?? '', 'text/html');
+        const art = d.querySelector('article');
+        return {
+          theNote: art?.querySelector('p.note')?.getAttribute('style') ?? null,
+          theThirdBox: art?.querySelectorAll('div.box')[2]?.getAttribute('style') ?? null,
+          nothingElseStyled: Array.from(art?.children ?? []).filter((el) =>
+            el.hasAttribute('style'),
+          ).length,
+          order: Array.from(art?.children ?? []).map((el) => el.localName).join(','),
+        };
+      });
       check('theFileDoesNotBalloon', () => {
         const grew = (movedDoc?.after ?? '').length - source.length;
         return { grewBy: grew, underOneKilobyte: Math.abs(grew) < 1024 };
