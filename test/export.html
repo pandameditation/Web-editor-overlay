@@ -36,6 +36,15 @@
        even though it is the overlay's own bundle: writing it back changes nothing. -->
   <script src="../dist/html-editor-overlay.iife.js" id="authored-overlay-script"></script>
 
+  <!-- What a dev server does to a script it has hot-reloaded. The file said `stories.js`;
+       the live page says this. Writing the timestamp back pins the URL forever, so the
+       browser stops seeing new versions of the file. -->
+  <script id="reloaded" src="./stories.js?t=1787928538048"></script>
+  <!-- The same, with a query the author wrote alongside it: only the server's half goes. -->
+  <link id="reloaded-sheet" rel="stylesheet" href="./tokens.css?brand=dark&amp;t=1787928538048">
+  <!-- And a query that only looks like one. Nobody is allowed to touch this. -->
+  <script id="authored-query" src="./cached.js?v=2"></script>
+
   <pre id="progress">start</pre>
   <pre id="out">pending</pre>
 
@@ -112,6 +121,20 @@
        * ------------------------------------------------------------------ */
       check('theExportKeepsTheAuthorsOwnScript', () =>
         Boolean(doc.getElementById('authored-overlay-script')));
+
+      /* ------------------------------------------------------------------ *
+       * The URLs a dev server rewrote go back to what the file said.
+       * ------------------------------------------------------------------ */
+      check('theReloadStampIsNotWrittenIntoTheFile', () => ({
+        inTheLivePage: document.getElementById('reloaded')?.getAttribute('src') ?? null,
+        inTheExport: doc.getElementById('reloaded')?.getAttribute('src') ?? null,
+      }));
+      // Only the server's parameter is lifted out; the author's survives beside it.
+      check('anAuthoredParameterSurvivesAlongsideIt', () =>
+        doc.getElementById('reloaded-sheet')?.getAttribute('href') ?? null);
+      // And a query that merely resembles one is left completely alone.
+      check('aQueryTheAuthorWroteIsUntouched', () =>
+        doc.getElementById('authored-query')?.getAttribute('src') ?? null);
       check('theExportKeepsThePagesContent', () => ({
         heading: doc.getElementById('authored')?.textContent ?? null,
         // The edit itself is the point of saving, so it has to be in there.

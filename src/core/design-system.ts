@@ -310,8 +310,23 @@ export function exportHTML(
     injected.remove();
   }
   for (const el of Array.from(clone.querySelectorAll('script[src], link[href]'))) {
-    const url = el.getAttribute('src') ?? el.getAttribute('href') ?? '';
-    if (isToolingURL(url)) el.remove();
+    const attribute = el.hasAttribute('src') ? 'src' : 'href';
+    const url = el.getAttribute(attribute) ?? '';
+    if (isToolingURL(url)) {
+      el.remove();
+      continue;
+    }
+    /*
+     * A dev server rewrites the URLs it serves, and the file said something shorter.
+     *
+     * Hot reloading works by re-requesting a module with a fresh query, so a `<script
+     * src="stories.js">` becomes `src="stories.js?t=1787928538048"` in the live page the
+     * moment it is edited. Serializing that writes the timestamp into the file, where it is
+     * pinned forever: the browser then keeps fetching that one URL, so the file has quietly
+     * been made uncacheable and the next reload of a changed script serves the old one.
+     */
+    const cleaned = withoutTransientQuery(url);
+    if (cleaned !== url) el.setAttribute(attribute, cleaned);
   }
 
   /*
@@ -348,6 +363,34 @@ export function exportHTML(
  */
 function isToolingURL(url: string): boolean {
   return /(?:^|\/)@(?:vite|id|fs|react-refresh)(?:\/|$)/.test(url);
+}
+
+/**
+ * Query parameters a dev server added, which the file never had.
+ *
+ * Only the ones no author writes by hand, because getting this wrong means editing a URL
+ * someone meant. `t=` followed by an epoch in milliseconds is a reload stamp — thirteen
+ * digits of wall clock is not something a person types into a `src`. The bare flags are
+ * Vite's own transform switches and are meaningless in markup. Anything else is left
+ * exactly as it is, including a hand-written `?v=2`, which is why that is not on the list.
+ *
+ * Other parameters on the same URL survive: only the transient ones are lifted out, so
+ * `theme.css?brand=dark&t=1787928538048` keeps the half that was authored.
+ */
+const TRANSIENT_PARAM = /^(?:t=\d{10,14}|import|direct|used|inline|raw|url|worker|html-proxy)$/;
+
+function withoutTransientQuery(url: string): string {
+  const query = url.indexOf('?');
+  if (query === -1) return url;
+  const [path, rest] = [url.slice(0, query), url.slice(query + 1)];
+  const hash = rest.indexOf('#');
+  const search = hash === -1 ? rest : rest.slice(0, hash);
+  const fragment = hash === -1 ? '' : rest.slice(hash);
+
+  const kept = search
+    .split('&')
+    .filter((param) => param !== '' && !TRANSIENT_PARAM.test(param));
+  return `${path}${kept.length ? `?${kept.join('&')}` : ''}${fragment}`;
 }
 
 /**
