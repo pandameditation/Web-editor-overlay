@@ -160,6 +160,23 @@
       const dialog = deep(document, 'heo-source-dialog');
       check('itFoundTheScriptThatBuildsTheList', () =>
         dialog?.shadowRoot.querySelector('.where code')?.textContent?.trim() ?? null);
+      /*
+       * The panel has to have a background of its own.
+       *
+       * `.surface` lives in a separate style export from `baseStyles`, so omitting it
+       * fails silently: the dialog renders, lays out correctly, and shows the page
+       * straight through itself. Nothing else notices, which is why this is asserted
+       * rather than left to the eye.
+       */
+      check('theDialogPanelIsOpaque', () => {
+        const panel = dialog?.shadowRoot.querySelector('.dialog');
+        const background = panel ? getComputedStyle(panel).backgroundColor : '';
+        const alpha = /rgba?\([^)]*?,\s*([\d.]+)\s*\)$/.exec(background);
+        return {
+          background,
+          opaqueEnough: Boolean(background) && (!alpha || Number(alpha[1]) >= 0.8),
+        };
+      });
       check('andWindowedItOnTheDataThatProducesTheText', () => {
         const buffer = deep(dialog.shadowRoot, 'heo-code-editor')?.value ?? '';
         return {
@@ -178,6 +195,43 @@
       }));
       await frames();
       results.recorded = engine.commitSourceEdit();
+      await frames();
+
+      /*
+       * The confirmation has to be readable, and it arrives while the modal is open.
+       *
+       * A toast is usually the reply to something done in a dialog — this one carries the
+       * Undo for the edit just recorded — so being painted behind that dialog makes it
+       * useless. Checked by hit-testing the pixel rather than by reading a z-index:
+       * stacking depends on paint order and the top layer too, and only asking what is
+       * actually on top covers all three.
+       */
+      const deepestAt = (x, y) => {
+        let node = document.elementFromPoint(x, y);
+        while (node && node.shadowRoot) {
+          const inner = node.shadowRoot.elementFromPoint(x, y);
+          if (!inner || inner === node) break;
+          node = inner;
+        }
+        return node;
+      };
+      const toast = deep(document, 'heo-toast');
+      check('theToastIsShownOverTheModal', () => {
+        if (!toast) return 'no toast';
+        const panel = toast.shadowRoot.querySelector('.toast');
+        const box = panel.getBoundingClientRect();
+        const hit = deepestAt(box.left + box.width / 2, box.top + box.height / 2);
+        return {
+          // In the top layer, which is the only way to outrank a native modal dialog.
+          inTopLayer: panel.matches(':popover-open'),
+          // And in front where it counts: the pixel belongs to the toast.
+          onTop: Boolean(hit) && Boolean(hit.closest('heo-toast') ?? (hit.getRootNode().host?.tagName?.toLowerCase() === 'heo-toast')),
+          hit: hit ? hit.className || hit.tagName.toLowerCase() : null,
+          // The modal is still open underneath, so this is a real overlap.
+          modalStillOpen: Boolean(deep(document, 'heo-source-dialog')),
+        };
+      });
+
       check('theEditIsFiledAgainstTheScript', () => {
         const record = engine.records.find((r) => r.detail?.scope === 'rendered source');
         if (!record) return 'no record';

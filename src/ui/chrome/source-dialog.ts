@@ -6,7 +6,7 @@ import { describeProvenance } from '../../core/provenance.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
-import { baseStyles } from '../theme.js';
+import { baseStyles, surfaceStyles } from '../theme.js';
 import '../controls/code-editor.js';
 
 /**
@@ -41,6 +41,10 @@ import '../controls/code-editor.js';
 export class HeoSourceDialog extends HeoElement {
   static override styles = [
     baseStyles,
+    // `.surface` is what gives the panel its background, and it lives in its own export
+    // rather than in `baseStyles` — so leaving this out does not fail loudly, it just
+    // renders a dialog with the page showing through it. Every other dialog includes it.
+    surfaceStyles,
     css`
       :host {
         position: fixed;

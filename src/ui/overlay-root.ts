@@ -98,11 +98,17 @@ export class HeoOverlay extends HeoElement {
       ${state.editing && state.insertAnchor ? html`<heo-insert-menu></heo-insert-menu>` : nothing}
       ${state.editing && state.textEditing ? html`<heo-text-toolbar></heo-text-toolbar>` : nothing}
       ${state.drag ? html`<heo-drag-chip></heo-drag-chip>` : nothing}
-      ${state.toast ? html`<heo-toast></heo-toast>` : nothing}
       ${state.savePreview != null ? html`<heo-save-dialog></heo-save-dialog>` : nothing}
       ${state.extraction ? html`<heo-extract-dialog></heo-extract-dialog>` : nothing}
       ${state.sourceEdit ? html`<heo-source-dialog></heo-source-dialog>` : nothing}
       ${state.codeWorkspace ? html`<heo-code-workspace></heo-code-workspace>` : nothing}
+      <!--
+        Last, so paint order agrees with what the z-index already says.
+        A toast is the reply to an action usually taken in one of the dialogs above, so
+        it outranks all of them; leaving it earlier in the tree meant the two rules had
+        to be read together to know which won.
+      -->
+      ${state.toast ? html`<heo-toast></heo-toast>` : nothing}
     `;
   }
 
