@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Editor overlay — a token edit goes to one file</title>
+  <!--
+    Editing a token has to write it where the user said, and nowhere else.
+
+    The registries render tokens into a generated `<style>` block so a colour changes on
+    screen the moment it is typed. That block is a preview, not a location — but the save
+    used to treat it as one, so a token sent to styles.css was written into the page as
+    well, and the two copies disagreed the moment either was touched.
+
+        npm run build:lib && npm run check:token
+  -->
+  <link rel="stylesheet" href="./tokens.css">
+</head>
+
+<body>
+  <h1 id="title">Tokens live in the stylesheet</h1>
+  <p id="copy" class="clay">Some copy.</p>
+
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+
+  <script>
+    (async () => {
+      const errors = [];
+      window.addEventListener('error', (e) => errors.push('error: ' + e.message));
+      window.addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+
+      const results = {};
+      const progress = document.getElementById('progress');
+      const check = (name, fn) => {
+        progress.textContent = name;
+        try { results[name] = fn(); }
+        catch (err) { results[name] = 'THREW: ' + (err && err.message ? err.message : String(err)); }
+      };
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark' });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+
+      const page = decodeURIComponent(location.pathname).split('/').pop();
+      const directory = decodeURIComponent(location.pathname).replace(/[^/]*$/, '');
+      const disk = new Map();
+      const project = {
+        kind: 'directory',
+        label: 'memory',
+        resolve(url) {
+          const path = decodeURIComponent(new URL(url, location.href).pathname);
+          return path.startsWith(directory) ? path.slice(directory.length) : null;
+        },
+        read: async (path) => {
+          if (disk.has(path)) return disk.get(path);
+          try {
+            const text = await (await fetch('./' + path)).text();
+            disk.set(path, text);
+            return text;
+          } catch { return null; }
+        },
+        write: async (path, text) => { disk.set(path, text); },
+        ensureWritable: async () => true,
+        release: async () => { },
+      };
+      await engine.attachProject(project, { quiet: true });
+      await frames();
+
+      check('theTokenWasReadFromTheStylesheet', () => engine.tokens.get('clay')?.value ?? null);
+
+      /* ------------------------------------------------------------------ *
+       * Send the design system to the stylesheet, then edit a token.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'editAToken';
+      const targets = engine.styleTargets().map((t) => t.value);
+      const sheetTarget = targets.find((t) => /tokens\.css$/.test(t));
+      results.theStylesheetIsOfferedAsATarget = Boolean(sheetTarget);
+      engine.setDesignSystemTarget(sheetTarget);
+
+      engine.setDockTab('tokens');
+      await frames();
+      const panel = (() => {
+        const walk = (root) => {
+          const found = root.querySelector('heo-tokens-panel');
+          if (found) return found;
+          for (const el of root.querySelectorAll('*')) {
+            if (!el.shadowRoot) continue;
+            const inner = walk(el.shadowRoot);
+            if (inner) return inner;
+          }
+          return null;
+        };
+        return walk(document);
+      })();
+      const field = Array.from(panel.shadowRoot.querySelectorAll('heo-value-field'))
+        .find((f) => f.getAttribute('label') === 'clay');
+      results.theTokenHasAField = Boolean(field);
+      field?.dispatchEvent(new CustomEvent('value-change', { detail: { value: '#846b62' }, bubbles: true }));
+      await frames();
+
+      check('theEditTookEffectOnScreen', () =>
+        getComputedStyle(document.getElementById('copy')).color);
+      check('itIsRecordedAsOneChange', () => engine.records.map((r) => r.kind));
+
+      /* ------------------------------------------------------------------ *
+       * One file, and it is the one that was chosen.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'thePlan';
+      const plan = await engine.previewWritePlan();
+      check('theSaveWritesOnlyTheStylesheet', () =>
+        (plan?.writes ?? []).map((w) => `${w.path}|${w.kind}|${w.reason}`));
+      check('andTheNewValueIsInIt', () => {
+        const write = (plan?.writes ?? []).find((w) => /tokens\.css$/.test(w.path));
+        return (write?.after ?? '').includes('#846b62');
+      });
+      // The page is not in the plan at all, so nothing can have been written into it.
+      check('theHtmlIsNotWritten', () =>
+        (plan?.writes ?? []).filter((w) => w.kind === 'document').length);
+      // And the export it would have used carries no copy of the token either, so a save
+      // triggered by some other edit cannot smuggle it in.
+      check('andTheExportCarriesNoCopyOfTheToken', () => {
+        const html = engine.exportHTML();
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        const styles = Array.from(doc.querySelectorAll('style')).map((el) => el.textContent ?? '');
+        return {
+          mentionsTheToken: styles.some((css) => css.includes('--clay')),
+          generatedBlocksLeft: doc.querySelectorAll('[data-heo-generated]').length,
+        };
+      });
+
+      /* ------------------------------------------------------------------ *
+       * And with the page chosen instead, it goes in the page — because then
+       * that block is the only home the token has.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'documentTarget';
+      engine.setDesignSystemTarget('document');
+      await frames();
+      const inPage = await engine.previewWritePlan();
+      check('choosingThePagePutsItInThePage', () => {
+        const doc = new DOMParser().parseFromString(engine.exportHTML(), 'text/html');
+        const styles = Array.from(doc.querySelectorAll('style')).map((el) => el.textContent ?? '');
+        return {
+          mentionsTheToken: styles.some((css) => css.includes('--clay')),
+          writes: (inPage?.writes ?? []).map((w) => `${w.path}|${w.kind}`),
+        };
+      });
+
+      results.__errors = errors;
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"__errors":["' + String(e && e.message) + '"]}:END';
+    });
+  </script>
+</body>
+
+</html>

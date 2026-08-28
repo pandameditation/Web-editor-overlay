@@ -1,0 +1,11 @@
+/* The design system's home. A token edited in the panel belongs back in here, and in
+   here only — not duplicated into the page that renders it. */
+:root {
+  --clay: #6b5b52;
+  --space-md: 16px;
+}
+
+.clay {
+  color: var(--clay);
+  padding: var(--space-md);
+}

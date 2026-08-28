@@ -171,10 +171,25 @@ export interface InlineStyleReconciliation {
   patches: DeclarationPatch[];
 }
 
+export interface ExportOptions {
+  /** Regions the page's own code built, which the file never declared. */
+  generated?: readonly HTMLElement[];
+  /**
+   * Whether the design system's own CSS belongs in this file.
+   *
+   * True when the save is leaving tokens and classes in the page. False when they are going
+   * to a stylesheet, in which case the generated blocks are a live preview of a change that
+   * is being written somewhere else, and keeping them would write it twice.
+   */
+  designSystemInDocument?: boolean;
+}
+
 export function exportHTML(
   styleEdits: readonly InlineStyleReconciliation[] = [],
-  generated: readonly HTMLElement[] = [],
+  options: ExportOptions = {},
 ): string {
+  const generated = options.generated ?? [];
+  const designSystemInDocument = options.designSystemInDocument ?? true;
   /*
    * Content the page built is marked before the clone is taken, and unmarked after.
    *
@@ -239,8 +254,23 @@ export function exportHTML(
   for (const link of Array.from(clone.querySelectorAll('link[disabled]'))) {
     link.removeAttribute('disabled');
   }
+  /*
+   * The design system goes wherever it was told to go, and to one place only.
+   *
+   * These blocks are how a token edit shows on screen before it is saved — the registries
+   * render into them so `--clay` changes colour the moment it is typed. That makes them a
+   * preview, not a location. When the save is sending the design system to a stylesheet,
+   * keeping them here writes every token into the page as well, so one edit lands in two
+   * files and the two then disagree the moment either is touched.
+   *
+   * When the document *is* the chosen target, this block is the only home the tokens have,
+   * so the CSS stays and only the editor's marker goes.
+   */
   for (const generated of Array.from(clone.querySelectorAll('[data-heo-generated]'))) {
-    // Keep the CSS, drop the marker: the exported page should still look right.
+    if (!designSystemInDocument) {
+      generated.remove();
+      continue;
+    }
     generated.removeAttribute('data-heo-generated');
     generated.removeAttribute('id');
   }

@@ -3373,7 +3373,12 @@ export class EditorEngine {
    * correctly and the second one put the stale value back.
    */
   exportHTML(): string {
-    return exportHTML(inlineStyleEdits(this.history.appliedRecords), this.#generatedRegions());
+    return exportHTML(inlineStyleEdits(this.history.appliedRecords), {
+      generated: this.#generatedRegions(),
+      // The one thing the target decides: whether the tokens and classes live in this file
+      // or in the stylesheet the save is about to write them to.
+      designSystemInDocument: this.designSystemTarget === DOCUMENT_TARGET,
+    });
   }
 
   async save(): Promise<boolean> {

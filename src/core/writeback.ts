@@ -393,9 +393,10 @@ export async function buildWritePlan(
    * way to deliver, so it goes in the list of changes with nowhere to go, where the
    * reason is stated and the prompt still carries it.
    */
+  const systemInDocument = subject.designSystemTarget === DOCUMENT_TARGET;
   const documentRecords: ChangeRecord[] = [];
   for (const record of records) {
-    if (!isDocumentChange(record)) continue;
+    if (!isDocumentChange(record, systemInDocument)) continue;
     const rendered = record.detail?.rendered;
     if (rendered) {
       unwritable.push({ record, reason: rendered });
@@ -615,7 +616,20 @@ function groupFor(
  * written as an exclusion: a new kind of element edit should be covered by the
  * document write without anyone having to remember to add it here.
  */
-function isDocumentChange(record: ChangeRecord): boolean {
+function isDocumentChange(record: ChangeRecord, designSystemInDocument: boolean): boolean {
+  /*
+   * A token or class edit belongs to the design system, not to the document.
+   *
+   * Where it lands is the one thing the design-system target decides, and it is delivered
+   * by `designSystemCSS` — so counting these as document changes as well wrote the same
+   * `--clay: #846b62` into two files at once: the stylesheet that was chosen for it, and the
+   * page, via the generated `<style>` block the editor renders it from. The block is how the
+   * change shows on screen before it is saved; it is not a second home for it.
+   *
+   * When the target *is* the document, that block is the only place it can go, and then
+   * these really are document changes.
+   */
+  if (record.kind === 'token' || record.kind === 'token-class') return designSystemInDocument;
   const target = record.detail?.writeTo;
   return !target || target === DOCUMENT_TARGET;
 }
