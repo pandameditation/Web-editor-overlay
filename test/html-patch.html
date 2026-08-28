@@ -18,8 +18,12 @@
   <img id="pic" src="a.png" alt="Self closed" />
   <section id="all-stories"></section>
   <ul id="list">
+    <!-- An author's comment between children, which a container rebuild must not delete. -->
     <li class="static">Authored item</li>
+    <li class="second">Second item</li>
   </ul>
+  <!-- Loose text alongside an element, which cannot be rebuilt without losing the words. -->
+  <p id="mixed">Hello <b id="bold">world</b> again</p>
 
   <script src="./stories.js"></script>
   <pre id="progress">start</pre>
@@ -159,17 +163,12 @@
       await frames();
       const fallbackPlan = await engine.previewWritePlan();
       const fallbackDoc = (fallbackPlan?.writes ?? []).find((w) => w.kind === 'document');
-      check('aStructuralChangeFallsBackToRewriting', () => ({
+      check('aStructuralChangeIsPatchedNow', () => ({
         reason: fallbackDoc?.reason ?? null,
         patched: /patched in place/.test(fallbackDoc?.reason ?? ''),
       }));
-      check('andSaysWhyTheWholeFileIsBeingRewritten', () => {
-        const warnings = fallbackDoc?.warnings ?? [];
-        return {
-          namesTheBlocker: warnings.some((w) => /could not be located in it/.test(w)),
-          stillWarnsAboutGeneratedMarkup: warnings.some((w) => /built by the page's own code/.test(w)),
-        };
-      });
+      // Nothing to warn about: no serialization happened, so neither caveat applies.
+      check('soThereIsNothingToWarnAbout', () => (fallbackDoc?.warnings ?? []).length);
       // But the duplicate really is in the bytes, so the edit is not lost.
       check('andTheStructuralEditStillReachesTheFile', () => {
         const doc2 = new DOMParser().parseFromString(fallbackDoc?.after ?? '', 'text/html');
@@ -191,8 +190,19 @@
       await frames();
       const movedPlan = await engine.previewWritePlan();
       const movedDoc = (movedPlan?.writes ?? []).find((w) => w.kind === 'document');
-      check('movingAndAddingStillFallsBack', () =>
-        !/patched in place/.test(movedDoc?.reason ?? ''));
+      check('movingAndAddingIsNowPatchedToo', () =>
+        /patched in place/.test(movedDoc?.reason ?? ''));
+      // A reorder contributes the bytes the children already had, so the markup that merely
+      // moved is byte-identical — including the formatting quirks in it.
+      check('theMovedMarkupIsPreservedVerbatim', () => {
+        const after2 = movedDoc?.after ?? '';
+        return {
+          unquotedClassStillThere: /class=lead/.test(after2),
+          singleQuotedDataStillThere: /data-note='kept'/.test(after2),
+          selfClosedBrStillThere: /<br \/>/.test(after2),
+          uppercaseTitleStillThere: /<TITLE>/.test(after2),
+        };
+      });
       check('butTheGeneratedListIsStillLeftOut', () => {
         const doc3 = new DOMParser().parseFromString(movedDoc?.after ?? '', 'text/html');
         return {
@@ -211,6 +221,41 @@
        * The size test the user actually cares about: a save must not grow the file by the
        * amount the page renders. Compared against the source, which had the container empty.
        */
+      check('theRebuiltOrderMatchesTheLivePage', () => {
+        const doc3 = new DOMParser().parseFromString(movedDoc?.after ?? '', 'text/html');
+        const ids = (root) =>
+          Array.from(root.querySelectorAll('body > *'))
+            .filter((el) => el.id && el.id !== 'out' && el.id !== 'progress')
+            .map((el) => el.id);
+        return { inTheFile: ids(doc3), inTheLivePage: ids(document) };
+      });
+      check('theAuthorsCommentBetweenChildrenSurvives', () =>
+        /An author's comment between children/.test(movedDoc?.after ?? ''));
+
+      /* ------------------------------------------------------------------ *
+       * A container the rebuild cannot handle safely still falls back, and
+       * says so — the escape hatch has to keep existing.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'looseText';
+      engine.insertMarkup('<i id="added-inline">and</i>', {
+        reference: byId('bold'),
+        position: 'after',
+      });
+      await frames();
+      const loosePlan = await engine.previewWritePlan();
+      const looseDoc = (loosePlan?.writes ?? []).find((w) => w.kind === 'document');
+      check('aContainerWithLooseTextFallsBack', () => ({
+        patched: /patched in place/.test(looseDoc?.reason ?? ''),
+        explainsWhy: (looseDoc?.warnings ?? []).some((w) =>
+          /mixes text with other elements/.test(w),
+        ),
+      }));
+      // And the words either side of it are still there, which is what the bail protects.
+      check('andTheLooseWordsAreNotLost', () => {
+        const doc4 = new DOMParser().parseFromString(looseDoc?.after ?? '', 'text/html');
+        return (doc4.getElementById('mixed')?.textContent ?? '').replace(/\s+/g, ' ').trim();
+      });
+
       check('theFileDoesNotBalloon', () => {
         const grew = (movedDoc?.after ?? '').length - source.length;
         return { grewBy: grew, underOneKilobyte: Math.abs(grew) < 1024 };

@@ -67,6 +67,8 @@ export interface ElementAnchor {
   column?: number;
   /** The exact text being replaced, for a text patch with nothing better to go on. */
   text?: string;
+  /** The element's container, for a change about position rather than content. */
+  parent?: ElementAnchor;
 }
 
 export type HtmlPatch =
@@ -153,11 +155,22 @@ function resolveAnchor(html: string, anchor: ElementAnchor): OpenTag | string {
     if (tag && tag.name === wanted) return tag;
   }
 
+  /*
+   * An anchor that names an id is answered by that id or not at all.
+   *
+   * Falling through to a weaker match was a real bug: a newly inserted `<p id="added">` is
+   * not in the file, and the tag-name fallback below then handed back the only `<p>` that
+   * was — so the new element was written as a second copy of an existing one. An id that is
+   * absent is information, not a dead end.
+   */
   if (anchor.id) {
     const tag = tagWithId(html, anchor.id);
     if (typeof tag === 'string') return tag;
-    if (tag && tag.name === wanted) return tag;
-    if (tag) return `the file has ${anchor.id} on a <${tag.name}> rather than a <${wanted}>`;
+    if (!tag) return `the file has no element with id "${anchor.id}"`;
+    if (tag.name !== wanted) {
+      return `the file has ${anchor.id} on a <${tag.name}> rather than a <${wanted}>`;
+    }
+    return tag;
   }
 
   if (anchor.text) {
@@ -166,7 +179,34 @@ function resolveAnchor(html: string, anchor: ElementAnchor): OpenTag | string {
     if (tag) return tag;
   }
 
+  /*
+   * A tag the file contains exactly once identifies itself.
+   *
+   * `<body>` is why this exists: a top-level element's container has no id and needs none,
+   * and without this every reorder at the top of a page fell back to serializing. The
+   * uniqueness requirement is the same safeguard the text anchor uses — one match is a fact,
+   * two is a guess.
+   */
+  /*
+   * Nothing named this element, so a tag the file holds exactly once will do. Reached only
+   * when there was no id and no marker to go on — `<body>` and `<br>` rather than anything
+   * that was supposed to identify itself.
+   */
+  const unique = uniqueTag(html, wanted);
+  if (unique) return unique;
+
   return `could not find this <${wanted}> in the file`;
+}
+
+/** The only tag of this name in the file, or null when there are none or several. */
+function uniqueTag(html: string, name: string): OpenTag | null {
+  let found: OpenTag | null = null;
+  for (const tag of openTags(html)) {
+    if (tag.name !== name) continue;
+    if (found) return null;
+    found = tag;
+  }
+  return found;
 }
 
 /**
@@ -390,4 +430,45 @@ function escapeRegExp(value: string): string {
 function clip(value: string, limit = 40): string {
   const collapsed = value.replace(/\s+/g, ' ').trim();
   return collapsed.length > limit ? `${collapsed.slice(0, limit - 1)}…` : collapsed;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Reading the file back                                                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * An element's own text, exactly as the file has it.
+ *
+ * The whole point of reordering by reconciliation: a child that merely moved contributes the
+ * bytes it already had, so its markup, comments, formatting and nested content come through
+ * untouched. Leading whitespace on its line comes with it when the tag starts the line, which
+ * is what makes a pure reorder reproduce the original lines rather than re-indent them.
+ */
+export function elementText(html: string, anchor: ElementAnchor): string | null {
+  const tag = resolveAnchor(html, anchor);
+  if (typeof tag === 'string') return null;
+
+  let start = tag.start;
+  const lineStart = html.lastIndexOf('\n', start - 1) + 1;
+  if (html.slice(lineStart, start).trim() === '') start = lineStart;
+
+  if (tag.selfClosing) return html.slice(start, tag.end + 1);
+  const close = matchingClose(html, tag);
+  if (close === -1) return null;
+  const gt = html.indexOf('>', close);
+  return gt === -1 ? null : html.slice(start, gt + 1);
+}
+
+/** The whitespace an element sits behind on its line, for indenting what joins it. */
+export function indentOf(html: string, anchor: ElementAnchor): string {
+  const tag = resolveAnchor(html, anchor);
+  if (typeof tag === 'string') return '';
+  const lineStart = html.lastIndexOf('\n', tag.start - 1) + 1;
+  const lead = html.slice(lineStart, tag.start);
+  return lead.trim() === '' ? lead : '';
+}
+
+/** True when the file contains this element at all. */
+export function canResolve(html: string, anchor: ElementAnchor): boolean {
+  return typeof resolveAnchor(html, anchor) !== 'string';
 }

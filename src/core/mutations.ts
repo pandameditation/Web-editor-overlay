@@ -48,10 +48,19 @@ function record(
   };
 }
 
-function anchorFor(el: HTMLElement): ElementAnchor {
+function anchorFor(el: HTMLElement, withParent = true): ElementAnchor {
   return {
     tag: el.tagName.toLowerCase(),
     id: el.id || undefined,
+    /*
+     * The container, for a change that is about where this element sits rather than what it
+     * says. Captured here because `record()` runs while the element is still attached — a
+     * delete has not happened yet, and after it there is no parent left to ask.
+     */
+    parent:
+      withParent && el.parentElement && el.parentElement !== document.documentElement
+        ? anchorFor(el.parentElement, false)
+        : undefined,
     // The marker verbatim, which serves twice: it finds the element again in the live DOM,
     // and it names the file and position to patch. Kept raw rather than parsed because the
     // file half decides whether the position means anything — a marker pointing at a `.ts`

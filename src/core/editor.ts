@@ -3194,7 +3194,7 @@ export class EditorEngine {
       // into a copy of the theme.
       designSystemCSS: [this.tokens.toCSS(), this.classes.toCSS()].filter(Boolean).join('\n\n'),
       designSystemTarget: target,
-      generatedElements: this.#generatedRegions().length,
+      generatedRegions: this.#generatedRegions(),
     };
   }
 
