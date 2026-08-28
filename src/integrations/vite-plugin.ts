@@ -260,7 +260,13 @@ export default function editorOverlay(options: EditorOverlayPluginOptions = {}):
           tags: [
             {
               tag: 'script',
-              attrs: { type: 'module', src: BOOTSTRAP_URL },
+              /*
+               * Marked as injected, so the export knows not to write it into the file.
+               * The bootstrap URL already sits in Vite's virtual namespace and would be
+               * recognised by that alone, but a tag this plugin controls should say what
+               * it is rather than be inferred from the shape of its src.
+               */
+              attrs: { type: 'module', src: BOOTSTRAP_URL, 'data-heo-injected': '' },
               injectTo: 'body',
             },
           ],

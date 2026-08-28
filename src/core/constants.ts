@@ -19,6 +19,21 @@ export const IGNORE_ATTR = 'data-heo-ignore';
 export const MIRROR_ATTR = 'data-heo-mirror';
 
 /**
+ * A tag put into the page by tooling, which must never be written back to the file.
+ *
+ * The distinction it draws is between a script that is *in* your HTML and one that a dev
+ * server or a plugin added on the way to the browser. Both are in the DOM and the export
+ * serializes the DOM, so without a way to tell them apart, saving writes the injected one
+ * into the source — and the next request injects it again on top, so the file grows a
+ * copy per save.
+ *
+ * Only for tags the overlay's own tooling injects. A script the page author added by hand
+ * is theirs and stays, even when it is the overlay's own bundle: it is already in the file,
+ * so writing it back changes nothing.
+ */
+export const INJECTED_ATTR = 'data-heo-injected';
+
+/**
  * Marks a control holding an edit the user has not committed.
  *
  * Read as a plain attribute so the keymap can tell that a keystroke belongs to the

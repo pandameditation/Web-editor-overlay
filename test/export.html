@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en" style="color-scheme: light">
+
+<head>
+  <meta charset="utf-8">
+  <title>Editor overlay — what the export must not contain</title>
+  <!--
+    The export serializes the live DOM, and the live DOM is not the file.
+
+    A dev server rewrites the HTML on its way to the browser, and the editor writes a
+    couple of attributes onto `<html>` while edit mode is on. Everything in here that
+    the file never had has to be taken back out, or saving writes it in — and the next
+    request injects it again on top, so the file grows a copy per save. That accumulation
+    is what this fixture pins down.
+
+        npm run build:lib && npm run check:export
+  -->
+
+  <!-- What Vite's dev server adds. It 404s here, which is fine: it only has to be in the
+       DOM to be exported, and a failed load is a browser-log entry, not a page error. -->
+  <script type="module" src="/@vite/client"></script>
+
+  <!-- And what a framework plugin adds. -->
+  <script type="module" src="/@react-refresh"></script>
+</head>
+
+<body>
+  <h1 id="authored">Written in the HTML</h1>
+  <p id="copy">Some copy.</p>
+
+  <!-- What this project's own Vite plugin injects: marked, so it is recognised outright
+       rather than by the shape of its URL. -->
+  <script type="module" src="/@id/__x00__virtual:heo-bootstrap" data-heo-injected></script>
+
+  <!-- And a script the page author wrote. This is in the file and must stay in the file,
+       even though it is the overlay's own bundle: writing it back changes nothing. -->
+  <script src="../dist/html-editor-overlay.iife.js" id="authored-overlay-script"></script>
+
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+
+  <script>
+    (async () => {
+      const errors = [];
+      window.addEventListener('error', (e) => errors.push('error: ' + e.message));
+      window.addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+
+      const results = {};
+      const progress = document.getElementById('progress');
+      const check = (name, fn) => {
+        progress.textContent = name;
+        try { results[name] = fn(); }
+        catch (err) { results[name] = 'THREW: ' + (err && err.message ? err.message : String(err)); }
+      };
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark' });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+
+      // Edit something, so this is a real save and not an export of an untouched page.
+      api.select(document.getElementById('copy'));
+      engine.setStyle('padding', '12px');
+      await frames();
+
+      const root = document.documentElement;
+      results.theEditorIsWritingOnTheHtmlElement = {
+        editAttribute: root.hasAttribute('data-heo-edit'),
+        dragAccent: root.style.getPropertyValue('--heo-drag-accent').trim() !== '',
+      };
+
+      const html = engine.exportHTML();
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      const srcs = (selector) =>
+        Array.from(doc.querySelectorAll(selector)).map((el) => el.getAttribute('src'));
+
+      /* ------------------------------------------------------------------ *
+       * The attributes the editor puts on `<html>`.
+       * ------------------------------------------------------------------ */
+      check('theExportDropsTheEditModeAttribute', () =>
+        !doc.documentElement.hasAttribute('data-heo-edit'));
+      check('theExportDropsTheDragAccent', () =>
+        !/--heo-drag-accent/.test(doc.documentElement.getAttribute('style') ?? ''));
+      // But not the page's own inline style on the same element.
+      check('andKeepsThePagesOwnInlineStyle', () =>
+        doc.documentElement.getAttribute('style'));
+
+      /* ------------------------------------------------------------------ *
+       * The tags the tooling injected.
+       * ------------------------------------------------------------------ */
+      check('theExportDropsTheDevServerClient', () => srcs('script[src*="@vite"]'));
+      check('theExportDropsTheFrameworkRuntime', () => srcs('script[src*="react-refresh"]'));
+      check('theExportDropsWhatThePluginInjected', () =>
+        doc.querySelectorAll('[data-heo-injected]').length);
+
+      /*
+       * The invariant that stops the accumulation.
+       *
+       * One in the DOM because the server put it there; none in the file. Serve the file
+       * again and the server adds exactly one back, so the count is stable however many
+       * times the page is saved. It used to be one more each time.
+       */
+      check('soTheCountIsStableAcrossSaves', () => ({
+        inTheLiveDom: document.querySelectorAll('script[src*="@vite"]').length,
+        inTheExport: doc.querySelectorAll('script[src*="@vite"]').length,
+      }));
+
+      /* ------------------------------------------------------------------ *
+       * And a script the author wrote stays, whatever it loads.
+       * ------------------------------------------------------------------ */
+      check('theExportKeepsTheAuthorsOwnScript', () =>
+        Boolean(doc.getElementById('authored-overlay-script')));
+      check('theExportKeepsThePagesContent', () => ({
+        heading: doc.getElementById('authored')?.textContent ?? null,
+        // The edit itself is the point of saving, so it has to be in there.
+        editedStyle: doc.getElementById('copy')?.getAttribute('style') ?? null,
+      }));
+      // Nothing of the editor survives at all.
+      check('noEditorChromeSurvives', () => ({
+        host: doc.querySelectorAll('html-editor-overlay').length,
+        internal: doc.querySelectorAll('[data-heo-internal]').length,
+        markers: doc.querySelectorAll('[data-heo-edit], [data-heo-editing], [data-heo-src]').length,
+      }));
+
+      results.__errors = errors;
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"__errors":["' + String(e && e.message) + '"]}:END';
+    });
+  </script>
+</body>
+
+</html>

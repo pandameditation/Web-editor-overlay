@@ -1,4 +1,11 @@
-import { HOST_TAG, INSERTED_ATTR, MIRROR_ATTR, MODAL_ATTR, SOURCE_ATTR } from './constants.js';
+import {
+  HOST_TAG,
+  INJECTED_ATTR,
+  INSERTED_ATTR,
+  MIRROR_ATTR,
+  MODAL_ATTR,
+  SOURCE_ATTR,
+} from './constants.js';
 import type { ClassRegistry } from './classes.js';
 import { patchCSS, type DeclarationPatch } from './css-patch.js';
 import type { BlockLibrary } from './library.js';
@@ -217,16 +224,63 @@ export function exportHTML(styleEdits: readonly InlineStyleReconciliation[] = []
     el.removeAttribute('data-heo-editing');
   }
 
-  // The scroll lock, which is on `<html>` itself — and `<html>` is what was cloned,
-  // so it is not reachable by `querySelectorAll`. Exporting from the save dialog's
-  // own footer happens with a modal open by definition, which is exactly when this
-  // is set.
+  /*
+   * Tags the tooling put in the page, which were never in the file.
+   *
+   * A dev server rewrites the HTML on its way to the browser — Vite adds its HMR client,
+   * a framework plugin adds its refresh runtime, and this project's own plugin adds the
+   * overlay bootstrap. All of it is in the DOM, and the export serializes the DOM, so
+   * every one of them used to be written into the source file. The next request then
+   * injected them again on top of the copies now in the file, which is why a page
+   * accumulated one `<script src="/@vite/client">` per save.
+   *
+   * Two ways of spotting them, because only one is available. Anything this project
+   * injects says so outright. Anything a dev server injects cannot be marked, so it is
+   * recognised by living in the virtual namespace servers reserve for themselves — a
+   * path segment starting `@`, which a real file on disk cannot have.
+   */
+  for (const injected of Array.from(clone.querySelectorAll(`[${INJECTED_ATTR}]`))) {
+    injected.remove();
+  }
+  for (const el of Array.from(clone.querySelectorAll('script[src], link[href]'))) {
+    const url = el.getAttribute('src') ?? el.getAttribute('href') ?? '';
+    if (isToolingURL(url)) el.remove();
+  }
+
+  /*
+   * The three things the editor writes onto `<html>` itself.
+   *
+   * `<html>` is what was cloned, so none of them are reachable through
+   * `querySelectorAll` — every one has to be named here, and forgetting one is invisible
+   * until it turns up in a diff. `data-heo-edit` and the drag accent are set on every
+   * render while edit mode is on, which is to say always, whenever an export happens.
+   *
+   * The accent is removed as a property rather than by dropping the attribute, because a
+   * page is entitled to its own inline styles on `<html>`; the attribute only goes if
+   * taking the accent out left it empty.
+   */
   clone.removeAttribute(MODAL_ATTR);
+  clone.removeAttribute('data-heo-edit');
+  clone.style.removeProperty('--heo-drag-accent');
+  if (!clone.getAttribute('style')?.trim()) clone.removeAttribute('style');
 
   const doctype = document.doctype
     ? `<!DOCTYPE ${document.doctype.name}>\n`
     : '<!DOCTYPE html>\n';
   return `${doctype}${clone.outerHTML}\n`;
+}
+
+/**
+ * True for a URL that belongs to a dev server rather than to the project.
+ *
+ * Vite serves its own machinery from a reserved namespace — `/@vite/client`,
+ * `/@react-refresh`, `/@id/…` for virtual modules, `/@fs/…` for files outside the root —
+ * and nothing on disk can occupy it, because a path segment cannot begin with `@` and
+ * still be resolved as a file. Matched anywhere in the path rather than only at the start,
+ * so a project served under a base path is covered too.
+ */
+function isToolingURL(url: string): boolean {
+  return /(?:^|\/)@(?:vite|id|fs|react-refresh)(?:\/|$)/.test(url);
 }
 
 /**
