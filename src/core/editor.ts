@@ -395,6 +395,15 @@ export class EditorEngine {
   #toastTimer = 0;
   #toastId = 0;
   #textEditSnapshot: string | null = null;
+  /**
+   * Whether the press now in progress landed inside a live text edit.
+   *
+   * Which is to say: whether a sweep through some words is underway. Recorded on
+   * `pointerdown` because that is the only moment it is knowable — by the time the release
+   * arrives the pointer may be anywhere, and often is, since selecting to the end of a
+   * paragraph means dragging past its edge.
+   */
+  #pressBeganInTextEdit = false;
   #injectedElements = new Set<string>();
   #destroyed = false;
   /** Deferred seed and design-system loads, so `whenReady` has something to await. */
@@ -4262,10 +4271,21 @@ export class EditorEngine {
        * instead of to the editor under the cursor. Only the text toolbar is genuinely
        * part of the edit it acts on, so only the text toolbar is exempt.
        */
+      /*
+       * Every press decides afresh whether a text sweep is starting under it.
+       *
+       * Cleared here rather than only where it is read, so the flag describes the press that
+       * is happening now and can never be left over from one whose release went somewhere
+       * this handler does not see.
+       */
+      this.#pressBeganInTextEdit = false;
+
       const editing = this.store.value.textEditing;
       if (editing) {
         const path = event.composedPath();
         if (!path.includes(editing) && !path.some(isTextEditChrome)) this.endTextEdit(true);
+        // A press inside the live edit is the start of a sweep through its words.
+        else if (path.includes(editing)) this.#pressBeganInTextEdit = true;
         return;
       }
 
@@ -4290,6 +4310,7 @@ export class EditorEngine {
       if (isOverlayEvent(event) || isNativeInputEvent(event)) return;
       const el = selectableFromEvent(event);
       if (!el || el !== this.store.value.selected) return;
+      this.#pressBeganInTextEdit = true;
       this.beginTextEdit(el, 'leave-selection');
     });
 
@@ -4302,6 +4323,16 @@ export class EditorEngine {
      * caret lands where the pointer was, not at the end of the text.
      */
     on(document, 'click', (event) => {
+      /*
+       * Read and cleared first, before any early return can strand it.
+       *
+       * A sweep that releases over the overlay's chrome, or after edit mode has been turned
+       * off, still has to leave this flag describing nothing — otherwise the next ordinary
+       * click on the page would be mistaken for the tail of that gesture and swallowed.
+       */
+      const endedASweep = this.#pressBeganInTextEdit;
+      this.#pressBeganInTextEdit = false;
+
       if (!this.editing) return;
       if (isOverlayEvent(event)) return;
 
@@ -4318,11 +4349,39 @@ export class EditorEngine {
       const anchor = eventAnchor(event);
       if (anchor) event.preventDefault();
 
+      const native = isNativeInputEvent(event);
+
+      /*
+       * The release that ends a text sweep is not a click on whatever is under the pointer.
+       *
+       * Selecting to the end of a paragraph means dragging past its last line, and reaching
+       * its final word means dragging past its right edge — so the pointer leaving the box
+       * mid-sweep is the normal case, not an edge one. When it does, the release lands on
+       * something else and the browser reports the click against the nearest common ancestor,
+       * which is usually `<body>`.
+       *
+       * Read as a fresh click, that ended the edit and selected `<body>`, and removing
+       * `contenteditable` collapsed the selection — so the words the user had just swept
+       * disappeared at the exact moment they let go. Which reads as "moving outside the box
+       * cancels my selection", because letting go is when it becomes visible.
+       *
+       * The press is what says which gesture this is. It began inside the element being
+       * edited, so this click belongs to that element however far the pointer travelled. The
+       * default is still suppressed — in edit mode the page does not act on clicks — but
+       * nothing about the selection or the edit changes.
+       */
+      if (endedASweep) {
+        if (!native) {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+        return;
+      }
+
       const el = selectableFromEvent(event);
       if (!el) return;
       if (this.store.value.textEditing === el) return;
 
-      const native = isNativeInputEvent(event);
       if (!native) {
         event.preventDefault();
         event.stopPropagation();

@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Sweeping text past the edge of the element</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: system-ui, sans-serif;
+    }
+
+    #copy {
+      width: 320px;
+      border: 1px solid #ccc;
+    }
+
+    #below {
+      margin-top: 80px;
+      height: 120px;
+      background: #f3f4f6;
+    }
+  </style>
+</head>
+
+<body>
+  <!--
+    Selecting text by sweeping is a press-move-release gesture, and the move very often
+    leaves the element: reaching the last word of a paragraph means dragging past its
+    right edge, and selecting to the end means dragging below its last line. The browser
+    handles that natively and keeps extending the selection. The editor must not undo it.
+  -->
+  <h1 id="title">Sweep past the edge</h1>
+  <p id="copy">Sweep across these words and keep going past the edge of the box.</p>
+  <div id="below">Somewhere else entirely, well outside the paragraph's box.</div>
+
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const results = {};
+      const errors = [];
+      addEventListener('error', (e) => errors.push('error: ' + e.message));
+      addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+
+      const progress = document.getElementById('progress');
+      const check = (name, fn) => {
+        progress.textContent = name;
+        try { results[name] = fn(); }
+        catch (err) { results[name] = 'THREW: ' + (err && err.message ? err.message : String(err)); }
+      };
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const byId = (id) => document.getElementById(id);
+
+      const at = (el, dx = 4, dy = 4) => {
+        const box = el.getBoundingClientRect();
+        return { clientX: box.left + dx, clientY: box.top + dy };
+      };
+      const pointer = (type, el, point, init = {}) =>
+        el.dispatchEvent(new PointerEvent(type, {
+          bubbles: true, composed: true, cancelable: true,
+          button: 0, buttons: type === 'pointerup' ? 0 : 1, isPrimary: true,
+          ...point, ...init,
+        }));
+      const mouse = (type, el, point) =>
+        el.dispatchEvent(new MouseEvent(type, {
+          bubbles: true, composed: true, cancelable: true, button: 0, ...point,
+        }));
+
+      /** The words the browser would have swept, stood in for by a real Range. */
+      const sweepText = (el, from, to) => {
+        const range = document.createRange();
+        range.setStart(el.firstChild, from);
+        range.setEnd(el.firstChild, to);
+        const selection = getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+      };
+      const selected = () => String(getSelection()).trim();
+      const editingId = () => window.__engine.store.value.textEditing?.id ?? null;
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark' });
+      const engine = api.engine;
+      window.__engine = engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+
+      const copy = byId('copy');
+      const below = byId('below');
+
+      /* ------------------------------------------------------------------ *
+       * Get into the state the bug happens in: selected, then pressed, so a
+       * sweep is underway on an element that is being edited.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'setup';
+      api.select(copy);
+      await frames();
+      pointer('pointerdown', copy, at(copy, 6, 6));
+      await frames();
+      check('theSweepStartsOnTheEditedParagraph', () => ({
+        editing: editingId(),
+        contenteditable: copy.getAttribute('contenteditable'),
+      }));
+
+      sweepText(copy, 0, 26);
+      check('andTheWordsAreSelected', () => selected());
+
+      /* ------------------------------------------------------------------ *
+       * 1. The pointer leaves the box, still held down.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'moveOutside';
+      pointer('pointermove', below, at(below, 20, 20));
+      pointer('pointerover', below, at(below, 20, 20));
+      mouse('mousemove', below, at(below, 20, 20));
+      await frames();
+      check('movingOutsideTheBoxKeepsTheSelection', () => ({
+        text: selected(),
+        editing: editingId(),
+        hovered: engine.store.value.hovered?.id ?? null,
+      }));
+
+      /* ------------------------------------------------------------------ *
+       * 2. And releasing outside it keeps the selection too.
+       *
+       * The release ends the sweep. It is not a click on whatever happens to be under
+       * the pointer — the gesture began inside the paragraph, and treating the release
+       * as a fresh click is what moves the editor's selection and collapses the text.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'releaseOutside';
+      pointer('pointerup', below, at(below, 20, 20));
+      mouse('mouseup', below, at(below, 20, 20));
+      // A release outside the element makes the common ancestor the click target, which
+      // is what the browser does: press in the <p>, release in the <div>, click on <body>.
+      mouse('click', document.body, at(below, 20, 20));
+      await frames();
+      check('releasingOutsideTheBoxKeepsTheSelection', () => ({
+        text: selected(),
+        stillEditing: editingId(),
+        selectedElement: engine.store.value.selected?.id ?? null,
+      }));
+
+      /* ------------------------------------------------------------------ *
+       * 3. But a deliberate press elsewhere still ends the edit.
+       *
+       * The distinction that has to survive the fix: a *new* gesture starting outside is
+       * how the user leaves a text edit, and it must keep working.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'freshPressElsewhere';
+      pointer('pointerdown', below, at(below, 20, 20));
+      await frames();
+      check('aFreshPressOutsideStillEndsTheEdit', () => editingId());
+      pointer('pointerup', below, at(below, 20, 20));
+      mouse('click', below, at(below, 20, 20));
+      await frames();
+      check('andSelectsWhatWasPressed', () => engine.store.value.selected?.id ?? null);
+
+      results.__errors = errors;
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"__fatal":' + JSON.stringify(String((e && e.stack) || e)) + '}:END';
+    });
+  </script>
+</body>
+
+</html>
