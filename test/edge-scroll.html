@@ -4,11 +4,15 @@
   <meta charset="utf-8">
   <title>Scrolling to the rest of the page during a drag</title>
   <style>
-    body { margin: 0; font-family: system-ui, sans-serif; }
+    body { margin: 0; overflow-x: hidden; font-family: system-ui, sans-serif; }
     #stack { padding: 8px; }
     #stack > div { height: 40px; background: #eef; margin-bottom: 6px; }
-    /* Long enough that the pointer parked at an edge has somewhere to go for a while. */
-    #filler { height: 6000px; background: linear-gradient(#fff, #dfe); }
+    /*
+     * Long enough that a pointer held at the edge through all three gears still has road ahead
+     * of it. Ten seconds of holding covers something like eighty thousand pixels, so this leaves
+     * room to spare rather than measuring a hold that quietly ran out of page.
+     */
+    #filler { height: 160000px; background: linear-gradient(#fff, #dfe); }
     #panel { height: 200px; overflow: auto; border: 2px solid #99a; margin: 8px; }
     #panel > div { height: 1400px; background: linear-gradient(#ffe, #fdd); }
     pre { margin: 0; }
@@ -55,11 +59,23 @@
       const middleX = () => Math.round(innerWidth / 2);
       const bottom = (inset) => ({ x: middleX(), y: innerHeight - inset });
 
-      /** Hold the pointer at one spot for a while and report how far the page travelled. */
+      /**
+       * Hold the pointer at one spot for a while and report how far the page travelled.
+       *
+       * The spot is re-derived and re-reported as the hold runs, because it is expressed
+       * relative to the viewport and the viewport is not guaranteed to stay the same size. A
+       * y of `innerHeight - 2` captured once became a y *past* the bottom of a viewport that
+       * later shrank, which the drag reads as the pointer having left the window — the cancel
+       * gesture — so the dwell kept being thrown away and the speed never built. A real pointer
+       * reports where it is against the window as it stands, and so does this.
+       */
       const holdAt = async (spot, ms) => {
         const from = scrollY;
-        engine.updateDrag(spot.x, spot.y);
+        const report = () => { const p = spot(); engine.updateDrag(p.x, p.y); };
+        report();
+        const ticking = setInterval(report, 80);
         await wait(ms);
+        clearInterval(ticking);
         return scrollY - from;
       };
       const beginDrag = async (spot) => {
@@ -75,7 +91,7 @@
        * ------------------------------------------------------------------ */
       await beginDrag(bottom(6));
       await check('holdingAtTheBottomEdgeScrollsDown', async () => {
-        const moved = await holdAt(bottom(6), 500);
+        const moved = await holdAt(() => bottom(6), 500);
         return { moved: Math.round(moved), scrolled: moved > 200 };
       });
 
@@ -85,8 +101,8 @@
       await check('itStartsSlowAndBuildsUp', async () => {
         engine.cancelDrag();
         await beginDrag(bottom(6));
-        const first = await holdAt(bottom(6), 260);
-        const later = await holdAt(bottom(6), 260);
+        const first = await holdAt(() => bottom(6), 260);
+        const later = await holdAt(() => bottom(6), 260);
         return {
           first: Math.round(first),
           later: Math.round(later),
@@ -102,16 +118,101 @@
         engine.cancelDrag();
         // Just inside the band, from a cold start.
         await beginDrag(bottom(Math.round(band) - 4));
-        const shallow = await holdAt(bottom(Math.round(band) - 4), 420);
+        const shallow = await holdAt(() => bottom(Math.round(band) - 4), 420);
         engine.cancelDrag();
         // Right at the edge, from an equally cold start, for the same time.
         await beginDrag(bottom(2));
-        const deep = await holdAt(bottom(2), 420);
+        const deep = await holdAt(() => bottom(2), 420);
         return {
           shallow: Math.round(shallow),
           deep: Math.round(deep),
           deeperIsFaster: deep > shallow * 2,
           shallowIsGentle: shallow < innerHeight,
+        };
+      });
+
+      /* ------------------------------------------------------------------ *
+       * Held against the edge for seconds, it keeps building well past full speed.
+       * ------------------------------------------------------------------ */
+      /**
+       * Watch one unbroken hold and report how far the page moved in two windows of it.
+       *
+       * Observed rather than re-reported: reporting the pointer again mid-hold restarts the
+       * dwell, and the dwell is the thing being measured. One press, then hands off.
+       */
+      const travelDuring = async (spot, windows) => {
+        engine.cancelDrag();
+        await beginDrag(spot);
+        const began = performance.now();
+        const marks = [];
+        await new Promise((done) => {
+          const sample = () => {
+            marks.push({ at: performance.now() - began, y: scrollY });
+            if (marks[marks.length - 1].at > windows[windows.length - 1][1] + 40) done();
+            else requestAnimationFrame(sample);
+          };
+          requestAnimationFrame(sample);
+        });
+        const at = (ms) => {
+          let best = marks[0];
+          for (const mark of marks) if (Math.abs(mark.at - ms) < Math.abs(best.at - ms)) best = mark;
+          return best.y;
+        };
+        return windows.map(([from, to]) => Math.round(at(to) - at(from)));
+      };
+
+      await check('eachThreeSecondsHeldRoughlyDoublesTheSpeed', async () => {
+        /*
+         * One window per gear, each sampled after that gear has finished arriving: just past the
+         * warm-up, then past three, six and nine seconds.
+         */
+        const [base, first, second, third] = await travelDuring(bottom(2), [
+          [1000, 1600], [3000, 3600], [6000, 6600], [9000, 9600],
+        ]);
+        engine.cancelDrag();
+        const step = (a, b) => Number((b / Math.max(a, 1)).toFixed(2));
+        return {
+          afterWarmup: base,
+          afterThree: first,
+          afterSix: second,
+          afterNine: third,
+          gearRatios: [step(base, first), step(first, second), step(second, third)],
+          eachGearIsFaster: first > base * 2 && second > first * 1.6 && third > second * 1.6,
+        };
+      });
+
+      /*
+       * And the ramp has no step in it. Sampled densely across the two gear changes, the speed
+       * from one window to the next never jumps — a boundary with a kink would show up here as a
+       * sudden change between neighbouring samples.
+       */
+      await check('andTheGearChangesHaveNoLurchInThem', async () => {
+        const windows = [];
+        for (let at = 2200; at <= 7000; at += 400) windows.push([at, at + 400]);
+        const travel = await travelDuring(bottom(2), windows);
+        engine.cancelDrag();
+        let worst = 1;
+        for (let i = 1; i < travel.length; i += 1) {
+          const ratio = travel[i] / Math.max(travel[i - 1], 1);
+          if (ratio > worst) worst = ratio;
+        }
+        return {
+          samples: travel,
+          worstStepBetweenNeighbours: Number(worst.toFixed(2)),
+          // Speed rises throughout, so some growth is expected; a lurch would be far larger.
+          noLurch: worst < 1.6,
+        };
+      });
+
+      // The reward is for holding at the *edge*: resting in the shallows does not earn it.
+      await check('butAShallowHoldDoesNotEarnIt', async () => {
+        const band = Math.round(Math.max(44, Math.min(140, innerHeight * 0.14)));
+        const [settled, sustained] = await travelDuring(bottom(band - 6), [[1000, 1600], [3000, 3600]]);
+        engine.cancelDrag();
+        return {
+          inTheSecondAfterWarmup: settled,
+          inTheSecondAfterThree: sustained,
+          staysGentle: sustained < Math.max(settled, 1) * 2,
         };
       });
 
@@ -124,7 +225,7 @@
         await frames();
         engine.startDrag(item, middleX(), 6);
         engine.updateDrag(middleX(), 6);
-        const moved = await holdAt({ x: middleX(), y: 6 }, 420);
+        const moved = await holdAt(() => ({ x: middleX(), y: 6 }), 420);
         return { moved: Math.round(moved), scrolledUp: moved < 0 };
       });
 
@@ -134,7 +235,7 @@
       await check('theMiddleOfTheScreenScrollsNothing', async () => {
         engine.cancelDrag();
         await beginDrag({ x: middleX(), y: Math.round(innerHeight / 2) });
-        const moved = await holdAt({ x: middleX(), y: Math.round(innerHeight / 2) }, 420);
+        const moved = await holdAt(() => ({ x: middleX(), y: Math.round(innerHeight / 2) }), 420);
         return Math.round(moved);
       });
 

@@ -32,8 +32,20 @@
 export interface EdgeScrollHooks {
   /** Where the pointer is, in viewport coordinates, or null when the drag is over. */
   pointer: () => { x: number; y: number } | null;
-  /** Called after each scroll step so the drop target can be re-read under the pointer. */
-  moved: () => void;
+  /**
+   * Called after each scroll step so the drop target can be re-read under the pointer.
+   *
+   * Given the position the scroll was worked out from, clamped into the window. A replay is not
+   * a fresh event and must not be able to change what the drag thinks the *user* did: reporting
+   * a stale position that had fallen outside a shrunken viewport put the drag into its
+   * about-to-be-abandoned state and left it there, since every later replay said the same thing.
+   */
+  moved: (at: { x: number; y: number }) => void;
+  /**
+   * True while the drag is in its "release to abandon" state, which is the caller's own
+   * judgement about the pointer having left the window rather than a second guess made here.
+   */
+  suspended: () => boolean;
 }
 
 /**
@@ -53,9 +65,33 @@ const SLOWEST = 30;
 /** Fast enough to cross a long document without lifting the pointer, at the outer edge. */
 const FASTEST = 1600;
 
-/** How long the pointer has to stay in the band to earn full speed, and where it starts. */
+/** How long the pointer has to stay in the band to earn ordinary full speed, and where it starts. */
 const WARMUP_MS = 850;
 const WARMUP_FLOOR = 0.2;
+
+/**
+ * And then it keeps building, in gears, for someone who is clearly going a long way.
+ *
+ * Ordinary full speed is tuned for placing something a screen or two away. Held right against the
+ * edge, the intent is different — the target is nowhere near, and the only thing the gesture can
+ * still express is "further" — so each further three seconds of holding roughly doubles what the
+ * one before it offered. Three seconds says "not close"; nine says "the other end of the
+ * document", and the ceiling is high enough to get there.
+ *
+ * Gears rather than one long ramp because the useful speeds are far apart. A single curve to the
+ * top would rush through everything in the middle, and those middle rates are the ones that put
+ * something a few screens away — which is most drags.
+ *
+ * Every join is smooth, and that is designed rather than lucky. The warm-up's ease flattens to
+ * zero slope as it completes, and each gear's ease starts and ends at zero slope, so no boundary
+ * anywhere has a kink in it. A step in acceleration is felt as the page lurching, which is
+ * precisely the impression these ramps exist to avoid.
+ */
+const GEARS: readonly { at: number; gain: number }[] = [
+  { at: 3000, gain: 3 },
+  { at: 6000, gain: 6 },
+  { at: 9000, gain: 12 },
+];
 /** How long a slip out of the band is forgiven before the warm-up is given up on. */
 const FORGIVE_MS = 140;
 
@@ -92,7 +128,8 @@ export function startEdgeScroll(hooks: EdgeScrollHooks): () => void {
       return;
     }
 
-    const wanted = edgePush(pointer);
+    const within = { x: clamp(pointer.x, innerWidth), y: clamp(pointer.y, innerHeight) };
+    const wanted = hooks.suspended() ? null : edgePush(within);
     if (!wanted) {
       /*
        * Out of the band. The warm-up is kept for a moment in case this is jitter, and the
@@ -113,20 +150,35 @@ export function startEdgeScroll(hooks: EdgeScrollHooks): () => void {
     if (since === null) since = now;
     leftAt = null;
 
-    const held = (now - since) / WARMUP_MS;
+    const held = now - since;
     // Eased out, so the build-up is felt early and has clearly finished by the end rather
     // than creeping up on the user for the whole second.
-    const warm = WARMUP_FLOOR + (1 - WARMUP_FLOOR) * easeOut(clamp01(held));
+    const warm = WARMUP_FLOOR + (1 - WARMUP_FLOOR) * easeOut(clamp01(held / WARMUP_MS));
+    /*
+     * Which gear the hold has earned, once the warm-up has run its course. Gated on depth
+     * below, per axis: this is the reward for holding against the edge, and a pointer resting
+     * in the shallows has not asked for it.
+     */
+    const gain = gearFor(held);
 
     let scrolled = false;
     for (const axis of ['x', 'y'] as const) {
       const push = wanted[axis];
       if (!push) continue;
-      const target = scrollableFor(pointer, axis, Math.sign(push));
+      const target = scrollableFor(within, axis, Math.sign(push));
       if (!target) continue;
       // `push` carries the sign; its magnitude is the eased depth into the band.
-      const speed = SLOWEST + (FASTEST - SLOWEST) * ease(Math.abs(push));
-      debt[axis] += Math.sign(push) * speed * warm * dt;
+      const into = Math.abs(push);
+      const speed = SLOWEST + (FASTEST - SLOWEST) * ease(into);
+      /*
+       * Depth decides how much of the sustained gain is on offer, linearly.
+       *
+       * Linearly and not through `ease`, because `ease` has already shaped the base speed —
+       * compounding the two would leave the gain unreachable anywhere but the outermost pixel,
+       * which is not somewhere a hand can be asked to stay for three seconds.
+       */
+      const sustained = 1 + (gain - 1) * into;
+      debt[axis] += Math.sign(push) * speed * warm * sustained * dt;
       const whole = Math.trunc(debt[axis]);
       if (!whole) continue;
       debt[axis] -= whole;
@@ -138,7 +190,7 @@ export function startEdgeScroll(hooks: EdgeScrollHooks): () => void {
 
     // Only when something actually moved: at a scroll limit there is nothing new under the
     // pointer, and re-planning the drop on every frame for no reason is just work.
-    if (scrolled) hooks.moved();
+    if (scrolled) hooks.moved(within);
   };
 
   frame = requestAnimationFrame(step);
@@ -146,21 +198,23 @@ export function startEdgeScroll(hooks: EdgeScrollHooks): () => void {
 }
 
 /**
- * How hard the pointer is pushing at each edge, as a signed depth from 0 to 1.
+ * How hard the pointer is pushing at each edge, as a signed depth from 0 to 1, or null for
+ * neither edge.
  *
- * Null when it is in neither band, or when it has left the viewport altogether — off-window is
- * the drag's cancel gesture, and scrolling the page while the user is on their way to abandoning
- * the move would undo the very thing they are trying to get back to.
+ * The position is clamped into the window rather than rejected for being outside it. Whether the
+ * user has left is the drag's own call — it has the live events and a state for it — and making
+ * that judgement a second time from geometry got it wrong: the viewport can shrink mid-gesture,
+ * and a pointer resting at the old bottom edge then sits past the new one without having moved
+ * at all. Read as departure, that killed the scrolling for the rest of the drag while the user
+ * was still holding against the edge waiting for it.
  */
 function edgePush(pointer: { x: number; y: number }): { x: number; y: number } | null {
-  if (pointer.x < 0 || pointer.y < 0 || pointer.x > innerWidth || pointer.y > innerHeight) {
-    return null;
-  }
-  const push = {
-    x: depth(pointer.x, innerWidth),
-    y: depth(pointer.y, innerHeight),
-  };
+  const push = { x: depth(pointer.x, innerWidth), y: depth(pointer.y, innerHeight) };
   return push.x || push.y ? push : null;
+}
+
+function clamp(at: number, size: number): number {
+  return at < 0 ? 0 : at > size ? size : at;
 }
 
 /** Signed depth into the near or far band along one axis, 0 outside both. */
@@ -212,6 +266,26 @@ function hasRoom(el: HTMLElement, axis: 'x' | 'y', sign: number): boolean {
   return sign < 0 ? at > 0.5 : at < max - 0.5;
 }
 
+/**
+ * The multiplier a hold of this length has reached, interpolated inside its gear.
+ *
+ * Each segment runs from where the previous one left off, so the value is continuous, and each
+ * uses an ease that is flat at both ends, so the rate of change is continuous too.
+ */
+function gearFor(held: number): number {
+  let fromAt = WARMUP_MS;
+  let fromGain = 1;
+  for (const gear of GEARS) {
+    if (held < gear.at) {
+      const t = easeInOut(clamp01((held - fromAt) / (gear.at - fromAt)));
+      return fromGain + (gear.gain - fromGain) * t;
+    }
+    fromAt = gear.at;
+    fromGain = gear.gain;
+  }
+  return fromGain;
+}
+
 /** Fine control near the band's inner edge, real speed only at the outer few pixels. */
 function ease(depth: number): number {
   return depth * depth * depth;
@@ -219,6 +293,11 @@ function ease(depth: number): number {
 
 function easeOut(t: number): number {
   return 1 - (1 - t) * (1 - t);
+}
+
+/** Flat at both ends, so a ramp using it neither starts nor finishes with a jolt. */
+function easeInOut(t: number): number {
+  return t * t * (3 - 2 * t);
 }
 
 function clamp01(value: number): number {

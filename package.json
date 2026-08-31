@@ -52,7 +52,7 @@
     "check:links": "node scripts/browser-check.mjs test/links.html 45000",
     "check:newtab": "node scripts/browser-check.mjs test/link-newtab.html 45000",
     "check:textdrag": "node scripts/browser-check.mjs test/text-drag.html 45000",
-    "check:edgescroll": "node scripts/browser-check.mjs test/edge-scroll.html 60000"
+    "check:edgescroll": "node scripts/browser-check.mjs test/edge-scroll.html 150000"
   },
   "dependencies": {
     "lit": "3.3.3"

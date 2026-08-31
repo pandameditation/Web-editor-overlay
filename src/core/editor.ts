@@ -2799,10 +2799,12 @@ export class EditorEngine {
     this.#stopEdgeScroll?.();
     this.#stopEdgeScroll = startEdgeScroll({
       pointer: () => this.store.value.drag?.pointer ?? null,
-      moved: () => {
-        const pointer = this.store.value.drag?.pointer;
-        if (pointer) this.updateDrag(pointer.x, pointer.y);
+      moved: (at) => {
+        if (this.store.value.drag) this.updateDrag(at.x, at.y);
       },
+      // Held, not stopped: coming back inside the window resumes the drag, so it must also be
+      // able to resume scrolling.
+      suspended: () => this.store.value.drag?.willCancel === true,
     });
   }
 
