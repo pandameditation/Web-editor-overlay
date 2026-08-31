@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Sweeping text on a selected element</title>
+  <style>
+    body { margin: 0; padding: 24px; font-family: system-ui, sans-serif; }
+    pre { margin-top: 16px; }
+  </style>
+</head>
+<body>
+  <p id="copy">Sweep across these words to select them.</p>
+  <p id="other">Another paragraph entirely.</p>
+  <input id="field" value="a native input">
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const errors = [];
+      window.addEventListener('error', (e) => errors.push('error: ' + e.message));
+      window.addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+      const results = {};
+      const check = async (name, fn) => {
+        document.getElementById('progress').textContent = name;
+        try { results[name] = await fn(); }
+        catch (err) { results[name] = 'THREW: ' + String(err && err.message); }
+      };
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const byId = (id) => document.getElementById(id);
+
+      const press = (el, button = 0) => {
+        const box = el.getBoundingClientRect();
+        el.dispatchEvent(new PointerEvent('pointerdown', {
+          bubbles: true, composed: true, cancelable: true, button, isPrimary: true,
+          clientX: Math.round(box.left + 8), clientY: Math.round(box.top + box.height / 2),
+        }));
+      };
+      const clickIt = (el) => {
+        const box = el.getBoundingClientRect();
+        el.dispatchEvent(new MouseEvent('click', {
+          bubbles: true, composed: true, cancelable: true,
+          clientX: Math.round(box.left + 8), clientY: Math.round(box.top + box.height / 2),
+        }));
+      };
+      const editingId = () => engine.store.value.textEditing?.id ?? null;
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark' });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+
+      const copy = byId('copy');
+
+      /* ------------------------------------------------------------------ *
+       * Pressing on something not yet selected still just selects it.
+       * ------------------------------------------------------------------ */
+      api.select(null);
+      await frames();
+      press(copy);
+      await frames();
+      await check('pressingAnUnselectedElementDoesNotStartEditing', () => editingId());
+      clickIt(copy);
+      await frames();
+      await check('andTheClickSelectsIt', () => ({
+        selected: engine.store.value.selected?.id ?? null,
+        editing: editingId(),
+      }));
+
+      /* ------------------------------------------------------------------ *
+       * The press after that starts editing immediately, before any click.
+       * ------------------------------------------------------------------ */
+      press(copy);
+      await check('theNextPressStartsEditingRightAway', () => editingId());
+      await check('andItIsEditableWhileThePointerIsStillDown', () => ({
+        contenteditable: copy.getAttribute('contenteditable'),
+      }));
+
+      /*
+       * The regression this exists for. A sweep hands the browser an editable element and it
+       * builds the selection natively; the range below stands in for that. Editing used to place
+       * a caret a frame later, which wiped the whole thing.
+       */
+      const range = document.createRange();
+      range.setStart(copy.firstChild, 0);
+      range.setEnd(copy.firstChild, 5);
+      const selection = getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      await check('theSweptTextIsSelected', () => String(getSelection()).trim());
+      await frames();
+      await check('andSurvivesTheFrameAfterwards', () => String(getSelection()).trim());
+      // Released, and it is still what was swept.
+      clickIt(copy);
+      await frames();
+      await check('andTheClickThatEndsTheSweepLeavesItAlone', () => ({
+        text: String(getSelection()).trim(),
+        editing: editingId(),
+      }));
+
+      /* ------------------------------------------------------------------ *
+       * Pressing elsewhere still ends the edit and moves the selection.
+       * ------------------------------------------------------------------ */
+      press(byId('other'));
+      await frames();
+      await check('pressingAnotherElementEndsTheEdit', () => editingId());
+      clickIt(byId('other'));
+      await frames();
+      await check('andSelectsThatOneInstead', () => engine.store.value.selected?.id ?? null);
+
+      /* ------------------------------------------------------------------ *
+       * What must not trigger it.
+       * ------------------------------------------------------------------ */
+      api.select(byId('other'));
+      await frames();
+      press(byId('other'), 2);
+      await frames();
+      await check('aRightClickDoesNotStartEditing', () => editingId());
+
+      api.select(byId('field'));
+      await frames();
+      press(byId('field'));
+      await frames();
+      await check('andNeitherDoesPressingANativeInput', () => editingId());
+
+      results.__errors = errors;
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"__errors":["' + String(e && e.message) + '"]}:END';
+    });
+  </script>
+</body>
+</html>

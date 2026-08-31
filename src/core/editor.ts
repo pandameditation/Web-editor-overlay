@@ -2097,8 +2097,15 @@ export class EditorEngine {
    * `caret` places the insertion point under the pointer instead of at the end,
    * which is what makes clicking into a paragraph behave the way it does in every
    * other editor: you land where you clicked.
+   *
+   * `'leave-selection'` is for the case where the browser is already doing that job: editing
+   * began on `pointerdown`, so by the time this runs the user may be mid-sweep through the
+   * text. Placing a caret then would wipe what they are selecting.
    */
-  beginTextEdit(el = this.store.value.selected, caret?: { x: number; y: number }): void {
+  beginTextEdit(
+    el = this.store.value.selected,
+    caret?: { x: number; y: number } | 'leave-selection',
+  ): void {
     if (!el || this.store.value.textEditing === el) return;
     if (!acceptsChildren(el)) return;
     /*
@@ -2142,6 +2149,15 @@ export class EditorEngine {
     // caret is placed, otherwise Safari drops the selection.
     requestAnimationFrame(() => {
       if (this.store.value.textEditing !== el) return;
+      /*
+       * Nothing to place: the gesture that started this is placing it.
+       *
+       * A press on an already-selected element turns editing on straight away so that the
+       * browser's own selection drag can run, and the browser has had the element as editable
+       * since before `mousedown`. Reaching in a frame later to clear the ranges and re-place a
+       * caret would undo the sweep in progress, which is the whole point of starting early.
+       */
+      if (caret === 'leave-selection') return;
       el.focus({ preventScroll: true });
       const selection = getSelection();
       if (!selection) return;
@@ -3865,7 +3881,31 @@ export class EditorEngine {
       if (editing) {
         const path = event.composedPath();
         if (!path.includes(editing) && !path.some(isTextEditChrome)) this.endTextEdit(true);
+        return;
       }
+
+      /*
+       * Pressing on an element that is already selected starts editing it now, not on release.
+       *
+       * Selecting text is a press-move-release gesture, and the browser only performs it on an
+       * element that is editable when the press lands. Waiting for the `click` meant the sweep
+       * happened over a non-editable element — nothing was selected — and editing then began at
+       * the release point with a bare caret. The words the user had just swept over were the one
+       * thing they had asked for, and they were gone. So the element becomes editable during
+       * `pointerdown`, before `mousedown`, and the browser does the rest.
+       *
+       * A plain click through this same path lands the caret where it was clicked, which is what
+       * it did before, so the click handler no longer has to place one: it sees the element is
+       * already being edited and stands down.
+       *
+       * Only the primary button, and only the element that is already selected — pressing on
+       * anything else is how the selection moves, and that has to keep working.
+       */
+      if (event.button !== 0) return;
+      if (isOverlayEvent(event) || isNativeInputEvent(event)) return;
+      const el = selectableFromEvent(event);
+      if (!el || el !== this.store.value.selected) return;
+      this.beginTextEdit(el, 'leave-selection');
     });
 
     /**
