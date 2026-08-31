@@ -1,7 +1,13 @@
 import { prettifyClassName } from './classes.js';
 import { parseDesignSystem } from './design-system.js';
 import { prettifyTokenName } from './tokens.js';
-import type { DesignClass, DesignSystemDocument, DesignToken, LibraryBlock } from './types.js';
+import type {
+  DesignClass,
+  DesignRule,
+  DesignSystemDocument,
+  DesignToken,
+  LibraryBlock,
+} from './types.js';
 
 /**
  * Design systems as a single copy-pasteable string.
@@ -70,6 +76,22 @@ export function compactDesignSystem(doc: DesignSystemDocument): DesignSystemDocu
     return next;
   });
 
+  /*
+   * Rules keep their order, and their order is the only thing about them that is not
+   * self-evident from the selector.
+   *
+   * `map` rather than anything that sorts or dedupes: two rules of equal specificity are
+   * decided by which comes last, so a seed that reordered them would land a page looking
+   * different from the one it was taken from. No label is derived from a selector, so
+   * unlike the two above there is nothing to strip as redundant.
+   */
+  const rules = (doc.rules ?? []).map((entry) => {
+    const next: DesignRule = { selector: entry.selector, declarations: entry.declarations };
+    if (entry.label) next.label = entry.label;
+    if (entry.description) next.description = entry.description;
+    return next;
+  });
+
   // Blocks are the bulk of any real seed, so every optional field is dropped when
   // it is empty rather than carried as `null`.
   const blocks = doc.blocks.map((block) => {
@@ -90,7 +112,17 @@ export function compactDesignSystem(doc: DesignSystemDocument): DesignSystemDocu
     return next;
   });
 
-  return { name: doc.name, version: doc.version, tokens, classes, blocks };
+  // `rules` is omitted entirely when there are none, rather than carried as `[]`. Every
+  // page without a rule would otherwise pay four characters for saying so, and the
+  // parser already defaults a missing key.
+  return {
+    name: doc.name,
+    version: doc.version,
+    tokens,
+    classes,
+    blocks,
+    ...(rules.length ? { rules } : {}),
+  };
 }
 
 /**
@@ -157,6 +189,7 @@ export async function decodeSeed(text: string): Promise<DesignSystemDocument> {
 export interface SeedStats {
   tokens: number;
   classes: number;
+  rules: number;
   blocks: number;
   /** Characters in the seed, which is what a paste target has to hold. */
   length: number;
@@ -177,6 +210,7 @@ export function seedStats(doc: DesignSystemDocument, seed: string): SeedStats {
   return {
     tokens: doc.tokens.length,
     classes: doc.classes.length,
+    rules: doc.rules?.length ?? 0,
     blocks: doc.blocks.length,
     length: seed.length,
     size: formatBytes(seed.length),

@@ -83,6 +83,37 @@ export interface PlannedWrite {
   warnings?: string[];
 }
 
+/**
+ * The three kinds of vocabulary a session can author, each as CSS.
+ *
+ * Empty strings are the normal case: most sessions touch one of the three.
+ */
+export interface DesignSystemCSS {
+  tokens: string;
+  classes: string;
+  rules: string;
+}
+
+/** The parts, in cascade order, as one block. Empty when nothing was authored. */
+export function designSystemCSSText(css: DesignSystemCSS): string {
+  return [css.tokens, css.classes, css.rules].filter((part) => part.trim()).join('\n\n');
+}
+
+/** Which kinds are present, for a reason a reader can act on. */
+function designSystemKinds(css: DesignSystemCSS): string[] {
+  const kinds: string[] = [];
+  if (css.tokens.trim()) kinds.push('tokens');
+  if (css.classes.trim()) kinds.push('classes');
+  if (css.rules.trim()) kinds.push('rules');
+  return kinds;
+}
+
+/** `tokens and classes`, `tokens, classes and rules`. */
+function listPhrase(items: string[]): string {
+  if (items.length <= 1) return items[0] ?? '';
+  return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
+}
+
 /** A change that cannot be written, and why. */
 export interface UnwritableChange {
   record: ChangeRecord;
@@ -116,12 +147,18 @@ export interface WriteSubject {
   /** Suggested name for the page's own file, when its URL does not give one. */
   fileName: string;
   /**
-   * CSS the editor generated this session: new tokens and reusable classes.
+   * CSS the editor generated this session, in three parts.
    *
-   * Kept apart from the records because it is not a change to an existing file — it
-   * is new vocabulary that has to be given a home. See `designSystemTarget`.
+   * Kept apart from the records because it is not a change to an existing file — it is
+   * new vocabulary that has to be given a home. See `designSystemTarget`.
+   *
+   * Split rather than pre-joined so the plan can say which kinds a file is about to
+   * receive: "new tokens and rules" is a materially different write from "new classes",
+   * and a single string can only be described as "the design system". The join order is
+   * settled here, in one place, because it decides the cascade — two rules of equal
+   * specificity are resolved by which comes last.
    */
-  designSystemCSS: string;
+  designSystemCSS: DesignSystemCSS;
   /**
    * Where that CSS should go: a stylesheet URL, or `'document'` to leave it in the
    * `<style>` block the page is already rendering it from.
@@ -356,31 +393,33 @@ export async function buildWritePlan(
     });
   }
 
-  /* ---- 3. New tokens and classes, when they belong in a file ---- */
+  /* ---- 3. New tokens, classes and rules, when they belong in a file ---- */
 
   const systemTarget = subject.designSystemTarget;
+  const systemCSS = designSystemCSSText(subject.designSystemCSS);
+  const systemKinds = listPhrase(designSystemKinds(subject.designSystemCSS));
   if (systemTarget && systemTarget !== DOCUMENT_TARGET) {
     const path = host.resolve(systemTarget);
     if (!path) {
       // Not fatal: the CSS is still in the page and still in the prompt.
       unwritable.push({
-        record: designSystemRecord(subject.designSystemCSS),
+        record: designSystemRecord(systemCSS),
         reason: reasonForUnreachable(systemTarget, host),
       });
     } else {
       const existing = writes.find((write) => write.path === path);
       const before = existing ? existing.before : await host.read(path);
       const base = existing ? existing.after : (before ?? '');
-      const after = upsertSection(base, subject.designSystemCSS);
+      const after = upsertSection(base, systemCSS);
       if (after !== before) {
         if (existing) {
           existing.after = after;
-          existing.reason = `${existing.reason}, plus tokens and classes`;
+          existing.reason = `${existing.reason}, plus ${systemKinds}`;
         } else {
           writes.push({
             path,
             kind: 'stylesheet',
-            reason: 'new tokens and classes',
+            reason: `new ${systemKinds}`,
             before,
             after,
             records: [],
@@ -1036,7 +1075,7 @@ function groupFor(
  */
 function isDocumentChange(record: ChangeRecord, designSystemInDocument: boolean): boolean {
   /*
-   * A token or class edit belongs to the design system, not to the document.
+   * A token, class or rule edit belongs to the design system, not to the document.
    *
    * Where it lands is the one thing the design-system target decides, and it is delivered
    * by `designSystemCSS` — so counting these as document changes as well wrote the same
@@ -1047,7 +1086,13 @@ function isDocumentChange(record: ChangeRecord, designSystemInDocument: boolean)
    * When the target *is* the document, that block is the only place it can go, and then
    * these really are document changes.
    */
-  if (record.kind === 'token' || record.kind === 'token-class') return designSystemInDocument;
+  if (
+    record.kind === 'token' ||
+    record.kind === 'token-class' ||
+    record.kind === 'token-rule'
+  ) {
+    return designSystemInDocument;
+  }
   const target = record.detail?.writeTo;
   return !target || target === DOCUMENT_TARGET;
 }
@@ -1075,7 +1120,7 @@ function designSystemRecord(css: string): ChangeRecord {
   return {
     id: 'design-system',
     kind: 'token',
-    summary: 'New tokens and reusable classes',
+    summary: 'New tokens, reusable classes and CSS rules',
     target: 'design system',
     after: css,
     at: Date.now(),

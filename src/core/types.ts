@@ -53,6 +53,38 @@ export interface DesignClass {
   origin?: 'stylesheet' | 'user' | 'imported';
 }
 
+/**
+ * A CSS rule the editor owns: a selector and the declarations it sets.
+ *
+ * The third kind of vocabulary, and the one the other two cannot express. A token
+ * names a value and a class names a group of declarations you have to go and put on
+ * an element; neither can say "every `h2` in this page is this size" or "a `p`
+ * directly inside `.prose` gets this measure". That is a rule, and until now the only
+ * way to write one was to open the CSS panel and type it.
+ *
+ * Keyed on the selector, because that is what identifies it — two rules with the same
+ * selector are one rule with the declarations merged, which is also how a stylesheet
+ * behaves. Complex selectors are the point rather than an edge case: `h2 > p`,
+ * `.card .title`, `a:hover` and `p::first-line` are all ordinary values here.
+ */
+export interface DesignRule {
+  /** The selector as written, whitespace normalised: `h2`, `h2 > p`, `a:hover`. */
+  selector: string;
+  declarations: Record<string, string>;
+  /** Human label shown in lists. Defaults to the selector itself. */
+  label?: string;
+  description?: string;
+  /**
+   * Where the rule came from.
+   *
+   * There is no `'stylesheet'` here on purpose. Rules already in the page's own
+   * stylesheets are edited in place by the cascade inspector, which patches the file
+   * they live in; ingesting them here as well would give one edit two homes and turn a
+   * one-line diff into a copy of the theme.
+   */
+  origin?: 'user' | 'imported';
+}
+
 /** Declared prop on a library component. */
 export interface PropSpec {
   type: 'text' | 'number' | 'color' | 'select' | 'url' | 'boolean' | 'token';
@@ -101,7 +133,7 @@ export interface LibraryBlock {
   origin?: 'preset' | 'user' | 'imported';
 }
 
-/** A portable design system: tokens, classes and blocks in one document. */
+/** A portable design system: tokens, classes, rules and blocks in one document. */
 export interface DesignSystemDocument {
   $schema?: string;
   name: string;
@@ -110,6 +142,12 @@ export interface DesignSystemDocument {
   tokens: DesignToken[];
   classes: DesignClass[];
   blocks: LibraryBlock[];
+  /**
+   * Optional so a document written before rules existed still type-checks, and so a
+   * caller handing one in by hand does not have to supply an empty array. Everything
+   * the editor produces sets it.
+   */
+  rules?: DesignRule[];
 }
 
 /** Source location injected by the Vite plugin (or by hand) as `data-heo-src`. */
@@ -134,7 +172,8 @@ export interface ChangeRecord {
   | 'duplicate'
   | 'replace'
   | 'token'
-  | 'token-class';
+  | 'token-class'
+  | 'token-rule';
   /** Short human summary, e.g. `Set padding to var(--space-lg)`. */
   summary: string;
   /** CSS selector path to the target, resolved at record time. */

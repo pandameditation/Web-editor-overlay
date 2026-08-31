@@ -37,9 +37,11 @@ function prompt(records: ChangeRecord[], over: Partial<PromptInput> = {}): strin
     records,
     tokens: [],
     classes: [],
+    cssRules: [],
     blocks: [],
     tokenCSS: '',
     classCSS: '',
+    cssRuleCSS: '',
     pageURL: 'http://localhost:5180/test-page.html',
     ...over,
   });

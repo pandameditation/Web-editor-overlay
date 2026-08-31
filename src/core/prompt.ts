@@ -1,5 +1,11 @@
 import { diffCSS, type CssChange } from './css-patch.js';
-import type { ChangeRecord, DesignClass, DesignToken, LibraryBlock } from './types.js';
+import type {
+  ChangeRecord,
+  DesignClass,
+  DesignRule,
+  DesignToken,
+  LibraryBlock,
+} from './types.js';
 
 /**
  * Turns an editing session into an edit log a coding agent can execute.
@@ -30,9 +36,12 @@ export interface PromptInput {
   records: ChangeRecord[];
   tokens: DesignToken[];
   classes: DesignClass[];
+  /** CSS rules the editor owns, as opposed to rules edited in the page's own sheets. */
+  cssRules: DesignRule[];
   blocks: LibraryBlock[];
   tokenCSS: string;
   classCSS: string;
+  cssRuleCSS: string;
   pageURL: string;
   /** Blocks whose custom elements were injected during the session. */
   injectedElements?: string[];
@@ -82,6 +91,22 @@ export function buildPrompt(input: PromptInput): string {
     "Add these to this project's stylesheet.",
   );
   if (classes) sections.push(classes);
+
+  /*
+   * Rules after classes, and the note says what a class's note cannot.
+   *
+   * A class is inert until something wears it, so pasting one in is safe. A rule applies
+   * the moment it lands, to everything its selector matches — so the instruction has to
+   * be "keep these in this order", because two rules of equal specificity are decided by
+   * which comes last and reordering them changes the page.
+   */
+  const cssRules = designSection(
+    'New CSS rules',
+    input.cssRuleCSS,
+    input.cssRules,
+    "Add these to this project's stylesheet, in this order — they were written to apply in it.",
+  );
+  if (cssRules) sections.push(cssRules);
 
   if (blocks.length) sections.push(blockSection(blocks));
 
@@ -235,7 +260,9 @@ function groupTitle(group: EditGroup): string {
     default:
       break;
   }
-  if (first.kind === 'token' || first.kind === 'token-class') return 'design system';
+  if (first.kind === 'token' || first.kind === 'token-class' || first.kind === 'token-rule') {
+    return 'design system';
+  }
 
   const at = group.source ? ` (${group.source.file}:${group.source.line})` : '';
   return `${code(last.target)}${at}`;
@@ -345,6 +372,18 @@ function stepsFor(record: ChangeRecord, blocks: Block[]): string[] {
 
     case 'token-class':
       return [`${sentence(record.summary)}. See New classes.`];
+
+    /*
+     * A rule is named by its selector, in code, because that is the thing to go and find.
+     *
+     * The summary already reads as a sentence — "Set color to #333 on h2 > p" — so the
+     * only thing worth adding is where it lives, and pointing at the design system CSS is
+     * what stops an agent hunting for an element to put an inline style on.
+     */
+    case 'token-rule':
+      return [
+        `${sentence(record.summary)}. This is a CSS rule for ${code(detail.selector ?? record.target)}; see New CSS rules.`,
+      ];
 
     default:
       return [`${sentence(record.summary)}.`];

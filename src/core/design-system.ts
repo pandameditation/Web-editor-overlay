@@ -11,6 +11,8 @@ import { withoutProvenance } from './provenance.js';
 import type { ClassRegistry } from './classes.js';
 import { patchCSS, type DeclarationPatch } from './css-patch.js';
 import type { BlockLibrary } from './library.js';
+import type { RuleRegistry } from './rules.js';
+import { safeSelector } from './selectors.js';
 import type { TokenRegistry } from './tokens.js';
 import type { DesignSystemDocument } from './types.js';
 
@@ -24,10 +26,22 @@ const SCHEMA = 'https://html-editor-overlay.dev/schema/design-system-1.json';
  * can be imported into the next. The format is deliberately plain JSON with no
  * references between entries, so it stays diffable and hand-editable.
  */
+/**
+ * The four registries a design system is read from and written back into.
+ *
+ * Taken as one object rather than as positional arguments. There were three, a fourth
+ * was added, and the next one should not mean editing every call site and getting the
+ * order right — which is a real hazard when three of the four have the same shape.
+ */
+export interface DesignRegistries {
+  tokens: TokenRegistry;
+  classes: ClassRegistry;
+  rules: RuleRegistry;
+  library: BlockLibrary;
+}
+
 export function exportDesignSystem(
-  tokens: TokenRegistry,
-  classes: ClassRegistry,
-  library: BlockLibrary,
+  registries: DesignRegistries,
   name = 'Design system',
 ): DesignSystemDocument {
   return {
@@ -35,27 +49,30 @@ export function exportDesignSystem(
     name,
     version: 1,
     createdAt: new Date().toISOString(),
-    tokens: tokens.export(),
-    classes: classes.export(),
-    blocks: library.export(),
+    tokens: registries.tokens.export(),
+    classes: registries.classes.export(),
+    rules: registries.rules.export(),
+    blocks: registries.library.export(),
   };
 }
 
 export interface ImportResult {
   tokens: number;
   classes: number;
+  rules: number;
   blocks: number;
 }
 
 export function importDesignSystem(
   document_: unknown,
-  registries: { tokens: TokenRegistry; classes: ClassRegistry; library: BlockLibrary },
+  registries: DesignRegistries,
   options: { overwrite?: boolean } = {},
 ): ImportResult {
   const parsed = parseDesignSystem(document_);
   return {
     tokens: registries.tokens.import(parsed.tokens, options),
     classes: registries.classes.import(parsed.classes, options),
+    rules: registries.rules.import(parsed.rules ?? [], options),
     blocks: registries.library.import(parsed.blocks, options),
   };
 }
@@ -67,7 +84,7 @@ export function parseDesignSystem(input: unknown): DesignSystemDocument {
     throw new TypeError('A design system must be a JSON object.');
   }
   const doc = raw as Partial<DesignSystemDocument>;
-  const arrays: Array<keyof DesignSystemDocument> = ['tokens', 'classes', 'blocks'];
+  const arrays: Array<keyof DesignSystemDocument> = ['tokens', 'classes', 'rules', 'blocks'];
   for (const key of arrays) {
     const value = doc[key];
     if (value != null && !Array.isArray(value)) {
@@ -84,6 +101,23 @@ export function parseDesignSystem(input: unknown): DesignSystemDocument {
     ),
     classes: (doc.classes ?? []).filter(
       (entry) => entry && typeof entry.name === 'string' && entry.declarations && typeof entry.declarations === 'object',
+    ),
+    /*
+     * A rule's selector is checked here, not just shaped.
+     *
+     * Everything else in this function is a shape check, because a token with a silly
+     * name is inert. A selector is not inert: an unparseable one throws from inside
+     * `insertRule`, and the registry would be holding a rule that can never render. An
+     * imported document is untrusted input, so the one gate that matters runs on the way
+     * in rather than being left to whatever calls this next.
+     */
+    rules: (doc.rules ?? []).filter(
+      (entry) =>
+        entry &&
+        typeof entry.selector === 'string' &&
+        Boolean(safeSelector(entry.selector)) &&
+        entry.declarations &&
+        typeof entry.declarations === 'object',
     ),
     blocks: (doc.blocks ?? []).filter(
       (block) => block && typeof block.name === 'string' && typeof block.html === 'string',

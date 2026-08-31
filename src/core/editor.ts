@@ -128,13 +128,16 @@ import {
   type WriteSubject,
   patchDocumentSource,
 } from './writeback.js';
+import { RuleRegistry } from './rules.js';
 import { decodeSeed, decodeSeedSync, encodeSeed } from './seed.js';
+import { ruleSelectorFor, safeSelector } from './selectors.js';
 import { Store } from './store.js';
 import { TokenRegistry } from './tokens.js';
 import type {
   BlockKind,
   ChangeRecord,
   DesignClass,
+  DesignRule,
   DesignSystemDocument,
   DragState,
   EditorSnapshotState,
@@ -363,6 +366,14 @@ export class EditorEngine {
   readonly history = new History();
   readonly tokens = new TokenRegistry();
   readonly classes = new ClassRegistry();
+  /**
+   * CSS rules the editor owns: a selector and the declarations it sets.
+   *
+   * The vocabulary neither of the other two can express. A class has to be put on an
+   * element by hand, so "every `h2` on this page" or "a `p` directly inside `.prose`"
+   * had nowhere to live except the CSS panel's raw text.
+   */
+  readonly rules = new RuleRegistry();
   readonly library: BlockLibrary;
   readonly options: MountOptions;
 
@@ -399,6 +410,16 @@ export class EditorEngine {
   #preview: { el: HTMLElement; property: string; before: string; priority: string } | null = null;
   /** Declarations a class had before its live preview started. */
   #classPreview: { name: string; declarations: Record<string, string> } | null = null;
+  /**
+   * Declarations a registry rule had before its live preview started.
+   *
+   * Its own field rather than a share of `#rulePreview`, which is about a live
+   * `CSSStyleRule` in one of the page's sheets. These two are different objects reached
+   * from different panels, and a single slot would let the cascade inspector's
+   * exploration be reverted by the tokens panel's — putting a value back onto the wrong
+   * rule.
+   */
+  #designRulePreview: { selector: string; declarations: Record<string, string> } | null = null;
   /** The rule declaration a live preview is painting over. */
   #rulePreview:
     | { rule: CSSStyleRule; property: string; before: string; priority: string }
@@ -474,6 +495,7 @@ export class EditorEngine {
       }),
       this.tokens.onChange(() => this.#bumpRegistry()),
       this.classes.onChange(() => this.#bumpRegistry()),
+      this.rules.onChange(() => this.#bumpRegistry()),
       this.library.onChange(() => this.#bumpRegistry()),
     );
 
@@ -541,6 +563,7 @@ export class EditorEngine {
     if (this.#toastTimer) clearTimeout(this.#toastTimer);
     this.tokens.destroy();
     this.classes.destroy();
+    this.rules.destroy();
     this.library.destroy();
     // Every `<link>` the editor stood in for goes back to loading its own file. A page
     // the editor has left must not be rendering from a `<style>` the editor put there.
@@ -954,6 +977,12 @@ export class EditorEngine {
       const entry = this.classes.get(classPreview.name);
       if (entry) this.classes.upsert({ ...entry, declarations: classPreview.declarations });
     }
+    const rulePreview = this.#designRulePreview;
+    this.#designRulePreview = null;
+    if (rulePreview) {
+      const entry = this.rules.get(rulePreview.selector);
+      if (entry) this.rules.upsert({ ...entry, declarations: rulePreview.declarations });
+    }
   }
 
   /**
@@ -1139,6 +1168,250 @@ export class EditorEngine {
       revert: () => this.classes.upsert(snapshot),
     });
     this.#bumpRevision();
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* CSS rules the editor owns                                              */
+  /* ---------------------------------------------------------------------- */
+
+  /**
+   * The declarations a registry rule had before its live preview started.
+   *
+   * Same contract as `classPreviewTarget`, and needed for the same reason: a preview is
+   * written into the registry the editor renders from, so a field reading the registry
+   * back would be told its own draft had already been committed — after which
+   * committing compares equal and does nothing, and looking away reverts the preview,
+   * losing the edit.
+   */
+  get designRulePreviewTarget(): { selector: string; declarations: Record<string, string> } | null {
+    const preview = this.#designRulePreview;
+    return preview
+      ? { selector: preview.selector, declarations: { ...preview.declarations } }
+      : null;
+  }
+
+  /**
+   * Create a rule, or open the one that already has this selector.
+   *
+   * Created empty. There is nothing to take declarations from — the point of a rule is
+   * that it is written rather than extracted — so the useful next step is the property
+   * editor, and the caller expands it.
+   *
+   * Returns the selector as stored, which is not always the selector passed in:
+   * whitespace is normalised so `h2   >  p` and `h2 > p` are one rule. Returns null when
+   * the selector is not one the browser accepts, having said so.
+   */
+  createDesignRule(rawSelector: string, declarations: Record<string, string> = {}): string | null {
+    const selector = safeSelector(rawSelector);
+    if (!selector) {
+      const shown = String(rawSelector ?? '').trim();
+      this.notify(
+        shown ? `"${shown}" is not a CSS selector the browser accepts.` : 'Type a selector first.',
+        'error',
+      );
+      return null;
+    }
+    if (this.rules.has(selector)) {
+      this.notify(`${selector} already has a rule — opening it.`, 'info');
+      return selector;
+    }
+
+    const entry: DesignRule = { selector, declarations: { ...declarations }, origin: 'user' };
+    this.history.commit({
+      label: `Add rule ${selector}`,
+      record: {
+        id: nextChangeId(),
+        kind: 'token-rule',
+        summary: `Add CSS rule ${selector}`,
+        target: selector,
+        after: Object.entries(entry.declarations)
+          .map(([property, value]) => `${property}: ${value}`)
+          .join('; '),
+        detail: { selector },
+        at: Date.now(),
+      },
+      apply: () => this.rules.upsert(entry),
+      revert: () => {
+        this.rules.remove(selector);
+      },
+    });
+    this.#bumpRevision();
+    return selector;
+  }
+
+  /**
+   * Live preview for a rule declaration.
+   *
+   * Writes straight into the managed sheet rather than through the history-backed
+   * setter, so dragging a colour on `h2` recolours every heading as it moves. The
+   * registry holds the authoritative value, so the next commit or a cancel puts things
+   * right; there is nothing to unwind.
+   */
+  previewDesignRuleDeclaration(selector: string, property: string, value: string): void {
+    const entry = this.rules.get(selector);
+    if (!entry) return;
+    this.#designRulePreview ??= {
+      selector: entry.selector,
+      declarations: { ...entry.declarations },
+    };
+    this.rules.setDeclaration(entry.selector, property, value);
+  }
+
+  /** Change one declaration on a rule. An empty value keeps the row and drops the CSS. */
+  setDesignRuleDeclaration(selector: string, property: string, value: string): void {
+    const live = this.rules.get(selector);
+    if (!live) return;
+    const key = live.selector;
+    // A live preview has already written into the registry, so the pre-edit state has to
+    // come from the snapshot taken when the preview began — otherwise undo would return
+    // to the last frame of the exploration rather than to the start.
+    const preview = this.#designRulePreview?.selector === key ? this.#designRulePreview : null;
+    this.#designRulePreview = null;
+    const before: DesignRule = preview ? { ...live, declarations: preview.declarations } : live;
+    const snapshot: DesignRule = { ...before, declarations: { ...before.declarations } };
+
+    this.history.commit({
+      label: `Set ${property} on ${key}`,
+      mergeKey: `rule:${key}:${property}`,
+      subject: `rule-decl:${key}:${property}`,
+      record: {
+        id: nextChangeId(),
+        kind: 'token-rule',
+        summary: `Set ${property} to ${value || '(removed)'} on ${key}`,
+        target: key,
+        before: snapshot.declarations[property],
+        after: value || undefined,
+        detail: { selector: key, property, value },
+        at: Date.now(),
+      },
+      apply: () => {
+        this.rules.setDeclaration(key, property, value);
+      },
+      revert: () => this.rules.upsert(snapshot),
+    });
+    this.#bumpRevision();
+  }
+
+  /** Drop a declaration from a rule, name and all. */
+  removeDesignRuleDeclaration(selector: string, property: string): void {
+    const entry = this.rules.get(selector);
+    if (!entry) return;
+    const key = entry.selector;
+    this.#designRulePreview = null;
+    const snapshot: DesignRule = { ...entry, declarations: { ...entry.declarations } };
+    this.history.commit({
+      label: `Remove ${property} from ${key}`,
+      subject: `rule-decl:${key}:${property}`,
+      record: {
+        id: nextChangeId(),
+        kind: 'token-rule',
+        summary: `Remove ${property} from ${key}`,
+        target: key,
+        before: snapshot.declarations[property],
+        detail: { selector: key, property },
+        at: Date.now(),
+      },
+      apply: () => {
+        this.rules.removeDeclaration(key, property);
+      },
+      revert: () => this.rules.upsert(snapshot),
+    });
+    this.#bumpRevision();
+  }
+
+  /**
+   * Point a rule at a different selector, keeping its declarations.
+   *
+   * Its own operation rather than delete-plus-create, because that pair would move the
+   * rule to the end of the sheet and silently change which of two equally specific rules
+   * wins. Returns the stored selector, or null when the rename was refused.
+   */
+  renameDesignRule(from: string, to: string): string | null {
+    const entry = this.rules.get(from);
+    if (!entry) return null;
+    const previous = entry.selector;
+    const next = safeSelector(to);
+    if (!next) {
+      this.notify(`"${String(to ?? '').trim()}" is not a CSS selector the browser accepts.`, 'error');
+      return null;
+    }
+    if (next === previous) return previous;
+    if (this.rules.has(next)) {
+      this.notify(`${next} already has a rule.`, 'error');
+      return null;
+    }
+
+    this.#designRulePreview = null;
+    this.history.commit({
+      label: `Retarget ${previous}`,
+      subject: `rule-selector:${previous}`,
+      record: {
+        id: nextChangeId(),
+        kind: 'token-rule',
+        summary: `Change the selector ${previous} to ${next}`,
+        target: next,
+        before: previous,
+        after: next,
+        detail: { selector: next, previousSelector: previous },
+        at: Date.now(),
+      },
+      apply: () => {
+        this.rules.rename(previous, next);
+      },
+      revert: () => {
+        this.rules.rename(next, previous);
+      },
+    });
+    this.#bumpRevision();
+    return next;
+  }
+
+  /** Delete a rule, keeping it on the undo stack. */
+  removeDesignRule(selector: string): void {
+    const entry = this.rules.get(selector);
+    if (!entry) return;
+    const key = entry.selector;
+    const snapshot: DesignRule = { ...entry, declarations: { ...entry.declarations } };
+    /*
+     * Position is not restored, and that is a knowing trade.
+     *
+     * `upsert` puts the rule back at the end of the sheet rather than where it was, so
+     * undoing a deletion can change which of two equally specific rules wins. Preserving
+     * it would mean the registry carrying an index through every command; deleting a
+     * rule and taking it straight back is rare, and two rules of identical specificity
+     * fighting over the same property is rarer still.
+     */
+    this.history.commit({
+      label: `Delete rule ${key}`,
+      record: {
+        id: nextChangeId(),
+        kind: 'token-rule',
+        summary: `Remove CSS rule ${key}`,
+        target: key,
+        before: Object.entries(snapshot.declarations)
+          .filter(([, value]) => value.trim())
+          .map(([property, value]) => `${property}: ${value}`)
+          .join('; '),
+        detail: { selector: key },
+        at: Date.now(),
+      },
+      apply: () => {
+        this.rules.remove(key);
+      },
+      revert: () => this.rules.upsert(snapshot),
+    });
+    this.#bumpRevision();
+  }
+
+  /**
+   * A selector describing the current selection, for seeding a new rule.
+   *
+   * Deliberately not `selectorFor`, which builds a unique path with `:nth-child` in it.
+   * A rule wants to describe a set — `.card`, `h2` — rather than pick one element out
+   * of one, so a unique path is the one shape that is always wrong here.
+   */
+  suggestedRuleSelector(el = this.store.value.selected): string {
+    return el ? ruleSelectorFor(el) : '';
   }
 
   /**
@@ -3057,7 +3330,14 @@ export class EditorEngine {
    * Returns true when a step was spent here.
    */
   #takeBackUnfinishedEdit(): boolean {
-    if (!this.#preview && !this.#rulePreview && !this.#classPreview) return false;
+    if (
+      !this.#preview &&
+      !this.#rulePreview &&
+      !this.#classPreview &&
+      !this.#designRulePreview
+    ) {
+      return false;
+    }
     this.cancelPreview();
     // Let the field that owns the draft drop it, so its box agrees with the page.
     document.dispatchEvent(new CustomEvent(EDIT_DISCARDED_EVENT));
@@ -3424,7 +3704,16 @@ export class EditorEngine {
       // Only the vocabulary this session authored. Tokens read out of the page's own
       // stylesheets are already in a file, and writing them back would turn a diff
       // into a copy of the theme.
-      designSystemCSS: [this.tokens.toCSS(), this.classes.toCSS()].filter(Boolean).join('\n\n'),
+      //
+      //
+      // Handed over as three parts rather than one block: the plan uses them to say
+      // which kinds a file is about to receive, and joining them is its decision because
+      // the join order is the cascade order.
+      designSystemCSS: {
+        tokens: this.tokens.toCSS(),
+        classes: this.classes.toCSS(),
+        rules: this.rules.toCSS(),
+      },
       designSystemTarget: target,
       generatedRegions: this.#generatedRegions(),
     };
@@ -3564,9 +3853,11 @@ export class EditorEngine {
       records: this.handoffRecords,
       tokens: this.tokens.export(),
       classes: this.classes.export(),
+      cssRules: this.rules.export(),
       blocks: this.library.list(),
       tokenCSS: this.tokens.toCSS(),
       classCSS: this.classes.toCSS(),
+      cssRuleCSS: this.rules.toCSS(),
       pageURL: location.href,
       injectedElements: [...this.#injectedElements],
     });
@@ -3797,7 +4088,10 @@ export class EditorEngine {
   }
 
   designSystem(): DesignSystemDocument {
-    return exportDesignSystem(this.tokens, this.classes, this.library, document.title || 'Design system');
+    return exportDesignSystem(
+      { tokens: this.tokens, classes: this.classes, rules: this.rules, library: this.library },
+      document.title || 'Design system',
+    );
   }
 
   exportDesignSystemFile(): void {

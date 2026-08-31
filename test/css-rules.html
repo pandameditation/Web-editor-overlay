@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Managing CSS rules from the Tokens panel</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: system-ui, sans-serif;
+    }
+  </style>
+</head>
+
+<body>
+  <!--
+    A page with a deliberate vocabulary, because the autocomplete is supposed to be
+    made of it: three h2s, paragraphs both inside and outside .prose, a class used
+    twice, an id used once, and a link. If the completion list is built from the page
+    then these are what it offers; if it is built from a static catalogue, it will not
+    match these counts.
+  -->
+  <h1 id="masthead">CSS rules</h1>
+  <h2>First heading</h2>
+  <p>A paragraph that is not inside the prose wrapper.</p>
+
+  <section class="prose">
+    <h2>Second heading</h2>
+    <p class="lead">A paragraph that is a direct child of .prose.</p>
+    <p>Another direct child.</p>
+    <div>
+      <p>A paragraph nested one level deeper, so it is a descendant but not a child.</p>
+    </div>
+  </section>
+
+  <section class="prose">
+    <h2>Third heading</h2>
+    <p class="lead">One more lead.</p>
+  </section>
+
+  <a href="#masthead">Back to the top</a>
+
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+
+  <script type="module">
+    import { mount } from '../dist/html-editor-overlay.js';
+
+    const results = {};
+    const errors = [];
+    addEventListener('error', (e) => errors.push('error: ' + e.message));
+    addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+
+    const progress = document.getElementById('progress');
+    const step = (name) => { progress.textContent = name; };
+    const check = (name, fn) => {
+      step(name);
+      try { results[name] = fn(); }
+      catch (err) { results[name] = 'THREW: ' + (err && err.message ? err.message : String(err)); }
+    };
+    const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+    /** Every shadow root, so the panel and its controls can be reached. */
+    function deepQuery(selector, root = document) {
+      const found = root.querySelector?.(selector);
+      if (found) return found;
+      for (const el of root.querySelectorAll?.('*') ?? []) {
+        if (!el.shadowRoot) continue;
+        const hit = deepQuery(selector, el.shadowRoot);
+        if (hit) return hit;
+      }
+      return null;
+    }
+
+    (async () => {
+      const api = mount({ theme: 'dark' });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      api.openPanel('tokens');
+      await frames();
+
+      const rules = engine.rules;
+      const styleOf = (selector, property) => {
+        const el = document.querySelector(selector);
+        return el ? getComputedStyle(el).getPropertyValue(property).trim() : null;
+      };
+
+      /* ------------------------------------------------------------------ *
+       * 1. The section is on screen, after Reusable classes.
+       * ------------------------------------------------------------------ */
+      check('theRulesSectionIsInTheTokensPanel', () => {
+        const panel = deepQuery('heo-tokens-panel');
+        if (!panel) return 'no tokens panel';
+        const headings = Array.from(panel.shadowRoot.querySelectorAll('heo-section'))
+          .map((section) => section.getAttribute('heading'));
+        return {
+          headings,
+          hasRules: headings.includes('CSS rules'),
+          afterReusableClasses:
+            headings.indexOf('CSS rules') > headings.indexOf('Reusable classes'),
+        };
+      });
+
+      check('andItOffersASelectorField', () => Boolean(deepQuery('heo-selector-field')));
+
+      /*
+       * Nothing in the composer sticks out of it.
+       *
+       * The selector field is a grid item inside a narrow panel, and its combinator row is
+       * a flex row of chips — so the field's minimum width was for a while wider than the
+       * surface holding it, which pushed the match count and the create button off the
+       * edge of the panel. Measured rather than eyeballed, because it only shows at a
+       * particular panel width.
+       */
+      check('andNothingInTheComposerOverflowsIt', () => {
+        const panel = deepQuery('heo-tokens-panel');
+        const compose = panel.shadowRoot.querySelector('.compose');
+        const selectorField = compose?.querySelector('heo-selector-field');
+        const inner = compose ? compose.clientWidth : 0;
+        const field = selectorField?.getBoundingClientRect().width ?? 0;
+        return {
+          composeInnerWidth: Math.round(inner),
+          fieldWidth: Math.round(field),
+          fieldFits: field > 0 && field <= inner,
+          chipsFit: Array.from(
+            selectorField?.shadowRoot?.querySelectorAll('.combo') ?? [],
+          ).every(
+            (chip) =>
+              chip.getBoundingClientRect().right <=
+              selectorField.getBoundingClientRect().right + 1,
+          ),
+        };
+      });
+
+      /* ------------------------------------------------------------------ *
+       * 2. The autocomplete is made of this page.
+       *
+       * Typed through the real input so the component's own parsing runs, then read
+       * back off the popover it renders.
+       * ------------------------------------------------------------------ */
+      const field = deepQuery('heo-selector-field');
+      const type = async (text) => {
+        const input = field.shadowRoot.querySelector('input');
+        input.focus();
+        input.value = text;
+        input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        await frames();
+      };
+      const options = () =>
+        Array.from(field.shadowRoot.querySelectorAll('.option')).map((button) => ({
+          label: button.querySelector('.name')?.textContent?.trim(),
+          meta: button.querySelector('.meta')?.textContent?.trim(),
+        }));
+      const groups = () =>
+        Array.from(field.shadowRoot.querySelectorAll('.group')).map((el) => el.textContent.trim());
+
+      await type('');
+      check('theEmptyListOffersThePagesOwnTags', () => {
+        const labels = options().map((item) => item.label);
+        return {
+          groups: groups(),
+          // Tags actually in this page, and none that are not.
+          offersH2: labels.includes('h2'),
+          offersP: labels.includes('p'),
+          offersA: labels.includes('a'),
+          offersProseClass: labels.includes('.prose'),
+          offersMastheadId: labels.includes('#masthead'),
+          // Nothing invented: this page has no table, so no table.
+          offersTable: labels.includes('table'),
+          // And the counts are the page's real counts.
+          h2Count: options().find((item) => item.label === 'h2')?.meta,
+          proseCount: options().find((item) => item.label === '.prose')?.meta,
+        };
+      });
+
+      await type('h');
+      check('typingNarrowsToMatches', () => {
+        const labels = options().map((item) => item.label);
+        return { labels: labels.slice(0, 6), offersH1: labels.includes('h1'), offersH2: labels.includes('h2') };
+      });
+
+      /* ------------------------------------------------------------------ *
+       * 3. A combinator, then a completion for what follows it.
+       *
+       * The whole point of the head/tail split: after `.prose > ` the offers are
+       * for the second half, and every offered value is the *whole* selector.
+       * ------------------------------------------------------------------ */
+      await type('.prose > ');
+      check('afterACombinatorTheOffersAreWholeSelectors', () => {
+        const items = options();
+        const paragraph = items.find((item) => item.label === 'p');
+        return {
+          groups: groups(),
+          offersP: Boolean(paragraph),
+          // Four `p` are inside .prose, but only three are direct children.
+          directChildCount: paragraph?.meta,
+          descendantCount: document.querySelectorAll('.prose p').length,
+          childCount: document.querySelectorAll('.prose > p').length,
+        };
+      });
+
+      check('andTheCombinatorChipsAreOfferedWhenUsable', () => {
+        const chips = Array.from(field.shadowRoot.querySelectorAll('.combo'));
+        return {
+          labels: chips.map((chip) => chip.textContent.trim()),
+          // The draft ends in `>`, so another combinator would be nonsense.
+          allDisabled: chips.every((chip) => chip.disabled),
+        };
+      });
+
+      await type('.prose');
+      check('andEnabledWhenTheDraftCanTakeOne', () => {
+        const chips = Array.from(field.shadowRoot.querySelectorAll('.combo'));
+        return { noneDisabled: chips.every((chip) => !chip.disabled) };
+      });
+
+      /* ------------------------------------------------------------------ *
+       * 4. A half-written selector says so rather than being accepted.
+       * ------------------------------------------------------------------ */
+      await type('h2 >');
+      check('aDanglingCombinatorIsRefusedWithAReason', () => ({
+        marked: field.hasAttribute('data-invalid'),
+        message: field.shadowRoot.querySelector('.problem')?.textContent?.trim() ?? null,
+        submitDisabled: field.shadowRoot.querySelector('.go')?.disabled ?? null,
+      }));
+
+      await type('h2 > > p');
+      check('andSoIsSelectorNonsense', () => ({
+        marked: field.hasAttribute('data-invalid'),
+        message: field.shadowRoot.querySelector('.problem')?.textContent?.trim() ?? null,
+      }));
+
+      /* ------------------------------------------------------------------ *
+       * 5. Create a complex rule and give it properties.
+       * ------------------------------------------------------------------ */
+      step('create');
+      const created = engine.createDesignRule('.prose > p');
+      check('aComplexSelectorIsAccepted', () => ({ stored: created, inRegistry: rules.has('.prose > p') }));
+
+      engine.setDesignRuleDeclaration('.prose > p', 'color', 'rgb(20, 40, 60)');
+      engine.setDesignRuleDeclaration('.prose > p', 'max-width', '42ch');
+      await frames();
+
+      check('theRuleRendersOnThePage', () => ({
+        // A direct child gets it.
+        directChild: styleOf('.prose > p', 'color'),
+        // A nested one does not, which is what makes `>` meaningful.
+        nested: styleOf('.prose div p', 'color'),
+        // And a paragraph outside .prose is untouched.
+        outside: styleOf('body > p', 'color'),
+        maxWidth: styleOf('.prose > p', 'max-width'),
+      }));
+
+      check('andItIsInTheGeneratedStylesheet', () => {
+        const sheet = document.getElementById('heo-design-rules');
+        return {
+          exists: Boolean(sheet),
+          isGenerated: sheet?.hasAttribute('data-heo-generated') ?? false,
+          css: sheet?.textContent?.trim() ?? null,
+        };
+      });
+
+      /* ------------------------------------------------------------------ *
+       * 6. Whitespace is normalised, so one rule cannot become two.
+       * ------------------------------------------------------------------ */
+      check('whitespaceVariantsAreTheSameRule', () => {
+        const before = rules.size;
+        const again = engine.createDesignRule('.prose   >    p');
+        return { before, after: rules.size, resolvedTo: again };
+      });
+
+      /* ------------------------------------------------------------------ *
+       * 7. Pseudo-classes, which is the thing selecting an element cannot reach.
+       * ------------------------------------------------------------------ */
+      engine.createDesignRule('a:hover');
+      engine.setDesignRuleDeclaration('a:hover', 'text-decoration', 'underline wavy');
+      await frames();
+      check('aStateRuleCanBeWritten', () => ({
+        inRegistry: rules.has('a:hover'),
+        inCSS: (document.getElementById('heo-design-rules')?.textContent ?? '').includes('a:hover'),
+        // It matches nothing right now, by definition, and the panel is expected to say so.
+        matches: rules.matchCount('a:hover'),
+      }));
+
+      /* ------------------------------------------------------------------ *
+       * 8. Retargeting keeps the declarations and the cascade position.
+       * ------------------------------------------------------------------ */
+      step('retarget');
+      const order = () => rules.list().map((entry) => entry.selector);
+      const orderBefore = order();
+      const renamed = engine.renameDesignRule('.prose > p', '.prose p');
+      await frames();
+      check('renamingKeepsDeclarationsAndPosition', () => ({
+        renamed,
+        declarations: rules.get('.prose p')?.declarations ?? null,
+        oldGone: !rules.has('.prose > p'),
+        orderBefore,
+        orderAfter: order(),
+        positionKept: order().indexOf('.prose p') === orderBefore.indexOf('.prose > p'),
+        // Now a descendant selector, so the nested paragraph is styled too.
+        nestedNowStyled: styleOf('.prose div p', 'color'),
+      }));
+
+      check('andRenamingOntoATakenSelectorIsRefused', () => {
+        const size = rules.size;
+        const refused = engine.renameDesignRule('a:hover', '.prose p');
+        return { refused, sizeUnchanged: rules.size === size, stillThere: rules.has('a:hover') };
+      });
+
+      /* ------------------------------------------------------------------ *
+       * 9. Every step is undoable, like any other edit.
+       * ------------------------------------------------------------------ */
+      step('undo');
+      api.undo();
+      await frames();
+      check('undoTakesBackTheRename', () => ({
+        backTo: rules.has('.prose > p'),
+        renamedGone: !rules.has('.prose p'),
+        nestedUnstyledAgain: styleOf('.prose div p', 'color'),
+      }));
+
+      api.redo();
+      await frames();
+      check('andRedoPutsItBack', () => rules.has('.prose p'));
+
+      /* ------------------------------------------------------------------ *
+       * 10. Removing a declaration, then the whole rule.
+       * ------------------------------------------------------------------ */
+      step('remove');
+      engine.removeDesignRuleDeclaration('.prose p', 'max-width');
+      await frames();
+      check('aDeclarationCanBeDropped', () => ({
+        left: Object.keys(rules.get('.prose p')?.declarations ?? {}),
+        maxWidthGone: styleOf('.prose > p', 'max-width') !== '42ch',
+      }));
+
+      engine.removeDesignRule('a:hover');
+      await frames();
+      check('andSoCanTheRule', () => ({
+        gone: !rules.has('a:hover'),
+        outOfCSS: !(document.getElementById('heo-design-rules')?.textContent ?? '').includes('a:hover'),
+      }));
+
+      api.undo();
+      await frames();
+      check('andDeletingIsUndoable', () => ({
+        back: rules.has('a:hover'),
+        withDeclarations: rules.get('a:hover')?.declarations ?? null,
+      }));
+
+      /* ------------------------------------------------------------------ *
+       * 11. Rules travel with the design system, and reach the save prompt.
+       * ------------------------------------------------------------------ */
+      step('handoff');
+      check('rulesAreInTheDesignSystemDocument', () => {
+        const doc = api.exportDesignSystem();
+        return {
+          count: doc.rules?.length ?? 0,
+          selectors: (doc.rules ?? []).map((entry) => entry.selector),
+        };
+      });
+
+      /*
+       * A seed is the compressed round trip, so importing one back over the top has to
+       * leave the registry saying exactly what it said — same selectors, same order.
+       * `overwrite` so the comparison is against what came out rather than against
+       * whatever was already there winning the collision.
+       */
+      step('andSurviveASeedRoundTrip');
+      const selectorsBeforeSeed = rules.list().map((entry) => entry.selector);
+      const seed = await api.exportSeed();
+      await api.importDesignSystem(seed, true);
+      await frames();
+      const selectorsAfterSeed = rules.list().map((entry) => entry.selector);
+      results.andSurviveASeedRoundTrip = {
+        before: selectorsBeforeSeed,
+        after: selectorsAfterSeed,
+        same: JSON.stringify(selectorsBeforeSeed) === JSON.stringify(selectorsAfterSeed),
+      };
+
+      check('theSavePromptDescribesThem', () => {
+        const prompt = api.getPrompt();
+        return {
+          hasSection: prompt.includes('**New CSS rules:**'),
+          namesTheSelector: prompt.includes('.prose p'),
+          saysKeepTheOrder: /in this order/.test(prompt),
+        };
+      });
+
+      /* ------------------------------------------------------------------ *
+       * 12. And a save writes them as CSS, not as inline styles on elements.
+       * ------------------------------------------------------------------ */
+      step('write');
+      const page = decodeURIComponent(location.pathname).split('/').pop();
+      const directory = decodeURIComponent(location.pathname).replace(/[^/]*$/, '');
+      const disk = new Map();
+      await engine.attachProject({
+        kind: 'directory',
+        label: 'memory',
+        resolve(url) {
+          const path = decodeURIComponent(new URL(url, location.href).pathname);
+          return path.startsWith(directory) ? path.slice(directory.length) : null;
+        },
+        read: async (path) => {
+          if (disk.has(path)) return disk.get(path);
+          try {
+            const text = await (await fetch('./' + path)).text();
+            disk.set(path, text);
+            return text;
+          } catch { return null; }
+        },
+        write: async (path, text) => { disk.set(path, text); },
+        ensureWritable: async () => true,
+        release: async () => { },
+      }, { quiet: true });
+      await frames();
+
+      const plan = await engine.previewWritePlan();
+      check('theWritePlanCarriesTheRuleCSS', () => {
+        const writes = plan?.writes ?? [];
+        const carrying = writes.filter((write) => (write.after ?? '').includes('.prose p'));
+        return {
+          files: writes.map((write) => ({ path: write.path, kind: write.kind, reason: write.reason })),
+          filesCarryingTheRule: carrying.map((write) => write.path),
+          // A rule must never arrive as an inline style on the elements it matched.
+          noInlineStyleOnMatches: Array.from(document.querySelectorAll('.prose p')).every(
+            (el) => !el.getAttribute('style'),
+          ),
+          page,
+        };
+      });
+
+      results.__errors = errors;
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify({ __fatal: String(e && e.stack || e), ...results }, null, 1) + ':END';
+    });
+  </script>
+</body>
+
+</html>

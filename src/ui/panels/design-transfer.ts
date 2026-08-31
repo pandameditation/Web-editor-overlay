@@ -9,6 +9,7 @@ import {
   type SeedTarget,
 } from '../../core/seed.js';
 import type { DesignSystemDocument } from '../../core/types.js';
+import { designSystemCSSText } from '../../core/writeback.js';
 import { icon } from '../icons.js';
 
 /**
@@ -302,9 +303,13 @@ export const DesignTransfer = {
   render(host: DesignTransferHost): TemplateResult {
     const { engine } = host;
     const { doc, seed } = seedFor(engine, host.onSeed);
-    const generatedCSS = [engine.tokens.toCSS(), engine.classes.toCSS()]
-      .filter(Boolean)
-      .join('\n\n');
+    // Same order the write plan joins these in, because the join order is the cascade
+    // order — a preview that reordered them would not be the CSS the save produces.
+    const generatedCSS = designSystemCSSText({
+      tokens: engine.tokens.toCSS(),
+      classes: engine.classes.toCSS(),
+      rules: engine.rules.toCSS(),
+    });
 
     const stats = seed ? seedStats(doc, seed) : null;
     const snippets = seed ? seedSnippets(seed) : [];
@@ -314,7 +319,8 @@ export const DesignTransfer = {
 
     return html`<div class="transfer">
       <p class="hint" style="margin:0 0 9px">
-        A seed carries this whole system — tokens, classes and blocks — as one string. Paste it into
+        A seed carries this whole system — tokens, classes, rules and blocks — as one string. Paste
+        it into
         any page and that page rebuilds the same vocabulary, with nothing to host and nothing to
         fetch.
       </p>
@@ -324,6 +330,12 @@ export const DesignTransfer = {
               <span><b>${stats.tokens}</b> token${stats.tokens === 1 ? '' : 's'}</span>
               <span class="sep">·</span>
               <span><b>${stats.classes}</b> class${stats.classes === 1 ? '' : 'es'}</span>
+              <!-- Only when there are any: a tally is a summary, and a zero in it is a
+                   column of nothing rather than a fact worth the width. -->
+              ${stats.rules
+            ? html`<span class="sep">·</span>
+                    <span><b>${stats.rules}</b> rule${stats.rules === 1 ? '' : 's'}</span>`
+            : nothing}
               <span class="sep">·</span>
               <span><b>${stats.blocks}</b> block${stats.blocks === 1 ? '' : 's'}</span>
               <span class="spacer"></span>
@@ -360,9 +372,9 @@ export const DesignTransfer = {
             <p class="note">
               ${active?.note}
               ${stats.bulky && target === 'attribute'
-              ? html`<br />This seed is ${stats.size} — long for an attribute. The seed block keeps
+            ? html`<br />This seed is ${stats.size} — long for an attribute. The seed block keeps
                   the file readable.`
-              : nothing}
+            : nothing}
             </p>
 
             <div class="row" style="margin-top:10px">
@@ -417,7 +429,7 @@ export const DesignTransfer = {
           ${icon('upload', 12)} Open a file…
         </button>
         <span class="spacer" style="flex:1 1 auto"></span>
-        <label class="check" title="Replace tokens, classes and blocks that already exist here">
+        <label class="check" title="Replace tokens, classes, rules and blocks that already exist here">
           <input
             type="checkbox"
             .checked=${host.overwrite}
@@ -432,7 +444,7 @@ export const DesignTransfer = {
       ${generatedCSS
         ? html`<pre>${generatedCSS}</pre>`
         : html`<p class="hint" style="margin:0">
-            Nothing generated yet. New tokens and classes appear here as CSS, ready to paste into
+            Nothing generated yet. New tokens, classes and rules appear here as CSS, ready to paste into
             the project's stylesheet.
           </p>`}
     </div>`;

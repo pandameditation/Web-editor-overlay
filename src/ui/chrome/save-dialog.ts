@@ -8,7 +8,7 @@ import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
 import { DesignTransfer, type DesignTransferHost } from '../panels/design-transfer.js';
 import { baseStyles, surfaceStyles } from '../theme.js';
-import type { PlannedWrite } from '../../core/writeback.js';
+import { designSystemCSSText, type PlannedWrite } from '../../core/writeback.js';
 
 /**
  * The save review dialog.
@@ -584,7 +584,7 @@ export class HeoSaveDialog extends HeoElement {
       <div class="content">
         ${hasSystem && targets.length > 1
         ? html`<div class="destination">
-              <label for="heo-ds-target">New tokens and classes go in</label>
+              <label for="heo-ds-target">New tokens, classes and rules go in</label>
               <select
                 id="heo-ds-target"
                 .value=${chosen}
@@ -716,9 +716,18 @@ export class HeoSaveDialog extends HeoElement {
     </div>`;
   }
 
-  /** New tokens and classes, as CSS. Empty when the session authored none. */
+  /**
+   * New tokens, classes and rules, as CSS. Empty when the session authored none.
+   *
+   * Same order the write plan uses, and for its reason: the join order is the cascade
+   * order, so this preview and the file have to agree about it.
+   */
   #designSystemCSS(): string {
-    return [this.editor.tokens.toCSS(), this.editor.classes.toCSS()].filter(Boolean).join('\n');
+    return designSystemCSSText({
+      tokens: this.editor.tokens.toCSS(),
+      classes: this.editor.classes.toCSS(),
+      rules: this.editor.rules.toCSS(),
+    });
   }
 
   /**

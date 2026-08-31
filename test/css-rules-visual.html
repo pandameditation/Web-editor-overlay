@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>CSS rules — visual</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 40px 48px;
+      max-width: 720px;
+      font-family: ui-sans-serif, system-ui, sans-serif;
+      color: #1f2430;
+      line-height: 1.6;
+    }
+
+    h1 {
+      font-size: 34px;
+      letter-spacing: -0.02em;
+    }
+  </style>
+</head>
+
+<body>
+  <h1 id="masthead">A page with a vocabulary</h1>
+  <h2>First heading</h2>
+  <p>A paragraph outside the prose wrapper.</p>
+  <section class="prose">
+    <h2>Second heading</h2>
+    <p class="lead">A lead paragraph, a direct child of .prose.</p>
+    <p>Another direct child.</p>
+  </section>
+  <section class="prose">
+    <h2>Third heading</h2>
+    <p class="lead">One more lead.</p>
+  </section>
+  <a href="#masthead">Back to the top</a>
+
+  <pre id="progress" style="display:none">start</pre>
+  <pre id="out" style="display:none">pending</pre>
+
+  <script type="module">
+    import { mount } from '../dist/html-editor-overlay.js';
+
+    const frames = (n = 2) =>
+      new Promise((r) => {
+        let left = n;
+        const tick = () => (left-- > 0 ? requestAnimationFrame(tick) : r());
+        tick();
+      });
+
+    function deepQuery(selector, root = document) {
+      const found = root.querySelector?.(selector);
+      if (found) return found;
+      for (const el of root.querySelectorAll?.('*') ?? []) {
+        if (!el.shadowRoot) continue;
+        const hit = deepQuery(selector, el.shadowRoot);
+        if (hit) return hit;
+      }
+      return null;
+    }
+
+    (async () => {
+      const api = mount({ theme: 'dark' });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      api.openPanel('tokens');
+      await frames(4);
+
+      // Two rules: one doing real work with a mix of value kinds, and one state rule
+      // that matches nothing right now, so the empty-match treatment is on screen too.
+      engine.createDesignRule('.prose > p');
+      engine.setDesignRuleDeclaration('.prose > p', 'color', '#475467');
+      engine.setDesignRuleDeclaration('.prose > p', 'max-width', '62ch');
+      engine.setDesignRuleDeclaration('.prose > p', 'line-height', '1.7');
+      engine.createDesignRule('a:hover');
+      engine.setDesignRuleDeclaration('a:hover', 'text-decoration', 'underline wavy');
+      engine.createDesignRule('h2');
+      engine.setDesignRuleDeclaration('h2', 'letter-spacing', '-0.01em');
+      await frames(4);
+
+      // Collapse the sections above so the rules section is in frame, then open the
+      // rule that is worth reading.
+      const panel = deepQuery('heo-tokens-panel');
+      for (const section of panel.shadowRoot.querySelectorAll('heo-section')) {
+        const heading = section.getAttribute('heading');
+        if (heading !== 'CSS rules') section.open = false;
+      }
+      await frames(3);
+      // `#miss` shows the other half of the design: a rule that matches nothing, with the
+      // retarget field open. Both states are worth being able to look at.
+      const wanted = location.hash === '#miss' ? 'a:hover' : '.prose > p';
+      const header = Array.from(panel.shadowRoot.querySelectorAll('.rule > header')).find((el) =>
+        el.textContent.includes(wanted),
+      );
+      header?.click();
+      await frames(4);
+
+      if (location.hash === '#miss') {
+        const retarget = Array.from(panel.shadowRoot.querySelectorAll('.rule .btn')).find((el) =>
+          el.textContent.includes('Change selector'),
+        );
+        retarget?.click();
+        await frames(4);
+      }
+
+      /*
+       * Widths, reported so a screenshot can be checked against numbers.
+       *
+       * The bug worth watching for here is a control wider than the card holding it: the
+       * selector field is a grid item whose combinator chips can force a minimum width, and
+       * when that happens the match count and the submit button leave the panel. Any value
+       * larger than the one above it in this list is that bug.
+       */
+      const box = (el) => (el ? Math.round(el.getBoundingClientRect().width) : null);
+      const card = panel.shadowRoot.querySelector('.rule[data-open]');
+      const retargetField = card?.querySelector('.retarget heo-selector-field');
+      document.getElementById('out').textContent =
+        'RESULTS:' +
+        JSON.stringify({
+          ready: true,
+          widths: {
+            card: box(card),
+            retarget: box(card?.querySelector('.retarget')),
+            retargetField: box(retargetField),
+            retargetCombos: box(retargetField?.shadowRoot?.querySelector('.combos')),
+            compose: box(panel.shadowRoot.querySelector('.compose')),
+            composeField: box(panel.shadowRoot.querySelector('.compose heo-selector-field')),
+          },
+        }) +
+        ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"error":"' + String(e && e.message) + '"}:END';
+    });
+  </script>
+</body>
+
+</html>

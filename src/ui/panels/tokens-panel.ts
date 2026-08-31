@@ -6,35 +6,44 @@ import { labelFor } from '../../core/dom.js';
 import { type SeedTarget } from '../../core/seed.js';
 import { TOKEN_GROUP_LABELS, TOKEN_GROUPS, prettifyTokenName } from '../../core/tokens.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
-import type { DesignClass, DesignToken, TokenGroup } from '../../core/types.js';
+import type { DesignClass, DesignRule, DesignToken, TokenGroup } from '../../core/types.js';
 import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
 import { classSuggestions } from '../suggestions.js';
 import { baseStyles, swatchStyle } from '../theme.js';
 import { ClassEditor, focusDeclaration } from './class-editor.js';
+import { RuleEditor, type RuleEditorHost } from './rule-editor.js';
 import { DesignTransfer, type DesignTransferHost } from './design-transfer.js';
+import { type HeoSelectorField } from '../controls/selector-field.js';
 import { type HeoValueField } from '../controls/value-field.js';
 import '../controls/section.js';
 
-const openGroups = new Set<string>(['component', 'color', 'space', 'classes']);
+const openGroups = new Set<string>(['component', 'color', 'space', 'classes', 'rules']);
 
 /**
- * The design system panel: tokens and reusable classes.
+ * The design system panel: tokens, reusable classes and CSS rules.
  *
- * Ordered by what the user is most likely to act on. Tokens the selected
- * component already uses come first, so a session naturally converges on the
- * existing vocabulary. Below that is the full palette by group, then the class
- * registry, then import and export — because the whole point of defining a system
- * here is being able to carry it to the next page or project.
+ * Ordered by what the user is most likely to act on, and then by how far each thing
+ * reaches. Tokens the selected component already uses come first, so a session naturally
+ * converges on the existing vocabulary. Below that is the full palette by group, then the
+ * class registry, then the rule registry, then import and export — because the whole
+ * point of defining a system here is being able to carry it to the next page.
  *
- * Token edits are written into a managed stylesheet, so changing a value updates
- * everything that references it immediately.
+ * Rules sit after classes rather than beside them because they are the widest-reaching
+ * thing in the panel. A token changes what references it; a class changes what wears it;
+ * a rule changes whatever its selector happens to match, which is a set the user has to
+ * be shown rather than told. That is why the rule section is the only one that reports
+ * live match counts.
+ *
+ * All three write into managed stylesheets, so changing a value updates the page
+ * immediately.
  */
 @customElement('heo-tokens-panel')
 export class HeoTokensPanel extends HeoElement {
   static override styles = [
     baseStyles,
     ClassEditor.styles,
+    RuleEditor.styles,
     css`
       :host {
         display: block;
@@ -126,6 +135,42 @@ export class HeoTokensPanel extends HeoElement {
         grid-template-columns: 1fr 96px;
         gap: 6px;
       }
+
+      /* The "write a new rule" surface. Raised rather than sunken like the token
+         creator, because it is the one composer in this panel with a live readout
+         attached to it — the selector field draws on the page while it is focused, and
+         a surface that sits above the list says the two are connected. */
+      .compose {
+        display: grid;
+        /* See the note on the rule card's retarget row: an auto track sized from its
+           items' minimums overflows rather than clamping. */
+        grid-template-columns: minmax(0, 1fr);
+        gap: 8px;
+        padding: 10px;
+        border: 1px solid var(--heo-line);
+        border-radius: var(--heo-r-md);
+        background: linear-gradient(
+          180deg,
+          color-mix(in oklab, var(--heo-accent) 6%, var(--heo-raised)),
+          var(--heo-raised)
+        );
+        box-shadow: var(--heo-inset);
+      }
+      .compose > .head {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        color: var(--heo-text-dim);
+        font-size: 10.5px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      .compose .seed {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+      }
     `,
     DesignTransfer.styles,
   ];
@@ -144,6 +189,21 @@ export class HeoTokensPanel extends HeoElement {
   @state() private newClassProperty = '';
   @state() private version = 0;
   @state() private classDraft = '';
+
+  /* ---- CSS rules ---- */
+
+  @state() private expandedRule: string | null = null;
+  /**
+   * The add-property draft for rules, kept apart from the class one.
+   *
+   * A shared buffer would put whatever was half-typed into a class's add field into
+   * every rule's as well, since both are rendered at once in this panel.
+   */
+  @state() private newRuleProperty = '';
+  /** The rule whose selector is being rewritten, if any. */
+  @state() private editingRuleSelector: string | null = null;
+  /** Live draft of the new-rule selector field, so the create button can reflect it. */
+  @state() private ruleDraft = '';
 
   /**
    * What the shared Share & import surface reads back from its host.
@@ -164,6 +224,9 @@ export class HeoTokensPanel extends HeoElement {
       <div class="bar">
         <span class="chip">${icon('droplet', 11)} ${this.editor.tokens.size} tokens</span>
         <span class="chip">${icon('blocks', 11)} ${this.editor.classes.size} classes</span>
+        ${this.editor.rules.size
+        ? html`<span class="chip">${icon('code', 11)} ${this.editor.rules.size} rules</span>`
+        : nothing}
         <span class="spacer"></span>
         <button
           class="btn sm"
@@ -179,6 +242,7 @@ export class HeoTokensPanel extends HeoElement {
       ${this.#renderCreate()}
       ${TOKEN_GROUPS.map((group) => this.#renderGroup(group, usage)).filter(Boolean)}
       ${this.#renderClasses(el)}
+      ${this.#renderRules(el)}
       ${this.#renderTransfer()}
     `;
   }
@@ -431,6 +495,183 @@ export class HeoTokensPanel extends HeoElement {
     // Through the field's own API: while focused it ignores external writes to
     // `value`, so assigning to the draft alone would leave the text on screen.
     field?.reset('');
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* CSS rules                                                              */
+  /* ---------------------------------------------------------------------- */
+
+  /**
+   * The rule registry: write a selector, then give it properties.
+   *
+   * The composer leads rather than trailing the list, which is the opposite of the class
+   * section and deliberate. A class section is usually visited to adjust something that
+   * exists — the list is the subject. This section is almost always opened to *add* a
+   * rule, because rules are how you reach the things the Styles panel cannot select at
+   * all: every heading at once, a hover state, a pseudo-element.
+   */
+  #renderRules(el: HTMLElement | null): TemplateResult {
+    const rules = this.editor.rules.list();
+    const matches = this.editor.rules.matches();
+
+    return html`<heo-section
+      heading="CSS rules"
+      glyph="code"
+      badge=${String(rules.length)}
+      ?open=${openGroups.has('rules')}
+      @section-toggle=${(event: CustomEvent<{ open: boolean }>) =>
+        this.#remember('rules', event.detail.open)}
+    >
+      ${this.#renderRuleComposer(el)}
+      ${rules.length === 0
+        ? html`<p class="hint" style="margin:10px 0 0">
+            A rule styles everything its selector matches, so it reaches what selecting a
+            single element cannot: every heading at once, a link on hover, a list marker.
+            Tokens and classes still apply — a rule can use both.
+          </p>`
+        : html`<div style="margin-top:10px">
+            ${repeat(
+          rules,
+          (entry) => entry.selector,
+          (entry) => this.#renderRule(entry, matches.get(entry.selector) ?? 0, el),
+        )}
+          </div>`}
+    </heo-section>`;
+  }
+
+  /**
+   * The selector field, plus one-tap seeds from the current selection.
+   *
+   * The seeds matter more than they look. Typing a selector from nothing needs you to
+   * already know what the page is made of; "style every `h2`" or "style `.card`" is the
+   * request behind most rules, and offering it as a button skips the part where the user
+   * has to guess at the vocabulary. `suggestedRuleSelector` deliberately describes a set
+   * rather than picking one element out of one.
+   */
+  #renderRuleComposer(el: HTMLElement | null): TemplateResult {
+    const seed = el ? this.editor.suggestedRuleSelector(el) : '';
+    const tag = el?.tagName.toLowerCase() ?? '';
+    const seeds = [...new Set([seed, tag].filter((value) => value && !this.editor.rules.has(value)))];
+
+    return html`<div class="compose">
+      <div class="head">${icon('plus', 12)} New rule</div>
+      <heo-selector-field
+        placeholder="h2 > p, a:hover, .card .title"
+        action="Create this rule"
+        action-icon="plus"
+        @selector-input=${(event: CustomEvent<{ value: string }>) => {
+        this.ruleDraft = event.detail.value;
+      }}
+        @selector-submit=${(event: CustomEvent<{ value: string }>) =>
+        this.#createRule(event.detail.value, event.target as HeoSelectorField)}
+      ></heo-selector-field>
+      ${seeds.length
+        ? html`<div class="seed">
+            ${seeds.map(
+          (value) => html`<button
+              class="btn sm"
+              type="button"
+              title=${`Start a rule for ${value}`}
+              @click=${() => this.#createRule(value)}
+            >
+              ${icon('cursor', 11)} <code class="mono">${value}</code>
+            </button>`,
+        )}
+          </div>`
+        : nothing}
+      <p class="hint" style="margin:0">
+        ${this.#draftAlreadyExists()
+        ? html`${icon('alert', 11)} A rule for
+            <code class="mono">${this.ruleDraft.trim()}</code> already exists — this will open it
+            rather than adding a second one.`
+        : html`Combinators and pseudo-classes are fine. Matches are outlined on the page while
+            the field has focus.`}
+      </p>
+    </div>`;
+  }
+
+  /**
+   * True when what is being typed already has a rule.
+   *
+   * Worth saying before the button is pressed rather than after. Two rules for one
+   * selector cannot exist — the registry is keyed on it — so submitting a duplicate opens
+   * the original, and a user who expected a second, independent rule would otherwise
+   * conclude the button had not worked.
+   */
+  #draftAlreadyExists(): boolean {
+    const draft = this.ruleDraft.trim();
+    return Boolean(draft) && this.editor.rules.has(draft);
+  }
+
+  /**
+   * Create a rule and open it, ready for its first property.
+   *
+   * Empty on purpose, the same as `#createClass`: there is nothing to take declarations
+   * from, so the useful next step is the property editor — which is why this expands the
+   * card rather than leaving the user to find it in the list.
+   */
+  #createRule(rawSelector: string, field?: HeoSelectorField): void {
+    const selector = this.editor.createDesignRule(rawSelector);
+    // Null means the engine refused it and has already said why.
+    if (!selector) return;
+    this.expandedRule = selector;
+    this.editingRuleSelector = null;
+    this.ruleDraft = '';
+    openGroups.add('rules');
+    this.version += 1;
+    // Through the field's own API: while focused it ignores external writes to `value`,
+    // so clearing the draft alone would leave the text on screen.
+    field?.reset('');
+  }
+
+  #renderRule(entry: DesignRule, matches: number, el: HTMLElement | null): TemplateResult {
+    return RuleEditor.render(entry, {
+      expanded: this.expandedRule === entry.selector,
+      matches,
+      onToggle: () => {
+        this.expandedRule = this.expandedRule === entry.selector ? null : entry.selector;
+        // Retargeting belongs to an open card. Left set, reopening the card would land
+        // straight back in the selector field the user had already stepped away from.
+        this.editingRuleSelector = null;
+      },
+      host: this.#ruleHost(el),
+    });
+  }
+
+  /** What the rule editor reads back from this panel. */
+  #ruleHost(el: HTMLElement | null): RuleEditorHost {
+    return {
+      engine: this.editor,
+      element: el,
+      newProperty: this.newRuleProperty,
+      onNewProperty: (value) => {
+        this.newRuleProperty = value;
+      },
+      onRemoved: (removed) => {
+        if (this.expandedRule === removed) this.expandedRule = null;
+        if (this.editingRuleSelector === removed) this.editingRuleSelector = null;
+      },
+      // The selector is the identity, so a rename moves the card. Without this the card
+      // the user is working in collapses the moment they retarget it.
+      onRenamed: (from, to) => {
+        if (this.expandedRule === from) this.expandedRule = to;
+      },
+      onFocus: (property) => focusDeclaration(this.renderRoot, property),
+      editingSelector: this.editingRuleSelector,
+      onEditSelector: (next) => {
+        this.editingRuleSelector = next;
+        if (next) this.expandedRule = next;
+      },
+      /*
+       * No Apply, and no Delete from inside the declaration list.
+       *
+       * `RuleEditor` renders its own action row, and it has to: "apply to selection" is
+       * meaningless for a rule, which applies by matching rather than by being put on
+       * something. Set explicitly so the shared host type states what this surface offers
+       * rather than leaving it to a default.
+       */
+      actions: 'none',
+    };
   }
 
   #renderClass(entry: DesignClass, uses: number, el: HTMLElement | null): TemplateResult {

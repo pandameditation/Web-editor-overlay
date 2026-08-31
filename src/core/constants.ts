@@ -113,6 +113,16 @@ export const TOKEN_STYLE_ID = 'heo-design-tokens';
 /** id of the `<style>` element the class editor writes into. */
 export const CLASS_STYLE_ID = 'heo-design-classes';
 
+/**
+ * id of the `<style>` element the CSS rule editor writes into.
+ *
+ * Its own sheet rather than a share of the class sheet, and the reason is the cascade.
+ * A rule here may be a bare tag selector, which loses every tie against a class — so
+ * the two have to be orderable relative to the page's own sheets independently, and a
+ * save has to be able to write one without rewriting the other.
+ */
+export const RULE_STYLE_ID = 'heo-design-rules';
+
 /** id of the `<style>` element block CSS accumulates in. */
 export const BLOCK_STYLE_ID = 'heo-block-styles';
 
