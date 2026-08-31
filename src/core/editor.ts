@@ -111,6 +111,7 @@ import {
   type Provenance,
   forgetProvenance,
 } from './provenance.js';
+import { startEdgeScroll } from './autoscroll.js';
 import {
   collectStyleSources,
   describeRule,
@@ -2786,7 +2787,27 @@ export class EditorEngine {
       quickMenuOpen: false,
       insertAnchor: null,
     });
+
+    /*
+     * The pointer is holding something, so it cannot also reach for a scrollbar: pushing towards
+     * the edge of the screen is how the rest of the page is reached during a drag.
+     *
+     * Fed from the store rather than from pointer events, because the whole point is that it
+     * keeps working while the pointer is held still — and `moved` replays the last known pointer
+     * through `updateDrag` so the drop target follows the content sliding underneath it.
+     */
+    this.#stopEdgeScroll?.();
+    this.#stopEdgeScroll = startEdgeScroll({
+      pointer: () => this.store.value.drag?.pointer ?? null,
+      moved: () => {
+        const pointer = this.store.value.drag?.pointer;
+        if (pointer) this.updateDrag(pointer.x, pointer.y);
+      },
+    });
   }
+
+  /** Cancels the edge-scroll loop belonging to the drag in flight. */
+  #stopEdgeScroll: (() => void) | null = null;
 
   /**
    * Update the in-flight drag.
@@ -2811,7 +2832,16 @@ export class EditorEngine {
     if (!drag) return;
     this.#clearDragTimer();
 
-    const outside = x < 4 || y < 4 || x > innerWidth - 4 || y > innerHeight - 4;
+    /*
+     * Outside means outside, now that the edge is where scrolling is asked for.
+     *
+     * This used to count the outer four pixels of the viewport as having left it. That was
+     * harmless while the edge meant nothing, and wrong the moment it became the way to reach the
+     * rest of the page: pushing right up to the edge to keep scrolling — which is exactly what
+     * the last stretch of the band invites — announced the move was about to be abandoned.
+     * Pointer capture reports coordinates beyond the window, so the real thing is detectable.
+     */
+    const outside = x < 0 || y < 0 || x > innerWidth || y > innerHeight;
     if (outside) {
       if (!drag.willCancel) this.#applyDrop(drag.origin.parent, drag.origin.nextSibling, drag.element);
       this.#dragPending = null;
@@ -2919,6 +2949,9 @@ export class EditorEngine {
     const drag = this.store.value.drag;
     if (!drag) return;
     this.#clearDragTimer();
+    // The gesture is over, so nothing should still be scrolling on its behalf.
+    this.#stopEdgeScroll?.();
+    this.#stopEdgeScroll = null;
     this.#dragPending = null;
     this.#dragLeftHomeAt = null;
     this.#dragDwell = null;
@@ -2950,6 +2983,9 @@ export class EditorEngine {
     const drag = this.store.value.drag;
     if (!drag) return;
     this.#clearDragTimer();
+    // The gesture is over, so nothing should still be scrolling on its behalf.
+    this.#stopEdgeScroll?.();
+    this.#stopEdgeScroll = null;
     this.#dragPending = null;
     this.#dragLeftHomeAt = null;
     this.#dragDwell = null;

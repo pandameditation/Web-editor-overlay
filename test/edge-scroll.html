@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Scrolling to the rest of the page during a drag</title>
+  <style>
+    body { margin: 0; font-family: system-ui, sans-serif; }
+    #stack { padding: 8px; }
+    #stack > div { height: 40px; background: #eef; margin-bottom: 6px; }
+    /* Long enough that the pointer parked at an edge has somewhere to go for a while. */
+    #filler { height: 6000px; background: linear-gradient(#fff, #dfe); }
+    #panel { height: 200px; overflow: auto; border: 2px solid #99a; margin: 8px; }
+    #panel > div { height: 1400px; background: linear-gradient(#ffe, #fdd); }
+    pre { margin: 0; }
+  </style>
+</head>
+<body>
+  <section id="stack">
+    <div id="i1">One</div>
+    <div id="i2">Two</div>
+    <div id="i3">Three</div>
+  </section>
+  <div id="filler">A long way down</div>
+  <div id="panel"><div>Inside a scrolling panel</div></div>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const errors = [];
+      window.addEventListener('error', (e) => errors.push('error: ' + e.message));
+      window.addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+      const results = {};
+      const check = async (name, fn) => {
+        document.getElementById('progress').textContent = name;
+        try { results[name] = await fn(); }
+        catch (err) { results[name] = 'THREW: ' + String(err && err.message); }
+      };
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const byId = (id) => document.getElementById(id);
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark' });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+
+      const item = byId('i2');
+      /*
+       * Parked horizontally centred and far below the dragged element's own siblings, so the
+       * drop plan plans nothing and the only thing moving is the scroll position. A reorder
+       * mid-measurement would change the page height under the numbers being compared.
+       */
+      const middleX = () => Math.round(innerWidth / 2);
+      const bottom = (inset) => ({ x: middleX(), y: innerHeight - inset });
+
+      /** Hold the pointer at one spot for a while and report how far the page travelled. */
+      const holdAt = async (spot, ms) => {
+        const from = scrollY;
+        engine.updateDrag(spot.x, spot.y);
+        await wait(ms);
+        return scrollY - from;
+      };
+      const beginDrag = async (spot) => {
+        scrollTo({ top: 0, behavior: 'instant' });
+        await frames();
+        engine.startDrag(item, spot.x, spot.y);
+        engine.updateDrag(spot.x, spot.y);
+        await frames();
+      };
+
+      /* ------------------------------------------------------------------ *
+       * Holding at the bottom edge brings the rest of the page up.
+       * ------------------------------------------------------------------ */
+      await beginDrag(bottom(6));
+      await check('holdingAtTheBottomEdgeScrollsDown', async () => {
+        const moved = await holdAt(bottom(6), 500);
+        return { moved: Math.round(moved), scrolled: moved > 200 };
+      });
+
+      /* ------------------------------------------------------------------ *
+       * Slow to begin with, faster the longer it is held.
+       * ------------------------------------------------------------------ */
+      await check('itStartsSlowAndBuildsUp', async () => {
+        engine.cancelDrag();
+        await beginDrag(bottom(6));
+        const first = await holdAt(bottom(6), 260);
+        const later = await holdAt(bottom(6), 260);
+        return {
+          first: Math.round(first),
+          later: Math.round(later),
+          acceleratesWhileHeld: later > first * 1.3,
+        };
+      });
+
+      /* ------------------------------------------------------------------ *
+       * Deeper into the band is faster, which is what makes it aimable.
+       * ------------------------------------------------------------------ */
+      await check('deeperIntoTheBandIsFaster', async () => {
+        const band = Math.max(44, Math.min(140, innerHeight * 0.14));
+        engine.cancelDrag();
+        // Just inside the band, from a cold start.
+        await beginDrag(bottom(Math.round(band) - 4));
+        const shallow = await holdAt(bottom(Math.round(band) - 4), 420);
+        engine.cancelDrag();
+        // Right at the edge, from an equally cold start, for the same time.
+        await beginDrag(bottom(2));
+        const deep = await holdAt(bottom(2), 420);
+        return {
+          shallow: Math.round(shallow),
+          deep: Math.round(deep),
+          deeperIsFaster: deep > shallow * 2,
+          shallowIsGentle: shallow < innerHeight,
+        };
+      });
+
+      /* ------------------------------------------------------------------ *
+       * Holding at the top edge brings it back.
+       * ------------------------------------------------------------------ */
+      await check('holdingAtTheTopEdgeScrollsUp', async () => {
+        engine.cancelDrag();
+        scrollTo({ top: 2500, behavior: 'instant' });
+        await frames();
+        engine.startDrag(item, middleX(), 6);
+        engine.updateDrag(middleX(), 6);
+        const moved = await holdAt({ x: middleX(), y: 6 }, 420);
+        return { moved: Math.round(moved), scrolledUp: moved < 0 };
+      });
+
+      /* ------------------------------------------------------------------ *
+       * What must not scroll.
+       * ------------------------------------------------------------------ */
+      await check('theMiddleOfTheScreenScrollsNothing', async () => {
+        engine.cancelDrag();
+        await beginDrag({ x: middleX(), y: Math.round(innerHeight / 2) });
+        const moved = await holdAt({ x: middleX(), y: Math.round(innerHeight / 2) }, 420);
+        return Math.round(moved);
+      });
+
+      // Leaving the window is the cancel gesture, so it must not also scroll.
+      await check('andLeavingTheWindowScrollsNothing', async () => {
+        engine.cancelDrag();
+        await beginDrag(bottom(6));
+        await wait(200);
+        const from = scrollY;
+        engine.updateDrag(middleX(), innerHeight + 40);
+        await wait(400);
+        return { moved: Math.round(scrollY - from), willCancel: engine.store.value.drag?.willCancel ?? null };
+      });
+
+      // And the edge itself is not read as having left the window any more.
+      await check('butTheEdgeItselfIsNotACancel', async () => {
+        engine.cancelDrag();
+        await beginDrag(bottom(1));
+        await wait(120);
+        return engine.store.value.drag?.willCancel ?? null;
+      });
+
+      /* ------------------------------------------------------------------ *
+       * It stops when the gesture does, and at the end of the page.
+       * ------------------------------------------------------------------ */
+      await check('releasingStopsIt', async () => {
+        engine.cancelDrag();
+        await beginDrag(bottom(6));
+        await wait(300);
+        engine.endDrag();
+        await frames();
+        const from = scrollY;
+        await wait(400);
+        return { movedAfterRelease: Math.round(scrollY - from) };
+      });
+
+      await check('andTheEndOfThePageIsNotAProblem', async () => {
+        engine.cancelDrag();
+        engine.startDrag(item, middleX(), innerHeight - 4);
+        engine.updateDrag(middleX(), innerHeight - 4);
+        await frames();
+        /*
+         * Measured after the drag has begun, not before. Starting one restyles the element it
+         * picks up, which changes the page's height and clamps the scroll position — a shift
+         * that has nothing to do with this and reads as a few pixels of phantom travel.
+         */
+        scrollTo({ top: document.documentElement.scrollHeight, behavior: 'instant' });
+        await frames();
+        const atEnd = scrollY;
+        await wait(400);
+        const moved = Math.round(scrollY - atEnd);
+        const survived = Boolean(engine.store.value.drag);
+        engine.cancelDrag();
+        return { moved, wentNoFurther: moved <= 0, stillDragging: survived };
+      });
+
+      /* ------------------------------------------------------------------ *
+       * A scrolling panel under the pointer takes precedence over the page.
+       * ------------------------------------------------------------------ */
+      await check('aPanelUnderThePointerScrollsInsteadOfThePage', async () => {
+        engine.cancelDrag();
+        const panel = byId('panel');
+        panel.scrollTop = 0;
+        // Put the panel's lower edge inside the bottom band, with the page able to scroll too.
+        panel.scrollIntoView({ block: 'end', behavior: 'instant' });
+        await frames();
+        const box = panel.getBoundingClientRect();
+        const spot = { x: Math.round(box.left + box.width / 2), y: Math.round(box.bottom - 6) };
+        if (spot.y < innerHeight - Math.max(44, innerHeight * 0.14)) return 'panel not in the band';
+        engine.startDrag(item, spot.x, spot.y);
+        engine.updateDrag(spot.x, spot.y);
+        // Again after the drag's own restyle has settled, so the baseline is a real one.
+        await frames();
+        const pageFrom = scrollY;
+        await wait(500);
+        /*
+         * Compared against each other rather than asking the page to be perfectly still. The
+         * drop preview's reflow animates for a moment and nudges the page's height, so a few
+         * pixels of drift are not this feature at work; the panel outrunning the page by an
+         * order of magnitude is.
+         */
+        const result = {
+          panelTravel: Math.round(panel.scrollTop),
+          pageDrift: Math.round(scrollY - pageFrom),
+          panelScrolled: panel.scrollTop > 40,
+          andTookPrecedenceOverThePage: panel.scrollTop > Math.abs(scrollY - pageFrom) * 3,
+        };
+        engine.cancelDrag();
+        return result;
+      });
+
+      results.__errors = errors;
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"__errors":["' + String(e && e.message) + '"]}:END';
+    });
+  </script>
+</body>
+</html>
