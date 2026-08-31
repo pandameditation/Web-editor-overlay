@@ -343,16 +343,19 @@ export class RuleRegistry {
   }
 
   /**
-   * The rules worth carrying to another page.
+   * Everything the registry holds, page rules included.
    *
-   * Only the authored ones, which is where this parts company with the token and class
-   * registries — those export everything they hold, so that a seed stands on its own. A
-   * token is a named value and a class is inert until an element wears it, so carrying the
-   * page's own is harmless and often the point. A rule applies the moment it lands, so a
-   * seed carrying the host page's stylesheet would restyle whatever page received it.
+   * The same as `ClassRegistry.export`, and for the same reason: a design system document
+   * — and the seed built from it — has to stand on its own, because the page receiving it
+   * does not have the stylesheet these were read from. `compactDesignSystem` drops
+   * `origin` on the way out, so what arrives is vocabulary the receiving page owns and
+   * emits.
+   *
+   * Which is not the same question as what a *save* writes. That is `toCSS`, and it leaves
+   * scanned rules out — the file they came from already says it.
    */
   export(): DesignRule[] {
-    return this.authored();
+    return this.list();
   }
 
   /**

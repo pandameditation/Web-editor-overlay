@@ -1,0 +1,15 @@
+/*
+ * A linked stylesheet, present only so the save dialog has somewhere to offer.
+ *
+ * Deliberately holds nothing the rule scanner will take: a `:root` block of custom
+ * properties belongs to the token registry and a bare class belongs to the class
+ * registry, so linking this file gives the destination picker a second option without
+ * changing what the rule list in the panel contains.
+ */
+:root {
+  --rules-ink: #2f3542;
+}
+
+.rules-lead {
+  font-weight: 600;
+}

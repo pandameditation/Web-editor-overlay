@@ -20,6 +20,7 @@
 <body>
   <h1 id="title">Tokens live in the stylesheet</h1>
   <p id="copy" class="clay">Some copy.</p>
+  <blockquote id="quote">A pull quote, for a rule to point at.</blockquote>
 
   <pre id="progress">start</pre>
   <pre id="out">pending</pre>
@@ -150,6 +151,92 @@
           writes: (inPage?.writes ?? []).map((w) => `${w.path}|${w.kind}`),
         };
       });
+
+      /* ------------------------------------------------------------------ *
+       * A CSS rule is the same kind of thing, so it obeys the same choice.
+       *
+       * Tokens, classes and rules are one design system with one destination — the label
+       * on the picker says all three — so a rule must not quietly go somewhere else. Both
+       * directions are checked, because the interesting failure is asymmetric: a rule
+       * landing in the page when a stylesheet was chosen writes it twice.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'aRuleFollowsTheSameChoice';
+      engine.createDesignRule('#quote');
+      engine.setDesignRuleDeclaration('#quote', 'border-left', '3px solid var(--clay)');
+      await frames();
+
+      check('theRuleAppliesOnScreen', () =>
+        getComputedStyle(document.getElementById('quote')).borderLeftColor);
+      check('andIsRecordedAsADesignSystemChange', () =>
+        engine.records.filter((r) => r.kind === 'token-rule').map((r) => r.summary));
+
+      // Still on the document target from the block above, so it belongs in the page.
+      const rulePage = await engine.previewWritePlan();
+      check('withThePageChosenTheRuleIsInThePage', () => {
+        const doc = new DOMParser().parseFromString(engine.exportHTML(), 'text/html');
+        const styles = Array.from(doc.querySelectorAll('style')).map((el) => el.textContent ?? '');
+        return {
+          mentionsTheRule: styles.some((css) => css.includes('#quote')),
+          writes: (rulePage?.writes ?? []).map((w) => `${w.path}|${w.kind}`),
+          notInTheStylesheet: !(rulePage?.writes ?? []).some((w) => /tokens\.css$/.test(w.path)),
+        };
+      });
+
+      progress.textContent = 'aRuleGoesToTheStylesheet';
+      engine.setDesignSystemTarget(sheetTarget);
+      await frames();
+      const ruleSheet = await engine.previewWritePlan();
+      check('andWithTheStylesheetChosenItGoesThere', () => {
+        const write = (ruleSheet?.writes ?? []).find((w) => /tokens\.css$/.test(w.path));
+        return {
+          writes: (ruleSheet?.writes ?? []).map((w) => `${w.path}|${w.kind}|${w.reason}`),
+          ruleIsInTheStylesheet: (write?.after ?? '').includes('#quote'),
+          // The one failure that matters: the same CSS in two files, disagreeing the
+          // moment either is touched.
+          andNotAlsoInTheHtml: !(ruleSheet?.writes ?? []).some((w) => w.kind === 'document'),
+        };
+      });
+      check('andTheExportCarriesNoCopyOfTheRule', () => {
+        const doc = new DOMParser().parseFromString(engine.exportHTML(), 'text/html');
+        const styles = Array.from(doc.querySelectorAll('style')).map((el) => el.textContent ?? '');
+        return {
+          mentionsTheRule: styles.some((css) => css.includes('#quote')),
+          generatedBlocksLeft: doc.querySelectorAll('[data-heo-generated]').length,
+        };
+      });
+
+      /* ------------------------------------------------------------------ *
+       * And the seed carries rules the way it carries classes.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'theSeed';
+      check('theDesignSystemHoldsRulesAlongsideClasses', () => {
+        const doc = api.exportDesignSystem();
+        return {
+          classes: doc.classes.map((entry) => entry.name),
+          rules: (doc.rules ?? []).map((entry) => entry.selector),
+          // Read out of tokens.css, so both registries carry a page-authored entry — which
+          // is what a seed needs, since the receiving page has no tokens.css.
+          classOrigins: doc.classes.map((entry) => entry.origin ?? null),
+          ruleOrigins: (doc.rules ?? []).map((entry) => entry.origin ?? null),
+        };
+      });
+      /*
+       * Round-tripped through the public import, which is the path a user takes and the
+       * only way to see inside a seed — it is compressed, so there is nothing to
+       * pattern-match. `overwrite` so what lands is what came out rather than whatever was
+       * already here winning the collision.
+       */
+      const seed = await api.exportSeed();
+      const rulesBeforeSeed = engine.rules.list().map((entry) => entry.selector);
+      await api.importDesignSystem(seed, true);
+      await frames();
+      check('andTheSeedCarriesThemToo', () => ({
+        seedLength: seed.length,
+        before: rulesBeforeSeed,
+        after: engine.rules.list().map((entry) => entry.selector),
+        stillHasTheAuthoredOne: engine.rules.has('#quote'),
+        stillApplies: getComputedStyle(document.getElementById('quote')).borderLeftWidth,
+      }));
 
       results.__errors = errors;
       document.getElementById('out').textContent =

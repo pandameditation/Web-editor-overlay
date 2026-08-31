@@ -49,6 +49,8 @@
       }
     }
   </style>
+  <!-- A writable destination, so the save dialog has more than one place to offer. -->
+  <link rel="stylesheet" href="./css-rules.css">
 </head>
 
 <body>
@@ -486,6 +488,35 @@
       });
 
       /*
+       * Rules and classes answer the two questions the same way.
+       *
+       * They are one design system with one destination, so the pair has to be consistent
+       * or the picker in the save dialog is lying about one of them:
+       *
+       *   export()  — everything, page entries included, because a seed has to stand on
+       *               its own in a page that does not have the stylesheet they came from.
+       *   toCSS()   — only what this session authored, because the file the rest came from
+       *               already says it.
+       */
+      check('andRulesAndClassesAgreeOnWhatTravelsAndWhatIsWritten', () => {
+        const scannedRule = rules.list().find((entry) => entry.origin === 'stylesheet');
+        const scannedClass = engine.classes
+          .list()
+          .find((entry) => entry.origin === 'stylesheet');
+        const doc = api.exportDesignSystem();
+        return {
+          exampleRule: scannedRule?.selector ?? null,
+          exampleClass: scannedClass?.name ?? null,
+          // Both export their page entries.
+          pageRuleTravels: (doc.rules ?? []).some((entry) => entry.selector === scannedRule?.selector),
+          pageClassTravels: doc.classes.some((entry) => entry.name === scannedClass?.name),
+          // Neither writes them back.
+          pageRuleNotWritten: !rules.toCSS().includes(scannedRule?.selector ?? '\u0000'),
+          pageClassNotWritten: !engine.classes.toCSS().includes(`.${scannedClass?.name ?? '\u0000'}`),
+        };
+      });
+
+      /*
        * A seed is the compressed round trip, so importing one back over the top has to
        * leave the registry saying exactly what it said — same selectors, same order.
        * `overwrite` so the comparison is against what came out rather than against
@@ -540,7 +571,75 @@
       }, { quiet: true });
       await frames();
 
-      const plan = await engine.previewWritePlan();
+      /*
+       * The destination picker, which is the mechanism this all has to hang off.
+       *
+       * One design system, one choice of where it goes — the label names all three kinds,
+       * so a rule must obey it rather than quietly landing somewhere else. The picker lives
+       * in the save dialog's file view, so it needs the project connected first.
+       *
+       * Note the write below carries every rule, not only the ones written by hand: the seed
+       * round trip above re-imported them, and an imported rule is this session's. The
+       * default — page rules staying out of a save — is checked before that, by
+       * `andRulesAndClassesAgreeOnWhatTravelsAndWhatIsWritten`.
+       */
+      progress.textContent = 'theDestinationPicker';
+      // The file view, because that is where the picker lives — the review step lists the
+      // changes, the file step is where you say which files they go to.
+      engine.previewSave('files');
+      await frames();
+      await frames();
+      await frames();
+      check('theSaveDialogOffersOneDestinationForAllThree', () => {
+        const dialog = deepQuery('heo-save-dialog');
+        const row = dialog?.shadowRoot?.querySelector('.destination');
+        const select = row?.querySelector('select');
+        return {
+          label: row?.querySelector('label')?.textContent?.trim() ?? null,
+          namesRules: /rules/.test(row?.querySelector('label')?.textContent ?? ''),
+          options: Array.from(select?.options ?? []).map((option) => option.textContent.trim()),
+          chosen: select?.value ?? null,
+        };
+      });
+
+      progress.textContent = 'theRuleFollowsTheChoice';
+      const sheetTarget = engine
+        .styleTargets()
+        .map((target) => target.value)
+        .find((value) => /css-rules\.css$/.test(value));
+      engine.setDesignSystemTarget(sheetTarget);
+      const toSheet = await engine.previewWritePlan();
+      results.choosingTheStylesheetSendsTheRulesThere = {
+        target: sheetTarget ? sheetTarget.split('/').pop() : null,
+        writes: (toSheet?.writes ?? []).map((w) => `${w.path}|${w.kind}|${w.reason}`),
+        ruleInTheStylesheet: (toSheet?.writes ?? []).some(
+          (w) => /css-rules\.css$/.test(w.path) && (w.after ?? '').includes('.prose p'),
+        ),
+        /*
+         * The failure that matters: the same rule in two files.
+         *
+         * A document write can still happen — this session also edited text and structure —
+         * so the question is not whether the HTML is written but whether the rule CSS is in
+         * it as well.
+         */
+        ruleNotAlsoInTheHtml: !(toSheet?.writes ?? []).some(
+          (w) => w.kind === 'document' && (w.after ?? '').includes('.prose p'),
+        ),
+      };
+
+      progress.textContent = 'andBackToThePage';
+      engine.setDesignSystemTarget('document');
+      const toPage = await engine.previewWritePlan();
+      results.andKeepingItInThePagePutsItInTheHtml = {
+        ruleInTheHtml: (toPage?.writes ?? []).some(
+          (w) => w.kind === 'document' && (w.after ?? '').includes('.prose p'),
+        ),
+        stylesheetNotWritten: !(toPage?.writes ?? []).some((w) => /css-rules\.css$/.test(w.path)),
+      };
+      engine.closeSavePreview();
+      await frames();
+
+      const plan = toPage;
       check('theWritePlanCarriesTheRuleCSS', () => {
         const writes = plan?.writes ?? [];
         const carrying = writes.filter((write) => (write.after ?? '').includes('.prose p'));
