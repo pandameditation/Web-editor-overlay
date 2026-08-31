@@ -481,6 +481,7 @@ export class EditorEngine {
   start(): void {
     this.tokens.scanDocument();
     this.classes.scanDocument();
+    this.rules.scanDocument();
     this.#seedFromOptions();
 
     this.#listeners.push(
@@ -1340,6 +1341,23 @@ export class EditorEngine {
       this.notify(`${next} already has a rule.`, 'error');
       return null;
     }
+    /*
+     * A rule that came out of the page's own CSS cannot be retargeted from here.
+     *
+     * Editing its declarations produces an override, which is a coherent thing to write.
+     * Changing its selector is not: the rule in the file would go on applying and the new
+     * selector would apply as well, so one move would leave two rules. Said plainly rather
+     * than refused silently, and the way to actually do it is named.
+     */
+    if (entry.origin === 'stylesheet') {
+      this.notify(
+        `${previous} comes from ${this.rules.sourceOf(previous) ?? 'the page’s CSS'}, so its ` +
+        'selector cannot be changed from here — the original would keep applying. Edit that ' +
+        'rule in the Styles panel, or add a new rule for the selector you want.',
+        'warn',
+      );
+      return null;
+    }
 
     this.#designRulePreview = null;
     this.history.commit({
@@ -1371,6 +1389,22 @@ export class EditorEngine {
     const entry = this.rules.get(selector);
     if (!entry) return;
     const key = entry.selector;
+    /*
+     * Only rules this session owns can be deleted, and that is not a limitation to hide.
+     *
+     * Taking a scanned rule out of the registry would not take it out of the stylesheet it
+     * was read from — it would come straight back on the next scan, and meanwhile the page
+     * would look unchanged. A button whose effect is "forget this for a moment" is worse
+     * than no button, so the panel does not offer one and this is the backstop.
+     */
+    if (entry.origin === 'stylesheet') {
+      this.notify(
+        `${key} is declared in ${this.rules.sourceOf(key) ?? 'the page’s CSS'}, so it cannot be ` +
+        'deleted from here. Remove it from that stylesheet, or override what it sets.',
+        'warn',
+      );
+      return;
+    }
     const snapshot: DesignRule = { ...entry, declarations: { ...entry.declarations } };
     /*
      * Position is not restored, and that is a knowing trade.
@@ -3587,6 +3621,7 @@ export class EditorEngine {
     if (project) await this.#mirrorUnreadableSheets(project);
     this.tokens.scanDocument();
     this.classes.scanDocument();
+    this.rules.scanDocument();
     /*
      * A folder makes the page's own HTML readable, and over `file://` that is the only
      * way it ever becomes readable — a fetch of the document is refused there for the
@@ -3648,6 +3683,7 @@ export class EditorEngine {
       unmirrored += 1;
       this.tokens.scanCSS(file.text);
       this.classes.scanCSS(file.text);
+      this.rules.scanCSS(file.text, file.path);
     }
 
     if (unmirrored) {

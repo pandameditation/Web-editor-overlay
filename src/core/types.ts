@@ -77,12 +77,13 @@ export interface DesignRule {
   /**
    * Where the rule came from.
    *
-   * There is no `'stylesheet'` here on purpose. Rules already in the page's own
-   * stylesheets are edited in place by the cascade inspector, which patches the file
-   * they live in; ingesting them here as well would give one edit two homes and turn a
-   * one-line diff into a copy of the theme.
+   * `'stylesheet'` means it was read out of the page's own CSS rather than written here,
+   * and it is the origin that decides whether the rule is emitted: a scanned rule is
+   * already in a file, so re-emitting it would turn a diff into a copy of the theme. The
+   * moment one is edited it becomes `'user'` and is emitted as an override — the same
+   * arrangement tokens and reusable classes have, for the same reason.
    */
-  origin?: 'user' | 'imported';
+  origin?: 'stylesheet' | 'user' | 'imported';
 }
 
 /** Declared prop on a library component. */

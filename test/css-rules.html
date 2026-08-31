@@ -4,11 +4,49 @@
 <head>
   <meta charset="utf-8">
   <title>Managing CSS rules from the Tokens panel</title>
+  <!--
+    The page's own CSS, written so the scan has something of every kind to decide about:
+    a plain tag rule, a descendant rule, a state rule, a comma list, a bare class that
+    belongs to the class registry instead, a :root block that belongs to the tokens
+    registry, and a rule inside @media that has nowhere to record its condition.
+  -->
   <style>
     body {
       margin: 0;
       padding: 24px;
       font-family: system-ui, sans-serif;
+    }
+
+    :root {
+      --page-ink: #223;
+      --page-gap: 12px;
+    }
+
+    h1 {
+      letter-spacing: -0.01em;
+    }
+
+    section h2 {
+      color: #556;
+    }
+
+    a:focus-visible {
+      outline: 2px solid var(--page-ink);
+    }
+
+    h2,
+    h3 {
+      font-weight: 650;
+    }
+
+    .lead {
+      font-size: 17px;
+    }
+
+    @media (min-width: 400px) {
+      .prose {
+        padding-inline: var(--page-gap);
+      }
     }
   </style>
 </head>
@@ -131,6 +169,91 @@
               chip.getBoundingClientRect().right <=
               selectorField.getBoundingClientRect().right + 1,
           ),
+        };
+      });
+
+      /* ------------------------------------------------------------------ *
+       * 1b. The page's own rules were read in, the way classes are.
+       * ------------------------------------------------------------------ */
+      const selectors = () => rules.list().map((entry) => entry.selector);
+
+      check('thePagesOwnRulesAreDetected', () => ({
+        selectors: selectors(),
+        // Written in the page's <style>, so all of these should be here.
+        body: rules.has('body'),
+        h1: rules.has('h1'),
+        descendant: rules.has('section h2'),
+        state: rules.has('a:focus-visible'),
+        // A comma list stays one rule: splitting it would emit the declarations twice.
+        commaList: rules.has('h2, h3'),
+        allMarkedAsFromTheStylesheet: rules
+          .list()
+          .every((entry) => entry.origin === 'stylesheet'),
+      }));
+
+      check('andEachOneSaysWhereItCameFrom', () => rules.sourceOf('h1'));
+
+      check('butNotWhatAnotherRegistryOwns', () => ({
+        // A bare class is a reusable class, and it is in that registry instead.
+        bareClassSkipped: !rules.has('.lead'),
+        andIsAClassInstead: Boolean(engine.classes.get('lead')),
+        // A block of nothing but custom properties is the token list.
+        rootSkipped: !rules.has(':root'),
+        andAreTokensInstead: Boolean(engine.tokens.get('page-ink')),
+        // Conditional rules have nowhere to record the condition, so they are left alone
+        // rather than hoisted out of it.
+        mediaRuleSkipped: !rules.has('.prose'),
+      }));
+
+      check('andTheEditorsOwnSheetIsNotReadBackIn', () => {
+        // The generated sheets are where this registry writes. Ingesting them would make
+        // a rule its own source and it would survive being deleted.
+        const ids = Array.from(document.querySelectorAll('style[data-heo-generated]')).map(
+          (el) => el.id,
+        );
+        return { generatedSheets: ids, noSelfIngest: !rules.has('html-editor-overlay') };
+      });
+
+      check('scannedRulesAreNotWrittenBackUntilEdited', () => ({
+        // The whole reason scanning is safe: they are already in a file.
+        generatedCSS: (document.getElementById('heo-design-rules')?.textContent ?? '').trim(),
+        authored: rules.authored().length,
+      }));
+
+      check('editingOneMakesItAnOverride', () => {
+        engine.setDesignRuleDeclaration('h1', 'letter-spacing', '0.04em');
+        const entry = rules.get('h1');
+        return {
+          origin: entry?.origin ?? null,
+          // The scanned declaration came along, so the override is complete rather than
+          // a fragment that half-applies.
+          declarations: entry?.declarations ?? null,
+          inGeneratedCSS: (document.getElementById('heo-design-rules')?.textContent ?? '').includes(
+            'h1',
+          ),
+          onScreen: styleOf('h1', 'letter-spacing'),
+          nowAuthored: rules.authored().length,
+        };
+      });
+
+      check('andRescanningDoesNotUndoThatEdit', () => {
+        rules.scanDocument();
+        return {
+          stillUser: rules.get('h1')?.origin ?? null,
+          stillEdited: rules.get('h1')?.declarations['letter-spacing'] ?? null,
+          // And nothing was duplicated by the second pass.
+          count: selectors().filter((selector) => selector === 'h1').length,
+        };
+      });
+
+      check('aPageRuleCannotBeRetargetedOrDeletedFromHere', () => {
+        const before = selectors();
+        const renamed = engine.renameDesignRule('section h2', 'article h2');
+        engine.removeDesignRule('section h2');
+        return {
+          renameRefused: renamed,
+          deleteRefused: rules.has('section h2'),
+          listUnchanged: JSON.stringify(selectors()) === JSON.stringify(before),
         };
       });
 

@@ -18,6 +18,14 @@
       font-size: 34px;
       letter-spacing: -0.02em;
     }
+
+    section h2 {
+      color: #344054;
+    }
+
+    a:focus-visible {
+      outline: 2px solid #6366f1;
+    }
   </style>
 </head>
 
@@ -90,7 +98,14 @@
       await frames(3);
       // `#miss` shows the other half of the design: a rule that matches nothing, with the
       // retarget field open. Both states are worth being able to look at.
-      const wanted = location.hash === '#miss' ? 'a:hover' : '.prose > p';
+      // `#page` shows a rule read out of the page's own CSS: it has no dot, says where it
+      // is declared, and offers no retarget or delete because neither would work on it.
+      const wanted =
+        location.hash === '#miss'
+          ? 'a:hover'
+          : location.hash === '#page'
+            ? 'section h2'
+            : '.prose > p';
       const header = Array.from(panel.shadowRoot.querySelectorAll('.rule > header')).find((el) =>
         el.textContent.includes(wanted),
       );

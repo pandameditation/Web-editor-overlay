@@ -113,7 +113,11 @@ export function installStyleMirror(link: HTMLLinkElement, css: string): StyleMir
   const witness = takeWitness();
 
   const element = document.createElement('style');
-  element.setAttribute(MIRROR_ATTR, '');
+  // The marker carries the href it stands for. Everything that acts on this attribute
+  // only asks whether it is present, and naming the file makes the stand-in
+  // self-describing — which is what lets a registry say where a rule it scanned lives
+  // instead of reporting an anonymous inline block.
+  element.setAttribute(MIRROR_ATTR, link.href);
   // The `<link>`'s own media query is part of when its rules apply, so it has to
   // come along; without it a print-only sheet would start applying on screen.
   if (link.media) element.media = link.media;

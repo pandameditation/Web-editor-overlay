@@ -263,8 +263,15 @@ export class ClassRegistry {
   }
 }
 
-/** `.card` from a selector, or null when the selector is not a bare class. */
-function simpleClassName(selector: string): string | null {
+/**
+ * `.card` from a selector, or null when the selector is not a bare class.
+ *
+ * Exported because it is also the line between this registry and the rule registry: a
+ * selector this recognises is a reusable class and belongs here, and everything else is a
+ * rule. Shared rather than restated so the two cannot both claim the same selector and
+ * emit it twice.
+ */
+export function simpleClassName(selector: string): string | null {
   const text = selector.trim();
   const match = /^\.([A-Za-z_][\w-]*)$/.exec(text);
   if (!match) return null;

@@ -69,6 +69,16 @@ export const RuleEditor = {
       background: var(--heo-hover);
     }
 
+    /* Written or changed in this session, so it is going into a file on save. The same
+       mark the class cards use, and it means the same thing there. */
+    .rule .dot {
+      width: 5px;
+      height: 5px;
+      flex: 0 0 auto;
+      border-radius: 999px;
+      background: var(--heo-accent);
+    }
+
     /* The selector, in code, because that is what the user will look for in a file. */
     .rule .sel {
       flex: 1 1 auto;
@@ -147,6 +157,28 @@ export const RuleEditor = {
       margin-top: 1px;
     }
 
+    /* Where a scanned rule lives, and what editing it will do. Quieter than the
+       zero-match warning, because it is orientation rather than a problem. */
+    .rule .from {
+      display: flex;
+      align-items: flex-start;
+      gap: 6px;
+      padding: 7px 8px;
+      border-bottom: 1px solid var(--heo-line);
+      color: var(--heo-text-faint);
+      font-size: 10.5px;
+      line-height: 1.45;
+    }
+    .rule .from svg {
+      flex: 0 0 auto;
+      margin-top: 1px;
+    }
+    .rule .from code {
+      color: var(--heo-text-dim);
+      font-family: var(--heo-mono);
+      font-size: 10px;
+    }
+
     /*
      * The declaration rows arrive from ClassEditor, whose layout is scoped to the
      * container the class card puts around them. Wrapping in one of those is how this
@@ -182,6 +214,14 @@ export const RuleEditor = {
   ): TemplateResult {
     const { expanded, matches, onToggle, host } = options;
     const editingSelector = host.editingSelector === entry.selector;
+    /*
+     * Read out of the page's CSS, as opposed to written here.
+     *
+     * The distinction runs through the whole card. A scanned rule is already in a file, so
+     * it is not part of what a save writes until it is edited, its selector cannot be
+     * changed from here, and it cannot be deleted from here — the file is where it lives.
+     */
+    const scanned = entry.origin === 'stylesheet';
 
     return html`<div class="rule" ?data-open=${expanded}>
       <header
@@ -196,6 +236,9 @@ export const RuleEditor = {
       }}
       >
         ${icon(expanded ? 'chevronDown' : 'chevronRight', 11)}
+        ${scanned
+        ? nothing
+        : html`<span class="dot" title="Written in this session, so a save carries it"></span>`}
         <span class="sel" title=${entry.selector}>${entry.selector}</span>
         ${expanded ? nothing : html`<span class="props">${summarizeRule(entry)}</span>`}
         <span
@@ -210,34 +253,66 @@ export const RuleEditor = {
 
       ${expanded
         ? html`
+            ${scanned ? RuleEditor.renderSource(entry, host) : nothing}
             ${matches === 0 ? RuleEditor.renderMiss() : nothing}
             ${editingSelector ? RuleEditor.renderRetarget(entry, host) : nothing}
             ${RuleEditor.renderBody(entry, host)}
-            <div class="actions">
-              <button
-                class="btn sm"
-                type="button"
-                aria-pressed=${editingSelector}
-                title="Point this rule at a different selector"
-                @click=${() => host.onEditSelector(editingSelector ? null : entry.selector)}
-              >
-                ${icon('search', 12)}
-                ${editingSelector ? 'Keep this selector' : 'Change selector'}
-              </button>
-              <button
-                class="btn sm danger"
-                type="button"
-                @click=${() => {
-            host.engine.removeDesignRule(entry.selector);
-            host.onRemoved?.(entry.selector);
-          }}
-              >
-                ${icon('trash', 12)} Delete
-              </button>
-            </div>
+            ${
+          /*
+           * A scanned rule gets no actions at all, and that is the honest surface.
+           *
+           * Neither one would work on it: retargeting would leave the original applying
+           * from the file, and deleting would forget it until the next scan brought it
+           * back. The note above the declarations says where it lives instead.
+           */
+          scanned
+            ? nothing
+            : html`<div class="actions">
+                  <button
+                    class="btn sm"
+                    type="button"
+                    aria-pressed=${editingSelector}
+                    title="Point this rule at a different selector"
+                    @click=${() => host.onEditSelector(editingSelector ? null : entry.selector)}
+                  >
+                    ${icon('search', 12)}
+                    ${editingSelector ? 'Keep this selector' : 'Change selector'}
+                  </button>
+                  <button
+                    class="btn sm danger"
+                    type="button"
+                    @click=${() => {
+                host.engine.removeDesignRule(entry.selector);
+                host.onRemoved?.(entry.selector);
+              }}
+                  >
+                    ${icon('trash', 12)} Delete
+                  </button>
+                </div>`
+          }
           `
         : nothing}
     </div>`;
+  },
+
+  /**
+   * Where a scanned rule came from, and what changing it will do.
+   *
+   * The question this answers is "why can I not delete this one", asked before it is
+   * asked. It also states the override up front: an edit here does not rewrite the rule in
+   * the file, it adds a rule that wins — which is the same arrangement tokens and classes
+   * have, and the thing a reader of the resulting diff needs to already know.
+   */
+  renderSource(entry: DesignRule, host: RuleEditorHost): TemplateResult {
+    const source = host.engine.rules.sourceOf(entry.selector);
+    return html`<p class="from">
+      ${icon('file', 12)}
+      <span>
+        Declared in ${source ? html`<code>${source}</code>` : 'the page’s own CSS'}. Editing it
+        here adds an override that wins, rather than rewriting that rule — so the file keeps
+        what it says and the save carries the difference.
+      </span>
+    </p>`;
   },
 
   /**

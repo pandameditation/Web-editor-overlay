@@ -171,6 +171,17 @@ export class HeoTokensPanel extends HeoElement {
         flex-wrap: wrap;
         gap: 5px;
       }
+
+      /* The mark used on rule cards written this session, shown inline in the sentence
+         that explains it so the legend and the thing it describes are the same shape. */
+      .legend-dot {
+        display: inline-block;
+        width: 5px;
+        height: 5px;
+        vertical-align: 1px;
+        border-radius: 999px;
+        background: var(--heo-accent);
+      }
     `,
     DesignTransfer.styles,
   ];
@@ -509,10 +520,17 @@ export class HeoTokensPanel extends HeoElement {
    * exists — the list is the subject. This section is almost always opened to *add* a
    * rule, because rules are how you reach the things the Styles panel cannot select at
    * all: every heading at once, a hover state, a pseudo-element.
+   *
+   * The list under it holds the page's own rules as well as this session's, read in on
+   * mount the same way tokens and classes are. That is what makes this a manager rather
+   * than a scratchpad: the rules already in the file are the ones most likely to need
+   * changing, and a rule written last session is in the file now.
    */
   #renderRules(el: HTMLElement | null): TemplateResult {
     const rules = this.editor.rules.list();
     const matches = this.editor.rules.matches();
+    const authored = this.editor.rules.authored().length;
+    const fromPage = rules.length - authored;
 
     return html`<heo-section
       heading="CSS rules"
@@ -529,13 +547,34 @@ export class HeoTokensPanel extends HeoElement {
             single element cannot: every heading at once, a link on hover, a list marker.
             Tokens and classes still apply — a rule can use both.
           </p>`
-        : html`<div style="margin-top:10px">
-            ${repeat(
-          rules,
-          (entry) => entry.selector,
-          (entry) => this.#renderRule(entry, matches.get(entry.selector) ?? 0, el),
-        )}
-          </div>`}
+        : html`
+            <!--
+              What the list is made of, before it is scrolled. The two halves behave
+              differently — a page rule is edited as an override and cannot be deleted from
+              here — so saying which is which up front is worth one line.
+            -->
+            <p class="hint" style="margin:10px 0 8px">
+              ${fromPage
+            ? html`${fromPage} read from this page's stylesheets${authored
+              ? html`, ${authored} written here (marked
+                      <span class="legend-dot"></span>)`
+              : ''}.
+                  Editing a page rule adds an override; only the ones written here are
+                  deleted from here.`
+            : html`${authored} written in this session.`}
+              ${this.editor.rules.truncated
+            ? html`<br />This page has more rules than are listed — the scan stops once
+                  the list would stop being usable.`
+            : nothing}
+            </p>
+            <div>
+              ${repeat(
+              rules,
+              (entry) => entry.selector,
+              (entry) => this.#renderRule(entry, matches.get(entry.selector) ?? 0, el),
+            )}
+            </div>
+          `}
     </heo-section>`;
   }
 

@@ -1,5 +1,8 @@
-import { RULE_STYLE_ID } from './constants.js';
+import { simpleClassName } from './classes.js';
+import { MIRROR_ATTR, RULE_STYLE_ID } from './constants.js';
+import { parseDeclarations } from './css.js';
 import { countMatches, safeSelector } from './selectors.js';
+import { withParsedSheet } from './sheets.js';
 import { declarationsToCSS, ManagedStyleSheet } from './stylesheet.js';
 import type { DesignRule } from './types.js';
 
@@ -24,17 +27,152 @@ import type { DesignRule } from './types.js';
  * would quietly reorder the cascade every time a rule was added. The list is therefore
  * the order the rules were written in, and it is the order they are emitted in.
  *
- * **Nothing is scanned out of the page.** The page's own rules are edited in place by
- * the cascade inspector, which patches the file they live in; ingesting them here as
- * well would give one edit two homes and turn a one-line diff into a copy of the theme.
- * So this registry only ever holds rules the editor owns — which also means everything
- * in it is safe to emit, and `toCSS` needs no origin filter.
+ * **The page's own rules are read in, and left alone until edited.** Exactly what the
+ * token and class registries do, and the reason is the same: a panel for managing CSS
+ * rules that could only show the ones created in this session would be blind to the file
+ * it is meant to be managing, and a rule written last session would vanish on reload.
+ * Scanned rules carry `origin: 'stylesheet'` and are excluded from `toCSS`, so nothing is
+ * written back until it is changed; editing one flips it to `'user'`, after which it is
+ * emitted as an override that wins by coming later.
+ *
+ * **The registry does not claim what another one owns.** A bare `.card` rule is a
+ * reusable class and belongs to `ClassRegistry`; a `:root` block of custom properties
+ * belongs to `TokenRegistry`. Both are skipped here, because a selector held in two
+ * registries is a selector emitted twice.
  */
 export class RuleRegistry {
   #rules = new Map<string, DesignRule>();
   #sheet = new ManagedStyleSheet(RULE_STYLE_ID);
   #listeners = new Set<() => void>();
   #matchCache: Map<string, number> | null = null;
+  /**
+   * Where each scanned rule was read from, as something to show a person.
+   *
+   * Kept beside the rules rather than on them: a `DesignRule` is exported, seeded and
+   * imported, and which sheet a rule happened to live in on one page is not a fact worth
+   * carrying to the next one.
+   */
+  #sources = new Map<string, string>();
+  /** True once a scan stopped at the cap, so the panel can say the list is partial. */
+  #truncated = false;
+
+  /* ------------------------------------------------------------------------ */
+  /* Reading the page                                                          */
+  /* ------------------------------------------------------------------------ */
+
+  /**
+   * Collect the page's own rules.
+   *
+   * Idempotent, and safe to call again after an edit: a rule the user has touched is no
+   * longer `'stylesheet'`, and the collector leaves those alone. That is what makes this
+   * runnable on mount, on demand from the refresh button, and again whenever a connected
+   * folder makes another stylesheet readable.
+   */
+  scanDocument(): void {
+    for (const sheet of Array.from(document.styleSheets)) {
+      // The editor's own output. Scanning it would re-ingest what this registry just
+      // emitted, and a rule would become its own source.
+      if (sheet.ownerNode instanceof Element && sheet.ownerNode.hasAttribute('data-heo-generated')) {
+        continue;
+      }
+      this.#collect(sheet, sheetLabel(sheet));
+    }
+    for (const sheet of document.adoptedStyleSheets ?? []) {
+      this.#collect(sheet, 'adopted stylesheet');
+    }
+    this.#invalidate();
+  }
+
+  /**
+   * Collect rules from CSS text rather than from a live sheet.
+   *
+   * The counterpart to `ClassRegistry.scanCSS`, and for the same reason: a sheet the
+   * browser refuses to expose is invisible to `scanDocument`, but its text — read off
+   * disk by a connected project — parses like any other CSS.
+   */
+  scanCSS(css: string, label = 'a project stylesheet'): void {
+    withParsedSheet(css, (sheet) => this.#collect(sheet, label));
+    this.#invalidate();
+  }
+
+  /**
+   * Take the top-level style rules out of a sheet.
+   *
+   * Deliberately not recursive, which is the one place this diverges from
+   * `ClassRegistry.#collect`. A rule inside `@media`, `@supports`, `@container` or
+   * `@layer` applies under a condition this registry has nowhere to record — a
+   * `DesignRule` is a selector and declarations — so hoisting one out would emit it
+   * unconditionally and change the page. Not showing a conditional rule is a gap;
+   * misrepresenting one is a bug, so the gap is the better trade.
+   *
+   * Tolerant of a sheet it cannot read, so one cross-origin `<link>` does not stop the
+   * scan at the sheet it happens to appear before.
+   */
+  #collect(container: CSSStyleSheet, label: string): void {
+    let list: CSSRuleList;
+    try {
+      list = container.cssRules;
+    } catch {
+      // Cross-origin. A connected project reads these off disk and `scanCSS` handles
+      // them; from here there is nothing to see.
+      return;
+    }
+
+    for (const rule of Array.from(list)) {
+      if (this.#rules.size >= SCAN_LIMIT) {
+        // Recorded rather than just stopped: a list that quietly ends at 400 looks like
+        // the page only has 400 rules, and the panel should be able to say otherwise.
+        this.#truncated = true;
+        return;
+      }
+      if (!(rule instanceof CSSStyleRule)) continue;
+
+      const selector = safeSelector(rule.selectorText);
+      // A selector the browser will not take back — a vendor hack, or something a
+      // preprocessor left behind. It cannot be re-emitted, so it cannot be managed.
+      if (!selector) continue;
+      // Owned by another registry. Checked through the class registry's own predicate so
+      // the two cannot drift into both claiming it.
+      if (rule.selectorText.split(',').every((part) => simpleClassName(part))) continue;
+
+      const declarations = parseDeclarations(rule.style.cssText);
+      const properties = Object.keys(declarations);
+      if (!properties.length) continue;
+      // A block of nothing but custom properties is the token registry's, and the Tokens
+      // sections above already list every one of them.
+      if (properties.every((property) => property.startsWith('--'))) continue;
+
+      const existing = this.#rules.get(selector);
+      // Once the user has touched it, it is theirs. A rescan must not put the file's
+      // values back over an edit that has not been saved yet.
+      if (existing && existing.origin !== 'stylesheet') continue;
+
+      this.#rules.set(selector, {
+        selector,
+        // Merged, because one selector can be written more than once in a sheet and the
+        // later declarations win — which is what the map already models.
+        declarations: { ...existing?.declarations, ...declarations },
+        origin: 'stylesheet',
+      });
+      this.#sources.set(selector, this.#sources.get(selector) ?? label);
+    }
+  }
+
+  /** Which stylesheet a scanned rule came from, for the panel to show. */
+  sourceOf(selector: string): string | undefined {
+    return this.#sources.get(safeSelector(selector));
+  }
+
+  /**
+   * True when a scan hit the cap, so the page has more rules than the list shows.
+   *
+   * Worth saying out loud. Everything else in this panel is exhaustive, so a silently
+   * partial list is the one thing here that could mislead someone into thinking a rule
+   * does not exist.
+   */
+  get truncated(): boolean {
+    return this.#truncated;
+  }
 
   /** Every rule, in the order it will be written. */
   list(): DesignRule[] {
@@ -112,6 +250,11 @@ export class RuleRegistry {
     return this.upsert({
       ...entry,
       declarations: { ...entry.declarations, [property]: value.trim() },
+      // A rule read out of the page becomes this session's the moment it is edited, and
+      // that word is what makes the edit real: `toCSS` leaves `'stylesheet'` rules out, so
+      // without the flip the map would hold the new value, the row would show the new
+      // value, and the page would go on rendering the old one.
+      origin: 'user',
     });
   }
 
@@ -121,7 +264,16 @@ export class RuleRegistry {
     if (!entry) return undefined;
     const declarations = { ...entry.declarations };
     delete declarations[property];
-    return this.upsert({ ...entry, declarations });
+    /*
+     * Also an edit, so also `'user'` — with one caveat worth stating.
+     *
+     * For a rule this registry authored, removing a declaration removes it. For one read
+     * out of a file, the emitted override simply stops mentioning the property, and the
+     * file's own declaration then shows through again. Which is the honest outcome of an
+     * override: this registry adds CSS, it does not reach into someone else's rule and
+     * delete a line from it.
+     */
+    return this.upsert({ ...entry, declarations, origin: 'user' });
   }
 
   /**
@@ -141,6 +293,16 @@ export class RuleRegistry {
     if (!entry || !next) return null;
     if (next === previous) return entry;
     if (this.#rules.has(next)) return null;
+
+    /*
+     * A rule read out of the page cannot be retargeted, and refusing is the honest answer.
+     *
+     * This registry emits CSS; it does not edit someone else's rule. Pointing a scanned
+     * rule at a new selector would emit the new one and leave the original applying from
+     * the file — two rules where the user asked for one moved. Changing the selector of a
+     * rule in a file is the cascade inspector's job, because that patches the file.
+     */
+    if (entry.origin === 'stylesheet') return null;
 
     const renamed: DesignRule = { ...entry, selector: next };
     const rebuilt = new Map<string, DesignRule>();
@@ -180,22 +342,40 @@ export class RuleRegistry {
     return count;
   }
 
+  /**
+   * The rules worth carrying to another page.
+   *
+   * Only the authored ones, which is where this parts company with the token and class
+   * registries — those export everything they hold, so that a seed stands on its own. A
+   * token is a named value and a class is inert until an element wears it, so carrying the
+   * page's own is harmless and often the point. A rule applies the moment it lands, so a
+   * seed carrying the host page's stylesheet would restyle whatever page received it.
+   */
   export(): DesignRule[] {
-    return this.list();
+    return this.authored();
   }
 
   /**
-   * The rules as CSS, in registry order.
+   * The rules the editor owns, as CSS, in registry order.
    *
-   * No origin filter, unlike the token and class registries: everything in here is a
-   * rule the editor owns, because nothing else is ever put in. Rules with no
-   * declarations are skipped — an empty rule is a row mid-edit, not CSS.
+   * Rules read out of the page's own stylesheets are left out unless they have been
+   * edited, which is the same filter the token and class registries apply and the reason
+   * scanning is safe at all: emitting them would write the page's stylesheet back into
+   * itself and turn a one-line diff into a copy of the theme.
+   *
+   * Rules with no declarations are skipped too — an empty rule is a row mid-edit, not CSS.
    */
-  toCSS(): string {
+  toCSS(includeAll = false): string {
     return this.list()
+      .filter((entry) => includeAll || entry.origin !== 'stylesheet')
       .filter((entry) => Object.values(entry.declarations).some((value) => value.trim()))
       .map((entry) => `${entry.selector} {\n${declarationsToCSS(entry.declarations)}\n}`)
       .join('\n\n');
+  }
+
+  /** The rules this session authored or changed, which is what a save carries. */
+  authored(): DesignRule[] {
+    return this.list().filter((entry) => entry.origin !== 'stylesheet');
   }
 
   onChange(listener: () => void): () => void {
@@ -211,6 +391,17 @@ export class RuleRegistry {
 
   #flush(): void {
     this.#sheet.write(this.toCSS());
+    this.#invalidate();
+  }
+
+  /**
+   * Announce a change without rewriting the sheet.
+   *
+   * What a scan needs: it only ever adds `'stylesheet'` rules, which `toCSS` leaves out,
+   * so there is nothing new to render — but the panel has more to list and the match
+   * counts are stale.
+   */
+  #invalidate(): void {
     this.#matchCache = null;
     for (const listener of [...this.#listeners]) {
       try {
@@ -219,6 +410,38 @@ export class RuleRegistry {
         console.error('[html-editor-overlay] rule listener failed', error);
       }
     }
+  }
+}
+
+/**
+ * A ceiling on how many rules are read out of the page.
+ *
+ * Not a performance limit — the scan itself is fast. It is a limit on the panel: a page
+ * linking a utility framework has thousands of rules, and a list of thousands is not a
+ * thing anyone manages. Same-origin frameworks are the case this catches; a CDN's sheet
+ * throws on `cssRules` and never reaches here at all.
+ */
+const SCAN_LIMIT = 400;
+
+/** A short name for where a rule came from: the file, or the page itself. */
+function sheetLabel(sheet: CSSStyleSheet): string {
+  if (sheet.href) return fileName(sheet.href);
+  const owner = sheet.ownerNode;
+  if (owner instanceof Element) {
+    // A stand-in the editor installed for a `<link>` it could not read. Naming the
+    // stand-in would be meaningless; the marker carries the file it stands for.
+    const mirrored = owner.getAttribute(MIRROR_ATTR);
+    if (mirrored) return fileName(mirrored);
+  }
+  return 'this page';
+}
+
+/** The last path segment of a URL, or the URL when it has none. */
+function fileName(href: string): string {
+  try {
+    return new URL(href, location.href).pathname.split('/').pop() || href;
+  } catch {
+    return href;
   }
 }
 
