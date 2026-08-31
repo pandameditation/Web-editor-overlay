@@ -174,6 +174,9 @@ export function setInnerHTML(el: HTMLElement, before: string, after: string): Co
     record: record(el, 'text', `Change text of ${labelFor(el)}`, {
       before: exact(stripTags(before)),
       after: exact(stripTags(after)),
+      // The markup as well, so a change that is only markup is not mistaken for no change.
+      markupBefore: before,
+      markupAfter: after,
     }),
     apply: () => {
       el.innerHTML = after;

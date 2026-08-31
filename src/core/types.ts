@@ -193,6 +193,18 @@ export interface ChangeRecord {
    * A key rather than the node, because records are copied and serialized as plain data.
    */
   elementRef?: string;
+  /**
+   * The element's markup either side of a text edit, tags and all.
+   *
+   * `before` and `after` carry the *text*, because that is what the change list and the prompt
+   * show, and tags in there would be noise. But it means a change that only alters markup —
+   * wrapping a word in a link is the plain example — reads as identical either side, and the
+   * step that discards changes whose net effect is nothing then discarded it: the link appeared
+   * on screen and no record of it existed, so nothing carried it to a file. This is what that
+   * comparison uses instead.
+   */
+  markupBefore?: string;
+  markupAfter?: string;
   at: number;
 }
 

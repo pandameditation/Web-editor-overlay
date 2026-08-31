@@ -187,6 +187,9 @@ export class HeoTextToolbar extends HeoElement {
           .checked=${this.newTab}
           @change=${(event: Event) => {
             this.newTab = (event.target as HTMLInputElement).checked;
+            // Written through as it is ticked, not on Apply, so cancelling still remembers it
+            // and nothing depends on this component surviving until the link is applied.
+            this.editor.linkOpensInNewTab = this.newTab;
           }}
         />
         New tab
@@ -216,9 +219,18 @@ export class HeoTextToolbar extends HeoElement {
     const node = selection?.anchorNode;
     const start = node instanceof HTMLElement ? node : node?.parentElement;
     const anchor = start?.closest('a[href]');
+    /*
+     * An existing link answers for itself; a new one inherits the last choice made.
+     *
+     * The choice used to live in this component's own state, which is emptied whenever the
+     * toolbar re-renders from scratch — it renders nothing between text edits — so "open in a
+     * new tab" was forgotten between one link and the next. The engine holds it now.
+     */
     if (anchor) {
       existing = anchor.getAttribute('href') ?? '';
       this.newTab = anchor.getAttribute('target') === '_blank';
+    } else {
+      this.newTab = this.editor.linkOpensInNewTab;
     }
     this.href = existing;
     this.linkMode = true;
@@ -236,6 +248,7 @@ export class HeoTextToolbar extends HeoElement {
   }
 
   #applyLink(): void {
+    this.editor.linkOpensInNewTab = this.newTab;
     this.editor.insertLink(this.href, this.newTab ? '_blank' : null);
     this.linkMode = false;
   }

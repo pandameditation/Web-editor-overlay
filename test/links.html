@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Links are content while editing</title>
+  <style>
+    body { margin: 0; padding: 24px; font-family: system-ui, sans-serif; }
+    pre { margin-top: 16px; }
+  </style>
+</head>
+<body>
+  <p id="copy">Some words before <a id="link" href="#gone">the link text</a> and after.</p>
+  <p id="plain">Plain words with nothing linked in them at all.</p>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const errors = [];
+      window.addEventListener('error', (e) => errors.push('error: ' + e.message));
+      window.addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+      const results = {};
+      const check = (name, fn) => {
+        document.getElementById('progress').textContent = name;
+        try { results[name] = fn(); }
+        catch (err) { results[name] = 'THREW: ' + String(err && err.message); }
+      };
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const byId = (id) => document.getElementById(id);
+
+      /*
+       * Whether the click was allowed to navigate is the observable fact here.
+       *
+       * The href is a fragment for a reason: the control case, with editing off, *must* let the
+       * click through, and an off-site href there unloaded the page mid-run — which reads as a
+       * hung fixture rather than a failing one, since the script reporting the result goes with
+       * it. What is under test is `a[href]`, and a fragment is one.
+       */
+      const clickOn = (el) => {
+        const box = el.getBoundingClientRect();
+        const event = new MouseEvent('click', {
+          bubbles: true, composed: true, cancelable: true,
+          clientX: Math.round(box.left + box.width / 2),
+          clientY: Math.round(box.top + box.height / 2),
+        });
+        el.dispatchEvent(event);
+        return event.defaultPrevented;
+      };
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark' });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+
+      /* ------------------------------------------------------------------ *
+       * Outside edit mode a link is a link.
+       * ------------------------------------------------------------------ */
+      api.setEditing(false);
+      await frames();
+      check('withEditingOffTheLinkIsLeftAlone', () => clickOn(byId('link')));
+
+      /* ------------------------------------------------------------------ *
+       * Inside it, no click navigates — including the ones that used to.
+       * ------------------------------------------------------------------ */
+      api.setEditing(true);
+      await frames();
+      const link = byId('link');
+
+      check('theFirstClickDoesNotNavigate', () => clickOn(link));
+      await frames();
+      // The second click is the one that starts the text edit, and the one that used to leave.
+      check('norDoesTheSecondOneThatStartsEditing', () => clickOn(link));
+      await frames();
+      check('andEditingHasBegun', () => ({
+        editing: engine.store.value.textEditing?.id ?? null,
+      }));
+      // And now every further click, made to place the caret in the link's words, stays put.
+      check('norDoAnyClicksMadeWhileEditingIt', () => [clickOn(link), clickOn(link)]);
+
+      /* ------------------------------------------------------------------ *
+       * A sweep across the link's text selects it rather than dragging it.
+       * ------------------------------------------------------------------ */
+      check('draggingFromInsideTheLinkIsCancelled', () => {
+        const event = new DragEvent('dragstart', { bubbles: true, composed: true, cancelable: true });
+        link.dispatchEvent(event);
+        return event.defaultPrevented;
+      });
+      // Everything else still drags: this is not a blanket ban on the gesture.
+      check('butDraggingPlainTextIsNot', () => {
+        const event = new DragEvent('dragstart', { bubbles: true, composed: true, cancelable: true });
+        byId('plain').dispatchEvent(event);
+        return event.defaultPrevented;
+      });
+
+      /* ------------------------------------------------------------------ *
+       * The toolbar's link button, with the focus loss that broke it.
+       * ------------------------------------------------------------------ */
+      engine.endTextEdit(true);
+      await frames();
+      const plain = byId('plain');
+      engine.beginTextEdit(plain);
+      await frames();
+
+      // Select the word "Plain" the way a user's sweep would.
+      const range = document.createRange();
+      range.setStart(plain.firstChild, 0);
+      range.setEnd(plain.firstChild, 5);
+      const selection = getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      await frames();
+      check('theSelectedWordIs', () => String(getSelection()).trim());
+
+      /*
+       * Now take the focus away, which is precisely what the URL field does when it opens and
+       * exactly what left `createLink` with nothing to act on.
+       */
+      const field = document.createElement('input');
+      field.type = 'url';
+      document.body.appendChild(field);
+      field.focus();
+      await frames();
+      check('andTheSelectionIsGoneOnceTheFieldHasFocus', () => String(getSelection()).trim());
+
+      engine.insertLink('https://example.com/added', '_blank');
+      await frames();
+      field.remove();
+
+      check('applyingTheLinkWrapsTheWordThatWasSelected', () => {
+        const anchor = plain.querySelector('a[href]');
+        return {
+          text: anchor?.textContent ?? null,
+          href: anchor?.getAttribute('href') ?? null,
+          target: anchor?.getAttribute('target') ?? null,
+          rel: anchor?.getAttribute('rel') ?? null,
+        };
+      });
+      // And the rest of the paragraph is untouched.
+      check('andLeavesTheRestOfTheTextAlone', () => plain.textContent);
+
+      // Committing turns it into a change that can reach the file.
+      engine.endTextEdit(true);
+      await frames();
+      /*
+       * The change has to exist to be saveable, and wrapping a word in a link changes no text —
+       * so this is the check that the markup comparison is doing its job.
+       */
+      check('soTheNewLinkIsARecordedChange', () => {
+        const record = engine.records.find((r) => (r.target ?? '').includes('plain'));
+        return {
+          kind: record?.kind ?? null,
+          // `after` is the text, deliberately; the markup is where the anchor shows up.
+          carriesTheAnchor: (record?.markupAfter ?? '').includes('example.com/added'),
+          textIsUnchanged: record?.before === record?.after,
+          blocked: Boolean(record?.detail?.rendered),
+        };
+      });
+
+      /*
+       * And end to end: the link reaches the file, patched into it rather than serialized out
+       * of the page. Nothing else about the document moves.
+       */
+      const page = decodeURIComponent(location.pathname).split('/').pop();
+      const source = await (await fetch('./' + page)).text();
+      const written = engine.exportPatchedHTML(source);
+      check('andItReachesTheFile', () => {
+        const doc = new DOMParser().parseFromString(written.html, 'text/html');
+        const anchor = doc.querySelector('#plain a[href]');
+        return {
+          patchedNotSerialized: written.patched,
+          href: anchor?.getAttribute('href') ?? null,
+          text: anchor?.textContent ?? null,
+          target: anchor?.getAttribute('target') ?? null,
+          theOtherLinkIsUntouched: doc.getElementById('link')?.getAttribute('href') ?? null,
+        };
+      });
+
+      results.__errors = errors;
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"__errors":["' + String(e && e.message) + '"]}:END';
+    });
+  </script>
+</body>
+</html>

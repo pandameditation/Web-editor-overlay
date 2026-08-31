@@ -2514,6 +2514,9 @@ export class EditorEngine {
     el.removeAttribute('contenteditable');
     el.removeAttribute('data-heo-editing');
     el.removeAttribute('spellcheck');
+    // Belongs to the edit that is ending; keeping it would let a later command act on a range
+    // into text that has since been replaced.
+    this.#textEditRange = null;
     this.store.patch({ textEditing: null });
 
     if (before == null) return;
@@ -2616,16 +2619,74 @@ export class EditorEngine {
    */
   formatText(command: 'bold' | 'italic' | 'underline' | 'strikeThrough' | 'removeFormat'): void {
     if (!this.store.value.textEditing) return;
+    this.#restoreTextSelection();
     document.execCommand(command);
   }
+
+  /**
+   * Put the caret back where the user left it in the page before running a command.
+   *
+   * `execCommand` acts on whatever is selected right now, and the toolbar's own controls can
+   * take that away. The format buttons dodge it by cancelling `pointerdown` so focus never
+   * moves — but the link field cannot: it is an input, it has to be focused to be typed into,
+   * and focusing it collapses the page selection. By the time Apply was pressed there was
+   * nothing selected in the page, so `createLink` had nothing to wrap and the button looked
+   * broken. Restoring the remembered range is what gives it something to act on.
+   */
+  #restoreTextSelection(): void {
+    const el = this.store.value.textEditing;
+    const range = this.#textEditRange;
+    if (!el) return;
+    const selection = getSelection();
+    if (!selection) return;
+
+    // Already in the right place: leave it exactly as it is rather than re-anchoring it.
+    const current = selection.rangeCount ? selection.getRangeAt(0) : null;
+    if (current && el.contains(current.commonAncestorContainer)) {
+      el.focus({ preventScroll: true });
+      return;
+    }
+    if (!range || !el.contains(range.commonAncestorContainer)) return;
+    el.focus({ preventScroll: true });
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+
+  /**
+   * The last selection the user made inside the element being edited.
+   *
+   * Tracked continuously rather than captured by whoever needs it, so any control can act on
+   * the selection without each one having to remember to save it first.
+   */
+  #textEditRange: Range | null = null;
 
   /** Wrap the current selection in a link. Empty `href` unlinks. */
   insertLink(href: string, target?: '_blank' | null): void {
     const el = this.store.value.textEditing;
     if (!el) return;
+    // The URL field had the focus a moment ago, so the page's selection has to come back first.
+    this.#restoreTextSelection();
     const url = href.trim();
+
+    /*
+     * Read before the command runs, because running it destroys the answer.
+     */
+    const carried = new Map<string, string>();
+    for (const anchor of selectedAnchors(el)) {
+      for (const attribute of Array.from(anchor.attributes)) {
+        if (attribute.name === 'href' || attribute.name === 'target') continue;
+        if (attribute.name === 'rel') {
+          const kept = withRel(attribute.value, false);
+          if (kept) carried.set('rel', kept);
+          continue;
+        }
+        carried.set(attribute.name, attribute.value);
+      }
+    }
+
     if (!url) {
       document.execCommand('unlink');
+      this.#bumpRevision();
       return;
     }
     const selection = getSelection();
@@ -2635,14 +2696,42 @@ export class EditorEngine {
     } else {
       document.execCommand('createLink', false, url);
     }
-    if (target === '_blank') {
-      for (const anchor of Array.from(el.querySelectorAll('a[href]'))) {
-        if (anchor.getAttribute('href') !== url) continue;
+    /*
+     * Set or cleared on the links the selection actually produced, and always both ways.
+     *
+     * Two things were wrong with matching `a[href]` against the URL string instead. Nothing
+     * ever *removed* `target`, so unticking New tab on a link that already had it was ignored
+     * — and `execCommand` does not always keep the href verbatim, so a URL typed without a
+     * scheme could match nothing and the choice was silently dropped. Locating them through
+     * the selection asks the question that was meant: which links did this just make.
+     */
+    for (const anchor of selectedAnchors(el, url)) {
+      // `execCommand` rebuilds an anchor it relinks, dropping everything it was carrying. An
+      // author's `rel="nofollow"`, an id, a class: none of that is this feature's to discard.
+      for (const [name, value] of carried) {
+        if (!anchor.hasAttribute(name)) anchor.setAttribute(name, value);
+      }
+      if (target === '_blank') {
         anchor.setAttribute('target', '_blank');
-        anchor.setAttribute('rel', 'noopener noreferrer');
+        anchor.setAttribute('rel', withRel(anchor.getAttribute('rel'), true));
+      } else {
+        anchor.removeAttribute('target');
+        const rel = withRel(anchor.getAttribute('rel'), false);
+        if (rel) anchor.setAttribute('rel', rel);
+        else anchor.removeAttribute('rel');
       }
     }
+    this.#bumpRevision();
   }
+
+  /**
+   * Whether a new link should open in a new tab, remembered between links.
+   *
+   * Held here rather than on the toolbar because the toolbar comes and goes: it renders nothing
+   * between text edits, and anything kept in its own state is one re-render away from being
+   * forgotten. The preference belongs to the session, so the session holds it.
+   */
+  linkOpensInNewTab = false;
 
   /* ---------------------------------------------------------------------- */
   /* Drag reordering                                                        */
@@ -3790,6 +3879,20 @@ export class EditorEngine {
     on(document, 'click', (event) => {
       if (!this.editing) return;
       if (isOverlayEvent(event)) return;
+
+      /*
+       * In edit mode a link is content, so it never navigates. Settled before anything else.
+       *
+       * The rest of this handler is about selecting and text editing, and it returns early once
+       * the element is already being edited — which is exactly when clicking inside a link took
+       * the user off the page. So the first click was safe, and every click after it, made while
+       * placing the caret to edit the link's words, followed the href. Placing this above the
+       * early returns is the whole fix: navigation is off for as long as edit mode is on,
+       * whatever is selected and whatever is being edited.
+       */
+      const anchor = eventAnchor(event);
+      if (anchor) event.preventDefault();
+
       const el = selectableFromEvent(event);
       if (!el) return;
       if (this.store.value.textEditing === el) return;
@@ -3805,6 +3908,33 @@ export class EditorEngine {
         return;
       }
       this.select(el);
+    });
+
+    /*
+     * Dragging from inside a link selects its text rather than picking the link up.
+     *
+     * Anchors are draggable by default, so a press-and-sweep over a link's words — the ordinary
+     * way anyone selects text — started a native link drag instead, and the words could not be
+     * selected at all. Cancelling the drag at `dragstart` hands the gesture back to the
+     * selection, which is what it was for.
+     *
+     * Scoped to links, and to edit mode. A drag that begins anywhere else is left alone.
+     */
+    on(document, 'dragstart', (event) => {
+      if (!this.editing) return;
+      if (isOverlayEvent(event)) return;
+      if (eventAnchor(event)) event.preventDefault();
+    });
+
+    // Remembered as it happens, because the toolbar's link field destroys it when focused.
+    on(document, 'selectionchange', () => {
+      const el = this.store.value.textEditing;
+      if (!el) return;
+      const selection = getSelection();
+      if (!selection?.rangeCount) return;
+      const range = selection.getRangeAt(0);
+      if (!el.contains(range.commonAncestorContainer)) return;
+      this.#textEditRange = range.cloneRange();
     });
 
     on(document, 'keydown', (event) => {
@@ -4028,10 +4158,51 @@ function isOverlayEvent(event: Event): boolean {
   return event.composedPath().some(isOverlayChrome);
 }
 
+/**
+ * The link an event happened inside, if any.
+ *
+ * Read from the composed path rather than with `closest` on the target, because a click can land
+ * on a text node or inside a shadow tree, and the path is the one list that crosses both.
+ */
+function eventAnchor(event: Event): HTMLAnchorElement | null {
+  for (const node of event.composedPath()) {
+    if (node instanceof HTMLAnchorElement && node.hasAttribute('href')) return node;
+  }
+  return null;
+}
+
 function parseArray<T>(value: T[] | string): T[] {
   if (typeof value !== 'string') return Array.isArray(value) ? value : [];
   const parsed: unknown = JSON.parse(value);
   return Array.isArray(parsed) ? (parsed as T[]) : [];
+}
+
+/**
+ * The links the current selection sits in, or failing that the ones matching a URL.
+ *
+ * `intersectsNode` rather than a string comparison, so a link counts because the selection is
+ * in it and not because its href happens to read the same as what was typed. The URL fallback
+ * covers the collapsed case, where a link was inserted at a caret and there is no span to test.
+ */
+function selectedAnchors(el: HTMLElement, url?: string): HTMLAnchorElement[] {
+  const anchors = Array.from(el.querySelectorAll('a[href]')).filter(
+    (node): node is HTMLAnchorElement => node instanceof HTMLAnchorElement,
+  );
+  const selection = getSelection();
+  const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+  if (range && !range.collapsed) {
+    const touched = anchors.filter((anchor) => range.intersectsNode(anchor));
+    if (touched.length) return touched;
+  }
+  return url === undefined ? [] : anchors.filter((anchor) => anchor.getAttribute('href') === url);
+}
+
+/** `rel` with the new-tab tokens added or removed, leaving the author's own tokens in place. */
+function withRel(rel: string | null, newTab: boolean): string {
+  const ours = new Set(['noopener', 'noreferrer']);
+  const tokens = (rel ?? '').split(/\s+/).filter((token) => token && !ours.has(token.toLowerCase()));
+  if (newTab) tokens.push('noopener', 'noreferrer');
+  return tokens.join(' ');
 }
 
 function escapeAttribute(value: string): string {

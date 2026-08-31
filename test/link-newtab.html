@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The link toolbar's New tab choice</title>
+  <style>
+    body { margin: 0; padding: 24px; font-family: system-ui, sans-serif; }
+    pre { margin-top: 16px; }
+  </style>
+</head>
+<body>
+  <p id="one">First paragraph with a word to link.</p>
+  <p id="two">Second paragraph with another word to link.</p>
+  <p id="three">Third paragraph, linking once more here.</p>
+  <p id="existing">Editing <a href="https://example.com/old" target="_blank" rel="noopener noreferrer nofollow">an existing link</a> here.</p>
+  <p id="bare">Bare host without a scheme in it.</p>
+  <p id="fresh">Fresh paragraph nothing has linked yet.</p>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const errors = [];
+      window.addEventListener('error', (e) => errors.push('error: ' + e.message));
+      window.addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+      const results = {};
+      // Awaited one at a time: these drive a shared toolbar, so overlapping them interleaves
+      // three link insertions into each other and the results describe nothing.
+      const check = async (name, fn) => {
+        document.getElementById('progress').textContent = name;
+        try { results[name] = await fn(); }
+        catch (err) { results[name] = 'THREW: ' + String(err && err.message); }
+      };
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const byId = (id) => document.getElementById(id);
+      const deep = (root, selector) => {
+        const found = root.querySelector(selector);
+        if (found) return found;
+        for (const element of root.querySelectorAll('*')) {
+          if (!element.shadowRoot) continue;
+          const inner = deep(element.shadowRoot, selector);
+          if (inner) return inner;
+        }
+        return null;
+      };
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark' });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+
+      const toolbar = () => deep(document, 'heo-text-toolbar');
+      const inBar = (selector) => toolbar()?.shadowRoot?.querySelector(selector) ?? null;
+      /** The toolbar's own buttons, found by the labels the user reads. */
+      const barButton = (label) =>
+        Array.from(toolbar()?.shadowRoot?.querySelectorAll('button') ?? []).find(
+          (b) => (b.getAttribute('aria-label') ?? b.textContent ?? '').trim() === label,
+        ) ?? null;
+
+      /**
+       * Drive the real controls, in the order a person uses them: select a word, open the link
+       * field, type a URL, decide about New tab, apply.
+       */
+      const linkTheFirstWord = async (el, url, newTab) => {
+        engine.beginTextEdit(el);
+        await frames();
+        const range = document.createRange();
+        const text = el.firstChild;
+        range.setStart(text, 0);
+        range.setEnd(text, text.data.indexOf(' '));
+        const selection = getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        await frames();
+
+        barButton('Insert link')?.click();
+        await frames();
+        const field = inBar('input[type="url"]');
+        if (!field) return 'no url field';
+        field.value = url;
+        field.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        await frames();
+
+        const box = inBar('input[type="checkbox"]');
+        if (!box) return 'no checkbox';
+        /*
+         * Clicked through the label, which is how it is reached with a mouse: the words "New
+         * tab" are part of the control and most people aim at them rather than the 13px box.
+         */
+        if (box.checked !== newTab) {
+          const label = toolbar().shadowRoot.querySelector('label.blank');
+          const rect = label.getBoundingClientRect();
+          for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+            label.dispatchEvent(new MouseEvent(type, {
+              bubbles: true, composed: true, cancelable: true,
+              clientX: Math.round(rect.right - 4), clientY: Math.round(rect.top + rect.height / 2),
+            }));
+          }
+          await frames();
+        }
+        const seen = inBar('input[type="checkbox"]')?.checked ?? null;
+        barButton('Apply')?.click();
+        await frames();
+        engine.endTextEdit(true);
+        await frames();
+        return seen;
+      };
+
+      const anchorIn = (el) => {
+        const a = el.querySelector('a[href]');
+        return a
+          ? { href: a.getAttribute('href'), target: a.getAttribute('target'), rel: a.getAttribute('rel') }
+          : null;
+      };
+
+      /* ------------------------------------------------------------------ *
+       * Ticking New tab must put target="_blank" on the link.
+       * ------------------------------------------------------------------ */
+      await check('theCheckboxWasTickedBeforeApplying', () =>
+        linkTheFirstWord(byId('one'), 'https://example.com/one', true));
+
+      /* ------------------------------------------------------------------ *
+       * And the choice is remembered for the next link, without re-ticking.
+       * ------------------------------------------------------------------ */
+      await check('theNextLinkOpensWithItStillTicked', () =>
+        linkTheFirstWord(byId('two'), 'https://example.com/two', true));
+
+      /* ------------------------------------------------------------------ *
+       * Unticking must stick too, and must not leave a stale target behind.
+       * ------------------------------------------------------------------ */
+      await check('andUntickingItIsRespected', () =>
+        linkTheFirstWord(byId('three'), 'https://example.com/three', false));
+
+      /* ------------------------------------------------------------------ *
+       * Unticking on a link that already opens in a new tab must remove it.
+       * ------------------------------------------------------------------ */
+      const existingLink = byId('existing').querySelector('a');
+      await check('openingAnExistingNewTabLinkShowsItTicked', async () => {
+        engine.beginTextEdit(byId('existing'));
+        await frames();
+        const range = document.createRange();
+        range.selectNodeContents(existingLink);
+        const selection = getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        await frames();
+        barButton('Insert link')?.click();
+        await frames();
+        return {
+          prefilledUrl: inBar('input[type="url"]')?.value ?? null,
+          ticked: inBar('input[type="checkbox"]')?.checked ?? null,
+        };
+      });
+      await check('andUntickingItTakesTargetOff', async () => {
+        const box = inBar('input[type="checkbox"]');
+        if (box?.checked) { box.click(); await frames(); }
+        barButton('Apply')?.click();
+        await frames();
+        engine.endTextEdit(true);
+        await frames();
+        const a = byId('existing').querySelector('a[href]');
+        return { target: a?.getAttribute('target') ?? null, rel: a?.getAttribute('rel') ?? null };
+      });
+
+      /* ------------------------------------------------------------------ *
+       * A URL the user typed without a scheme is still theirs to open in a tab.
+       * ------------------------------------------------------------------ */
+      await check('aUrlWithoutASchemeStillGetsTheTarget', () =>
+        linkTheFirstWord(byId('bare'), 'example.com/bare', true));
+
+      /* ------------------------------------------------------------------ *
+       * The preference lives on the session, so it outlives the toolbar.
+       * ------------------------------------------------------------------ */
+      await check('tickingItIsRecordedOnTheSession', () => engine.linkOpensInNewTab);
+      await check('andASessionPreferenceOpensTheFieldTicked', async () => {
+        engine.linkOpensInNewTab = true;
+        // A paragraph nothing has touched, so its first child is still the text node.
+        engine.beginTextEdit(byId('fresh'));
+        await frames();
+        const range = document.createRange();
+        range.setStart(byId('fresh').firstChild, 0);
+        range.setEnd(byId('fresh').firstChild, 5);
+        const selection = getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        await frames();
+        barButton('Insert link')?.click();
+        await frames();
+        const ticked = inBar('input[type="checkbox"]')?.checked ?? null;
+        barButton('Cancel')?.click();
+        await frames();
+        engine.endTextEdit(false);
+        await frames();
+        // Cancelling still keeps the choice, because it was written through when ticked.
+        return { ticked, stillRemembered: engine.linkOpensInNewTab };
+      });
+
+      const settled = { ...results };
+      settled.theBareLink = anchorIn(byId('bare'));
+      settled.theTickedLinkOpensInANewTab = anchorIn(byId('one'));
+      settled.theRememberedOneDoesToo = anchorIn(byId('two'));
+      settled.andTheUntickedOneDoesNot = anchorIn(byId('three'));
+      settled.__errors = errors;
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify(settled, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"__errors":["' + String(e && e.message) + '"]}:END';
+    });
+  </script>
+</body>
+</html>

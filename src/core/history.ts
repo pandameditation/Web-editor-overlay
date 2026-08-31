@@ -335,7 +335,19 @@ function netRecords(commands: readonly Command[]): ChangeRecord[] {
     const group = groups.get(entry.subject)!;
     const first = group[0];
     const last = group[group.length - 1];
-    if (normalize(first.before) === normalize(last.after)) continue;
+    /*
+     * Compared on markup where there is markup to compare.
+     *
+     * A group whose first state matches its last has cancelled itself out and is not a pending
+     * change. For a text edit the state is the markup: judged on the stripped text instead,
+     * wrapping a word in a link looked like a no-op and the link was dropped from the change
+     * set. Both ends have to carry markup for it to be the fair comparison, which is the case
+     * exactly when the group is text edits — they are grouped by element and kind.
+     */
+    const markup = first.markupBefore != null && last.markupAfter != null;
+    const from = markup ? first.markupBefore : first.before;
+    const to = markup ? last.markupAfter : last.after;
+    if (normalize(from) === normalize(to)) continue;
     out.push({
       ...last,
       before: first.before,
