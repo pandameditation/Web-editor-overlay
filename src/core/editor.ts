@@ -96,6 +96,7 @@ import {
   type SourceWindow,
 } from './js-edit.js';
 import { installStyleMirror, releaseStyleMirrors } from './mirror.js';
+import { modalOpen } from './modal.js';
 import { collectScriptSources, fetchScriptSource } from './scripts.js';
 import {
   describeProvenance,
@@ -130,6 +131,14 @@ import {
 } from './writeback.js';
 import { RuleRegistry } from './rules.js';
 import { decodeSeed, decodeSeedSync, encodeSeed } from './seed.js';
+import {
+  claimEvent,
+  listen,
+  setShieldPolicy,
+  shieldOwnedEvents,
+  unlisten,
+  type EventFamily,
+} from './shield.js';
 import { ruleSelectorFor, safeSelector } from './selectors.js';
 import { Store } from './store.js';
 import { TokenRegistry } from './tokens.js';
@@ -4216,6 +4225,14 @@ export class EditorEngine {
   /* ---------------------------------------------------------------------- */
 
   #bindPageEvents(): void {
+    /*
+     * Through `listen`, not `addEventListener`, and that is load-bearing.
+     *
+     * The event shield gates page handlers on `document` and `window` for exactly the
+     * types this method registers. `listen` reaches the saved native method, so the
+     * editor's own wiring is never a candidate for gating — otherwise opening a modal
+     * would suppress the editor's own `pointerdown` and `keydown` along with the page's.
+     */
     const on = <K extends keyof DocumentEventMap>(
       target: Document | Window,
       type: K,
@@ -4223,8 +4240,8 @@ export class EditorEngine {
       capture = true,
     ): void => {
       const listener = handler as EventListener;
-      target.addEventListener(type, listener, capture);
-      this.#listeners.push(() => target.removeEventListener(type, listener, capture));
+      listen(target, type, listener, capture);
+      this.#listeners.push(() => unlisten(target, type, listener, capture));
     };
 
     on(document, 'pointerover', (event) => {
@@ -4346,10 +4363,24 @@ export class EditorEngine {
     });
 
     on(document, 'keydown', (event) => {
+      /*
+       * Whether the editor consumed this keystroke, measured rather than assumed.
+       *
+       * The keymap says so by calling `preventDefault`, and that is the set the page must
+       * not also act on — an arrow that moved the selected element should not additionally
+       * advance the page's carousel. Compared before and after because the page may have
+       * prevented the default itself, in a capture handler that ran first, and one page
+       * handler silencing another would be a bug this feature invented.
+       */
+      const prevented = event.defaultPrevented;
       // Tab first, and only while editing: it decides *where* the next keystroke
       // will land, which every other binding then depends on.
-      if (this.store.value.editing && containTab(event)) return;
+      if (this.store.value.editing && containTab(event)) {
+        this.#claimKey(event, prevented);
+        return;
+      }
       handleKeyDown(this, event);
+      this.#claimKey(event, prevented);
     });
 
     const geometry = (): void => this.#bumpGeometry();
@@ -4361,9 +4392,107 @@ export class EditorEngine {
       event.preventDefault();
       event.returnValue = '';
     };
-    window.addEventListener('beforeunload', beforeUnload);
-    this.#listeners.push(() => window.removeEventListener('beforeunload', beforeUnload));
+    listen(window, 'beforeunload', beforeUnload as EventListener);
+    this.#listeners.push(() => unlisten(window, 'beforeunload', beforeUnload as EventListener));
+
+    /*
+     * And the page stops hearing about interactions the editor owns.
+     *
+     * Installed here rather than at mount so it is torn down with everything else: the
+     * patch itself stays, but the policy is what gives it an opinion, and an unmounted
+     * editor has none.
+     */
+    if (this.options.shieldPageEvents !== false) {
+      setShieldPolicy(this.#ownsInteraction);
+      this.#listeners.push(() => setShieldPolicy(null));
+      // The layer that covers page-targeted events during a gesture the editor owns —
+      // an arrow key inside a `contenteditable` being the case that needed it.
+      this.#listeners.push(shieldOwnedEvents());
+    }
   }
+
+  /**
+   * Record that the keymap consumed this keystroke, and stop it there.
+   *
+   * `preventDefault` is how the keymap says it acted, so comparing before and after is how
+   * that is measured — and comparing rather than reading is what stops a page handler that
+   * cancelled the default itself from being mistaken for the editor.
+   *
+   * Then it stops propagating. An arrow that moved the selected element should not also
+   * advance the page's carousel, and this is the only layer that can say so: the keystroke
+   * targets a page element, so nothing about its path identifies it as the editor's.
+   * Because this runs in the capture phase on `document`, stopping here skips every page
+   * handler below and every bubble handler above, while leaving the editor's own
+   * same-target listeners untouched.
+   *
+   * Overlay-origin keys are left alone deliberately. They are layer 2's job — stopped on
+   * the way *out*, once the control they were aimed at has had them — and stopping one here
+   * would take it away from that control.
+   */
+  #claimKey(event: KeyboardEvent, preventedBefore: boolean): void {
+    if (preventedBefore || !event.defaultPrevented) return;
+    claimEvent(event);
+    if (this.options.shieldPageEvents === false) return;
+    if (!isOverlayEvent(event)) event.stopPropagation();
+  }
+
+  /**
+   * Whether the editor owns the interaction an event belongs to.
+   *
+   * The second half of the event shield: the first half is geometric — anything that
+   * happened inside the overlay is the overlay's — and this is the half that has to reason
+   * about state, because the interactions that matter most happen on *page* elements.
+   * Typing into a paragraph and dragging an element to reorder it both target the page and
+   * never pass through the overlay at all.
+   *
+   * Deliberately narrow. Edit mode on its own is not ownership: the user still clicks
+   * around a page that is still a page, and a wholesale block would break the very site
+   * they are editing. What counts is a gesture in flight — a live text edit, a reorder, an
+   * open modal — where a second listener acting on the same input can only interfere.
+   */
+  #ownsInteraction = (_event: Event, family: EventFamily): boolean => {
+    /*
+     * A modal owns everything, which is what the word means.
+     *
+     * `modalOpen` already locks page scrolling through CSS for the same reason; this is
+     * the other half of it. The user's own example lives here: a wheel over a full-screen
+     * dialog is not a request to scroll whatever the page does with wheels.
+     */
+    if (modalOpen()) return true;
+
+    const state = this.store.value;
+
+    /*
+     * A live text edit owns the keys, the caret and the sweep that selects with it.
+     *
+     * `wheel` is left out on purpose. Scrolling while the caret is somewhere is an
+     * ordinary thing to do, and the page moving its own furniture in response is not
+     * interference — it is the page working. The keys are the opposite: an arrow inside a
+     * paragraph is the caret's, and nothing else's.
+     */
+    if (state.textEditing) {
+      return (
+        family === 'keyboard' ||
+        family === 'text' ||
+        family === 'selection' ||
+        family === 'pointer' ||
+        family === 'drag'
+      );
+    }
+
+    /*
+     * A reorder in flight owns the pointer, and Escape, which cancels it.
+     *
+     * The gesture moves the real element as the pointer travels, so the page sees a stream
+     * of pointer events over content that is rearranging itself — the worst possible input
+     * for a handler that assumes the layout is standing still.
+     */
+    if (state.drag) {
+      return family === 'pointer' || family === 'keyboard' || family === 'drag';
+    }
+
+    return false;
+  };
 
   /**
    * Watch the page for changes that invalidate what the overlay is showing.

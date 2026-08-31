@@ -3,6 +3,7 @@ import { customElement, state } from 'lit/decorators.js';
 import { isMutable, labelFor, selectorFor, visualBox } from '../../core/dom.js';
 import { copyToClipboard } from '../../core/design-system.js';
 import { hasComponentProps } from '../../core/props.js';
+import { listen, unlisten } from '../../core/shield.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
@@ -172,12 +173,13 @@ export class HeoQuickMenu extends HeoElement {
 
   override connectedCallback(): void {
     super.connectedCallback();
-    document.addEventListener('pointerdown', this.#onDocumentPointerDown, true);
+    // `listen`, so the shield's `pointerdown` gate cannot stop this menu dismissing.
+    listen(document, 'pointerdown', this.#onDocumentPointerDown, true);
   }
 
   override disconnectedCallback(): void {
     super.disconnectedCallback();
-    document.removeEventListener('pointerdown', this.#onDocumentPointerDown, true);
+    unlisten(document, 'pointerdown', this.#onDocumentPointerDown, true);
   }
 
   override render(): TemplateResult | typeof nothing {

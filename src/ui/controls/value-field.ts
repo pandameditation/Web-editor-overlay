@@ -3,6 +3,7 @@ import { customElement, property, query, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 import { DIRTY_ATTR, EDIT_DISCARDED_EVENT } from '../../core/constants.js';
 import { formatLength, nextUnit, parseLength, toHexColor } from '../../core/css.js';
+import { listen, unlisten } from '../../core/shield.js';
 import { icon } from '../icons.js';
 import { baseStyles, swatchStyle } from '../theme.js';
 
@@ -409,10 +410,13 @@ export class HeoValueField extends LitElement {
   override connectedCallback(): void {
     super.connectedCallback();
     this.draft = this.value;
-    addEventListener('scroll', this.#onScroll, true);
-    addEventListener('resize', this.#onScroll);
-    document.addEventListener('pointerdown', this.#onDocumentDown, true);
-    document.addEventListener(EDIT_DISCARDED_EVENT, this.#onEditDiscarded);
+    // Through `listen` so the event shield never gates the overlay's own housekeeping:
+    // `pointerdown` and `scroll` are both types it suppresses for the page, and this
+    // field needs them to dismiss its list and keep it positioned.
+    listen(window, 'scroll', this.#onScroll, true);
+    listen(window, 'resize', this.#onScroll);
+    listen(document, 'pointerdown', this.#onDocumentDown, true);
+    listen(document, EDIT_DISCARDED_EVENT, this.#onEditDiscarded);
     if (this.hasUpdated) this.#watchFocus();
   }
 
@@ -446,10 +450,10 @@ export class HeoValueField extends LitElement {
 
   override disconnectedCallback(): void {
     super.disconnectedCallback();
-    removeEventListener('scroll', this.#onScroll, true);
-    removeEventListener('resize', this.#onScroll);
-    document.removeEventListener('pointerdown', this.#onDocumentDown, true);
-    document.removeEventListener(EDIT_DISCARDED_EVENT, this.#onEditDiscarded);
+    unlisten(window, 'scroll', this.#onScroll, true);
+    unlisten(window, 'resize', this.#onScroll);
+    unlisten(document, 'pointerdown', this.#onDocumentDown, true);
+    unlisten(document, EDIT_DISCARDED_EVENT, this.#onEditDiscarded);
     this.renderRoot?.removeEventListener('focusout', this.#onFocusOutBound);
     // The deferred blur would otherwise commit from a detached element, and a
     // still-open flag would re-promote the popover if Lit reuses this instance.

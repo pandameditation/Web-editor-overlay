@@ -6,6 +6,7 @@ import { labelFor } from '../../core/dom.js';
 import { normalizeCustomElementTag, PROP_TYPES, type BlockPropRow } from '../../core/library.js';
 import type { BlockExtraction, ClassExtraction } from '../../core/editor.js';
 import { ModalController } from '../../core/modal.js';
+import { listen, unlisten } from '../../core/shield.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import type { BlockKind, PropSpec } from '../../core/types.js';
 import { HeoElement } from '../context.js';
@@ -606,14 +607,16 @@ export class HeoExtractDialog extends HeoElement {
 
   override connectedCallback(): void {
     super.connectedCallback();
-    addEventListener('resize', this.#reposition);
-    addEventListener('scroll', this.#reposition, true);
+    // `listen`, because `scroll` is a type the event shield suppresses for the page and
+    // this dialog is one of the things it is protecting.
+    listen(window, 'resize', this.#reposition);
+    listen(window, 'scroll', this.#reposition, true);
   }
 
   override disconnectedCallback(): void {
     super.disconnectedCallback();
-    removeEventListener('resize', this.#reposition);
-    removeEventListener('scroll', this.#reposition, true);
+    unlisten(window, 'resize', this.#reposition);
+    unlisten(window, 'scroll', this.#reposition, true);
   }
 
   override updated(): void {

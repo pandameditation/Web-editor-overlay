@@ -319,6 +319,26 @@ export interface MountOptions {
   sourceToken?: string;
 
   /**
+   * Keep the page's own event listeners out of the editor's interactions. Defaults on.
+   *
+   * The overlay is a second application layered over the page, and the page is still
+   * listening: a `wheel` handler that hijacks scrolling fires while a dock panel is being
+   * scrolled, and arrow keys bound to a carousel fire while the caret is being moved
+   * through a paragraph. Neither page is misbehaving — it has no way to know the editor
+   * exists — so the editor is what has to draw the line.
+   *
+   * Two things are suppressed, and only for the page's handlers on `window`, `document`,
+   * `<html>` and `<body>`: events that happened inside the overlay's own chrome, and
+   * events belonging to a gesture the editor owns — a live text edit, a reorder in
+   * flight, an open modal. Lifecycle and navigation events always get through.
+   *
+   * Worth turning off in one situation: a page whose own behaviour is the thing being
+   * edited and has to keep running exactly as it does normally. Doing so brings back the
+   * interference, which is the trade.
+   */
+  shieldPageEvents?: boolean;
+
+  /**
    * Whether to work out which content the page's JavaScript renders. Defaults on.
    *
    * When it does, inline text editing is refused on that content and the code

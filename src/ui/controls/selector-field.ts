@@ -12,6 +12,7 @@ import {
   type SelectorCompletion,
   type SelectorVocabulary,
 } from '../../core/selectors.js';
+import { listen, unlisten } from '../../core/shield.js';
 import { ManagedStyleSheet } from '../../core/stylesheet.js';
 import { icon } from '../icons.js';
 import { baseStyles } from '../theme.js';
@@ -396,16 +397,18 @@ export class HeoSelectorField extends LitElement {
   override connectedCallback(): void {
     super.connectedCallback();
     this.draft = this.value;
-    addEventListener('scroll', this.#onScroll, true);
-    addEventListener('resize', this.#onScroll);
-    document.addEventListener('pointerdown', this.#onDocumentDown, true);
+    // Through `listen`, for the reason the value field documents: the shield suppresses
+    // `pointerdown` and `scroll` for the page, and this field needs both.
+    listen(window, 'scroll', this.#onScroll, true);
+    listen(window, 'resize', this.#onScroll);
+    listen(document, 'pointerdown', this.#onDocumentDown, true);
   }
 
   override disconnectedCallback(): void {
     super.disconnectedCallback();
-    removeEventListener('scroll', this.#onScroll, true);
-    removeEventListener('resize', this.#onScroll);
-    document.removeEventListener('pointerdown', this.#onDocumentDown, true);
+    unlisten(window, 'scroll', this.#onScroll, true);
+    unlisten(window, 'resize', this.#onScroll);
+    unlisten(document, 'pointerdown', this.#onDocumentDown, true);
     // The outline is drawn on the page, not in this shadow root, so it does not go
     // away with the component. Every teardown path has to clear it.
     clearPeek(this);

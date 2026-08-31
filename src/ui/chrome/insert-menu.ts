@@ -10,6 +10,7 @@ import {
   type HtmlElementSpec,
 } from '../../core/elements.js';
 import { INSERT_POSITION_LABELS, type InsertPosition } from '../../core/mutations.js';
+import { listen, unlisten } from '../../core/shield.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import type { LibraryBlock } from '../../core/types.js';
 import { HeoElement } from '../context.js';
@@ -300,12 +301,13 @@ export class HeoInsertMenu extends HeoElement {
 
   override connectedCallback(): void {
     super.connectedCallback();
-    document.addEventListener('pointerdown', this.#onDocumentPointerDown, true);
+    // `listen`, so the shield's `pointerdown` gate cannot stop this menu dismissing.
+    listen(document, 'pointerdown', this.#onDocumentPointerDown, true);
   }
 
   override disconnectedCallback(): void {
     super.disconnectedCallback();
-    document.removeEventListener('pointerdown', this.#onDocumentPointerDown, true);
+    unlisten(document, 'pointerdown', this.#onDocumentPointerDown, true);
   }
 
   override updated(): void {

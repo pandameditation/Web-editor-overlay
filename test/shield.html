@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Keeping the page's listeners out of the editor's interactions</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: system-ui, sans-serif;
+    }
+
+    #tall {
+      height: 2400px;
+    }
+  </style>
+</head>
+
+<body>
+  <!--
+    A page that listens the way real pages do: global handlers on window and document,
+    a mix of capture and bubble, for the interaction types that collide with an editor.
+    Every one of them counts what it saw, so a check is "did this fire" rather than
+    "did something look right".
+  -->
+  <h1 id="title">The page is still listening</h1>
+  <p id="copy">A paragraph to edit, with enough words to move a caret through.</p>
+  <p id="other">Another paragraph.</p>
+  <div id="tall">Something tall, so the page can scroll.</div>
+
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+
+  <script>
+    // Registered before the overlay bundle loads, which is the harder case: these are the
+    // listeners a page installs in its own <head>, and the shield has to have been in
+    // place first to gate them. The bundle below is a module, so it evaluates after this.
+    window.pageHits = {
+      wheelWindow: 0,
+      wheelWindowCapture: 0,
+      keydownWindow: 0,
+      keydownDocumentCapture: 0,
+      inputDocument: 0,
+      pointerdownWindow: 0,
+      clickBody: 0,
+      onceClick: 0,
+      resizeWindow: 0,
+      customWindow: 0,
+    };
+    const hit = (name) => { window.pageHits[name] += 1; };
+
+    window.addEventListener('wheel', () => hit('wheelWindow'));
+    window.addEventListener('wheel', () => hit('wheelWindowCapture'), true);
+    window.addEventListener('keydown', () => hit('keydownWindow'));
+    document.addEventListener('keydown', () => hit('keydownDocumentCapture'), true);
+    document.addEventListener('input', () => hit('inputDocument'));
+    window.addEventListener('pointerdown', () => hit('pointerdownWindow'));
+    document.body.addEventListener('click', () => hit('clickBody'));
+    // A "first interaction" hook. Suppressing its one chance must not consume it.
+    window.addEventListener('click', () => hit('onceClick'), { once: true });
+    // Not an interaction event, so it must never be gated.
+    window.addEventListener('resize', () => hit('resizeWindow'));
+    window.addEventListener('heo-test-ping', () => hit('customWindow'));
+
+    /*
+     * The one thing no layer can cover, stated as a test rather than left implicit.
+     *
+     * A capture-phase listener on window or document, registered before the overlay's
+     * bundle evaluated, runs before the patch existed and before either propagation layer
+     * is in the path. `wheelWindowCapture` and `keydownDocumentCapture` above are those,
+     * and the checks below expect them to keep firing.
+     */
+  </script>
+
+  <script type="module">
+    import { mount } from '../dist/html-editor-overlay.js';
+
+    const results = {};
+    const errors = [];
+    addEventListener('error', (e) => errors.push('error: ' + e.message));
+    addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+
+    const progress = document.getElementById('progress');
+    const step = (name) => { progress.textContent = name; };
+    const check = (name, fn) => {
+      step(name);
+      try { results[name] = fn(); }
+      catch (err) { results[name] = 'THREW: ' + (err && err.message ? err.message : String(err)); }
+    };
+    const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+    function deepQuery(selector, root = document) {
+      const found = root.querySelector?.(selector);
+      if (found) return found;
+      for (const el of root.querySelectorAll?.('*') ?? []) {
+        if (!el.shadowRoot) continue;
+        const hit = deepQuery(selector, el.shadowRoot);
+        if (hit) return hit;
+      }
+      return null;
+    }
+
+    /** Counts before and after an action, so a check reads as a delta. */
+    const around = async (action) => {
+      const before = { ...window.pageHits };
+      await action();
+      await frames();
+      const after = { ...window.pageHits };
+      const delta = {};
+      for (const key of Object.keys(after)) {
+        if (after[key] !== before[key]) delta[key] = after[key] - before[key];
+      }
+      return delta;
+    };
+
+    /**
+     * A delta, judged.
+     *
+     * `blocked` is the set that must not have fired and did not; `leaked` is the set that
+     * must not have fired and did. A check passes when `leaked` is empty — spelled out
+     * rather than left for a reader to compare two lists by eye.
+     */
+    const judge = (delta, mustNotFire, mayFire = []) => {
+      const leaked = mustNotFire.filter((name) => delta[name]);
+      const alsoFired = Object.keys(delta).filter(
+        (name) => !mustNotFire.includes(name) && !mayFire.includes(name),
+      );
+      return {
+        blocked: mustNotFire.filter((name) => !delta[name]),
+        leaked,
+        ok: leaked.length === 0,
+        fired: delta,
+        unexpected: alsoFired,
+      };
+    };
+
+    /** The pre-registered capture listeners, which no layer can reach. See the note above. */
+    const PRE_CAPTURE = ['wheelWindowCapture', 'keydownDocumentCapture'];
+
+    const wheelOn = (target) =>
+      target.dispatchEvent(
+        new WheelEvent('wheel', { bubbles: true, composed: true, cancelable: true, deltaY: 120 }),
+      );
+    const keyOn = (target, key) =>
+      target.dispatchEvent(
+        new KeyboardEvent('keydown', { key, bubbles: true, composed: true, cancelable: true }),
+      );
+
+    (async () => {
+      const api = mount({ theme: 'dark' });
+      const engine = api.engine;
+      await engine.whenReady();
+      await frames();
+
+      /* ------------------------------------------------------------------ *
+       * 1. With the editor idle, the page is untouched.
+       *
+       * The shield is installed from the moment the bundle evaluates, so this is the
+       * check that it is inert until it has something to protect.
+       * ------------------------------------------------------------------ */
+      results.anIdleEditorLeavesThePageAlone = await around(async () => {
+        wheelOn(document.getElementById('copy'));
+        keyOn(document.getElementById('copy'), 'ArrowDown');
+        window.dispatchEvent(new CustomEvent('heo-test-ping'));
+      });
+
+      api.setEditing(true);
+      await frames();
+
+      /* ------------------------------------------------------------------ *
+       * 2. Events from inside the overlay's own chrome are never the page's.
+       *
+       * The user's example: scrolling a panel must not run the page's wheel handler.
+       * Dispatched on a real node inside the dock's shadow root, so the event composes
+       * out through the host exactly as a real one would.
+       * ------------------------------------------------------------------ */
+      step('openThePanel');
+      api.openPanel('tokens');
+      await frames();
+      const dock = deepQuery('heo-dock');
+      const inPanel = dock?.shadowRoot?.querySelector('.body, .panel, section') ?? dock;
+
+      results.aWheelInsideThePanelDoesNotReachThePage = judge(
+        await around(async () => wheelOn(inPanel)),
+        ['wheelWindow'],
+        PRE_CAPTURE,
+      );
+      results.aKeystrokeInsideThePanelDoesNotReachThePage = judge(
+        await around(async () => keyOn(inPanel, 'ArrowDown')),
+        ['keydownWindow'],
+        PRE_CAPTURE,
+      );
+      check('andTheWheelReallyCameFromInsideTheOverlay', () => ({
+        node: inPanel?.tagName?.toLowerCase() ?? null,
+        insideHost: Boolean(inPanel?.closest?.('html-editor-overlay')) ||
+          Boolean(dock?.shadowRoot?.contains(inPanel)),
+      }));
+
+      // And the same wheel on a page element still reaches the page, so the gate is
+      // about origin rather than about edit mode being on.
+      results.butAWheelOnThePageStillDoes = await around(async () => {
+        wheelOn(document.getElementById('copy'));
+      });
+
+      /* ------------------------------------------------------------------ *
+       * 3. While a modal is open, the page hears nothing interactive.
+       * ------------------------------------------------------------------ */
+      step('openAModal');
+      engine.previewSave();
+      await frames();
+      await frames();
+      check('theSaveDialogIsOpen', () => Boolean(deepQuery('heo-save-dialog')));
+
+      results.withAModalOpenTheWheelIsTheModalsEvenOverThePage = judge(
+        await around(async () => wheelOn(document.getElementById('copy'))),
+        ['wheelWindow'],
+        PRE_CAPTURE,
+      );
+      results.andSoAreTheArrowKeys = judge(
+        await around(async () => keyOn(document.getElementById('copy'), 'ArrowDown')),
+        ['keydownWindow'],
+        PRE_CAPTURE,
+      );
+      // Resize is not an interaction event, so it goes through even here.
+      results.butAResizeStillReachesThePage = await around(async () => {
+        window.dispatchEvent(new Event('resize'));
+      });
+
+      engine.closeSavePreview();
+      await frames();
+      results.andClosingItGivesThePageItsEventsBack = await around(async () => {
+        wheelOn(document.getElementById('copy'));
+      });
+
+      /* ------------------------------------------------------------------ *
+       * 4. While text is being edited, the keys belong to the caret.
+       *
+       * The user's second example. The event targets a *page* element and travels up the
+       * page's own tree, which is why stopping propagation at the overlay could never
+       * have covered this.
+       * ------------------------------------------------------------------ */
+      step('editText');
+      const copy = document.getElementById('copy');
+      api.select(copy);
+      engine.beginTextEdit(copy);
+      await frames();
+      check('theParagraphIsBeingEdited', () => copy.getAttribute('contenteditable'));
+
+      results.arrowKeysDoNotReachThePageWhileEditing = judge(
+        await around(async () => {
+          keyOn(copy, 'ArrowRight');
+          keyOn(copy, 'ArrowLeft');
+        }),
+        ['keydownWindow'],
+        PRE_CAPTURE,
+      );
+      results.norDoesTheInputStream = judge(
+        await around(async () =>
+          copy.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true })),
+        ),
+        ['inputDocument'],
+      );
+      /*
+       * Wheel is deliberately still the page's while editing.
+       *
+       * Scrolling with a caret somewhere is an ordinary thing to do, and the page moving
+       * its own furniture is the page working rather than interfering.
+       */
+      results.butScrollingIsStillThePages = await around(async () => {
+        wheelOn(copy);
+      });
+
+      /*
+       * Ending the edit hands the text stream back.
+       *
+       * Measured on `input` rather than on a key, because the arrow keys stay blocked for a
+       * different and correct reason — with an element selected they are the editor's
+       * navigation keys, which the next check covers on its own terms.
+       */
+      engine.endTextEdit(true);
+      await frames();
+      results.andEndingTheEditGivesTheTextStreamBack = await around(async () =>
+        document
+          .getElementById('other')
+          .dispatchEvent(new InputEvent('input', { bubbles: true, composed: true })),
+      );
+
+      /* ------------------------------------------------------------------ *
+       * 5. A keystroke the editor's keymap consumed is not also the page's.
+       *
+       * Unshifted arrows move the selection in edit mode, so the page's carousel must not
+       * advance at the same time. Measured on a page element with nothing else in flight.
+       * ------------------------------------------------------------------ */
+      step('claimedKeys');
+      api.select(document.getElementById('copy'));
+      await frames();
+      results.aKeyTheKeymapActedOnIsNotAlsoThePages = judge(
+        await around(async () => keyOn(document.getElementById('copy'), 'ArrowDown')),
+        ['keydownWindow'],
+        PRE_CAPTURE,
+      );
+      // A key the editor does not bind is left entirely alone.
+      results.butAKeyTheEditorIgnoresGoesStraightThrough = await around(async () => {
+        keyOn(document.getElementById('copy'), 'F9');
+      });
+
+      /* ------------------------------------------------------------------ *
+       * 5b. A listener registered after the overlay loaded is covered completely.
+       *
+       * This is the layer the propagation stops cannot be: the patch was in place when
+       * these were registered, so it gates them whatever phase they asked for — including
+       * the capture phase on window, which nothing else can reach. It is also the ordinary
+       * case for a framework that mounts after the editor.
+       * ------------------------------------------------------------------ */
+      step('lateListeners');
+      let lateBubble = 0;
+      let lateCapture = 0;
+      const onLateBubble = () => { lateBubble += 1; };
+      const onLateCapture = () => { lateCapture += 1; };
+      window.addEventListener('wheel', onLateBubble);
+      window.addEventListener('wheel', onLateCapture, true);
+
+      api.openPanel('tokens');
+      await frames();
+      const panelNode = deepQuery('heo-dock');
+      wheelOn(panelNode);
+      await frames();
+      const insidePanel = { bubble: lateBubble, capture: lateCapture };
+      wheelOn(document.getElementById('copy'));
+      await frames();
+      check('aLateRegisteredListenerIsGatedInBothPhases', () => ({
+        insidePanel,
+        // Neither phase heard the panel's wheel …
+        bothBlockedInsideTheOverlay: insidePanel.bubble === 0 && insidePanel.capture === 0,
+        // … and both hear the page's.
+        bothFireOnThePage: lateBubble === 1 && lateCapture === 1,
+      }));
+      window.removeEventListener('wheel', onLateBubble);
+      window.removeEventListener('wheel', onLateCapture, true);
+
+      /* ------------------------------------------------------------------ *
+       * 6. A `once` listener suppressed once is not spent.
+       * ------------------------------------------------------------------ */
+      step('onceListener');
+      api.openPanel('tokens');
+      await frames();
+      const target = deepQuery('heo-dock') ?? document.body;
+      results.aSuppressedOnceListenerIsPutBack = await around(async () => {
+        // Suppressed: the click is inside the overlay.
+        target.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+      });
+      api.setEditing(false);
+      await frames();
+      results.andStillFiresOnTheFirstClickThePageSees = await around(async () => {
+        document.getElementById('other').dispatchEvent(
+          new MouseEvent('click', { bubbles: true, composed: true }),
+        );
+      });
+
+      /* ------------------------------------------------------------------ *
+       * 7. removeEventListener still works on a gated listener.
+       *
+       * The wrapper is what the browser holds, so removing the original has to find and
+       * remove the wrapper — otherwise a handler the page removed goes on firing.
+       * ------------------------------------------------------------------ */
+      step('removal');
+      let removable = 0;
+      const onWheel = () => { removable += 1; };
+      window.addEventListener('wheel', onWheel);
+      wheelOn(document.getElementById('copy'));
+      const afterAdd = removable;
+      window.removeEventListener('wheel', onWheel);
+      wheelOn(document.getElementById('copy'));
+      check('removingAGatedListenerStopsIt', () => ({
+        firedWhileRegistered: afterAdd,
+        firedAfterRemoval: removable - afterAdd,
+      }));
+
+      /* ------------------------------------------------------------------ *
+       * 8. Unmounting hands the page back completely.
+       * ------------------------------------------------------------------ */
+      step('unmount');
+      api.unmount();
+      await frames();
+      results.afterUnmountingEverythingReachesThePage = await around(async () => {
+        wheelOn(document.getElementById('copy'));
+        keyOn(document.getElementById('copy'), 'ArrowDown');
+      });
+
+      results.__errors = errors;
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify({ __fatal: String((e && e.stack) || e), ...results }, null, 1) + ':END';
+    });
+  </script>
+</body>
+
+</html>

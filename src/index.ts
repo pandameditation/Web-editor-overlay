@@ -5,6 +5,7 @@ import type { FileHost } from './core/file-host.js';
 import type { PlannedWrite, WritePlan, WriteResult } from './core/writeback.js';
 import { releaseModals } from './core/modal.js';
 import { installProvenance } from './core/provenance.js';
+import { installEventShield, shieldOverlayEvents } from './core/shield.js';
 import { ManagedStyleSheet } from './core/stylesheet.js';
 import { publishLit } from './core/lit-bridge.js';
 import { autoMountFromScriptTag } from './integrations/script-tag.js';
@@ -124,6 +125,8 @@ interface Instance {
   host: HTMLElement;
   sheet: ManagedStyleSheet;
   api: OverlayAPI;
+  /** Takes the host's event shield back off, so unmounting leaves the page untouched. */
+  releaseShield: (() => void) | null;
 }
 
 let instance: Instance | null = null;
@@ -257,7 +260,17 @@ export function mount(options: MountOptions = {}): OverlayAPI {
     configure: (next) => configure(next),
   };
 
-  instance = { engine, host, sheet, api };
+  /*
+   * Nothing that happens inside the chrome continues out into the page.
+   *
+   * Bound here rather than in the engine because it belongs to the host element, which is
+   * this function's to own. Bubble phase, so the overlay's own controls have had the event
+   * first and only its onward journey to `<body>`, `document` and `window` is cut off.
+   */
+  const releaseShield =
+    options.shieldPageEvents === false ? null : shieldOverlayEvents(host);
+
+  instance = { engine, host, sheet, api, releaseShield };
   return api;
 }
 
@@ -291,13 +304,14 @@ function raiseToTopLayer(host: HTMLElement): void {
 
 export function unmount(): void {
   if (!instance) return;
-  const { engine, host, sheet } = instance;
+  const { engine, host, sheet, releaseShield } = instance;
   instance = null;
   // Order matters. `destroy()` cancels an in-flight drag, which patches the store
   // and can queue one last render; removing the host next disconnects everything
   // before the engine reference is dropped, so that render cannot ask a component
   // for an engine that no longer exists.
   engine.destroy();
+  releaseShield?.();
   host.remove();
   setEngine(null);
   sheet.destroy();
@@ -400,6 +414,20 @@ if (typeof window !== 'undefined') {
  * at the end of `<body>` sees only what happens after it.
  */
 installProvenance();
+
+/*
+ * And the gate that keeps the page's listeners out of the editor's interactions.
+ *
+ * Installed at module evaluation, alongside the provenance patches, for a reason that is
+ * the same in kind but stricter: a listener registered before this runs is registered as
+ * itself and can never be gated. Being early is what determines how much of the page's
+ * wiring is covered at all.
+ *
+ * Installing the patch is not the same as acting on it. It has no opinion until an engine
+ * mounts and hands it one, and none again once that engine is gone — so a page that never
+ * mounts the editor is left exactly as it was.
+ */
+installEventShield();
 
 autoMountFromScriptTag(globalAPI);
 
