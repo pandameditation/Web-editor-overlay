@@ -646,25 +646,48 @@
       engine.previewSave();
       await frames();
       await frames();
-      check('theSaveButtonOffersToWriteTheFile', () => {
+      /*
+       * Which offer leads, and it is not this one.
+       *
+       * Connecting a folder edits the files the page is built from, in place, so where the
+       * browser can offer that it is the primary and saving a copy is the button beside it.
+       * Only where no folder can be handed over — Firefox and Safari on a local file, chiefly
+       * — is saving a copy the main event, because then it is the whole of what can be done.
+       */
+      const canConnect = api.engine.store.value.project === null && (await engine.hostOptions()).picker;
+      check('theFolderRouteLeadsWhereItCan', () => {
         const dialog = deepQuery('heo-save-dialog');
         const labels = Array.from(dialog?.shadowRoot?.querySelectorAll('footer .btn') ?? []).map(
           (el) => el.textContent.replace(/\s+/g, ' ').trim(),
         );
+        const primaryLabel =
+          dialog?.shadowRoot?.querySelector('footer .btn.primary')?.textContent
+            ?.replace(/\s+/g, ' ').trim() ?? null;
         return {
           labels,
-          // The ask: it reads like the connected case, naming the file rather than "Save changes".
-          namesTheFile: labels.some((label) => /^Write page\.(html|zip)/.test(label)),
+          primary: primaryLabel,
+          thisBrowserCanTakeAFolder: canConnect,
+          // Saving a copy is always reachable, and it says what it is either way.
+          savingACopyIsOffered: labels.some((label) => /^Save as HTML/.test(label)),
           noLongerSaysSaveChanges: !labels.some((label) => label === 'Save changes'),
+          asExpected: canConnect
+            ? /^Connect folder to edit files/.test(primaryLabel ?? '')
+            : /^Save as HTML/.test(primaryLabel ?? ''),
         };
       });
 
-      // And the primary button leads to the export step rather than writing straight away.
+      // The Save-as-HTML entry leads to the step rather than writing straight away.
       const primary = () => {
         const dialog = deepQuery('heo-save-dialog');
         return Array.from(dialog?.shadowRoot?.querySelectorAll('footer .btn.primary') ?? [])[0] ?? null;
       };
-      primary()?.click();
+      const htmlEntry = () => {
+        const dialog = deepQuery('heo-save-dialog');
+        return Array.from(dialog?.shadowRoot?.querySelectorAll('footer .btn') ?? []).find((el) =>
+          /^Save as HTML/.test(el.textContent.replace(/\s+/g, ' ').trim()),
+        ) ?? null;
+      };
+      htmlEntry()?.click();
       await frames();
       await frames();
       check('andPressingItOpensTheExportStep', () => {
@@ -884,6 +907,44 @@
         const primary = dialog?.shadowRoot?.querySelector('footer .btn.primary');
         return primary?.textContent.replace(/\s+/g, ' ').trim() ?? null;
       });
+
+      /* ------------------------------------------------------------------ *
+       * 6. A browser that cannot take a folder at all.
+       *
+       * Firefox and Safari opening a page from disk. There is no folder to hand over, so
+       * saving a copy is not the fallback — it is the whole of what can be done, and it leads.
+       * Reached by taking the directory picker away, because headless Chrome always has one.
+       * ------------------------------------------------------------------ */
+      step('noPicker');
+      const realDirectoryPicker = window.showDirectoryPicker;
+      delete window.showDirectoryPicker;
+      engine.closeSavePreview();
+      await frames();
+      api.select(document.getElementById('copy'));
+      engine.setStyle('padding', '3px');
+      await frames();
+      engine.previewSave();
+      // The dialog asks what the browser can offer on the way in, and answers a promise.
+      for (let i = 0; i < 10; i += 1) await frames();
+      check('withoutAFolderPickerSavingACopyLeads', () => {
+        const dialog = deepQuery('heo-save-dialog');
+        const labels = Array.from(dialog?.shadowRoot?.querySelectorAll('footer .btn') ?? []).map(
+          (el) => el.textContent.replace(/\s+/g, ' ').trim(),
+        );
+        const primaryLabel =
+          dialog?.shadowRoot?.querySelector('footer .btn.primary')?.textContent
+            ?.replace(/\s+/g, ' ').trim() ?? null;
+        return {
+          labels,
+          primary: primaryLabel,
+          // Promoted, and not also duplicated in the slot beside it.
+          asExpected:
+            /^Save as HTML/.test(primaryLabel ?? '') &&
+            labels.filter((label) => /^Save as HTML/.test(label)).length === 1 &&
+            !labels.some((label) => /Connect folder/.test(label)),
+        };
+      });
+      window.showDirectoryPicker = realDirectoryPicker;
 
       results.__errors = errors;
       URL.createObjectURL = realCreate;

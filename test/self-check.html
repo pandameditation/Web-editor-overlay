@@ -2566,15 +2566,27 @@
       /*
        * And the way out is still the primary, one click from here.
        *
-       * It no longer says "Save changes": with no folder connected, saving writes the page
-       * out, so the button names the file it is about to write the way the connected case
-       * does. Matched on the primary rather than the words, since "Write to files…" sits
-       * next to it and means something else entirely.
+       * It no longer says "Save changes". With no folder connected the primary is the offer to
+       * connect one, because that edits the files this page is built from rather than producing
+       * a copy of the output; saving a copy is the button beside it, and becomes the primary
+       * only in a browser that cannot take a folder at all. Matched on the primary rather than
+       * on the words, since several buttons here lead somewhere.
        */
       check('savingIsStillOneClickAway', () => {
         const primary = saveDialog().shadowRoot.querySelector('footer .btn.primary');
         const label = primary?.textContent.replace(/\s+/g, ' ').trim() ?? null;
-        return { label, andItNamesWhatItWrites: /^Write .+\.(html|zip)/.test(label ?? '') };
+        const labels = Array.from(saveDialog().shadowRoot.querySelectorAll('footer .btn')).map((b) =>
+          b.textContent.replace(/\s+/g, ' ').trim(),
+        );
+        return {
+          label,
+          // This is the design-system step's footer, so it holds the way back and the primary
+          // and nothing else — the review footer is where the alternatives live.
+          alongside: labels,
+          andItLeadsSomewhereUseful: /^(Connect folder to edit files|Save as HTML|Write )/.test(
+            label ?? '',
+          ),
+        };
       });
       footerButton('Back to the changes').dispatchEvent(
         new MouseEvent('click', { bubbles: true, composed: true }));

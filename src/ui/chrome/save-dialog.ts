@@ -732,7 +732,7 @@ export class HeoSaveDialog extends HeoElement {
   private static readonly LABEL = {
     transfer: 'Share this design system',
     files: 'Review the files this will write',
-    export: 'Write as',
+    export: 'Save as HTML',
     review: 'Review and save changes',
   } as const;
 
@@ -986,30 +986,18 @@ export class HeoSaveDialog extends HeoElement {
      * proposal. The label names the file it will write, which is the answer to "what happens
      * if I press this".
      */
-    if (!project) {
+    /*
+     * On the Save-as-HTML step the primary writes the copy, connected or not.
+     *
+     * Checked before the project, because that step is now reachable with a folder attached —
+     * and `save()` prefers the project, so it would have written to the files while the button
+     * said it was writing an HTML copy. `writeBundle` is what the label promises, so it is what
+     * gets called.
+     */
+    if (this.view === 'export') {
       const { bundling, bundlePlan } = this.state.value;
-      // The export step already worked the shape out from a survey it had in hand, so it
-      // passes it in rather than have the footer reach a different answer to the same question.
       const shape = known ?? this.editor.bundleShape();
       const name = bundlePlan?.fileName ?? bundleName(this.editor.exportFileName, shape);
-
-      if (this.view !== 'export') {
-        return html`<button
-          class="btn primary"
-          type="button"
-          ?disabled=${saving || nothingToDo}
-          title=${records.length === 0
-            ? 'Nothing has changed since the last save'
-            : nothingToDo
-              ? 'Every change is unchecked, so there is nothing to write'
-              : `Choose how to write ${name}`}
-          @click=${() => this.#openExport()}
-        >
-          ${icon(shape === 'single' ? 'code' : 'folder', 12)} Write ${name}
-          ${icon('chevronRight', 11)}
-        </button>`;
-      }
-
       return html`<button
         class="btn primary"
         type="button"
@@ -1019,9 +1007,59 @@ export class HeoSaveDialog extends HeoElement {
           : this.state.value.exportPrompt
             ? `Choose where to put ${name}, then write it`
             : `Write ${name} to your downloads folder`}
-        @click=${() => void this.editor.save()}
+        @click=${() => void this.editor.writeBundle()}
       >
-        ${icon('save', 12)} Write ${name}
+        ${icon('save', 12)} Save ${name}
+      </button>`;
+    }
+
+    if (!project) {
+      const { bundlePlan } = this.state.value;
+      // The export step already worked the shape out from a survey it had in hand, so it
+      // passes it in rather than have the footer reach a different answer to the same question.
+      const shape = known ?? this.editor.bundleShape();
+      const name = bundlePlan?.fileName ?? bundleName(this.editor.exportFileName, shape);
+
+      /*
+       * Connecting a folder is the primary offer wherever the browser can make it.
+       *
+       * It is the better answer by a distance: it changes the files this page is built from,
+       * in place, so the edits are in the project rather than in a copy of the output. Saving
+       * a standalone HTML is a real thing to want, but it is the fallback — and it used to be
+       * the prominent one purely because it always works.
+       */
+      if (this.canPickFolder) {
+        return html`<button
+          class="btn primary"
+          type="button"
+          ?disabled=${saving}
+          title="Hand over the folder holding this page. Saving then edits those files where they already are, so the changes land in your project instead of in a downloaded copy."
+          @click=${async () => {
+            if (await this.editor.connectProjectFolder()) this.view = 'files';
+          }}
+        >
+          ${icon('folder', 12)} Connect folder to edit files ${icon('chevronRight', 11)}
+        </button>`;
+      }
+
+      /*
+       * No picker, so there is no folder to offer and this is the only thing that works.
+       *
+       * Firefox and Safari opening a page from disk, chiefly — where the browser will not hand
+       * a folder to a page at all, and a copy of the output is the whole of what can be done.
+       */
+      return html`<button
+        class="btn primary"
+        type="button"
+        ?disabled=${saving || nothingToDo}
+        title=${records.length === 0
+          ? 'Nothing has changed since the last save'
+          : nothingToDo
+            ? 'Every change is unchecked, so there is nothing to write'
+            : `Choose what travels with ${name} and where it goes`}
+        @click=${() => this.#openExport()}
+      >
+        ${icon('code', 12)} Save as HTML ${icon('chevronRight', 11)}
       </button>`;
     }
 
@@ -1136,10 +1174,12 @@ export class HeoSaveDialog extends HeoElement {
           ${icon('chevronLeft', 14)}
         </button>
         <div class="body">
-          <h2>Write as</h2>
+          <h2>Save as HTML</h2>
           <p>
-            Choose what travels with the page and how it is packaged. Nothing is written until
-            you press the button below.
+            A copy of this page, with your edits in it. Choose what travels with it and how it is
+            packaged — nothing is written until you press the button below.${this.canPickFolder
+        ? ' To change the files this page is built from instead, go back and connect its folder.'
+        : ''}
           </p>
         </div>
         <button
@@ -1154,10 +1194,10 @@ export class HeoSaveDialog extends HeoElement {
 
       <div class="content">
         <section class="pick">
-          <h3 id="heo-export-what">Choose what to save</h3>
+          <h3 id="heo-export-what">Choose what to embed for offline use</h3>
           <p class="lead">
-            Each kind the page links to. Ticked means it travels with the page; unticked
-            leaves the link exactly as it is, pointing where it points today.
+            Ticked means it travels with the page; unticked
+            leaves external links exactly as they are.
           </p>
           <div class="choices" role="group" aria-labelledby="heo-export-what">
             ${this.#renderPlacement('style', 'Styles', survey)}
@@ -1524,9 +1564,20 @@ export class HeoSaveDialog extends HeoElement {
     `;
   }
 
-  /** Show the export step, building the plan on the way in. */
+  /**
+   * Show the export step, building the plan on the way in.
+   *
+   * The name is seeded with the page's own, so the field arrives filled in rather than empty
+   * behind a placeholder. Almost every save is a copy of this page under this name, and
+   * retyping it is work the step can do. Seeded into state rather than painted into the input,
+   * because a value that only looks present cannot be selected, and one restored by the next
+   * render fights anyone trying to clear it.
+   */
   #openExport(): void {
     this.view = 'export';
+    if (this.state.value.exportName === null) {
+      this.editor.setExportName(this.editor.exportDefaultName);
+    }
     if (!this.state.value.bundlePlan) void this.editor.previewBundle();
   }
 
@@ -1698,14 +1749,24 @@ export class HeoSaveDialog extends HeoElement {
           >
             ${icon('blocks', 12)} Design system ${icon('chevronRight', 11)}
           </button>
-          <button
-            class="btn"
-            type="button"
-            title="Download this page as HTML. The original file is patched where it can be read, so only the lines you changed change."
-            @click=${() => void this.editor.exportPageHTML()}
-          >
-            ${icon('code', 12)} HTML
-          </button>
+          <!--
+            The way to a standalone copy, wherever it is not already the primary.
+
+            It used to download immediately with no say in what went into it. Now it leads to
+            the same step the primary leads to when there is no folder route, so there is one
+            place that answers "what goes in the file and where does it land" rather than two
+            behaviours behind similar-looking buttons.
+          -->
+          ${this.canPickFolder || this.state.value.project
+        ? html`<button
+              class="btn"
+              type="button"
+              title="Write a copy of this page as HTML, with your edits in it. The original file is patched where it can be read, so only the lines you changed change."
+              @click=${() => this.#openExport()}
+            >
+              ${icon('code', 12)} Save as HTML ${icon('chevronRight', 11)}
+            </button>`
+        : nothing}
           <button class="btn" type="button" @click=${() => void this.editor.copyPrompt()}>
             ${icon('copy', 12)} Copy prompt
           </button>
@@ -1746,20 +1807,15 @@ export class HeoSaveDialog extends HeoElement {
       `;
     }
 
-    // No picker and no server means there is nothing to offer, so nothing is offered.
-    // A button that can only explain why it does not work is worse than its absence.
-    if (!this.canPickFolder) return nothing;
-
-    return html`<button
-      class="btn"
-      type="button"
-      title="Hand over the folder holding this page, so saving edits its files instead of describing them"
-      @click=${async () => {
-        if (await this.editor.connectProjectFolder()) this.view = 'files';
-      }}
-    >
-      ${icon('folder', 12)} Write to files…
-    </button>`;
+    /*
+     * Unconnected, the offer is the primary button rather than this slot.
+     *
+     * Connecting a folder is the thing most people want and it used to sit in a secondary
+     * position because saving a copy always works and this does not. Promoting it left nothing
+     * for this slot to hold, and a second button doing the same thing beside it would be worse
+     * than an empty one.
+     */
+    return nothing;
   }
 
   /**
