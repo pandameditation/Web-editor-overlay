@@ -1056,9 +1056,10 @@ export class HeoSaveDialog extends HeoElement {
         ? html`<div class="access blocked">
               <span class="g">${icon('alert', 12)}</span>
               <p>
-                ${limit} So nothing can be folded in here, whatever is ticked, and the HTML
-                itself is what this writes. Serving the page — through the Vite plugin, or any
-                static server — makes every asset readable and every option below work.
+                ${limit} So a linked file cannot be folded in here, whatever is ticked. What is
+                already written into the page travels with it as it always did — a page with its
+                CSS and JS inline is self-contained already. Serving it, through the Vite plugin
+                or any static server, makes the linked ones readable too.
               </p>
             </div>`
         : nothing}
@@ -1186,10 +1187,18 @@ export class HeoSaveDialog extends HeoElement {
    * A category with nothing in it is shown and disabled rather than hidden. A page with no
    * scripts should say so — a missing row reads as an oversight, and the absence is
    * information about the page.
+   *
+   * The box shows the choice, and being disabled says the choice cannot be changed here.
+   * Those are two different facts and it used to conflate them, clearing the box whenever it
+   * disabled it — so a page whose assets could not be read reported "styles: not folded in"
+   * while the export it produced had every inline block in place. What the row counts is
+   * only what a choice can act on, which is the *external* references; anything already
+   * written into the page travels regardless, and now says so.
    */
   #renderPlacement(kind: AssetKind, label: string, survey: BundleSurvey): TemplateResult {
     const category = survey.categories.find((entry) => entry.kind === kind);
     const count = category?.count ?? 0;
+    const embedded = category?.embedded ?? 0;
     /*
      * What the build actually managed, in preference to what the survey guessed.
      *
@@ -1208,10 +1217,16 @@ export class HeoSaveDialog extends HeoElement {
     // Nothing to decide when there is nothing of this kind, or when none of it can be read.
     const settled = count === 0 || readable === 0;
 
+    /** What is already in the page, said the same way in every branch below. */
+    const travels =
+      embedded === 0
+        ? ''
+        : ` · ${embedded} already in the page${settled ? ', travelling either way' : ''}`;
+
     return html`<label class=${`choice${settled ? ' settled' : ''}`}>
       <input
         type="checkbox"
-        .checked=${inline && !settled}
+        .checked=${inline}
         ?disabled=${settled}
         @change=${(event: Event) =>
         this.editor.setBundleOptions({
@@ -1222,16 +1237,18 @@ export class HeoSaveDialog extends HeoElement {
         <span class="name">${label}</span>
         <span class="detail">
           ${count === 0
-        ? html`none in this page`
+        ? embedded === 0
+          ? html`none in this page`
+          : html`nothing linked · ${embedded} already in the page`
         : readable === 0
-          ? html`${count} referenced, none readable from here`
+          ? html`${count} linked, none readable from here${travels}`
           : inline
             ? html`${readable} folded into the HTML${count > readable
               ? html` · ${count - readable} cannot be read`
-              : ''}`
+              : ''}${travels}`
             : html`${readable} kept beside it${count > readable
               ? html` · ${count - readable} cannot be read`
-              : ''}`}
+              : ''}${travels}`}
         </span>
         ${reason && readable < count ? html`<span class="why">${reason}</span>` : nothing}
       </span>

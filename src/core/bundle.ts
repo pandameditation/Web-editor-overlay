@@ -2,6 +2,7 @@ import {
   archivePath,
   assetUrl,
   collectDocumentAssets,
+  countEmbeddedAssets,
   fetchAsset,
   fileNameOf,
   localAssetLimit,
@@ -120,6 +121,16 @@ export interface CategoryReport {
   count: number;
   /** How many of those could actually be read. */
   readable: number;
+  /**
+   * How much of this kind is already inside the document and needs no decision.
+   *
+   * Not part of `count`, because the choices cannot act on it — a `<style>` block travels
+   * whatever the styles checkbox says. Carried so the UI can stop implying the opposite: a
+   * page written with inline CSS and JS is self-contained already, and a row reading "none
+   * in this page" or "none readable from here" beside an export that plainly contains them
+   * is how someone concludes the count is lying.
+   */
+  embedded: number;
   /** Why the unreadable ones cannot be had. Empty when everything is readable. */
   reason?: string;
 }
@@ -140,6 +151,7 @@ export interface BundleSurvey {
 export function surveyBundle(subject: BundleSubject): BundleSurvey {
   const doc = new DOMParser().parseFromString(subject.html, 'text/html');
   const assets = collectDocumentAssets(doc, { project: subject.project });
+  const embedded = countEmbeddedAssets(doc);
   const kinds: AssetKind[] = ['style', 'script', 'image'];
 
   const categories = kinds.map((kind) => {
@@ -150,6 +162,7 @@ export function surveyBundle(subject: BundleSubject): BundleSurvey {
       kind,
       count: mine.length,
       readable: readable.length,
+      embedded: embedded[kind],
       reason: blocked?.reason,
     };
   });

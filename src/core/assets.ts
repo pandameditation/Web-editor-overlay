@@ -382,6 +382,50 @@ export function collectDocumentAssets(
 }
 
 /**
+ * How much of each kind is already inside the document.
+ *
+ * The counterpart to `collectDocumentAssets`, and the reason it exists is a question people
+ * actually ask: a page whose CSS and JS are written in `<style>` and `<script>` blocks
+ * exports as one self-contained file no matter what any checkbox says, because there was
+ * never anything to fetch. Counting only the external references — which is all the choices
+ * can act on — makes such a page look like nothing travelled, when in truth all of it did.
+ *
+ * So this counts what needs no decision, purely so the UI can say so. Nothing here is
+ * fetched, rewritten, or acted on.
+ */
+export function countEmbeddedAssets(doc: Document): Record<AssetKind, number> {
+  const embedded: Record<AssetKind, number> = { style: 0, script: 0, image: 0 };
+
+  embedded.style = doc.querySelectorAll('style').length;
+  // A `<script>` with no `src` carries its own text. That includes `application/json` and
+  // JSON-LD blocks, which are data rather than code but travel the same way.
+  embedded.script = Array.from(doc.querySelectorAll('script:not([src])')).filter(
+    (el) => (el.textContent ?? '').trim().length > 0,
+  ).length;
+
+  // An image already written as a `data:` URI is embedded by whoever authored it.
+  const isData = (value: string | null): boolean => (value ?? '').trim().startsWith('data:');
+  for (const entry of SINGLE) {
+    if (entry.kind !== 'image') continue;
+    for (const el of Array.from(doc.querySelectorAll(entry.selector))) {
+      if (isData(el.getAttribute(entry.attribute))) embedded.image += 1;
+    }
+  }
+  for (const el of Array.from(doc.querySelectorAll('[srcset]'))) {
+    for (const candidate of parseSrcset(el.getAttribute('srcset') ?? '')) {
+      if (isData(candidate)) embedded.image += 1;
+    }
+  }
+  for (const style of Array.from(doc.querySelectorAll('style'))) {
+    for (const url of cssUrls(style.textContent ?? '')) {
+      if (isData(url)) embedded.image += 1;
+    }
+  }
+
+  return embedded;
+}
+
+/**
  * The URLs out of a `srcset`, ignoring the descriptors.
  *
  * Split on commas and take the first whitespace-separated token of each candidate, which

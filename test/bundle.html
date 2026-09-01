@@ -213,8 +213,33 @@
       check('theSurveyFindsThePagesParts', () => {
         const survey = engine.bundleSurvey();
         return Object.fromEntries(
-          survey.categories.map((entry) => [entry.kind, { count: entry.count, readable: entry.readable }]),
+          survey.categories.map((entry) => [
+            entry.kind,
+            { count: entry.count, readable: entry.readable, embedded: entry.embedded },
+          ]),
         );
+      });
+      /*
+       * What is counted is only what a choice can act on.
+       *
+       * This page has two linked scripts and several inline ones, and the inline ones are not
+       * in `count` because no checkbox can do anything about them — they are already in the
+       * document and travel with it. Reported separately so the row can say so, which it did
+       * not, and someone reading "none readable from here" beside an export plainly full of
+       * inline scripts concluded the count was lying.
+       */
+      check('andCountsWhatTravelsAnywaySeparately', () => {
+        const survey = engine.bundleSurvey();
+        const scripts = survey.categories.find((c) => c.kind === 'script');
+        const styles = survey.categories.find((c) => c.kind === 'style');
+        return {
+          linkedScripts: scripts?.count ?? null,
+          inlineScripts: scripts?.embedded ?? null,
+          linkedStyles: styles?.count ?? null,
+          inlineStyles: styles?.embedded ?? null,
+          // The page has an inline <style> and inline <script>s, whatever the origin rules say.
+          asExpected: (scripts?.embedded ?? 0) > 0 && (styles?.embedded ?? 0) > 0,
+        };
       });
 
       /* ------------------------------------------------------------------ *
@@ -549,6 +574,29 @@
           disabled: el.querySelector('input')?.disabled ?? null,
         }));
         return { step: shell?.getAttribute('aria-label') ?? null, choices };
+      });
+      /*
+       * A disabled box still shows the choice.
+       *
+       * These two facts were conflated: the box was cleared whenever it was disabled, so a
+       * page whose linked files could not be read reported "styles: not folded in" while the
+       * export it produced had every inline block in place. Ticked means "fold this in", which
+       * is the setting; disabled means "not from here", which is the situation.
+       */
+      check('aDisabledChoiceStillShowsWhatWasChosen', () => {
+        const dialog = deepQuery('heo-save-dialog');
+        const rows = Array.from(dialog?.shadowRoot?.querySelectorAll('.choice') ?? []).map((el) => ({
+          name: el.querySelector('.name')?.textContent?.trim() ?? null,
+          checked: el.querySelector('input')?.checked ?? null,
+          disabled: el.querySelector('input')?.disabled ?? null,
+        }));
+        const options = engine.store.value.bundleOptions;
+        const expected = { Styles: 'styles', Scripts: 'scripts', 'Images and fonts': 'images' };
+        return {
+          rows,
+          // Every box matches its option, whether or not it can be clicked.
+          asExpected: rows.every((row) => row.checked === (options[expected[row.name]] === 'inline')),
+        };
       });
       check('andTheStepSaysWhatItWillBeCalledAndWhereItGoes', () => {
         const dialog = deepQuery('heo-save-dialog');
