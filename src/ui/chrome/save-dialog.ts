@@ -11,8 +11,12 @@ import { baseStyles, surfaceStyles } from '../theme.js';
 import { localAssetLimit, type AssetKind } from '../../core/assets.js';
 import {
   bundleName,
+  bundleShape,
+  canArchive,
+  planCanArchive,
   PLACEMENT_KEYS,
   type BundleFile,
+  type BundlePackaging,
   type BundlePlan,
   type BundleSurvey,
 } from '../../core/bundle.js';
@@ -959,7 +963,7 @@ export class HeoSaveDialog extends HeoElement {
    * connection: a project makes saving a write to named files, and calling that "Save
    * changes" would be the one place this dialog was coy about what it does.
    */
-  #renderPrimary(): TemplateResult {
+  #renderPrimary(known?: BundlePackaging): TemplateResult {
     const { saving, project, writePlan, planning } = this.state.value;
     const records = this.editor.records;
     const dropped = records.length - this.editor.handoffRecords.length;
@@ -976,7 +980,9 @@ export class HeoSaveDialog extends HeoElement {
      */
     if (!project) {
       const { bundling, bundlePlan } = this.state.value;
-      const shape = this.editor.bundleShape();
+      // The export step already worked the shape out from a survey it had in hand, so it
+      // passes it in rather than have the footer reach a different answer to the same question.
+      const shape = known ?? this.editor.bundleShape();
       const name = bundlePlan?.fileName ?? bundleName(this.editor.exportFileName, shape);
 
       if (this.view !== 'export') {
@@ -1079,9 +1085,22 @@ export class HeoSaveDialog extends HeoElement {
    * archive is only ever offered when there is a file to put in it.
    */
   #renderExport(): TemplateResult {
-    const { bundling, bundlePlan } = this.state.value;
+    const { bundling, bundlePlan, bundleOptions } = this.state.value;
+    /*
+     * Surveyed once, then passed down.
+     *
+     * A survey clones and serializes the whole document, so it is the most expensive thing
+     * this render does. It used to happen three times per render — once here, once inside
+     * `bundleShape` and once inside `canArchiveBundle`, each of which falls back to a fresh
+     * survey when there is no plan yet. Ticking a box clears the plan and causes several
+     * renders in a row, so a click cost the better part of a dozen full document copies and
+     * the page visibly froze.
+     */
     const survey = this.editor.bundleSurvey();
-    const shape = this.editor.bundleShape();
+    const shape = bundlePlan ? bundlePlan.shape : bundleShape(survey, bundleOptions);
+    const offerArchive = bundlePlan
+      ? planCanArchive(bundlePlan, bundleOptions)
+      : canArchive(survey, bundleOptions);
     const limit = localAssetLimit();
 
     return html`
@@ -1129,7 +1148,7 @@ export class HeoSaveDialog extends HeoElement {
           </div>
         </section>
 
-        ${this.#renderPackaging()} ${this.#renderNaming(shape)}
+        ${this.#renderPackaging(offerArchive)} ${this.#renderNaming(shape)}
 
         ${limit
         ? html`<div class="access blocked">
@@ -1194,7 +1213,7 @@ export class HeoSaveDialog extends HeoElement {
           >
             ${icon('refresh', 12)} Recheck
           </button>
-          ${this.#renderPrimary()}
+          ${this.#renderPrimary(shape)}
         </div>
       </footer>
     `;
@@ -1212,8 +1231,8 @@ export class HeoSaveDialog extends HeoElement {
    * because the difference between them is the difference between a file that opens anywhere
    * and a file that needs its folder.
    */
-  #renderPackaging(): TemplateResult | typeof nothing {
-    if (!this.editor.canArchiveBundle()) return nothing;
+  #renderPackaging(offer: boolean): TemplateResult | typeof nothing {
+    if (!offer) return nothing;
     const chosen = this.state.value.bundleOptions.packaging;
 
     const option = (
@@ -1357,8 +1376,20 @@ export class HeoSaveDialog extends HeoElement {
      */
     const plan = this.state.value.bundlePlan;
     const blocked = plan?.omitted.filter((entry) => entry.kind === kind) ?? null;
-    const readable = plan ? plan.placed[kind] : (category?.readable ?? 0);
-    const count = plan ? readable + (blocked?.length ?? 0) : (category?.count ?? 0);
+    /*
+     * How many the page has comes from `found`, not from `placed`.
+     *
+     * `placed` is what travelled, which is a consequence of this very checkbox — so counting
+     * from it let the row destroy the evidence for its own existence. Unticking a kind meant
+     * nothing was carried, which read as "none in this page", which disabled the row, which
+     * made it impossible to tick again.
+     *
+     * Unreadable is what was attempted and failed. Nothing is attempted for a kind that is
+     * not being saved, so it stays readable-until-proven-otherwise, which is both true and
+     * what keeps the row clickable.
+     */
+    const count = plan ? plan.found[kind] : (category?.count ?? 0);
+    const readable = plan ? count - (blocked?.length ?? 0) : (category?.readable ?? 0);
     const reason = blocked?.[0]?.reason ?? category?.reason;
     const options = this.state.value.bundleOptions;
     const key = PLACEMENT_KEYS[kind];

@@ -138,7 +138,6 @@ import {
   buildBundle,
   bundleBlob,
   bundleName,
-  bundleShape,
   canArchive,
   DEFAULT_BUNDLE_OPTIONS,
   exportBase,
@@ -147,6 +146,7 @@ import {
   renameBundle,
   surveyBundle,
   type BundleOptions,
+  type BundlePackaging,
   type BundlePlan,
   type BundleSubject,
   type BundleSurvey,
@@ -3984,10 +3984,20 @@ export class EditorEngine {
    * to put beside the HTML however they were marked. Without this the button offered a
    * `.zip` and the download was an `.html`.
    */
-  bundleShape(): 'single' | 'archive' {
+  bundleShape(): BundlePackaging {
     const plan = this.store.value.bundlePlan;
     if (plan) return plan.shape;
-    return bundleShape(this.bundleSurvey(), this.store.value.bundleOptions);
+    /*
+     * No plan, so the choice is taken at its word.
+     *
+     * Deliberately not surveyed. Answering properly means cloning and serializing the whole
+     * document to find out whether an archive could hold anything, and this is read from the
+     * footer on every render of every step — so the accurate answer cost a full document copy
+     * per keystroke, and the page froze. Callers that already hold a survey can have the
+     * accurate answer from `bundleShape(survey, options)`; everyone else gets the intent,
+     * which a built plan then corrects.
+     */
+    return this.store.value.bundleOptions.packaging;
   }
 
   setBundleOptions(next: Partial<BundleOptions>): void {

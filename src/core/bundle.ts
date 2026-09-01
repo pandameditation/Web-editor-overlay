@@ -150,7 +150,7 @@ export interface BundlePlan {
   /** Assets that stayed external because their bytes could not be read. */
   omitted: BundleOmission[];
   /**
-   * How many distinct assets of each kind the build actually placed.
+   * How many distinct assets of each kind the build actually carried.
    *
    * The survey cannot know this and it is not a detail. References inside a *linked*
    * stylesheet are invisible until that sheet has been fetched, so a page with twelve fonts
@@ -159,6 +159,16 @@ export interface BundlePlan {
    * run it knows, and this is how it says.
    */
   placed: Record<AssetKind, number>;
+  /**
+   * How many distinct assets of each kind the build *encountered*, whatever it did with them.
+   *
+   * Separate from `placed` because how many a page has is a fact about the page, and how many
+   * travelled is a consequence of the choices. Counting the page from `placed` made a
+   * checkbox destroy the evidence for its own existence: unticking a kind meant nothing was
+   * carried, which read as "none in this page", which disabled the row — so it could not be
+   * ticked again.
+   */
+  found: Record<AssetKind, number>;
   /** Total bytes the download will be. */
   size: number;
   /**
@@ -267,8 +277,15 @@ export async function buildBundle(
   const taken = new Set<string>();
   /** Assets already written into the archive, so two references share one file. */
   const archived = new Map<string, string>();
-  /** Distinct URLs successfully placed, per kind, so the UI can report what happened. */
+  /** Distinct URLs successfully carried, per kind, so the UI can report what happened. */
   const handled: Record<AssetKind, Set<string>> = {
+    style: new Set(),
+    script: new Set(),
+    image: new Set(),
+    font: new Set(),
+  };
+  /** Every distinct URL met, per kind, whatever was then done with it. */
+  const found: Record<AssetKind, Set<string>> = {
     style: new Set(),
     script: new Set(),
     image: new Set(),
@@ -294,6 +311,9 @@ export async function buildBundle(
     // decisions, so the file decides which checkbox it answers to.
     const kind = fallback === 'image' ? assetKindOf(url) : fallback;
     const placement = governedBy(kind);
+    // Recorded before anything is decided: that the page refers to this is true regardless of
+    // what the choices then do about it.
+    found[kind].add(url);
 
     // Not saving it means not touching it. Nothing is fetched, so nothing can fail, and it
     // is not reported as left behind — it was never coming.
@@ -339,6 +359,7 @@ export async function buildBundle(
     const url = assetUrl(raw);
     if (!url) continue;
 
+    found.style.add(url);
     // Not saving the styles means not reading them, which also means the assets they refer
     // to stay unknown. That is consistent: those references are not being touched either.
     if (stylePlacement === 'leave') continue;
@@ -413,10 +434,12 @@ export async function buildBundle(
     if (!url) continue;
 
     if (scriptPlacement !== 'inline') {
+      // `place` records it as met on the way through, including when it leaves it alone.
       const path = await place(url, 'script', () => scriptPlacement);
       if (path) script.setAttribute('src', path);
       continue;
     }
+    found.script.add(url);
 
 
     const asset = await fetchAsset(url, project);
@@ -505,6 +528,12 @@ export async function buildBundle(
       script: handled.script.size,
       image: handled.image.size,
       font: handled.font.size,
+    },
+    found: {
+      style: found.style.size,
+      script: found.script.size,
+      image: found.image.size,
+      font: found.font.size,
     },
     size: all.reduce((total, file) => total + file.bytes.length, 0),
     patched: subject.patched,

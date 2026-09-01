@@ -686,6 +686,55 @@
           choices,
         };
       });
+      /*
+       * Unticking a box must not lock it.
+       *
+       * The reported bug, and it was deterministic: the row counted the page from what the
+       * build had *carried*, so unticking a kind meant nothing was carried, which read as
+       * "none in this page", which disabled the row — and it could never be ticked again.
+       * Clicked through the real checkbox rather than the API, because the checkbox is where
+       * it went wrong.
+       */
+      step('toggling');
+      const rowFor = (name) =>
+        Array.from(deepQuery('heo-save-dialog')?.shadowRoot?.querySelectorAll('.choice') ?? []).find(
+          (el) => el.querySelector('.name')?.textContent?.trim() === name,
+        );
+      const boxFor = (name) => rowFor(name)?.querySelector('input');
+      const clickBox = async (name) => {
+        const box = boxFor(name);
+        box.checked = !box.checked;
+        box.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+        // Long enough for the rebuild the change kicks off to land.
+        for (let i = 0; i < 8; i += 1) await frames();
+      };
+
+      const toggles = [];
+      for (const name of ['Styles', 'Images']) {
+        const start = boxFor(name);
+        if (!start || start.disabled) {
+          toggles.push({ row: name, skipped: 'disabled to begin with' });
+          continue;
+        }
+        await clickBox(name);
+        const off = boxFor(name);
+        const offState = { checked: off?.checked ?? null, disabled: off?.disabled ?? null };
+        await clickBox(name);
+        const back = boxFor(name);
+        toggles.push({
+          row: name,
+          afterUnticking: offState,
+          afterReticking: { checked: back?.checked ?? null, disabled: back?.disabled ?? null },
+          // Unticking leaves it unticked and still clickable; ticking it puts it back.
+          asExpected:
+            offState.checked === false &&
+            offState.disabled === false &&
+            back?.checked === true &&
+            back?.disabled === false,
+        });
+      }
+      results.untickingAnOptionDoesNotLockIt = toggles;
+
       check('theStepReadsAsThreeDecisions', () => {
         const dialog = deepQuery('heo-save-dialog');
         const sections = Array.from(dialog?.shadowRoot?.querySelectorAll('.pick h3') ?? []).map(
