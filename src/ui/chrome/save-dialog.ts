@@ -396,6 +396,24 @@ export class HeoSaveDialog extends HeoElement {
       .choice:hover {
         border-color: var(--heo-line-strong);
       }
+      /* Indented under the row above, with an elbow, because it depends on it: a face can only
+         travel inside a stylesheet that travels. */
+      .choice.sub {
+        position: relative;
+        margin-left: 17px;
+      }
+      .choice.sub::before {
+        content: '';
+        position: absolute;
+        left: -11px;
+        top: -8px;
+        bottom: 50%;
+        width: 10px;
+        border-left: 1px solid var(--heo-line);
+        border-bottom: 1px solid var(--heo-line);
+        border-bottom-left-radius: 5px;
+        pointer-events: none;
+      }
       /* Nothing to decide: no assets of this kind, or none that can be read here. Dimmed
          rather than dropped, because the absence is a fact about the page worth seeing. */
       .choice.settled {
@@ -1199,11 +1217,19 @@ export class HeoSaveDialog extends HeoElement {
             Ticked means it travels with the page; unticked
             leaves external links exactly as they are.
           </p>
+          <!--
+            Fonts sit under Styles because that is where they come from.
+
+            A webfont is named by an at-font-face rule, so embedding one means rewriting the CSS
+            that points at it — which can only happen in a stylesheet being saved. Nested rather
+            than merged, because the dependency is not absolute: a face declared in an inline
+            style block travels whatever this row says, since that CSS is in the page already.
+          -->
           <div class="choices" role="group" aria-labelledby="heo-export-what">
             ${this.#renderPlacement('style', 'Styles', survey)}
+            ${this.#renderPlacement('font', 'Fonts', survey, { sub: true })}
             ${this.#renderPlacement('script', 'Scripts', survey)}
             ${this.#renderPlacement('image', 'Images', survey)}
-            ${this.#renderPlacement('font', 'Fonts', survey)}
           </div>
         </section>
 
@@ -1425,7 +1451,12 @@ export class HeoSaveDialog extends HeoElement {
    * only what a choice can act on, which is the *external* references; anything already
    * written into the page travels regardless, and now says so.
    */
-  #renderPlacement(kind: AssetKind, label: string, survey: BundleSurvey): TemplateResult {
+  #renderPlacement(
+    kind: AssetKind,
+    label: string,
+    survey: BundleSurvey,
+    shape: { sub?: boolean } = {},
+  ): TemplateResult {
     const category = survey.categories.find((entry) => entry.kind === kind);
     const embedded = category?.embedded ?? 0;
     /*
@@ -1466,6 +1497,21 @@ export class HeoSaveDialog extends HeoElement {
     const reason = blocked[0]?.reason ?? (saving ? category?.reason : undefined);
     // Nothing to decide when there is nothing of this kind, or when none of it can be read.
     const settled = count === 0 || readable === 0;
+    /*
+     * Nothing found may mean nothing is there, or may mean nobody looked.
+     *
+     * An asset named only inside a linked stylesheet does not exist until that sheet has been
+     * read, and a sheet that is not being saved is never read. So with Styles unticked, a page
+     * whose every webfont lives in its CSS reported "none in this page" — which is not what
+     * "we did not look" means, and left no clue that ticking Styles would reveal them.
+     */
+    const linkedStyles = plan ? plan.found.style : (survey.categories.find((e) => e.kind === 'style')?.count ?? 0);
+    const hiddenByStyles =
+      count === 0 &&
+      embedded === 0 &&
+      !options.styles &&
+      linkedStyles > 0 &&
+      (kind === 'font' || kind === 'image');
 
     /** What is already in the page, said the same way in every branch below. */
     const travels =
@@ -1496,7 +1542,9 @@ export class HeoSaveDialog extends HeoElement {
           ? 'encoded as base64'
           : 'folded into the HTML';
 
-    return html`<label class=${`choice${settled ? ' settled' : ''}`}>
+    return html`<label
+      class=${`choice${settled ? ' settled' : ''}${shape.sub ? ' sub' : ''}`}
+    >
       <input
         type="checkbox"
         .checked=${saving}
@@ -1507,17 +1555,26 @@ export class HeoSaveDialog extends HeoElement {
       <span class="text">
         <span class="name">${label}</span>
         <span class="detail">
-          ${count === 0
-        ? embedded === 0
-          ? html`none in this page`
-          : html`nothing linked · ${embedded} already in the page`
-        : readable === 0
-          ? html`${count} linked, none readable from here${travels}`
-          : html`${readable} ${outcome}${count > readable
-            ? html` · ${count - readable} cannot be read`
-            : ''}${travels}`}
+          ${hiddenByStyles
+        ? html`named inside your stylesheets, which are not being saved`
+        : count === 0
+          ? embedded === 0
+            ? html`none in this page`
+            : html`nothing linked · ${embedded} already in the page`
+          : readable === 0
+            ? html`${count} linked, none readable from here${travels}`
+            : html`${readable} ${outcome}${count > readable
+              ? html` · ${count - readable} cannot be read`
+              : ''}${travels}`}
         </span>
-        ${reason && readable < count ? html`<span class="why">${reason}</span>` : nothing}
+        ${hiddenByStyles
+        ? html`<span class="why">
+              Tick Styles to bring them in — a face is named by a rule, so it can only travel
+              inside a stylesheet that travels.
+            </span>`
+        : reason && readable < count
+          ? html`<span class="why">${reason}</span>`
+          : nothing}
       </span>
     </label>`;
   }

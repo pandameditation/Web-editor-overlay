@@ -807,6 +807,57 @@
       }
       results.untickingAnOptionDoesNotLockIt = toggles;
 
+      /*
+       * Fonts depend on Styles, and the row says so instead of pretending there are none.
+       *
+       * A face is named by an at-font-face rule, so embedding one means rewriting the CSS that
+       * points at it — impossible in a stylesheet that is not being saved. This page keeps its
+       * only font in `bundle.css`, so unticking Styles hides it, and the row used to report
+       * "none in this page", which is not what "we did not look" means.
+       */
+      step('fontsUnderStyles');
+      results.fontsAreNestedUnderStyles = (() => {
+        const dialog = deepQuery('heo-save-dialog');
+        const rows = Array.from(dialog?.shadowRoot?.querySelectorAll('.choice') ?? []);
+        const names = rows.map((el) => el.querySelector('.name')?.textContent?.trim() ?? null);
+        const fonts = rows.find((el) => el.querySelector('.name')?.textContent?.trim() === 'Fonts');
+        return {
+          order: names,
+          fontsIsIndented: fonts?.classList.contains('sub') ?? null,
+          // Directly beneath the row it depends on.
+          asExpected:
+            names[0] === 'Styles' &&
+            names[1] === 'Fonts' &&
+            (fonts?.classList.contains('sub') ?? false),
+        };
+      })();
+
+      if (readable) {
+        engine.setBundleOptions({ styles: false, fonts: true, packaging: 'single' });
+        for (let i = 0; i < 12; i += 1) await frames();
+        results.unsavedStylesHideTheirFontsAndSaysSo = (() => {
+          const dialog = deepQuery('heo-save-dialog');
+          const fonts = Array.from(dialog?.shadowRoot?.querySelectorAll('.choice') ?? []).find(
+            (el) => el.querySelector('.name')?.textContent?.trim() === 'Fonts',
+          );
+          const detail = fonts?.querySelector('.detail')?.textContent?.replace(/\s+/g, ' ').trim() ?? null;
+          const why = fonts?.querySelector('.why')?.textContent?.replace(/\s+/g, ' ').trim() ?? null;
+          return {
+            detail,
+            why,
+            // Says nobody looked, and says what to do about it.
+            asExpected:
+              /not being saved/.test(detail ?? '') &&
+              /Tick Styles/.test(why ?? '') &&
+              !/none in this page/.test(detail ?? ''),
+          };
+        })();
+        engine.setBundleOptions({ styles: true, fonts: true });
+        for (let i = 0; i < 12; i += 1) await frames();
+      } else {
+        results.unsavedStylesHideTheirFontsAndSaysSo = 'not applicable in this run';
+      }
+
       check('theStepReadsAsThreeDecisions', () => {
         const dialog = deepQuery('heo-save-dialog');
         const sections = Array.from(dialog?.shadowRoot?.querySelectorAll('.pick h3') ?? []).map(
@@ -814,11 +865,12 @@
         );
         return {
           sections,
-          // What to save, how to carry it, where to put it — in the order each depends on the
-          // one before. The middle one is absent when it has nothing to decide.
+          // What travels, how it is carried, where it lands — in the order each depends on the
+          // one before. The middle one is absent when it has nothing to decide. Matched loosely
+          // because the wording is the sort of thing that gets improved.
           asExpected:
-            sections[0] === 'Choose what to save' &&
-            sections[sections.length - 1] === 'Choose where to save it',
+            /^Choose what/.test(sections[0] ?? '') &&
+            /^Choose where/.test(sections[sections.length - 1] ?? ''),
         };
       });
       /*
