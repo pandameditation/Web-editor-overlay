@@ -181,7 +181,17 @@ export interface OverlayAPI {
    * null when the user backs out of that dialog.
    */
   writeBundle(): Promise<BundlePlan | null>;
-  /** How the page is written out when there is nowhere to write to. */
+  /**
+   * How the page is written out when there is nowhere to write to.
+   *
+   * Two decisions. `styles`, `scripts`, `images` and `fonts` say which kinds travel with the
+   * page — false leaves those references pointing where they already point, which is what a
+   * CDN font wants. `packaging` says how what travels is carried: folded into one
+   * self-contained HTML, or copied beside it in a `.zip`.
+   *
+   * Asking for an archive when nothing would go in it is not an error and not honoured: the
+   * output is the lone HTML either way, and the plan reports `single`.
+   */
   setBundleOptions(options: Partial<BundleOptions>): void;
   /**
    * What to call the file, without its extension. Null goes back to the page's own name.

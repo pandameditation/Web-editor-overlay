@@ -297,7 +297,18 @@ export class HeoSaveDialog extends HeoElement {
 
       /* ---- The export step's three choices ---- */
 
-      .choices-lead {
+      /* One of the export step's two questions, with its heading and its controls. */
+      .pick {
+        margin-bottom: 14px;
+      }
+      .pick h3 {
+        margin: 0 0 3px;
+        color: var(--heo-text);
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+      .pick .lead {
         margin: 0 0 8px;
         color: var(--heo-text-faint);
         font-size: 10.5px;
@@ -306,7 +317,58 @@ export class HeoSaveDialog extends HeoElement {
       .choices {
         display: grid;
         gap: 6px;
-        margin-bottom: 12px;
+      }
+
+      /* The packaging alternatives: large enough to read before choosing. */
+      .packages {
+        display: grid;
+        gap: 7px;
+      }
+      .package {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        padding: 11px 12px;
+        border: 1px solid var(--heo-line);
+        border-radius: var(--heo-r-sm);
+        background: var(--heo-raised);
+        cursor: pointer;
+        transition:
+          border-color var(--heo-fast),
+          background var(--heo-fast);
+      }
+      .package:hover {
+        border-color: var(--heo-line-strong);
+      }
+      .package.on {
+        border-color: var(--heo-accent);
+        background: color-mix(in oklab, var(--heo-accent) 8%, var(--heo-raised));
+      }
+      .package input {
+        width: 15px;
+        height: 15px;
+        margin: 1px 0 0;
+        flex: 0 0 auto;
+        accent-color: var(--heo-accent);
+        cursor: inherit;
+      }
+      .package .body {
+        display: grid;
+        gap: 3px;
+        min-width: 0;
+      }
+      .package .name {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        color: var(--heo-text);
+        font-size: 12px;
+        font-weight: 550;
+      }
+      .package .detail {
+        color: var(--heo-text-faint);
+        font-size: 10.5px;
+        line-height: 1.5;
       }
       .choice {
         display: flex;
@@ -363,7 +425,6 @@ export class HeoSaveDialog extends HeoElement {
       .naming {
         display: grid;
         gap: 7px;
-        margin-bottom: 12px;
         padding: 9px 11px;
         border: 1px solid var(--heo-line);
         border-radius: var(--heo-r-sm);
@@ -374,7 +435,7 @@ export class HeoSaveDialog extends HeoElement {
         align-items: center;
         gap: 7px;
       }
-      .naming .lead {
+      .naming .field-label {
         flex: 0 0 auto;
         color: var(--heo-text-dim);
         font-size: 11px;
@@ -659,7 +720,7 @@ export class HeoSaveDialog extends HeoElement {
   private static readonly LABEL = {
     transfer: 'Share this design system',
     files: 'Review the files this will write',
-    export: 'Choose how to write this page out',
+    export: 'Write as',
     review: 'Review and save changes',
   } as const;
 
@@ -1004,14 +1065,18 @@ export class HeoSaveDialog extends HeoElement {
    * How to write the page out, and what that will produce.
    *
    * The disconnected counterpart of the Files step, and it exists for the same reason: the
-   * one thing worth doing before handing something over is saying what it contains. Here
-   * that is three choices and their consequence — fold the styles, scripts and images into
-   * the HTML, or leave them as references beside it.
+   * one thing worth doing before handing something over is saying what it contains.
    *
-   * The output *shape* is not a fourth choice. A single file that still points at files
-   * nobody has is the one combination that cannot work, so it is derived: everything folded
-   * in is one `.html`, anything left out needs its files, and files beside an HTML page can
-   * only be handed over as an archive.
+   * Two questions, in the order they depend on each other. **What to save** is per kind of
+   * asset, and it is genuinely about saving — unticking fonts leaves their links pointing
+   * where they always did rather than moving them somewhere else. **How to package it** then
+   * asks what to do with what was saved, and appears only when there is something to
+   * package: with nothing saved, or nothing readable, both answers produce the same lone
+   * HTML file, and choosing between two identical outcomes is worse than not being asked.
+   *
+   * That conditional is also the guard. A single file that still points at files nobody has
+   * is the combination that cannot work, and it is unreachable rather than prevented: the
+   * archive is only ever offered when there is a file to put in it.
    */
   #renderExport(): TemplateResult {
     const { bundling, bundlePlan } = this.state.value;
@@ -1033,16 +1098,10 @@ export class HeoSaveDialog extends HeoElement {
           ${icon('chevronLeft', 14)}
         </button>
         <div class="body">
-          <h2>
-            ${shape === 'single' ? 'One self-contained HTML file' : 'A folder of files, as a .zip'}
-          </h2>
+          <h2>Write as</h2>
           <p>
-            ${shape === 'single'
-        ? 'Everything the page needs is folded into the HTML, so it opens anywhere — from a ' +
-        'download, an email attachment, a USB stick. Assets become data URIs, which costs ' +
-        'about a third in size.'
-        : 'The page keeps its references, and the files they point at travel with it at the ' +
-        'paths it already uses. Unzip it and the structure is the one you had.'}
+            Choose what travels with the page and how it is packaged. Nothing is written until
+            you press the button below.
           </p>
         </div>
         <button
@@ -1056,19 +1115,21 @@ export class HeoSaveDialog extends HeoElement {
       </header>
 
       <div class="content">
-        <p class="choices-lead">
-          Ticked means folded into the HTML — text inlined, images and fonts encoded as
-          base64 — so the file works with nothing beside it and no connection. Unticked
-          keeps the link and sends the file along beside the page.
-        </p>
-        <div class="choices">
-          ${this.#renderPlacement('style', 'Styles', survey)}
-          ${this.#renderPlacement('script', 'Scripts', survey)}
-          ${this.#renderPlacement('image', 'Images', survey)}
-          ${this.#renderPlacement('font', 'Fonts', survey)}
-        </div>
+        <section class="pick">
+          <h3 id="heo-export-what">Choose what to save</h3>
+          <p class="lead">
+            Each kind the page links to. Ticked means it travels with the page; unticked
+            leaves the link exactly as it is, pointing where it points today.
+          </p>
+          <div class="choices" role="group" aria-labelledby="heo-export-what">
+            ${this.#renderPlacement('style', 'Styles', survey)}
+            ${this.#renderPlacement('script', 'Scripts', survey)}
+            ${this.#renderPlacement('image', 'Images', survey)}
+            ${this.#renderPlacement('font', 'Fonts', survey)}
+          </div>
+        </section>
 
-        ${this.#renderNaming(shape)}
+        ${this.#renderPackaging()} ${this.#renderNaming(shape)}
 
         ${limit
         ? html`<div class="access blocked">
@@ -1140,6 +1201,67 @@ export class HeoSaveDialog extends HeoElement {
   }
 
   /**
+   * How what was saved is carried: one file, or a folder of them.
+   *
+   * Absent entirely when there is nothing to carry. With every kind unticked, or with none of
+   * the ticked ones readable from here, both answers produce the same single HTML file — so
+   * the question is not asked, and the archive, which is the half that can be wrong, is never
+   * offered without something to put in it.
+   *
+   * Radios rather than a checkbox because these are alternatives, and large enough to read
+   * because the difference between them is the difference between a file that opens anywhere
+   * and a file that needs its folder.
+   */
+  #renderPackaging(): TemplateResult | typeof nothing {
+    if (!this.editor.canArchiveBundle()) return nothing;
+    const chosen = this.state.value.bundleOptions.packaging;
+
+    const option = (
+      value: 'single' | 'archive',
+      glyph: string,
+      name: string,
+      detail: string,
+    ): TemplateResult => html`
+      <label class=${`package${chosen === value ? ' on' : ''}`}>
+        <input
+          type="radio"
+          name="heo-packaging"
+          value=${value}
+          .checked=${chosen === value}
+          @change=${() => this.editor.setBundleOptions({ packaging: value })}
+        />
+        <span class="body">
+          <span class="name">${icon(glyph, 12)} ${name}</span>
+          <span class="detail">${detail}</span>
+        </span>
+      </label>
+    `;
+
+    return html`
+      <section class="pick">
+        <h3 id="heo-export-how">Choose how to package it</h3>
+        <div class="packages" role="radiogroup" aria-labelledby="heo-export-how">
+          ${option(
+      'single',
+      'code',
+      'One self-contained HTML file',
+      'Everything the page needs is folded into the HTML, so it opens anywhere — from a ' +
+      'download, an email attachment, a USB stick. Assets become data URIs, which costs ' +
+      'about a third in size.',
+    )}
+          ${option(
+      'archive',
+      'folder',
+      'A folder of files, as a .zip',
+      'The page keeps its references, and the files they point at travel with it at the ' +
+      'paths it already uses. Unzip it and the structure is the one you had.',
+    )}
+        </div>
+      </section>
+    `;
+  }
+
+  /**
    * What the file is called, and where it lands.
    *
    * The name is editable and the extension is not. The extension follows the shape — one
@@ -1157,9 +1279,11 @@ export class HeoSaveDialog extends HeoElement {
     const picker = this.editor.exportPickerAvailable();
 
     return html`
-      <div class="naming">
+      <section class="pick">
+        <h3 id="heo-export-where">Choose where to save it</h3>
+        <div class="naming">
         <div class="row">
-          <span class="lead" id="heo-export-name-label">Save as</span>
+          <span class="field-label" id="heo-export-name-label">Name</span>
           <input
             type="text"
             .value=${exportName ?? ''}
@@ -1191,7 +1315,8 @@ export class HeoSaveDialog extends HeoElement {
               This browser cannot ask where to put a file, so it goes wherever downloads go.
               Chrome and Edge can offer the folder.
             </span>`}
-      </div>
+        </div>
+      </section>
     `;
   }
 
@@ -1236,8 +1361,9 @@ export class HeoSaveDialog extends HeoElement {
     const count = plan ? readable + (blocked?.length ?? 0) : (category?.count ?? 0);
     const reason = blocked?.[0]?.reason ?? category?.reason;
     const options = this.state.value.bundleOptions;
-    const inline = options[PLACEMENT_KEYS[kind]] === 'inline';
     const key = PLACEMENT_KEYS[kind];
+    const saving = options[key];
+    const archived = options.packaging === 'archive';
     // Nothing to decide when there is nothing of this kind, or when none of it can be read.
     const settled = count === 0 || readable === 0;
 
@@ -1255,15 +1381,28 @@ export class HeoSaveDialog extends HeoElement {
      */
     const binary = kind === 'image' || kind === 'font';
 
+    /*
+     * What saving this kind will actually do, which depends on the packaging.
+     *
+     * Said here rather than only in the packaging section because this is the row someone is
+     * looking at when they decide. "Encoded as base64" in particular is where a small page
+     * becomes a large one, and "folded into the HTML" says nothing about that.
+     */
+    const outcome = !saving
+      ? 'left as links'
+      : archived
+        ? 'copied in beside the page'
+        : binary
+          ? 'encoded as base64'
+          : 'folded into the HTML';
+
     return html`<label class=${`choice${settled ? ' settled' : ''}`}>
       <input
         type="checkbox"
-        .checked=${inline}
+        .checked=${saving}
         ?disabled=${settled}
         @change=${(event: Event) =>
-        this.editor.setBundleOptions({
-          [key]: (event.target as HTMLInputElement).checked ? 'inline' : 'external',
-        })}
+        this.editor.setBundleOptions({ [key]: (event.target as HTMLInputElement).checked })}
       />
       <span class="text">
         <span class="name">${label}</span>
@@ -1274,13 +1413,9 @@ export class HeoSaveDialog extends HeoElement {
           : html`nothing linked · ${embedded} already in the page`
         : readable === 0
           ? html`${count} linked, none readable from here${travels}`
-          : inline
-            ? html`${readable} ${binary ? 'encoded as base64' : 'folded into the HTML'}${count > readable
-              ? html` · ${count - readable} cannot be read`
-              : ''}${travels}`
-            : html`${readable} kept beside it${count > readable
-              ? html` · ${count - readable} cannot be read`
-              : ''}${travels}`}
+          : html`${readable} ${outcome}${count > readable
+            ? html` · ${count - readable} cannot be read`
+            : ''}${travels}`}
         </span>
         ${reason && readable < count ? html`<span class="why">${reason}</span>` : nothing}
       </span>

@@ -139,9 +139,11 @@ import {
   bundleBlob,
   bundleName,
   bundleShape,
+  canArchive,
   DEFAULT_BUNDLE_OPTIONS,
   exportBase,
   extensionOf,
+  planCanArchive,
   renameBundle,
   surveyBundle,
   type BundleOptions,
@@ -347,11 +349,10 @@ export interface EditorState {
   /**
    * How the page should be written out when there is no project to write into.
    *
-   * Three choices, one per kind of asset, and the shape of the download follows from them:
-   * everything folded in is one self-contained file, anything left as a reference needs the
-   * files beside it and so becomes an archive. Held in the store rather than in the dialog
-   * so it survives the dialog being closed and reopened — someone who chose to keep their
-   * images external once meant it.
+   * Two decisions: which kinds of asset to save, and whether the result is one self-contained
+   * file or a folder of them. Held in the store rather than in the dialog so it survives the
+   * dialog being closed and reopened — someone who chose not to bring their webfonts once
+   * meant it.
    */
   bundleOptions: BundleOptions;
   /** The export the current choices would produce, once it has been built. */
@@ -4032,6 +4033,20 @@ export class EditorEngine {
   /** True when this browser can ask where to put a file. */
   exportPickerAvailable(): boolean {
     return savePickerAvailable();
+  }
+
+  /**
+   * Whether an archive is worth offering, given what is set to be saved.
+   *
+   * The packaging choice appears only when this is true, which is what keeps the one broken
+   * combination out of reach: a zip is offered only when there is a file to put beside the
+   * page. A built plan answers from what it placed, which is the only way to know about
+   * assets that live inside a linked stylesheet.
+   */
+  canArchiveBundle(): boolean {
+    const plan = this.store.value.bundlePlan;
+    const options = this.store.value.bundleOptions;
+    return plan ? planCanArchive(plan, options) : canArchive(this.bundleSurvey(), options);
   }
 
   /**

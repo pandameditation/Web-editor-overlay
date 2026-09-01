@@ -46,13 +46,46 @@ import { makeZip, type ZipEntry } from './zip.js';
  * silently is not would be the worst thing this could produce.
  */
 
-/** Whether a category travels inside the HTML or stays a reference beside it. */
-export type AssetPlacement = 'inline' | 'external';
+/**
+ * What happens to one asset.
+ *
+ * Three outcomes, from two questions asked separately — whether to save it at all, and how
+ * the output is packaged:
+ *
+ * - **`inline`**: its bytes go into the HTML. Text as text, images and fonts as base64.
+ * - **`beside`**: its bytes go into the archive, at the path the page already uses, and the
+ *   reference is rewritten if that path moved.
+ * - **`leave`**: nothing is fetched and nothing is copied. The reference stays exactly as
+ *   written and points wherever it always did — right for a CDN font or an image the page
+ *   loads from somewhere that will still be there.
+ */
+export type AssetPlacement = 'inline' | 'beside' | 'leave';
 
+/** How the output is packaged: one file, or a folder of them. */
+export type BundlePackaging = 'single' | 'archive';
+
+/** Which categories to save, keyed as the UI names them. */
+export type IncludeKey = 'styles' | 'scripts' | 'images' | 'fonts';
+
+/**
+ * The two decisions, kept separate because they are separate.
+ *
+ * They used to be one: each category was "inline" or "external", and the packaging was
+ * derived from whether anything had been left out. That conflated *what to save* with *how
+ * to carry it*, so there was no way to say "bring the images but not the webfonts, and put
+ * it all in one file" — unticking a box moved it into a zip rather than leaving it alone.
+ *
+ * Splitting them costs one guard, which the UI enforces by only offering the archive when
+ * the choices above make one possible: a single file that still points at files nobody has
+ * is the combination that cannot work, and it is now unreachable rather than prevented.
+ */
 export interface BundleOptions {
-  styles: AssetPlacement;
-  scripts: AssetPlacement;
-  images: AssetPlacement;
+  /** Stylesheets the page links to. */
+  styles: boolean;
+  /** Scripts the page links to. */
+  scripts: boolean;
+  /** Pictures, from the HTML and from `url()` in CSS. */
+  images: boolean;
   /**
    * Fonts, separately from images.
    *
@@ -61,23 +94,35 @@ export interface BundleOptions {
    * document, where the *picture* checkbox then decided their fate. Base64 costs a third,
    * and a font family is far larger than the pictures on most pages.
    */
-  fonts: AssetPlacement;
+  fonts: boolean;
+  packaging: BundlePackaging;
 }
 
 export const DEFAULT_BUNDLE_OPTIONS: BundleOptions = {
-  styles: 'inline',
-  scripts: 'inline',
-  images: 'inline',
-  fonts: 'inline',
+  styles: true,
+  scripts: true,
+  images: true,
+  fonts: true,
+  // One file is the useful default: it is the thing a zip cannot be, which is openable by
+  // double-clicking it.
+  packaging: 'single',
 };
 
 /** The option each kind of asset is governed by. */
-export const PLACEMENT_KEYS: Record<AssetKind, keyof BundleOptions> = {
+export const PLACEMENT_KEYS: Record<AssetKind, IncludeKey> = {
   style: 'styles',
   script: 'scripts',
   image: 'images',
   font: 'fonts',
 };
+
+export const INCLUDE_KINDS: AssetKind[] = ['style', 'script', 'image', 'font'];
+
+/** What the current choices mean for one kind of asset. */
+export function placementFor(kind: AssetKind, options: BundleOptions): AssetPlacement {
+  if (!options[PLACEMENT_KEYS[kind]]) return 'leave';
+  return options.packaging === 'archive' ? 'beside' : 'inline';
+}
 
 /** One file the export will produce. */
 export interface BundleFile {
@@ -237,7 +282,7 @@ export async function buildBundle(
 
   /**
    * Place one asset: a `data:` URI when it is travelling inline, an archive path when it
-   * is not, or null to leave the reference exactly as written.
+   * travels beside, or null to leave the reference exactly as written.
    */
   const place = async (
     url: string,
@@ -250,7 +295,11 @@ export async function buildBundle(
     const kind = fallback === 'image' ? assetKindOf(url) : fallback;
     const placement = governedBy(kind);
 
-    if (placement === 'external') {
+    // Not saving it means not touching it. Nothing is fetched, so nothing can fail, and it
+    // is not reported as left behind — it was never coming.
+    if (placement === 'leave') return null;
+
+    if (placement === 'beside') {
       const existing = archived.get(url);
       if (existing) return existing;
       const bytes = await fetchAsset(url, project);
@@ -280,20 +329,19 @@ export async function buildBundle(
   };
 
   /** The option a kind answers to, read fresh so every call agrees. */
-  const governedBy = (kind: AssetKind): AssetPlacement => options[PLACEMENT_KEYS[kind]];
+  const governedBy = (kind: AssetKind): AssetPlacement => placementFor(kind, options);
 
   /* ---- Stylesheets ---- */
 
+  const stylePlacement = placementFor('style', options);
   for (const link of Array.from(doc.querySelectorAll('link[rel~="stylesheet"][href]'))) {
     const raw = link.getAttribute('href') ?? '';
     const url = assetUrl(raw);
     if (!url) continue;
 
-    if (options.styles === 'external') {
-      const path = await place(url, 'style', () => 'external');
-      if (path) link.setAttribute('href', path);
-      continue;
-    }
+    // Not saving the styles means not reading them, which also means the assets they refer
+    // to stay unknown. That is consistent: those references are not being touched either.
+    if (stylePlacement === 'leave') continue;
 
     const asset = await fetchAsset(url, project);
     if (!asset) {
@@ -301,17 +349,52 @@ export async function buildBundle(
       continue;
     }
     // Counted here as well as in `place`, which this path does not go through: a stylesheet
-    // folded in is one the row has to report, or it reads as a page with no stylesheets.
+    // saved is one the row has to report, or it reads as a page with no stylesheets.
     handled.style.add(url);
+    const text = new TextDecoder().decode(asset.bytes);
+
+    if (stylePlacement === 'beside') {
+      /*
+       * A sheet copied verbatim is a sheet whose own references have to be copied too.
+       *
+       * This is the half that was missing: the bytes went into the archive and nothing ever
+       * looked inside them, so a zip arrived holding the CSS and none of the fonts or
+       * background images it names. Unzipping it produced a page with no typeface.
+       *
+       * The references resolve against the *sheet*, not the document, and each one keeps its
+       * own path under the page directory — so `css/theme.css` asking for `../img/a.png`
+       * finds `img/a.png` in the archive, because both kept their places. Only a reference
+       * whose path had to move needs the text rewritten.
+       */
+      const moved = new Map<string, string>();
+      for (const reference of cssReferences(text)) {
+        const resolved = assetUrl(reference, url);
+        if (!resolved) continue;
+        const next = await place(resolved, 'image', governedBy);
+        if (next) moved.set(reference, next);
+      }
+      const bytes = moved.size
+        ? new TextEncoder().encode(
+          rewriteCssUrls(text, (reference) => moved.get(reference.trim()) ?? null),
+        )
+        : asset.bytes;
+
+      const path = archivePath(url, taken);
+      archived.set(url, path);
+      files.push({ path, bytes, kind: 'style' });
+      if (path !== relativeAssetPath(url)) link.setAttribute('href', path);
+      continue;
+    }
+
     /*
-     * The text is moving from a `<link>`, which resolves relative URLs against itself, to
-     * a `<style>`, which resolves them against the document. Rewriting them is not a
-     * nicety: a stylesheet in `css/` referring to `../img/hero.png` would otherwise point
-     * one directory too high the moment it was inlined.
+     * Inlined: the text is moving from a `<link>`, which resolves relative URLs against
+     * itself, to a `<style>`, which resolves them against the document. Rewriting them is
+     * not a nicety — a stylesheet in `css/` referring to `../img/hero.png` would otherwise
+     * point one directory too high the moment it was inlined.
      */
-    const css = rewriteCssUrls(new TextDecoder().decode(asset.bytes), (raw2) => {
-      const resolved = assetUrl(raw2, url);
-      return resolved && resolved !== raw2 ? resolved : null;
+    const css = rewriteCssUrls(text, (reference) => {
+      const resolved = assetUrl(reference, url);
+      return resolved && resolved !== reference ? resolved : null;
     });
     const style = doc.createElement('style');
     style.textContent = css;
@@ -323,16 +406,18 @@ export async function buildBundle(
 
   /* ---- Scripts ---- */
 
+  const scriptPlacement = placementFor('script', options);
   for (const script of Array.from(doc.querySelectorAll('script[src]'))) {
     const raw = script.getAttribute('src') ?? '';
     const url = assetUrl(raw);
     if (!url) continue;
 
-    if (options.scripts === 'external') {
-      const path = await place(url, 'script', () => 'external');
+    if (scriptPlacement !== 'inline') {
+      const path = await place(url, 'script', () => scriptPlacement);
       if (path) script.setAttribute('src', path);
       continue;
     }
+
 
     const asset = await fetchAsset(url, project);
     if (!asset) {
@@ -527,21 +612,40 @@ function isImageHref(el: Element): boolean {
  * applies: anything staying external means files beside the HTML, and files beside the
  * HTML mean an archive.
  */
-export function bundleShape(
-  survey: BundleSurvey,
-  options: BundleOptions,
-): 'single' | 'archive' {
-  const external: Array<[AssetKind, AssetPlacement]> = (
-    ['style', 'script', 'image', 'font'] as AssetKind[]
-  ).map((kind) => [kind, options[PLACEMENT_KEYS[kind]]]);
-  for (const [kind, placement] of external) {
-    if (placement !== 'external') continue;
+export function bundleShape(survey: BundleSurvey, options: BundleOptions): BundlePackaging {
+  return options.packaging === 'archive' && canArchive(survey, options) ? 'archive' : 'single';
+}
+
+/**
+ * Whether an archive is worth offering at all.
+ *
+ * A zip earns its place only when something would sit beside the page in it. With every
+ * category unticked, or with nothing of the ticked ones readable from here, both packagings
+ * produce the same lone HTML file — and asking someone to choose between two identical
+ * outcomes is worse than not asking.
+ *
+ * The UI hides the choice when this is false, which is also how the one broken combination
+ * stays unreachable: an archive is only ever offered when there is a file to put in it.
+ */
+export function canArchive(survey: BundleSurvey, options: BundleOptions): boolean {
+  return INCLUDE_KINDS.some((kind) => {
+    if (!options[PLACEMENT_KEYS[kind]]) return false;
     const category = survey.categories.find((entry) => entry.kind === kind);
-    // Only a category that actually has readable assets can produce a file, so a page
-    // with no images does not become a zip by having images set to external.
-    if (category && category.readable > 0) return 'archive';
-  }
-  return 'single';
+    return (category?.readable ?? 0) > 0;
+  });
+}
+
+/**
+ * The same question asked of a built plan, which knows rather than guesses.
+ *
+ * The survey cannot see inside a linked stylesheet, so a page whose only external assets
+ * are fonts in its CSS surveys as having nothing to archive. Once the build has run, what
+ * it placed is the answer.
+ */
+export function planCanArchive(plan: BundlePlan, options: BundleOptions): boolean {
+  return INCLUDE_KINDS.some(
+    (kind) => options[PLACEMENT_KEYS[kind]] && plan.placed[kind] > 0,
+  );
 }
 
 /** What the download's name will be, before anything is built. */

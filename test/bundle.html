@@ -246,7 +246,7 @@
        * 3. Everything inline: one self-contained file.
        * ------------------------------------------------------------------ */
       step('single');
-      engine.setBundleOptions({ styles: 'inline', scripts: 'inline', images: 'inline' });
+      engine.setBundleOptions({ styles: true, scripts: true, images: true, fonts: true, packaging: 'single' });
       check('withEverythingInlineTheShapeIsOneFile', () => engine.bundleShape());
 
       const single = await engine.previewBundle();
@@ -363,50 +363,51 @@
        * what made it invisible to the survey as well.
        * ------------------------------------------------------------------ */
       step('fonts');
+      /** The inlined CSS of a built plan, which is where both assets end up referenced. */
+      const planCss = (plan) => {
+        const doc = new DOMParser().parseFromString(
+          new TextDecoder().decode(plan.files.find((f) => f.kind === 'document').bytes),
+          'text/html',
+        );
+        return Array.from(doc.querySelectorAll('style')).map((s) => s.textContent ?? '').join('\n');
+      };
+
       if (readable) {
-        engine.setBundleOptions({ styles: 'inline', images: 'inline', fonts: 'external' });
+        engine.setBundleOptions({ styles: true, images: true, fonts: false, packaging: 'single' });
         const split = await engine.previewBundle();
-        const css = () => {
-          const doc = new DOMParser().parseFromString(
-            new TextDecoder().decode(split.files.find((f) => f.kind === 'document').bytes),
-            'text/html',
-          );
-          return Array.from(doc.querySelectorAll('style')).map((s) => s.textContent ?? '').join('\n');
-        };
-        const text = css();
+        const text = planCss(split);
         results.fontsAndImagesAreSeparateChoices = {
           placed: split?.placed ?? null,
           // The picture went in as base64 and the font did not, from one build.
           imageIsBase64: /url\("data:image\/svg\+xml/.test(text),
-          fontIsStillALink: /url\("?[^"]*probe\.woff2/.test(text),
           fontIsNotBase64: !/url\("data:font/.test(text),
-          // And the font is beside the page instead, which is what unticking asked for.
-          fontIsInTheArchive: (split?.files ?? []).some((f) => f.kind === 'font'),
+          // Unticked means left alone: the reference still points where it always did, and
+          // nothing was copied anywhere. This is what a CDN font wants.
+          fontIsStillALink: /url\("?[^")]*probe\.woff2/.test(text),
+          nothingWasCopied: !(split?.files ?? []).some((f) => f.kind === 'font'),
+          // And it is not reported as left behind, because it was never coming.
+          notCountedAsAFailure: !(split?.omitted ?? []).some((o) => o.kind === 'font'),
           asExpected:
             /url\("data:image\/svg\+xml/.test(text) &&
             !/url\("data:font/.test(text) &&
-            (split?.files ?? []).some((f) => f.kind === 'font'),
+            /url\("?[^")]*probe\.woff2/.test(text) &&
+            !(split?.files ?? []).some((f) => f.kind === 'font') &&
+            !(split?.omitted ?? []).some((o) => o.kind === 'font'),
         };
 
         // And the other way round, from the same page: fonts in, pictures out.
-        engine.setBundleOptions({ images: 'external', fonts: 'inline' });
+        engine.setBundleOptions({ images: false, fonts: true, packaging: 'single' });
         const swapped = await engine.previewBundle();
-        const swappedText = (() => {
-          const doc = new DOMParser().parseFromString(
-            new TextDecoder().decode(swapped.files.find((f) => f.kind === 'document').bytes),
-            'text/html',
-          );
-          return Array.from(doc.querySelectorAll('style')).map((s) => s.textContent ?? '').join('\n');
-        })();
+        const swappedText = planCss(swapped);
         results.andTheChoicesCanBeSwapped = {
           // The declared type is the assertion, not a detail: a data URI is all the browser
           // has to go on, and a font announced as a byte stream is a font that will not load.
           fontDataType: (swappedText.match(/url\("(data:[^;,)"]*)/) ?? [])[1] ?? null,
           fontIsBase64: /url\("data:font\/woff2/.test(swappedText),
-          imageIsStillALink: (swapped?.files ?? []).some((f) => f.kind === 'image'),
+          imageIsStillALink: /url\("?[^")]*dot\.svg/.test(swappedText),
           asExpected:
             /url\("data:font\/woff2/.test(swappedText) &&
-            (swapped?.files ?? []).some((f) => f.kind === 'image'),
+            /url\("?[^")]*dot\.svg/.test(swappedText),
         };
 
         /*
@@ -421,11 +422,33 @@
           theBuildPlaced: swapped?.placed.font ?? null,
           asExpected: (swapped?.placed.font ?? 0) === 1,
         };
-        engine.setBundleOptions({ images: 'inline', fonts: 'inline' });
+
+        /*
+         * And the packaging is the other question: the same two ticked, carried differently.
+         *
+         * This is what unticking used to do, and conflating the two meant there was no way to
+         * ask for "bring the images but not the webfonts, in one file".
+         */
+        engine.setBundleOptions({ images: true, fonts: true, packaging: 'archive' });
+        const beside = await engine.previewBundle();
+        const besideText = planCss(beside);
+        results.packagingIsASeparateQuestionFromWhatToSave = {
+          shape: beside?.shape ?? null,
+          files: (beside?.files ?? []).map((f) => `${f.path}|${f.kind}`),
+          // Saved, but carried beside rather than encoded in.
+          nothingIsBase64: !/url\("data:/.test(besideText),
+          asExpected:
+            beside?.shape === 'archive' &&
+            !/url\("data:/.test(besideText) &&
+            (beside?.files ?? []).some((f) => f.kind === 'font') &&
+            (beside?.files ?? []).some((f) => f.kind === 'image'),
+        };
+        engine.setBundleOptions({ images: true, fonts: true, packaging: 'single' });
       } else {
         results.fontsAndImagesAreSeparateChoices = 'not applicable in this run';
         results.andTheChoicesCanBeSwapped = 'not applicable in this run';
         results.aFontBehindAStylesheetIsCountedOnceItIsKnown = 'not applicable in this run';
+        results.packagingIsASeparateQuestionFromWhatToSave = 'not applicable in this run';
       }
 
       /* ------------------------------------------------------------------ *
@@ -508,14 +531,14 @@
       check('andItCanBeTurnedBackOn', () => engine.store.value.exportPrompt);
 
       /* ------------------------------------------------------------------ *
-       * 4. Something external: an archive, at the paths the page already uses.
+       * 4. Packaged as a folder: an archive, at the paths the page already uses.
        * ------------------------------------------------------------------ */
       step('archive');
       forget();
-      engine.setBundleOptions({ images: 'external' });
-      check('leavingImagesExternalOffersAnArchive', () => ({
-        // Nothing has been read yet, so the offer is the optimistic one: an image left
-        // outside means a file beside the page, which means an archive.
+      engine.setBundleOptions({ packaging: 'archive' });
+      check('askingForAnArchiveOffersOne', () => ({
+        // Nothing has been read yet, so the offer is the optimistic one: the choice is taken
+        // at its word until a build finds out whether there is anything to put in it.
         offered: engine.bundleShape(),
         asExpected: engine.bundleShape() === 'archive',
       }));
@@ -530,8 +553,10 @@
         keepsItsOwnPath:
           (archive?.files ?? []).some((f) => f.path === 'nested/dot.svg') === readable,
         // With nothing readable there is no asset to put beside the HTML, so it stays one
-        // file — the honest answer rather than an archive holding only a page.
+        // file — the honest answer rather than an archive holding only a page. The choice is
+        // remembered either way; it is the outcome that collapses.
         shapeMatchesTheRun: (archive?.shape ?? null) === (readable ? 'archive' : 'single'),
+        theChoiceIsStillRemembered: engine.store.value.bundleOptions.packaging === 'archive',
         // And the offer follows the plan once there is one, so the button cannot promise a
         // `.zip` over a download that turns out to be an `.html`.
         theOfferFollowsIt: engine.bundleShape() === (archive?.shape ?? null),
@@ -652,11 +677,60 @@
           disabled: el.querySelector('input')?.disabled ?? null,
         }));
         return {
+          // Generic now, because the shape is a choice inside the step rather than its title.
           step: shell?.getAttribute('aria-label') ?? null,
-          // Four rows, not three: fonts are their own decision now.
-          lead: dialog?.shadowRoot?.querySelector('.choices-lead')?.textContent
-            ?.replace(/\s+/g, ' ').trim() ?? null,
+          heading: dialog?.shadowRoot?.querySelector('header h2')?.textContent?.trim() ?? null,
+          sections: Array.from(dialog?.shadowRoot?.querySelectorAll('.pick h3') ?? []).map((el) =>
+            el.textContent.trim(),
+          ),
           choices,
+        };
+      });
+      check('theStepReadsAsThreeDecisions', () => {
+        const dialog = deepQuery('heo-save-dialog');
+        const sections = Array.from(dialog?.shadowRoot?.querySelectorAll('.pick h3') ?? []).map(
+          (el) => el.textContent.trim(),
+        );
+        return {
+          sections,
+          // What to save, how to carry it, where to put it — in the order each depends on the
+          // one before. The middle one is absent when it has nothing to decide.
+          asExpected:
+            sections[0] === 'Choose what to save' &&
+            sections[sections.length - 1] === 'Choose where to save it',
+        };
+      });
+      /*
+       * The packaging question is asked only when it has two different answers.
+       *
+       * With something saved and readable, both are offered as radios. With nothing to put
+       * beside the page the section is absent altogether — not disabled, absent — because
+       * both answers would produce the same lone HTML file, and that is also what keeps the
+       * one combination that cannot work out of reach.
+       */
+      check('theSecondSectionAppearsOnlyWhenItHasSomethingToDecide', () => {
+        const dialog = deepQuery('heo-save-dialog');
+        const packages = Array.from(dialog?.shadowRoot?.querySelectorAll('.package') ?? []).map(
+          (el) => ({
+            name: el.querySelector('.name')?.textContent?.trim() ?? null,
+            detail: el.querySelector('.detail')?.textContent?.replace(/\s+/g, ' ').trim() ?? null,
+            checked: el.querySelector('input')?.checked ?? null,
+            type: el.querySelector('input')?.type ?? null,
+          }),
+        );
+        const headings = Array.from(dialog?.shadowRoot?.querySelectorAll('.pick h3') ?? []).map(
+          (el) => el.textContent.trim(),
+        );
+        const offered = headings.includes('Choose how to package it');
+        return {
+          packages,
+          canArchive: engine.canArchiveBundle(),
+          // Present exactly when an archive is possible, and never half-present.
+          asExpected:
+            offered === engine.canArchiveBundle() &&
+            packages.length === (offered ? 2 : 0) &&
+            packages.every((p) => p.type === 'radio') &&
+            packages.filter((p) => p.checked).length === (offered ? 1 : 0),
         };
       });
       /*
@@ -679,7 +753,7 @@
         return {
           rows,
           // Every box matches its option, whether or not it can be clicked.
-          asExpected: rows.every((row) => row.checked === (options[expected[row.name]] === 'inline')),
+          asExpected: rows.every((row) => row.checked === options[expected[row.name]]),
         };
       });
       check('andTheStepSaysWhatItWillBeCalledAndWhereItGoes', () => {
