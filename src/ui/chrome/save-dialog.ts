@@ -14,6 +14,7 @@ import {
   bundleShape,
   canArchive,
   planCanArchive,
+  planIsStale,
   PLACEMENT_KEYS,
   type BundleFile,
   type BundlePackaging,
@@ -301,9 +302,16 @@ export class HeoSaveDialog extends HeoElement {
 
       /* ---- The export step's three choices ---- */
 
-      /* One of the export step's two questions, with its heading and its controls. */
+      /* One of the export step's questions, with its heading and its controls. */
       .pick {
         margin-bottom: 14px;
+      }
+      /* Being rebuilt: still there, still the right height, visibly not yet the answer. */
+      .plan {
+        transition: opacity var(--heo-fast);
+      }
+      .plan.refreshing {
+        opacity: 0.45;
       }
       .pick h3 {
         margin: 0 0 3px;
@@ -1097,9 +1105,20 @@ export class HeoSaveDialog extends HeoElement {
      * the page visibly froze.
      */
     const survey = this.editor.bundleSurvey();
-    const shape = bundlePlan ? bundlePlan.shape : bundleShape(survey, bundleOptions);
-    const offerArchive = bundlePlan
-      ? planCanArchive(bundlePlan, bundleOptions)
+    /*
+     * A plan outlives the choices that made it, so which parts of it still apply matters.
+     *
+     * `shape` and the packaging offer come from the *current* choices once the plan is stale,
+     * because those are what the footer promises and it must not promise a `.zip` for choices
+     * that stopped producing one. The file list keeps showing the old plan, dimmed, because a
+     * list that empties and refills is the flashing this replaced.
+     */
+    const stale = bundlePlan !== null && planIsStale(bundlePlan, bundleOptions);
+    const settledPlan = bundlePlan && !stale ? bundlePlan : null;
+    const refreshing = bundling || stale;
+    const shape = settledPlan ? settledPlan.shape : bundleShape(survey, bundleOptions);
+    const offerArchive = settledPlan
+      ? planCanArchive(settledPlan, bundleOptions)
       : canArchive(survey, bundleOptions);
     const limit = localAssetLimit();
 
@@ -1182,15 +1201,24 @@ export class HeoSaveDialog extends HeoElement {
             </div>`
         : nothing}
 
-        ${bundling
-        ? html`<div class="empty">Reading the page's files…</div>`
-        : bundlePlan
-          ? this.#renderBundlePlan(bundlePlan)
-          : html`<div class="empty">
-                ${shape === 'single'
+        <!--
+          The list stays put while the next one builds.
+
+          Swapping it for a progress line was four layouts per click and read as flashing.
+          There is only one moment with nothing to show — the very first build — and after
+          that a refresh is a dimmed list rather than an absent one.
+        -->
+        ${bundlePlan
+        ? html`<div class=${`plan${refreshing ? ' refreshing' : ''}`} aria-busy=${refreshing}>
+              ${this.#renderBundlePlan(bundlePlan)}
+            </div>`
+        : html`<div class="empty">
+              ${bundling
+            ? "Reading the page's files…"
+            : shape === 'single'
               ? 'One file, once it has been built.'
               : 'The files, once they have been built.'}
-              </div>`}
+            </div>`}
       </div>
 
       <footer>
@@ -1375,26 +1403,27 @@ export class HeoSaveDialog extends HeoElement {
      * all there is, which is fine — opening this step builds a plan straight away.
      */
     const plan = this.state.value.bundlePlan;
-    const blocked = plan?.omitted.filter((entry) => entry.kind === kind) ?? null;
+    const options = this.state.value.bundleOptions;
+    const key = PLACEMENT_KEYS[kind];
+    const saving = options[key];
+    const archived = options.packaging === 'archive';
     /*
      * How many the page has comes from `found`, not from `placed`.
      *
      * `placed` is what travelled, which is a consequence of this very checkbox — so counting
      * from it let the row destroy the evidence for its own existence. Unticking a kind meant
      * nothing was carried, which read as "none in this page", which disabled the row, which
-     * made it impossible to tick again.
+     * made it impossible to tick again. `found` is a fact about the page, so it holds still
+     * across every choice, which is also why the row does not jump when one is made.
      *
-     * Unreadable is what was attempted and failed. Nothing is attempted for a kind that is
-     * not being saved, so it stays readable-until-proven-otherwise, which is both true and
-     * what keeps the row clickable.
+     * Failures are only reported for a kind being saved. Nothing is attempted otherwise, so
+     * there is nothing to have failed — and reading them off a plan built before the box was
+     * unticked would put a stale warning under a row that is no longer trying.
      */
+    const blocked = saving ? (plan?.omitted.filter((entry) => entry.kind === kind) ?? []) : [];
     const count = plan ? plan.found[kind] : (category?.count ?? 0);
-    const readable = plan ? count - (blocked?.length ?? 0) : (category?.readable ?? 0);
-    const reason = blocked?.[0]?.reason ?? category?.reason;
-    const options = this.state.value.bundleOptions;
-    const key = PLACEMENT_KEYS[kind];
-    const saving = options[key];
-    const archived = options.packaging === 'archive';
+    const readable = plan ? count - blocked.length : (category?.readable ?? 0);
+    const reason = blocked[0]?.reason ?? (saving ? category?.reason : undefined);
     // Nothing to decide when there is nothing of this kind, or when none of it can be read.
     const settled = count === 0 || readable === 0;
 

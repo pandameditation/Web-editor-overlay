@@ -709,6 +709,55 @@
         for (let i = 0; i < 8; i += 1) await frames();
       };
 
+      /*
+       * Nothing may disappear between the click and the settled result.
+       *
+       * The flashing was structural: clicking cleared the plan, so the file list was replaced
+       * by a placeholder, then by a progress line, then rebuilt — four layouts for one click.
+       * So this samples every frame from the click until the rebuild lands and asserts the list
+       * was never empty and its row count never dropped to nothing.
+       */
+      step('flicker');
+      if (!boxFor('Images')?.disabled) {
+        const listRows = () =>
+          deepQuery('heo-save-dialog')?.shadowRoot?.querySelectorAll('.plan .write').length ?? 0;
+        const emptyShown = () =>
+          Boolean(deepQuery('heo-save-dialog')?.shadowRoot?.querySelector('.empty'));
+
+        const before = listRows();
+        const box = boxFor('Images');
+        box.checked = false;
+        box.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+
+        const samples = [];
+        for (let i = 0; i < 40; i += 1) {
+          await frames();
+          samples.push({ rows: listRows(), empty: emptyShown() });
+          if (i > 6 && !engine.store.value.bundling && samples[samples.length - 1].rows > 0) {
+            const plan = engine.store.value.bundlePlan;
+            if (plan && plan.options.images === false) break;
+          }
+        }
+        results.tickingDoesNotFlashTheContent = {
+          rowsBefore: before,
+          lowestRowCountSeen: Math.min(...samples.map((s) => s.rows)),
+          everShowedThePlaceholder: samples.some((s) => s.empty),
+          frames: samples.length,
+          // The list held its ground the whole way through.
+          asExpected:
+            before > 0 &&
+            Math.min(...samples.map((s) => s.rows)) > 0 &&
+            !samples.some((s) => s.empty),
+        };
+        // Put it back, and let the rebuild settle before the checks below read the rows.
+        const restore = boxFor('Images');
+        restore.checked = true;
+        restore.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+        for (let i = 0; i < 12; i += 1) await frames();
+      } else {
+        results.tickingDoesNotFlashTheContent = 'not applicable in this run';
+      }
+
       const toggles = [];
       for (const name of ['Styles', 'Images']) {
         const start = boxFor(name);

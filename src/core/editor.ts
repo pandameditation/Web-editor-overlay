@@ -143,6 +143,7 @@ import {
   exportBase,
   extensionOf,
   planCanArchive,
+  planIsStale,
   renameBundle,
   surveyBundle,
   type BundleOptions,
@@ -461,6 +462,8 @@ export class EditorEngine {
   #destroyed = false;
   /** Which export build is the current one, so an overtaken one stays quiet. */
   #bundleRun = 0;
+  /** The pending rebuild after an option change, so a burst of clicks builds once. */
+  #bundleTimer: ReturnType<typeof setTimeout> | null = null;
   /** Deferred seed and design-system loads, so `whenReady` has something to await. */
   #pending = new Set<Promise<unknown>>();
 
@@ -633,6 +636,11 @@ export class EditorEngine {
     // against a torn-down engine.
     this.cancelDrag();
     this.#clearDragTimer();
+    // A scheduled export rebuild would otherwise fire against a torn-down engine.
+    if (this.#bundleTimer !== null) {
+      clearTimeout(this.#bundleTimer);
+      this.#bundleTimer = null;
+    }
     for (const off of this.#listeners) off();
     this.#listeners = [];
     for (const observer of this.#observers) observer.disconnect();
@@ -3986,7 +3994,10 @@ export class EditorEngine {
    */
   bundleShape(): BundlePackaging {
     const plan = this.store.value.bundlePlan;
-    if (plan) return plan.shape;
+    // Only while it still describes the current choices. A plan is now kept on screen after
+    // a box is ticked, so trusting it blindly would offer a `.zip` for choices that no longer
+    // produce one — and that offer becomes the extension in the save picker.
+    if (plan && !planIsStale(plan, this.store.value.bundleOptions)) return plan.shape;
     /*
      * No plan, so the choice is taken at its word.
      *
@@ -4000,15 +4011,25 @@ export class EditorEngine {
     return this.store.value.bundleOptions.packaging;
   }
 
+  /**
+   * Change what gets saved, and how.
+   *
+   * The plan on screen is deliberately *not* cleared. It was, and one click then produced four
+   * layouts in a row — the file list, an empty placeholder, a progress line, then the new list
+   * — which read as the panel flashing. It stays put instead, marked stale through
+   * `planIsStale`, until the replacement is ready.
+   *
+   * The rebuild is also debounced. Ticking three boxes is one intention, and each rebuild
+   * reads every asset the page refers to, so running one per click means two wasted passes
+   * over the network and two intermediate states nobody wanted to see.
+   */
   setBundleOptions(next: Partial<BundleOptions>): void {
-    const merged = { ...this.store.value.bundleOptions, ...next };
-    // A plan built for the old choices describes a different download, so it goes rather
-    // than sitting there over a footer that now promises something else.
-    this.store.patch({ bundleOptions: merged, bundlePlan: null });
-    // And it comes straight back, because the answer to "what will this write" should not
-    // require pressing Recheck. The shape has to be settled before the write, too: it is
-    // what the extension in the save picker's suggested name comes from.
-    void this.previewBundle();
+    this.store.patch({ bundleOptions: { ...this.store.value.bundleOptions, ...next } });
+    if (this.#bundleTimer !== null) clearTimeout(this.#bundleTimer);
+    this.#bundleTimer = setTimeout(() => {
+      this.#bundleTimer = null;
+      void this.previewBundle();
+    }, 140);
   }
 
   /**
@@ -4079,6 +4100,12 @@ export class EditorEngine {
      */
     const run = (this.#bundleRun += 1);
     const stale = (): boolean => this.#destroyed || run !== this.#bundleRun;
+    // A build asked for directly supersedes one merely scheduled, so pressing Write or Recheck
+    // does not get followed by a second pass a moment later.
+    if (this.#bundleTimer !== null) {
+      clearTimeout(this.#bundleTimer);
+      this.#bundleTimer = null;
+    }
 
     const source = await this.#readOwnDocument();
     if (stale()) return null;

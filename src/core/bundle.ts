@@ -124,6 +124,19 @@ export function placementFor(kind: AssetKind, options: BundleOptions): AssetPlac
   return options.packaging === 'archive' ? 'beside' : 'inline';
 }
 
+/** Whether two sets of choices would produce the same export. */
+export function sameBundleOptions(a: BundleOptions, b: BundleOptions): boolean {
+  return (
+    a.packaging === b.packaging &&
+    INCLUDE_KINDS.every((kind) => a[PLACEMENT_KEYS[kind]] === b[PLACEMENT_KEYS[kind]])
+  );
+}
+
+/** True when a plan no longer describes what the current choices would write. */
+export function planIsStale(plan: BundlePlan, options: BundleOptions): boolean {
+  return !sameBundleOptions(plan.options, options);
+}
+
 /** One file the export will produce. */
 export interface BundleFile {
   path: string;
@@ -144,6 +157,16 @@ export interface BundleOmission {
 export interface BundlePlan {
   /** `single` when everything is folded in, `archive` when files sit beside the HTML. */
   shape: 'single' | 'archive';
+  /**
+   * The choices this was built from.
+   *
+   * Carried so a plan can outlive the choices that made it. Clearing it the moment a box was
+   * ticked meant the file list vanished, was replaced by a placeholder, then by a progress
+   * line, then reappeared — four layouts for one click. Keeping it lets the panel hold still
+   * while the next one builds, and this is what says whether what is on screen still answers
+   * the question being asked.
+   */
+  options: BundleOptions;
   /** Suggested download name, with the right extension for the shape. */
   fileName: string;
   files: BundleFile[];
@@ -520,6 +543,7 @@ export async function buildBundle(
   const all = [document_, ...files];
   return {
     shape,
+    options: { ...options },
     fileName: shape === 'single' ? `${base}.html` : `${base}.zip`,
     files: all,
     omitted,
