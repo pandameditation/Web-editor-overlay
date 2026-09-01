@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Pasting arbitrary HTML in</title>
+  <!--
+    The `+` button's third route: markup the user already has.
+
+    Blocks cover assembled patterns and the catalogue covers bare tags. Everything else — a
+    snippet from someone's docs, a chunk copied from another page, an embed a service handed
+    over — had no way in, and the answer was to build it out of primitives by hand.
+
+    What is worth checking here is not that the DOM changed. It is that the four positions all
+    mean what they say, that sanitisation is loud rather than silent, and that the whole paste
+    is one undoable change that leaves no trace of the editor in the export.
+  -->
+  <style>
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: system-ui, sans-serif;
+    }
+
+    .card {
+      padding: 12px;
+      border: 1px solid #ccd;
+    }
+  </style>
+</head>
+
+<body>
+  <h1 id="title">Paste</h1>
+  <div id="host" class="card">
+    <p id="copy">Existing copy.</p>
+  </div>
+  <p id="tail">Tail.</p>
+  <img id="void" src="data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACwAAAAAAQABAAACAkQBADs=" alt="">
+
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const results = {};
+      const errors = [];
+      addEventListener('error', (e) => errors.push('error: ' + e.message));
+      addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+
+      const progress = document.getElementById('progress');
+      const step = (name) => { progress.textContent = name; };
+      const check = (name, fn) => {
+        step(name);
+        try { results[name] = fn(); }
+        catch (err) { results[name] = 'THREW: ' + (err && err.message ? err.message : String(err)); }
+      };
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const byId = (id) => document.getElementById(id);
+
+      function deepQuery(selector, root = document) {
+        const found = root.querySelector?.(selector);
+        if (found) return found;
+        for (const el of root.querySelectorAll?.('*') ?? []) {
+          if (!el.shadowRoot) continue;
+          const hit = deepQuery(selector, el.shadowRoot);
+          if (hit) return hit;
+        }
+        return null;
+      }
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark', fileName: 'paste.html' });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+
+      /* ------------------------------------------------------------------ *
+       * 1. The route exists, and the menu leads to it.
+       * ------------------------------------------------------------------ */
+      step('menu');
+      api.select(byId('copy'));
+      await frames();
+      engine.setInsertAnchor({ reference: byId('copy'), position: 'after' });
+      await frames();
+      await frames();
+
+      const menu = () => deepQuery('heo-insert-menu');
+      const rows = () =>
+        Array.from(menu()?.shadowRoot?.querySelectorAll('.row') ?? []).map((el) => ({
+          el,
+          name: el.querySelector('.name')?.textContent?.trim() ?? '',
+        }));
+      check('theInsertMenuOffersPastingMarkup', () => {
+        const found = rows().find((row) => /^Paste HTML/.test(row.name));
+        return {
+          offered: Boolean(found),
+          // Last, so it does not crowd out the answers that need no typing.
+          isLast: rows().at(-1)?.name === found?.name,
+        };
+      });
+
+      /*
+       * A search that matches nothing is the strongest signal for this route: whatever was
+       * being described is neither a block nor a bare tag.
+       */
+      step('emptySearch');
+      const search = () => menu()?.shadowRoot?.querySelector('.top input');
+      const type = async (text) => {
+        const field = search();
+        field.value = text;
+        field.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        await frames();
+      };
+      await type('<figure class="quote"');
+      check('andLeadsWhenNothingElseMatched', () => {
+        const list = rows();
+        return {
+          rows: list.map((row) => row.name),
+          asExpected: list.length === 1 && /^Paste HTML/.test(list[0].name),
+        };
+      });
+
+      // Clicking it hands over to the dialog, carrying what was typed.
+      step('open');
+      rows()[0].el.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+      await frames();
+      await frames();
+
+      const dialog = () => deepQuery('heo-paste-dialog');
+      const area = () =>
+        dialog()?.shadowRoot?.querySelector('heo-code-editor')?.shadowRoot?.querySelector('textarea');
+      check('theDialogOpensSeededWithWhatWasTyped', () => ({
+        open: Boolean(dialog()),
+        draft: engine.store.value.htmlPaste?.draft ?? null,
+        // The menu is gone: it only lives while an anchor is set, which is why the dialog
+        // cannot be rendered inside it.
+        menuClosed: menu() === null,
+        anchorCleared: engine.store.value.insertAnchor === null,
+      }));
+
+      /** Write into the dialog's editor the way a person would. */
+      const write = async (markup) => {
+        const editor = dialog()?.shadowRoot?.querySelector('heo-code-editor');
+        editor.dispatchEvent(
+          new CustomEvent('code-input', { detail: { value: markup }, bubbles: true, composed: true }),
+        );
+        await frames();
+      };
+      const insert = async () => {
+        const button = Array.from(dialog()?.shadowRoot?.querySelectorAll('footer .btn') ?? []).find(
+          (el) => /Insert/.test(el.textContent),
+        );
+        button.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+        await frames();
+        await frames();
+      };
+
+      /* ------------------------------------------------------------------ *
+       * 2. Each of the four positions means what it says.
+       * ------------------------------------------------------------------ */
+      step('positions');
+      const setWhere = (position) => {
+        const open = engine.store.value.htmlPaste;
+        engine.updateHtmlPaste({ anchor: { reference: open.anchor.reference, position } });
+      };
+
+      await write('<p class="pasted" data-at="after">after</p>');
+      await insert();
+      check('afterPutsItNextToTheElement', () => ({
+        previous: byId('copy').nextElementSibling?.dataset.at ?? null,
+        parent: byId('copy').parentElement?.id ?? null,
+        // One change, and the editor marked what it added.
+        marked: byId('copy').nextElementSibling?.hasAttribute('data-heo-inserted') ?? null,
+        selected: engine.store.value.selected?.dataset.at ?? null,
+      }));
+
+      const pasteInto = async (reference, position, markup) => {
+        engine.beginHtmlPaste({ reference, position });
+        await frames();
+        await write(markup);
+        await insert();
+      };
+
+      await pasteInto(byId('copy'), 'before', '<p class="pasted" data-at="before">before</p>');
+      check('beforePutsItAheadOfTheElement', () =>
+        byId('copy').previousElementSibling?.dataset.at ?? null);
+
+      await pasteInto(byId('host'), 'lastChild', '<span class="pasted" data-at="inside">inside</span>');
+      check('insidePutsItAmongTheChildren', () => ({
+        lastChild: byId('host').lastElementChild?.dataset.at ?? null,
+        parent: byId('host').lastElementChild?.parentElement?.id ?? null,
+      }));
+
+      await pasteInto(byId('tail'), 'replace', '<blockquote id="swapped">swapped in</blockquote>');
+      check('replaceSwapsTheElementOut', () => ({
+        gone: byId('tail') === null,
+        arrived: byId('swapped')?.tagName ?? null,
+        recorded: engine.records.at(-1)?.kind ?? null,
+      }));
+
+      /* ------------------------------------------------------------------ *
+       * 3. Several elements at once, and it is still one change.
+       * ------------------------------------------------------------------ */
+      step('multiple');
+      const before = engine.records.length;
+      await pasteInto(byId('copy'), 'after', '<h3 class="pasted">Two</h3><p class="pasted">parts</p>');
+      check('aPasteOfSeveralElementsIsOneChange', () => ({
+        landed: document.querySelectorAll('.pasted').length,
+        recordsAdded: engine.records.length - before,
+        asExpected: engine.records.length - before === 1,
+      }));
+
+      step('undo');
+      const pastedBeforeUndo = document.querySelectorAll('.pasted').length;
+      engine.undo();
+      await frames();
+      check('andUndoTakesTheWholePasteBackOut', () => {
+        const removed = pastedBeforeUndo - document.querySelectorAll('.pasted').length;
+        // Both elements, not just the one that happened to be selected.
+        return { removed, asExpected: removed === 2 };
+      });
+
+      /* ------------------------------------------------------------------ *
+       * 4. Sanitisation is loud, not silent.
+       *
+       * A stripped `onclick` is a button that does nothing, and a paste that quietly loses it
+       * is the worst kind of bug: the feature looks like it worked.
+       * ------------------------------------------------------------------ */
+      step('sanitize');
+      engine.beginHtmlPaste({ reference: byId('copy'), position: 'after' });
+      await frames();
+      await write(
+        '<div id="scrubbed" onclick="alert(1)">' +
+        '<script>window.__pasteRan = true;<\/script>' +
+        '<a href="javascript:alert(2)">link</a>' +
+        '</div>',
+      );
+      check('theDialogSaysWhatItWillStrip', () => {
+        const note = dialog()?.shadowRoot?.querySelector('.note.warn');
+        return {
+          shown: Boolean(note),
+          text: note?.textContent?.replace(/\s+/g, ' ').trim() ?? null,
+          namesTheHandler: /event handler/.test(note?.textContent ?? ''),
+          namesTheScript: /script/i.test(note?.textContent ?? ''),
+        };
+      });
+      await insert();
+      check('andStripsItOnTheWayIn', () => {
+        const el = byId('scrubbed');
+        return {
+          arrived: Boolean(el),
+          keptTheHandler: el?.hasAttribute('onclick') ?? null,
+          keptAScript: el?.querySelector('script') !== null ? true : false,
+          keptTheJavascriptUrl: el?.querySelector('a')?.hasAttribute('href') ?? null,
+          // Nothing ran, which is the point of parsing it inert.
+          scriptRan: window.__pasteRan === true,
+        };
+      });
+
+      /* ------------------------------------------------------------------ *
+       * 5. Markup that cannot be placed is refused with a reason.
+       * ------------------------------------------------------------------ */
+      step('refusals');
+      engine.beginHtmlPaste({ reference: byId('copy'), position: 'after' });
+      await frames();
+      await write('just words, no tags');
+      const refused = engine.commitHtmlPaste();
+      await frames();
+      check('looseTextIsRefusedWithAnExplanation', () => ({
+        inserted: refused,
+        stillOpen: Boolean(engine.store.value.htmlPaste),
+        error: engine.store.value.htmlPaste?.error ?? null,
+        // Tells them what to do about it rather than just saying no.
+        saysWhatToDo: /wrap/i.test(engine.store.value.htmlPaste?.error ?? ''),
+      }));
+
+      // And text alongside an element is kept, with the loose part reported.
+      await write('loose words <b id="kept">bold</b>');
+      check('andLooseTextBesideAnElementIsFlagged', () => {
+        const note = dialog()?.shadowRoot?.querySelector('.note.warn');
+        return {
+          note: note?.textContent?.replace(/\s+/g, ' ').trim() ?? null,
+          warnsAboutDropping: /will be dropped/.test(note?.textContent ?? ''),
+        };
+      });
+      await insert();
+      check('theElementLandsAndTheLooseWordsDoNot', () => ({
+        kept: byId('kept')?.tagName ?? null,
+        looseWordsArrived: /loose words/.test(byId('host')?.textContent ?? ''),
+      }));
+
+      step('cancel');
+      engine.beginHtmlPaste({ reference: byId('copy'), position: 'after' });
+      await frames();
+      await write('<p id="never">never inserted</p>');
+      engine.cancelHtmlPaste();
+      await frames();
+      check('cancellingInsertsNothing', () => ({
+        closed: engine.store.value.htmlPaste === null,
+        dialogGone: dialog() === null,
+        neverArrived: byId('never') === null,
+      }));
+
+      /* ------------------------------------------------------------------ *
+       * 6. It leaves no trace of the editor in the export.
+       * ------------------------------------------------------------------ */
+      step('export');
+      check('theExportCarriesThePastedMarkupAndNoEditorTrace', () => {
+        const html = engine.exportHTML();
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        return {
+          pastedIsThere: doc.querySelectorAll('.pasted').length > 0,
+          swappedIsThere: Boolean(doc.getElementById('swapped')),
+          editorAttributes: doc.querySelectorAll('[data-heo-inserted],[data-heo-src]').length,
+          overlayHost: doc.querySelectorAll('html-editor-overlay').length,
+        };
+      });
+
+      results.__errors = errors;
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify({ __fatal: String((e && e.stack) || e) }, null, 1) + ':END';
+    });
+  </script>
+</body>
+
+</html>

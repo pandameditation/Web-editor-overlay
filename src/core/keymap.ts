@@ -33,6 +33,10 @@ export function handleKeyDown(engine: EditorEngine, event: KeyboardEvent): void 
   // Modal dialogs own their own keys; the dialog component handles Escape and
   // commit, so the page keymap stays out of the way entirely.
   if (state.extraction) return;
+  // The paste dialog is the same case: its code editor emits `code-cancel` on Escape and
+  // `code-submit` on Cmd+Enter, and a page shortcut firing underneath it would act on a
+  // selection the user cannot see.
+  if (state.htmlPaste) return;
 
   // A native `<dialog>` opened with `showModal` makes everything outside it inert,
   // so a shortcut that opens overlay chrome would put it behind the modal where it

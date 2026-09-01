@@ -2417,7 +2417,14 @@
       await wait(160);
       check('theHtmlScopeDropsTheBlocks', () => menuGroups().join(','));
       check('andEveryRowCarriesItsTag', () => {
-        const rows = menuRows();
+        /*
+         * Every *element* row, that is. The list also ends with the route to writing markup
+         * by hand, which is not an element and has no tag to name — a chip there would have
+         * to invent one.
+         */
+        const rows = menuRows().filter(
+          (r) => !/^Paste HTML/.test(r.querySelector('.name')?.textContent.trim() ?? ''),
+        );
         return rows.length > 30 && rows.every((r) => Boolean(r.querySelector('.kind.tag')));
       });
       check('eachOneExplainsItself', () =>
@@ -2438,7 +2445,15 @@
       typeMenu('marquee');
       await wait(140);
       check('evenTheDeprecatedOnesAreFindable', () =>
-        menuRows().map((r) => `${r.querySelector('.name').textContent.trim()}:${r.querySelector('.kind.tag')?.textContent.trim()}`).join(','));
+        menuRows()
+          .map((r) => {
+            const name = r.querySelector('.name').textContent.trim();
+            // The write-it-yourself row has no tag, so it reads as a dash rather than
+            // "undefined" — it is the one row in the list that is not an element.
+            const tag = r.querySelector('.kind.tag')?.textContent.trim() ?? '—';
+            return `${name}:${tag}`;
+          })
+          .join(','));
 
       /* And it inserts. `<marquee>` is the test because nothing in the sanitizer
          knows about it: an allowlist would have silently dropped it. */

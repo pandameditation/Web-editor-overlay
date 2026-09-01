@@ -61,6 +61,7 @@ import {
   duplicateElement,
   insertHTML,
   insertNodes,
+  INSERT_POSITION_LABELS,
   moveCommandFromOrigin,
   moveElement,
   removeElement,
@@ -78,7 +79,7 @@ import {
   elementKey,
 } from './mutations.js';
 import { buildPrompt } from './prompt.js';
-import { formatHTML } from './sanitize.js';
+import { formatHTML, previewMarkup } from './sanitize.js';
 import {
   connectDirectory,
   connectServer,
@@ -194,6 +195,23 @@ export interface InsertAnchor {
 }
 
 /**
+ * Arbitrary markup on its way into the page.
+ *
+ * The library offers assembled patterns and the catalogue offers bare tags; between them sits
+ * everything else — a snippet from a component library, a block of markup from somewhere else
+ * in the project, an embed someone was given. This is that route, and it is the same insert
+ * underneath: sanitised, positioned, recorded, undoable.
+ */
+export interface HtmlPaste {
+  /** Where it lands. Changeable from inside the dialog. */
+  anchor: InsertAnchor;
+  /** What the user has written so far. */
+  draft: string;
+  /** Why it cannot be inserted yet, when it cannot. */
+  error: string;
+}
+
+/**
  * A pending extraction, held in state while the user reviews it.
  *
  * Extraction used to happen silently with a generated name, which produced
@@ -305,6 +323,15 @@ export interface EditorState {
   drag: DragState | null;
   quickMenuOpen: boolean;
   insertAnchor: InsertAnchor | null;
+  /**
+   * A blob of HTML being pasted in, held while the user writes it.
+   *
+   * Deliberately not part of `insertAnchor`. The insert menu exists only while that is set,
+   * and committing clears it — so a dialog owned by the menu would be torn down by its own
+   * success. This holds its own copy of where the markup is going, which also lets the
+   * position be changed from inside the dialog without reopening anything.
+   */
+  htmlPaste: HtmlPaste | null;
   extraction: Extraction | null;
   /**
    * Which language the Code panel is showing, in the dock and expanded alike.
@@ -527,6 +554,7 @@ export class EditorEngine {
       drag: null,
       quickMenuOpen: false,
       insertAnchor: null,
+      htmlPaste: null,
       extraction: null,
       codeTab: 'html',
       codeWorkspace: false,
@@ -2477,6 +2505,124 @@ export class EditorEngine {
 
   setInsertAnchor(anchor: InsertAnchor | null): void {
     this.store.patch({ insertAnchor: anchor });
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Pasting arbitrary markup                                               */
+  /* ---------------------------------------------------------------------- */
+
+  /**
+   * Open the paste route for a blob of HTML.
+   *
+   * Takes its own copy of the anchor and closes the insert menu, because the menu is only
+   * alive while `insertAnchor` is set and this dialog has to outlive it.
+   *
+   * `seed` is what the user had already typed into the menu's search box when it looked like
+   * markup. Carrying it over means typing `<figure>` and reaching for this route does not
+   * throw the typing away.
+   */
+  beginHtmlPaste(anchor?: InsertAnchor, seed = ''): boolean {
+    const target = anchor ?? this.store.value.insertAnchor ?? this.#defaultAnchor();
+    if (!target) return false;
+    this.endTextEdit(true);
+    this.store.patch({
+      htmlPaste: { anchor: target, draft: seed, error: '' },
+      insertAnchor: null,
+      quickMenuOpen: false,
+    });
+    return true;
+  }
+
+  updateHtmlPaste(patch: Partial<Omit<HtmlPaste, 'anchor'>> & { anchor?: InsertAnchor }): void {
+    const open = this.store.value.htmlPaste;
+    if (!open) return;
+    this.store.patch({ htmlPaste: { ...open, ...patch } });
+  }
+
+  cancelHtmlPaste(): void {
+    if (!this.store.value.htmlPaste) return;
+    this.store.patch({ htmlPaste: null });
+  }
+
+  /**
+   * Insert what was written, and say what became of it.
+   *
+   * Refuses ahead of the insert rather than after, because `insertHTML` returning null covers
+   * two very different situations — nothing was written, and what was written had no element
+   * at its root — and "that markup could not be inserted" is unhelpful for either. Text with
+   * no tags around it is the common mistake and gets its own sentence.
+   *
+   * The toast names what was stripped. A pasted `onclick` that silently vanishes is a button
+   * that silently does nothing, and the report exists so that is never the outcome.
+   */
+  commitHtmlPaste(): HTMLElement | null {
+    const open = this.store.value.htmlPaste;
+    if (!open) return null;
+
+    const draft = open.draft.trim();
+    if (!draft) {
+      this.updateHtmlPaste({ error: 'Nothing to insert yet.' });
+      return null;
+    }
+
+    const preview = previewMarkup(draft);
+    if (!preview.elements) {
+      this.updateHtmlPaste({
+        error: preview.looseText
+          ? 'That is text with no element around it. Wrap it in a tag — a <p>, say — and it can be placed.'
+          : 'No element in that markup. A paste has to start with a tag.',
+      });
+      return null;
+    }
+    if (open.anchor.position === 'replace' && !isMutable(open.anchor.reference)) {
+      this.updateHtmlPaste({
+        error: `${labelFor(open.anchor.reference)} cannot be replaced.`,
+      });
+      return null;
+    }
+    if (!open.anchor.reference.isConnected) {
+      this.updateHtmlPaste({
+        error: 'The element this was going next to is no longer in the page.',
+      });
+      return null;
+    }
+
+    const inserted = this.insertMarkup(draft, open.anchor);
+    if (!inserted) {
+      this.updateHtmlPaste({ error: 'That markup could not be inserted.' });
+      return null;
+    }
+
+    this.store.patch({ htmlPaste: null });
+
+    const { report } = preview;
+    const stripped = [
+      report.scripts && `${report.scripts} script${report.scripts === 1 ? '' : 's'}`,
+      report.handlers &&
+      `${report.handlers} event handler${report.handlers === 1 ? '' : 's'}`,
+      report.urls && `${report.urls} unsafe URL${report.urls === 1 ? '' : 's'}`,
+      report.styles && `${report.styles} inline style${report.styles === 1 ? '' : 's'}`,
+    ].filter((entry): entry is string => Boolean(entry));
+
+    const what =
+      preview.elements === 1
+        ? `<${preview.tags[0]}>`
+        : `${preview.elements} elements`;
+    const where = `${INSERT_POSITION_LABELS[open.anchor.position]} ${labelFor(open.anchor.reference)}`;
+
+    if (stripped.length) {
+      this.notify(
+        `Inserted ${what} ${where}, without ${stripped.join(', ')} — the page cannot run code the editor put in it.`,
+        'warn',
+        { label: 'Undo', run: () => this.undo() },
+      );
+    } else {
+      this.notify(`Inserted ${what} ${where}.`, 'success', {
+        label: 'Undo',
+        run: () => this.undo(),
+      });
+    }
+    return inserted;
   }
 
   setQuickMenu(open: boolean): void {

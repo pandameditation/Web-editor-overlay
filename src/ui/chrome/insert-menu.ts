@@ -43,7 +43,9 @@ import '../controls/segmented.js';
 type InsertEntry =
   | { id: string; kind: 'block'; block: LibraryBlock }
   | { id: string; kind: 'element'; spec: HtmlElementSpec }
-  | { id: string; kind: 'more'; hidden: number };
+  | { id: string; kind: 'more'; hidden: number }
+  /** Write or paste markup directly, for everything the other two cannot express. */
+  | { id: string; kind: 'paste' };
 @customElement('heo-insert-menu')
 export class HeoInsertMenu extends HeoElement {
   static override styles = [
@@ -359,7 +361,18 @@ export class HeoInsertMenu extends HeoElement {
      */
     const typed = this.query.trim().toLowerCase().replace(/^<|>$/g, '');
     const exact = typed && shown[0]?.tag === typed;
-    return exact ? [...elements, ...blocks] : [...blocks, ...elements];
+    const ordered = exact ? [...elements, ...blocks] : [...blocks, ...elements];
+
+    /*
+     * Writing markup by hand is always on offer, and leads when nothing else matched.
+     *
+     * A search that found nothing is the strongest possible signal for this route: whatever
+     * was being described is not a block and not a bare tag, so the honest next step is a
+     * field to write it in. Otherwise it sits at the end, out of the way of the answers that
+     * needed no typing.
+     */
+    const paste: InsertEntry = { id: 'paste', kind: 'paste' };
+    return ordered.length ? [...ordered, paste] : [paste];
   }
 
   override render(): TemplateResult | typeof nothing {
@@ -391,11 +404,13 @@ export class HeoInsertMenu extends HeoElement {
     const groups: Array<{ name: string; entries: InsertEntry[] }> = [];
     for (const entry of entries) {
       const name =
-        entry.kind === 'block'
-          ? entry.block.category ?? (entry.block.kind === 'container' ? 'Layout' : 'Components')
-          : entry.kind === 'element' && this.scope === 'html'
-            ? entry.spec.group
-            : 'HTML elements';
+        entry.kind === 'paste'
+          ? 'Your own markup'
+          : entry.kind === 'block'
+            ? entry.block.category ?? (entry.block.kind === 'container' ? 'Layout' : 'Components')
+            : entry.kind === 'element' && this.scope === 'html'
+              ? entry.spec.group
+              : 'HTML elements';
       const existing = groups.find((group) => group.name === name);
       if (existing) existing.entries.push(entry);
       else groups.push({ name, entries: [entry] });
@@ -480,6 +495,24 @@ export class HeoInsertMenu extends HeoElement {
         <span class="body">
           <span class="name">${entry.hidden} more element${entry.hidden === 1 ? '' : 's'}</span>
           <span class="desc">Tables, forms, embeds, and a marquee.</span>
+        </span>
+      </button>`;
+    }
+
+    if (entry.kind === 'paste') {
+      return html`<button
+        class="row"
+        type="button"
+        role="option"
+        aria-selected=${selected}
+        title="Write or paste any HTML and place it relative to this element"
+        @pointerenter=${onEnter}
+        @click=${() => this.#pick(entry)}
+      >
+        <span class="glyph">${icon('code', 14)}</span>
+        <span class="body">
+          <span class="name">Paste HTML…</span>
+          <span class="desc">Any markup you have, placed right here.</span>
         </span>
       </button>`;
     }
@@ -626,6 +659,21 @@ export class HeoInsertMenu extends HeoElement {
   }
 
   #pick(entry: InsertEntry): void {
+    /*
+     * Hands over to its own dialog, carrying the query when it looked like markup.
+     *
+     * Not rendered inside this menu, and it cannot be: the menu lives only while
+     * `insertAnchor` is set, and inserting clears it — so a field in here would be destroyed
+     * by its own success. Someone who typed `<figure class="x"` and then reached for this
+     * route should not have to type it again either, so a query with a tag in it seeds the
+     * buffer.
+     */
+    if (entry.kind === 'paste') {
+      const typed = this.query.trim();
+      const seed = typed.includes('<') ? typed : '';
+      this.editor.beginHtmlPaste(this.state.value.insertAnchor ?? undefined, seed);
+      return;
+    }
     if (entry.kind === 'more') {
       this.allElements = true;
       // The reveal replaces the row that was highlighted, so hold the position

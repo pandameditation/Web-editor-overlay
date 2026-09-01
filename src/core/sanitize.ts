@@ -43,9 +43,46 @@ export function safeURL(value: string, allowDataImage = false): string {
   }
 }
 
-/** Strip script, event handlers and unsafe URLs from a live subtree, in place. */
-export function scrubElement(root: ParentNode): void {
-  for (const script of Array.from(root.querySelectorAll('script'))) script.remove();
+/**
+ * What sanitisation took out.
+ *
+ * Counted rather than discarded because someone pasting markup is entitled to know that
+ * their `onclick` is gone. Silently dropping it produces the worst kind of bug report — the
+ * feature appears to work, the button does nothing, and nothing ever said why.
+ */
+export interface SanitizeReport {
+  /** `<script>` elements removed. */
+  scripts: number;
+  /** `on*` attributes removed. */
+  handlers: number;
+  /** URL attributes dropped for pointing somewhere unsafe. */
+  urls: number;
+  /** `style` attributes dropped for carrying script. */
+  styles: number;
+}
+
+function emptyReport(): SanitizeReport {
+  return { scripts: 0, handlers: 0, urls: 0, styles: 0 };
+}
+
+/** True when nothing was taken out. */
+export function nothingRemoved(report: SanitizeReport): boolean {
+  return !report.scripts && !report.handlers && !report.urls && !report.styles;
+}
+
+/**
+ * Strip script, event handlers and unsafe URLs from a live subtree, in place.
+ *
+ * Returns what it removed. Every existing caller ignores that, which is correct for them —
+ * the library and the code panel sanitise markup the user is not looking at. The paste route
+ * does look at it, and tells them.
+ */
+export function scrubElement(root: ParentNode): SanitizeReport {
+  const report = emptyReport();
+  for (const script of Array.from(root.querySelectorAll('script'))) {
+    script.remove();
+    report.scripts += 1;
+  }
   const all = [root, ...Array.from(root.querySelectorAll('*'))].filter(
     (node): node is Element => node instanceof Element,
   );
@@ -55,28 +92,34 @@ export function scrubElement(root: ParentNode): void {
       const value = attr.value;
       if (name.startsWith('on')) {
         el.removeAttribute(attr.name);
+        report.handlers += 1;
         continue;
       }
       if (name === 'style' && /(?:expression|javascript:|vbscript:)/i.test(value)) {
         el.removeAttribute(attr.name);
+        report.styles += 1;
         continue;
       }
       if (URL_ATTRS.has(name)) {
         const allowData = MEDIA_TAGS.test(el.tagName);
         if (name === 'srcset') {
-          const kept = value
-            .split(',')
-            .map((entry) => entry.trim())
-            .filter((entry) => safeURL(entry.split(/\s+/)[0] ?? '', allowData))
-            .join(', ');
-          if (kept) el.setAttribute(attr.name, kept);
+          const candidates = value.split(',').map((entry) => entry.trim()).filter(Boolean);
+          const kept = candidates.filter((entry) =>
+            safeURL(entry.split(/\s+/)[0] ?? '', allowData),
+          );
+          if (kept.length) el.setAttribute(attr.name, kept.join(', '));
           else el.removeAttribute(attr.name);
+          if (kept.length !== candidates.length) report.urls += 1;
           continue;
         }
-        if (!safeURL(value, allowData)) el.removeAttribute(attr.name);
+        if (!safeURL(value, allowData)) {
+          el.removeAttribute(attr.name);
+          report.urls += 1;
+        }
       }
     }
   }
+  return report;
 }
 
 /**
@@ -86,12 +129,70 @@ export function scrubElement(root: ParentNode): void {
  * network requests fire and no scripts run before `scrubElement` gets to it.
  */
 export function sanitizeFragment(html: string): DocumentFragment {
+  return sanitizeFragmentReporting(html).fragment;
+}
+
+/** The same, with an account of what was taken out on the way through. */
+export function sanitizeFragmentReporting(html: string): {
+  fragment: DocumentFragment;
+  report: SanitizeReport;
+} {
   const template = document.createElement('template');
-  template.innerHTML = String(html ?? '')
-    .replace(/<script\b[\s\S]*?<\/script\s*>/gi, '')
-    .replace(/<script\b[^>]*\/?>/gi, '');
-  scrubElement(template.content);
-  return template.content;
+  /*
+   * Scripts go before the parse, so they are counted here rather than by `scrubElement`.
+   *
+   * The regex pass exists because a `<script>` that has been parsed is a `<script>` whose
+   * `src` the browser may already have queued. Stripping the text first means the markup is
+   * inert before it becomes nodes at all — belt and braces with the removal inside
+   * `scrubElement`, which catches whatever the regex could not see.
+   */
+  const source = String(html ?? '');
+  let scripts = 0;
+  template.innerHTML = source
+    .replace(/<script\b[\s\S]*?<\/script\s*>/gi, () => {
+      scripts += 1;
+      return '';
+    })
+    .replace(/<script\b[^>]*\/?>/gi, () => {
+      scripts += 1;
+      return '';
+    });
+  const report = scrubElement(template.content);
+  report.scripts += scripts;
+  return { fragment: template.content, report };
+}
+
+/**
+ * What inserting this markup would produce, without inserting it.
+ *
+ * The paste route needs to say three things before anything is committed: how many elements
+ * arrive, what sanitisation took out, and whether any of it will be dropped for a reason
+ * that has nothing to do with safety.
+ *
+ * That last one is the easy mistake. Insertion works in elements, so text sitting at the top
+ * level of a paste — the `Hello ` in `Hello <b>world</b>` — has nowhere to go and disappears.
+ * Reporting it is the difference between a tool with a documented edge and a tool that eats
+ * half your paragraph.
+ */
+export interface MarkupPreview {
+  /** Elements that would be inserted. */
+  elements: number;
+  /** Tag names of those elements, in order, for a short summary. */
+  tags: string[];
+  /** True when text outside any element would be lost. */
+  looseText: boolean;
+  report: SanitizeReport;
+}
+
+export function previewMarkup(html: string): MarkupPreview {
+  const { fragment, report } = sanitizeFragmentReporting(html);
+  const tags = Array.from(fragment.children)
+    .filter((node): node is HTMLElement => node instanceof HTMLElement)
+    .map((node) => node.tagName.toLowerCase());
+  const looseText = Array.from(fragment.childNodes).some(
+    (node) => node.nodeType === Node.TEXT_NODE && (node.textContent ?? '').trim().length > 0,
+  );
+  return { elements: tags.length, tags, looseText, report };
 }
 
 /** Parse to a single element, or null when the markup has no element root. */
