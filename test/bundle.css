@@ -6,11 +6,25 @@
  * document, so inlining this sheet has to rewrite it or the reference breaks. It also means
  * inlining the styles pulls an image into the export that the HTML never mentions.
  */
+/*
+ * And a font, which is the whole reason fonts are their own choice.
+ *
+ * It is reachable only through this sheet, so a survey of the page cannot see it — the text
+ * has to be fetched before this `url()` exists at all. That used to mean a page with fonts
+ * in its CSS reported none, and, worse, that folding the *styles* in brought the font into
+ * the document where the *images* checkbox decided whether to base64 it.
+ */
+@font-face {
+  font-family: 'Heo Probe';
+  src: url(nested/probe.woff2) format('woff2');
+}
+
 .card {
   padding: 16px;
   border-radius: 12px;
   background-color: #fff;
   background-image: url(nested/dot.svg);
+  font-family: 'Heo Probe', system-ui, sans-serif;
 }
 
 .card h2 {

@@ -1,5 +1,6 @@
 import {
   archivePath,
+  assetKindOf,
   assetUrl,
   collectDocumentAssets,
   countEmbeddedAssets,
@@ -52,12 +53,30 @@ export interface BundleOptions {
   styles: AssetPlacement;
   scripts: AssetPlacement;
   images: AssetPlacement;
+  /**
+   * Fonts, separately from images.
+   *
+   * They were the same choice once, and that was wrong in a way people noticed: fonts come
+   * in through `url()` in CSS, so folding a stylesheet in brings a family of them into the
+   * document, where the *picture* checkbox then decided their fate. Base64 costs a third,
+   * and a font family is far larger than the pictures on most pages.
+   */
+  fonts: AssetPlacement;
 }
 
 export const DEFAULT_BUNDLE_OPTIONS: BundleOptions = {
   styles: 'inline',
   scripts: 'inline',
   images: 'inline',
+  fonts: 'inline',
+};
+
+/** The option each kind of asset is governed by. */
+export const PLACEMENT_KEYS: Record<AssetKind, keyof BundleOptions> = {
+  style: 'styles',
+  script: 'scripts',
+  image: 'images',
+  font: 'fonts',
 };
 
 /** One file the export will produce. */
@@ -85,6 +104,16 @@ export interface BundlePlan {
   files: BundleFile[];
   /** Assets that stayed external because their bytes could not be read. */
   omitted: BundleOmission[];
+  /**
+   * How many distinct assets of each kind the build actually placed.
+   *
+   * The survey cannot know this and it is not a detail. References inside a *linked*
+   * stylesheet are invisible until that sheet has been fetched, so a page with twelve fonts
+   * in its CSS surveys as having none — and a row reading "no fonts in this page" above an
+   * export that embedded twelve of them is indistinguishable from a lie. Once the build has
+   * run it knows, and this is how it says.
+   */
+  placed: Record<AssetKind, number>;
   /** Total bytes the download will be. */
   size: number;
   /**
@@ -152,7 +181,7 @@ export function surveyBundle(subject: BundleSubject): BundleSurvey {
   const doc = new DOMParser().parseFromString(subject.html, 'text/html');
   const assets = collectDocumentAssets(doc, { project: subject.project });
   const embedded = countEmbeddedAssets(doc);
-  const kinds: AssetKind[] = ['style', 'script', 'image'];
+  const kinds: AssetKind[] = ['style', 'script', 'image', 'font'];
 
   const categories = kinds.map((kind) => {
     const mine = assets.filter((asset) => asset.kind === kind);
@@ -193,6 +222,13 @@ export async function buildBundle(
   const taken = new Set<string>();
   /** Assets already written into the archive, so two references share one file. */
   const archived = new Map<string, string>();
+  /** Distinct URLs successfully placed, per kind, so the UI can report what happened. */
+  const handled: Record<AssetKind, Set<string>> = {
+    style: new Set(),
+    script: new Set(),
+    image: new Set(),
+    font: new Set(),
+  };
 
   const omit = (kind: AssetKind, url: string, reason: string): void => {
     if (omitted.some((entry) => entry.url === url)) return;
@@ -205,9 +241,15 @@ export async function buildBundle(
    */
   const place = async (
     url: string,
-    kind: AssetKind,
-    placement: AssetPlacement,
+    fallback: AssetKind,
+    /** Which option governs it, resolved from the file rather than from where it sits. */
+    governedBy: (kind: AssetKind) => AssetPlacement,
   ): Promise<string | null> => {
+    // A `url()` in a stylesheet may be a picture or a font, and the two are different
+    // decisions, so the file decides which checkbox it answers to.
+    const kind = fallback === 'image' ? assetKindOf(url) : fallback;
+    const placement = governedBy(kind);
+
     if (placement === 'external') {
       const existing = archived.get(url);
       if (existing) return existing;
@@ -221,6 +263,7 @@ export async function buildBundle(
       }
       const path = archivePath(url, taken);
       archived.set(url, path);
+      handled[kind].add(url);
       files.push({ path, bytes: bytes.bytes, kind });
       // Only rewritten when the archive path differs from what the document already
       // says, so a page whose assets are already relative keeps its own references.
@@ -232,8 +275,12 @@ export async function buildBundle(
       omit(kind, url, unreadable(url, kind, project));
       return null;
     }
+    handled[kind].add(url);
     return toDataUrl(bytes);
   };
+
+  /** The option a kind answers to, read fresh so every call agrees. */
+  const governedBy = (kind: AssetKind): AssetPlacement => options[PLACEMENT_KEYS[kind]];
 
   /* ---- Stylesheets ---- */
 
@@ -243,7 +290,7 @@ export async function buildBundle(
     if (!url) continue;
 
     if (options.styles === 'external') {
-      const path = await place(url, 'style', 'external');
+      const path = await place(url, 'style', () => 'external');
       if (path) link.setAttribute('href', path);
       continue;
     }
@@ -253,6 +300,9 @@ export async function buildBundle(
       omit('style', url, unreadable(url, 'style', project));
       continue;
     }
+    // Counted here as well as in `place`, which this path does not go through: a stylesheet
+    // folded in is one the row has to report, or it reads as a page with no stylesheets.
+    handled.style.add(url);
     /*
      * The text is moving from a `<link>`, which resolves relative URLs against itself, to
      * a `<style>`, which resolves them against the document. Rewriting them is not a
@@ -279,7 +329,7 @@ export async function buildBundle(
     if (!url) continue;
 
     if (options.scripts === 'external') {
-      const path = await place(url, 'script', 'external');
+      const path = await place(url, 'script', () => 'external');
       if (path) script.setAttribute('src', path);
       continue;
     }
@@ -289,6 +339,7 @@ export async function buildBundle(
       omit('script', url, unreadable(url, 'script', project));
       continue;
     }
+    handled.script.add(url);
     /*
      * `src` goes and the text arrives, and every other attribute stays.
      *
@@ -310,7 +361,7 @@ export async function buildBundle(
       if (attribute === 'src' && el.tagName.toLowerCase() === 'script') continue;
       const url = assetUrl(el.getAttribute(attribute) ?? '');
       if (!url) continue;
-      const next = await place(url, 'image', options.images);
+      const next = await place(url, 'image', governedBy);
       if (next) el.setAttribute(attribute, next);
     }
 
@@ -324,7 +375,7 @@ export async function buildBundle(
           rewritten.push(entry.trim());
           continue;
         }
-        const next = await place(url, 'image', options.images);
+        const next = await place(url, 'image', governedBy);
         rewritten.push([next ?? candidate, ...parts].join(' '));
       }
       if (rewritten.length) el.setAttribute('srcset', rewritten.join(', '));
@@ -340,7 +391,7 @@ export async function buildBundle(
     for (const raw of cssReferences(css)) {
       const url = assetUrl(raw);
       if (!url) continue;
-      const next = await place(url, 'image', options.images);
+      const next = await place(url, 'image', governedBy);
       if (next) map.set(raw, next);
     }
     if (!map.size) continue;
@@ -364,6 +415,12 @@ export async function buildBundle(
     fileName: shape === 'single' ? `${base}.html` : `${base}.zip`,
     files: all,
     omitted,
+    placed: {
+      style: handled.style.size,
+      script: handled.script.size,
+      image: handled.image.size,
+      font: handled.font.size,
+    },
     size: all.reduce((total, file) => total + file.bytes.length, 0),
     patched: subject.patched,
     why: subject.why,
@@ -474,11 +531,9 @@ export function bundleShape(
   survey: BundleSurvey,
   options: BundleOptions,
 ): 'single' | 'archive' {
-  const external: Array<[AssetKind, AssetPlacement]> = [
-    ['style', options.styles],
-    ['script', options.scripts],
-    ['image', options.images],
-  ];
+  const external: Array<[AssetKind, AssetPlacement]> = (
+    ['style', 'script', 'image', 'font'] as AssetKind[]
+  ).map((kind) => [kind, options[PLACEMENT_KEYS[kind]]]);
   for (const [kind, placement] of external) {
     if (placement !== 'external') continue;
     const category = survey.categories.find((entry) => entry.kind === kind);

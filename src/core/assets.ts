@@ -24,7 +24,27 @@ import { documentPath, normalizePath } from './file-host.js';
  * it can do instead of attempting what it cannot, and the user is told which it was.
  */
 
-export type AssetKind = 'style' | 'script' | 'image';
+export type AssetKind = 'style' | 'script' | 'image' | 'font';
+
+/**
+ * Which category a reference belongs to, decided by what the file is.
+ *
+ * Fonts are their own kind rather than a sort of image, because the decision about them is
+ * a different decision. They arrive almost entirely through `url()` in CSS, a page has more
+ * of them than it has pictures, and a woff2 folded into the HTML costs a third of its size
+ * again in base64 — a whole family can add a megabyte. Someone who wants their photographs
+ * embedded may well not want that, and lumping the two together meant the font decision was
+ * made by the picture checkbox.
+ *
+ * The fallback is what the reference's position implies: a `url()` in a stylesheet is an
+ * image unless the extension says otherwise, and an unrecognised extension in `<img src>`
+ * is still an image.
+ */
+export function assetKindOf(url: string, fallback: AssetKind = 'image'): AssetKind {
+  const mime = mimeOf(url);
+  if (mime.startsWith('font/') || mime === 'application/vnd.ms-fontobject') return 'font';
+  return fallback;
+}
 
 /** One thing the document points at. */
 export interface AssetRef {
@@ -237,10 +257,18 @@ export async function fetchAsset(
     const response = await fetch(url, { credentials: 'same-origin' });
     if (!response.ok) return null;
     const buffer = await response.arrayBuffer();
-    return {
-      bytes: new Uint8Array(buffer),
-      mime: response.headers.get('content-type')?.split(';')[0]?.trim() || mimeOf(url),
-    };
+    const declared = response.headers.get('content-type')?.split(';')[0]?.trim() ?? '';
+    /*
+     * The header wins only when it says something.
+     *
+     * `application/octet-stream` is not an answer, it is the absence of one — and it is
+     * exactly what a `file://` fetch reports for a woff2 in Chrome. Trusting it produced
+     * `data:application/octet-stream` for an embedded font, which browsers refuse to load
+     * as a font: the export looked right and rendered in a fallback face. The extension is
+     * the better guess whenever the header declines to make one.
+     */
+    const known = declared && declared !== 'application/octet-stream' ? declared : mimeOf(url);
+    return { bytes: new Uint8Array(buffer), mime: known };
   } catch {
     return null;
   }
@@ -353,7 +381,10 @@ export function collectDocumentAssets(
     seen.add(url);
     const reach = assetReach(url, options.project);
     out.push({
-      kind,
+      // Where it was found says what it is *for*; the file itself says what it *is*, and a
+      // woff2 behind an `<img src>` is still a font. Stylesheets and scripts are named by
+      // their position and never reconsidered.
+      kind: kind === 'image' ? assetKindOf(url) : kind,
       raw,
       url,
       path: relativeAssetPath(url),
@@ -394,7 +425,7 @@ export function collectDocumentAssets(
  * fetched, rewritten, or acted on.
  */
 export function countEmbeddedAssets(doc: Document): Record<AssetKind, number> {
-  const embedded: Record<AssetKind, number> = { style: 0, script: 0, image: 0 };
+  const embedded: Record<AssetKind, number> = { style: 0, script: 0, image: 0, font: 0 };
 
   embedded.style = doc.querySelectorAll('style').length;
   // A `<script>` with no `src` carries its own text. That includes `application/json` and
@@ -403,23 +434,37 @@ export function countEmbeddedAssets(doc: Document): Record<AssetKind, number> {
     (el) => (el.textContent ?? '').trim().length > 0,
   ).length;
 
-  // An image already written as a `data:` URI is embedded by whoever authored it.
-  const isData = (value: string | null): boolean => (value ?? '').trim().startsWith('data:');
+  /*
+   * An asset already written as a `data:` URI is embedded by whoever authored it.
+   *
+   * Which kind it is has to come from the URI's own media type, because there is no file
+   * name to read an extension from — `data:font/woff2;base64,...` is a font and nothing
+   * about where it sits would say so.
+   */
+  const dataKind = (value: string | null): AssetKind | null => {
+    const text = (value ?? '').trim();
+    if (!text.startsWith('data:')) return null;
+    const mime = text.slice(5, Math.max(5, text.indexOf(','))).split(';')[0].toLowerCase();
+    return mime.startsWith('font/') || mime === 'application/vnd.ms-fontobject'
+      ? 'font'
+      : 'image';
+  };
+  const countData = (value: string | null): void => {
+    const kind = dataKind(value);
+    if (kind) embedded[kind] += 1;
+  };
+
   for (const entry of SINGLE) {
     if (entry.kind !== 'image') continue;
     for (const el of Array.from(doc.querySelectorAll(entry.selector))) {
-      if (isData(el.getAttribute(entry.attribute))) embedded.image += 1;
+      countData(el.getAttribute(entry.attribute));
     }
   }
   for (const el of Array.from(doc.querySelectorAll('[srcset]'))) {
-    for (const candidate of parseSrcset(el.getAttribute('srcset') ?? '')) {
-      if (isData(candidate)) embedded.image += 1;
-    }
+    for (const candidate of parseSrcset(el.getAttribute('srcset') ?? '')) countData(candidate);
   }
   for (const style of Array.from(doc.querySelectorAll('style'))) {
-    for (const url of cssUrls(style.textContent ?? '')) {
-      if (isData(url)) embedded.image += 1;
-    }
+    for (const url of cssUrls(style.textContent ?? '')) countData(url);
   }
 
   return embedded;

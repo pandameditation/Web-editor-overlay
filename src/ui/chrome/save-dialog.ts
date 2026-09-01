@@ -9,7 +9,13 @@ import { icon } from '../icons.js';
 import { DesignTransfer, type DesignTransferHost } from '../panels/design-transfer.js';
 import { baseStyles, surfaceStyles } from '../theme.js';
 import { localAssetLimit, type AssetKind } from '../../core/assets.js';
-import { bundleName, type BundleFile, type BundlePlan, type BundleSurvey } from '../../core/bundle.js';
+import {
+  bundleName,
+  PLACEMENT_KEYS,
+  type BundleFile,
+  type BundlePlan,
+  type BundleSurvey,
+} from '../../core/bundle.js';
 import { designSystemCSSText, type PlannedWrite } from '../../core/writeback.js';
 import { fileAccessStyles } from '../panels/file-access.js';
 
@@ -291,6 +297,12 @@ export class HeoSaveDialog extends HeoElement {
 
       /* ---- The export step's three choices ---- */
 
+      .choices-lead {
+        margin: 0 0 8px;
+        color: var(--heo-text-faint);
+        font-size: 10.5px;
+        line-height: 1.5;
+      }
       .choices {
         display: grid;
         gap: 6px;
@@ -1044,10 +1056,16 @@ export class HeoSaveDialog extends HeoElement {
       </header>
 
       <div class="content">
+        <p class="choices-lead">
+          Ticked means folded into the HTML — text inlined, images and fonts encoded as
+          base64 — so the file works with nothing beside it and no connection. Unticked
+          keeps the link and sends the file along beside the page.
+        </p>
         <div class="choices">
           ${this.#renderPlacement('style', 'Styles', survey)}
           ${this.#renderPlacement('script', 'Scripts', survey)}
-          ${this.#renderPlacement('image', 'Images and fonts', survey)}
+          ${this.#renderPlacement('image', 'Images', survey)}
+          ${this.#renderPlacement('font', 'Fonts', survey)}
         </div>
 
         ${this.#renderNaming(shape)}
@@ -1197,23 +1215,29 @@ export class HeoSaveDialog extends HeoElement {
    */
   #renderPlacement(kind: AssetKind, label: string, survey: BundleSurvey): TemplateResult {
     const category = survey.categories.find((entry) => entry.kind === kind);
-    const count = category?.count ?? 0;
     const embedded = category?.embedded ?? 0;
     /*
-     * What the build actually managed, in preference to what the survey guessed.
+     * What the build actually did, in preference to what the survey guessed.
      *
-     * The survey resolves URLs and does not read them, so for a local file it can only be
-     * optimistic — see `assetReach`. Once a plan exists it has attempted every one of them,
-     * and its omissions are the real answer. Before then the guess is all there is, which is
-     * fine: opening this step builds a plan straight away.
+     * The survey resolves URLs without reading them, so it is wrong in two directions. It is
+     * optimistic about whether a local file can be had — see `assetReach` — and it is blind
+     * to anything a *linked* stylesheet refers to, because that text has to be fetched
+     * before its `url()`s exist. A page with a dozen fonts in its CSS surveys as having
+     * none, so counting from the survey put "no fonts in this page" above an export that
+     * embedded twelve.
+     *
+     * Once a plan exists it has attempted every one of them: `placed` is what worked and
+     * `omitted` is what did not, and together they are the count. Before then the guess is
+     * all there is, which is fine — opening this step builds a plan straight away.
      */
     const plan = this.state.value.bundlePlan;
     const blocked = plan?.omitted.filter((entry) => entry.kind === kind) ?? null;
-    const readable = blocked ? count - blocked.length : (category?.readable ?? 0);
+    const readable = plan ? plan.placed[kind] : (category?.readable ?? 0);
+    const count = plan ? readable + (blocked?.length ?? 0) : (category?.count ?? 0);
     const reason = blocked?.[0]?.reason ?? category?.reason;
     const options = this.state.value.bundleOptions;
-    const key = kind === 'style' ? 'styles' : kind === 'script' ? 'scripts' : 'images';
-    const inline = options[key] === 'inline';
+    const inline = options[PLACEMENT_KEYS[kind]] === 'inline';
+    const key = PLACEMENT_KEYS[kind];
     // Nothing to decide when there is nothing of this kind, or when none of it can be read.
     const settled = count === 0 || readable === 0;
 
@@ -1222,6 +1246,14 @@ export class HeoSaveDialog extends HeoElement {
       embedded === 0
         ? ''
         : ` · ${embedded} already in the page${settled ? ', travelling either way' : ''}`;
+    /*
+     * Bytes rather than text, so folding them in means base64 and costs a third.
+     *
+     * Worth naming in the row rather than only in the lead-in: "folded into the HTML" says
+     * nothing about size, and a font family encoded inline is where a small page turns into
+     * a large one.
+     */
+    const binary = kind === 'image' || kind === 'font';
 
     return html`<label class=${`choice${settled ? ' settled' : ''}`}>
       <input
@@ -1243,7 +1275,7 @@ export class HeoSaveDialog extends HeoElement {
         : readable === 0
           ? html`${count} linked, none readable from here${travels}`
           : inline
-            ? html`${readable} folded into the HTML${count > readable
+            ? html`${readable} ${binary ? 'encoded as base64' : 'folded into the HTML'}${count > readable
               ? html` · ${count - readable} cannot be read`
               : ''}${travels}`
             : html`${readable} kept beside it${count > readable
@@ -1274,11 +1306,7 @@ export class HeoSaveDialog extends HeoElement {
           ? plan.patched
             ? 'your file, with this session patched into it'
             : `rebuilt from the page${plan.why[0] ? ` — ${plan.why[0]}` : ''}`
-          : file.kind === 'style'
-            ? 'stylesheet, kept beside the page'
-            : file.kind === 'script'
-              ? 'script, kept beside the page'
-              : 'asset, kept beside the page'}
+          : `${BUNDLE_NOUN[file.kind]}, kept beside the page`}
             </span>
           </span>
           <span class="size">${bytes(file.bytes.length)}</span>
@@ -1648,6 +1676,15 @@ const BUNDLE_GLYPH: Record<BundleFile['kind'], string> = {
   style: 'droplet',
   script: 'play',
   image: 'image',
+  font: 'text',
+};
+
+/** What to call each kind in a sentence about one file. */
+const BUNDLE_NOUN: Record<AssetKind, string> = {
+  style: 'stylesheet',
+  script: 'script',
+  image: 'image',
+  font: 'font',
 };
 
 const GLYPH: Record<PlannedWrite['kind'], string> = {

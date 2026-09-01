@@ -354,9 +354,87 @@
       });
 
       /* ------------------------------------------------------------------ *
+       * 3b-ii. Fonts answer to the fonts checkbox, not the images one.
+       *
+       * The reported bug: ticking Styles embedded every font as base64. Folding a stylesheet
+       * in brings its `url()` references into the document, and those were all classified as
+       * images — so the *pictures* checkbox decided what happened to the fonts, and the fonts
+       * one did not exist. The font here is reachable only through `bundle.css`, which is
+       * what made it invisible to the survey as well.
+       * ------------------------------------------------------------------ */
+      step('fonts');
+      if (readable) {
+        engine.setBundleOptions({ styles: 'inline', images: 'inline', fonts: 'external' });
+        const split = await engine.previewBundle();
+        const css = () => {
+          const doc = new DOMParser().parseFromString(
+            new TextDecoder().decode(split.files.find((f) => f.kind === 'document').bytes),
+            'text/html',
+          );
+          return Array.from(doc.querySelectorAll('style')).map((s) => s.textContent ?? '').join('\n');
+        };
+        const text = css();
+        results.fontsAndImagesAreSeparateChoices = {
+          placed: split?.placed ?? null,
+          // The picture went in as base64 and the font did not, from one build.
+          imageIsBase64: /url\("data:image\/svg\+xml/.test(text),
+          fontIsStillALink: /url\("?[^"]*probe\.woff2/.test(text),
+          fontIsNotBase64: !/url\("data:font/.test(text),
+          // And the font is beside the page instead, which is what unticking asked for.
+          fontIsInTheArchive: (split?.files ?? []).some((f) => f.kind === 'font'),
+          asExpected:
+            /url\("data:image\/svg\+xml/.test(text) &&
+            !/url\("data:font/.test(text) &&
+            (split?.files ?? []).some((f) => f.kind === 'font'),
+        };
+
+        // And the other way round, from the same page: fonts in, pictures out.
+        engine.setBundleOptions({ images: 'external', fonts: 'inline' });
+        const swapped = await engine.previewBundle();
+        const swappedText = (() => {
+          const doc = new DOMParser().parseFromString(
+            new TextDecoder().decode(swapped.files.find((f) => f.kind === 'document').bytes),
+            'text/html',
+          );
+          return Array.from(doc.querySelectorAll('style')).map((s) => s.textContent ?? '').join('\n');
+        })();
+        results.andTheChoicesCanBeSwapped = {
+          // The declared type is the assertion, not a detail: a data URI is all the browser
+          // has to go on, and a font announced as a byte stream is a font that will not load.
+          fontDataType: (swappedText.match(/url\("(data:[^;,)"]*)/) ?? [])[1] ?? null,
+          fontIsBase64: /url\("data:font\/woff2/.test(swappedText),
+          imageIsStillALink: (swapped?.files ?? []).some((f) => f.kind === 'image'),
+          asExpected:
+            /url\("data:font\/woff2/.test(swappedText) &&
+            (swapped?.files ?? []).some((f) => f.kind === 'image'),
+        };
+
+        /*
+         * The count comes from the build, not the survey.
+         *
+         * A font behind a linked stylesheet does not exist until that sheet is read, so the
+         * survey says zero and the row would have said "no fonts in this page" above an
+         * export that had just embedded one.
+         */
+        results.aFontBehindAStylesheetIsCountedOnceItIsKnown = {
+          surveySaw: engine.bundleSurvey().categories.find((c) => c.kind === 'font')?.count ?? null,
+          theBuildPlaced: swapped?.placed.font ?? null,
+          asExpected: (swapped?.placed.font ?? 0) === 1,
+        };
+        engine.setBundleOptions({ images: 'inline', fonts: 'inline' });
+      } else {
+        results.fontsAndImagesAreSeparateChoices = 'not applicable in this run';
+        results.andTheChoicesCanBeSwapped = 'not applicable in this run';
+        results.aFontBehindAStylesheetIsCountedOnceItIsKnown = 'not applicable in this run';
+      }
+
+      /* ------------------------------------------------------------------ *
        * 3c. Called whatever the user calls it.
        * ------------------------------------------------------------------ */
       step('rename');
+      // Settled first: changing a placement starts a rebuild, and renaming what is not there
+      // yet only stores the name. Real typing lands the same way — the rebuild picks it up.
+      await engine.previewBundle();
       const beforeRename = engine.store.value.bundlePlan;
       engine.setExportName('My Landing Page');
       const renamed = engine.store.value.bundlePlan;
@@ -573,7 +651,13 @@
           checked: el.querySelector('input')?.checked ?? null,
           disabled: el.querySelector('input')?.disabled ?? null,
         }));
-        return { step: shell?.getAttribute('aria-label') ?? null, choices };
+        return {
+          step: shell?.getAttribute('aria-label') ?? null,
+          // Four rows, not three: fonts are their own decision now.
+          lead: dialog?.shadowRoot?.querySelector('.choices-lead')?.textContent
+            ?.replace(/\s+/g, ' ').trim() ?? null,
+          choices,
+        };
       });
       /*
        * A disabled box still shows the choice.
@@ -591,7 +675,7 @@
           disabled: el.querySelector('input')?.disabled ?? null,
         }));
         const options = engine.store.value.bundleOptions;
-        const expected = { Styles: 'styles', Scripts: 'scripts', 'Images and fonts': 'images' };
+        const expected = { Styles: 'styles', Scripts: 'scripts', Images: 'images', Fonts: 'fonts' };
         return {
           rows,
           // Every box matches its option, whether or not it can be clicked.
