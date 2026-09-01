@@ -1,4 +1,5 @@
 import { HOST_TAG, MIRROR_ATTR } from './constants.js';
+import { absolutizeCssUrls } from './css-urls.js';
 
 /**
  * Stand-ins for stylesheets the browser refuses to expose.
@@ -209,39 +210,14 @@ export function releaseStyleMirrors(): void {
  * having been written for a `<link>`, which resolves against itself. Anything already
  * absolute, and anything that is not a fetch at all — `data:`, a bare fragment — is
  * left exactly as written.
+ *
+ * The scan itself lives in `css-urls.ts`, because the bundle exporter needs the same one
+ * to point references at data URLs or at paths inside an archive. Kept as a named
+ * re-export rather than replaced at the call sites: this is the mirror's own vocabulary,
+ * and the sentence above is what it means here.
  */
 export function absolutizeUrls(css: string, base: string): string {
-  const rewrite = (raw: string): string | null => {
-    const value = raw.trim();
-    if (!value || value.startsWith('#')) return null;
-    // A scheme or a protocol-relative prefix means it is already absolute.
-    if (/^[a-z][a-z0-9+.-]*:/i.test(value) || value.startsWith('//')) return null;
-    try {
-      return new URL(value, base).href;
-    } catch {
-      return null;
-    }
-  };
-
-  return (
-    css
-      // `url(x)`, `url('x')`, `url("x")` — including the ones inside `@import url(...)`.
-      .replace(
-        /\burl\(\s*(?:"([^"\n]*)"|'([^'\n]*)'|([^'"()\s]*))\s*\)/gi,
-        (whole, dq: string | undefined, sq: string | undefined, bare: string | undefined) => {
-          const next = rewrite(dq ?? sq ?? bare ?? '');
-          return next === null ? whole : `url("${next}")`;
-        },
-      )
-      // `@import "x"`, the form with no `url()` around it.
-      .replace(
-        /(@import\s+)(?:"([^"\n]*)"|'([^'\n]*)')/gi,
-        (whole, lead: string, dq: string | undefined, sq: string | undefined) => {
-          const next = rewrite(dq ?? sq ?? '');
-          return next === null ? whole : `${lead}"${next}"`;
-        },
-      )
-  );
+  return absolutizeCssUrls(css, base);
 }
 
 /* -------------------------------------------------------------------------- */

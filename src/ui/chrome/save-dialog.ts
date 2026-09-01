@@ -8,7 +8,10 @@ import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
 import { DesignTransfer, type DesignTransferHost } from '../panels/design-transfer.js';
 import { baseStyles, surfaceStyles } from '../theme.js';
+import { localAssetLimit, type AssetKind } from '../../core/assets.js';
+import { bundleName, type BundleFile, type BundlePlan, type BundleSurvey } from '../../core/bundle.js';
 import { designSystemCSSText, type PlannedWrite } from '../../core/writeback.js';
+import { fileAccessStyles } from '../panels/file-access.js';
 
 /**
  * The save review dialog.
@@ -286,6 +289,63 @@ export class HeoSaveDialog extends HeoElement {
         color: var(--heo-text);
       }
 
+      /* ---- The export step's three choices ---- */
+
+      .choices {
+        display: grid;
+        gap: 6px;
+        margin-bottom: 12px;
+      }
+      .choice {
+        display: flex;
+        align-items: flex-start;
+        gap: 9px;
+        padding: 9px 11px;
+        border: 1px solid var(--heo-line);
+        border-radius: var(--heo-r-sm);
+        background: var(--heo-raised);
+        cursor: pointer;
+        transition: border-color var(--heo-fast);
+      }
+      .choice:hover {
+        border-color: var(--heo-line-strong);
+      }
+      /* Nothing to decide: no assets of this kind, or none that can be read here. Dimmed
+         rather than dropped, because the absence is a fact about the page worth seeing. */
+      .choice.settled {
+        cursor: default;
+        opacity: 0.62;
+      }
+      .choice.settled:hover {
+        border-color: var(--heo-line);
+      }
+      .choice input {
+        width: 14px;
+        height: 14px;
+        margin: 1px 0 0;
+        flex: 0 0 auto;
+        accent-color: var(--heo-accent);
+        cursor: inherit;
+      }
+      .choice .text {
+        display: grid;
+        gap: 2px;
+        min-width: 0;
+      }
+      .choice .name {
+        color: var(--heo-text);
+        font-size: 11.5px;
+      }
+      .choice .detail {
+        color: var(--heo-text-faint);
+        font-size: 10.5px;
+      }
+      .choice .why {
+        color: color-mix(in oklab, var(--heo-warn) 74%, var(--heo-text-faint));
+        font-size: 10.5px;
+        line-height: 1.45;
+      }
+
       .destination {
         display: flex;
         flex-wrap: wrap;
@@ -437,6 +497,9 @@ export class HeoSaveDialog extends HeoElement {
       }
     `,
     DesignTransfer.styles,
+    // The export step reuses the notice the code panels draw when a page opened from disk
+    // cannot read its own files, because it is the same fact and should read the same way.
+    fileAccessStyles,
   ];
 
   protected state = new StoreController(
@@ -445,7 +508,21 @@ export class HeoSaveDialog extends HeoElement {
     // `registry` is in here for the include/exclude checkboxes: toggling one bumps it,
     // and without that the row would keep drawing its old state while the preview
     // beside it had already changed.
-    (s) => [s.savePreview, s.saving, s.registry, s.project, s.writePlan, s.planning] as const,
+    (s) =>
+      [
+        s.savePreview,
+        s.saving,
+        s.registry,
+        s.project,
+        s.writePlan,
+        s.planning,
+        // The export step's own three: the choices, the plan they produced, and whether one
+        // is being built. Without them a checkbox would move and the footer would go on
+        // promising the file the previous choice would have written.
+        s.bundleOptions,
+        s.bundlePlan,
+        s.bundling,
+      ] as const,
     shallowArrayEquals,
   );
 
@@ -469,7 +546,7 @@ export class HeoSaveDialog extends HeoElement {
    * want to carry the system to the next page rather than archive it. So the button
    * became a step, and the step is the same surface the Tokens panel offers.
    */
-  @state() private view: 'review' | 'transfer' | 'files' = 'review';
+  @state() private view: 'review' | 'transfer' | 'files' | 'export' = 'review';
 
   /** State the shared transfer surface reads back from its host. */
   @state() private seedTarget: SeedTarget | null = null;
@@ -501,6 +578,7 @@ export class HeoSaveDialog extends HeoElement {
   private static readonly LABEL = {
     transfer: 'Share this design system',
     files: 'Review the files this will write',
+    export: 'Choose how to write this page out',
     review: 'Review and save changes',
   } as const;
 
@@ -519,7 +597,9 @@ export class HeoSaveDialog extends HeoElement {
         ? this.#renderTransfer()
         : this.view === 'files'
           ? this.#renderFiles()
-          : this.#renderReview(preview)}
+          : this.view === 'export'
+            ? this.#renderExport()
+            : this.#renderReview(preview)}
     </div>`;
   }
 
@@ -743,19 +823,45 @@ export class HeoSaveDialog extends HeoElement {
     const dropped = records.length - this.editor.handoffRecords.length;
     const nothingToDo = records.length === 0 || dropped === records.length;
 
+    /*
+     * No project: the save writes the page out, and it says so.
+     *
+     * Two steps, exactly as a project write has, because the reasons are the same. The
+     * download is about to become someone's copy of this page, and the step in between is
+     * where it says which files, how big, and what it could not reach — while it is still a
+     * proposal. The label names the file it will write, which is the answer to "what happens
+     * if I press this".
+     */
     if (!project) {
+      const { bundling, bundlePlan } = this.state.value;
+      const shape = this.editor.bundleShape();
+      const name = bundlePlan?.fileName ?? bundleName(this.editor.exportFileName, shape);
+
+      if (this.view !== 'export') {
+        return html`<button
+          class="btn primary"
+          type="button"
+          ?disabled=${saving || nothingToDo}
+          title=${records.length === 0
+            ? 'Nothing has changed since the last save'
+            : nothingToDo
+              ? 'Every change is unchecked, so there is nothing to write'
+              : `Choose how to write ${name}`}
+          @click=${() => this.#openExport()}
+        >
+          ${icon(shape === 'single' ? 'code' : 'folder', 12)} Write ${name}
+          ${icon('chevronRight', 11)}
+        </button>`;
+      }
+
       return html`<button
         class="btn primary"
         type="button"
-        ?disabled=${saving || nothingToDo}
-        title=${records.length === 0
-          ? 'Nothing has changed since the last save'
-          : nothingToDo
-            ? 'Every change is unchecked, so there is nothing to hand off'
-            : 'Hand these changes off'}
+        ?disabled=${saving || bundling || nothingToDo}
+        title=${nothingToDo ? 'Nothing to write' : `Write ${name} and download it`}
         @click=${() => void this.editor.save()}
       >
-        ${icon('save', 12)} Save changes
+        ${icon('save', 12)} Write ${name}
       </button>`;
     }
 
@@ -803,6 +909,254 @@ export class HeoSaveDialog extends HeoElement {
   #openFiles(): void {
     this.view = 'files';
     if (!this.state.value.writePlan) void this.editor.previewWritePlan();
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Writing the page out, when there is nowhere to write into             */
+  /* ---------------------------------------------------------------------- */
+
+  /**
+   * How to write the page out, and what that will produce.
+   *
+   * The disconnected counterpart of the Files step, and it exists for the same reason: the
+   * one thing worth doing before handing something over is saying what it contains. Here
+   * that is three choices and their consequence — fold the styles, scripts and images into
+   * the HTML, or leave them as references beside it.
+   *
+   * The output *shape* is not a fourth choice. A single file that still points at files
+   * nobody has is the one combination that cannot work, so it is derived: everything folded
+   * in is one `.html`, anything left out needs its files, and files beside an HTML page can
+   * only be handed over as an archive.
+   */
+  #renderExport(): TemplateResult {
+    const { bundling, bundlePlan } = this.state.value;
+    const survey = this.editor.bundleSurvey();
+    const shape = this.editor.bundleShape();
+    const limit = localAssetLimit();
+
+    return html`
+      <header>
+        <button
+          class="btn icon ghost back"
+          type="button"
+          aria-label="Back to the changes"
+          title="Back to the changes"
+          @click=${() => {
+        this.view = 'review';
+      }}
+        >
+          ${icon('chevronLeft', 14)}
+        </button>
+        <div class="body">
+          <h2>
+            ${shape === 'single' ? 'One self-contained HTML file' : 'A folder of files, as a .zip'}
+          </h2>
+          <p>
+            ${shape === 'single'
+        ? 'Everything the page needs is folded into the HTML, so it opens anywhere — from a ' +
+        'download, an email attachment, a USB stick. Assets become data URIs, which costs ' +
+        'about a third in size.'
+        : 'The page keeps its references, and the files they point at travel with it at the ' +
+        'paths it already uses. Unzip it and the structure is the one you had.'}
+          </p>
+        </div>
+        <button
+          class="btn icon ghost"
+          type="button"
+          aria-label="Close"
+          @click=${() => this.editor.closeSavePreview()}
+        >
+          ${icon('close', 14)}
+        </button>
+      </header>
+
+      <div class="content">
+        <div class="choices">
+          ${this.#renderPlacement('style', 'Styles', survey)}
+          ${this.#renderPlacement('script', 'Scripts', survey)}
+          ${this.#renderPlacement('image', 'Images and fonts', survey)}
+        </div>
+
+        ${limit
+        ? html`<div class="access blocked">
+              <span class="g">${icon('alert', 12)}</span>
+              <p>
+                ${limit} So nothing can be folded in here, whatever is ticked, and the HTML
+                itself is what this writes. Serving the page — through the Vite plugin, or any
+                static server — makes every asset readable and every option below work.
+              </p>
+            </div>`
+        : nothing}
+        ${bundlePlan && !bundlePlan.patched
+        ? html`<div class="access blocked">
+              <span class="g">${icon('alert', 12)}</span>
+              <p>
+                The document is rebuilt from the page rather than patched, so quoting,
+                self-closing tags and letter case are normalised throughout${bundlePlan.why[0]
+            ? html` — ${bundlePlan.why[0]}`
+            : ''}.
+                Handing over the file this page was opened from keeps it as you wrote it.
+              </p>
+              <button
+                class="btn sm"
+                type="button"
+                title="Pick the HTML file this page was opened from, so the export patches it instead"
+                @click=${() => void this.editor.exportFromPickedFile()}
+              >
+                ${icon('upload', 12)} Use the original file
+              </button>
+            </div>`
+        : nothing}
+
+        ${bundling
+        ? html`<div class="empty">Reading the page's files…</div>`
+        : bundlePlan
+          ? this.#renderBundlePlan(bundlePlan)
+          : html`<div class="empty">
+                ${shape === 'single'
+              ? 'One file, once it has been built.'
+              : 'The files, once they have been built.'}
+              </div>`}
+      </div>
+
+      <footer>
+        <button
+          class="btn"
+          type="button"
+          @click=${() => {
+        this.view = 'review';
+      }}
+        >
+          ${icon('chevronLeft', 12)} Back
+        </button>
+        <div class="actions">
+          <button
+            class="btn"
+            type="button"
+            title="Read the page's files again and rebuild the list"
+            ?disabled=${bundling}
+            @click=${() => void this.editor.previewBundle()}
+          >
+            ${icon('refresh', 12)} Recheck
+          </button>
+          ${this.#renderPrimary()}
+        </div>
+      </footer>
+    `;
+  }
+
+  /**
+   * One category's inline-or-external choice.
+   *
+   * A checkbox rather than a pair of radios, because there is a default worth stating:
+   * ticked means "bring it with me", which is what someone asking for a self-contained file
+   * wants and the only thing that produces one. Unticking is the deliberate act.
+   *
+   * A category with nothing in it is shown and disabled rather than hidden. A page with no
+   * scripts should say so — a missing row reads as an oversight, and the absence is
+   * information about the page.
+   */
+  #renderPlacement(kind: AssetKind, label: string, survey: BundleSurvey): TemplateResult {
+    const category = survey.categories.find((entry) => entry.kind === kind);
+    const count = category?.count ?? 0;
+    /*
+     * What the build actually managed, in preference to what the survey guessed.
+     *
+     * The survey resolves URLs and does not read them, so for a local file it can only be
+     * optimistic — see `assetReach`. Once a plan exists it has attempted every one of them,
+     * and its omissions are the real answer. Before then the guess is all there is, which is
+     * fine: opening this step builds a plan straight away.
+     */
+    const plan = this.state.value.bundlePlan;
+    const blocked = plan?.omitted.filter((entry) => entry.kind === kind) ?? null;
+    const readable = blocked ? count - blocked.length : (category?.readable ?? 0);
+    const reason = blocked?.[0]?.reason ?? category?.reason;
+    const options = this.state.value.bundleOptions;
+    const key = kind === 'style' ? 'styles' : kind === 'script' ? 'scripts' : 'images';
+    const inline = options[key] === 'inline';
+    // Nothing to decide when there is nothing of this kind, or when none of it can be read.
+    const settled = count === 0 || readable === 0;
+
+    return html`<label class=${`choice${settled ? ' settled' : ''}`}>
+      <input
+        type="checkbox"
+        .checked=${inline && !settled}
+        ?disabled=${settled}
+        @change=${(event: Event) =>
+        this.editor.setBundleOptions({
+          [key]: (event.target as HTMLInputElement).checked ? 'inline' : 'external',
+        })}
+      />
+      <span class="text">
+        <span class="name">${label}</span>
+        <span class="detail">
+          ${count === 0
+        ? html`none in this page`
+        : readable === 0
+          ? html`${count} referenced, none readable from here`
+          : inline
+            ? html`${readable} folded into the HTML${count > readable
+              ? html` · ${count - readable} cannot be read`
+              : ''}`
+            : html`${readable} kept beside it${count > readable
+              ? html` · ${count - readable} cannot be read`
+              : ''}`}
+        </span>
+        ${reason && readable < count ? html`<span class="why">${reason}</span>` : nothing}
+      </span>
+    </label>`;
+  }
+
+  /**
+   * The files the export will contain.
+   *
+   * Same job as `#renderPlan` does for a project write, and the same reason for existing:
+   * the download is about to become someone's copy of this page, and naming what is in it
+   * beforehand is the difference between a save and a surprise.
+   */
+  #renderBundlePlan(plan: BundlePlan): TemplateResult {
+    return html`
+      ${plan.files.map(
+      (file) => html`<div class="write">
+          <span class="glyph">${icon(BUNDLE_GLYPH[file.kind], 13)}</span>
+          <span class="detail">
+            <span class="path">${file.path}</span>
+            <span class="why">
+              ${file.kind === 'document'
+          ? plan.patched
+            ? 'your file, with this session patched into it'
+            : `rebuilt from the page${plan.why[0] ? ` — ${plan.why[0]}` : ''}`
+          : file.kind === 'style'
+            ? 'stylesheet, kept beside the page'
+            : file.kind === 'script'
+              ? 'script, kept beside the page'
+              : 'asset, kept beside the page'}
+            </span>
+          </span>
+          <span class="size">${bytes(file.bytes.length)}</span>
+        </div>`,
+    )}
+      ${plan.omitted.length
+        ? html`<div class="stranded">
+            <h3>${icon('alert', 12)} Stayed as references</h3>
+            <ul>
+              ${plan.omitted.map(
+          (entry) => html`<li>
+                  <code>${entry.label}</code>
+                  <span class="tag">${entry.kind}</span>
+                  — ${entry.reason}
+                </li>`,
+        )}
+            </ul>
+          </div>`
+        : nothing}
+    `;
+  }
+
+  /** Show the export step, building the plan on the way in. */
+  #openExport(): void {
+    this.view = 'export';
+    if (!this.state.value.bundlePlan) void this.editor.previewBundle();
   }
 
   /**
@@ -1139,6 +1493,14 @@ export class HeoSaveDialog extends HeoElement {
     )}`;
   }
 }
+
+/** One glyph per kind of file the export produces. */
+const BUNDLE_GLYPH: Record<BundleFile['kind'], string> = {
+  document: 'code',
+  style: 'droplet',
+  script: 'play',
+  image: 'image',
+};
 
 const GLYPH: Record<PlannedWrite['kind'], string> = {
   document: 'file',

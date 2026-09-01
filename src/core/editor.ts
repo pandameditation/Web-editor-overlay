@@ -38,6 +38,7 @@ import {
 } from './dom.js';
 import {
   copyToClipboard,
+  downloadBlob,
   downloadText,
   exportDesignSystem,
   exportHTML,
@@ -129,6 +130,17 @@ import {
   type WriteSubject,
   patchDocumentSource,
 } from './writeback.js';
+import {
+  buildBundle,
+  bundleShape,
+  DEFAULT_BUNDLE_OPTIONS,
+  downloadBundle,
+  surveyBundle,
+  type BundleOptions,
+  type BundlePlan,
+  type BundleSubject,
+  type BundleSurvey,
+} from './bundle.js';
 import { RuleRegistry } from './rules.js';
 import { decodeSeed, decodeSeedSync, encodeSeed } from './seed.js';
 import {
@@ -324,6 +336,20 @@ export interface EditorState {
   saveView: 'review' | 'files';
   /** The open targeted-source edit, when one is open. */
   sourceEdit: SourceEdit | null;
+  /**
+   * How the page should be written out when there is no project to write into.
+   *
+   * Three choices, one per kind of asset, and the shape of the download follows from them:
+   * everything folded in is one self-contained file, anything left as a reference needs the
+   * files beside it and so becomes an archive. Held in the store rather than in the dialog
+   * so it survives the dialog being closed and reopened — someone who chose to keep their
+   * images external once meant it.
+   */
+  bundleOptions: BundleOptions;
+  /** The export the current choices would produce, once it has been built. */
+  bundlePlan: BundlePlan | null;
+  /** True while it is being built, which means reading every asset. */
+  bundling: boolean;
 }
 
 /**
@@ -488,6 +514,9 @@ export class EditorEngine {
       writePlan: null,
       planning: false,
       saveView: 'review',
+      bundleOptions: { ...DEFAULT_BUNDLE_OPTIONS },
+      bundlePlan: null,
+      bundling: false,
       sourceEdit: null,
     });
   }
@@ -3899,6 +3928,138 @@ export class EditorEngine {
   }
 
   /* ---------------------------------------------------------------------- */
+  /* Writing the page out, with no project to write into                    */
+  /* ---------------------------------------------------------------------- */
+
+  /**
+   * What the page is made of, for the choices in the export step.
+   *
+   * Cheap enough to call on every render — it parses the export and resolves URLs, and
+   * reads nothing — which is what lets the checkboxes say how many assets each of them
+   * covers and whether inlining them is possible here at all.
+   */
+  bundleSurvey(): BundleSurvey {
+    return surveyBundle(this.#bundleSubject(null));
+  }
+
+  /**
+   * The shape the current choices would produce: one file, or an archive.
+   *
+   * A built plan wins over the prediction, and the two really can differ. The prediction
+   * resolves URLs without reading them, so for a local file it has to be optimistic — see
+   * `assetReach` — and a page whose assets all turn out to be unreadable produces no files
+   * to put beside the HTML however they were marked. Without this the button offered a
+   * `.zip` and the download was an `.html`.
+   */
+  bundleShape(): 'single' | 'archive' {
+    const plan = this.store.value.bundlePlan;
+    if (plan) return plan.shape;
+    return bundleShape(this.bundleSurvey(), this.store.value.bundleOptions);
+  }
+
+  setBundleOptions(next: Partial<BundleOptions>): void {
+    const merged = { ...this.store.value.bundleOptions, ...next };
+    // A plan built for the old choices describes a different download, so it goes rather
+    // than sitting there over a footer that now promises something else.
+    this.store.patch({ bundleOptions: merged, bundlePlan: null });
+  }
+
+  /**
+   * Build the export without handing it over.
+   *
+   * The counterpart to `previewWritePlan`, and a step for the same reason: this is the one
+   * place the overlay can say what a download will actually contain — which files, how
+   * big, and which assets it could not reach — while it is still a proposal. Reading every
+   * asset is what makes that answer real rather than a guess, and also what makes it slow
+   * enough to be worth a progress state.
+   */
+  async previewBundle(): Promise<BundlePlan | null> {
+    const source = await this.#readOwnDocument();
+    if (this.#destroyed) return null;
+    this.store.patch({ bundling: true });
+    try {
+      const plan = await buildBundle(
+        this.#bundleSubject(source),
+        this.store.value.bundleOptions,
+      );
+      if (this.#destroyed) return null;
+      this.store.patch({ bundlePlan: plan });
+      return plan;
+    } catch (error) {
+      console.error('[html-editor-overlay] could not build the export', error);
+      this.notify('Could not build the export. See the console for details.', 'error');
+      this.store.patch({ bundlePlan: null });
+      return null;
+    } finally {
+      this.store.patch({ bundling: false });
+    }
+  }
+
+  /**
+   * Write the page out and hand it over.
+   *
+   * Rebuilds rather than trusting the plan on screen, for the same reason the project
+   * write does: between showing it and pressing the button a checkbox may have moved, and
+   * what gets downloaded has to be what was described.
+   *
+   * Counts as a save. The page's own file is what changed, so the pending count starts
+   * again from here — the same thing writing to a project means, reached a different way.
+   * That is the whole point of this route existing: a download is not a lesser save.
+   */
+  async writeBundle(): Promise<BundlePlan | null> {
+    const plan = await this.previewBundle();
+    if (!plan) return null;
+
+    const name = await downloadBundle(plan, downloadBlob);
+    this.#markSaved();
+    this.store.patch({ savePreview: null });
+
+    const files = plan.files.length;
+    const detail =
+      plan.shape === 'single'
+        ? plan.patched
+          ? 'patched from your file, so only the lines you changed changed'
+          : 'rebuilt from the page, so quoting and formatting are normalised'
+        : `${files} file${files === 1 ? '' : 's'}, at the paths the page already uses`;
+    /*
+     * Anything that could not travel is named, not counted.
+     *
+     * A self-contained file that quietly is not self-contained is the worst thing this
+     * could produce, so the assets left behind are the headline when there are any — with
+     * the reason, which on a page opened from disk is the same for all of them.
+     */
+    if (plan.omitted.length) {
+      const first = plan.omitted[0];
+      const rest = plan.omitted.length - 1;
+      this.notify(
+        `Wrote ${name}. ${first.label}${rest ? ` and ${rest} other asset${rest === 1 ? '' : 's'}` : ''} ` +
+        `stayed as ${rest ? 'references' : 'a reference'}: ${first.reason}`,
+        'warn',
+      );
+      return plan;
+    }
+    this.notify(`Wrote ${name} — ${detail}.`, 'success');
+    return plan;
+  }
+
+  /** The name a download is offered under, before its extension is settled. */
+  get exportFileName(): string {
+    return this.options.fileName ?? 'edited-page.html';
+  }
+
+  /** What the bundler needs, with the document patched from source where it could be. */
+  #bundleSubject(source: string | null): BundleSubject {
+    const result = this.exportPatchedHTML(source);
+    return {
+      html: result.html,
+      patched: result.patched,
+      why: result.why,
+      fileName: this.options.fileName ?? 'edited-page.html',
+      project: this.#project,
+    };
+  }
+
+  /* ---------------------------------------------------------------------- */
   /* Save and export                                                        */
   /* ---------------------------------------------------------------------- */
 
@@ -4007,18 +4168,25 @@ export class EditorEngine {
           this.notify('Save was rejected by the host page.', 'error');
           return false;
         }
-      } else {
-        const copied = await copyToClipboard(payload.prompt);
-        downloadText('apply-visual-edits.md', payload.prompt, 'text/markdown');
-        this.notify(
-          copied
-            ? 'Prompt copied to the clipboard and downloaded.'
-            : 'Prompt downloaded as apply-visual-edits.md.',
-          'success',
-        );
+        this.store.patch({ savePreview: null });
+        return true;
       }
-      this.store.patch({ savePreview: null });
-      return true;
+
+      /*
+       * With nowhere to write, a save writes the page out.
+       *
+       * It used to produce a prompt — instructions for someone else to apply the changes to
+       * a codebase — and that is the right answer only when there *is* a codebase. Someone
+       * editing a page they opened from disk has the file; what they want back is the file,
+       * with their edits in it. Handing them a Markdown description of their own edits was
+       * an answer to a question they had not asked.
+       *
+       * The prompt has not gone anywhere: it is a tab in the review step and a button
+       * beside this one, because on a page that *is* part of a project it remains the more
+       * useful of the two. It is no longer what pressing Save does.
+       */
+      const plan = await this.writeBundle();
+      return plan !== null;
     } catch (error) {
       console.error('[html-editor-overlay] save failed', error);
       this.notify('Save failed. See the console for details.', 'error');

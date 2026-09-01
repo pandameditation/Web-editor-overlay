@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Writing the page out with nowhere to write it</title>
+  <!--
+    A page with one of everything the export has to decide about: a linked stylesheet (which
+    itself refers to an image), an inline <style>, an external script, an inline script, and
+    an <img>. Opened over `file://` with no folder connected, which is the case this exists
+    for — the Save button used to hand over a Markdown prompt here.
+
+    Run twice, and the difference is the whole point:
+
+        npm run check:bundle          -- local file access allowed, so siblings are readable
+        npm run check:bundle:strict   -- the real thing: every file its own opaque origin
+
+    The strict run is what Firefox does. Nothing can be inlined there, and the checks below
+    expect exactly that rather than pretending otherwise.
+  -->
+  <link rel="stylesheet" href="./bundle.css">
+  <style>
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: system-ui, sans-serif;
+    }
+
+    .badge {
+      background-image: url("nested/dot.svg");
+      width: 24px;
+      height: 24px;
+    }
+  </style>
+</head>
+
+<body>
+  <h1 id="title">Written out, not described</h1>
+  <div class="card">
+    <h2 id="heading">A card</h2>
+    <p id="copy">Some copy to edit.</p>
+  </div>
+  <img id="pic" src="./nested/dot.svg" alt="A dot">
+  <span class="badge"></span>
+
+  <script src="./bundle.js"></script>
+  <script>
+    document.documentElement.dataset.inlineScriptRan = 'yes';
+  </script>
+
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const results = {};
+      const errors = [];
+      addEventListener('error', (e) => errors.push('error: ' + e.message));
+      addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+
+      const progress = document.getElementById('progress');
+      const step = (name) => { progress.textContent = name; };
+      const check = (name, fn) => {
+        step(name);
+        try { results[name] = fn(); }
+        catch (err) { results[name] = 'THREW: ' + (err && err.message ? err.message : String(err)); }
+      };
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+      function deepQuery(selector, root = document) {
+        const found = root.querySelector?.(selector);
+        if (found) return found;
+        for (const el of root.querySelectorAll?.('*') ?? []) {
+          if (!el.shadowRoot) continue;
+          const hit = deepQuery(selector, el.shadowRoot);
+          if (hit) return hit;
+        }
+        return null;
+      }
+
+      /*
+       * Which of the two worlds this run is in, established by asking rather than assuming.
+       *
+       * Everything below is judged against it: with siblings readable the export can be
+       * self-contained, and without them it cannot, and both are correct behaviour.
+       */
+      let readable = false;
+      try {
+        const probe = await fetch('./bundle.css');
+        readable = probe.ok;
+      } catch { readable = false; }
+      results.siblingsAreReadableInThisRun = readable;
+
+      /* The downloads, intercepted, so nothing is written to disk and the bytes can be read. */
+      const downloads = [];
+      const realCreate = URL.createObjectURL;
+      URL.createObjectURL = (blob) => {
+        downloads.push(blob);
+        return realCreate.call(URL, blob);
+      };
+      const clicked = [];
+      const realClick = HTMLAnchorElement.prototype.click;
+      HTMLAnchorElement.prototype.click = function () {
+        if (this.download) clicked.push(this.download);
+        // Not forwarded: a real click would open a save dialog and stall the run.
+      };
+      const lastDownload = async () => {
+        const blob = downloads[downloads.length - 1];
+        return { name: clicked[clicked.length - 1] ?? null, blob, text: blob ? await blob.text() : '' };
+      };
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark', fileName: 'page.html' });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+
+      check('theExternalsLoaded', () => ({
+        script: document.documentElement.dataset.bundleScriptRan ?? null,
+        inline: document.documentElement.dataset.inlineScriptRan ?? null,
+        cardPadding: getComputedStyle(document.querySelector('.card')).padding,
+      }));
+      check('andNoFolderIsConnected', () => engine.store.value.project ?? null);
+
+      /* ------------------------------------------------------------------ *
+       * 1. Make an edit, so there is something to write.
+       * ------------------------------------------------------------------ */
+      step('edit');
+      const heading = document.getElementById('heading');
+      engine.beginTextEdit(heading);
+      await frames();
+      heading.firstChild.data = 'An edited card';
+      engine.endTextEdit(true);
+      api.select(document.getElementById('copy'));
+      engine.setStyle('color', 'rebeccapurple');
+      await frames();
+      check('thereIsSomethingToSave', () => engine.records.map((r) => r.kind));
+
+      /* ------------------------------------------------------------------ *
+       * 2. The page is surveyed: what it is made of, before anything is read.
+       * ------------------------------------------------------------------ */
+      /*
+       * The survey reads nothing — it resolves URLs and counts them — so `readable` here is
+       * a hope, not a finding, and it says the same in both runs. What the dialog shows is
+       * the built plan's verdict instead, which is why the checkboxes further down report
+       * "none readable from here" on the strict run while this still says otherwise.
+       */
+      step('survey');
+      check('theSurveyFindsThePagesParts', () => {
+        const survey = engine.bundleSurvey();
+        return Object.fromEntries(
+          survey.categories.map((entry) => [entry.kind, { count: entry.count, readable: entry.readable }]),
+        );
+      });
+
+      /* ------------------------------------------------------------------ *
+       * 3. Everything inline: one self-contained file.
+       * ------------------------------------------------------------------ */
+      step('single');
+      engine.setBundleOptions({ styles: 'inline', scripts: 'inline', images: 'inline' });
+      check('withEverythingInlineTheShapeIsOneFile', () => engine.bundleShape());
+
+      const single = await engine.previewBundle();
+      check('andThePlanIsOneHtmlFile', () => ({
+        shape: single?.shape ?? null,
+        fileName: single?.fileName ?? null,
+        files: (single?.files ?? []).map((f) => `${f.path}|${f.kind}`),
+        omitted: (single?.omitted ?? []).map((o) => `${o.kind}:${o.label}`),
+      }));
+
+      check('andItSaysWhyWhenNothingCouldBeFoldedIn', () => {
+        const first = single?.omitted[0];
+        return {
+          any: (single?.omitted ?? []).length,
+          reason: first?.reason ?? null,
+          // Over a real `file://` origin this is the expected outcome, not a failure.
+          matchesTheRun: readable ? (single?.omitted ?? []).length === 0 : (single?.omitted ?? []).length > 0,
+        };
+      });
+
+      step('writeSingle');
+      await engine.writeBundle();
+      await frames();
+      const wroteSingle = await lastDownload();
+      check('theDownloadIsTheHtmlItself', () => ({
+        name: wroteSingle.name,
+        isHtml: /\.html$/.test(wroteSingle.name ?? ''),
+        type: wroteSingle.blob?.type ?? null,
+      }));
+      check('andCarriesTheEdits', () => {
+        const doc = new DOMParser().parseFromString(wroteSingle.text, 'text/html');
+        return {
+          heading: doc.getElementById('heading')?.textContent ?? null,
+          copyStyle: doc.getElementById('copy')?.getAttribute('style') ?? null,
+          noEditorTrace: doc.querySelectorAll('html-editor-overlay, [data-heo-src]').length,
+        };
+      });
+      check('andWhetherItIsSelfContained', () => {
+        const doc = new DOMParser().parseFromString(wroteSingle.text, 'text/html');
+        const links = doc.querySelectorAll('link[rel~="stylesheet"]').length;
+        const externalScripts = doc.querySelectorAll('script[src]').length;
+        const dataImages = Array.from(doc.querySelectorAll('img')).filter((img) =>
+          (img.getAttribute('src') ?? '').startsWith('data:'),
+        ).length;
+        return {
+          stylesheetLinksLeft: links,
+          externalScriptsLeft: externalScripts,
+          imagesAsDataUrls: dataImages,
+          // With siblings readable nothing should be left pointing outward; without them,
+          // everything is — and the file is still the page plus the edits either way.
+          //
+          // Two scripts, not one: `bundle.js` and the overlay's own tag, which is hand-added
+          // and so belongs to the page as far as the export is concerned.
+          asExpected: readable
+            ? links === 0 && externalScripts === 0 && dataImages === 1
+            : links === 1 && externalScripts === 2 && dataImages === 0,
+        };
+      });
+      check('andAnInlinedStylesheetKeepsItsAssetPointingRight', () => {
+        if (!readable) return 'not applicable in this run';
+        // `bundle.css` says `url(nested/dot.svg)`, written relative to itself. Inlined into a
+        // `<style>` it has to have become something that still resolves — a data URI here,
+        // since images are inline too.
+        const doc = new DOMParser().parseFromString(wroteSingle.text, 'text/html');
+        const css = Array.from(doc.querySelectorAll('style')).map((s) => s.textContent ?? '').join('\n');
+        return {
+          hasCardRule: /\.card\s*\{/.test(css),
+          dotIsInlined: /url\("data:image\/svg\+xml/.test(css),
+          noBareRelativeDot: !/url\(["']?nested\/dot\.svg/.test(css),
+        };
+      });
+
+      /* ------------------------------------------------------------------ *
+       * 4. Something external: an archive, at the paths the page already uses.
+       * ------------------------------------------------------------------ */
+      step('archive');
+      engine.setBundleOptions({ images: 'external' });
+      check('leavingImagesExternalOffersAnArchive', () => ({
+        // Nothing has been read yet, so the offer is the optimistic one: an image left
+        // outside means a file beside the page, which means an archive.
+        offered: engine.bundleShape(),
+        asExpected: engine.bundleShape() === 'archive',
+      }));
+
+      const archive = await engine.previewBundle();
+      check('andThePlanListsTheFilesBesideIt', () => ({
+        shape: archive?.shape ?? null,
+        fileName: archive?.fileName ?? null,
+        files: (archive?.files ?? []).map((f) => `${f.path}|${f.kind}`),
+        // The asset keeps the path the page already refers to it by — when its bytes could
+        // be read at all. Unreadable, it is left named in the HTML and nowhere in the plan.
+        keepsItsOwnPath:
+          (archive?.files ?? []).some((f) => f.path === 'nested/dot.svg') === readable,
+        // With nothing readable there is no asset to put beside the HTML, so it stays one
+        // file — the honest answer rather than an archive holding only a page.
+        shapeMatchesTheRun: (archive?.shape ?? null) === (readable ? 'archive' : 'single'),
+        // And the offer follows the plan once there is one, so the button cannot promise a
+        // `.zip` over a download that turns out to be an `.html`.
+        theOfferFollowsIt: engine.bundleShape() === (archive?.shape ?? null),
+      }));
+
+      step('writeArchive');
+      await engine.writeBundle();
+      await frames();
+      const wroteArchive = await lastDownload();
+      check('theDownloadIsAZipWhenThereAreFilesBesideIt', () => ({
+        name: wroteArchive.name,
+        type: wroteArchive.blob?.type ?? null,
+        asExpected: readable
+          ? /\.zip$/.test(wroteArchive.name ?? '') && wroteArchive.blob?.type === 'application/zip'
+          : /\.html$/.test(wroteArchive.name ?? ''),
+      }));
+      step('andTheZipIsAZip');
+      if (readable && wroteArchive.blob) {
+        const bytes = new Uint8Array(await wroteArchive.blob.arrayBuffer());
+        const signature = String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3]);
+        const tail = bytes.subarray(bytes.length - 22);
+        results.andTheZipIsAZip = {
+          // `PK\x03\x04` opens a local file header; `PK\x05\x06` opens the end record.
+          localHeader: signature === 'PK\u0003\u0004',
+          endRecord: String.fromCharCode(tail[0], tail[1], tail[2], tail[3]) === 'PK\u0005\u0006',
+          entries: new DataView(bytes.buffer).getUint16(bytes.length - 22 + 10, true),
+          bytes: bytes.length,
+        };
+      } else {
+        results.andTheZipIsAZip = 'not applicable in this run';
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 5. It counts as a save, and the dialog says so.
+       * ------------------------------------------------------------------ */
+      step('savedState');
+      check('writingThePageOutCountsAsASave', () => ({
+        pending: engine.store.value.changeCount,
+        canStillUndo: engine.store.value.canUndo,
+      }));
+
+      /*
+       * A fresh edit first, because the write above cleared the pending count.
+       *
+       * The primary button is disabled with nothing to write, which is correct and was
+       * briefly mistaken for the navigation being broken.
+       */
+      step('dialog');
+      api.select(document.getElementById('title'));
+      engine.setStyle('letter-spacing', '-0.01em');
+      await frames();
+      engine.previewSave();
+      await frames();
+      await frames();
+      check('theSaveButtonOffersToWriteTheFile', () => {
+        const dialog = deepQuery('heo-save-dialog');
+        const labels = Array.from(dialog?.shadowRoot?.querySelectorAll('footer .btn') ?? []).map(
+          (el) => el.textContent.replace(/\s+/g, ' ').trim(),
+        );
+        return {
+          labels,
+          // The ask: it reads like the connected case, naming the file rather than "Save changes".
+          namesTheFile: labels.some((label) => /^Write page\.(html|zip)/.test(label)),
+          noLongerSaysSaveChanges: !labels.some((label) => label === 'Save changes'),
+        };
+      });
+
+      // And the primary button leads to the export step rather than writing straight away.
+      const primary = () => {
+        const dialog = deepQuery('heo-save-dialog');
+        return Array.from(dialog?.shadowRoot?.querySelectorAll('footer .btn.primary') ?? [])[0] ?? null;
+      };
+      primary()?.click();
+      await frames();
+      await frames();
+      check('andPressingItOpensTheExportStep', () => {
+        const dialog = deepQuery('heo-save-dialog');
+        const shell = dialog?.shadowRoot?.querySelector('.dialog');
+        const choices = Array.from(dialog?.shadowRoot?.querySelectorAll('.choice') ?? []).map((el) => ({
+          name: el.querySelector('.name')?.textContent?.trim() ?? null,
+          detail: el.querySelector('.detail')?.textContent?.replace(/\s+/g, ' ').trim() ?? null,
+          checked: el.querySelector('input')?.checked ?? null,
+          disabled: el.querySelector('input')?.disabled ?? null,
+        }));
+        return { step: shell?.getAttribute('aria-label') ?? null, choices };
+      });
+
+      results.__errors = errors;
+      URL.createObjectURL = realCreate;
+      HTMLAnchorElement.prototype.click = realClick;
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify({ __fatal: String((e && e.stack) || e) }, null, 1) + ':END';
+    });
+  </script>
+</body>
+
+</html>

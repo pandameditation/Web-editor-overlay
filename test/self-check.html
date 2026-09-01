@@ -2563,7 +2563,19 @@
         const code = saveDialog().shadowRoot.querySelector('.transfer .snippet pre')?.textContent ?? '';
         return code.includes('heo1');
       });
-      check('savingIsStillOneClickAway', () => Boolean(footerButton('Save changes')));
+      /*
+       * And the way out is still the primary, one click from here.
+       *
+       * It no longer says "Save changes": with no folder connected, saving writes the page
+       * out, so the button names the file it is about to write the way the connected case
+       * does. Matched on the primary rather than the words, since "Write to files…" sits
+       * next to it and means something else entirely.
+       */
+      check('savingIsStillOneClickAway', () => {
+        const primary = saveDialog().shadowRoot.querySelector('footer .btn.primary');
+        const label = primary?.textContent.replace(/\s+/g, ' ').trim() ?? null;
+        return { label, andItNamesWhatItWrites: /^Write .+\.(html|zip)/.test(label ?? '') };
+      });
       footerButton('Back to the changes').dispatchEvent(
         new MouseEvent('click', { bubbles: true, composed: true }));
       await wait(180);

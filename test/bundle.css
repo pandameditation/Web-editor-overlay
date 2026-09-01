@@ -1,0 +1,19 @@
+/*
+ * A linked stylesheet with a relative asset reference in it.
+ *
+ * The `url()` is the interesting part: it is written relative to *this file*, which sits in
+ * the same directory as the page here — but a `<style>` block resolves against the
+ * document, so inlining this sheet has to rewrite it or the reference breaks. It also means
+ * inlining the styles pulls an image into the export that the HTML never mentions.
+ */
+.card {
+  padding: 16px;
+  border-radius: 12px;
+  background-color: #fff;
+  background-image: url(nested/dot.svg);
+}
+
+.card h2 {
+  color: #172033;
+  margin-top: 0;
+}

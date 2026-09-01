@@ -2,6 +2,8 @@ import { DRAGGING_ATTR, HOST_TAG, IGNORE_ATTR, VERSION, Z_BASE } from './core/co
 import { normalizeCustomElementTag } from './core/library.js';
 import { EditorEngine, type ProjectInfo } from './core/editor.js';
 import type { FileHost } from './core/file-host.js';
+import type { BundleOptions, BundlePlan } from './core/bundle.js';
+
 import type { PlannedWrite, WritePlan, WriteResult } from './core/writeback.js';
 import { releaseModals } from './core/modal.js';
 import { installProvenance } from './core/provenance.js';
@@ -164,6 +166,17 @@ export interface OverlayAPI {
   getProject(): ProjectInfo | null;
   /** Which files a save would write, and which changes have nowhere to go. */
   previewWrites(): Promise<WritePlan | null>;
+  /**
+   * What writing the page out would produce, with no project to write into.
+   *
+   * The download route's counterpart to `previewWrites`: which files, how large, and which
+   * assets could not be reached. Reads every asset, so it is worth showing progress for.
+   */
+  previewBundle(): Promise<BundlePlan | null>;
+  /** Write the page out and hand it over. Counts as a save. */
+  writeBundle(): Promise<BundlePlan | null>;
+  /** How the page is written out when there is nowhere to write to. */
+  setBundleOptions(options: Partial<BundleOptions>): void;
   exportDesignSystem(): DesignSystemDocument;
   /** The whole design system as one copy-pasteable seed string. */
   exportSeed(): Promise<string>;
@@ -249,6 +262,9 @@ export function mount(options: MountOptions = {}): OverlayAPI {
     disconnectProject: () => engine.disconnectProject(),
     getProject: () => engine.store.value.project,
     previewWrites: () => engine.previewWritePlan(),
+    previewBundle: () => engine.previewBundle(),
+    writeBundle: () => engine.writeBundle(),
+    setBundleOptions: (options) => engine.setBundleOptions(options),
     exportDesignSystem: () => engine.designSystem(),
     exportSeed: () => engine.designSystemSeed(),
     importDesignSystem: (document_, overwrite = false) =>

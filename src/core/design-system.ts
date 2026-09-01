@@ -130,7 +130,17 @@ export function parseDesignSystem(input: unknown): DesignSystemDocument {
 /* -------------------------------------------------------------------------- */
 
 export function downloadText(filename: string, text: string, mime = 'text/plain'): void {
-  const blob = new Blob([text], { type: `${mime};charset=utf-8` });
+  downloadBlob(filename, new Blob([text], { type: `${mime};charset=utf-8` }));
+}
+
+/**
+ * Hand a blob to the user as a download.
+ *
+ * Split out from `downloadText` because that one appends `;charset=utf-8` to the type,
+ * which is right for every text format it is used for and wrong for an archive: a zip is
+ * bytes, and declaring a character set for it is a claim about content it does not have.
+ */
+export function downloadBlob(filename: string, blob: Blob): void {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
   anchor.href = url;
