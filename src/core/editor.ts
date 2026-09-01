@@ -83,10 +83,14 @@ import {
   connectDirectory,
   connectServer,
   hostAvailability,
+  pickSaveTarget,
   restoreDirectory,
+  savePickerAvailable,
+  writeSaveTarget,
   type FileHost,
   type FileHostKind,
   type HostAvailability,
+  type SaveChoice,
   documentPath,
 } from './file-host.js';
 import {
@@ -132,9 +136,13 @@ import {
 } from './writeback.js';
 import {
   buildBundle,
+  bundleBlob,
+  bundleName,
   bundleShape,
   DEFAULT_BUNDLE_OPTIONS,
-  downloadBundle,
+  exportBase,
+  extensionOf,
+  renameBundle,
   surveyBundle,
   type BundleOptions,
   type BundlePlan,
@@ -350,6 +358,24 @@ export interface EditorState {
   bundlePlan: BundlePlan | null;
   /** True while it is being built, which means reading every asset. */
   bundling: boolean;
+  /**
+   * What to call the file, without its extension, when the page's own name is not it.
+   *
+   * Null means the name comes from `options.fileName`, which is normally the file the page
+   * was opened from — the right default, since the usual intent is to write back a copy of
+   * the same page. Someone keeping the original alongside a variant needs to say otherwise,
+   * and that is what this holds. The extension is not theirs to choose: it follows the
+   * shape, and a `.zip` named `.html` would be a file that does not open.
+   */
+  exportName: string | null;
+  /**
+   * Whether to ask where the file goes rather than sending it to the download folder.
+   *
+   * Only meaningful where the browser has a save picker. On by default there, because
+   * "where did that go" is a worse first experience than one extra dialog, and because a
+   * picker is also the only way to overwrite the file the page was opened from.
+   */
+  exportPrompt: boolean;
 }
 
 /**
@@ -432,6 +458,8 @@ export class EditorEngine {
   #pressBeganInTextEdit = false;
   #injectedElements = new Set<string>();
   #destroyed = false;
+  /** Which export build is the current one, so an overtaken one stays quiet. */
+  #bundleRun = 0;
   /** Deferred seed and design-system loads, so `whenReady` has something to await. */
   #pending = new Set<Promise<unknown>>();
 
@@ -517,6 +545,10 @@ export class EditorEngine {
       bundleOptions: { ...DEFAULT_BUNDLE_OPTIONS },
       bundlePlan: null,
       bundling: false,
+      exportName: null,
+      // Nothing to ask with means nothing to ask, and a switch that does nothing is worse
+      // than no switch: the dialog reads this to decide whether to offer the choice at all.
+      exportPrompt: savePickerAvailable(),
       sourceEdit: null,
     });
   }
@@ -3962,6 +3994,44 @@ export class EditorEngine {
     // A plan built for the old choices describes a different download, so it goes rather
     // than sitting there over a footer that now promises something else.
     this.store.patch({ bundleOptions: merged, bundlePlan: null });
+    // And it comes straight back, because the answer to "what will this write" should not
+    // require pressing Recheck. The shape has to be settled before the write, too: it is
+    // what the extension in the save picker's suggested name comes from.
+    void this.previewBundle();
+  }
+
+  /**
+   * Rename the export.
+   *
+   * Applied to the plan in place rather than rebuilding it. The name has no bearing on the
+   * bytes, and re-reading every asset on each keystroke would make a text field feel like a
+   * network operation.
+   *
+   * Stored as typed, and narrowed only where it becomes a file name — `exportBase` runs in
+   * `bundleName`, `renameBundle` and `buildBundle`. Sanitising on the way in instead would
+   * mean a field that rewrites itself under the caret every time someone types a character
+   * it does not like. Empty goes back to the page's own name rather than becoming a file
+   * called nothing.
+   */
+  setExportName(name: string | null): void {
+    const next = name === null || name.trim() === '' ? null : name;
+    const plan = this.store.value.bundlePlan;
+    this.store.patch({
+      exportName: next,
+      bundlePlan: plan ? renameBundle(plan, next ?? this.#pageFileName) : null,
+    });
+  }
+
+  /** Whether pressing Write asks where the file goes. */
+  setExportPrompt(on: boolean): void {
+    // Refused rather than stored where there is no picker, so the state cannot claim an
+    // ability the browser does not have.
+    this.store.patch({ exportPrompt: on && savePickerAvailable() });
+  }
+
+  /** True when this browser can ask where to put a file. */
+  exportPickerAvailable(): boolean {
+    return savePickerAvailable();
   }
 
   /**
@@ -3974,24 +4044,38 @@ export class EditorEngine {
    * enough to be worth a progress state.
    */
   async previewBundle(): Promise<BundlePlan | null> {
+    /*
+     * Only the newest build gets to speak.
+     *
+     * Ticking a checkbox starts one, so a few quick clicks put several in flight at once,
+     * each reading the options as they were when it started. Without this the slowest one
+     * lands last and the panel ends up describing a set of choices nobody has selected —
+     * and the footer would offer to write it.
+     */
+    const run = (this.#bundleRun += 1);
+    const stale = (): boolean => this.#destroyed || run !== this.#bundleRun;
+
     const source = await this.#readOwnDocument();
-    if (this.#destroyed) return null;
+    if (stale()) return null;
     this.store.patch({ bundling: true });
     try {
       const plan = await buildBundle(
         this.#bundleSubject(source),
         this.store.value.bundleOptions,
       );
-      if (this.#destroyed) return null;
+      if (stale()) return null;
       this.store.patch({ bundlePlan: plan });
       return plan;
     } catch (error) {
+      if (stale()) return null;
       console.error('[html-editor-overlay] could not build the export', error);
       this.notify('Could not build the export. See the console for details.', 'error');
       this.store.patch({ bundlePlan: null });
       return null;
     } finally {
-      this.store.patch({ bundling: false });
+      // Left alone when a newer build owns it, or the spinner would stop while one is
+      // still running.
+      if (!stale()) this.store.patch({ bundling: false });
     }
   }
 
@@ -4002,15 +4086,30 @@ export class EditorEngine {
    * write does: between showing it and pressing the button a checkbox may have moved, and
    * what gets downloaded has to be what was described.
    *
+   * **Where it goes is asked first, and that ordering is not a preference.** A save picker
+   * needs transient activation, which expires a few seconds after the click, and building
+   * the export means reading every asset the page refers to. Ask afterwards and the picker
+   * is refused on any page with more than a handful of images. So the destination is settled
+   * while the click is still warm, and the extension offered comes from the plan already on
+   * screen — which is why changing a checkbox rebuilds it rather than leaving it empty.
+   *
    * Counts as a save. The page's own file is what changed, so the pending count starts
    * again from here — the same thing writing to a project means, reached a different way.
    * That is the whole point of this route existing: a download is not a lesser save.
    */
   async writeBundle(): Promise<BundlePlan | null> {
+    const target = this.store.value.exportPrompt
+      ? await pickSaveTarget(bundleName(this.exportFileName, this.bundleShape()))
+      : ({ kind: 'unavailable' } as const);
+    // Backing out of the picker is backing out of the save. Writing to the download folder
+    // instead would put the file exactly where they declined to put it.
+    if (target.kind === 'cancelled') return null;
+
     const plan = await this.previewBundle();
     if (!plan) return null;
 
-    const name = await downloadBundle(plan, downloadBlob);
+    const name = await this.#handOver(plan, target);
+    if (name === null) return null;
     this.#markSaved();
     this.store.patch({ savePreview: null });
 
@@ -4042,8 +4141,70 @@ export class EditorEngine {
     return plan;
   }
 
-  /** The name a download is offered under, before its extension is settled. */
+  /**
+   * Put the bytes where the user said.
+   *
+   * A chosen handle wins, with one guard: the extension the picker was offered came from
+   * the shape predicted before the build, and the build is what settles it. When the two
+   * disagree — a page whose assets all turned out unreadable produces one file where an
+   * archive was expected — writing zip bytes into a `.html`, or the reverse, would hand over
+   * a file that does not open. So the handle is dropped in favour of a plain download under
+   * the right name, and the reason is said out loud rather than silently swallowed.
+   *
+   * Returns the name written, or null when nothing was.
+   */
+  async #handOver(plan: BundlePlan, target: SaveChoice): Promise<string | null> {
+    const blob = await bundleBlob(plan);
+
+    if (target.kind === 'chosen') {
+      if (extensionOf(target.name) === extensionOf(plan.fileName)) {
+        try {
+          await writeSaveTarget(target.handle, blob);
+          return target.name;
+        } catch (error) {
+          console.error('[html-editor-overlay] could not write the chosen file', error);
+          this.notify(
+            `Could not write ${target.name}. The file may be open elsewhere, or permission was withdrawn.`,
+            'error',
+          );
+          return null;
+        }
+      }
+      this.notify(
+        `Saved as ${plan.fileName} instead of ${target.name}: reading the page's files ` +
+        `turned out ${plan.shape === 'single' ? 'one file' : 'more than one file'}, so the ` +
+        'extension changed.',
+        'warn',
+      );
+    }
+
+    downloadBlob(plan.fileName, blob);
+    return plan.fileName;
+  }
+
+  /**
+   * The name a download is offered under, before its extension is settled.
+   *
+   * The typed name wins over the page's own, and the page's own is the default rather than
+   * something generic: writing back a copy of the file you opened is the common case, and
+   * having to retype its name every time would be the tax on it.
+   */
   get exportFileName(): string {
+    return this.store.value.exportName ?? this.#pageFileName;
+  }
+
+  /**
+   * The name the page itself suggests, with nothing typed over it and no extension.
+   *
+   * What the name field shows as its placeholder, so an empty field still says what
+   * pressing Write would produce.
+   */
+  get exportDefaultName(): string {
+    return exportBase(this.#pageFileName);
+  }
+
+  /** The name the page itself suggests, ignoring anything typed over it. */
+  get #pageFileName(): string {
     return this.options.fileName ?? 'edited-page.html';
   }
 
@@ -4054,7 +4215,7 @@ export class EditorEngine {
       html: result.html,
       patched: result.patched,
       why: result.why,
-      fileName: this.options.fileName ?? 'edited-page.html',
+      fileName: this.exportFileName,
       project: this.#project,
     };
   }

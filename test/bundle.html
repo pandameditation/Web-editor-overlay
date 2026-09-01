@@ -105,9 +105,72 @@
         if (this.download) clicked.push(this.download);
         // Not forwarded: a real click would open a save dialog and stall the run.
       };
-      const lastDownload = async () => {
+
+      /*
+       * The save picker, stood in for.
+       *
+       * Headless Chrome has `showSaveFilePicker` but cannot show a dialog, and a real one
+       * would need a real click and then stall the run waiting for a human. So it is
+       * replaced by something that records what it was asked and answers on command — which
+       * is also the only way to check the thing worth checking: that the name offered
+       * already has the right extension for the shape, because the picker is asked *before*
+       * the export is built.
+       */
+      const asked = [];
+      const savedTo = [];
+      let pickerAnswer = 'accept';
+      const realPicker = window.showSaveFilePicker;
+      window.showSaveFilePicker = async (options = {}) => {
+        asked.push({
+          suggestedName: options.suggestedName ?? null,
+          accepts: Object.keys(options.types?.[0]?.accept ?? {}),
+          id: options.id ?? null,
+          startIn: options.startIn ?? null,
+        });
+        if (pickerAnswer === 'cancel') throw new DOMException('Aborted', 'AbortError');
+        const name = pickerAnswer === 'rename' ? 'chosen-by-hand.html' : options.suggestedName;
+        const record = { name, blob: null, closed: false };
+        savedTo.push(record);
+        return {
+          name,
+          createWritable: async () => ({
+            write: async (blob) => {
+              record.blob = blob;
+            },
+            close: async () => {
+              record.closed = true;
+            },
+            abort: async () => undefined,
+          }),
+        };
+      };
+
+      /**
+       * What the last write produced, whichever way it went out.
+       *
+       * Both destinations are real paths through the same code — a handle where the browser
+       * has a picker, a download where it does not — so the checks below ask "what was
+       * written" rather than assuming which one happened, and `via` is what says.
+       */
+      const written = async () => {
+        const handle = savedTo[savedTo.length - 1];
         const blob = downloads[downloads.length - 1];
-        return { name: clicked[clicked.length - 1] ?? null, blob, text: blob ? await blob.text() : '' };
+        const usedHandle = handle && handle.blob && !clicked.length;
+        const chosen = usedHandle ? handle.blob : blob;
+        return {
+          via: usedHandle ? 'picker' : clicked.length ? 'download' : null,
+          name: usedHandle ? handle.name : (clicked[clicked.length - 1] ?? null),
+          blob: chosen ?? null,
+          text: chosen ? await chosen.text() : '',
+          committed: usedHandle ? handle.closed : null,
+        };
+      };
+      /** Forget the writes so far, so the next check reads its own. */
+      const forget = () => {
+        downloads.length = 0;
+        clicked.length = 0;
+        savedTo.length = 0;
+        asked.length = 0;
       };
 
       const api = window.HtmlEditorOverlay.mount({ theme: 'dark', fileName: 'page.html' });
@@ -179,14 +242,48 @@
         };
       });
 
+      /* ------------------------------------------------------------------ *
+       * 3a. Backing out of the picker backs out of the save.
+       * ------------------------------------------------------------------ */
+      step('cancel');
+      forget();
+      pickerAnswer = 'cancel';
+      const refused = await engine.writeBundle();
+      await frames();
+      const afterCancel = await written();
+      check('decliningTheFolderWritesNothing', () => ({
+        plan: refused,
+        wrote: afterCancel.via,
+        // The whole point: the file does not quietly land in the downloads folder instead.
+        nothingLanded: refused === null && afterCancel.via === null,
+        // And the edits are still pending, so nothing was marked saved either.
+        stillPending: engine.store.value.changeCount > 0,
+      }));
+      pickerAnswer = 'accept';
+
+      /* ------------------------------------------------------------------ *
+       * 3b. Written where the user said, under the name they were offered.
+       * ------------------------------------------------------------------ */
       step('writeSingle');
+      forget();
       await engine.writeBundle();
       await frames();
-      const wroteSingle = await lastDownload();
+      const wroteSingle = await written();
+      check('itAsksWhereBeforeItBuilds', () => ({
+        asked: asked.length,
+        // Asked with the extension already right, which it can only be because the shape was
+        // settled beforehand — the picker cannot be asked after the build, the gesture is gone.
+        offered: asked[0]?.suggestedName ?? null,
+        acceptsHtml: asked[0]?.accepts.includes('text/html') ?? false,
+        startsInDownloads: asked[0]?.startIn ?? null,
+      }));
       check('theDownloadIsTheHtmlItself', () => ({
+        via: wroteSingle.via,
         name: wroteSingle.name,
         isHtml: /\.html$/.test(wroteSingle.name ?? ''),
         type: wroteSingle.blob?.type ?? null,
+        // Closed, not left open: an unclosed writable is a file that never appears.
+        committed: wroteSingle.committed,
       }));
       check('andCarriesTheEdits', () => {
         const doc = new DOMParser().parseFromString(wroteSingle.text, 'text/html');
@@ -232,9 +329,86 @@
       });
 
       /* ------------------------------------------------------------------ *
+       * 3c. Called whatever the user calls it.
+       * ------------------------------------------------------------------ */
+      step('rename');
+      const beforeRename = engine.store.value.bundlePlan;
+      engine.setExportName('My Landing Page');
+      const renamed = engine.store.value.bundlePlan;
+      check('renamingDoesNotRebuild', () => ({
+        // Same bytes, different name. Rebuilding would mean re-reading every asset on every
+        // keystroke, which is what a text field must not do.
+        sameDocumentBytes: beforeRename?.files[0].bytes === renamed?.files[0].bytes,
+        planIsStillThere: Boolean(renamed),
+      }));
+      check('theNameReachesEverywhereItShows', () => ({
+        download: renamed?.fileName ?? null,
+        // Inside an archive this is a path someone sees when they unzip it.
+        documentPath: renamed?.files.find((f) => f.kind === 'document')?.path ?? null,
+        offeredNext: engine.exportFileName,
+      }));
+      check('andAPathOrAnIllegalCharacterIsNotAName', () => {
+        engine.setExportName('../../etc/pa*ssw?d');
+        const name = engine.store.value.bundlePlan?.fileName ?? null;
+        return {
+          name,
+          // The directory part is dropped and the illegal characters go: where the file
+          // lands is the picker's business, not the name field's.
+          climbsNowhere: !(name ?? '').includes('/') && !(name ?? '').includes('*'),
+        };
+      });
+      check('andClearingItGoesBackToThePagesOwnName', () => {
+        engine.setExportName('');
+        return {
+          stored: engine.store.value.exportName,
+          falls: engine.exportFileName,
+          placeholder: engine.exportDefaultName,
+        };
+      });
+      engine.setExportName('My Landing Page');
+
+      step('writeRenamed');
+      forget();
+      await engine.writeBundle();
+      await frames();
+      const wroteRenamed = await written();
+      check('theWrittenFileCarriesTheTypedName', () => ({
+        offered: asked[0]?.suggestedName ?? null,
+        wrote: wroteRenamed.name,
+        asExpected: asked[0]?.suggestedName === 'My Landing Page.html',
+      }));
+      // Back to the page's own name, so the rest reads as it did before.
+      engine.setExportName(null);
+
+      /* ------------------------------------------------------------------ *
+       * 3d. Without a picker, or with the asking turned off, it downloads.
+       * ------------------------------------------------------------------ */
+      step('downloadInstead');
+      forget();
+      engine.setExportPrompt(false);
+      check('turningOffTheAskingSticks', () => ({
+        stored: engine.store.value.exportPrompt,
+        asExpected: engine.store.value.exportPrompt === false,
+      }));
+      await engine.writeBundle();
+      await frames();
+      const wroteDirect = await written();
+      check('withoutAskingItGoesToTheDownloadsFolder', () => ({
+        via: wroteDirect.via,
+        name: wroteDirect.name,
+        // Nothing was asked, and the file still arrived. This is the Firefox and Safari
+        // path as well as the opted-out one.
+        askedNobody: asked.length === 0,
+        asExpected: wroteDirect.via === 'download' && /\.html$/.test(wroteDirect.name ?? ''),
+      }));
+      engine.setExportPrompt(true);
+      check('andItCanBeTurnedBackOn', () => engine.store.value.exportPrompt);
+
+      /* ------------------------------------------------------------------ *
        * 4. Something external: an archive, at the paths the page already uses.
        * ------------------------------------------------------------------ */
       step('archive');
+      forget();
       engine.setBundleOptions({ images: 'external' });
       check('leavingImagesExternalOffersAnArchive', () => ({
         // Nothing has been read yet, so the offer is the optimistic one: an image left
@@ -261,12 +435,18 @@
       }));
 
       step('writeArchive');
+      forget();
       await engine.writeBundle();
       await frames();
-      const wroteArchive = await lastDownload();
+      const wroteArchive = await written();
       check('theDownloadIsAZipWhenThereAreFilesBesideIt', () => ({
+        via: wroteArchive.via,
         name: wroteArchive.name,
         type: wroteArchive.blob?.type ?? null,
+        // The picker was offered the archive extension, not the page one — which is the
+        // reason the shape has to be settled before the asking.
+        offered: asked[0]?.suggestedName ?? null,
+        acceptsZip: asked[0]?.accepts.includes('application/zip') ?? false,
         asExpected: readable
           ? /\.zip$/.test(wroteArchive.name ?? '') && wroteArchive.blob?.type === 'application/zip'
           : /\.html$/.test(wroteArchive.name ?? ''),
@@ -285,6 +465,35 @@
         };
       } else {
         results.andTheZipIsAZip = 'not applicable in this run';
+      }
+
+      /*
+       * An OS save dialog lets you type whatever you like, including the wrong extension.
+       *
+       * Writing zip bytes into a file called `.html` would hand over something that does not
+       * open, so the chosen handle is dropped and the file goes out under the name that
+       * matches its contents instead. Only reachable when the shape is an archive, so it is
+       * skipped in the run where nothing is readable.
+       */
+      step('mismatch');
+      if (readable) {
+        forget();
+        pickerAnswer = 'rename';
+        engine.setStyle('opacity', '0.99');
+        await frames();
+        await engine.writeBundle();
+        await frames();
+        const salvaged = await written();
+        results.aNameThatDisagreesWithTheContentsIsRefused = {
+          theyTyped: savedTo[savedTo.length - 1]?.name ?? null,
+          itWroteInstead: salvaged.name,
+          via: salvaged.via,
+          // Not through the handle, and named for what it actually is.
+          asExpected: salvaged.via === 'download' && /\.zip$/.test(salvaged.name ?? ''),
+        };
+        pickerAnswer = 'accept';
+      } else {
+        results.aNameThatDisagreesWithTheContentsIsRefused = 'not applicable in this run';
       }
 
       /* ------------------------------------------------------------------ *
@@ -341,10 +550,41 @@
         }));
         return { step: shell?.getAttribute('aria-label') ?? null, choices };
       });
+      check('andTheStepSaysWhatItWillBeCalledAndWhereItGoes', () => {
+        const dialog = deepQuery('heo-save-dialog');
+        const naming = dialog?.shadowRoot?.querySelector('.naming');
+        const field = naming?.querySelector('input[type=text]');
+        return {
+          // Empty with the page's own name behind it, which is what pressing Write produces.
+          value: field?.value ?? null,
+          placeholder: field?.placeholder ?? null,
+          // Shown, and not a text field: it follows the shape, and a zip named .html is a
+          // file that does not open.
+          extension: naming?.querySelector('.ext')?.textContent?.trim() ?? null,
+          // This browser has a picker, so the destination is a choice rather than a
+          // statement. Somewhere without one gets the sentence instead.
+          destinationIsAChoice: Boolean(naming?.querySelector('input[type=checkbox]')),
+          destination: naming?.querySelector('.to')?.textContent?.replace(/\s+/g, ' ').trim() ?? null,
+        };
+      });
+      check('andTypingInItReachesTheFooter', () => {
+        const dialog = deepQuery('heo-save-dialog');
+        const field = dialog?.shadowRoot?.querySelector('.naming input[type=text]');
+        field.value = 'renamed-from-the-field';
+        field.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        return engine.exportFileName;
+      });
+      await frames();
+      check('andTheFooterFollowsTheField', () => {
+        const dialog = deepQuery('heo-save-dialog');
+        const primary = dialog?.shadowRoot?.querySelector('footer .btn.primary');
+        return primary?.textContent.replace(/\s+/g, ' ').trim() ?? null;
+      });
 
       results.__errors = errors;
       URL.createObjectURL = realCreate;
       HTMLAnchorElement.prototype.click = realClick;
+      window.showSaveFilePicker = realPicker;
       document.getElementById('out').textContent =
         'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
     })().catch((e) => {

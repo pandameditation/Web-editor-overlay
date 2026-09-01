@@ -93,6 +93,15 @@ interface PermissionAwareHandle {
   requestPermission?(descriptor: { mode: 'read' | 'readwrite' }): Promise<PermissionState>;
 }
 
+interface SavePicker {
+  showSaveFilePicker?(options?: {
+    id?: string;
+    suggestedName?: string;
+    startIn?: string | FileSystemHandle;
+    types?: Array<{ description?: string; accept: Record<string, string[]> }>;
+  }): Promise<FileSystemFileHandle>;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Paths                                                                       */
 /* -------------------------------------------------------------------------- */
@@ -476,6 +485,86 @@ export async function connectServer(
   const probe = await probeServer(endpoint, token);
   if (!probe) return null;
   return new ServerHost(endpoint, probe.root, probe.base, token);
+}
+
+/* -------------------------------------------------------------------------- */
+/* One file, saved where the user says                                         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Where a download is going, once the user has been asked.
+ *
+ * Three outcomes rather than a handle-or-null, because the caller has to treat them
+ * differently and collapsing two of them is how a cancelled save turns into a file
+ * appearing somewhere anyway. `unavailable` means this browser has no save picker and
+ * the fallback download is the right thing; `cancelled` means the user said no, and
+ * nothing should happen at all.
+ */
+export type SaveChoice =
+  | { kind: 'chosen'; handle: FileSystemFileHandle; name: string }
+  | { kind: 'cancelled' }
+  | { kind: 'unavailable' };
+
+/** True when this browser can ask where to put a file. */
+export function savePickerAvailable(): boolean {
+  return typeof (window as unknown as SavePicker).showSaveFilePicker === 'function';
+}
+
+/**
+ * Ask where to save one file. Must be called from a user gesture.
+ *
+ * The gesture is the constraint that shapes the whole flow. A save picker needs
+ * transient activation, which expires in a few seconds, and building an export means
+ * reading every asset the page refers to — easily longer than that. So this is asked
+ * *before* anything is built, and the extension in `suggestedName` is what the caller
+ * has already decided the output will be.
+ */
+export async function pickSaveTarget(suggestedName: string): Promise<SaveChoice> {
+  const picker = window as unknown as SavePicker;
+  if (typeof picker.showSaveFilePicker !== 'function') return { kind: 'unavailable' };
+
+  try {
+    const handle = await picker.showSaveFilePicker({
+      // Shared with nothing else: this remembers where pages get written, which is not
+      // where a project folder lives.
+      id: 'heo-export',
+      suggestedName,
+      startIn: 'downloads',
+      types: [saveType(suggestedName)],
+    });
+    return { kind: 'chosen', handle, name: handle.name || suggestedName };
+  } catch {
+    /*
+     * Cancelling is not an error, and neither is a browser refusing the call.
+     *
+     * Both arrive as a rejection and both mean the same thing here — no file was
+     * chosen — so neither is reported. Falling back to a plain download on a refusal
+     * would put the file somewhere the user did not pick, which is the one outcome
+     * this function exists to prevent.
+     */
+    return { kind: 'cancelled' };
+  }
+}
+
+/** Write bytes to a handle the user chose, replacing whatever was there. */
+export async function writeSaveTarget(handle: FileSystemFileHandle, blob: Blob): Promise<void> {
+  const writable = await handle.createWritable();
+  try {
+    await writable.write(blob);
+  } catch (error) {
+    // Aborted rather than closed: closing commits, and committing a partial file over
+    // something the user already had is worse than failing.
+    await writable.abort().catch(() => undefined);
+    throw error;
+  }
+  await writable.close();
+}
+
+/** The file type to offer, so the picker filters and appends sensibly. */
+function saveType(name: string): { description: string; accept: Record<string, string[]> } {
+  return name.toLowerCase().endsWith('.zip')
+    ? { description: 'Zip archive', accept: { 'application/zip': ['.zip'] } }
+    : { description: 'Web page', accept: { 'text/html': ['.html'] } };
 }
 
 /* -------------------------------------------------------------------------- */

@@ -337,7 +337,7 @@ export async function buildBundle(
   /* ---- Out it comes ---- */
 
   const shape: BundlePlan['shape'] = files.length ? 'archive' : 'single';
-  const base = subject.fileName.replace(/\.html?$/i, '') || 'edited-page';
+  const base = exportBase(subject.fileName);
   const html = `<!DOCTYPE html>\n${doc.documentElement.outerHTML}\n`;
   const document_: BundleFile = {
     path: `${base}.html`,
@@ -358,23 +358,39 @@ export async function buildBundle(
 }
 
 /**
- * Hand the plan to the user.
+ * The plan as the bytes that will be written.
  *
- * One file goes out as itself; more than one goes out as an archive. Returns the name
- * written, so the caller can say what happened without recomputing it.
+ * One file is itself; more than one can only travel as an archive. Split from the
+ * download because the same bytes now have two possible destinations — a handle the user
+ * picked, or the browser's download folder — and which one it is should not change what
+ * gets written.
  */
-export async function downloadBundle(
-  plan: BundlePlan,
-  download: (name: string, blob: Blob) => void,
-): Promise<string> {
+export async function bundleBlob(plan: BundlePlan): Promise<Blob> {
   if (plan.shape === 'single') {
-    const only = plan.files[0];
-    download(plan.fileName, new Blob([only.bytes], { type: 'text/html;charset=utf-8' }));
-    return plan.fileName;
+    return new Blob([plan.files[0].bytes], { type: 'text/html;charset=utf-8' });
   }
   const entries: ZipEntry[] = plan.files.map((file) => ({ path: file.path, bytes: file.bytes }));
-  download(plan.fileName, await makeZip(entries));
-  return plan.fileName;
+  return makeZip(entries);
+}
+
+/**
+ * The same export under a different name.
+ *
+ * Renaming is not rebuilding. The name has no bearing on a single byte of what the export
+ * contains, and rebuilding to change it would re-read every asset the page refers to — so
+ * a field someone is typing into would either lag behind them or hammer the network. This
+ * moves the two places the name appears: the download's own name, and the document's path,
+ * which inside an archive is a real entry someone will see when they unzip it.
+ */
+export function renameBundle(plan: BundlePlan, fileName: string): BundlePlan {
+  const base = exportBase(fileName);
+  return {
+    ...plan,
+    fileName: bundleName(base, plan.shape),
+    files: plan.files.map((file) =>
+      file.kind === 'document' ? { ...file, path: `${base}.html` } : file,
+    ),
+  };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -462,6 +478,48 @@ export function bundleShape(
 
 /** What the download's name will be, before anything is built. */
 export function bundleName(fileName: string, shape: 'single' | 'archive'): string {
-  const base = fileName.replace(/\.html?$/i, '') || 'edited-page';
+  const base = exportBase(fileName);
   return shape === 'single' ? `${base}.html` : `${base}.zip`;
+}
+
+/**
+ * A file name reduced to something safe to write, without the extension.
+ *
+ * This is user input now — someone types the name in the export step — and it ends up as
+ * a real file on a real disk and as a path inside an archive. So it is narrowed rather
+ * than trusted:
+ *
+ * - **Any directory part is dropped.** Where the file goes is the picker's business, and a
+ *   name containing `../` is either a mistake or an attempt to write somewhere else.
+ * - **Characters that are illegal or ambiguous somewhere are removed** — the Windows set
+ *   plus control characters, since an export is meant to travel between machines.
+ * - **Leading dots go**, because a page saved as a hidden file looks like a save that
+ *   silently failed.
+ *
+ * Idempotent, so it can be applied on every keystroke and again at write time.
+ */
+export function exportBase(fileName: string): string {
+  const last = fileName.split(/[\\/]+/).pop() ?? '';
+  const base = last
+    .replace(/\.(html?|zip)$/i, '')
+    .replace(/[<>:"|?*\u0000-\u001f]/g, '')
+    .replace(/\s+/g, ' ')
+    .replace(/^\.+/, '')
+    .trim()
+    // Well under any filesystem's limit, with room for the extension.
+    .slice(0, 100)
+    .trim();
+  return base || 'edited-page';
+}
+
+/**
+ * A file's extension, lowercased, for comparing two names.
+ *
+ * Exists because the one place it is used is a correctness check rather than a display
+ * detail: what a save picker was told the file would be, against what the build turned out
+ * to be. Writing zip bytes to a name ending `.html` produces a file that does not open.
+ */
+export function extensionOf(name: string): string {
+  const dot = name.lastIndexOf('.');
+  return dot === -1 ? '' : name.slice(dot).toLowerCase();
 }

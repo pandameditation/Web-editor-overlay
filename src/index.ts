@@ -173,10 +173,27 @@ export interface OverlayAPI {
    * assets could not be reached. Reads every asset, so it is worth showing progress for.
    */
   previewBundle(): Promise<BundlePlan | null>;
-  /** Write the page out and hand it over. Counts as a save. */
+  /**
+   * Write the page out and hand it over. Counts as a save.
+   *
+   * Asks where the file goes first, where the browser can ask and it has not been turned
+   * off — so this must be reached from a user gesture, the same as any picker. Resolves
+   * null when the user backs out of that dialog.
+   */
   writeBundle(): Promise<BundlePlan | null>;
   /** How the page is written out when there is nowhere to write to. */
   setBundleOptions(options: Partial<BundleOptions>): void;
+  /**
+   * What to call the file, without its extension. Null goes back to the page's own name.
+   *
+   * The extension is not on offer: it follows from the placement choices, since files
+   * beside an HTML page can only travel as an archive.
+   */
+  setExportName(name: string | null): void;
+  /** Whether writing asks where the file goes. Ignored where the browser cannot ask. */
+  setExportPrompt(on: boolean): void;
+  /** True when this browser can ask where to put a file. */
+  canChooseWhere(): boolean;
   exportDesignSystem(): DesignSystemDocument;
   /** The whole design system as one copy-pasteable seed string. */
   exportSeed(): Promise<string>;
@@ -265,6 +282,9 @@ export function mount(options: MountOptions = {}): OverlayAPI {
     previewBundle: () => engine.previewBundle(),
     writeBundle: () => engine.writeBundle(),
     setBundleOptions: (options) => engine.setBundleOptions(options),
+    setExportName: (name) => engine.setExportName(name),
+    setExportPrompt: (on) => engine.setExportPrompt(on),
+    canChooseWhere: () => engine.exportPickerAvailable(),
     exportDesignSystem: () => engine.designSystem(),
     exportSeed: () => engine.designSystemSeed(),
     importDesignSystem: (document_, overwrite = false) =>

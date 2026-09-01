@@ -346,6 +346,71 @@ export class HeoSaveDialog extends HeoElement {
         line-height: 1.45;
       }
 
+      /* ---- What it is called, and where it lands ---- */
+
+      .naming {
+        display: grid;
+        gap: 7px;
+        margin-bottom: 12px;
+        padding: 9px 11px;
+        border: 1px solid var(--heo-line);
+        border-radius: var(--heo-r-sm);
+        background: var(--heo-raised);
+      }
+      .naming .row {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+      }
+      .naming .lead {
+        flex: 0 0 auto;
+        color: var(--heo-text-dim);
+        font-size: 11px;
+      }
+      .naming input[type='text'] {
+        flex: 1 1 auto;
+        min-width: 0;
+        height: 25px;
+        padding: 0 7px;
+        border: 1px solid var(--heo-line-strong);
+        border-radius: var(--heo-r-sm);
+        background: var(--heo-sunken);
+        color: var(--heo-text);
+        font-family: var(--heo-mono);
+        font-size: 11px;
+      }
+      .naming input[type='text']:focus-visible {
+        outline: none;
+        border-color: var(--heo-accent);
+      }
+      /* The extension is shown, not editable: it follows the shape, and a zip named .html
+         is a file that does not open. */
+      .naming .ext {
+        flex: 0 0 auto;
+        color: var(--heo-text-faint);
+        font-family: var(--heo-mono);
+        font-size: 11px;
+      }
+      .naming .to {
+        display: flex;
+        align-items: flex-start;
+        gap: 7px;
+        color: var(--heo-text-faint);
+        font-size: 10.5px;
+        line-height: 1.45;
+      }
+      .naming .to input[type='checkbox'] {
+        width: 13px;
+        height: 13px;
+        margin: 1px 0 0;
+        flex: 0 0 auto;
+        accent-color: var(--heo-accent);
+        cursor: pointer;
+      }
+      .naming label.to {
+        cursor: pointer;
+      }
+
       .destination {
         display: flex;
         flex-wrap: wrap;
@@ -522,6 +587,10 @@ export class HeoSaveDialog extends HeoElement {
         s.bundleOptions,
         s.bundlePlan,
         s.bundling,
+        // And where it is going, since the footer names the file: typing in the name field
+        // has to reach the button that promises to write it.
+        s.exportName,
+        s.exportPrompt,
       ] as const,
     shallowArrayEquals,
   );
@@ -858,7 +927,11 @@ export class HeoSaveDialog extends HeoElement {
         class="btn primary"
         type="button"
         ?disabled=${saving || bundling || nothingToDo}
-        title=${nothingToDo ? 'Nothing to write' : `Write ${name} and download it`}
+        title=${nothingToDo
+          ? 'Nothing to write'
+          : this.state.value.exportPrompt
+            ? `Choose where to put ${name}, then write it`
+            : `Write ${name} to your downloads folder`}
         @click=${() => void this.editor.save()}
       >
         ${icon('save', 12)} Write ${name}
@@ -977,6 +1050,8 @@ export class HeoSaveDialog extends HeoElement {
           ${this.#renderPlacement('image', 'Images and fonts', survey)}
         </div>
 
+        ${this.#renderNaming(shape)}
+
         ${limit
         ? html`<div class="access blocked">
               <span class="g">${icon('alert', 12)}</span>
@@ -1042,6 +1117,62 @@ export class HeoSaveDialog extends HeoElement {
           ${this.#renderPrimary()}
         </div>
       </footer>
+    `;
+  }
+
+  /**
+   * What the file is called, and where it lands.
+   *
+   * The name is editable and the extension is not. The extension follows the shape — one
+   * file is `.html`, files beside it can only travel as `.zip` — so offering it as text
+   * would be offering someone the chance to name an archive `.html` and produce a file that
+   * does not open. Shown rather than hidden, because the whole point of this step is that
+   * nothing about the download is a surprise.
+   *
+   * Where it goes is a browser capability, not a preference, so the control only appears
+   * where there is a choice to make. Chrome and Edge can ask; Firefox and Safari cannot, and
+   * a switch that did nothing there would be worse than the plain sentence saying so.
+   */
+  #renderNaming(shape: 'single' | 'archive'): TemplateResult {
+    const { exportName, exportPrompt } = this.state.value;
+    const picker = this.editor.exportPickerAvailable();
+
+    return html`
+      <div class="naming">
+        <div class="row">
+          <span class="lead" id="heo-export-name-label">Save as</span>
+          <input
+            type="text"
+            .value=${exportName ?? ''}
+            placeholder=${this.editor.exportDefaultName}
+            aria-labelledby="heo-export-name-label"
+            spellcheck="false"
+            autocomplete="off"
+            @input=${(event: Event) =>
+        this.editor.setExportName((event.target as HTMLInputElement).value)}
+          />
+          <span class="ext">${shape === 'single' ? '.html' : '.zip'}</span>
+        </div>
+
+        ${picker
+        ? html`<label class="to">
+              <input
+                type="checkbox"
+                .checked=${exportPrompt}
+                @change=${(event: Event) =>
+            this.editor.setExportPrompt((event.target as HTMLInputElement).checked)}
+              />
+              <span>
+                ${exportPrompt
+            ? 'Ask where to put it. The folder you pick is remembered for next time.'
+            : 'Send it straight to your downloads folder without asking.'}
+              </span>
+            </label>`
+        : html`<span class="to">
+              This browser cannot ask where to put a file, so it goes wherever downloads go.
+              Chrome and Edge can offer the folder.
+            </span>`}
+      </div>
     `;
   }
 
