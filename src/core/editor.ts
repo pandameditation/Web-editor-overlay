@@ -5439,32 +5439,40 @@ function linkElementFor(href: string): HTMLLinkElement | null {
 const NBSP = '\u00a0';
 
 /**
- * Turn the browser's editing spaces back into plain ones, across the part that changed.
+ * Turn the browser's editing spaces back into plain ones, where the two mean the same thing.
  *
- * A `contenteditable` region does not hold the characters you typed. Wherever a plain
- * space would collapse to nothing — at the start or end of the content, or beside another
- * space — the browser stores U+00A0 instead, because that is the only way to keep the gap
- * on screen while the text is being worked on. It is a rendering device, and it belongs to
- * the edit rather than to the document: `innerHTML` serialises U+00A0 as `&nbsp;`, so every
- * one of them that survives the edit is an entity in the user's source file. Pasting a
- * sentence copied from another page was the loudest case — the clipboard brings the source
- * page's hard spaces with it, so every gap between words arrived as one — but typing a
- * single trailing space does it too.
+ * A `contenteditable` region does not hold the characters you typed. Wherever a plain space
+ * would collapse to nothing — beside another space, or at the edge of the content — the
+ * browser stores U+00A0 instead, because that is the only way HTML can keep the gap on
+ * screen. `innerHTML` then serialises U+00A0 as `&nbsp;`, so every one of them that survives
+ * the edit is an entity in the user's source file. Pasting a sentence copied from another
+ * page is the loudest case: the clipboard carries the source page's own hard spaces, so
+ * every gap between its words arrives as one.
  *
- * Scoped to what changed, and that is the whole reason this takes a `before`. A hard space
- * an author wrote deliberately, in `10&nbsp;km` or `Mr.&nbsp;Smith`, is indistinguishable
- * from one the browser invented; the only thing that separates them is that the author's
- * was already there. So the text is compared against how it started, and only the span
- * between the first and last difference is rewritten. Everything either side keeps whatever
- * it had.
+ * Two conditions, and both are necessary.
  *
- * The substitution is one character for one character, which is what makes it safe to do
+ * **It must render identically.** A lone hard space with real characters either side takes
+ * exactly the width a plain space would, so swapping it changes nothing anyone can see. Every
+ * other position is load-bearing: in `one<nbsp> two` or `one two<nbsp>` the hard space *is*
+ * the second space and the trailing space, and turning those into plain ones would collapse
+ * them away. Multiple spaces are something a user is entitled to type, and this must never be
+ * what takes them back out. Whitespace-preserving elements are the exception in the other
+ * direction — under `pre` a plain space run survives on its own, so there every hard space is
+ * interchangeable.
+ *
+ * **It must be part of what changed.** A hard space an author wrote deliberately, in
+ * `10&nbsp;km` or `Mr.&nbsp;Smith`, is indistinguishable from one the browser invented — the
+ * only thing separating them is that the author's was already there. So the text is compared
+ * against how it started and only the span between the first and last difference is
+ * considered. Everything either side keeps exactly what it had.
+ *
+ * The substitution is one character for one character, which is what makes it safe to run
  * under a live caret: every offset in every text node still means what it meant, so the
  * insertion point does not move and no selection is lost.
  *
- * Runs unattributed, because writing to a text node goes through a setter `provenance`
- * watches — and an element marked as script-rendered for having had its spaces tidied
- * would be an element the editor then refuses to trust.
+ * Unattributed, because writing to a text node goes through a setter `provenance` watches,
+ * and an element marked script-rendered for having had its spaces tidied is an element the
+ * editor then refuses to trust.
  */
 function restorePlainSpaces(el: HTMLElement, before: string): boolean {
   const after = el.textContent ?? '';
@@ -5475,27 +5483,78 @@ function restorePlainSpaces(el: HTMLElement, before: string): boolean {
 
   return withoutProvenance(() => {
     const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    const preserving = new Map<Element, boolean>();
     let changed = false;
     let offset = 0;
 
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
       const data = node.nodeValue ?? '';
-      // Where this node overlaps the changed span, in the node's own coordinates. The
-      // walker visits text nodes in the order `textContent` concatenates them, so a
-      // running count is enough to line the two up.
-      const from = Math.max(0, span.start - offset);
-      const to = Math.min(data.length, span.end - offset);
+      // The walker visits text nodes in the order `textContent` concatenates them, so a
+      // running count lines the node up with the offsets `changedSpan` reported.
+      const start = offset;
       offset += data.length;
-      if (to <= from || !data.includes(NBSP)) continue;
+      if (!data.includes(NBSP)) continue;
 
-      const next =
-        data.slice(0, from) + data.slice(from, to).replaceAll(NBSP, ' ') + data.slice(to);
+      const parent = node.parentElement;
+      const keepsRuns = parent != null && preservesSpaceRuns(parent, preserving);
+      let next = '';
+
+      for (let i = 0; i < data.length; i += 1) {
+        const character = data[i];
+        const at = start + i;
+        const swappable =
+          character === NBSP &&
+          at >= span.start &&
+          at < span.end &&
+          (keepsRuns || standsForASpace(after, at));
+        next += swappable ? ' ' : character;
+      }
+
       if (next === data) continue;
       node.nodeValue = next;
       changed = true;
     }
     return changed;
   });
+}
+
+/**
+ * Whether a plain space at this offset would render the way the hard space there does.
+ *
+ * True only for a hard space with a non-space character on each side. Anything else is
+ * holding a gap open that a plain space cannot hold: a neighbouring space means this one is
+ * the second of a run, and a missing neighbour means it is at the edge of the content, where
+ * plain whitespace is dropped.
+ *
+ * `\s` covers U+00A0 in JavaScript, so a run of hard spaces stops itself — which is the
+ * conservative answer and the right one. Rewriting one of a pair would happen to preserve
+ * the width, but only until the next pass looked at the other.
+ */
+function standsForASpace(text: string, at: number): boolean {
+  const before = text[at - 1];
+  const after = text[at + 1];
+  if (before === undefined || after === undefined) return false;
+  return !/\s/.test(before) && !/\s/.test(after);
+}
+
+/**
+ * Whether this element renders a run of plain spaces as a run.
+ *
+ * Inside one, the hard space has no job to do — `pre` and its relatives keep every space
+ * that is written — so all of them can go back to being spaces. Read from the computed
+ * style because the mode inherits, and cached per element because a paste into a list of
+ * `<code>` spans would otherwise ask the same question of each of them.
+ *
+ * `pre-line` is deliberately absent: it keeps newlines and collapses spaces, so a run there
+ * still needs the hard spaces to survive.
+ */
+function preservesSpaceRuns(el: Element, cache: Map<Element, boolean>): boolean {
+  const known = cache.get(el);
+  if (known !== undefined) return known;
+  const mode = getComputedStyle(el).whiteSpace;
+  const preserved = mode === 'pre' || mode === 'pre-wrap' || mode === 'break-spaces';
+  cache.set(el, preserved);
+  return preserved;
 }
 
 /**
