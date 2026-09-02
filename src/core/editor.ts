@@ -17,6 +17,7 @@ import {
   IGNORE_ATTR,
   INSERTED_ATTR,
   RULE_STYLE_ID,
+  SEED_SCRIPT_SELECTOR,
   TOKEN_STYLE_ID,
   VERSION,
 } from './constants.js';
@@ -745,7 +746,26 @@ export class EditorEngine {
     this.tokens.scanDocument();
     this.classes.scanDocument();
     this.rules.scanDocument();
+    /*
+     * The page's own seed first, then whatever this mount was configured with.
+     *
+     * That order keeps configuration the more specific answer — a `data-seed` attribute or a
+     * `designSystem` plugin option still wins a collision — while a library saved into the page
+     * survives, because a seed carrying only blocks cannot be overwritten by options carrying
+     * only tokens.
+     */
+    const carriesSeed = this.#seedFromDocument();
     this.#seedFromOptions();
+    /*
+     * A page that already carries its library keeps carrying it.
+     *
+     * The tick defaults off because writing a script into someone's markup should be asked for.
+     * But once it is in the file the asking is done, and leaving the default off meant the next
+     * save silently stopped updating it: add a block, save, and the file still held the previous
+     * library with no indication that the new one had been left behind. Opting in is a decision
+     * about this page, so the page is where it is remembered.
+     */
+    if (carriesSeed) this.store.patch({ saveBlockLibrary: true });
 
     this.#listeners.push(
       this.history.onChange(() => {
@@ -842,6 +862,39 @@ export class EditorEngine {
     // Nothing should outlive the editor that handed the names out.
     resetSheetIds();
     this.#project = null;
+  }
+
+  /**
+   * Apply the seed the page carries in its own markup, if it has one.
+   *
+   * This is what makes "write the library into the page" mean anything: the save puts a
+   * `<script type="application/heo-seed">` into the file, and this reads it back on the next
+   * load. Without it the tag sat in the file being ignored, so a library authored in one session
+   * still died with it — the save worked and looked like it worked, and the reload silently
+   * dropped everything.
+   *
+   * It belongs to the engine rather than to the script-tag integration, and that is the actual
+   * bug being fixed. Reading it there made it conditional on how the overlay was mounted: the
+   * loader-tag path found it, while the Vite plugin — which mounts from a virtual module, with no
+   * loader tag anywhere — never looked. A seed in the document is a fact about the document, and
+   * every mount path shares the document.
+   *
+   * Reported rather than swallowed. A seed that will not parse is usually one that has been
+   * hand-edited, and silence would leave someone staring at a file that plainly contains their
+   * library, wondering why it is not there.
+   */
+  #seedFromDocument(): boolean {
+    const block = document.querySelector(SEED_SCRIPT_SELECTOR);
+    const text = block?.textContent?.trim();
+    if (!text) return false;
+    try {
+      this.#applySeed(text);
+      return true;
+    } catch (error) {
+      console.error('[html-editor-overlay] could not read the seed in this page', error);
+      this.notify('This page carries a design system the editor could not read.', 'error');
+      return false;
+    }
   }
 
   #seedFromOptions(): void {

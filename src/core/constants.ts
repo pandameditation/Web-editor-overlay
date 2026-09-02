@@ -205,3 +205,21 @@ export const NATIVE_INPUT_TAGS = new Set(['input', 'select', 'textarea', 'option
 
 /** z-index band reserved for overlay chrome. */
 export const Z_BASE = 2147482000;
+
+/**
+ * MIME type of the inert script a page carries its own design system in.
+ *
+ * Unknown to the browser on purpose, so the tag is parsed and nothing in it is executed. The
+ * seed is data; the overlay is the only thing that does anything with it, and a page without
+ * the overlay carries a few kB of payload that breaks nothing.
+ */
+export const SEED_SCRIPT_TYPE = 'application/heo-seed';
+
+/**
+ * The seed tag, as a selector.
+ *
+ * Shared because four places need to agree on it — the file patcher and the serializer both
+ * write one, and the engine reads one back at mount. Three copies of the same string is how the
+ * write side and the read side end up describing different tags.
+ */
+export const SEED_SCRIPT_SELECTOR = `script[type="${SEED_SCRIPT_TYPE}"]`;

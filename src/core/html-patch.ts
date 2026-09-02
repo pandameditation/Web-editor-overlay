@@ -31,6 +31,11 @@
  * the file stops reaching it.
  */
 
+// The only import this module has, and it is a string. Everything else here is text in, text
+// out — but the seed tag it writes has to be the tag the engine looks for, and two copies of
+// that MIME type is how the writer and the reader end up describing different tags.
+import { SEED_SCRIPT_TYPE } from './constants.js';
+
 /**
  * The file, line and column out of a `data-heo-src` value.
  *
@@ -770,7 +775,7 @@ export function hasSeedBlock(html: string): boolean {
 function seedBlock(seed: string, indent: string): string {
   return [
     SEED_BLOCK_START,
-    `${indent}<script type="application/heo-seed">`,
+    `${indent}<script type="${SEED_SCRIPT_TYPE}">`,
     `${indent}  ${seed}`,
     `${indent}</script>`,
     `${indent}${SEED_BLOCK_END}`,

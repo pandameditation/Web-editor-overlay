@@ -32,16 +32,6 @@ export interface ScriptTagHost {
 const NEGATIVE = new Set(['false', 'off', '0', 'no']);
 
 /**
- * A seed too long for an attribute, in a block of its own.
- *
- * An unknown `type` is markup the browser will not execute, so this is inert to
- * everything but us. It exists because a design system with components runs to
- * several thousand characters, and while an attribute will technically hold that,
- * nobody can read or edit the file afterwards. A block wraps.
- */
-const SEED_BLOCK = 'script[type="application/heo-seed"]';
-
-/**
  * The tag that loaded this bundle.
  *
  * `document.currentScript` is the accurate answer, and it works for a tag the page
@@ -80,9 +70,15 @@ export function optionsFromAttributes(tag: HTMLElement): MountOptions {
   const presets = read('data-presets');
   if (presets !== null) options.presets = !NEGATIVE.has(presets.trim().toLowerCase());
 
-  // A whole design system, inline. The attribute wins over the block when both are
-  // present: it is on the tag doing the mounting, so it is the more specific answer.
-  const seed = read('data-seed') ?? seedFromBlock();
+  /*
+   * A whole design system, inline.
+   *
+   * Only the attribute. A seed in a `<script type="application/heo-seed">` block used to be read
+   * here too, which quietly made it a feature of *this* mount path — a page mounted by the Vite
+   * plugin or by a direct `mount()` call never came through here and never saw it. The engine
+   * reads that block itself now, on every path, and still lets this attribute win a collision.
+   */
+  const seed = read('data-seed');
   if (seed) options.seed = seed;
 
   // A selector rather than an element, since an attribute cannot hold a reference.
@@ -94,13 +90,6 @@ export function optionsFromAttributes(tag: HTMLElement): MountOptions {
   }
 
   return options;
-}
-
-/** The seed in a `<script type="application/heo-seed">` block, if the page has one. */
-function seedFromBlock(): string | null {
-  const block = document.querySelector(SEED_BLOCK);
-  const text = block?.textContent?.trim();
-  return text ? text : null;
 }
 
 /**

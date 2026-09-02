@@ -6,6 +6,8 @@ import {
   MIRROR_ATTR,
   MODAL_ATTR,
   RENDERED_ATTR,
+  SEED_SCRIPT_SELECTOR,
+  SEED_SCRIPT_TYPE,
   SOURCE_ATTR,
 } from './constants.js';
 import { withoutProvenance } from './provenance.js';
@@ -754,13 +756,13 @@ function writeSeedScript(clone: HTMLElement, seed: string): void {
   const payload = seed.trim();
   if (!payload) return;
 
-  const existing = clone.querySelector('script[type="application/heo-seed"]');
+  const existing = clone.querySelector(SEED_SCRIPT_SELECTOR);
   if (existing) {
     existing.textContent = payload;
     return;
   }
   const script = clone.ownerDocument.createElement('script');
-  script.setAttribute('type', 'application/heo-seed');
+  script.setAttribute('type', SEED_SCRIPT_TYPE);
   script.textContent = payload;
   // `<head>` for preference, so it is parsed before anything that might read it. A document
   // with no head is legal, and a script is honoured wherever it sits.
