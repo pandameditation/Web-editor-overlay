@@ -520,6 +520,16 @@ export interface ExportOptions {
    * common path byte-identical to what it was.
    */
   designSystemBlocks?: Record<string, string>;
+  /**
+   * The block library as a seed, to be written into `<head>` as a data script.
+   *
+   * The one part of a session that serializing the page cannot capture, because it is not in the
+   * page: a block is a definition the editor holds, and what the DOM shows is the *instances* of
+   * it. Without this an exported file carries nine cards and no way to make a tenth.
+   *
+   * Absent or empty writes nothing, which is what an unticked box means.
+   */
+  seedScript?: string;
 }
 
 export function exportHTML(
@@ -707,6 +717,8 @@ export function exportHTML(
   clone.style.removeProperty('--heo-drag-accent');
   if (!clone.getAttribute('style')?.trim()) clone.removeAttribute('style');
 
+  writeSeedScript(clone, options.seedScript ?? '');
+
   const doctype = document.doctype
     ? `<!DOCTYPE ${document.doctype.name}>\n`
     : '<!DOCTYPE html>\n';
@@ -724,6 +736,35 @@ export function exportHTML(
  */
 function isToolingURL(url: string): boolean {
   return /(?:^|\/)@(?:vite|id|fs|react-refresh)(?:\/|$)/.test(url);
+}
+
+/**
+ * Put the block library into the clone as a data script, or leave whatever is there.
+ *
+ * The counterpart of `upsertSeedBlock` for the serializing route. Reusing that function is not
+ * an option and the difference is instructive: it works on text, matching comment markers, and
+ * here there is no text yet — this runs against a DOM tree on its way to being one. Same
+ * outcome, same tag, and `script-tag.ts` reads either.
+ *
+ * An empty seed leaves an existing block alone rather than removing it, matching the text
+ * route: unticking the box means "do not maintain this", which is not the same as "delete the
+ * library already in this file".
+ */
+function writeSeedScript(clone: HTMLElement, seed: string): void {
+  const payload = seed.trim();
+  if (!payload) return;
+
+  const existing = clone.querySelector('script[type="application/heo-seed"]');
+  if (existing) {
+    existing.textContent = payload;
+    return;
+  }
+  const script = clone.ownerDocument.createElement('script');
+  script.setAttribute('type', 'application/heo-seed');
+  script.textContent = payload;
+  // `<head>` for preference, so it is parsed before anything that might read it. A document
+  // with no head is legal, and a script is honoured wherever it sits.
+  (clone.querySelector('head') ?? clone).prepend(script);
 }
 
 /**

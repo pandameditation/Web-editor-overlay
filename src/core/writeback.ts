@@ -19,6 +19,7 @@ import {
   indentOf,
   parseSourceMarker,
   patchHTML,
+  upsertSeedBlock,
   upsertStyleBlock,
   type ElementAnchor,
   type HtmlPatch,
@@ -169,6 +170,14 @@ export interface WriteSubject {
    * So it is a choice with a sensible default rather than a rule.
    */
   designSystemTarget: string;
+  /**
+   * The block library, encoded as a seed, when the user asked for it to travel with the page.
+   *
+   * Empty or absent means it does not. A separate field from `designSystemCSS` because it is a
+   * separate payload with a separate destination: CSS can go to a stylesheet and a seed cannot
+   * go anywhere but the markup, so there is no target to choose — only whether to write it.
+   */
+  blockLibrarySeed?: string;
   /**
    * How many elements in `html` the page's own code built rather than the file declaring.
    *
@@ -445,6 +454,7 @@ export async function buildWritePlan(
    * reason is stated and the prompt still carries it.
    */
   const systemInDocument = subject.designSystemTarget === DOCUMENT_TARGET;
+  const blockSeed = subject.blockLibrarySeed?.trim() ?? '';
   /*
    * Whether an element belongs to a region the page built.
    *
@@ -456,7 +466,7 @@ export async function buildWritePlan(
     regions.some((region) => region === el || region.contains(el));
   const documentRecords: ChangeRecord[] = [];
   for (const record of records) {
-    if (!isDocumentChange(record, systemInDocument)) continue;
+    if (!isDocumentChange(record, systemInDocument, Boolean(blockSeed))) continue;
     const rendered = record.detail?.rendered;
     if (rendered) {
       unwritable.push({ record, reason: rendered });
@@ -504,6 +514,7 @@ export async function buildWritePlan(
             // has already had it written by step 3, and writing it twice is the bug that
             // `isDocumentChange` exists to prevent.
             systemInDocument ? systemCSS : '',
+            blockSeed,
           );
       if (patched) {
         if (patched.html !== before) {
@@ -586,6 +597,7 @@ export function patchDocumentSource(
   documentPath: string,
 ): { html: string } | { why: string[] } {
   const systemInDocument = subject.designSystemTarget === DOCUMENT_TARGET;
+  const blockSeed = subject.blockLibrarySeed?.trim() ?? '';
   const regions = subject.generatedRegions ?? [];
   const isGenerated = (el: HTMLElement): boolean =>
     regions.some((region) => region === el || region.contains(el));
@@ -593,7 +605,8 @@ export function patchDocumentSource(
   // The same selection the write path makes: what the markup can carry, minus what the
   // page's own code owns.
   const documentRecords = subject.records.filter(
-    (record) => isDocumentChange(record, systemInDocument) && !record.detail?.rendered,
+    (record) =>
+      isDocumentChange(record, systemInDocument, Boolean(blockSeed)) && !record.detail?.rendered,
   );
   if (!documentRecords.length) return { why: ['nothing in this change set belongs to the markup'] };
 
@@ -605,6 +618,7 @@ export function patchDocumentSource(
     isGenerated,
     why,
     systemInDocument ? designSystemCSSText(subject.designSystemCSS) : '',
+    blockSeed,
   );
   return patched ?? { why: why.length ? why : ['no change could be placed in the file'] };
 }
@@ -641,7 +655,14 @@ const STRUCTURAL = new Set<ChangeRecord['kind']>([
  * for the markup — so they are delivered wholesale rather than placed individually. Naming them
  * here is what lets the patcher skip them instead of failing to find an element they never had.
  */
-const DESIGN_SYSTEM = new Set<ChangeRecord['kind']>(['token', 'token-class', 'token-rule']);
+/*
+ * `block` is here for the same reason and by a different route. A block change reaches a file
+ * as one seed script rather than as CSS, but it is delivered wholesale just the same, and it
+ * names no element — so the patcher has to skip it rather than hunt for one.
+ */
+const DESIGN_SYSTEM = new Set<ChangeRecord['kind']>([
+  'token', 'token-class', 'token-rule', 'block',
+]);
 
 /**
  * Rebuild each changed container's children from the file plus the live arrangement.
@@ -996,6 +1017,7 @@ function tryPatchDocument(
   generated: (el: HTMLElement) => boolean,
   why: string[],
   designSystemCSS = '',
+  blockLibrarySeed = '',
 ): { html: string } | null {
   if (!records.length) return null;
 
@@ -1096,7 +1118,16 @@ function tryPatchDocument(
    * rebuild touches, so in practice they do not collide — but ordering it explicitly costs
    * nothing and removes the question.
    */
-  return { html: upsertStyleBlock(reconciled.html, designSystemCSS) };
+  /*
+   * And the block library after it, for the same reason and in the same place.
+   *
+   * Two managed regions in `<head>`, each with its own markers, so a save that changes only the
+   * design system leaves the seed byte-identical and a save that changes only the library leaves
+   * the CSS alone. Both are no-ops when their payload is empty.
+   */
+  return {
+    html: upsertSeedBlock(upsertStyleBlock(reconciled.html, designSystemCSS), blockLibrarySeed),
+  };
 }
 
 function anchorKey(anchor: ElementAnchor): string {
@@ -1123,7 +1154,11 @@ function groupFor(
  * written as an exclusion: a new kind of element edit should be covered by the
  * document write without anyone having to remember to add it here.
  */
-function isDocumentChange(record: ChangeRecord, designSystemInDocument: boolean): boolean {
+function isDocumentChange(
+  record: ChangeRecord,
+  designSystemInDocument: boolean,
+  blockLibraryInDocument: boolean,
+): boolean {
   /*
    * A token, class or rule edit belongs to the design system, not to the document.
    *
@@ -1143,6 +1178,15 @@ function isDocumentChange(record: ChangeRecord, designSystemInDocument: boolean)
   ) {
     return designSystemInDocument;
   }
+  /*
+   * A block reaches the document only if the user asked for the library to travel.
+   *
+   * There is nowhere else it could go — a stylesheet cannot hold a template and props — so
+   * this is not a choice of destination like the design system's is. It is a choice of whether
+   * to write it at all, and when the answer is no the change is still real, still on the undo
+   * stack, and still in the prompt; it simply has no file to land in.
+   */
+  if (record.kind === 'block') return blockLibraryInDocument;
   const target = record.detail?.writeTo;
   return !target || target === DOCUMENT_TARGET;
 }

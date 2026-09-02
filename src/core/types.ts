@@ -174,7 +174,16 @@ export interface ChangeRecord {
   | 'replace'
   | 'token'
   | 'token-class'
-  | 'token-rule';
+  | 'token-rule'
+  /**
+   * A block added to, changed in, or removed from the library.
+   *
+   * Its own kind rather than folded into `token`, because it is the one part of the design
+   * system that is not CSS: a block is markup plus props plus, sometimes, a module, so it
+   * reaches a file as a seed rather than as a rule. Sharing a kind with tokens would have the
+   * write plan offer it to a stylesheet, which cannot hold one.
+   */
+  | 'block';
   /** Short human summary, e.g. `Set padding to var(--space-lg)`. */
   summary: string;
   /** CSS selector path to the target, resolved at record time. */

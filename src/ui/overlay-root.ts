@@ -15,6 +15,7 @@ import './chrome/toast.js';
 import './chrome/save-dialog.js';
 import './chrome/code-workspace.js';
 import './chrome/extract-dialog.js';
+import './chrome/confirm-dialog.js';
 import './chrome/paste-dialog.js';
 import './chrome/source-dialog.js';
 import './chrome/dock.js';
@@ -67,6 +68,7 @@ export class HeoOverlay extends HeoElement {
         s.htmlPaste,
         s.sourceEdit,
         s.codeWorkspace,
+        s.confirm,
         s.theme,
         s.accent,
       ] as const,
@@ -105,6 +107,11 @@ export class HeoOverlay extends HeoElement {
       ${state.htmlPaste ? html`<heo-paste-dialog></heo-paste-dialog>` : nothing}
       ${state.sourceEdit ? html`<heo-source-dialog></heo-source-dialog>` : nothing}
       ${state.codeWorkspace ? html`<heo-code-workspace></heo-code-workspace>` : nothing}
+      <!--
+        Above every other dialog, because it is asked *from* them: the library panel sits
+        inside the dock, and a question raised there has to be answerable on top of it.
+      -->
+      ${state.confirm ? html`<heo-confirm-dialog></heo-confirm-dialog>` : nothing}
       <!--
         Last, so paint order agrees with what the z-index already says.
         A toast is the reply to an action usually taken in one of the dialogs above, so

@@ -701,6 +701,8 @@ export class HeoSaveDialog extends HeoElement {
         s.exportPrompt,
         // How much of the design system travels, which both save steps offer.
         s.designSystemScope,
+        // And whether the block library goes with it, offered beside it in both.
+        s.saveBlockLibrary,
       ] as const,
     shallowArrayEquals,
   );
@@ -862,7 +864,7 @@ export class HeoSaveDialog extends HeoElement {
               </span>
             </div>`
         : nothing}
-        ${this.#renderDesignSystemScope()}
+        ${this.#renderDesignSystemScope()} ${this.#renderBlockLibrary()}
         ${planning
         ? html`<div class="empty">Reading the project files…</div>`
         : this.#renderPlan()}
@@ -1001,6 +1003,52 @@ export class HeoSaveDialog extends HeoElement {
    * to picture, so each option says how many tokens and classes it means, and the difference
    * between the two numbers is the argument.
    */
+  /**
+   * Whether the block library travels with the page.
+   *
+   * Its own row rather than a fourth option on the extent radios, because it is a different
+   * payload with a different destination. Tokens, classes and rules become CSS and can be sent
+   * to a stylesheet; a block is markup plus props plus sometimes a module, and the only thing
+   * that can carry one is a seed in the markup. So the question is not "how much" but "at all".
+   *
+   * Absent when the library holds nothing but presets — those are rebuilt by whatever loads the
+   * page, so there would be nothing to write and no decision to offer.
+   */
+  #renderBlockLibrary(): TemplateResult | typeof nothing {
+    const count = this.editor.blockLibrarySize();
+    if (!count) return nothing;
+    const on = this.state.value.saveBlockLibrary;
+
+    return html`<section class="pick">
+      <h3 id="heo-blocks">Block library</h3>
+      <p class="lead">
+        The page carries the components you placed. It does not carry the templates they came
+        from, so on the next load there is no way to make another one.
+      </p>
+      <div class="choices" role="group" aria-labelledby="heo-blocks">
+        <label class=${`choice${on ? ' on' : ''}`}>
+          <input
+            type="checkbox"
+            .checked=${on}
+            @change=${(event: Event) =>
+        this.editor.setSaveBlockLibrary((event.target as HTMLInputElement).checked)}
+          />
+          <span class="text">
+            <span class="name">Write the library into the page</span>
+            <span class="detail">
+              ${count} block${count === 1 ? '' : 's'} · a
+              <code class="mono">&lt;script type="application/heo-seed"&gt;</code> in the head
+            </span>
+            <span class="why">
+              Data, not code — the browser runs nothing. The editor reads it back on the next
+              load and the library is there again.
+            </span>
+          </span>
+        </label>
+      </div>
+    </section>`;
+  }
+
   #renderDesignSystemScope(): TemplateResult | typeof nothing {
     const all = this.editor.designSystemExtent('all');
     // Nothing authored or imported, so there is no question to ask.
@@ -1300,8 +1348,8 @@ export class HeoSaveDialog extends HeoElement {
           </div>
         </section>
 
-        ${this.#renderDesignSystemScope()} ${this.#renderPackaging(offerArchive)}
-        ${this.#renderNaming(shape)}
+        ${this.#renderDesignSystemScope()} ${this.#renderBlockLibrary()}
+        ${this.#renderPackaging(offerArchive)} ${this.#renderNaming(shape)}
 
         ${limit
         ? html`<div class="access blocked">

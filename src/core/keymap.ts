@@ -37,6 +37,14 @@ export function handleKeyDown(engine: EditorEngine, event: KeyboardEvent): void 
   // `code-submit` on Cmd+Enter, and a page shortcut firing underneath it would act on a
   // selection the user cannot see.
   if (state.htmlPaste) return;
+  /*
+   * And the confirmation, most of all.
+   *
+   * It is the one dialog whose entire purpose is that nothing happens until it is answered, so
+   * a page shortcut reaching past it — Delete on the selected element, say — would be the exact
+   * failure it exists to prevent.
+   */
+  if (state.confirm) return;
 
   // A native `<dialog>` opened with `showModal` makes everything outside it inert,
   // so a shortcut that opens overlay chrome would put it behind the modal where it

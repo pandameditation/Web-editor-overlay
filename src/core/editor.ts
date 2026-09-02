@@ -166,7 +166,7 @@ import {
   type BundleSurvey,
 } from './bundle.js';
 import { RuleRegistry } from './rules.js';
-import { decodeSeed, decodeSeedSync, encodeSeed } from './seed.js';
+import { decodeSeed, decodeSeedSync, encodeSeed, encodeSeedSync } from './seed.js';
 import {
   claimEvent,
   listen,
@@ -306,6 +306,36 @@ export interface BlockExtraction {
 
 export type Extraction = ClassExtraction | BlockExtraction;
 
+/**
+ * A question that has to be answered before something irreversible happens.
+ *
+ * Deliberately not a `window.confirm`, and deliberately not per-feature. The editor already
+ * owns a modal layer and a visual language, and a native dialog would be the one surface in
+ * the product that looks like 1997 and cannot say which nine elements are about to change.
+ *
+ * Held on the store like every other dialog, so the same rules apply for free: the page goes
+ * inert behind it, Escape cancels, and only one can be open.
+ *
+ * The bar for using it is narrow on purpose. Almost everything here is undoable, and an undo
+ * stack is a better answer than a prompt — a prompt in front of a reversible action is a tax
+ * on the ninety-nine times the user meant it. It is for the cases where the cost of being
+ * wrong is high enough that the user should look at the number first.
+ */
+export interface ConfirmRequest {
+  title: string;
+  /** The consequence, in a sentence. */
+  message: string;
+  /** What is at stake, when a count or a list makes it concrete. */
+  detail?: string;
+  /** Names the action rather than saying "OK", so the button is the answer to the title. */
+  confirmLabel: string;
+  /** `danger` for something that destroys, `warn` for something that overwrites. */
+  tone: 'danger' | 'warn';
+  /** Whether undo will get it back, which is the most useful thing the dialog can say. */
+  reversible?: boolean;
+  run: () => void;
+}
+
 /** An element, and the library block it is an instance of. */
 export interface BlockInstance {
   block: LibraryBlock;
@@ -382,7 +412,21 @@ export interface EditorState {
    * theme alongside a page that used two colours of it.
    */
   designSystemScope: DesignSystemScope;
+  /**
+   * Whether a saved page carries the block library with it.
+   *
+   * Separate from `designSystemScope`, which is about CSS: tokens, classes and rules reach a
+   * file as stylesheet text, and blocks cannot — a block is markup plus props plus, sometimes,
+   * a module, so the only thing that can carry one is the seed format. Different payload,
+   * different destination, different question.
+   *
+   * Off by default. Ticking it adds a script tag to somebody's HTML, which is a visible
+   * addition to a file they own and not something to do on their behalf.
+   */
+  saveBlockLibrary: boolean;
   extraction: Extraction | null;
+  /** A destructive action waiting to be confirmed. */
+  confirm: ConfirmRequest | null;
   /**
    * Which language the Code panel is showing, in the dock and expanded alike.
    *
@@ -618,7 +662,11 @@ export class EditorEngine {
       // Everything, by default: leaving something out is the deliberate act, and a save that
       // quietly dropped part of the vocabulary would be the worse surprise.
       designSystemScope: 'all',
+      // Unlike the design system's extent, off: this one adds a tag to the markup rather than
+      // deciding how much CSS an existing block carries.
+      saveBlockLibrary: false,
       extraction: null,
+      confirm: null,
       codeTab: 'html',
       codeWorkspace: false,
       toast: null,
@@ -1820,6 +1868,36 @@ export class EditorEngine {
     this.store.patch({ extraction: null });
   }
 
+  /* ---------------------------------------------------------------------- */
+  /* Asking first                                                           */
+  /* ---------------------------------------------------------------------- */
+
+  /**
+   * Hold an action until the user says yes.
+   *
+   * The callback is kept rather than the arguments, so the caller states its intent once and
+   * this has no opinion about what is being confirmed. A second request replaces the first:
+   * two questions at once is a stack of modals, and the answer to the buried one would be
+   * given blind.
+   */
+  askToConfirm(request: ConfirmRequest): void {
+    this.endTextEdit(true);
+    this.store.patch({ confirm: request });
+  }
+
+  /** Answer yes. Clears the question first, so the action runs against a settled UI. */
+  resolveConfirm(): void {
+    const pending = this.store.value.confirm;
+    if (!pending) return;
+    this.store.patch({ confirm: null });
+    pending.run();
+  }
+
+  cancelConfirm(): void {
+    if (!this.store.value.confirm) return;
+    this.store.patch({ confirm: null });
+  }
+
   /** Apply the pending extraction. Returns false and sets an error if invalid. */
   commitExtraction(): boolean {
     const pending = this.store.value.extraction;
@@ -1918,7 +1996,10 @@ export class EditorEngine {
       });
       // Props replace rather than merge: the review step is the whole truth about
       // them, so one deleted from the markup has to disappear with it.
-      const block = this.library.upsert({
+      //
+      // Through `upsertBlock` rather than straight into the library, so authoring a block is a
+      // change like any other: undoable, and visible to a save.
+      const block = this.upsertBlock({
         ...existing,
         ...built,
         props: Object.keys(applied.props).length ? applied.props : undefined,
@@ -1968,6 +2049,172 @@ export class EditorEngine {
   /** Props a block already declares, so editing one keeps its descriptions. */
   #existingProps(id: string | null): Record<string, PropSpec> | undefined {
     return id ? this.library.get(id)?.props : undefined;
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* The library, as changes rather than as side effects                    */
+  /* ---------------------------------------------------------------------- */
+
+  /**
+   * Add a block, or replace the one that has its id, undoably.
+   *
+   * Authoring a block used to be the one thing in the editor that simply happened. It wrote
+   * into the library and returned, which cost two separate things:
+   *
+   * Undo could not reach it. Half an hour of work on a template, one wrong Save, and the
+   * previous version was gone — while every trivial nudge to a margin was on the stack.
+   *
+   * And a save could not see it. The write plan is built from records, so a change that
+   * produced none was invisible to it; the library existed for exactly as long as the tab did.
+   * That is the half this shares with `importDesignSystemText`, which had the same problem and
+   * the same fix.
+   *
+   * Validation stays outside the command. `library.upsert` throws on a block with no id and no
+   * name, and a throw from inside `apply` would leave the stack holding a command that did
+   * nothing — so the caller checks first and this trusts what it is given.
+   */
+  upsertBlock(block: LibraryBlock): LibraryBlock {
+    const id = block.id;
+    /*
+     * Deep enough to put back.
+     *
+     * `props` and `element` are nested objects, and `upsert` replaces the map slot while sharing
+     * them — so a snapshot holding the references would be mutated by the very edit it exists to
+     * undo. The same care `setClassDeclaration` takes over one class's declarations.
+     */
+    const live = id ? this.library.get(id) : undefined;
+    const previous: LibraryBlock | undefined = live
+      ? {
+        ...live,
+        props: live.props ? { ...live.props } : undefined,
+        element: live.element ? { ...live.element } : undefined,
+      }
+      : undefined;
+    const next: LibraryBlock = { ...block };
+    let stored = next;
+
+    this.history.commit({
+      label: previous ? `Edit ${next.name}` : `Add ${next.name}`,
+      /*
+       * Keyed on the block, so a template edited four times in a row is one pending change
+       * reading "as it was before" to "as it is now" rather than four.
+       */
+      subject: `block:${id || next.name}`,
+      record: {
+        id: nextChangeId(),
+        kind: 'block',
+        summary: previous
+          ? `Update the ${next.name} block in the library`
+          : `Add a reusable ${next.name} block to the library`,
+        target: next.name,
+        before: previous?.html,
+        after: next.html,
+        detail: {
+          block: next.name,
+          html: next.html,
+          ...(next.props ? { props: Object.keys(next.props).join(', ') } : {}),
+          ...(next.element?.tag ? { tag: next.element.tag } : {}),
+        },
+        at: Date.now(),
+      },
+      apply: () => {
+        stored = this.library.upsert(next);
+      },
+      revert: () => {
+        if (previous) this.library.upsert(previous);
+        else this.library.remove(stored.id);
+      },
+    });
+    this.#bumpRevision();
+    return stored;
+  }
+
+  /**
+   * Take a block out of the library, undoably.
+   *
+   * Deleting one used to be immediate and final. What makes that worse than it sounds is that a
+   * block is the most expensive thing in here to recreate — markup, props, CSS and possibly a
+   * module — and the button that did it sat two pixels from the one that edits it.
+   *
+   * The instances stay. They are markup in the page and deleting a template is not a statement
+   * about the copies already placed; what they lose is the Component section, because nothing
+   * answers for their `data-heo-block` any more. Undo brings that back with the block.
+   */
+  removeBlock(id: string): LibraryBlock | undefined {
+    const live = this.library.get(id);
+    if (!live) return undefined;
+    const snapshot: LibraryBlock = {
+      ...live,
+      props: live.props ? { ...live.props } : undefined,
+      element: live.element ? { ...live.element } : undefined,
+    };
+
+    this.history.commit({
+      label: `Delete ${snapshot.name}`,
+      subject: `block:${id}`,
+      record: {
+        id: nextChangeId(),
+        kind: 'block',
+        summary: `Remove the ${snapshot.name} block from the library`,
+        target: snapshot.name,
+        before: snapshot.html,
+        detail: { block: snapshot.name },
+        at: Date.now(),
+      },
+      apply: () => {
+        this.library.remove(id);
+      },
+      revert: () => {
+        this.library.upsert(snapshot);
+      },
+    });
+    this.#bumpRevision();
+    this.notify(`Removed ${snapshot.name} from the library.`, 'info', {
+      label: 'Undo',
+      run: () => this.undo(),
+    });
+    return snapshot;
+  }
+
+  /**
+   * The library as a seed, or empty when it is not travelling with this save.
+   *
+   * Read by both save routes so what the plan describes and what gets written cannot disagree.
+   * Empty when the box is unticked, and empty when there is nothing to carry — a page whose
+   * library is entirely presets has nothing the next load could not rebuild for itself.
+   */
+  blockLibrarySeed(): string {
+    if (!this.store.value.saveBlockLibrary) return '';
+    const blocks = this.library.export();
+    if (!blocks.length) return '';
+    /*
+     * Only the blocks, deliberately.
+     *
+     * Tokens, classes and rules have their own route and their own extent choice, and putting
+     * them in here as well would write the design system twice over — once as CSS where the user
+     * sent it, once as a seed nobody asked for.
+     */
+    return encodeSeedSync({
+      name: 'Block library',
+      version: 1,
+      tokens: [],
+      classes: [],
+      blocks,
+    });
+  }
+
+  /** How many blocks a save would carry, for the tick to put a number on itself. */
+  blockLibrarySize(): number {
+    return this.library.export().length;
+  }
+
+  setSaveBlockLibrary(save: boolean): void {
+    if (this.store.value.saveBlockLibrary === save) return;
+    this.store.patch({ saveBlockLibrary: save });
+    // Both routes describe what they will write before writing it, so both descriptions are now
+    // out of date.
+    if (this.store.value.writePlan) void this.previewWritePlan();
+    if (this.store.value.bundlePlan) void this.previewBundle();
   }
 
   /** Show a language, wherever the Code panel currently is. */
@@ -4456,6 +4703,7 @@ export class EditorEngine {
       // the join order is the cascade order.
       designSystemCSS: this.designSystemParts(),
       designSystemTarget: target,
+      blockLibrarySeed: this.blockLibrarySeed(),
       generatedRegions: this.#generatedRegions(),
     };
   }
@@ -4966,6 +5214,9 @@ export class EditorEngine {
       designSystemInDocument:
         options.designSystemInDocument ?? this.designSystemTarget === DOCUMENT_TARGET,
       designSystemBlocks: this.#designSystemBlocks(),
+      // The library, when it was asked to travel. Serializing the page cannot pick this up on
+      // its own: the seed describes the library, and the library is not in the DOM.
+      seedScript: this.blockLibrarySeed(),
     });
   }
 

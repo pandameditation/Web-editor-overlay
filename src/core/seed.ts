@@ -143,6 +143,29 @@ export async function encodeSeed(doc: DesignSystemDocument): Promise<string> {
 }
 
 /**
+ * Encode a document as a seed without waiting, accepting the larger result.
+ *
+ * The plain codec, always. Compression is the platform's and the platform's is stream-shaped,
+ * so a compressed seed cannot be produced from a synchronous caller — and two of the callers
+ * that matter are exactly that: serializing the page for an export, and patching a seed block
+ * into a file being written. Both run inside a larger synchronous build and neither can become
+ * async without every path above it becoming async too.
+ *
+ * The cost is real and bounded: a plain seed is roughly three times a deflated one, which for a
+ * library of a dozen blocks is tens of kilobytes rather than a handful. That is the wrong trade
+ * for a seed being pasted into an attribute, which is why `encodeSeed` still exists and is still
+ * what the transfer UI uses. It is the right trade for a `<script>` block in a file, where the
+ * bytes are cheap and the alternative is not writing the library at all.
+ *
+ * Both codecs are the same format and `decodeSeedSync` reads this one without inflating, so a
+ * page loading a plain seed applies it before first paint rather than a tick later.
+ */
+export function encodeSeedSync(doc: DesignSystemDocument): string {
+  const json = JSON.stringify(compactDesignSystem(doc));
+  return `${PLAIN_PREFIX}${toBase64Url(new TextEncoder().encode(json))}`;
+}
+
+/**
  * Decode a seed, or plain JSON, without waiting.
  *
  * Returns null when the input is a compressed seed, which cannot be decoded

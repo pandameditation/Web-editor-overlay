@@ -617,10 +617,6 @@ export const STYLE_BLOCK_END = '<!-- heo:design-system end -->';
 export function upsertStyleBlock(html: string, css: string): string {
   const body = css.trim();
   if (!body) return html;
-
-  const start = html.indexOf(STYLE_BLOCK_START);
-  const end = html.indexOf(STYLE_BLOCK_END);
-
   /*
    * Already there without markers, so leave it be.
    *
@@ -635,11 +631,73 @@ export function upsertStyleBlock(html: string, css: string): string {
    * so it is worth naming — the durable fix is for both routes to emit the markers, which means
    * the serializer emitting one block where it currently emits three.
    */
-  if (start === -1 && html.includes(body)) return html;
+  if (!html.includes(STYLE_BLOCK_START) && html.includes(body)) return html;
+
+  return upsertManagedBlock(html, STYLE_BLOCK_START, STYLE_BLOCK_END, (indent) =>
+    styleBlock(body, indent),
+  );
+}
+
+/*
+ * The block library, as a seed the next load reads back.
+ *
+ * Its own markers rather than a share of the design system's, because the two answer different
+ * questions and are ticked independently: one is "how much CSS travels with this page", the
+ * other is "do the components travel at all". A single block would make unticking either one
+ * rewrite the other.
+ */
+export const SEED_BLOCK_START = '<!-- heo:blocks start — managed by html-editor-overlay -->';
+export const SEED_BLOCK_END = '<!-- heo:blocks end -->';
+
+/**
+ * Write the block library into the file as a seed script.
+ *
+ * The one shape a block can travel in. Tokens, classes and rules become CSS, and CSS is
+ * something any file can hold — but a block is markup plus prop declarations plus, sometimes, a
+ * module that defines a custom element, and no stylesheet can carry that. The seed format
+ * already exists for exactly this payload and the script-tag integration already reads
+ * `<script type="application/heo-seed">` back at mount, so writing one here closes a loop that
+ * was otherwise open: a library authored in a session lived only in that session.
+ *
+ * `type` is a non-executable MIME, so the browser parses the tag and runs nothing. The seed is
+ * data; the overlay is what does anything with it, and a page without the overlay carries an
+ * inert comment-with-a-payload that costs a few kB and breaks nothing.
+ *
+ * Same never-removes rule as the style block, for the same reason turned around: an empty seed
+ * means "the user did not ask for the library to travel", which is not the same as "delete the
+ * library that is already in this file" — and by the time a second save runs, that block may
+ * have been edited by hand.
+ */
+export function upsertSeedBlock(html: string, seed: string): string {
+  const body = seed.trim();
+  if (!body) return html;
+  if (!html.includes(SEED_BLOCK_START) && html.includes(body)) return html;
+
+  return upsertManagedBlock(html, SEED_BLOCK_START, SEED_BLOCK_END, (indent) =>
+    seedBlock(body, indent),
+  );
+}
+
+/**
+ * Replace a marked region, or put one in `<head>` if there is not one yet.
+ *
+ * Shared by the two managed blocks because the placement is the fiddly part and it is identical
+ * for both: find the markers and swap between them, otherwise work out where `</head>` sits and
+ * what it is indented by. Having written that twice once, the second copy is where the two would
+ * quietly stop agreeing about indentation.
+ */
+function upsertManagedBlock(
+  html: string,
+  startMarker: string,
+  endMarker: string,
+  render: (indent: string) => string,
+): string {
+  const start = html.indexOf(startMarker);
+  const end = html.indexOf(endMarker);
 
   if (start !== -1 && end > start) {
-    const finish = end + STYLE_BLOCK_END.length;
-    const block = styleBlock(body, lineIndentAt(html, start));
+    const finish = end + endMarker.length;
+    const block = render(lineIndentAt(html, start));
     // A save that changes nothing writes nothing, so the diff stays honest about what moved.
     if (html.slice(start, finish) === block) return html;
     return `${html.slice(0, start)}${block}${html.slice(finish)}`;
@@ -652,32 +710,71 @@ export function upsertStyleBlock(html: string, css: string): string {
       // The indentation of whatever `</head>` sits behind, plus one level for its children.
       const closeIndent = lineIndentAt(html, close);
       const indent = closeIndent ? `${closeIndent}  ` : '  ';
-      const block = styleBlock(body, indent);
       const lead = html.slice(0, close);
-      const needsBreak = !/\n[ \t]*$/.test(lead);
-      return `${lead}${needsBreak ? `\n${indent}` : ''}${block}\n${closeIndent}${html.slice(close)}`;
+      /*
+       * The marker lands at exactly the indentation the block is rendered with, and that
+       * equality is what makes a second save produce the same bytes.
+       *
+       * It did not before. When `</head>` already began its own line the block was inserted
+       * with no leading whitespace — marker at column zero — while its inner lines were
+       * indented one level. The next save then read the indent back off the marker, got
+       * nothing, and re-rendered the whole block one level out. Nothing was broken by it, but
+       * every save reported a change to a file whose content had not moved, which is exactly
+       * the noise the patching path exists to avoid.
+       */
+      const trailing = /\n([ \t]*)$/.exec(lead);
+      if (trailing) {
+        const existing = trailing[1];
+        // Whitespace already on the line wins when there is more of it, since that is what a
+        // later pass will measure.
+        const at = existing.length >= indent.length ? existing : indent;
+        return `${lead}${at.slice(existing.length)}${render(at)}\n${closeIndent}${html.slice(close)}`;
+      }
+      return `${lead}\n${indent}${render(indent)}\n${closeIndent}${html.slice(close)}`;
     }
   }
 
   /*
    * No `<head>` to put it in, which is legal HTML and not worth refusing over.
    *
-   * A file that opens with `<html>` and goes straight to content still renders a `<style>`
-   * wherever it finds one, so the block goes at the top of `<body>`, or at the very start when
-   * there is no `<body>` either. Nothing is lost but tidiness.
+   * A file that opens with `<html>` and goes straight to content still honours a `<style>` or a
+   * `<script>` wherever it finds one, so the block goes at the top of `<body>`, or at the very
+   * start when there is no `<body>` either. Nothing is lost but tidiness.
    */
-  const body_ = uniqueTag(html, 'body');
-  if (body_) {
-    const at = body_.end + 1;
-    const indent = `${lineIndentAt(html, body_.start)}  `;
-    return `${html.slice(0, at)}\n${indent}${styleBlock(body, indent)}${html.slice(at)}`;
+  const bodyTag = uniqueTag(html, 'body');
+  if (bodyTag) {
+    const at = bodyTag.end + 1;
+    const indent = `${lineIndentAt(html, bodyTag.start)}  `;
+    return `${html.slice(0, at)}\n${indent}${render(indent)}${html.slice(at)}`;
   }
-  return `${styleBlock(body, '')}\n${html}`;
+  return `${render('')}\n${html}`;
 }
 
 /** True when the markers are already in the text. */
 export function hasStyleBlock(html: string): boolean {
   return html.includes(STYLE_BLOCK_START);
+}
+
+/** True when the seed markers are already in the text. */
+export function hasSeedBlock(html: string): boolean {
+  return html.includes(SEED_BLOCK_START);
+}
+
+/**
+ * The seed block, marker to marker.
+ *
+ * The payload stays on its own line and is never wrapped or indented internally: it is one
+ * base64url token, and a line break inside it would be text content the reader has to strip
+ * before decoding. `script-tag.ts` trims, so surrounding whitespace is safe and inner is not.
+ */
+function seedBlock(seed: string, indent: string): string {
+  return [
+    SEED_BLOCK_START,
+    `${indent}<script type="application/heo-seed">`,
+    `${indent}  ${seed}`,
+    `${indent}</script>`,
+    `${indent}${SEED_BLOCK_END}`,
+  ].join('\n');
 }
 
 /** The managed block, marker to marker, with every line at the given indentation. */

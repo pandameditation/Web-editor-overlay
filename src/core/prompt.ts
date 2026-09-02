@@ -263,6 +263,10 @@ function groupTitle(group: EditGroup): string {
   if (first.kind === 'token' || first.kind === 'token-class' || first.kind === 'token-rule') {
     return 'design system';
   }
+  // Its own heading rather than "design system", because the answer to a block change is a
+  // component in the codebase, not a line of CSS — a reader sent to the design system section
+  // would find nothing there that explains it.
+  if (first.kind === 'block') return 'block library';
 
   const at = group.source ? ` (${group.source.file}:${group.source.line})` : '';
   return `${code(last.target)}${at}`;
@@ -384,6 +388,28 @@ function stepsFor(record: ChangeRecord, blocks: Block[]): string[] {
       return [
         `${sentence(record.summary)}. This is a CSS rule for ${code(detail.selector ?? record.target)}; see New CSS rules.`,
       ];
+
+    /*
+     * A block is a component, and saying so is the whole value of the step.
+     *
+     * The markup is in `detail.html` rather than in the sentence: it is a template with
+     * `{{prop}}` placeholders, which is exactly the shape a component's parameters take, and
+     * an agent reading "a reusable block called Card" without seeing it has nothing to build.
+     */
+    case 'block': {
+      const template = detail.html
+        ? block(blocks, 'html', `${detail.block ?? record.target} template`, detail.html)
+        : null;
+      const props = detail.props ? `, taking ${detail.props}` : '';
+      return [
+        `${sentence(record.summary)}${props}.`,
+        ...(template
+          ? [
+            `Its markup is ${template}. In a codebase this belongs as a component rather than as repeated markup; the ${code('{{name}}')} placeholders are its parameters.`,
+          ]
+          : []),
+      ];
+    }
 
     default:
       return [`${sentence(record.summary)}.`];

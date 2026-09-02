@@ -98,6 +98,16 @@ export class HeoLibraryPanel extends HeoElement {
         color: var(--heo-text);
         text-align: left;
         cursor: pointer;
+        /* Anchors the usage badge in the corner. */
+        position: relative;
+        /*
+         * The card measures itself, so its own labels can react to how much room it got.
+         *
+         * Card width comes from how many auto-fill columns fit, not from anything a media
+         * query could see — two cards in a narrow dock and three in a wide one are both
+         * "the same viewport". Only the card knows.
+         */
+        container-type: inline-size;
         transition:
           border-color var(--heo-fast),
           background var(--heo-fast),
@@ -148,20 +158,77 @@ export class HeoLibraryPanel extends HeoElement {
         white-space: nowrap;
         text-transform: uppercase;
       }
-      /* How many of this block are on the page. The one thing worth knowing before editing
-         a template, and nowhere else to learn it. */
+      /*
+       * How many of this block are on the page.
+       *
+       * In the corner rather than in the footer, because the footer is the row that runs out
+       * of room: it carries the kind label and up to three actions, and a count wedged in
+       * between them was the thing that pushed the label into an ellipsis. Up here it is out
+       * of the way of both, and it reads as a property of the card rather than another
+       * control among the buttons.
+       */
       .card .uses {
-        flex: 0 0 auto;
-        margin-left: auto;
+        position: absolute;
+        top: 7px;
+        right: 7px;
         padding: 1px 5px;
         border-radius: 999px;
         background: var(--heo-accent-soft);
         color: var(--heo-accent);
         font-family: var(--heo-mono);
         font-size: 9px;
+        line-height: 1.5;
       }
-      .card .uses + .kill {
-        margin-left: 0;
+
+      /*
+       * Two spellings of the kind, and the card picks whichever fits.
+       *
+       * "web component" beside three action buttons does not fit a 150px card, and an
+       * ellipsised "web compo…" tells you less than "wc" does. The short forms are the ones the
+       * insert menu already uses, so the two surfaces agree on the vocabulary.
+       *
+       * Three breakpoints rather than one, because the label is not what runs out of room — the
+       * *row* is, and how much of it is left depends on how many actions the card carries. A
+       * preset has one button and can spell "container" out at any width worth rendering; a
+       * block with copies in the page has three and cannot. One threshold for all of them either
+       * abbreviated cards that had the space or ellipsised ones that did not, so the count comes
+       * up from the template and each case gets its own.
+       */
+      /*
+       * The widths below are content-box, which is what a container query measures — a 149px
+       * card with 9px padding and a 1px border queries as 129. Reasoning in card widths is the
+       * easy mistake here and it silently abbreviates everything, since every threshold ends up
+       * about twenty pixels too generous.
+       *
+       * Each is the longest label plus the buttons beside it: roughly 80px for "web component",
+       * and 23px per action for an 18px button and its gap.
+       */
+      .card .kind .short {
+        display: none;
+      }
+      @container (max-width: 100px) {
+        .card[data-actions='1'] .kind .long {
+          display: none;
+        }
+        .card[data-actions='1'] .kind .short {
+          display: inline;
+        }
+      }
+      @container (max-width: 124px) {
+        .card[data-actions='2'] .kind .long {
+          display: none;
+        }
+        .card[data-actions='2'] .kind .short {
+          display: inline;
+        }
+      }
+      @container (max-width: 148px) {
+        .card[data-actions='3'] .kind .long {
+          display: none;
+        }
+        .card[data-actions='3'] .kind .short {
+          display: inline;
+        }
       }
       .card .kill {
         display: grid;
@@ -267,6 +334,13 @@ export class HeoLibraryPanel extends HeoElement {
       }
       .card .foot .kill + .kill {
         margin-left: 2px;
+      }
+
+      /* The same gutter as the cards above it, so the button lines up with their left edge
+         instead of sitting against the panel wall. */
+      .makerow {
+        display: flex;
+        padding: 12px 12px 0;
       }
     `,
   ];
@@ -412,22 +486,28 @@ export class HeoLibraryPanel extends HeoElement {
      * the action itself is what reports having found nothing out of date.
      */
     const placed = this.#usage.get(block.id) ?? 0;
+    // Edit always; update only when there is something to update; delete only when it is not a
+    // preset. How many of them there are decides how much room the kind label has, which the
+    // stylesheet reads back off this attribute.
+    const actions = 1 + (placed ? 1 : 0) + (removable ? 1 : 0);
     return html`<button
       class="card"
       type="button"
+      data-actions=${String(actions)}
       title=${block.description ?? block.name}
       @click=${() => this.#pick(block)}
     >
       <span class="glyph">${icon(block.icon ?? (block.kind === 'container' ? 'wrap' : 'blocks'), 15)}</span>
+      ${placed
+        ? html`<span class="uses" title=${`${placed} in the page`}>${placed}×</span>`
+        : nothing}
       <span class="name">${block.name}</span>
       <span class="desc">${block.description ?? ''}</span>
       <span class="foot">
-        <span class="kind">
-          ${block.element ? 'web component' : block.kind === 'container' ? 'container' : 'component'}
+        <span class="kind" title=${kindOf(block).long}>
+          <span class="long">${kindOf(block).long}</span>
+          <span class="short">${kindOf(block).short}</span>
         </span>
-        ${placed
-        ? html`<span class="uses" title=${`${placed} in the page`}>${placed}×</span>`
-        : nothing}
         ${placed
         ? html`<span
               class="kill"
@@ -437,12 +517,12 @@ export class HeoLibraryPanel extends HeoElement {
               title=${`Update the markup of the ${placed === 1 ? 'copy' : `${placed} copies`} in the page, keeping the text in each`}
               @click=${(event: Event) => {
             event.stopPropagation();
-            void this.editor.syncBlockInstances(block.id);
+            this.#syncAll(block, placed);
           }}
               @keydown=${(event: KeyboardEvent) => {
             if (event.key !== 'Enter') return;
             event.stopPropagation();
-            void this.editor.syncBlockInstances(block.id);
+            this.#syncAll(block, placed);
           }}
               >${icon('refresh', 11)}</span
             >`
@@ -577,11 +657,71 @@ export class HeoLibraryPanel extends HeoElement {
     this.configuring = null;
   }
 
-  #remove(block: LibraryBlock): void {
-    this.editor.library.remove(block.id);
-    this.editor.notify(`Removed ${block.name} from the library.`, 'info');
+  /**
+   * Update every copy in the page, once the user has seen the number.
+   *
+   * The one action here that reaches out and rewrites parts of the page the user is not looking
+   * at. It is undoable in one step, so this is not a safety net — it is the count. "Update the
+   * blocks in the page" is a different proposition at one copy and at fourteen, and the button
+   * cannot say which it is until it is asked.
+   */
+  #syncAll(block: LibraryBlock, placed: number): void {
+    this.editor.askToConfirm({
+      title: `Update ${placed === 1 ? 'one copy' : `all ${placed} copies`} of ${block.name}?`,
+      message:
+        'Each copy takes this template’s markup — its tags, classes and any element added to it — and keeps the text written into it.',
+      detail:
+        placed === 1
+          ? 'Styling and attributes set on that copy are replaced by the template’s.'
+          : `Styling and attributes set on any of the ${placed} are replaced by the template’s.`,
+      confirmLabel: placed === 1 ? 'Update it' : `Update ${placed}`,
+      tone: 'warn',
+      reversible: true,
+      run: () => void this.editor.syncBlockInstances(block.id),
+    });
   }
 
+  /**
+   * Delete a block, once the user has seen what it would cost.
+   *
+   * Undoable now, which is the bigger half of the fix — but still worth asking about, because a
+   * block is the most expensive thing in this panel to recreate and the button that deletes one
+   * sits two pixels from the button that edits it. The copies already in the page are the part
+   * people assume is at stake, so the dialog says outright that they are not.
+   */
+  #remove(block: LibraryBlock): void {
+    const placed = this.#usage.get(block.id) ?? 0;
+    this.editor.askToConfirm({
+      title: `Delete the ${block.name} block?`,
+      message:
+        'It goes out of the library, so it cannot be inserted again or used to update anything.',
+      detail: placed
+        ? `The ${placed === 1 ? 'copy' : `${placed} copies`} already in the page ${placed === 1 ? 'stays' : 'stay'} exactly as ${placed === 1 ? 'it is' : 'they are'} — ${placed === 1 ? 'it' : 'they'} just ${placed === 1 ? 'stops' : 'stop'} being linked to a template.`
+        : undefined,
+      confirmLabel: 'Delete it',
+      tone: 'danger',
+      reversible: true,
+      run: () => {
+        this.editor.removeBlock(block.id);
+      },
+    });
+  }
+
+}
+
+/**
+ * What kind of thing a block is, spelled out and abbreviated.
+ *
+ * Both, because the card cannot know in advance which one will fit — a container query picks
+ * at layout time. The short forms are the insert menu's own (`insert-menu.ts` labels its rows
+ * `box` and `cmp`), so the two places a block is described do not invent separate vocabularies
+ * for the same distinction.
+ */
+function kindOf(block: LibraryBlock): { long: string; short: string } {
+  if (block.element) return { long: 'web component', short: 'wc' };
+  return block.kind === 'container'
+    ? { long: 'container', short: 'box' }
+    : { long: 'component', short: 'cmp' };
 }
 
 function groupBy(blocks: LibraryBlock[]): Array<{ name: string; blocks: LibraryBlock[] }> {
