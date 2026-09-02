@@ -81,7 +81,18 @@
       background: #fecaca;
     }
 
-    /* --- display cases for the resize affordance --- */
+    /*
+     * --- the handles follow the Offsets section, not the display ---
+     *
+     * Both halves set the same four properties, so the rule is `position`. The display values are
+     * varied across these cases only to prove they are not what decides it.
+     */
+    #kinds {
+      position: relative;
+      margin-top: 20px;
+      height: 260px;
+    }
+
     #kinds>* {
       margin-top: 6px;
       background: #e0f2fe;
@@ -89,53 +100,49 @@
       height: 40px;
     }
 
-    #d-block {
+    #p-static-block {
       display: block;
     }
 
-    #d-inlineblock {
-      display: inline-block;
-    }
-
-    #d-flex {
+    #p-static-flex {
       display: flex;
     }
 
-    #d-inlineflex {
-      display: inline-flex;
-    }
-
-    #d-grid {
+    #p-static-grid {
       display: grid;
     }
 
-    #d-inlinegrid {
-      display: inline-grid;
+    /* The report that started this: a list item in normal flow, showing handles it should not. */
+    #p-static-li {
+      display: list-item;
     }
 
-    #d-table {
-      display: table;
-      width: 240px;
+    #p-rel-block {
+      position: relative;
     }
 
-    #d-row {
-      display: table-row;
+    #p-rel-li {
+      display: list-item;
+      position: relative;
     }
 
-    #d-cell {
-      display: table-cell;
-    }
-
-    /* A block child of a flex container is still resizable: it is an item, not a container. */
-    #flexitemwrap {
+    /* Positioned *and* flex: the Offsets section shows, so the handles do too. */
+    #p-abs-flex {
       display: flex;
+      position: absolute;
+      left: 260px;
+      top: 0;
     }
 
-    #d-flexitem {
-      display: block;
-      width: 100px;
-      height: 40px;
-      background: #fcd34d;
+    #p-fixed {
+      position: fixed;
+      left: 620px;
+      top: 120px;
+    }
+
+    #p-sticky {
+      position: sticky;
+      top: 0;
     }
 
     #report {
@@ -165,20 +172,15 @@
   </div>
 
   <div id="kinds">
-    <div id="d-block">block</div>
-    <div id="d-inlineblock">inline-block</div>
-    <div id="d-flex"><span>flex</span></div>
-    <div id="d-inlineflex"><span>inline-flex</span></div>
-    <div id="d-grid"><span>grid</span></div>
-    <div id="d-inlinegrid"><span>inline-grid</span></div>
-    <div id="d-table">
-      <div id="d-row">
-        <div id="d-cell">cell</div>
-      </div>
-    </div>
-    <div id="flexitemwrap">
-      <div id="d-flexitem">flex item</div>
-    </div>
+    <div id="p-static-block">static block</div>
+    <div id="p-static-flex"><span>static flex</span></div>
+    <div id="p-static-grid"><span>static grid</span></div>
+    <div id="p-static-li">static list-item</div>
+    <div id="p-rel-block">relative block</div>
+    <div id="p-rel-li">relative list-item</div>
+    <div id="p-abs-flex"><span>absolute flex</span></div>
+    <div id="p-fixed">fixed</div>
+    <div id="p-sticky">sticky</div>
   </div>
 
   <div id="report">
@@ -268,45 +270,74 @@
       };
 
       /* ------------------------------------------------------------------ *
-       * Resize handles stay away from layout-sized elements.
+       * The handles appear exactly where the Offsets section appears.
        * ------------------------------------------------------------------ */
+
+      /** Walk shadow roots to find a tag, wherever the dock has nested it. */
+      const deepFind = (tag, root = document) => {
+        const direct = root.querySelector?.(tag);
+        if (direct) return direct;
+        const hosts = root.querySelectorAll ? root.querySelectorAll('*') : [];
+        for (const host of hosts) {
+          if (host.shadowRoot) {
+            const found = deepFind(tag, host.shadowRoot);
+            if (found) return found;
+          }
+        }
+        return null;
+      };
+
+      /** Whether the Styles panel is currently offering the top/right/bottom/left rows. */
+      const offsetsSectionShown = () => {
+        const panel = deepFind('heo-styles-panel');
+        if (!panel?.shadowRoot) return null;
+        return Array.from(panel.shadowRoot.querySelectorAll('heo-section')).some(
+          (section) => section.heading === 'Offsets',
+        );
+      };
+
+      engine.setDockTab('styles');
+      await frames();
+
       const affordance = async (id) => {
         const el = byId(id);
         api.select(el);
         await frames();
+        await frames();
         const aff = engine.transformAffordances(el);
         const root = layer()?.shadowRoot;
-        const handles = root ? root.querySelectorAll('.frame .h').length : -1;
-        const rotate = root ? root.querySelectorAll('.frame .rot').length : -1;
         const box = el.getBoundingClientRect();
         const started = engine.startTransform(el, 'resize', 'se', box.right, box.bottom);
         if (started) engine.cancelTransform();
         return {
           display: getComputedStyle(el).display,
+          position: getComputedStyle(el).position,
           resize: aff ? aff.resize : null,
-          handles,
-          rotate,
+          handles: root ? root.querySelectorAll('.frame .h').length : -1,
+          // Rotation is a question about orientation, not placement, so it stays either way.
+          rotate: root ? root.querySelectorAll('.frame .rot').length : -1,
           gestureRefused: started === false,
+          offsets: offsetsSectionShown(),
         };
       };
 
-      const displays = {};
+      const cases = {};
       for (const id of [
-        'd-block', 'd-inlineblock', 'd-flex', 'd-inlineflex', 'd-grid', 'd-inlinegrid',
-        'd-table', 'd-row', 'd-cell', 'd-flexitem',
+        'p-static-block', 'p-static-flex', 'p-static-grid', 'p-static-li',
+        'p-rel-block', 'p-rel-li', 'p-abs-flex', 'p-fixed', 'p-sticky',
       ]) {
         progress.textContent = 'affordance ' + id;
-        displays[id] = await affordance(id);
+        cases[id] = await affordance(id);
       }
 
-      const RESIZABLE = new Set(['d-block', 'd-inlineblock', 'd-table', 'd-flexitem']);
-      for (const [id, seen] of Object.entries(displays)) {
-        const want = RESIZABLE.has(id);
+      for (const seen of Object.values(cases)) {
+        const want = seen.position !== 'static';
         seen.ok =
+          // The contract as the user stated it: the handles and the section agree, always.
+          seen.offsets === want &&
           seen.resize === want &&
           seen.handles === (want ? 8 : 0) &&
           seen.gestureRefused === !want &&
-          // Rotation is a question about orientation, not size, so it stays either way.
           seen.rotate === 1;
       }
 
@@ -316,11 +347,11 @@
           .map(([k]) => 'pin:' + k),
         ...(pinned.farright.keptItsAnchor ? [] : ['pin:farright-anchor']),
         ...(untouched.ok ? [] : ['pin:already']),
-        ...Object.entries(displays).filter(([, v]) => !v.ok).map(([k]) => 'display:' + k),
+        ...Object.entries(cases).filter(([, v]) => !v.ok).map(([k]) => 'handles:' + k),
       ];
 
       byId('out').textContent = 'RESULTS:' + JSON.stringify(
-        { ok: failed.length === 0, failed, pinned, untouched, displays, errors }, null, 1,
+        { ok: failed.length === 0, failed, pinned, untouched, cases, errors }, null, 1,
       ) + ':END';
     })().catch((e) => {
       document.getElementById('out').textContent =

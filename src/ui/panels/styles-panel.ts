@@ -16,6 +16,7 @@ import {
   type SizeConstraint,
 } from '../../core/css.js';
 import { labelFor, selectableParent } from '../../core/dom.js';
+import { resolvesOffsets } from '../../core/transform.js';
 import { normalizeClassName } from '../../core/classes.js';
 import type { DesignClass } from '../../core/types.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
@@ -53,7 +54,9 @@ const SECTIONS: SectionSpec[] = [
     heading: 'Offsets',
     glyph: 'moveIn',
     properties: ['top', 'right', 'bottom', 'left'],
-    when: (computed) => computed.position !== 'static',
+    // The same condition the page's handles use, from the same function: this section and those
+    // handles set the same four properties, so they are shown or hidden together by construction.
+    when: resolvesOffsets,
     /*
      * The same four properties the page's own handles write.
      *

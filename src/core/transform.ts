@@ -739,35 +739,19 @@ export function pinnedOffsets(
 }
 
 /**
- * Displays whose size comes from their own layout rather than from `width` and `height`.
+ * Whether this element resolves `top`, `right`, `bottom` and `left` at all.
  *
- * A flex or grid container sizes itself around its tracks, its gaps and its children's own flex
- * properties; a table row is sized by the table algorithm. Pinning a width on one of these is
- * usually not what someone dragging a corner meant, and the result either fights the layout or
- * is quietly ignored — so the resize handles stay away and leave the job to the properties that
- * actually govern it. Rotation and dragging are unaffected: neither is a question about size.
+ * The one condition behind both halves of the same feature: the Offsets section in the panel, and
+ * the handles on the page. They are two ways to set the same four properties, so an element that
+ * has one has the other — a handle on an element whose offsets the browser ignores would be
+ * offering a control that cannot do anything, and a panel section with no handles to match would
+ * make the page and the panel disagree about what is editable.
+ *
+ * Exported so the panel and the chrome ask the same function rather than each carrying their own
+ * copy of the rule.
  */
-const LAYOUT_SIZED = new Set([
-  'flex',
-  'inline-flex',
-  'grid',
-  'inline-grid',
-  // No box of its own at all, so there is nothing to take hold of.
-  'contents',
-  // The table algorithm decides these, whatever a rule asks for.
-  'table-row',
-  'table-row-group',
-  'table-header-group',
-  'table-footer-group',
-  'table-column',
-  'table-column-group',
-  'table-cell',
-  'table-caption',
-]);
-
-/** Whether dragging a corner of this element is a sensible way to set its size. */
-export function isResizableDisplay(display: string): boolean {
-  return !LAYOUT_SIZED.has(display.trim());
+export function resolvesOffsets(computed: CSSStyleDeclaration): boolean {
+  return computed.position !== 'static';
 }
 
 /**
@@ -790,11 +774,13 @@ export function readSnapshot(
   read: { inline: (property: string) => string; authored: (property: string) => string },
 ): TransformSnapshot | null {
   const computed = getComputedStyle(el);
-  const positioned = computed.position !== 'static';
-  if (mode === 'move' && !positioned) return null;
-  // Refused here rather than only in the chrome, so a keyboard or scripted resize cannot reach
-  // an element whose size is not its own to give.
-  if (mode === 'resize' && !isResizableDisplay(computed.display)) return null;
+  const positioned = resolvesOffsets(computed);
+  /*
+   * Moving and resizing both belong to an element that resolves offsets; rotating does not, and
+   * works on anything. Refused here rather than only in the chrome, so a keyboard or scripted
+   * gesture cannot reach an element the handles are deliberately absent from.
+   */
+  if ((mode === 'move' || mode === 'resize') && !positioned) return null;
 
   const linear = linearOf(computed.transform);
   const box = untransformedBox(el, linear, computed);

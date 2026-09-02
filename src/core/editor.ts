@@ -116,11 +116,11 @@ import {
 import {
   angleOf,
   declaredRotation,
-  isResizableDisplay,
   linearOf,
   originOf,
   pinnedOffsets,
   readSnapshot,
+  resolvesOffsets,
   stepFor,
   untransformedBox,
   TRANSFORM_LABEL,
@@ -4611,7 +4611,6 @@ export class EditorEngine {
    */
   transformAffordances(el: HTMLElement | null): {
     resize: boolean;
-    move: boolean;
     angle: number;
     box: Box;
     linear: Linear;
@@ -4625,12 +4624,13 @@ export class EditorEngine {
     const box = untransformedBox(el, linear, computed);
     if (box.width <= 0 || box.height <= 0) return null;
     return {
-      // A flex or grid container, or a table row, is sized by its own layout rules rather than by
-      // width and height, so a corner handle there would be offering the wrong control.
-      resize: isResizableDisplay(computed.display),
-      // Moving needs somewhere to move to. An element in normal flow is positioned by its
-      // neighbours, so dragging it is the reorder gesture and the thumb is where that lives.
-      move: computed.position !== 'static',
+      /*
+       * The resize and move handles are the page-side half of the panel's Offsets section, so they
+       * appear on exactly the elements that section appears for. An element in normal flow is
+       * sized and placed by its neighbours: dragging it is the reorder gesture, which lives on the
+       * thumb, and its offsets would be ignored if the handles wrote any.
+       */
+      resize: resolvesOffsets(computed),
       angle: declaredRotation(computed.transform) ?? angleOf(linear),
       box,
       linear,
