@@ -579,6 +579,30 @@ export function patchDocumentSource(
   const isGenerated = (el: HTMLElement): boolean =>
     regions.some((region) => region === el || region.contains(el));
 
+  /*
+   * A design system bound for this file cannot be patched into it, so patching is declined.
+   *
+   * Patching works from records, and an imported design system has none — importing a seed
+   * puts tokens in a registry, not in the history. So the CSS exists, belongs in this file, and
+   * is invisible to everything below: the patch succeeded, preserved the file's formatting
+   * beautifully, and quietly wrote a file with no design system in it. That is how an imported
+   * seed disappeared on save.
+   *
+   * Serializing is the right answer rather than a fallback. The generated `<style>` blocks are
+   * live in the page, so a rewrite carries them by construction and cannot duplicate them the
+   * way appending to the file's text could. It is also what already happened whenever the
+   * session *authored* a token, since a `token` record names no attribute and fails to place —
+   * this makes the same call for the same reason, one step earlier and out loud.
+   */
+  if (systemInDocument && designSystemCSSText(subject.designSystemCSS).trim()) {
+    return {
+      why: [
+        'the design system has to be written into this file, and it can only be placed by ' +
+        'rebuilding the page',
+      ],
+    };
+  }
+
   // The same selection the write path makes: what the markup can carry, minus what the
   // page's own code owns.
   const documentRecords = subject.records.filter(

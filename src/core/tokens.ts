@@ -249,9 +249,28 @@ export class TokenRegistry {
    * of the project's theme.
    */
   toCSS(includeAll = false): string {
-    const owned = this.list().filter((token) => includeAll || token.origin !== 'stylesheet');
-    if (!owned.length) return '';
-    const body = owned.map((token) => `  --${token.name}: ${token.value};`).join('\n');
+    return this.#css(this.#owned(includeAll));
+  }
+
+  /**
+   * The same CSS, narrowed to named tokens.
+   *
+   * For writing out only the part of a design system something actually uses. Shares the
+   * formatter with `toCSS` rather than repeating it, because the two producing subtly
+   * different CSS for the same tokens is the kind of difference nobody notices until a diff
+   * is twice the size it should be.
+   */
+  cssFor(names: ReadonlySet<string>, includeAll = false): string {
+    return this.#css(this.#owned(includeAll).filter((token) => names.has(token.name)));
+  }
+
+  #owned(includeAll: boolean): DesignToken[] {
+    return this.list().filter((token) => includeAll || token.origin !== 'stylesheet');
+  }
+
+  #css(tokens: readonly DesignToken[]): string {
+    if (!tokens.length) return '';
+    const body = tokens.map((token) => `  --${token.name}: ${token.value};`).join('\n');
     return `:root {\n${body}\n}`;
   }
 

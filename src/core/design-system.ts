@@ -9,7 +9,9 @@ import {
 } from './constants.js';
 import { withoutProvenance } from './provenance.js';
 import type { ClassRegistry } from './classes.js';
+import { tokensInValue } from './css.js';
 import { patchCSS, type DeclarationPatch } from './css-patch.js';
+import { queryDeep } from './dom.js';
 import type { BlockLibrary } from './library.js';
 import type { RuleRegistry } from './rules.js';
 import { safeSelector } from './selectors.js';
@@ -53,6 +55,194 @@ export function exportDesignSystem(
     classes: registries.classes.export(),
     rules: registries.rules.export(),
     blocks: registries.library.export(),
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* How much of it to write                                                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * How much of the design system a save should carry.
+ *
+ * An imported system is a vocabulary, and a page usually speaks a fraction of it. Writing the
+ * whole thing into a single-file export means shipping a stylesheet for a design language
+ * where two colours and one card class were used, which is the difference between a page and
+ * a page plus somebody's whole theme.
+ *
+ * - **`all`** — everything the session owns. Right when the file *is* the design system's
+ *   home, or when the point is to hand the vocabulary on.
+ * - **`used`** — only what the page actually references, closed over what those references
+ *   need in turn. Right for a page being handed to someone to look at.
+ * - **`none`** — leave it out. Right when it lives somewhere else already.
+ */
+export type DesignSystemScope = 'all' | 'used' | 'none';
+
+/** The three parts, kept separate so a plan can say which kinds a file will receive. */
+export interface DesignSystemParts {
+  tokens: string;
+  classes: string;
+  rules: string;
+}
+
+/** What `used` resolves to: the names that survive the pruning. */
+export interface DesignSystemUsage {
+  tokens: Set<string>;
+  classes: Set<string>;
+  rules: Set<string>;
+}
+
+/**
+ * Which parts of the design system the page actually leans on.
+ *
+ * Three passes, in this order, because each one can pull more in:
+ *
+ * 1. **Classes** are settled by looking at elements. `ClassRegistry.usage` counts real
+ *    `class` attributes, so this part is exact rather than inferred.
+ * 2. **Rules** are settled by whether their selector matches anything.
+ * 3. **Tokens** are whatever those two need, plus whatever the page's own CSS and inline
+ *    styles reference — then closed over, because a token's value can name another token.
+ *
+ * `TokenRegistry.usage` is deliberately not used for step 3. It walks every stylesheet
+ * including the generated ones, so a token referenced only by a class nobody applied comes
+ * back as used — which for this purpose is exactly the thing being pruned away.
+ */
+export function designSystemUsage(registries: DesignRegistries): DesignSystemUsage {
+  const classUsage = registries.classes.usage();
+  const classes = new Set(
+    registries.classes
+      .list()
+      .filter((entry) => (classUsage.get(entry.name) ?? 0) > 0)
+      .map((entry) => entry.name),
+  );
+
+  const ruleMatches = registries.rules.matches();
+  const rules = new Set(
+    registries.rules
+      .list()
+      .filter((entry) => (ruleMatches.get(entry.selector) ?? 0) > 0)
+      .map((entry) => entry.selector),
+  );
+
+  /* ---- Tokens: seed from everything that survived, plus the page's own CSS ---- */
+
+  const wanted = new Set<string>();
+  const want = (value: string): void => {
+    for (const name of tokensInValue(value)) wanted.add(name);
+  };
+
+  for (const entry of registries.classes.list()) {
+    if (!classes.has(entry.name)) continue;
+    for (const value of Object.values(entry.declarations)) want(value);
+  }
+  for (const entry of registries.rules.list()) {
+    if (!rules.has(entry.selector)) continue;
+    for (const value of Object.values(entry.declarations)) want(value);
+  }
+  for (const value of pageTokenReferences()) wanted.add(value);
+
+  /*
+   * Closure. A token's value can name another token, and that one another.
+   *
+   * Bounded by the registry size rather than by trusting the graph to be acyclic: a token
+   * defined in terms of itself is valid CSS that renders as nothing, and it should not be able
+   * to hang a save.
+   */
+  for (let pass = 0; pass <= registries.tokens.size; pass += 1) {
+    const before = wanted.size;
+    for (const name of [...wanted]) {
+      const token = registries.tokens.get(name);
+      if (token) want(token.value);
+    }
+    if (wanted.size === before) break;
+  }
+
+  // Only names the registry actually holds; a reference to a token nobody defined is the
+  // page's business, not something to write out.
+  const tokens = new Set([...wanted].filter((name) => registries.tokens.get(name)));
+  return { tokens, classes, rules };
+}
+
+/**
+ * Every token the page references from somewhere the editor does not own.
+ *
+ * The generated sheets are skipped on purpose: they are the design system rendering itself,
+ * so counting them would make every token in the registry look referenced.
+ */
+function pageTokenReferences(): Set<string> {
+  const names = new Set<string>();
+  const visit = (container: CSSStyleSheet | CSSGroupingRule): void => {
+    let list: CSSRuleList;
+    try {
+      list = container.cssRules;
+    } catch {
+      // A sheet the browser will not read. Its references are unknowable, which is a reason
+      // to keep more rather than less — see the caller's `used` copy.
+      return;
+    }
+    for (const rule of Array.from(list)) {
+      if (rule instanceof CSSStyleRule) {
+        for (const name of tokensInValue(rule.style.cssText)) names.add(name);
+      } else if (rule instanceof CSSGroupingRule) {
+        visit(rule);
+      }
+    }
+  };
+
+  for (const sheet of Array.from(document.styleSheets)) {
+    const node = sheet.ownerNode;
+    if (node instanceof Element && node.hasAttribute('data-heo-generated')) continue;
+    visit(sheet);
+  }
+  for (const sheet of document.adoptedStyleSheets ?? []) visit(sheet);
+  for (const el of queryDeep('[style]')) {
+    for (const name of tokensInValue(el.getAttribute('style') ?? '')) names.add(name);
+  }
+  return names;
+}
+
+/** The design system as CSS, at the requested extent. */
+export function designSystemParts(
+  registries: DesignRegistries,
+  scope: DesignSystemScope,
+): DesignSystemParts {
+  if (scope === 'none') return { tokens: '', classes: '', rules: '' };
+  if (scope === 'all') {
+    return {
+      tokens: registries.tokens.toCSS(),
+      classes: registries.classes.toCSS(),
+      rules: registries.rules.toCSS(),
+    };
+  }
+  const used = designSystemUsage(registries);
+  return {
+    tokens: registries.tokens.cssFor(used.tokens),
+    classes: registries.classes.cssFor(used.classes),
+    rules: registries.rules.cssFor(used.rules),
+  };
+}
+
+/** How many entries each extent would write, for the UI to put numbers on the choice. */
+export function designSystemExtent(
+  registries: DesignRegistries,
+  scope: DesignSystemScope,
+): { tokens: number; classes: number; rules: number } {
+  if (scope === 'none') return { tokens: 0, classes: 0, rules: 0 };
+  const owned = <T extends { origin?: string }>(entries: T[]): T[] =>
+    entries.filter((entry) => entry.origin !== 'stylesheet');
+  if (scope === 'all') {
+    return {
+      tokens: owned(registries.tokens.list()).length,
+      classes: owned(registries.classes.list()).length,
+      rules: owned(registries.rules.list()).length,
+    };
+  }
+  const used = designSystemUsage(registries);
+  return {
+    tokens: owned(registries.tokens.list()).filter((entry) => used.tokens.has(entry.name)).length,
+    classes: owned(registries.classes.list()).filter((entry) => used.classes.has(entry.name))
+      .length,
+    rules: owned(registries.rules.list()).filter((entry) => used.rules.has(entry.selector)).length,
   };
 }
 
@@ -226,6 +416,17 @@ export interface ExportOptions {
    * is being written somewhere else, and keeping them would write it twice.
    */
   designSystemInDocument?: boolean;
+  /**
+   * Replacement CSS for the generated blocks, keyed by element id.
+   *
+   * How the extent choice reaches the export. The blocks in the live page always hold the
+   * whole design system, because that is what is rendering — so writing out a subset means
+   * substituting the text on the way past. An empty string removes the block.
+   *
+   * Absent means leave them exactly as they are, which is what `all` wants and keeps the
+   * common path byte-identical to what it was.
+   */
+  designSystemBlocks?: Record<string, string>;
 }
 
 export function exportHTML(
@@ -310,10 +511,27 @@ export function exportHTML(
    * When the document *is* the chosen target, this block is the only home the tokens have,
    * so the CSS stays and only the editor's marker goes.
    */
+  const blocks = options.designSystemBlocks;
   for (const generated of Array.from(clone.querySelectorAll('[data-heo-generated]'))) {
     if (!designSystemInDocument) {
       generated.remove();
       continue;
+    }
+    /*
+     * Substituted before the id goes, since the id is what identifies which block this is.
+     *
+     * A block whose replacement is empty is dropped rather than left as an empty `<style>`:
+     * "none" should leave no trace, not a pair of tags where the theme used to be.
+     */
+    if (blocks) {
+      const replacement = blocks[generated.id];
+      if (replacement !== undefined) {
+        if (!replacement.trim()) {
+          generated.remove();
+          continue;
+        }
+        generated.textContent = replacement;
+      }
     }
     generated.removeAttribute('data-heo-generated');
     generated.removeAttribute('id');

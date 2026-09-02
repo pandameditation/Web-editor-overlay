@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>An imported design system, and how much of it gets written</title>
+  <!--
+    Three things live here, and the first is a regression.
+
+    A seed imported into a page with a readable stylesheet and no connected folder used to
+    vanish on save. `designSystemTarget` defaulted to the page's first readable stylesheet
+    without asking whether anything could write one, and `exportHTML` removes the generated
+    block whenever the target is not the document — on the grounds that the CSS is going to a
+    file instead. Only `planWrites` writes stylesheets, and that needs a `FileHost`. So the
+    tokens were addressed to a file nothing would ever write and deleted from the one place
+    they actually were.
+
+    It reproduced here and not over an opaque `file://` origin, where `cssRules` throws, the
+    link is filtered out of the target list, and the fallback was the document all along.
+
+    The other two: choosing how much of the system travels, and fonts being off by default.
+  -->
+  <link rel="stylesheet" href="./tokens.css">
+  <style>
+    /* The page's own use of one imported token, which is what "used" has to notice. */
+    .banner {
+      color: var(--seed-brand);
+    }
+  </style>
+</head>
+
+<body>
+  <h1 id="title" class="banner">Scope</h1>
+  <p id="copy" class="seed-card">In a class the seed defines.</p>
+  <p id="plain">In no class at all.</p>
+
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const results = {};
+      const errors = [];
+      addEventListener('error', (e) => errors.push('error: ' + e.message));
+      addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+
+      const progress = document.getElementById('progress');
+      const step = (name) => { progress.textContent = name; };
+      const check = (name, fn) => {
+        step(name);
+        try { results[name] = fn(); }
+        catch (err) { results[name] = 'THREW: ' + (err && err.message ? err.message : String(err)); }
+      };
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+      function deepQuery(selector, root = document) {
+        const found = root.querySelector?.(selector);
+        if (found) return found;
+        for (const el of root.querySelectorAll?.('*') ?? []) {
+          if (!el.shadowRoot) continue;
+          const hit = deepQuery(selector, el.shadowRoot);
+          if (hit) return hit;
+        }
+        return null;
+      }
+
+      /*
+       * A seed with more in it than the page uses, which is the normal case for an imported
+       * system and the whole reason the extent is a choice.
+       *
+       * `seed-ink` is referenced only by `seed-card`, so it survives "used" transitively.
+       * `seed-spare` and `.seed-unused` are referenced by nothing and should not.
+       */
+      const api = window.HtmlEditorOverlay.mount({
+        theme: 'dark',
+        fileName: 'scope.html',
+        seed: JSON.stringify({
+          name: 'Seeded system',
+          tokens: [
+            { name: 'seed-brand', value: '#ff00aa' },
+            { name: 'seed-ink', value: '#101828' },
+            { name: 'seed-spare', value: '#abcdef' },
+            { name: 'seed-echo', value: 'var(--seed-ink)' },
+          ],
+          classes: [
+            { name: 'seed-card', declarations: { padding: '11px', color: 'var(--seed-ink)' } },
+            { name: 'seed-unused', declarations: { margin: 'var(--seed-spare)' } },
+          ],
+        }),
+      });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+
+      check('theSeedIsLiveOnThePage', () => ({
+        tokens: engine.tokens.list().filter((t) => t.name.startsWith('seed-')).length,
+        classes: engine.classes.list().filter((c) => c.name.startsWith('seed-')).length,
+        renderedBlocks: document.querySelectorAll('[data-heo-generated]').length,
+      }));
+
+      /* ------------------------------------------------------------------ *
+       * 1. The regression: it must not be addressed to a file nobody can write.
+       * ------------------------------------------------------------------ */
+      step('target');
+      check('withNoFolderTheSystemStaysInThePage', () => ({
+        target: engine.designSystemTarget,
+        offered: engine.styleTargets().map((t) => t.label),
+        project: engine.store.value.project,
+        // A stylesheet is only a candidate when something can write one. Offering it here sent
+        // the tokens to a file nothing would write and deleted them from the page.
+        asExpected: engine.designSystemTarget === 'document',
+      }));
+
+      // Something to save, so the export path is real.
+      api.select(document.getElementById('plain'));
+      engine.setStyle('color', 'rebeccapurple');
+      await frames();
+
+      const exported = () => {
+        const doc = new DOMParser().parseFromString(engine.exportHTML(), 'text/html');
+        return Array.from(doc.querySelectorAll('style')).map((s) => s.textContent ?? '').join('\n');
+      };
+      check('andTheExportStillCarriesIt', () => {
+        const css = exported();
+        return {
+          brand: css.includes('--seed-brand'),
+          card: css.includes('.seed-card'),
+          asExpected: css.includes('--seed-brand') && css.includes('.seed-card'),
+        };
+      });
+
+      /*
+       * And through the disconnected save proper, which is where it was reported.
+       *
+       * The bundle route cannot write a stylesheet at all, so it forces the system into the
+       * HTML whatever the target says — belt and braces over the default above.
+       */
+      step('bundle');
+      const plan = await engine.previewBundle();
+      check('andSoDoesTheFileTheDisconnectedSaveWouldWrite', () => {
+        const doc = new DOMParser().parseFromString(
+          new TextDecoder().decode(plan.files.find((f) => f.kind === 'document').bytes),
+          'text/html',
+        );
+        const css = Array.from(doc.querySelectorAll('style')).map((s) => s.textContent ?? '').join('\n');
+        return {
+          brand: css.includes('--seed-brand'),
+          card: css.includes('.seed-card'),
+          asExpected: css.includes('--seed-brand') && css.includes('.seed-card'),
+        };
+      });
+
+      /* ------------------------------------------------------------------ *
+       * 2. How much of it travels.
+       * ------------------------------------------------------------------ */
+      step('extent');
+      check('theExtentsAreCounted', () => ({
+        all: engine.designSystemExtent('all'),
+        used: engine.designSystemExtent('used'),
+        none: engine.designSystemExtent('none'),
+        // The page applies `.seed-card` and references `--seed-brand`; `.seed-unused` and
+        // `--seed-spare` are referenced by nothing, so "used" has to be the smaller number.
+        usedIsSmaller:
+          engine.designSystemExtent('used').tokens < engine.designSystemExtent('all').tokens &&
+          engine.designSystemExtent('used').classes < engine.designSystemExtent('all').classes,
+      }));
+
+      check('usedKeepsWhatIsReachedAndDropsWhatIsNot', () => {
+        engine.setDesignSystemScope('used');
+        const css = exported();
+        return {
+          // Referenced by the page's own stylesheet.
+          brand: css.includes('--seed-brand'),
+          // Referenced only by the applied class, so it survives transitively.
+          ink: css.includes('--seed-ink'),
+          // Applied to an element.
+          card: css.includes('.seed-card'),
+          // Referenced by nothing.
+          spare: css.includes('--seed-spare'),
+          unused: css.includes('.seed-unused'),
+          asExpected:
+            css.includes('--seed-brand') &&
+            css.includes('--seed-ink') &&
+            css.includes('.seed-card') &&
+            !css.includes('--seed-spare') &&
+            !css.includes('.seed-unused'),
+        };
+      });
+
+      check('noneLeavesNoTrace', () => {
+        engine.setDesignSystemScope('none');
+        const css = exported();
+        // Declarations, not mentions. The page's own stylesheet says `var(--seed-brand)`, and
+        // that reference is the page's business — leaving the design system out does not mean
+        // editing the page's CSS.
+        return {
+          declaresAnySeedToken: /--seed-[\w-]+\s*:/.test(css),
+          declaresAnySeedClass: /\.seed-[\w-]+\s*\{/.test(css),
+          stillReferencesBrand: css.includes('var(--seed-brand)'),
+          asExpected: !/--seed-[\w-]+\s*:/.test(css) && !/\.seed-[\w-]+\s*\{/.test(css),
+        };
+      });
+
+      check('andAllPutsItBack', () => {
+        engine.setDesignSystemScope('all');
+        const css = exported();
+        return {
+          spare: css.includes('--seed-spare'),
+          unused: css.includes('.seed-unused'),
+          asExpected: css.includes('--seed-spare') && css.includes('.seed-unused'),
+        };
+      });
+
+      /* ------------------------------------------------------------------ *
+       * 3. The choice is offered where the save is made.
+       * ------------------------------------------------------------------ */
+      step('dialog');
+      engine.previewSave();
+      await frames();
+      await frames();
+
+      const dialog = () => deepQuery('heo-save-dialog');
+      const primary = () =>
+        dialog()?.shadowRoot?.querySelector('footer .btn.primary');
+      // Reach the Save-as-HTML step, however this browser labels the way in.
+      const htmlEntry = () =>
+        Array.from(dialog()?.shadowRoot?.querySelectorAll('footer .btn') ?? []).find((el) =>
+          /^Save as HTML/.test(el.textContent.replace(/\s+/g, ' ').trim()),
+        );
+      (htmlEntry() ?? primary())?.dispatchEvent(
+        new MouseEvent('click', { bubbles: true, composed: true }),
+      );
+      await frames();
+      await frames();
+
+      check('theSaveStepOffersTheExtent', () => {
+        const sections = Array.from(dialog()?.shadowRoot?.querySelectorAll('.pick h3') ?? []).map(
+          (el) => el.textContent.trim(),
+        );
+        const group = dialog()?.shadowRoot?.querySelector('[role=radiogroup][aria-labelledby=heo-ds-scope]');
+        const rows = Array.from(group?.querySelectorAll('.choice') ?? []).map((el) => ({
+          name: el.querySelector('.name')?.textContent?.trim() ?? null,
+          detail: el.querySelector('.detail')?.textContent?.trim() ?? null,
+          checked: el.querySelector('input')?.checked ?? null,
+        }));
+        return {
+          sections,
+          rows,
+          // Three alternatives, one chosen, each saying how much it means.
+          asExpected:
+            sections.includes('Design system') &&
+            rows.length === 3 &&
+            rows.filter((r) => r.checked).length === 1 &&
+            rows.every((r) => Boolean(r.detail)),
+        };
+      });
+
+      check('andPickingOneReachesTheEngine', () => {
+        const group = dialog()?.shadowRoot?.querySelector('[role=radiogroup][aria-labelledby=heo-ds-scope]');
+        const used = Array.from(group?.querySelectorAll('.choice') ?? []).find((el) =>
+          /Only what this page uses/.test(el.querySelector('.name')?.textContent ?? ''),
+        );
+        const input = used?.querySelector('input');
+        input.checked = true;
+        input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+        return engine.store.value.designSystemScope;
+      });
+
+      /* ------------------------------------------------------------------ *
+       * 4. Fonts are off by default, and say why when Styles hides them.
+       * ------------------------------------------------------------------ */
+      step('fonts');
+      check('fontsAreNotEmbeddedByDefault', () => {
+        // Read from the defaults rather than from this session, which has not touched them.
+        const options = engine.store.value.bundleOptions;
+        return {
+          styles: options.styles,
+          scripts: options.scripts,
+          images: options.images,
+          fonts: options.fonts,
+          // Base64 costs a third and a font family is the largest thing on most pages.
+          asExpected: options.fonts === false && options.styles === true,
+        };
+      });
+      check('andTheFontsRowShowsThatChoice', () => {
+        const rows = Array.from(dialog()?.shadowRoot?.querySelectorAll('.choice') ?? []);
+        const fonts = rows.find((el) => el.querySelector('.name')?.textContent?.trim() === 'Fonts');
+        return {
+          checked: fonts?.querySelector('input')?.checked ?? null,
+          // Nested under Styles, which is where fonts come from.
+          nested: fonts?.classList.contains('sub') ?? null,
+          asExpected: fonts?.querySelector('input')?.checked === false,
+        };
+      });
+      check('andFontsStayIndependentlyControllable', () => {
+        // Unticking Styles must not seize the fonts choice: a face declared in an inline style
+        // block travels whatever the linked stylesheets do.
+        engine.setBundleOptions({ styles: false, fonts: true });
+        const options = engine.store.value.bundleOptions;
+        return { styles: options.styles, fonts: options.fonts, asExpected: options.fonts === true };
+      });
+
+      results.__errors = errors;
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify({ __fatal: String((e && e.stack) || e) }, null, 1) + ':END';
+    });
+  </script>
+</body>
+
+</html>

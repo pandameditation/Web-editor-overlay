@@ -102,7 +102,15 @@ export const DEFAULT_BUNDLE_OPTIONS: BundleOptions = {
   styles: true,
   scripts: true,
   images: true,
-  fonts: true,
+  /*
+   * Off by default, unlike the rest.
+   *
+   * Base64 costs a third, and a font family is the largest thing on most pages — several
+   * hundred kilobytes for four weights, against a few for the pictures. A default that
+   * silently quadruples the file is the wrong one, and a link to a font that fails to load
+   * degrades to a fallback face rather than to a broken page.
+   */
+  fonts: false,
   // One file is the useful default: it is the thing a zip cannot be, which is openable by
   // double-clicking it.
   packaging: 'single',

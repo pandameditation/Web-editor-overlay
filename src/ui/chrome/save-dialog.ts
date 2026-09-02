@@ -396,6 +396,11 @@ export class HeoSaveDialog extends HeoElement {
       .choice:hover {
         border-color: var(--heo-line-strong);
       }
+      /* A chosen alternative, where the rows are radios rather than independent checkboxes. */
+      .choice.on {
+        border-color: var(--heo-accent);
+        background: color-mix(in oklab, var(--heo-accent) 8%, var(--heo-raised));
+      }
       /* Indented under the row above, with an elbow, because it depends on it: a face can only
          travel inside a stylesheet that travels. */
       .choice.sub {
@@ -694,6 +699,8 @@ export class HeoSaveDialog extends HeoElement {
         // has to reach the button that promises to write it.
         s.exportName,
         s.exportPrompt,
+        // How much of the design system travels, which both save steps offer.
+        s.designSystemScope,
       ] as const,
     shallowArrayEquals,
   );
@@ -855,6 +862,7 @@ export class HeoSaveDialog extends HeoElement {
               </span>
             </div>`
         : nothing}
+        ${this.#renderDesignSystemScope()}
         ${planning
         ? html`<div class="empty">Reading the project files…</div>`
         : this.#renderPlan()}
@@ -980,6 +988,65 @@ export class HeoSaveDialog extends HeoElement {
       classes: this.editor.classes.toCSS(),
       rules: this.editor.rules.toCSS(),
     });
+  }
+
+  /**
+   * How much of the design system to write.
+   *
+   * Drawn in both save steps, because it is the same question either way — a project write and
+   * a single-file export both have to decide whether the whole vocabulary travels or only the
+   * part this page speaks.
+   *
+   * The counts are the point. "Only what is used" is an easy thing to agree to and a hard thing
+   * to picture, so each option says how many tokens and classes it means, and the difference
+   * between the two numbers is the argument.
+   */
+  #renderDesignSystemScope(): TemplateResult | typeof nothing {
+    const all = this.editor.designSystemExtent('all');
+    // Nothing authored or imported, so there is no question to ask.
+    if (!all.tokens && !all.classes && !all.rules) return nothing;
+    const used = this.editor.designSystemExtent('used');
+    const chosen = this.state.value.designSystemScope;
+
+    const count = (extent: { tokens: number; classes: number; rules: number }): string => {
+      const parts = [
+        extent.tokens && `${extent.tokens} token${extent.tokens === 1 ? '' : 's'}`,
+        extent.classes && `${extent.classes} class${extent.classes === 1 ? '' : 'es'}`,
+        extent.rules && `${extent.rules} rule${extent.rules === 1 ? '' : 's'}`,
+      ].filter((part): part is string => Boolean(part));
+      return parts.length ? parts.join(', ') : 'nothing';
+    };
+
+    const options = [
+      { value: 'all', label: 'All of it', detail: count(all) },
+      { value: 'used', label: 'Only what this page uses', detail: count(used) },
+      { value: 'none', label: 'Leave it out', detail: 'nothing' },
+    ] as const;
+
+    return html`<section class="pick">
+      <h3 id="heo-ds-scope">Design system</h3>
+      <p class="lead">
+        The tokens, classes and rules this session owns, imported or authored. A page usually
+        speaks a fraction of an imported system.
+      </p>
+      <div class="choices" role="radiogroup" aria-labelledby="heo-ds-scope">
+        ${options.map(
+      (option) => html`<label class=${`choice${chosen === option.value ? ' on' : ''}`}>
+            <input
+              type="radio"
+              name="heo-ds-scope"
+              value=${option.value}
+              .checked=${chosen === option.value}
+              @change=${() => this.editor.setDesignSystemScope(option.value)}
+            />
+            <span class="text">
+              <span class="name">${option.label}</span>
+              <span class="detail">${option.detail}</span>
+            </span>
+          </label>`,
+    )}
+      </div>
+    </section>`;
   }
 
   /**
@@ -1233,7 +1300,8 @@ export class HeoSaveDialog extends HeoElement {
           </div>
         </section>
 
-        ${this.#renderPackaging(offerArchive)} ${this.#renderNaming(shape)}
+        ${this.#renderDesignSystemScope()} ${this.#renderPackaging(offerArchive)}
+        ${this.#renderNaming(shape)}
 
         ${limit
         ? html`<div class="access blocked">

@@ -228,8 +228,20 @@ export class ClassRegistry {
 
   /** CSS for classes the overlay owns. Page-authored classes are left alone. */
   toCSS(includeAll = false): string {
-    const owned = this.list().filter((entry) => includeAll || entry.origin !== 'stylesheet');
-    return owned
+    return this.#css(this.#owned(includeAll));
+  }
+
+  /** The same CSS, narrowed to named classes, for writing out only what is used. */
+  cssFor(names: ReadonlySet<string>, includeAll = false): string {
+    return this.#css(this.#owned(includeAll).filter((entry) => names.has(entry.name)));
+  }
+
+  #owned(includeAll: boolean): DesignClass[] {
+    return this.list().filter((entry) => includeAll || entry.origin !== 'stylesheet');
+  }
+
+  #css(entries: readonly DesignClass[]): string {
+    return entries
       .filter((entry) => Object.keys(entry.declarations).length > 0)
       .map((entry) => `.${entry.name} {\n${declarationsToCSS(entry.declarations)}\n}`)
       .join('\n\n');

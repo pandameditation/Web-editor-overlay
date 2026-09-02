@@ -369,8 +369,20 @@ export class RuleRegistry {
    * Rules with no declarations are skipped too — an empty rule is a row mid-edit, not CSS.
    */
   toCSS(includeAll = false): string {
-    return this.list()
-      .filter((entry) => includeAll || entry.origin !== 'stylesheet')
+    return this.#css(this.#owned(includeAll));
+  }
+
+  /** The same CSS, narrowed to named selectors, for writing out only what is used. */
+  cssFor(selectors: ReadonlySet<string>, includeAll = false): string {
+    return this.#css(this.#owned(includeAll).filter((entry) => selectors.has(entry.selector)));
+  }
+
+  #owned(includeAll: boolean): DesignRule[] {
+    return this.list().filter((entry) => includeAll || entry.origin !== 'stylesheet');
+  }
+
+  #css(entries: readonly DesignRule[]): string {
+    return entries
       .filter((entry) => Object.values(entry.declarations).some((value) => value.trim()))
       .map((entry) => `${entry.selector} {\n${declarationsToCSS(entry.declarations)}\n}`)
       .join('\n\n');

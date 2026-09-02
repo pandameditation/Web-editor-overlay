@@ -8,12 +8,15 @@ import {
   type ClassMergePlan,
 } from './classes.js';
 import {
+  CLASS_STYLE_ID,
   DRAGGING_ATTR,
   DRAG_TIMING,
   EDIT_DISCARDED_EVENT,
   HOST_TAG,
   IGNORE_ATTR,
   INSERTED_ATTR,
+  RULE_STYLE_ID,
+  TOKEN_STYLE_ID,
   VERSION,
 } from './constants.js';
 import { inlineDeclarations } from './css.js';
@@ -38,12 +41,16 @@ import {
 } from './dom.js';
 import {
   copyToClipboard,
+  designSystemExtent,
+  designSystemParts,
   downloadBlob,
   downloadText,
   exportDesignSystem,
   exportHTML,
   importDesignSystem,
   pickTextFile,
+  type DesignSystemParts,
+  type DesignSystemScope,
 } from './design-system.js';
 import { containTab } from './focus.js';
 import { History, nextChangeId, type Command } from './history.js';
@@ -332,6 +339,14 @@ export interface EditorState {
    * position be changed from inside the dialog without reopening anything.
    */
   htmlPaste: HtmlPaste | null;
+  /**
+   * How much of the design system a save writes.
+   *
+   * Separate from where it goes. An imported system is a vocabulary and a page usually speaks
+   * a fraction of it, so writing the lot into a single-file export ships somebody's whole
+   * theme alongside a page that used two colours of it.
+   */
+  designSystemScope: DesignSystemScope;
   extraction: Extraction | null;
   /**
    * Which language the Code panel is showing, in the dock and expanded alike.
@@ -555,6 +570,9 @@ export class EditorEngine {
       quickMenuOpen: false,
       insertAnchor: null,
       htmlPaste: null,
+      // Everything, by default: leaving something out is the deliberate act, and a save that
+      // quietly dropped part of the vocabulary would be the worse surprise.
+      designSystemScope: 'all',
       extraction: null,
       codeTab: 'html',
       codeWorkspace: false,
@@ -3729,12 +3747,34 @@ export class EditorEngine {
    * from, which is right for a single-file page and wrong for a project that keeps
    * its CSS in files — nobody wants their design tokens in the markup. So it is a
    * choice, defaulting to the page's first writable stylesheet when there is one.
+   *
+   * Null means nobody has chosen, not "the document". The difference matters: the default
+   * depends on whether a project is attached, and attaching one is something that happens
+   * after this is first read.
    */
   #designSystemTarget: string | null = null;
 
   get designSystemTarget(): string {
-    this.#designSystemTarget ??= this.styleTargets()[1]?.value ?? DOCUMENT_TARGET;
-    return this.#designSystemTarget;
+    return this.#designSystemTarget ?? this.#defaultDesignSystemTarget();
+  }
+
+  /**
+   * Where the design system goes when nobody has said.
+   *
+   * **A stylesheet is only offered when something can write one.** This used to default to
+   * the page's first readable stylesheet regardless, and that quietly destroyed imported
+   * design systems: `exportHTML` removes the generated `<style>` block whenever the target is
+   * not the document, on the grounds that the CSS is being written to a file instead — but
+   * only `planWrites` writes stylesheets, and that needs a `FileHost`. With a readable
+   * stylesheet and no folder connected, the tokens were addressed to a file nothing would
+   * ever write and deleted from the one place they were.
+   *
+   * Not memoised, so connecting a folder re-evaluates it. An explicit choice is remembered;
+   * an assumption is not the same thing as a choice.
+   */
+  #defaultDesignSystemTarget(): string {
+    if (!this.#project) return DOCUMENT_TARGET;
+    return this.styleTargets()[1]?.value ?? DOCUMENT_TARGET;
   }
 
   setDesignSystemTarget(target: string): void {
@@ -3743,6 +3783,35 @@ export class EditorEngine {
     // The plan named a file; it has to be rebuilt before it can name a different one.
     if (this.store.value.writePlan) void this.previewWritePlan();
     else this.#bumpRegistry();
+  }
+
+  /** How much of the design system a save writes: everything, only what is used, or none. */
+  setDesignSystemScope(scope: DesignSystemScope): void {
+    if (this.store.value.designSystemScope === scope) return;
+    this.store.patch({ designSystemScope: scope });
+    // Both routes describe what they will write before writing it, so both descriptions are
+    // now out of date.
+    if (this.store.value.writePlan) void this.previewWritePlan();
+    if (this.store.value.bundlePlan) void this.previewBundle();
+  }
+
+  /**
+   * The design system as CSS, at the extent the user chose.
+   *
+   * One source for both save routes and the dialog's preview, so what is described and what is
+   * written cannot disagree about how much of it there is.
+   */
+  designSystemParts(): DesignSystemParts {
+    return designSystemParts(this, this.store.value.designSystemScope);
+  }
+
+  /** How many entries each extent would write, for putting numbers on the choice. */
+  designSystemExtent(scope: DesignSystemScope): {
+    tokens: number;
+    classes: number;
+    rules: number;
+  } {
+    return designSystemExtent(this, scope);
   }
 
   /**
@@ -3979,11 +4048,7 @@ export class EditorEngine {
       // Handed over as three parts rather than one block: the plan uses them to say
       // which kinds a file is about to receive, and joining them is its decision because
       // the join order is the cascade order.
-      designSystemCSS: {
-        tokens: this.tokens.toCSS(),
-        classes: this.classes.toCSS(),
-        rules: this.rules.toCSS(),
-      },
+      designSystemCSS: this.designSystemParts(),
       designSystemTarget: target,
       generatedRegions: this.#generatedRegions(),
     };
@@ -4406,9 +4471,17 @@ export class EditorEngine {
     return this.options.fileName ?? 'edited-page.html';
   }
 
-  /** What the bundler needs, with the document patched from source where it could be. */
+  /**
+   * What the bundler needs, with the document patched from source where it could be.
+   *
+   * The design system is forced into the HTML here, because this route cannot put it anywhere
+   * else. Writing a stylesheet is `planWrites`' job and needs a connected project; a bundle is
+   * a copy of the page plus whatever assets travel with it, and there is no third place for
+   * tokens to live. Left to the stylesheet target, an imported design system was removed from
+   * the export and written nowhere.
+   */
   #bundleSubject(source: string | null): BundleSubject {
-    const result = this.exportPatchedHTML(source);
+    const result = this.exportPatchedHTML(source, { designSystemInDocument: true });
     return {
       html: result.html,
       patched: result.patched,
@@ -4474,13 +4547,39 @@ export class EditorEngine {
    * the pending set would make the first save after a rule edit write the file
    * correctly and the second one put the stale value back.
    */
-  exportHTML(): string {
+  /**
+   * @param options.designSystemInDocument Overrides where the design system is assumed to be
+   *   going. The bundle export passes true because it has no way to write a stylesheet, so
+   *   the HTML is the only place the design system can travel.
+   */
+  exportHTML(options: { designSystemInDocument?: boolean } = {}): string {
     return exportHTML(inlineStyleEdits(this.history.appliedRecords), {
       generated: this.#generatedRegions(),
       // The one thing the target decides: whether the tokens and classes live in this file
       // or in the stylesheet the save is about to write them to.
-      designSystemInDocument: this.designSystemTarget === DOCUMENT_TARGET,
+      designSystemInDocument:
+        options.designSystemInDocument ?? this.designSystemTarget === DOCUMENT_TARGET,
+      designSystemBlocks: this.#designSystemBlocks(),
     });
+  }
+
+  /**
+   * The generated blocks' contents at the chosen extent, or nothing to leave them alone.
+   *
+   * The live blocks hold the whole design system because that is what the page renders from,
+   * so narrowing what gets written means substituting their text as the export goes past.
+   * `all` returns undefined rather than the same CSS it already has, which keeps that path
+   * producing exactly the bytes it did before this existed.
+   */
+  #designSystemBlocks(): Record<string, string> | undefined {
+    const scope = this.store.value.designSystemScope;
+    if (scope === 'all') return undefined;
+    const parts = this.designSystemParts();
+    return {
+      [TOKEN_STYLE_ID]: parts.tokens,
+      [CLASS_STYLE_ID]: parts.classes,
+      [RULE_STYLE_ID]: parts.rules,
+    };
   }
 
   async save(): Promise<boolean> {
@@ -4654,15 +4753,31 @@ export class EditorEngine {
    *
    * Split out from the download so the decision is testable without a file dialog in the way.
    */
-  exportPatchedHTML(source: string | null): { html: string; patched: boolean; why: string[] } {
+  /**
+   * @param options.designSystemInDocument Forces the design system into this HTML rather than
+   *   letting the chosen stylesheet target decide. Both routes out of here have to honour it —
+   *   the patched one through the write subject's target, since `isDocumentChange` reads that
+   *   to decide whether a token edit belongs in the document at all.
+   */
+  exportPatchedHTML(
+    source: string | null,
+    options: { designSystemInDocument?: boolean } = {},
+  ): { html: string; patched: boolean; why: string[] } {
     const path = documentPath();
+    const inDocument = options.designSystemInDocument;
+    const serialized = (): string => this.exportHTML({ designSystemInDocument: inDocument });
+
     if (source !== null && path) {
-      const attempt = patchDocumentSource(source, this.#writeSubject(), path);
+      const subject =
+        inDocument === true
+          ? { ...this.#writeSubject(), designSystemTarget: DOCUMENT_TARGET }
+          : this.#writeSubject();
+      const attempt = patchDocumentSource(source, subject, path);
       if ('html' in attempt) return { html: attempt.html, patched: true, why: [] };
-      return { html: this.exportHTML(), patched: false, why: attempt.why };
+      return { html: serialized(), patched: false, why: attempt.why };
     }
     return {
-      html: this.exportHTML(),
+      html: serialized(),
       patched: false,
       why: [path ? 'the page could not read its own file' : 'this page has no file path'],
     };
