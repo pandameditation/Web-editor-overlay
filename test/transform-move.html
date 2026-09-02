@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Drag-to-move follows the pointer, including the first time</title>
+  <style>
+    body { margin: 0; padding: 40px; font-family: system-ui, sans-serif; }
+
+    /*
+     * The container is pushed well away from the page origin on purpose.
+     *
+     * The bug this fixture exists for only shows up when an element's static position is far
+     * from its containing block's origin — at the origin the two references coincide and a
+     * wrong measurement looks perfect. Every offset here is deliberately non-zero.
+     */
+    #frame {
+      position: relative;
+      margin: 60px 0 0 220px;
+      width: 520px;
+      height: 320px;
+      background: #f1f5f9;
+      border: 1px solid #cbd5e1;
+    }
+
+    /* Relative, sitting at the container origin: the case that used to pass by luck. */
+    #rel { position: relative; width: 140px; height: 70px; background: #bfdbfe; }
+
+    #abs { position: absolute; left: 60px; top: 180px; width: 120px; height: 60px; background: #bbf7d0; }
+
+    /* Absolute with nothing declared: it sits at its static position. */
+    #staticabs { position: absolute; width: 110px; height: 50px; background: #fde68a; }
+
+    /* Declared offsets plus margins: takes the authored-value path. */
+    #marg { position: absolute; left: 300px; top: 40px; margin: 12px 0 0 18px; width: 100px; height: 50px; background: #fecaca; }
+
+    #row { position: absolute; left: 0; top: 240px; display: flex; gap: 20px; }
+    #spacer { width: 180px; height: 60px; background: #e2e8f0; }
+
+    /* Relative, static position ~200px into the container. This is the regression. */
+    #reloffset { position: relative; width: 130px; height: 60px; background: #ddd6fe; }
+
+    /* Rotated: the bounding rect is the box *around* the element, not the element. */
+    #rot { position: absolute; width: 120px; height: 60px; background: #a5f3fc; transform: rotate(30deg); }
+
+    /* Margins with nothing declared: `left` positions the margin edge, not the border edge. */
+    #margstatic { position: absolute; margin: 14px 0 0 22px; width: 100px; height: 50px; background: #f5d0fe; }
+
+    /* Anchored from the far side: moving right has to make `right` smaller. */
+    #farside { position: absolute; right: 30px; bottom: 25px; width: 110px; height: 50px; background: #fed7aa; }
+
+    /* Fixed with nothing declared: its offsets are viewport-relative. */
+    #fixedel { position: fixed; left: 420px; top: 500px; width: 120px; height: 50px; background: #bae6fd; }
+
+    #stick { position: sticky; left: 0; width: 120px; height: 50px; background: #d9f99d; }
+
+    #report { position: absolute; width: 1px; height: 1px; overflow: hidden; }
+  </style>
+</head>
+
+<body>
+  <div id="frame">
+    <div id="rel">relative</div>
+    <div id="staticabs">static abs</div>
+    <div id="abs">absolute</div>
+    <div id="marg">margins</div>
+    <div id="row">
+      <div id="spacer"></div>
+      <div id="reloffset">relative, offset</div>
+      <div id="rot">rotated</div>
+      <div id="margstatic">margins, static</div>
+      <div id="stick">sticky</div>
+    </div>
+    <div id="farside">far side</div>
+  </div>
+  <div id="fixedel">fixed</div>
+
+  <div id="report">
+    <pre id="progress">start</pre>
+    <pre id="out">pending</pre>
+  </div>
+
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const cases = {};
+      const errors = [];
+      addEventListener('error', (e) => errors.push('error: ' + e.message));
+      addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + String(e.reason)));
+
+      const progress = document.getElementById('progress');
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const byId = (id) => document.getElementById(id);
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark', detectScriptContent: false });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+
+      /** Select, then wait for the chrome to stop settling so measurements are stable. */
+      const settle = async (id) => {
+        const el = byId(id);
+        api.select(el);
+        let last = null;
+        for (let i = 0; i < 60; i += 1) {
+          await frames();
+          const r = el.getBoundingClientRect();
+          const now = `${Math.round(r.left)},${Math.round(r.top)}`;
+          if (now === last) break;
+          last = now;
+        }
+        return el;
+      };
+
+      /** The offset an axis is currently carrying, authored or computed. */
+      const declaredOf = (el, prop) => {
+        const raw = el.style[prop] || getComputedStyle(el)[prop];
+        const n = Number.parseFloat(raw);
+        return Number.isFinite(n) ? n : 0;
+      };
+
+      /**
+       * Drag an element's middle by a delta and report whether it kept up.
+       *
+       * `expect: 'rect'` is the real invariant for absolute, relative and fixed: the element must
+       * land under the cursor. Sticky gets `expect: 'declared'` instead — its insets are scroll
+       * constraints rather than translations, so an unstuck sticky element correctly does not
+       * move at all, and the only thing worth asserting is that the offsets it wrote are right.
+       */
+      const push = async (id, dx, dy, expect) => {
+        const el = await settle(id);
+        const before = el.getBoundingClientRect();
+        const near = { left: declaredOf(el, 'left'), top: declaredOf(el, 'top') };
+        const at = { x: before.left + before.width / 2, y: before.top + before.height / 2 };
+
+        engine.startTransform(el, 'move', null, at.x, at.y);
+        engine.updateTransform(at.x + dx, at.y + dy, { shift: false, alt: false });
+        engine.endTransform();
+        await frames();
+
+        const after = el.getBoundingClientRect();
+        const travelled = [after.left - before.left, after.top - before.top];
+        const shifted = [declaredOf(el, 'left') - near.left, declaredOf(el, 'top') - near.top];
+        const measured = expect === 'rect' ? travelled : shifted;
+        return {
+          asked: [dx, dy],
+          travelled: travelled.map(Math.round),
+          ok: Math.abs(measured[0] - dx) < 1.5 && Math.abs(measured[1] - dy) < 1.5,
+          wrote: el.getAttribute('style') ?? '',
+        };
+      };
+
+      const plan = [
+        ['rel', 'rect'], ['reloffset', 'rect'], ['abs', 'rect'], ['staticabs', 'rect'],
+        ['marg', 'rect'], ['rot', 'rect'], ['margstatic', 'rect'], ['farside', 'rect'],
+        ['fixedel', 'rect'], ['stick', 'declared'],
+      ];
+
+      for (const [id, expect] of plan) {
+        progress.textContent = id;
+        /*
+         * Two moves, because the bug was only ever in the first one. Nothing is declared before
+         * the first drag, so it has to derive the starting offset; every drag after it just adds
+         * to the number already on the style attribute. A single-move test would have missed it,
+         * and a second-move-only test would have passed while the feature was broken.
+         */
+        cases[id] = {
+          expect,
+          first: await push(id, 40, 25, expect),
+          second: await push(id, 30, -15, expect),
+        };
+      }
+
+      const failed = Object.entries(cases)
+        .filter(([, v]) => !(v.first.ok && v.second.ok))
+        .map(([k]) => k);
+
+      byId('out').textContent =
+        'RESULTS:' + JSON.stringify({ ok: failed.length === 0, failed, cases, errors }, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"ok":false,"__fatal":' + JSON.stringify(String((e && e.stack) || e)) + '}:END';
+    });
+  </script>
+</body>
+
+</html>

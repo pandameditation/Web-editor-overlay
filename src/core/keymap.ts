@@ -46,6 +46,21 @@ export function handleKeyDown(engine: EditorEngine, event: KeyboardEvent): void 
    */
   if (state.confirm) return;
 
+  /*
+   * A handle drag owns Escape, which abandons it.
+   *
+   * Ahead of everything else because the keys a page shortcut would claim are the keys this
+   * gesture is using: Escape backs out of it, and Shift and Alt are held *through* it. Deleting
+   * the element mid-resize because Backspace still reached the keymap is the failure this avoids.
+   */
+  if (state.transform) {
+    if (key === 'Escape') {
+      event.preventDefault();
+      engine.cancelTransform();
+    }
+    return;
+  }
+
   // A native `<dialog>` opened with `showModal` makes everything outside it inert,
   // so a shortcut that opens overlay chrome would put it behind the modal where it
   // cannot be reached. The expanded code editor is the one such dialog; while the

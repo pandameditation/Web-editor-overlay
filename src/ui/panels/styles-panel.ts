@@ -37,6 +37,8 @@ interface SectionSpec {
   properties: string[];
   /** Only render when the element's computed style makes the section relevant. */
   when?: (computed: CSSStyleDeclaration) => boolean;
+  /** A line above the rows, for a section that has a second way in. */
+  note?: string;
 }
 
 const SECTIONS: SectionSpec[] = [
@@ -52,6 +54,15 @@ const SECTIONS: SectionSpec[] = [
     glyph: 'moveIn',
     properties: ['top', 'right', 'bottom', 'left'],
     when: (computed) => computed.position !== 'static',
+    /*
+     * The same four properties the page's own handles write.
+     *
+     * Said here because the two are easy to mistake for alternatives, and they are not: a field is
+     * how you say a number you already know, and dragging is how you find out which number you
+     * meant. Whichever is used, the declaration that comes out is the same — and the drag keeps
+     * the unit, so an offset written in percent is still in percent afterwards.
+     */
+    note: 'Or drag the element on the page. Shift keeps it on one axis.',
   },
   {
     id: 'flex',
@@ -1447,6 +1458,7 @@ export class HeoStylesPanel extends HeoElement {
       @section-toggle=${(event: CustomEvent<{ open: boolean }>) =>
         this.#remember(section.id, event.detail.open)}
     >
+      ${section.note ? html`<p class="hint" style="margin:0 0 9px">${section.note}</p>` : nothing}
       <div class="rows">
         ${section.properties.map((property) =>
           this.#renderRow(property, el, computed, declared, undefined, origins),

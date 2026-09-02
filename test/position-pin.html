@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Converting to absolute keeps the element where it is</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 40px;
+      font-family: system-ui, sans-serif;
+    }
+
+    /* Well away from the page origin, so a wrong reference shows up as a jump. */
+    #frame {
+      position: relative;
+      margin: 50px 0 0 200px;
+      width: 560px;
+      height: 300px;
+      background: #f1f5f9;
+      border: 1px solid #cbd5e1;
+    }
+
+    #frame>div {
+      background: #bfdbfe;
+    }
+
+    #spacer {
+      width: 100%;
+      height: 40px;
+      background: #e2e8f0;
+    }
+
+    #flowchild {
+      width: 160px;
+      height: 50px;
+    }
+
+    /*
+     * The leap this fixture exists for.
+     *
+     * An out-of-flow child of a flex container takes its static position from the container's
+     * content box corner, not from where the flow had put it. So a middle child converted to
+     * absolute with no offsets jumps to the top-left of the row.
+     */
+    #flexrow {
+      display: flex;
+      gap: 18px;
+      margin-top: 14px;
+    }
+
+    #flexrow>div {
+      width: 120px;
+      height: 60px;
+      background: #bbf7d0;
+    }
+
+    /* Relative and displaced: the displacement has to fold into the coordinate. */
+    #relmoved {
+      position: relative;
+      left: 40px;
+      top: 20px;
+      width: 140px;
+      height: 50px;
+      background: #fde68a;
+    }
+
+    /* Anchored from the right by a rule, so the pin must write `right`, not `left`. */
+    #farright {
+      position: relative;
+      right: 24px;
+      top: 10px;
+      width: 130px;
+      height: 50px;
+      background: #ddd6fe;
+    }
+
+    #tofixed {
+      width: 150px;
+      height: 50px;
+      background: #fecaca;
+    }
+
+    /* --- display cases for the resize affordance --- */
+    #kinds>* {
+      margin-top: 6px;
+      background: #e0f2fe;
+      width: 220px;
+      height: 40px;
+    }
+
+    #d-block {
+      display: block;
+    }
+
+    #d-inlineblock {
+      display: inline-block;
+    }
+
+    #d-flex {
+      display: flex;
+    }
+
+    #d-inlineflex {
+      display: inline-flex;
+    }
+
+    #d-grid {
+      display: grid;
+    }
+
+    #d-inlinegrid {
+      display: inline-grid;
+    }
+
+    #d-table {
+      display: table;
+      width: 240px;
+    }
+
+    #d-row {
+      display: table-row;
+    }
+
+    #d-cell {
+      display: table-cell;
+    }
+
+    /* A block child of a flex container is still resizable: it is an item, not a container. */
+    #flexitemwrap {
+      display: flex;
+    }
+
+    #d-flexitem {
+      display: block;
+      width: 100px;
+      height: 40px;
+      background: #fcd34d;
+    }
+
+    #report {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="frame">
+    <div id="spacer"></div>
+    <div id="flowchild">in flow</div>
+    <div id="flexrow">
+      <div id="flexfirst">first</div>
+      <div id="flexchild">middle</div>
+      <div id="flexlast">last</div>
+    </div>
+    <div id="relmoved">relative, displaced</div>
+    <div id="farright">anchored right</div>
+    <div id="tofixed">to fixed</div>
+    <div id="already" style="position:absolute;left:33px;top:210px;width:120px;height:40px;background:#a5f3fc">
+      already absolute
+    </div>
+  </div>
+
+  <div id="kinds">
+    <div id="d-block">block</div>
+    <div id="d-inlineblock">inline-block</div>
+    <div id="d-flex"><span>flex</span></div>
+    <div id="d-inlineflex"><span>inline-flex</span></div>
+    <div id="d-grid"><span>grid</span></div>
+    <div id="d-inlinegrid"><span>inline-grid</span></div>
+    <div id="d-table">
+      <div id="d-row">
+        <div id="d-cell">cell</div>
+      </div>
+    </div>
+    <div id="flexitemwrap">
+      <div id="d-flexitem">flex item</div>
+    </div>
+  </div>
+
+  <div id="report">
+    <pre id="progress">start</pre>
+    <pre id="out">pending</pre>
+  </div>
+
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const errors = [];
+      addEventListener('error', (e) => errors.push('error: ' + e.message));
+      addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + String(e.reason)));
+
+      const progress = document.getElementById('progress');
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const byId = (id) => document.getElementById(id);
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark', detectScriptContent: false });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+
+      const overlayRoot = () => document.querySelector('html-editor-overlay > heo-overlay');
+      const layer = () => overlayRoot().shadowRoot.querySelector('heo-selection-layer');
+
+      const near = (a, b) => Math.abs(a - b) < 1.5;
+
+      /* ------------------------------------------------------------------ *
+       * Converting to absolute or fixed must not move the element.
+       * ------------------------------------------------------------------ */
+      const convert = async (id, scheme) => {
+        const el = byId(id);
+        api.select(el);
+        await frames();
+        const before = el.getBoundingClientRect();
+        engine.setStyle('position', scheme, el);
+        await frames();
+        const after = el.getBoundingClientRect();
+
+        // Undo has to put the whole conversion back, not just the position.
+        engine.undo();
+        await frames();
+        const undone = el.getBoundingClientRect();
+
+        engine.redo();
+        await frames();
+
+        return {
+          stayedPut: near(after.left, before.left) && near(after.top, before.top),
+          drift: [Math.round(after.left - before.left), Math.round(after.top - before.top)],
+          wrote: el.getAttribute('style') ?? '',
+          undoRestores: near(undone.left, before.left) && near(undone.top, before.top),
+        };
+      };
+
+      const pinned = {};
+      for (const [id, scheme] of [
+        ['flowchild', 'absolute'],
+        ['flexchild', 'absolute'],
+        ['relmoved', 'absolute'],
+        ['farright', 'absolute'],
+        ['tofixed', 'fixed'],
+      ]) {
+        progress.textContent = 'convert ' + id;
+        pinned[id] = await convert(id, scheme);
+      }
+
+      // The right-anchored element must be pinned through `right`, not `left`.
+      pinned.farright.keptItsAnchor =
+        /(^|;)\s*right:/.test(pinned.farright.wrote) && !/(^|;)\s*left:/.test(pinned.farright.wrote);
+
+      /*
+       * Re-picking the position an element already has must leave its offsets alone. Otherwise
+       * every visit to the control would quietly re-round the numbers the user typed.
+       */
+      progress.textContent = 'already absolute';
+      const already = byId('already');
+      api.select(already);
+      await frames();
+      engine.setStyle('position', 'absolute', already);
+      await frames();
+      const untouched = {
+        left: already.style.left,
+        top: already.style.top,
+        ok: already.style.left === '33px' && already.style.top === '210px',
+      };
+
+      /* ------------------------------------------------------------------ *
+       * Resize handles stay away from layout-sized elements.
+       * ------------------------------------------------------------------ */
+      const affordance = async (id) => {
+        const el = byId(id);
+        api.select(el);
+        await frames();
+        const aff = engine.transformAffordances(el);
+        const root = layer()?.shadowRoot;
+        const handles = root ? root.querySelectorAll('.frame .h').length : -1;
+        const rotate = root ? root.querySelectorAll('.frame .rot').length : -1;
+        const box = el.getBoundingClientRect();
+        const started = engine.startTransform(el, 'resize', 'se', box.right, box.bottom);
+        if (started) engine.cancelTransform();
+        return {
+          display: getComputedStyle(el).display,
+          resize: aff ? aff.resize : null,
+          handles,
+          rotate,
+          gestureRefused: started === false,
+        };
+      };
+
+      const displays = {};
+      for (const id of [
+        'd-block', 'd-inlineblock', 'd-flex', 'd-inlineflex', 'd-grid', 'd-inlinegrid',
+        'd-table', 'd-row', 'd-cell', 'd-flexitem',
+      ]) {
+        progress.textContent = 'affordance ' + id;
+        displays[id] = await affordance(id);
+      }
+
+      const RESIZABLE = new Set(['d-block', 'd-inlineblock', 'd-table', 'd-flexitem']);
+      for (const [id, seen] of Object.entries(displays)) {
+        const want = RESIZABLE.has(id);
+        seen.ok =
+          seen.resize === want &&
+          seen.handles === (want ? 8 : 0) &&
+          seen.gestureRefused === !want &&
+          // Rotation is a question about orientation, not size, so it stays either way.
+          seen.rotate === 1;
+      }
+
+      const failed = [
+        ...Object.entries(pinned)
+          .filter(([, v]) => !(v.stayedPut && v.undoRestores))
+          .map(([k]) => 'pin:' + k),
+        ...(pinned.farright.keptItsAnchor ? [] : ['pin:farright-anchor']),
+        ...(untouched.ok ? [] : ['pin:already']),
+        ...Object.entries(displays).filter(([, v]) => !v.ok).map(([k]) => 'display:' + k),
+      ];
+
+      byId('out').textContent = 'RESULTS:' + JSON.stringify(
+        { ok: failed.length === 0, failed, pinned, untouched, displays, errors }, null, 1,
+      ) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"ok":false,"__fatal":' + JSON.stringify(String((e && e.stack) || e)) + '}:END';
+    });
+  </script>
+</body>
+
+</html>

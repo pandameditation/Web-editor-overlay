@@ -38,7 +38,7 @@
     "check:access": "HEO_FILE_ACCESS=strict node scripts/browser-check.mjs test/file-access.html 45000",
     "check:mirror": "HEO_FILE_ACCESS=strict node scripts/browser-check.mjs test/mirror.html 45000",
     "preview": "vite preview --config vite.demo.config.ts",
-    "check": "npm run build:lib && npm run build:plugin && npm run test:css && npm run test:instrument && npm run test:prompt && npm run test:endpoint && node scripts/browser-check.mjs test/self-check.html 60000 && node scripts/browser-check.mjs test/writeback.html 60000 && node scripts/browser-check.mjs test/chrome-tracking.html 45000 && node scripts/browser-check.mjs test/script-tag.html 45000 && node scripts/browser-check.mjs test/script-tag-manual.html 45000 && npm run check:opaque && npm run check:access && npm run check:mirror && npm run check:provenance && npm run check:late && npm run check:advisory && npm run check:export && npm run check:plan && npm run check:htmlpatch && npm run check:cssrules && npm run check:shield && npm run check:sweepout && npm run check:token && npm run check:download && npm run check:paste && npm run check:dsscope && npm run check:bundle && npm run check:bundle:strict && npm run check:reveal && npm run check:links && npm run check:newtab && npm run check:textdrag && npm run check:edgescroll",
+    "check": "npm run build:lib && npm run build:plugin && npm run test:css && npm run test:instrument && npm run test:prompt && npm run test:endpoint && node scripts/browser-check.mjs test/self-check.html 60000 && node scripts/browser-check.mjs test/writeback.html 60000 && node scripts/browser-check.mjs test/chrome-tracking.html 45000 && node scripts/browser-check.mjs test/script-tag.html 45000 && node scripts/browser-check.mjs test/script-tag-manual.html 45000 && npm run check:opaque && npm run check:access && npm run check:mirror && npm run check:provenance && npm run check:late && npm run check:advisory && npm run check:export && npm run check:plan && npm run check:htmlpatch && npm run check:cssrules && npm run check:shield && npm run check:sweepout && npm run check:token && npm run check:download && npm run check:paste && npm run check:dsscope && npm run check:bundle && npm run check:bundle:strict && npm run check:reveal && npm run check:links && npm run check:newtab && npm run check:textdrag && npm run check:edgescroll && npm run check:move && npm run check:pin",
     "check:plugin": "node scripts/browser-check.mjs http://localhost:5180/probe.html 40000",
     "check:provenance": "node scripts/browser-check.mjs test/provenance.html 45000",
     "check:late": "node scripts/browser-check.mjs test/late-mount.html 45000",
@@ -59,7 +59,9 @@
     "check:textdrag": "node scripts/browser-check.mjs test/text-drag.html 45000",
     "check:edgescroll": "node scripts/browser-check.mjs test/edge-scroll.html 150000",
     "check:paste": "node scripts/browser-check.mjs test/paste-html.html 45000",
-    "check:dsscope": "node scripts/browser-check.mjs test/design-scope.html 45000"
+    "check:dsscope": "node scripts/browser-check.mjs test/design-scope.html 45000",
+    "check:move": "node scripts/browser-check.mjs test/transform-move.html 90000",
+    "check:pin": "node scripts/browser-check.mjs test/position-pin.html 90000"
   },
   "dependencies": {
     "lit": "3.3.3"

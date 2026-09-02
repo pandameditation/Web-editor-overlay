@@ -20,7 +20,7 @@ import {
   TOKEN_STYLE_ID,
   VERSION,
 } from './constants.js';
-import { inlineDeclarations } from './css.js';
+import { appliedRules, cascadedDeclarations, inlineDeclarations } from './css.js';
 import { planDrag, samePlacement, type DropPlacement } from './drop-target.js';
 import { captureRects, neighbourhood, playFlip, settleDrop } from './reflow.js';
 import {
@@ -113,6 +113,24 @@ import {
   type SourceTarget,
   type SourceWindow,
 } from './js-edit.js';
+import {
+  angleOf,
+  declaredRotation,
+  isResizableDisplay,
+  linearOf,
+  originOf,
+  pinnedOffsets,
+  readSnapshot,
+  stepFor,
+  untransformedBox,
+  TRANSFORM_LABEL,
+  type Box,
+  type Linear,
+  type Point,
+  type ResizeHandle,
+  type TransformMode,
+  type TransformSnapshot,
+} from './transform.js';
 import { installStyleMirror, releaseStyleMirrors } from './mirror.js';
 import { modalOpen } from './modal.js';
 import { collectScriptSources, fetchScriptSource } from './scripts.js';
@@ -336,6 +354,26 @@ export interface ConfirmRequest {
   run: () => void;
 }
 
+/**
+ * A handle drag in progress, as the chrome needs to see it.
+ *
+ * Deliberately not a share of `drag`. That slice means "a reorder is happening", and a great deal
+ * hangs off it: the element goes translucent and unclickable, the layer dashes its outline and
+ * hides its own controls, a chip follows the pointer, hover is suppressed, Escape cancels a
+ * reorder. A resize is none of those things — the element stays solid and where it is, and what
+ * the user needs to see is the number they are producing.
+ */
+export interface TransformState {
+  element: HTMLElement;
+  mode: TransformMode;
+  /** Which handle, for a resize. Null for a move or a rotate. */
+  handle: ResizeHandle | null;
+  /** The values being written, live, for the badge to show while the pointer moves. */
+  readout: string;
+  /** What a held modifier would do, so the shortcut is discoverable mid-gesture. */
+  hint: string;
+}
+
 /** An element, and the library block it is an instance of. */
 export interface BlockInstance {
   block: LibraryBlock;
@@ -427,6 +465,8 @@ export interface EditorState {
   extraction: Extraction | null;
   /** A destructive action waiting to be confirmed. */
   confirm: ConfirmRequest | null;
+  /** A resize, move or rotate being dragged out on the page. */
+  transform: TransformState | null;
   /**
    * Which language the Code panel is showing, in the dock and expanded alike.
    *
@@ -667,6 +707,7 @@ export class EditorEngine {
       saveBlockLibrary: false,
       extraction: null,
       confirm: null,
+      transform: null,
       codeTab: 'html',
       codeWorkspace: false,
       toast: null,
@@ -1044,8 +1085,45 @@ export class EditorEngine {
     if (!el) return;
     this.#endPreview();
     this.#captureBaseline(el, property);
-    this.history.commit(setStyleProperty(el, property, value));
+
+    /*
+     * Taking an element out of flow keeps it where it is.
+     *
+     * Measured before the declaration lands, because afterwards the element has already moved and
+     * there is nothing left to measure. Committed as one entry with the position itself, so undo
+     * puts back the whole conversion rather than unpinning it and leaving it somewhere new.
+     */
+    const pin = property === 'position' ? this.#pinOffsets(el, value) : null;
+    if (pin) {
+      for (const pinned of Object.keys(pin)) this.#captureBaseline(el, pinned);
+      this.history.commit(
+        setStyleProperties(el, { [property]: value, ...pin }, `Position ${labelFor(el)}`),
+      );
+    } else {
+      this.history.commit(setStyleProperty(el, property, value));
+    }
     this.#bumpRevision();
+  }
+
+  /**
+   * The offsets to write alongside a switch to `absolute` or `fixed`, if any are needed.
+   *
+   * Only on the way out of the flow the element is currently in. Re-picking the position it
+   * already has changes nothing and should not rewrite its offsets, and `static`, `relative` and
+   * `sticky` all leave the element where the flow put it, so none of them need pinning.
+   */
+  #pinOffsets(el: HTMLElement, value: string): Record<string, string> | null {
+    const scheme = value.trim();
+    if (scheme !== 'absolute' && scheme !== 'fixed') return null;
+    if (getComputedStyle(el).position === scheme) return null;
+
+    const cascade = cascadedDeclarations(appliedRules(el));
+    const pin = pinnedOffsets(
+      el,
+      scheme,
+      (property) => this.inlineStyle(property, el) || cascade.get(property)?.value || '',
+    );
+    return Object.keys(pin).length ? pin : null;
   }
 
   /**
@@ -4254,6 +4332,313 @@ export class EditorEngine {
   }
 
   /* ---------------------------------------------------------------------- */
+  /* Resizing, moving and rotating by hand                                  */
+  /* ---------------------------------------------------------------------- */
+
+  #transform: TransformSnapshot | null = null;
+  #stopTransformScroll: (() => void) | null = null;
+  #transformPointer: Point | null = null;
+  #transformModifiers = { shift: false, alt: false };
+  /** The furthest the pointer has been from where it started, for the autoscroll gate. */
+  #transformTravel = 0;
+
+  /**
+   * Begin a handle drag. Returns false when this element cannot be manipulated that way.
+   *
+   * The Offsets panel and these handles are two ways into the same four properties, which is the
+   * point: a number is right when you know the number, and a corner is right when what you know
+   * is "a bit further left". Neither is a substitute for the other and both write the same CSS.
+   */
+  startTransform(
+    el: HTMLElement,
+    mode: TransformMode,
+    handle: ResizeHandle | null,
+    x: number,
+    y: number,
+  ): boolean {
+    if (!el.isConnected || this.store.value.drag) return false;
+    if (this.store.value.transform) this.cancelTransform();
+    // A live text edit and a handle drag both want the pointer, and the text edit was there
+    // first — so it is committed rather than fought with.
+    this.endTextEdit(true);
+
+    /*
+     * Two readings of the same properties, and the gesture needs both.
+     *
+     * `inline` is what to put back, and goes through the preview so a value someone is halfway
+     * through typing in the panel is not adopted as the state this gesture started from.
+     * `authored` is what the cascade actually settled on, as written — which is where the unit and
+     * the starting number come from.
+     */
+    const cascade = cascadedDeclarations(appliedRules(el));
+    const gesture = readSnapshot(el, mode, handle, x, y, {
+      inline: (property) => this.inlineStyle(property, el),
+      authored: (property) =>
+        this.inlineStyle(property, el) || cascade.get(property)?.value || '',
+    });
+    if (!gesture) return false;
+    this.#transform = gesture;
+    this.#transformPointer = { x, y };
+    this.#transformModifiers = { shift: false, alt: false };
+    this.#transformTravel = 0;
+
+    this.store.patch({
+      transform: { element: el, mode, handle, readout: '', hint: '' },
+      hovered: null,
+      quickMenuOpen: false,
+      insertAnchor: null,
+    });
+
+    /*
+     * The pointer is holding a handle, so it cannot also reach for a scrollbar — pushing towards
+     * the edge is how the rest of the page is reached. The same loop the reorder drag uses, fed
+     * from the last known pointer so it keeps working while the hand is held still.
+     */
+    this.#stopTransformScroll?.();
+    this.#stopTransformScroll = startEdgeScroll({
+      pointer: () => this.#transformPointer,
+      moved: (at) => {
+        if (this.#transform) this.updateTransform(at.x, at.y, this.#transformModifiers);
+      },
+      /*
+       * Held until the gesture has actually gone somewhere.
+       *
+       * A handle sits *on* the element's edge, so an element near the top of the page has its
+       * north handle inside the edge-scroll band before the pointer has moved at all. Engaging
+       * immediately would scroll the page out from under a user who only wanted to nudge a border
+       * by two pixels — the affordance would fight the very adjustment it is for. A deliberate
+       * drag towards the edge travels much further than this, so nothing is lost.
+       */
+      suspended: () => this.#transformTravel < TRANSFORM_SCROLL_TRAVEL,
+    });
+    return true;
+  }
+
+  /**
+   * Follow the pointer.
+   *
+   * Written straight onto the style attribute rather than through `previewStyle`, which holds one
+   * property at a time — and a corner drag writes four. The snapshot taken at the start is what
+   * makes that safe to do repeatedly: whatever this paints, `#restoreTransform` puts back
+   * exactly, which is what lets the release record one honest before-and-after.
+   */
+  updateTransform(x: number, y: number, modifiers: { shift: boolean; alt: boolean }): void {
+    const gesture = this.#transform;
+    if (!gesture) return;
+    this.#transformPointer = { x, y };
+    this.#transformModifiers = modifiers;
+    this.#transformTravel = Math.max(
+      this.#transformTravel,
+      Math.hypot(x - gesture.start.x, y - gesture.start.y),
+    );
+
+    const step = stepFor(gesture, x, y, modifiers);
+    gesture.written = step.declarations;
+    for (const [property, value] of Object.entries(step.declarations)) {
+      if (value) gesture.el.style.setProperty(property, value);
+      else gesture.el.style.removeProperty(property);
+    }
+
+    const state = this.store.value.transform;
+    if (state && (state.readout !== step.readout || state.hint !== step.hint)) {
+      this.store.patch({ transform: { ...state, readout: step.readout, hint: step.hint } });
+    }
+    // Geometry only: `#bumpRevision` would re-render the styles panel on every frame, and the
+    // panel is not what the user is looking at.
+    this.#bumpGeometry();
+  }
+
+  /**
+   * Put the element back exactly as the gesture found it.
+   *
+   * Run before committing, not instead of it. The command records the element's `before` at the
+   * moment it is built, so building it while the drag's own paint is still on the attribute would
+   * record the last frame of the gesture as the state to undo to — and undo would then appear to
+   * do nothing at all.
+   */
+  #restoreTransform(gesture: TransformSnapshot): void {
+    for (const [property, value] of Object.entries(gesture.inline)) {
+      if (value) gesture.el.style.setProperty(property, value);
+      else gesture.el.style.removeProperty(property);
+    }
+    tidyStyleAttribute(gesture.el);
+  }
+
+  #releaseTransform(): TransformSnapshot | null {
+    const gesture = this.#transform;
+    this.#transform = null;
+    this.#stopTransformScroll?.();
+    this.#stopTransformScroll = null;
+    this.#transformPointer = null;
+    if (gesture) this.store.patch({ transform: null });
+    return gesture;
+  }
+
+  /** Land the gesture as one undoable change. */
+  endTransform(): void {
+    const gesture = this.#releaseTransform();
+    if (!gesture) return;
+
+    /*
+     * A press that never travelled is not an edit.
+     *
+     * Without this, every accidental click on a handle would put a no-op on the undo stack and in
+     * the change set — and a change set that lists edits nobody made is one nobody reads.
+     */
+    const changed = Object.entries(gesture.written).some(
+      ([property, value]) => (value || '') !== (gesture.inline[property] || ''),
+    );
+    this.#restoreTransform(gesture);
+    if (!changed) {
+      this.#bumpGeometry();
+      return;
+    }
+
+    this.setStyles(gesture.written, TRANSFORM_LABEL[gesture.mode], gesture.el);
+    this.#bumpGeometry();
+    this.notify(`${TRANSFORM_LABEL[gesture.mode]} ${labelFor(gesture.el)}.`, 'success', {
+      label: 'Undo',
+      run: () => this.undo(),
+    });
+  }
+
+  /**
+   * Where the pointer was last seen during a gesture, or null when none is running.
+   *
+   * Exposed so a modifier key can re-evaluate the gesture at the position it is already at. Shift
+   * and Alt change what the same pointer means, and a user who has stopped moving before pressing
+   * one expects it to take effect where their hand is — not on the next twitch.
+   */
+  get transformPointer(): Point | null {
+    return this.#transform ? this.#transformPointer : null;
+  }
+
+  /** Abandon the gesture, leaving the element as it was. */
+  cancelTransform(): void {
+    const gesture = this.#releaseTransform();
+    if (!gesture) return;
+    this.#restoreTransform(gesture);
+    this.#bumpGeometry();
+  }
+
+  /**
+   * Arm a move on a positioned element, and start it if the pointer travels.
+   *
+   * Returns true once the press has been claimed, which is the signal for the page handler to
+   * stand down. Claimed on the press rather than on the first move, because the alternative is
+   * letting `beginTextEdit` run and then trying to take the gesture back off the browser's own
+   * selection machinery mid-sweep, which cannot be done cleanly.
+   *
+   * Nothing is written until the threshold is crossed. A press that never travels leaves no
+   * gesture, no history entry and no trace — and the click that follows it still lands, so a
+   * plain click on a positioned element goes on selecting and editing exactly as before.
+   */
+  #startMoveGesture(el: HTMLElement, event: PointerEvent): boolean {
+    if (getComputedStyle(el).position === 'static') return false;
+
+    const from = { x: event.clientX, y: event.clientY };
+    let started = false;
+    const modifiers = (source: PointerEvent | KeyboardEvent): { shift: boolean; alt: boolean } => ({
+      shift: source.shiftKey,
+      alt: source.altKey,
+    });
+
+    const move = (moveEvent: PointerEvent): void => {
+      if (!started) {
+        if (Math.hypot(moveEvent.clientX - from.x, moveEvent.clientY - from.y) < MOVE_THRESHOLD) {
+          return;
+        }
+        // From the original press, so the element does not jump by the threshold on the first frame.
+        started = this.startTransform(el, 'move', null, from.x, from.y);
+        if (!started) {
+          stop();
+          return;
+        }
+      }
+      this.updateTransform(moveEvent.clientX, moveEvent.clientY, modifiers(moveEvent));
+    };
+    const up = (upEvent: PointerEvent): void => {
+      stop();
+      if (!started) return;
+      this.endTransform();
+      /*
+       * The click that follows a completed drag is not a click on anything.
+       *
+       * Same problem the text sweep has, and the same answer: suppressing it here stops the
+       * release from being read as "select whatever is under the pointer", which after a move
+       * across the page is something else entirely.
+       */
+      this.#pressBeganInTextEdit = true;
+      upEvent.preventDefault();
+    };
+    const cancel = (): void => {
+      stop();
+      if (started) this.cancelTransform();
+    };
+    const key = (keyEvent: KeyboardEvent): void => {
+      if (!started) return;
+      // Held modifiers change what the same pointer position means, so the gesture has to be
+      // re-evaluated when one goes down or comes up rather than waiting for the next movement.
+      const at = this.#transformPointer;
+      if (at) this.updateTransform(at.x, at.y, modifiers(keyEvent));
+    };
+    const stop = (): void => {
+      unlisten(document, 'pointermove', move as EventListener, true);
+      unlisten(document, 'pointerup', up as EventListener, true);
+      unlisten(document, 'pointercancel', cancel as EventListener, true);
+      unlisten(document, 'keydown', key as EventListener, true);
+      unlisten(document, 'keyup', key as EventListener, true);
+    };
+
+    // Through `listen`, so the shield cannot gate the editor's own gesture wiring.
+    listen(document, 'pointermove', move as EventListener, true);
+    listen(document, 'pointerup', up as EventListener, true);
+    listen(document, 'pointercancel', cancel as EventListener, true);
+    listen(document, 'keydown', key as EventListener, true);
+    listen(document, 'keyup', key as EventListener, true);
+    return true;
+  }
+
+  /**
+   * Which handles this element should offer, and the geometry to draw them on.
+   *
+   * Answered here rather than in the layer so the decision and the arithmetic behind it stay
+   * together — and because the layer asks on every render, which makes it the wrong place to be
+   * re-deriving a transform matrix.
+   *
+   * Null means no handles at all: an inline element has no box worth grabbing, and `<body>` is
+   * not something to resize.
+   */
+  transformAffordances(el: HTMLElement | null): {
+    resize: boolean;
+    move: boolean;
+    angle: number;
+    box: Box;
+    linear: Linear;
+    origin: Point;
+  } | null {
+    if (!el || !el.isConnected) return null;
+    if (el === document.body || el === document.documentElement) return null;
+    const computed = getComputedStyle(el);
+    if (computed.display === 'inline' || computed.display === 'none') return null;
+    const linear = linearOf(computed.transform);
+    const box = untransformedBox(el, linear, computed);
+    if (box.width <= 0 || box.height <= 0) return null;
+    return {
+      // A flex or grid container, or a table row, is sized by its own layout rules rather than by
+      // width and height, so a corner handle there would be offering the wrong control.
+      resize: isResizableDisplay(computed.display),
+      // Moving needs somewhere to move to. An element in normal flow is positioned by its
+      // neighbours, so dragging it is the reorder gesture and the thumb is where that lives.
+      move: computed.position !== 'static',
+      angle: declaredRotation(computed.transform) ?? angleOf(linear),
+      box,
+      linear,
+      origin: originOf(computed, box),
+    };
+  }
+
+  /* ---------------------------------------------------------------------- */
   /* History                                                                */
   /* ---------------------------------------------------------------------- */
 
@@ -5643,6 +6028,25 @@ export class EditorEngine {
       if (isOverlayEvent(event) || isNativeInputEvent(event)) return;
       const el = selectableFromEvent(event);
       if (!el || el !== this.store.value.selected) return;
+
+      /*
+       * A positioned element is dragged, not swept.
+       *
+       * This is the one place the two gestures genuinely compete, and the tie has to be broken
+       * somewhere. An element with `position: absolute` sits where its offsets put it, and the
+       * expected thing to do with it — in this editor and in every design tool — is to pick it up
+       * and move it. An element in normal flow cannot be moved that way at all, so there it stays
+       * a text sweep and nothing changes.
+       *
+       * A threshold decides, not the press: below it nothing has happened, the handler below still
+       * runs on the release, and clicking into a positioned element to edit its words works
+       * exactly as it did. Past it, the press was a drag all along. What is given up is sweeping
+       * text in one motion on a *freshly selected* positioned element — click once to enter the
+       * text edit and the sweep is available again, because from then on the press lands inside a
+       * live edit and takes the branch above.
+       */
+      if (this.#startMoveGesture(el, event)) return;
+
       this.#pressBeganInTextEdit = true;
       this.beginTextEdit(el, 'leave-selection');
     });
@@ -5925,6 +6329,18 @@ export class EditorEngine {
       return family === 'pointer' || family === 'keyboard' || family === 'drag';
     }
 
+    /*
+     * A handle drag owns the same three, for the same reasons and one more.
+     *
+     * The element's own geometry is changing under the pointer, so any page handler watching for
+     * pointer movement is being fed a layout that will not hold still. `keyboard` matters here in
+     * its own right: Shift and Alt are part of the gesture — they lock the ratio and move the
+     * anchor — so those keystrokes belong to the drag and not to whatever the page binds them to.
+     */
+    if (state.transform) {
+      return family === 'pointer' || family === 'keyboard' || family === 'drag';
+    }
+
     return false;
   };
 
@@ -6062,6 +6478,18 @@ function linkElementFor(href: string): HTMLLinkElement | null {
   }
   return null;
 }
+
+/**
+ * How far the pointer has to travel before a press on a positioned element becomes a move.
+ *
+ * The same four pixels the drag thumb uses, and for the same reason: a deliberate click must
+ * never be read as a drag, and a fast drag must never be read as a click. Distance rather than
+ * time, because time makes a slow, careful click into a gesture the user did not ask for.
+ */
+const MOVE_THRESHOLD = 4;
+
+/** How far a handle drag must travel before it is allowed to scroll the page towards an edge. */
+const TRANSFORM_SCROLL_TRAVEL = 28;
 
 /** The editing space: a real character in the DOM, and `&nbsp;` once serialised. */
 const NBSP = '\u00a0';
