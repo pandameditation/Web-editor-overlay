@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>The block library, and its instances, survive a save and a reload</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 32px;
+      font-family: system-ui, sans-serif;
+    }
+
+    #stage {
+      padding: 16px;
+      background: #f1f5f9;
+      border: 1px solid #cbd5e1;
+    }
+
+    #report {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="stage">
+    <p id="anchor">Somewhere to insert next to.</p>
+  </div>
+
+  <div id="report">
+    <pre id="progress">start</pre>
+    <pre id="out">pending</pre>
+  </div>
+
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const errors = [];
+      addEventListener('error', (e) => errors.push('error: ' + e.message));
+      addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + String(e.reason)));
+
+      const progress = document.getElementById('progress');
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const results = {};
+
+      const BLOCK = {
+        id: 'promo-card',
+        name: 'Promo card',
+        kind: 'component',
+        html: '<div class="promo"><h3>{{title}}</h3><p>{{body}}</p></div>',
+        props: {
+          title: { type: 'text', default: 'Hello' },
+          body: { type: 'text', default: 'Some words.' },
+        },
+      };
+
+      /* ------------------------------------------------------------------ *
+       * Phase 1 — author a block, place one, and save with the tick on.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'phase 1: authoring';
+      let api = window.HtmlEditorOverlay.mount({ theme: 'dark', detectScriptContent: false });
+      let engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+
+      // A user block, as "Save as a reusable block" would leave it: not a preset, so it is
+      // something only this session knows about and only a seed could carry.
+      engine.library.upsert({ ...BLOCK, origin: 'user' });
+      const anchor = document.getElementById('anchor');
+      api.select(anchor);
+      await frames();
+
+      const placed = await engine.insertBlock(BLOCK, { title: 'Saved', body: 'Round trip.' }, {
+        reference: anchor,
+        position: 'after',
+      });
+      await frames();
+
+      results.authored = {
+        inserted: Boolean(placed),
+        linkedInPage: placed ? placed.getAttribute('data-heo-block') : null,
+        // The Components section's actual precondition.
+        hasComponentSection: Boolean(engine.blockInstance(placed)),
+        librarySize: engine.blockLibrarySize(),
+      };
+
+      /*
+       * Unticked first, as the control.
+       *
+       * The instance link is only worth writing when the template goes with it — an attribute
+       * naming a block the next load has never heard of is a dangling reference.
+       */
+      /*
+       * Parsed, not searched as text.
+       *
+       * This fixture's own script mentions both the seed MIME type and the link attribute, and
+       * the export serializes the page's inline scripts — so a substring check finds those
+       * mentions and reports a seed in a document that has none.
+       */
+      const survey = (html) => {
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        return {
+          seed: doc.querySelectorAll('script[type="application/heo-seed"]').length,
+          links: doc.querySelectorAll('[data-heo-block]').length,
+        };
+      };
+
+      const off = engine.exportHTML();
+      const offSurvey = survey(off);
+      results.untickedCarriesNeither = {
+        ...offSurvey,
+        ok: offSurvey.seed === 0 && offSurvey.links === 0,
+      };
+
+      engine.setSaveBlockLibrary(true);
+      await frames();
+      const saved = engine.exportHTML();
+      const onSurvey = survey(saved);
+      results.tickedCarriesBoth = {
+        ...onSurvey,
+        ok: onSurvey.seed === 1 && onSurvey.links === 1,
+      };
+
+      /* ------------------------------------------------------------------ *
+       * Phase 2 — reload: rebuild the page from what was written, remount.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'phase 2: reloading';
+
+      /*
+       * Read the saved document rather than hand-building the inputs, so what is under test is
+       * the artifact the save actually produced.
+       */
+      const savedDoc = new DOMParser().parseFromString(saved, 'text/html');
+      const savedSeed = savedDoc.querySelector('script[type="application/heo-seed"]')?.textContent?.trim() ?? '';
+      const savedInstance = savedDoc.querySelector('[data-heo-block]');
+      results.savedDocument = {
+        seedLength: savedSeed.length,
+        instanceTag: savedInstance ? savedInstance.tagName.toLowerCase() : null,
+        instanceBlockId: savedInstance ? savedInstance.getAttribute('data-heo-block') : null,
+      };
+
+      api.unmount();
+      await frames();
+
+      // Put the page back the way the saved file describes it, then mount as a fresh load.
+      document.getElementById('stage').innerHTML = savedInstance ? savedInstance.outerHTML : '';
+      const seedTag = document.createElement('script');
+      seedTag.setAttribute('type', 'application/heo-seed');
+      seedTag.textContent = savedSeed;
+      document.head.append(seedTag);
+      await frames();
+
+      /*
+       * Mounted with `mount()` directly and no loader tag in the page — which is the Vite
+       * plugin's shape, and the path where the seed used to be ignored entirely.
+       */
+      api = window.HtmlEditorOverlay.mount({ theme: 'dark', detectScriptContent: false });
+      engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+
+      const restoredEl = document.querySelector('[data-heo-block]');
+      const restoredBlock = engine.library.get('promo-card');
+      const instance = engine.blockInstance(restoredEl);
+
+      results.afterReload = {
+        libraryHasTheBlock: Boolean(restoredBlock),
+        blockName: restoredBlock ? restoredBlock.name : null,
+        elementStillLinked: Boolean(restoredEl),
+        // The whole point: selecting it again finds the Components section.
+        hasComponentSection: Boolean(instance),
+        namesItsTemplate: instance ? instance.block.name : null,
+        // Values are not durable by design, so they come back as the block's defaults.
+        values: instance ? instance.values : null,
+        // Every instance of a template is findable again, which is what sync needs.
+        instancesFound: engine.blockInstances('promo-card').length,
+        // The page already carries its library, so keeping it current needs no re-ticking.
+        tickDefaultedOn: engine.store.value.saveBlockLibrary === true,
+      };
+
+      results.afterReload.ok =
+        results.afterReload.libraryHasTheBlock &&
+        results.afterReload.hasComponentSection &&
+        results.afterReload.namesItsTemplate === 'Promo card' &&
+        results.afterReload.instancesFound === 1 &&
+        results.afterReload.tickDefaultedOn;
+
+      const failed = [
+        ...(results.authored.hasComponentSection ? [] : ['authored']),
+        ...(results.untickedCarriesNeither.ok ? [] : ['unticked']),
+        ...(results.tickedCarriesBoth.ok ? [] : ['ticked']),
+        ...(results.afterReload.ok ? [] : ['afterReload']),
+      ];
+
+      document.getElementById('out').textContent = 'RESULTS:' + JSON.stringify(
+        { ok: failed.length === 0, failed, ...results, errors }, null, 1,
+      ) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"ok":false,"__fatal":' + JSON.stringify(String((e && e.stack) || e)) + '}:END';
+    });
+  </script>
+</body>
+
+</html>

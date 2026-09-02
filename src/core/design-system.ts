@@ -650,10 +650,23 @@ export function exportHTML(
     el.removeAttribute(INSERTED_ATTR);
   }
 
-  // Which library block an element came from. Useful for as long as the editor is on the
-  // page and meaningless the moment it is not, which is what an export is.
-  for (const el of Array.from(clone.querySelectorAll(`[${BLOCK_ATTR}]`))) {
-    el.removeAttribute(BLOCK_ATTR);
+  /*
+   * Which library block an element came from, kept only when the library is coming too.
+   *
+   * This used to go unconditionally, on the reasoning that the link means nothing once the
+   * editor is off the page. That was right while the library could not travel: an attribute
+   * naming a template nothing has a copy of is a dangling reference in someone's markup.
+   *
+   * Writing the library into the page as a seed changes the answer, because now the template
+   * *is* in the file. Stripping the link then produced the confusing half-restore the seed was
+   * supposed to prevent — the blocks came back on the next load, and not one element in the page
+   * knew it was an instance of any of them, so the Components section was gone from things that
+   * plainly were components. The two halves are one feature and they travel together.
+   */
+  if (!options.seedScript?.trim()) {
+    for (const el of Array.from(clone.querySelectorAll(`[${BLOCK_ATTR}]`))) {
+      el.removeAttribute(BLOCK_ATTR);
+    }
   }
 
   for (const el of Array.from(clone.querySelectorAll('[contenteditable]'))) {

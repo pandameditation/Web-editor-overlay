@@ -430,8 +430,8 @@ export function insertNodes(
       'insert',
       `${label} ${INSERT_POSITION_LABELS[position]} ${labelFor(reference)}`,
       {
-        after: exact(nodes.map(cleanMarkup).join('')),
-        detail: { position, html: nodes.map(cleanMarkup).join('\n') },
+        after: exact(nodes.map((node) => cleanMarkup(node)).join('')),
+        detail: { position, html: nodes.map((node) => cleanMarkup(node)).join('\n') },
         group: elementKey(nodes[0]),
       },
     ),
@@ -471,7 +471,7 @@ function replaceWithNodes(
   if (!parent) return null;
   if (reference === document.body || reference === document.documentElement) return null;
   for (const node of nodes) node.setAttribute(INSERTED_ATTR, '');
-  const markup = nodes.map(cleanMarkup).join('\n');
+  const markup = nodes.map((node) => cleanMarkup(node)).join('\n');
 
   return {
     label,
@@ -854,11 +854,18 @@ function stripTags(html: string): string {
  * Works on a clone with every `data-heo-*` attribute removed: the source markers
  * and insertion flags are editor bookkeeping, and leaving them in would have the
  * agent paste them into the codebase.
+ *
+ * `keep` names the exceptions. There is exactly one so far and it earns it: when the block
+ * library travels with the page, `data-heo-block` stops being bookkeeping and becomes the only
+ * thing tying an element in the file to the template it came from. Strip it then and the next
+ * load restores the library but knows nothing about what in the page came from it.
  */
-export function cleanMarkup(el: HTMLElement): string {
+export function cleanMarkup(el: HTMLElement, keep: readonly string[] = []): string {
   const clone = el.cloneNode(true) as HTMLElement;
+  const kept = new Set(keep);
   for (const node of [clone, ...Array.from(clone.querySelectorAll('*'))]) {
     for (const attr of Array.from(node.attributes)) {
+      if (kept.has(attr.name)) continue;
       if (attr.name.startsWith('data-heo-') || attr.name === 'contenteditable') {
         node.removeAttribute(attr.name);
       }

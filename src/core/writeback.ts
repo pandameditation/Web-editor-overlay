@@ -1,4 +1,5 @@
 import {
+  BLOCK_ATTR,
   HOST_TAG,
   IGNORE_ATTR,
   INSERTED_ATTR,
@@ -681,6 +682,8 @@ function reconcileContainers(
   records: readonly ChangeRecord[],
   generated: (el: HTMLElement) => boolean,
   why: string[],
+  /** Bookkeeping attributes that are not bookkeeping for this write. See `cleanMarkup`. */
+  keep: readonly string[] = [],
 ): { html: string } | null {
   const containers = new Map<string, ElementAnchor>();
   for (const record of records) {
@@ -812,7 +815,7 @@ function reconcileContainers(
        * carry whatever spacing belongs there.
        */
       const verbatim = inline && original ? original.replace(/^[ \t]+/, '') : original;
-      parts.push(verbatim ?? `${inner}${cleanMarkup(child)}`);
+      parts.push(verbatim ?? `${inner}${cleanMarkup(child, keep)}`);
     }
     /*
      * Applied now rather than collected, so the next container out reads the result.
@@ -1105,8 +1108,22 @@ function tryPatchDocument(
     for (const failure of result.failed) why.push(failure.reason);
     return null;
   }
+  /*
+   * The instance links survive exactly when the library they point at does.
+   *
+   * A `data-heo-block` naming a template the next load has no copy of is worse than no
+   * attribute: it is a dangling reference in someone's markup. But when the seed is going into
+   * the same file, the two halves only work together — the library comes back and the elements
+   * that came from it can say so.
+   */
   const reconciled = structural.length
-    ? reconcileContainers(result.html, structural, generated, why)
+    ? reconcileContainers(
+      result.html,
+      structural,
+      generated,
+      why,
+      blockLibrarySeed.trim() ? [BLOCK_ATTR] : [],
+    )
     : { html: result.html };
   if (!reconciled) return null;
 

@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>A seed the page carries in its markup, on the loader-tag path</title>
+</head>
+
+<body>
+  <main>
+    <h1>Carried in the page</h1>
+    <!-- Written by a previous save: an instance whose template is in the seed below. -->
+    <div id="instance" data-heo-block="promo-card">
+      <h3>Saved</h3>
+      <p>Round trip.</p>
+    </div>
+  </main>
+
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+
+  <!--
+    The seed as a block rather than an attribute.
+
+    This is the shape a save writes, and it used to be read by the script-tag integration —
+    which meant it only worked on this path and was silently ignored on every other. The engine
+    reads it now, so this fixture pins the path that used to work while `block-roundtrip.html`
+    covers the `mount()` path that did not.
+
+    Payload: the "Promo card" block, plain `heo1p.` codec, so it applies before first paint.
+  -->
+  <script type="application/heo-seed">
+    heo1p.eyJuYW1lIjoiQmxvY2sgbGlicmFyeSIsInZlcnNpb24iOjEsInRva2VucyI6W10sImNsYXNzZXMiOltdLCJibG9ja3MiOlt7ImlkIjoicHJvbW8tY2FyZCIsIm5hbWUiOiJQcm9tbyBjYXJkIiwia2luZCI6ImNvbXBvbmVudCIsImh0bWwiOiI8ZGl2IGNsYXNzPVwicHJvbW9cIj48aDM-e3t0aXRsZX19PC9oMz48cD57e2JvZHl9fTwvcD48L2Rpdj4iLCJwcm9wcyI6eyJ0aXRsZSI6eyJ0eXBlIjoidGV4dCIsImRlZmF1bHQiOiJIZWxsbyJ9LCJib2R5Ijp7InR5cGUiOiJ0ZXh0IiwiZGVmYXVsdCI6IlNvbWUgd29yZHMuIn19fV19
+  </script>
+
+  <script src="../dist/html-editor-overlay.iife.js" data-heo="edit" data-presets="false"></script>
+
+  <script>
+    (async () => {
+      const errors = [];
+      addEventListener('error', (e) => errors.push('error: ' + e.message));
+      addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + String(e.reason)));
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+      // Mounted from the tag on DOMContentLoaded, so wait for it rather than for a timeout.
+      await new Promise((r) => addEventListener('DOMContentLoaded', r, { once: true }));
+      await frames();
+
+      const api = window.HtmlEditorOverlay.getInstance();
+      const engine = api.engine;
+      await engine.whenReady();
+      await frames();
+
+      const el = document.getElementById('instance');
+      const block = engine.library.get('promo-card');
+      const instance = engine.blockInstance(el);
+
+      const results = {
+        mountedFromTheTag: api !== null,
+        libraryHasTheSeededBlock: Boolean(block),
+        blockName: block ? block.name : null,
+        // `presets: false`, so the seeded block is the only thing in the library.
+        libraryCarriesOnlyIt: engine.blockLibrarySize() === 1,
+        // The element in the markup is recognised as an instance of it again.
+        hasComponentSection: Boolean(instance),
+        namesItsTemplate: instance ? instance.block.name : null,
+        valuesFallBackToDefaults: instance ? instance.values.title === 'Hello' : null,
+        instancesFound: engine.blockInstances('promo-card').length,
+        // The page already carries its library, so a save keeps it current without re-ticking.
+        tickDefaultedOn: engine.store.value.saveBlockLibrary === true,
+        // A mount-time seed is configuration, not an edit: the session opens clean.
+        openedWithNoPendingChanges: engine.records.length === 0,
+      };
+
+      results.ok =
+        results.libraryHasTheSeededBlock &&
+        results.blockName === 'Promo card' &&
+        results.hasComponentSection &&
+        results.namesItsTemplate === 'Promo card' &&
+        results.valuesFallBackToDefaults === true &&
+        results.instancesFound === 1 &&
+        results.tickDefaultedOn &&
+        results.openedWithNoPendingChanges;
+
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify({ ...results, errors }, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"ok":false,"__fatal":' + JSON.stringify(String((e && e.stack) || e)) + '}:END';
+    });
+  </script>
+</body>
+
+</html>
