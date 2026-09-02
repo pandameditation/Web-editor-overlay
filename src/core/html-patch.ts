@@ -578,3 +578,126 @@ export function indentOf(html: string, anchor: ElementAnchor): string {
 export function canResolve(html: string, anchor: ElementAnchor): boolean {
   return typeof resolveAnchor(html, anchor) !== 'string';
 }
+
+/* -------------------------------------------------------------------------- */
+/* The design system's block in the markup                                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Marker comments around the `<style>` block the editor owns inside a file it does not.
+ *
+ * The same device `css-patch.ts` uses for a stylesheet, and for the same reason: tokens and
+ * reusable classes have to go somewhere on the way to disk, and finding them again on the next
+ * save is what stops every session appending another copy.
+ *
+ * HTML comments rather than an `id` or a `data-` attribute, deliberately. The export strips the
+ * editor's markers so a saved file carries no trace of the tool, and an attribute smuggled past
+ * that would be the exception people notice. A comment is content — legible, greppable, and
+ * plainly the author's file explaining itself.
+ */
+export const STYLE_BLOCK_START = '<!-- heo:design-system start — managed by html-editor-overlay -->';
+export const STYLE_BLOCK_END = '<!-- heo:design-system end -->';
+
+/**
+ * Add or replace the editor's managed `<style>` block in an HTML file.
+ *
+ * Idempotent by construction: the block is found by its markers and replaced wholesale, so
+ * saving twice produces one block rather than two. Placed just before `</head>` when it is not
+ * there yet, indented to match whatever sits above it.
+ *
+ * **It never removes.** `upsertSection` does, for stylesheets, and the asymmetry is deliberate.
+ * A block written into an HTML file is, on the next load, an ordinary `<style>` the page owns:
+ * the registries scan it and record those tokens as `origin: 'stylesheet'`, which `toCSS`
+ * excludes precisely because they are already in a file. So the second save would compute an
+ * empty design system, and a version of this that removed on empty would delete the block it
+ * wrote a moment ago. Leaving it alone costs the ability to retract, which `designSystemScope`
+ * of `none` now means "do not add mine" rather than "delete what is there" — the safer reading
+ * anyway, since by then the block may have been edited by hand.
+ */
+export function upsertStyleBlock(html: string, css: string): string {
+  const body = css.trim();
+  if (!body) return html;
+
+  const start = html.indexOf(STYLE_BLOCK_START);
+  const end = html.indexOf(STYLE_BLOCK_END);
+
+  /*
+   * Already there without markers, so leave it be.
+   *
+   * A save that had to serialize wrote the design system as a plain `<style>`, unmarked, because
+   * a serialized file is the DOM and the DOM has no markers in it. If a later save patches, this
+   * would otherwise add a marked block beside the unmarked one and the file would declare every
+   * token twice. Matching the text is enough to recognise that case and the values are identical
+   * when it fires, so nothing is lost by declining.
+   *
+   * It does not cover a design system that *changed* between the two saves: the old unmarked
+   * block stays and a marked one joins it. Same-valued duplication is harmless and this is not,
+   * so it is worth naming — the durable fix is for both routes to emit the markers, which means
+   * the serializer emitting one block where it currently emits three.
+   */
+  if (start === -1 && html.includes(body)) return html;
+
+  if (start !== -1 && end > start) {
+    const finish = end + STYLE_BLOCK_END.length;
+    const block = styleBlock(body, lineIndentAt(html, start));
+    // A save that changes nothing writes nothing, so the diff stays honest about what moved.
+    if (html.slice(start, finish) === block) return html;
+    return `${html.slice(0, start)}${block}${html.slice(finish)}`;
+  }
+
+  const head = uniqueTag(html, 'head');
+  if (head) {
+    const close = matchingClose(html, head);
+    if (close !== -1) {
+      // The indentation of whatever `</head>` sits behind, plus one level for its children.
+      const closeIndent = lineIndentAt(html, close);
+      const indent = closeIndent ? `${closeIndent}  ` : '  ';
+      const block = styleBlock(body, indent);
+      const lead = html.slice(0, close);
+      const needsBreak = !/\n[ \t]*$/.test(lead);
+      return `${lead}${needsBreak ? `\n${indent}` : ''}${block}\n${closeIndent}${html.slice(close)}`;
+    }
+  }
+
+  /*
+   * No `<head>` to put it in, which is legal HTML and not worth refusing over.
+   *
+   * A file that opens with `<html>` and goes straight to content still renders a `<style>`
+   * wherever it finds one, so the block goes at the top of `<body>`, or at the very start when
+   * there is no `<body>` either. Nothing is lost but tidiness.
+   */
+  const body_ = uniqueTag(html, 'body');
+  if (body_) {
+    const at = body_.end + 1;
+    const indent = `${lineIndentAt(html, body_.start)}  `;
+    return `${html.slice(0, at)}\n${indent}${styleBlock(body, indent)}${html.slice(at)}`;
+  }
+  return `${styleBlock(body, '')}\n${html}`;
+}
+
+/** True when the markers are already in the text. */
+export function hasStyleBlock(html: string): boolean {
+  return html.includes(STYLE_BLOCK_START);
+}
+
+/** The managed block, marker to marker, with every line at the given indentation. */
+function styleBlock(css: string, indent: string): string {
+  const inner = css
+    .split('\n')
+    .map((line) => (line.trim() ? `${indent}  ${line}` : ''))
+    .join('\n');
+  return [
+    STYLE_BLOCK_START,
+    `${indent}<style>`,
+    inner,
+    `${indent}</style>`,
+    `${indent}${STYLE_BLOCK_END}`,
+  ].join('\n');
+}
+
+/** The whitespace at the start of the line the offset falls on. */
+function lineIndentAt(html: string, offset: number): string {
+  const lineStart = html.lastIndexOf('\n', Math.max(0, offset - 1)) + 1;
+  const lead = html.slice(lineStart, offset);
+  return lead.trim() === '' ? lead : '';
+}

@@ -49,8 +49,11 @@ import {
   exportHTML,
   importDesignSystem,
   pickTextFile,
+  restoreDesignSystem,
+  snapshotDesignSystem,
   type DesignSystemParts,
   type DesignSystemScope,
+  type ImportResult,
 } from './design-system.js';
 import { containTab } from './focus.js';
 import { History, nextChangeId, type Command } from './history.js';
@@ -4813,14 +4816,48 @@ export class EditorEngine {
    * and asking them to know which one they are holding is a question with no
    * useful answer. `decodeSeed` sorts it out.
    */
+  /**
+   * Bring a design system in, as a change like any other.
+   *
+   * Committed to history rather than applied straight to the registries, for two reasons that
+   * turn out to be the same reason. It is undoable, which someone who has just imported the
+   * wrong system very much wants. And it is a *record*, which is what makes a save notice it at
+   * all: the write plan builds the document write from records, so an import that left none was
+   * invisible to it — the tokens rendered on screen, the save reported success, and the file it
+   * wrote had no design system in it.
+   *
+   * Mount-time seeds are deliberately not routed through here. A seed given as an option is the
+   * page's configuration, not something the user did, and making it a change would open every
+   * session dirty with an edit nobody made.
+   */
   async importDesignSystemText(text: string, overwrite = false): Promise<boolean> {
     try {
       const doc = await decodeSeed(text);
-      const result = importDesignSystem(doc, this, { overwrite });
+      const before = snapshotDesignSystem(this);
+      let result: ImportResult = { tokens: 0, classes: 0, rules: 0, blocks: 0 };
+      const name = doc.name?.trim() || 'design system';
+
+      this.history.commit({
+        label: `Import ${name}`,
+        record: {
+          id: nextChangeId(),
+          kind: 'token',
+          summary: `Import ${name}`,
+          target: 'design system',
+          detail: { imported: name },
+          at: Date.now(),
+        },
+        apply: () => {
+          result = importDesignSystem(doc, this, { overwrite });
+        },
+        revert: () => restoreDesignSystem(this, before),
+      });
+
       this.#bumpRevision();
       this.notify(
         `Imported ${result.tokens} tokens, ${result.classes} classes and ${result.blocks} blocks.`,
         'success',
+        { label: 'Undo', run: () => this.undo() },
       );
       return true;
     } catch (error) {

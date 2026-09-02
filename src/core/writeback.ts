@@ -19,6 +19,7 @@ import {
   indentOf,
   parseSourceMarker,
   patchHTML,
+  upsertStyleBlock,
   type ElementAnchor,
   type HtmlPatch,
 } from './html-patch.js';
@@ -493,7 +494,17 @@ export async function buildWritePlan(
       const patched =
         before === null
           ? null
-          : tryPatchDocument(before, documentRecords, documentPath, isGenerated, why);
+          : tryPatchDocument(
+            before,
+            documentRecords,
+            documentPath,
+            isGenerated,
+            why,
+            // Only when the document is where the design system is going. A stylesheet target
+            // has already had it written by step 3, and writing it twice is the bug that
+            // `isDocumentChange` exists to prevent.
+            systemInDocument ? systemCSS : '',
+          );
       if (patched) {
         if (patched.html !== before) {
           writes.push({
@@ -579,30 +590,6 @@ export function patchDocumentSource(
   const isGenerated = (el: HTMLElement): boolean =>
     regions.some((region) => region === el || region.contains(el));
 
-  /*
-   * A design system bound for this file cannot be patched into it, so patching is declined.
-   *
-   * Patching works from records, and an imported design system has none — importing a seed
-   * puts tokens in a registry, not in the history. So the CSS exists, belongs in this file, and
-   * is invisible to everything below: the patch succeeded, preserved the file's formatting
-   * beautifully, and quietly wrote a file with no design system in it. That is how an imported
-   * seed disappeared on save.
-   *
-   * Serializing is the right answer rather than a fallback. The generated `<style>` blocks are
-   * live in the page, so a rewrite carries them by construction and cannot duplicate them the
-   * way appending to the file's text could. It is also what already happened whenever the
-   * session *authored* a token, since a `token` record names no attribute and fails to place —
-   * this makes the same call for the same reason, one step earlier and out loud.
-   */
-  if (systemInDocument && designSystemCSSText(subject.designSystemCSS).trim()) {
-    return {
-      why: [
-        'the design system has to be written into this file, and it can only be placed by ' +
-        'rebuilding the page',
-      ],
-    };
-  }
-
   // The same selection the write path makes: what the markup can carry, minus what the
   // page's own code owns.
   const documentRecords = subject.records.filter(
@@ -611,7 +598,14 @@ export function patchDocumentSource(
   if (!documentRecords.length) return { why: ['nothing in this change set belongs to the markup'] };
 
   const why: string[] = [];
-  const patched = tryPatchDocument(source, documentRecords, documentPath, isGenerated, why);
+  const patched = tryPatchDocument(
+    source,
+    documentRecords,
+    documentPath,
+    isGenerated,
+    why,
+    systemInDocument ? designSystemCSSText(subject.designSystemCSS) : '',
+  );
   return patched ?? { why: why.length ? why : ['no change could be placed in the file'] };
 }
 
@@ -639,6 +633,15 @@ const PATCHABLE = new Set<ChangeRecord['kind']>(['text', 'attribute', 'class', '
 const STRUCTURAL = new Set<ChangeRecord['kind']>([
   'insert', 'delete', 'move', 'duplicate', 'wrap', 'replace',
 ]);
+
+/**
+ * Changes to the design system rather than to any element.
+ *
+ * They reach a file as one block of CSS — `upsertSection` for a stylesheet, `upsertStyleBlock`
+ * for the markup — so they are delivered wholesale rather than placed individually. Naming them
+ * here is what lets the patcher skip them instead of failing to find an element they never had.
+ */
+const DESIGN_SYSTEM = new Set<ChangeRecord['kind']>(['token', 'token-class', 'token-rule']);
 
 /**
  * Rebuild each changed container's children from the file plus the live arrangement.
@@ -992,6 +995,7 @@ function tryPatchDocument(
   documentPath: string,
   generated: (el: HTMLElement) => boolean,
   why: string[],
+  designSystemCSS = '',
 ): { html: string } | null {
   if (!records.length) return null;
 
@@ -1019,6 +1023,16 @@ function tryPatchDocument(
 
   for (const record of records) {
     if (STRUCTURAL.has(record.kind)) continue;
+    /*
+     * A design-system change is carried by the managed block, not by an anchor.
+     *
+     * Skipped rather than failed, and that is the difference between patching and rewriting for
+     * every page with tokens in it. These records describe CSS, not an element: there is nothing
+     * in the markup to anchor to, so `anchorInFile` returns null and the loop below used to give
+     * up on the whole file — which is why editing one token reformatted the entire page. The CSS
+     * is applied once at the end, as a block, exactly the way a stylesheet target gets it.
+     */
+    if (DESIGN_SYSTEM.has(record.kind)) continue;
     /*
      * An edit to something the user just added needs no patch of its own.
      *
@@ -1069,8 +1083,20 @@ function tryPatchDocument(
     for (const failure of result.failed) why.push(failure.reason);
     return null;
   }
-  if (!structural.length) return { html: result.html };
-  return reconcileContainers(result.html, structural, generated, why);
+  const reconciled = structural.length
+    ? reconcileContainers(result.html, structural, generated, why)
+    : { html: result.html };
+  if (!reconciled) return null;
+
+  /*
+   * The design system last, as one block.
+   *
+   * After the containers, because a rebuild replaces everything between a container's tags and
+   * would either clobber the block or be clobbered by it. `<head>` is not a container any
+   * rebuild touches, so in practice they do not collide — but ordering it explicitly costs
+   * nothing and removes the question.
+   */
+  return { html: upsertStyleBlock(reconciled.html, designSystemCSS) };
 }
 
 function anchorKey(anchor: ElementAnchor): string {

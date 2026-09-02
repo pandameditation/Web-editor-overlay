@@ -153,6 +153,66 @@
       });
 
       /* ------------------------------------------------------------------ *
+       * 1b. And it gets there by patching, not by rewriting the file.
+       *
+       * The first fix for the lost seed declined to patch whenever the document was carrying a
+       * design system, which threw away formatting preservation for every page with tokens in
+       * it. The design system is delivered as one marker-delimited block instead — the same
+       * device `upsertSection` uses for a stylesheet — so a token is a patch like any other.
+       * ------------------------------------------------------------------ */
+      step('patched');
+      // A file to patch against. This is what the page was actually served from.
+      const ownFile = await (await fetch(location.href)).text();
+      /*
+       * Assembled at runtime, never written as one literal.
+       *
+       * This fixture patches *itself*, so the file being written is this file — and any literal
+       * in this script is in it. Counting a spelled-out marker counted the assertions looking
+       * for it, which read as three blocks where there was one.
+       */
+      const MARKER = '<!--' + ' heo:design-system start';
+      const countMarkers = (html) => html.split(MARKER).length - 1;
+      /** Style blocks that actually declare a seed token, which is the semantic question. */
+      const seedStyleBlocks = (html) => {
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        return Array.from(doc.querySelectorAll('style')).filter((el) =>
+          /--seed-brand\s*:/.test(el.textContent ?? ''),
+        ).length;
+      };
+      const patchedOnce = engine.exportPatchedHTML(ownFile);
+      check('theSeedReachesTheFileByPatching', () => ({
+        patched: patchedOnce.patched,
+        why: patchedOnce.why,
+        carriesTheSeed: patchedOnce.html.includes('--seed-brand'),
+        marked: countMarkers(patchedOnce.html) === 1,
+        // The whole point: the file's own text is preserved, so the comment the fixture opens
+        // with is still there rather than normalised away.
+        keptTheAuthorsComment: patchedOnce.html.includes('Three things live here'),
+        asExpected:
+          patchedOnce.patched &&
+          patchedOnce.html.includes('--seed-brand') &&
+          patchedOnce.html.includes('Three things live here'),
+      }));
+
+      /*
+       * Saving twice must produce one block, not two.
+       *
+       * The reason the block is marker-delimited at all. Feeding the first patch back in is
+       * exactly what a second save does: it reads the file it wrote last time.
+       */
+      const patchedTwice = engine.exportPatchedHTML(patchedOnce.html);
+      check('andSavingAgainReplacesItRatherThanAppending', () => {
+        const markers = countMarkers(patchedTwice.html);
+        const blocks = seedStyleBlocks(patchedTwice.html);
+        return {
+          markerBlocks: markers,
+          styleBlocksDeclaringTheToken: blocks,
+          // One block after two saves. This is what the markers are for.
+          asExpected: markers === 1 && blocks === 1,
+        };
+      });
+
+      /* ------------------------------------------------------------------ *
        * 2. How much of it travels.
        * ------------------------------------------------------------------ */
       step('extent');
@@ -212,6 +272,78 @@
           asExpected: css.includes('--seed-spare') && css.includes('.seed-unused'),
         };
       });
+
+      /* ------------------------------------------------------------------ *
+       * 2b. A token edit is a patch like any other.
+       *
+       * It never was: a `token` record names no element, so the patcher could not place it and
+       * gave up on the whole file. Editing one token reformatted the page. Design-system records
+       * are now skipped in the per-record pass and delivered as the block instead.
+       * ------------------------------------------------------------------ */
+      step('tokenEdit');
+      engine.tokens.upsert({ ...engine.tokens.get('seed-brand'), value: '#00ccff', origin: 'user' });
+      await frames();
+      const afterTokenEdit = engine.exportPatchedHTML(ownFile);
+      check('editingATokenStillPatchesTheFile', () => ({
+        patched: afterTokenEdit.patched,
+        why: afterTokenEdit.why,
+        carriesTheNewValue: afterTokenEdit.html.includes('#00ccff'),
+        keptTheAuthorsComment: afterTokenEdit.html.includes('Three things live here'),
+        asExpected:
+          afterTokenEdit.patched &&
+          afterTokenEdit.html.includes('#00ccff') &&
+          afterTokenEdit.html.includes('Three things live here'),
+      }));
+
+      /* ------------------------------------------------------------------ *
+       * 2c. Importing is a change, so it can be taken back.
+       *
+       * `import` on a registry is additive and never deletes, so undo cannot be a matter of
+       * replaying an earlier export — what arrived has to be removed and what it replaced put
+       * back. And being a record is also what makes a save notice the import at all.
+       * ------------------------------------------------------------------ */
+      step('importUndo');
+      const beforeImport = {
+        tokens: engine.tokens.list().length,
+        brand: engine.tokens.get('seed-brand')?.value ?? null,
+        records: engine.records.length,
+      };
+      await engine.importDesignSystemText(
+        JSON.stringify({
+          name: 'Second system',
+          tokens: [
+            { name: 'seed-brand', value: '#123456' },
+            { name: 'later-only', value: '#654321' },
+          ],
+        }),
+        true,
+      );
+      await frames();
+      check('importingIsRecordedAsAChange', () => ({
+        recordsAdded: engine.records.length - beforeImport.records,
+        kind: engine.records.at(-1)?.kind ?? null,
+        summary: engine.records.at(-1)?.summary ?? null,
+        overwroteTheToken: engine.tokens.get('seed-brand')?.value ?? null,
+        broughtANewOne: engine.tokens.get('later-only')?.value ?? null,
+        asExpected:
+          engine.records.length - beforeImport.records === 1 &&
+          engine.tokens.get('seed-brand')?.value === '#123456' &&
+          Boolean(engine.tokens.get('later-only')),
+      }));
+
+      engine.undo();
+      await frames();
+      check('andUndoTakesTheWholeImportBackOut', () => ({
+        // What it overwrote is restored, and what it introduced is gone — neither of which a
+        // replay of the old export would achieve, since import never deletes.
+        brand: engine.tokens.get('seed-brand')?.value ?? null,
+        laterOnly: engine.tokens.get('later-only')?.value ?? null,
+        tokens: engine.tokens.list().length,
+        asExpected:
+          engine.tokens.get('seed-brand')?.value === beforeImport.brand &&
+          !engine.tokens.get('later-only') &&
+          engine.tokens.list().length === beforeImport.tokens,
+      }));
 
       /* ------------------------------------------------------------------ *
        * 3. The choice is offered where the save is made.

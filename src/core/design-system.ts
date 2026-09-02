@@ -16,7 +16,13 @@ import type { BlockLibrary } from './library.js';
 import type { RuleRegistry } from './rules.js';
 import { safeSelector } from './selectors.js';
 import type { TokenRegistry } from './tokens.js';
-import type { DesignSystemDocument } from './types.js';
+import type {
+  DesignClass,
+  DesignRule,
+  DesignSystemDocument,
+  DesignToken,
+  LibraryBlock,
+} from './types.js';
 
 const SCHEMA = 'https://html-editor-overlay.dev/schema/design-system-1.json';
 
@@ -265,6 +271,92 @@ export function importDesignSystem(
     rules: registries.rules.import(parsed.rules ?? [], options),
     blocks: registries.library.import(parsed.blocks, options),
   };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Importing as something that can be taken back                               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Everything the four registries hold, deep enough to put back.
+ *
+ * `import` is purely additive — it never deletes — so replaying an earlier export does not undo
+ * one: every name the incoming system introduced would still be there. Restoring means removing
+ * what arrived and then reinstating what was replaced, which needs both halves of the picture.
+ *
+ * Declarations are copied rather than referenced. `list()` hands back the live entries, and
+ * `upsert` replaces the map slot with a fresh object but shares the nested declaration map — so a
+ * snapshot that kept the reference would mutate along with the thing it was meant to preserve.
+ * The same care `setClassDeclaration` takes for one class, taken here for all of them.
+ */
+export interface DesignSystemSnapshot {
+  tokens: DesignToken[];
+  classes: DesignClass[];
+  rules: DesignRule[];
+  blocks: LibraryBlock[];
+}
+
+export function snapshotDesignSystem(registries: DesignRegistries): DesignSystemSnapshot {
+  return {
+    tokens: registries.tokens.list().map((entry) => ({ ...entry })),
+    classes: registries.classes
+      .list()
+      .map((entry) => ({ ...entry, declarations: { ...entry.declarations } })),
+    rules: registries.rules
+      .list()
+      .map((entry) => ({ ...entry, declarations: { ...entry.declarations } })),
+    // `list`, not `export`: the latter drops presets, and a seed that overwrote one has to be
+    // able to put it back.
+    blocks: registries.library.list().map((entry) => ({ ...entry })),
+  };
+}
+
+/** Put the registries back exactly as the snapshot found them. */
+export function restoreDesignSystem(
+  registries: DesignRegistries,
+  snapshot: DesignSystemSnapshot,
+): void {
+  const drop = <T>(
+    live: readonly T[],
+    kept: readonly T[],
+    key: (entry: T) => string,
+    remove: (name: string) => unknown,
+  ): void => {
+    const keep = new Set(kept.map(key));
+    for (const entry of live) {
+      if (!keep.has(key(entry))) remove(key(entry));
+    }
+  };
+
+  drop(
+    registries.tokens.list().map((entry) => ({ ...entry })),
+    snapshot.tokens,
+    (entry) => entry.name,
+    (name) => registries.tokens.remove(name),
+  );
+  drop(
+    registries.classes.list().map((entry) => ({ ...entry })),
+    snapshot.classes,
+    (entry) => entry.name,
+    (name) => registries.classes.remove(name),
+  );
+  drop(
+    registries.rules.list().map((entry) => ({ ...entry })),
+    snapshot.rules,
+    (entry) => entry.selector,
+    (selector) => registries.rules.remove(selector),
+  );
+  drop(
+    registries.library.list().map((entry) => ({ ...entry })),
+    snapshot.blocks,
+    (entry) => entry.id,
+    (id) => registries.library.remove(id),
+  );
+
+  for (const entry of snapshot.tokens) registries.tokens.upsert(entry);
+  for (const entry of snapshot.classes) registries.classes.upsert(entry);
+  for (const entry of snapshot.rules) registries.rules.upsert(entry);
+  registries.library.import(snapshot.blocks, { overwrite: true });
 }
 
 /** Validate and normalise an untrusted design system document. */
