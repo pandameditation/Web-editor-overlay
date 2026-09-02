@@ -494,6 +494,16 @@ export class EditorEngine {
   #toastTimer = 0;
   #toastId = 0;
   #textEditSnapshot: string | null = null;
+  /** The edited element's text as the edit began, for `restorePlainSpaces`. */
+  #textEditText: string | null = null;
+  /**
+   * The element pasted into, and its text a moment before, held until the paste lands.
+   *
+   * A paste is the one edit that arrives as a block, so it is also the one worth cleaning
+   * up on its own rather than waiting for the commit: the region it touched is known
+   * exactly, which is the narrowest the whitespace fix can ever be scoped.
+   */
+  #pastedInto: { el: HTMLElement; text: string } | null = null;
   /**
    * Whether the press now in progress landed inside a live text edit.
    *
@@ -2703,6 +2713,9 @@ export class EditorEngine {
     this.#editWatchers.get(el)?.();
     this.#editWatchers.delete(el);
     this.#textEditSnapshot = el.innerHTML;
+    // The same moment, as characters rather than markup. What the editing spaces are
+    // measured against — see `restorePlainSpaces`.
+    this.#textEditText = el.textContent ?? '';
     el.setAttribute('contenteditable', 'true');
     el.setAttribute('data-heo-editing', '');
     el.setAttribute('spellcheck', 'true');
@@ -3089,7 +3102,11 @@ export class EditorEngine {
     const el = this.store.value.textEditing;
     if (!el) return;
     const before = this.#textEditSnapshot;
+    const beforeText = this.#textEditText;
     this.#textEditSnapshot = null;
+    this.#textEditText = null;
+    // Belongs to the edit that is ending, and there is nothing left to tidy up in it.
+    this.#pastedInto = null;
     el.removeAttribute('contenteditable');
     el.removeAttribute('data-heo-editing');
     el.removeAttribute('spellcheck');
@@ -3099,7 +3116,6 @@ export class EditorEngine {
     this.store.patch({ textEditing: null });
 
     if (before == null) return;
-    const after = el.innerHTML;
     if (!commit) {
       // Not attributed: this is the editor putting the element back, not the page
       // rendering it, and counting it would make a discarded edit the last one allowed.
@@ -3108,6 +3124,16 @@ export class EditorEngine {
       });
       return;
     }
+    /*
+     * The browser's editing spaces go back to being spaces before the markup is read.
+     *
+     * Last chance to do it: the next line serialises the element, and `innerHTML` writes
+     * U+00A0 out as `&nbsp;` — so anything still in the DOM at this point is in the file
+     * from here on. Typing a space at the end of a paragraph is enough to produce one,
+     * which is how `&nbsp;` was turning up in markup nobody had asked to change.
+     */
+    restorePlainSpaces(el, beforeText ?? el.textContent ?? '');
+    const after = el.innerHTML;
     if (after === before) return;
     /*
      * Stamped before the element is claimed, because claiming it hides the answer.
@@ -5089,6 +5115,48 @@ export class EditorEngine {
       if (eventAnchor(event)) event.preventDefault();
     });
 
+    /*
+     * A paste is measured on the way in, and tidied up on the way out.
+     *
+     * What arrives from a clipboard is full of U+00A0 — the source page's own hard spaces,
+     * plus the ones the browser substitutes wherever a plain space would collapse — and
+     * `innerHTML` serialises every one of them as `&nbsp;`. Left alone, copying a sentence
+     * from one page into another turns every gap between its words into an entity in the
+     * user's source file, which is not what anyone pasting text is asking for.
+     *
+     * The paste is not intercepted. Cancelling it and re-inserting the clipboard by hand
+     * would mean reimplementing what the browser does with a fragment — merging, caret
+     * placement, its own undo stack — and getting any of that subtly wrong costs more than
+     * the entity does. Instead the text is noted here, before the DOM changes, and compared
+     * against afterwards; the difference is the pasted region, and only that region is
+     * touched. Everything the author wrote around it, `10&nbsp;km` included, is untouched
+     * because it is outside the span that changed.
+     */
+    on(document, 'paste', (event) => {
+      const el = this.store.value.textEditing;
+      if (!el) return;
+      if (!event.composedPath().includes(el)) return;
+      this.#pastedInto = { el, text: el.textContent ?? '' };
+    });
+
+    /*
+     * The paste has landed by the time an `input` fires, so this is where it gets cleaned.
+     *
+     * Keyed off the note rather than off `inputType`, because browsers disagree about how
+     * many events one paste is: Chrome sends a single `insertFromPaste`, others split the
+     * replaced selection into a delete and an insert. Whichever it is, the first `input`
+     * after the paste is the one that follows the DOM change, and one pass over the region
+     * is all it takes.
+     */
+    on(document, 'input', (event) => {
+      const pending = this.#pastedInto;
+      if (!pending) return;
+      if (!event.composedPath().includes(pending.el)) return;
+      this.#pastedInto = null;
+      if (pending.el !== this.store.value.textEditing || !pending.el.isConnected) return;
+      restorePlainSpaces(pending.el, pending.text);
+    });
+
     // Remembered as it happens, because the toolbar's link field destroys it when focused.
     on(document, 'selectionchange', () => {
       const el = this.store.value.textEditing;
@@ -5365,6 +5433,94 @@ function linkElementFor(href: string): HTMLLinkElement | null {
     if (link instanceof HTMLLinkElement && link.href === href) return link;
   }
   return null;
+}
+
+/** The editing space: a real character in the DOM, and `&nbsp;` once serialised. */
+const NBSP = '\u00a0';
+
+/**
+ * Turn the browser's editing spaces back into plain ones, across the part that changed.
+ *
+ * A `contenteditable` region does not hold the characters you typed. Wherever a plain
+ * space would collapse to nothing — at the start or end of the content, or beside another
+ * space — the browser stores U+00A0 instead, because that is the only way to keep the gap
+ * on screen while the text is being worked on. It is a rendering device, and it belongs to
+ * the edit rather than to the document: `innerHTML` serialises U+00A0 as `&nbsp;`, so every
+ * one of them that survives the edit is an entity in the user's source file. Pasting a
+ * sentence copied from another page was the loudest case — the clipboard brings the source
+ * page's hard spaces with it, so every gap between words arrived as one — but typing a
+ * single trailing space does it too.
+ *
+ * Scoped to what changed, and that is the whole reason this takes a `before`. A hard space
+ * an author wrote deliberately, in `10&nbsp;km` or `Mr.&nbsp;Smith`, is indistinguishable
+ * from one the browser invented; the only thing that separates them is that the author's
+ * was already there. So the text is compared against how it started, and only the span
+ * between the first and last difference is rewritten. Everything either side keeps whatever
+ * it had.
+ *
+ * The substitution is one character for one character, which is what makes it safe to do
+ * under a live caret: every offset in every text node still means what it meant, so the
+ * insertion point does not move and no selection is lost.
+ *
+ * Runs unattributed, because writing to a text node goes through a setter `provenance`
+ * watches — and an element marked as script-rendered for having had its spaces tidied
+ * would be an element the editor then refuses to trust.
+ */
+function restorePlainSpaces(el: HTMLElement, before: string): boolean {
+  const after = el.textContent ?? '';
+  if (!after.includes(NBSP)) return false;
+
+  const span = changedSpan(before, after);
+  if (!span) return false;
+
+  return withoutProvenance(() => {
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    let changed = false;
+    let offset = 0;
+
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const data = node.nodeValue ?? '';
+      // Where this node overlaps the changed span, in the node's own coordinates. The
+      // walker visits text nodes in the order `textContent` concatenates them, so a
+      // running count is enough to line the two up.
+      const from = Math.max(0, span.start - offset);
+      const to = Math.min(data.length, span.end - offset);
+      offset += data.length;
+      if (to <= from || !data.includes(NBSP)) continue;
+
+      const next =
+        data.slice(0, from) + data.slice(from, to).replaceAll(NBSP, ' ') + data.slice(to);
+      if (next === data) continue;
+      node.nodeValue = next;
+      changed = true;
+    }
+    return changed;
+  });
+}
+
+/**
+ * The span of `after` that `before` does not account for, or null when nothing was added.
+ *
+ * A common prefix and a common suffix, which is all that is needed: an edit is a contiguous
+ * replacement, so whatever sits between the first and the last difference is what arrived.
+ * Cheap enough to run on every paste and every commit, and it needs no diff algorithm to be
+ * right about the case it is used for.
+ */
+function changedSpan(before: string, after: string): { start: number; end: number } | null {
+  const shortest = Math.min(before.length, after.length);
+  let start = 0;
+  while (start < shortest && before[start] === after[start]) start += 1;
+
+  let tail = 0;
+  while (
+    tail < shortest - start &&
+    before[before.length - 1 - tail] === after[after.length - 1 - tail]
+  ) {
+    tail += 1;
+  }
+
+  const end = after.length - tail;
+  return end > start ? { start, end } : null;
 }
 
 /** Enough of a string to recognise in a sentence, and no more. */
