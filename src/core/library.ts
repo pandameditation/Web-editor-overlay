@@ -246,6 +246,143 @@ function firstOption(spec: PropSpec): string | undefined {
   return typeof option === 'object' ? String(option.value ?? option.label) : String(option);
 }
 
+/* -------------------------------------------------------------------------- */
+/* Bringing a template change to a block already on the page                   */
+/* -------------------------------------------------------------------------- */
+
+/** Tags that cannot hold content, so there is never anything to carry into one. */
+const VOID_TAGS = new Set([
+  'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input',
+  'link', 'meta', 'param', 'source', 'track', 'wbr',
+]);
+
+/**
+ * The template's markup, carrying the words already on the page.
+ *
+ * A placed block is two things at once, and updating it has to respect both. Its *structure*
+ * belongs to the template — the tags, the classes, the wrapper somebody added in the library
+ * last week. Its *words* belong to the page: they were typed into this copy, they are different
+ * in every copy, and they are the entire reason there are nine cards rather than one.
+ *
+ * Re-rendering the template and swapping the element out gets the first and destroys the
+ * second, which makes "apply to all" a feature nobody can afford to use — the markup fix
+ * arrives and the nine headings become nine copies of the placeholder. So the template is the
+ * skeleton and the page is the content, and this is where they are put back together.
+ *
+ * The rule, in order:
+ *
+ * - Where the template has a leaf, the page's content for it goes in whole, markup included,
+ *   so a word somebody emphasised or a link they added comes across with its sentence.
+ * - Where the template has structure, children are paired by tag and then by position — the
+ *   second `<p>` to the second `<p>`, and a heading the template retagged to the heading it
+ *   used to be — and each pair is merged the same way.
+ * - Where the template has something the page has no counterpart for, the template's own
+ *   content stays. That is what makes a newly added tag arrive with something in it rather
+ *   than arriving empty, and it is why the guarantee holds in the direction that matters:
+ *   nothing the template fills comes out blank.
+ *
+ * Attributes are the template's throughout. A template edit is an edit to markup, and taking
+ * half of it would leave the page in a state neither side ever described.
+ */
+export function mergeInstanceText(template: HTMLElement, instance: HTMLElement): HTMLElement {
+  const merged = template.cloneNode(true) as HTMLElement;
+  carryWords(merged, instance);
+  return merged;
+}
+
+function carryWords(target: HTMLElement, source: HTMLElement): void {
+  if (VOID_TAGS.has(target.tagName.toLowerCase())) return;
+
+  const slots = elementChildren(target);
+  /*
+   * A leaf in the template is a place for words, and all of the page's words go into it.
+   *
+   * `innerHTML` rather than `textContent`, because what is here is not necessarily plain: the
+   * user may have bolded a phrase or linked a name, and that is part of what they wrote.
+   */
+  if (!slots.length) {
+    if (hasWords(source)) target.innerHTML = source.innerHTML;
+    return;
+  }
+
+  // Text sitting between the children, paired in the order it appears.
+  const donorText = textChildren(source);
+  const targetText = textChildren(target);
+  for (let i = 0; i < targetText.length && i < donorText.length; i += 1) {
+    if (!written(donorText[i].nodeValue)) continue;
+    targetText[i].nodeValue = donorText[i].nodeValue;
+  }
+
+  const donors = elementChildren(source);
+
+  /*
+   * The template has wrapped what used to be bare text.
+   *
+   * The one case where the pairing below has nothing to work with and the words would simply
+   * be dropped: the page holds a sentence and nothing else, and the template now holds
+   * structure with no room for text at the top level. Putting the sentence in the first place
+   * the template can hold one is the answer that keeps it, and the situation is narrow enough
+   * to be sure that is where it was meant to go.
+   */
+  if (!targetText.length && !donors.length && hasWords(source)) {
+    const leaf = firstLeaf(target);
+    if (leaf) leaf.innerHTML = source.innerHTML;
+    return;
+  }
+
+  /*
+   * Same tag first, in order, each donor used once. Then whatever is left over by position,
+   * which is what carries a heading's words through the template retagging it.
+   */
+  const taken = new Set<HTMLElement>();
+  const pairs = new Map<HTMLElement, HTMLElement>();
+  for (const slot of slots) {
+    const match = donors.find((donor) => !taken.has(donor) && donor.tagName === slot.tagName);
+    if (!match) continue;
+    taken.add(match);
+    pairs.set(slot, match);
+  }
+  slots.forEach((slot, index) => {
+    if (pairs.has(slot)) return;
+    const candidate = donors[index];
+    if (!candidate || taken.has(candidate)) return;
+    taken.add(candidate);
+    pairs.set(slot, candidate);
+  });
+
+  for (const [slot, donor] of pairs) carryWords(slot, donor);
+}
+
+function elementChildren(el: Element): HTMLElement[] {
+  return Array.from(el.children).filter((node): node is HTMLElement => node instanceof HTMLElement);
+}
+
+function textChildren(el: Element): Text[] {
+  return Array.from(el.childNodes).filter(
+    (node): node is Text => node.nodeType === Node.TEXT_NODE,
+  );
+}
+
+/** The first descendant that can hold words, for text the template has moved inwards. */
+function firstLeaf(el: HTMLElement): HTMLElement | null {
+  for (const child of elementChildren(el)) {
+    if (VOID_TAGS.has(child.tagName.toLowerCase())) continue;
+    if (!elementChildren(child).length) return child;
+    const deeper = firstLeaf(child);
+    if (deeper) return deeper;
+  }
+  return null;
+}
+
+/** Whether there is anything here a reader would call words. */
+function hasWords(el: Element): boolean {
+  return written(el.textContent);
+}
+
+function written(value: string | null): boolean {
+  return Boolean(value && value.trim());
+}
+
 export function slugify(value: string): string {
   return String(value ?? '')
     .trim()

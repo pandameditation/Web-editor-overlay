@@ -1472,7 +1472,7 @@ export class HeoExtractDialog extends HeoElement {
       ${placed
         ? html`<label
             class="check apply"
-            title="Rebuild the copies already placed in the page from this template. Anything changed on them since is replaced."
+            title="Bring this markup to the copies already placed in the page. The text written into each of them is kept."
           >
             <input
               type="checkbox"

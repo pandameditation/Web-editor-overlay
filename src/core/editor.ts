@@ -64,6 +64,7 @@ import {
   BlockLibrary,
   blockFromSource,
   blockPropRows,
+  mergeInstanceText,
   normalizeCustomElementTag,
   type BlockPropRow,
 } from './library.js';
@@ -2617,21 +2618,44 @@ export class EditorEngine {
   }
 
   /**
-   * Whether an instance has diverged from what its block would produce now.
+   * What this element would become if it were updated from its block, without updating it.
    *
-   * The question behind every part of this feature: a sync button with nothing to say about
-   * whether it would change anything is a button you press to find out, and a bulk update
-   * that reports a number has to have counted something real.
+   * The template as it now stands, with this copy's own words carried into it. Used for the
+   * update itself and for deciding whether to offer one, which is what keeps those two from
+   * ever disagreeing.
    *
-   * Two comparisons, because there are two mechanics — the same two `setBlockProp` splits on.
-   * A template block *is* its markup, so the markup is compared, both sides serialized through
-   * the same clone-and-strip so attribute order and quoting cannot manufacture a difference.
-   * A block that registers a custom element is not its markup: the tag renders itself, and
-   * what the editor controls is the tag and the attributes it carries, so those are what is
-   * compared. Serializing an upgraded element would compare against whatever it rendered into
-   * itself and report drift on every one of them.
+   * Synchronous, so a render pass can ask: `library.expand` renders the template without
+   * registering elements or writing stylesheets, which `instantiate` would do as a side effect
+   * of merely looking.
+   */
+  #mergedInstance(
+    el: HTMLElement,
+    block: LibraryBlock,
+    values: Record<string, string>,
+  ): HTMLElement | null {
+    const rendered = sanitizeFragment(this.library.expand(block, values)).firstElementChild;
+    if (!(rendered instanceof HTMLElement)) return null;
+    return mergeInstanceText(rendered, el);
+  }
+
+  /**
+   * Whether updating this instance from its block would actually change it.
    *
-   * Deliberately synchronous, so a render pass can ask. `library.expand` exists for this.
+   * Phrased that way deliberately, because the button says "Update" and a button that says
+   * Update has to mean it. The obvious reading — "does this element differ from the template?"
+   * — is the wrong one now that an update keeps the words already here: every copy differs from
+   * the template the moment somebody types into it, so every copy would sit there offering an
+   * update that would do nothing at all.
+   *
+   * So the comparison is against the merge, not against the template. If the two are the same
+   * there is nothing to bring across, and the control says so instead.
+   *
+   * The two mechanics `setBlockProp` splits on split here too. A template block *is* its
+   * markup, so markup is compared, both sides through the same clone-and-strip so attribute
+   * order and quoting cannot manufacture a difference. A block that registers a custom element
+   * is not its markup — the tag renders itself — so its tag and prop attributes are what is
+   * compared; serializing an upgraded element would compare against whatever it rendered into
+   * itself and report every one of them as stale.
    */
   blockDrift(el: HTMLElement | null): boolean {
     const instance = this.blockInstance(el);
@@ -2646,15 +2670,15 @@ export class EditorEngine {
       );
     }
 
-    const expected = sanitizeFragment(this.library.expand(block, values)).firstElementChild;
-    // Nothing to compare against. Reported as "no drift" rather than as drift, because the
-    // alternative is offering an update that would replace the element with nothing.
-    if (!(expected instanceof HTMLElement)) return false;
-    return cleanMarkup(el) !== cleanMarkup(expected);
+    const merged = this.#mergedInstance(el, block, values);
+    // Nothing to compare against. Reported as "nothing to do" rather than as stale, because
+    // the alternative is offering an update that would replace the element with nothing.
+    if (!merged) return false;
+    return cleanMarkup(el) !== cleanMarkup(merged);
   }
 
   /**
-   * Re-render one instance from its block as the library now holds it.
+   * Bring one instance's markup up to date with its block, keeping what is written in it.
    *
    * The other half of the library round trip. Inserting a block copies a template into the
    * page and the two then have nothing more to do with each other — which is right, because a
@@ -2669,7 +2693,11 @@ export class EditorEngine {
   }
 
   /**
-   * Re-render instances of a block from its current template, as one undoable step.
+   * Bring instances of a block up to date with its template, as one undoable step.
+   *
+   * Structure only. Every copy keeps the words that were written into it — see
+   * `mergeInstanceText`, which is the whole reason this is usable on more than one element at
+   * a time. Rebuilding from the template outright would arrive as nine identical placeholders.
    *
    * One step, and that is the part worth the machinery. Twenty elements change, so twenty
    * records are needed — a record carries one anchor, which is one place in one file, so
@@ -2730,21 +2758,38 @@ export class EditorEngine {
         this.notify(`Could not rebuild ${block.name}: ${message}`, 'error');
         return 0;
       }
-      const root = nodes[0];
       // Awaiting let the page move on. An element deleted while the template was rendering is
       // no longer anything this operation is about.
-      if (!root || !el.isConnected) continue;
-      /*
-       * An element block's props are attributes rather than substitutions, so they go onto the
-       * fresh tag the way `setBlockProp` puts them onto a live one. Without this the sync
-       * would hand back a bare tag and read as "the update cleared all my values".
-       */
+      if (!nodes[0] || !el.isConnected) continue;
+
       if (block.element?.tag) {
+        /*
+         * An element block's props are attributes rather than substitutions, so they go onto
+         * the fresh tag the way `setBlockProp` puts them onto a live one. Without this the
+         * update would hand back a bare tag and read as "it cleared all my values".
+         */
         for (const [name, value] of Object.entries(instance.values)) {
-          if (value) root.setAttribute(name, value);
+          if (value) nodes[0].setAttribute(name, value);
         }
+      } else {
+        /*
+         * The template's markup, this copy's words.
+         *
+         * Instantiating gives the template as the library now holds it, which is the structure
+         * that has to arrive — and, on its own, the placeholder text that has to not. The merge
+         * is what separates those: tags, classes and newly added elements come from the
+         * template, while everything written into this copy stays written.
+         *
+         * `instantiate` rather than `expand` even though the merge only needs markup, because
+         * it is also what injects the block's CSS and registers its element. A structural
+         * update that arrived without the stylesheet it depends on would look like a broken one.
+         */
+        nodes[0] = mergeInstanceText(nodes[0], el);
       }
+
+      const root = nodes[0];
       root.setAttribute(BLOCK_ATTR, block.id);
+      // After the merge, so the insertion marker lands on the node that is actually going in.
       const command = insertNodes(el, 'replace', nodes, `Update ${block.name}`);
       if (!command) continue;
       parts.push({ command, node: root, replaced: el, values: instance.values });

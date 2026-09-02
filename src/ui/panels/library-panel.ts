@@ -434,7 +434,7 @@ export class HeoLibraryPanel extends HeoElement {
               role="button"
               tabindex="0"
               aria-label=${`Update every ${block.name} in the page`}
-              title=${`Rebuild the ${placed === 1 ? 'copy' : `${placed} copies`} in the page from this template`}
+              title=${`Update the markup of the ${placed === 1 ? 'copy' : `${placed} copies`} in the page, keeping the text in each`}
               @click=${(event: Event) => {
             event.stopPropagation();
             void this.editor.syncBlockInstances(block.id);
