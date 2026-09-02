@@ -142,6 +142,25 @@ export class BlockLibrary {
     return { nodes, html };
   }
 
+  /**
+   * The markup this block would produce for these values, without producing it.
+   *
+   * `instantiate` is what builds an instance, and it has side effects by design — it defines
+   * custom elements and writes CSS into the page. That makes it the wrong tool for the one
+   * question a caller asks far more often than "give me one of these": *is the element on the
+   * page still what this block says?* Answering that by instantiating would register elements
+   * and inject stylesheets as a side effect of looking, and it would have to be awaited, which
+   * a render pass cannot do.
+   *
+   * So this is the same substitution with nothing else attached: synchronous, inert, and
+   * comparable against `cleanMarkup` of a live element once both have been through a DOM
+   * round trip.
+   */
+  expand(block: LibraryBlock, props: Record<string, string> = {}): string {
+    const values = { ...this.defaultProps(block), ...props };
+    return renderBlockTemplate(block.html, values, block.props ?? {});
+  }
+
   /** Define the block's custom element, once per tag per page. */
   async registerElement(block: LibraryBlock): Promise<void> {
     const element = block.element;

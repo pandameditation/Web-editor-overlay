@@ -139,10 +139,29 @@ export class HeoLibraryPanel extends HeoElement {
         gap: 5px;
       }
       .card .kind {
+        flex: 0 1 auto;
+        overflow: hidden;
         color: var(--heo-text-faint);
         font-size: 9px;
         letter-spacing: 0.05em;
+        text-overflow: ellipsis;
+        white-space: nowrap;
         text-transform: uppercase;
+      }
+      /* How many of this block are on the page. The one thing worth knowing before editing
+         a template, and nowhere else to learn it. */
+      .card .uses {
+        flex: 0 0 auto;
+        margin-left: auto;
+        padding: 1px 5px;
+        border-radius: 999px;
+        background: var(--heo-accent-soft);
+        color: var(--heo-accent);
+        font-family: var(--heo-mono);
+        font-size: 9px;
+      }
+      .card .uses + .kill {
+        margin-left: 0;
       }
       .card .kill {
         display: grid;
@@ -255,7 +274,10 @@ export class HeoLibraryPanel extends HeoElement {
   protected state = new StoreController(
     this,
     this.editor.store,
-    (s) => [s.selected, s.registry, s.insertAnchor] as const,
+    // `revision` as well as `registry`: the instance counts on the cards move when the page
+    // changes, not when the library does, so without it a block inserted or deleted left its
+    // card claiming the old number.
+    (s) => [s.selected, s.registry, s.insertAnchor, s.revision] as const,
     shallowArrayEquals,
   );
 
@@ -265,10 +287,21 @@ export class HeoLibraryPanel extends HeoElement {
   @state() private configuring: LibraryBlock | null = null;
   @state() private props: Record<string, string> = {};
 
+  /**
+   * How many of each block are in the page, for the run of cards about to be drawn.
+   *
+   * Filled at the top of `render` and read by `#renderCard`. Not `@state`: it is derived from
+   * the page on the way past, so setting it must not schedule another render.
+   */
+  #usage = new Map<string, number>();
+
   override render(): TemplateResult {
     const selected = this.editor.selected;
     const blocks = this.#visibleBlocks();
     const groups = groupBy(blocks);
+    // Counted once for the whole library rather than once per card: this method runs on every
+    // page revision, and a query per block would scale with the library for no reason.
+    this.#usage = this.editor.blockUsage();
 
     return html`
       <div class="top">
@@ -370,6 +403,15 @@ export class HeoLibraryPanel extends HeoElement {
 
   #renderCard(block: LibraryBlock): TemplateResult {
     const removable = block.origin !== 'preset';
+    /*
+     * Counted, never drift-tested.
+     *
+     * Drift is a clone-and-serialize per instance, which across a library of twenty blocks
+     * would be a markup diff of the whole page to decide whether to draw a badge — on every
+     * revision. So the card offers the action whenever there is anything at all to act on, and
+     * the action itself is what reports having found nothing out of date.
+     */
+    const placed = this.#usage.get(block.id) ?? 0;
     return html`<button
       class="card"
       type="button"
@@ -383,6 +425,28 @@ export class HeoLibraryPanel extends HeoElement {
         <span class="kind">
           ${block.element ? 'web component' : block.kind === 'container' ? 'container' : 'component'}
         </span>
+        ${placed
+        ? html`<span class="uses" title=${`${placed} in the page`}>${placed}×</span>`
+        : nothing}
+        ${placed
+        ? html`<span
+              class="kill"
+              role="button"
+              tabindex="0"
+              aria-label=${`Update every ${block.name} in the page`}
+              title=${`Rebuild the ${placed === 1 ? 'copy' : `${placed} copies`} in the page from this template`}
+              @click=${(event: Event) => {
+            event.stopPropagation();
+            void this.editor.syncBlockInstances(block.id);
+          }}
+              @keydown=${(event: KeyboardEvent) => {
+            if (event.key !== 'Enter') return;
+            event.stopPropagation();
+            void this.editor.syncBlockInstances(block.id);
+          }}
+              >${icon('refresh', 11)}</span
+            >`
+        : nothing}
         <span
           class="kill"
           role="button"

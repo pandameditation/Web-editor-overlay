@@ -66,6 +66,30 @@ export const SOURCE_ATTR = 'data-heo-src';
 export const INSERTED_ATTR = 'data-heo-inserted';
 
 /**
+ * Which library block an element is an instance of.
+ *
+ * In the DOM, and that is a deliberate reversal. The prop *values* an instance was built
+ * with are still held in a `WeakMap` keyed on the node, because they are the editor's
+ * bookkeeping and have no business in anyone's markup. The identity cannot be, for two
+ * reasons that only an attribute answers.
+ *
+ * It has to be enumerable. "Update every block in the page that came from this template"
+ * is a question about a set, and a `WeakMap` cannot be asked what is in it — so there was
+ * no way to find the instances, and no way to offer the operation at all.
+ *
+ * It has to survive the node. A map keyed on the element loses the link the moment
+ * anything replaces that element: rewriting an ancestor's markup, or the code panel
+ * touching a parent, reparses the subtree into fresh nodes. An attribute travels in the
+ * markup, so it comes back with them — which is what makes "select it again and the
+ * Component section is still there" true rather than usually true.
+ *
+ * Stripped everywhere the other bookkeeping attributes are. `cleanMarkup` drops every
+ * `data-heo-*` prefix, which covers the save prompt and the write-back path; the export
+ * names its attributes one at a time, so this one is named there too.
+ */
+export const BLOCK_ATTR = 'data-heo-block';
+
+/**
  * Set on the element being dragged, so the page stylesheet can render it as a
  * translucent preview of where it will land.
  */

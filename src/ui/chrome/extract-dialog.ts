@@ -543,6 +543,7 @@ export class HeoExtractDialog extends HeoElement {
 
       footer {
         display: flex;
+        flex-wrap: wrap;
         align-items: center;
         gap: 8px;
         padding: 11px 16px;
@@ -550,6 +551,12 @@ export class HeoExtractDialog extends HeoElement {
       }
       footer .spacer {
         flex: 1 1 auto;
+      }
+      /* Beside the save button rather than up in the form: it is a decision about what
+         saving does, so it belongs where saving is. */
+      footer .apply {
+        flex: 0 1 auto;
+        min-width: 0;
       }
       .error {
         color: var(--heo-danger);
@@ -1452,9 +1459,33 @@ export class HeoExtractDialog extends HeoElement {
     const onProps = pending.step === 'props';
     const editing = pending.id !== null;
     const label = onProps ? (editing ? 'Update block' : 'Save block') : 'Continue';
+    /*
+     * How many of these are already in the page, which is the whole question the option
+     * answers. Counted, not tested for drift: the count is a selector, drift is a markup
+     * comparison per element, and this runs on every keystroke in the dialog.
+     */
+    const placed = editing && pending.id ? this.editor.blockInstances(pending.id).length : 0;
     return html`<footer>
       ${pending.error
         ? html`<span class="error">${icon('close', 11)} ${pending.error}</span>`
+        : nothing}
+      ${placed
+        ? html`<label
+            class="check apply"
+            title="Rebuild the copies already placed in the page from this template. Anything changed on them since is replaced."
+          >
+            <input
+              type="checkbox"
+              .checked=${pending.applyToInstances}
+              @change=${(event: Event) =>
+            this.editor.updateExtraction({
+              applyToInstances: (event.target as HTMLInputElement).checked,
+            })}
+            />
+            ${placed === 1
+            ? 'Apply to the 1 in the page'
+            : `Apply to all ${placed} in the page`}
+          </label>`
         : nothing}
       <span class="spacer"></span>
       ${onProps

@@ -8,6 +8,7 @@ import {
   type ClassMergePlan,
 } from './classes.js';
 import {
+  BLOCK_ATTR,
   CLASS_STYLE_ID,
   DRAGGING_ATTR,
   DRAG_TIMING,
@@ -89,7 +90,7 @@ import {
   elementKey,
 } from './mutations.js';
 import { buildPrompt } from './prompt.js';
-import { formatHTML, previewMarkup } from './sanitize.js';
+import { formatHTML, previewMarkup, sanitizeFragment } from './sanitize.js';
 import {
   connectDirectory,
   connectServer,
@@ -285,10 +286,39 @@ export interface BlockExtraction {
   step: 'source' | 'props';
   /** The props step's rows, built on the way into it. */
   props: BlockPropRow[];
+  /**
+   * Whether saving should also rebuild the copies already placed in the page.
+   *
+   * Off by default, and that default is a judgement rather than laziness. A placed block is
+   * content: it has been written into, restyled, had things added to it. Rebuilding it from
+   * the template is exactly the right thing to want and exactly the wrong thing to do without
+   * being asked, because everything done to it since goes. So the dialog offers it with the
+   * count in view, and leaving it off is answered by a toast that offers it again — which
+   * means declining here is not a dead end.
+   *
+   * Only ever consulted when editing an existing block. A block being created for the first
+   * time has nothing in the page to apply to.
+   */
+  applyToInstances: boolean;
   error: string;
 }
 
 export type Extraction = ClassExtraction | BlockExtraction;
+
+/** An element, and the library block it is an instance of. */
+export interface BlockInstance {
+  block: LibraryBlock;
+  /** The props it was built with, or the block's defaults when the values were lost. */
+  values: Record<string, string>;
+  /**
+   * True when the overlay put this element in the page, rather than the page having
+   * come with it and the user having saved it as a block afterwards.
+   *
+   * Only ever wording: "Inserted as" against "Saved as". Both are instances and both
+   * sync the same way.
+   */
+  placed: boolean;
+}
 
 /** Which language the Code panel is showing. */
 export type CodeTab = 'html' | 'css' | 'js';
@@ -309,6 +339,7 @@ function emptyBlockDraft(): BlockExtraction {
     tag: '',
     step: 'source',
     props: [],
+    applyToInstances: false,
     error: '',
   };
 }
@@ -1892,10 +1923,40 @@ export class EditorEngine {
         props: Object.keys(applied.props).length ? applied.props : undefined,
       });
       this.store.patch({ extraction: null });
-      this.notify(
-        pending.id ? `Updated ${block.name}.` : `Saved ${block.name} to the library.`,
-        'success',
-      );
+
+      /*
+       * The element it was captured from is now one of these.
+       *
+       * "Save as a reusable block" used to be a one-way trip: it read the element, wrote a
+       * library entry, and left the two strangers. So the thing the user had just turned into a
+       * component did not know it was one — no Component section when it was selected again,
+       * and nothing to sync it back to. It is the first instance of what it produced, and
+       * saying so is what closes that loop.
+       *
+       * Values come from the block's own defaults, which is the honest answer: the placeholders
+       * were typed into the dialog by hand, so nothing here knows which part of the element
+       * each one stood for. Where they disagree, `blockDrift` reports the element as differing
+       * from its template, which is true and is the user's to resolve.
+       */
+      if (pending.element?.isConnected) this.#linkInstance(pending.element, block);
+
+      // Counted rather than checked for drift: an instance count is a selector, while drift is
+      // a markup comparison per element, and this runs on the way out of a dialog.
+      const placed = pending.id ? this.blockInstances(block.id).length : 0;
+      if (!pending.id) {
+        this.notify(`Saved ${block.name} to the library.`, 'success');
+      } else if (!placed) {
+        this.notify(`Updated ${block.name}.`, 'success');
+      } else if (pending.applyToInstances) {
+        // It reports what it did, including having found nothing to do.
+        void this.syncBlockInstances(block.id);
+      } else {
+        this.notify(
+          `Updated ${block.name}. ${placed === 1 ? 'One copy is' : `${placed} copies are`} in the page, still on the old version.`,
+          'info',
+          { label: placed === 1 ? 'Update it' : 'Update them', run: () => void this.syncBlockInstances(block.id) },
+        );
+      }
       return true;
     } catch (error) {
       this.updateExtraction({ error: error instanceof Error ? error.message : String(error) });
@@ -2269,8 +2330,9 @@ export class EditorEngine {
     const result = duplicateElement(el);
     if (!result) return;
     this.history.commit(result.command);
-    // A clone is a new node, so it needs its own instance record; without this the
-    // copy of a configured block would lose its editable props.
+    // A clone is a new node, so it needs its own values; without this the copy of a
+    // configured block would lose its editable props. The block *identity* needs no help —
+    // it is an attribute, so `cloneNode` brought it along.
     const instance = this.#instances.get(el);
     if (instance) this.#instances.set(result.node, { ...instance, values: { ...instance.values } });
     this.select(result.node);
@@ -2393,8 +2455,9 @@ export class EditorEngine {
       this.history.commit(command);
       if (block.element?.tag) this.#injectedElements.add(block.element.tag);
       // Remember what the block was configured with, so the props panel can offer
-      // the same form again instead of leaving the values write-once.
-      this.#rememberInstance(nodes[0], block, props);
+      // the same form again instead of leaving the values write-once — and so this
+      // element can be found again when the template it came from changes.
+      this.#linkInstance(nodes[0], block, props);
       this.store.patch({ insertAnchor: null });
       this.select(nodes[0]);
       this.notify(
@@ -2458,34 +2521,301 @@ export class EditorEngine {
   /* Block instances                                                        */
   /* ---------------------------------------------------------------------- */
 
-  #rememberInstance(
+  /**
+   * Tie an element to the block it came from.
+   *
+   * Two halves, in two places, for two different reasons. The block's *identity* goes into
+   * the markup, because it has to be findable — both across the page, so every instance of a
+   * template can be updated at once, and across a node being replaced, so selecting the
+   * element again still knows what it is. The prop *values* stay in a `WeakMap`, because they
+   * are the editor's private notes about this one node and nobody's markup should carry them.
+   *
+   * Unconditional, which it did not used to be. This returned early for a block that declared
+   * no props, on the reasonable-looking grounds that there was nothing to remember — but the
+   * record is what makes an element *a block* as far as the rest of the editor is concerned,
+   * so a block with no props was inserted and then immediately forgotten. Its Component
+   * section never appeared, and there was nothing to sync it back to. An instance with no
+   * values is a perfectly ordinary thing; it is `{}`, not absent.
+   */
+  #linkInstance(
     el: HTMLElement,
     block: LibraryBlock,
-    props: Record<string, unknown>,
+    props: Record<string, unknown> = {},
   ): void {
-    if (!block.props || !Object.keys(block.props).length) return;
     const values: Record<string, string> = {};
-    for (const [name, spec] of Object.entries(block.props)) {
+    for (const [name, spec] of Object.entries(block.props ?? {})) {
       values[name] = String(props[name] ?? spec.default ?? '');
     }
+    el.setAttribute(BLOCK_ATTR, block.id);
     this.#instances.set(el, { blockId: block.id, values });
   }
 
   /**
    * The block an element came from, with the props it was built with.
    *
-   * Returns nothing for elements the editor did not insert, which is most of the
-   * page — the props panel falls back to attributes there.
+   * Returns nothing for elements that never came from one, which is most of the page — the
+   * props panel falls back to attributes there.
+   *
+   * The attribute is consulted when the map has nothing, and that is what makes the answer
+   * durable rather than merely usual. Rewriting an ancestor's markup reparses this element
+   * into a new node, and a map keyed on the old one has no idea; the attribute rode along in
+   * the markup. What is lost in that case is the values, so they fall back to the block's own
+   * defaults — the honest answer, and the same one the insert form would have offered.
    */
-  blockInstance(
-    el: HTMLElement | null,
-  ): { block: LibraryBlock; values: Record<string, string> } | null {
+  blockInstance(el: HTMLElement | null): BlockInstance | null {
     if (!el) return null;
     const entry = this.#instances.get(el);
-    if (!entry) return null;
-    const block = this.library.get(entry.blockId);
+    const id = entry?.blockId ?? el.getAttribute(BLOCK_ATTR);
+    if (!id) return null;
+    const block = this.library.get(id);
     if (!block) return null;
-    return { block, values: { ...entry.values } };
+    return {
+      block,
+      values: entry ? { ...entry.values } : this.library.defaultProps(block),
+      // How it got here, which is the difference between "Inserted as" and "Saved as". Read
+      // off the insertion marker rather than remembered separately, so it survives everything
+      // the marker survives.
+      placed: el.hasAttribute(INSERTED_ATTR),
+    };
+  }
+
+  /**
+   * Every element in the page that came from this block.
+   *
+   * The whole reason the link lives in the markup. A `WeakMap` can answer "what is this
+   * element?" and can never answer "where are all of them?", and the second question is the
+   * one that has to be answerable for a template edit to reach the page.
+   *
+   * Regions the editor was told to leave alone are left alone here too — an instance inside
+   * one is not the editor's to update.
+   */
+  blockInstances(blockId: string): HTMLElement[] {
+    if (!blockId) return [];
+    const selector = `[${BLOCK_ATTR}="${CSS.escape(blockId)}"]`;
+    return Array.from(document.querySelectorAll(selector)).filter(
+      (node): node is HTMLElement =>
+        node instanceof HTMLElement && node.isConnected && !node.closest(`[${IGNORE_ATTR}]`),
+    );
+  }
+
+  /**
+   * How many instances of each block are in the page, in one pass.
+   *
+   * For the library panel, which draws a count on every card. Asking `blockInstances` per card
+   * would be a DOM query per block per render — and the panel redraws on every page revision,
+   * which is every style nudge and every frame of a drag. One query answers for the whole
+   * library however large it grows.
+   */
+  blockUsage(): Map<string, number> {
+    const counts = new Map<string, number>();
+    for (const node of Array.from(document.querySelectorAll(`[${BLOCK_ATTR}]`))) {
+      if (!(node instanceof HTMLElement) || node.closest(`[${IGNORE_ATTR}]`)) continue;
+      const id = node.getAttribute(BLOCK_ATTR);
+      if (id) counts.set(id, (counts.get(id) ?? 0) + 1);
+    }
+    return counts;
+  }
+
+  /**
+   * Whether an instance has diverged from what its block would produce now.
+   *
+   * The question behind every part of this feature: a sync button with nothing to say about
+   * whether it would change anything is a button you press to find out, and a bulk update
+   * that reports a number has to have counted something real.
+   *
+   * Two comparisons, because there are two mechanics — the same two `setBlockProp` splits on.
+   * A template block *is* its markup, so the markup is compared, both sides serialized through
+   * the same clone-and-strip so attribute order and quoting cannot manufacture a difference.
+   * A block that registers a custom element is not its markup: the tag renders itself, and
+   * what the editor controls is the tag and the attributes it carries, so those are what is
+   * compared. Serializing an upgraded element would compare against whatever it rendered into
+   * itself and report drift on every one of them.
+   *
+   * Deliberately synchronous, so a render pass can ask. `library.expand` exists for this.
+   */
+  blockDrift(el: HTMLElement | null): boolean {
+    const instance = this.blockInstance(el);
+    if (!el || !instance) return false;
+    const { block, values } = instance;
+
+    const tag = block.element?.tag;
+    if (tag) {
+      if (el.tagName.toLowerCase() !== tag) return true;
+      return Object.entries(values).some(
+        ([name, value]) => (el.getAttribute(name) ?? '') !== value,
+      );
+    }
+
+    const expected = sanitizeFragment(this.library.expand(block, values)).firstElementChild;
+    // Nothing to compare against. Reported as "no drift" rather than as drift, because the
+    // alternative is offering an update that would replace the element with nothing.
+    if (!(expected instanceof HTMLElement)) return false;
+    return cleanMarkup(el) !== cleanMarkup(expected);
+  }
+
+  /**
+   * Re-render one instance from its block as the library now holds it.
+   *
+   * The other half of the library round trip. Inserting a block copies a template into the
+   * page and the two then have nothing more to do with each other — which is right, because a
+   * placed block is content and content gets edited. But it left the template edit with
+   * nowhere to go: fixing a card's markup in the library changed what the *next* card would
+   * look like and nothing about the nine already on the page.
+   */
+  syncBlockInstance(el = this.store.value.selected): Promise<number> {
+    const instance = this.blockInstance(el);
+    if (!el || !instance) return Promise.resolve(0);
+    return this.syncBlockInstances(instance.block.id, [el]);
+  }
+
+  /**
+   * Re-render instances of a block from its current template, as one undoable step.
+   *
+   * One step, and that is the part worth the machinery. Twenty elements change, so twenty
+   * records are needed — a record carries one anchor, which is one place in one file, so
+   * twenty of them is the only way a save can write twenty elements. But the user did one
+   * thing, and one thing has to come back with one undo. So the per-element commands are
+   * built with the same builder an insert uses, then composed: one command, one label, one
+   * step, carrying every record.
+   *
+   * `only` narrows it to the instances the caller means, which is how the per-instance button
+   * shares this code path rather than approximating it.
+   */
+  async syncBlockInstances(
+    blockId: string,
+    only?: readonly HTMLElement[],
+  ): Promise<number> {
+    const block = this.library.get(blockId);
+    if (!block) return 0;
+
+    const candidates = (only ?? this.blockInstances(blockId)).filter(
+      (el) => el.isConnected && isMutable(el) && this.blockDrift(el),
+    );
+    /*
+     * An instance inside another instance is left to its parent.
+     *
+     * Blocks nest — a card template can contain a button block — and replacing the outer one
+     * detaches the inner one mid-operation, so the inner command would be swapping nodes that
+     * are no longer in the page. The outer rebuild carries it anyway, from the template.
+     */
+    const targets = candidates.filter(
+      (el) => !candidates.some((other) => other !== el && other.contains(el)),
+    );
+    if (!targets.length) {
+      const one = only?.[0];
+      this.notify(
+        one
+          ? `${labelFor(one)} already matches ${block.name}.`
+          : `Every ${block.name} in the page already matches the library.`,
+        'info',
+      );
+      return 0;
+    }
+
+    const parts: Array<{
+      command: Command;
+      node: HTMLElement;
+      replaced: HTMLElement;
+      values: Record<string, string>;
+    }> = [];
+
+    for (const el of targets) {
+      const instance = this.blockInstance(el);
+      if (!instance) continue;
+      let nodes: HTMLElement[];
+      try {
+        ({ nodes } = await this.library.instantiate(block, instance.values));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.notify(`Could not rebuild ${block.name}: ${message}`, 'error');
+        return 0;
+      }
+      const root = nodes[0];
+      // Awaiting let the page move on. An element deleted while the template was rendering is
+      // no longer anything this operation is about.
+      if (!root || !el.isConnected) continue;
+      /*
+       * An element block's props are attributes rather than substitutions, so they go onto the
+       * fresh tag the way `setBlockProp` puts them onto a live one. Without this the sync
+       * would hand back a bare tag and read as "the update cleared all my values".
+       */
+      if (block.element?.tag) {
+        for (const [name, value] of Object.entries(instance.values)) {
+          if (value) root.setAttribute(name, value);
+        }
+      }
+      root.setAttribute(BLOCK_ATTR, block.id);
+      const command = insertNodes(el, 'replace', nodes, `Update ${block.name}`);
+      if (!command) continue;
+      parts.push({ command, node: root, replaced: el, values: instance.values });
+    }
+    if (!parts.length) return 0;
+
+    const selected = this.store.value.selected;
+    const reselect = parts.find((part) => part.replaced === selected)?.node ?? null;
+
+    this.history.commit({
+      label: parts.length === 1 ? `Update ${block.name}` : `Update ${parts.length} × ${block.name}`,
+      /*
+       * A subject only when there is one element to have one.
+       *
+       * It is what lets successive edits to the same thing collapse to their net difference,
+       * which is right for one element synced twice and wrong for a fan-out — there the
+       * reduction would report the first element and drop the rest.
+       */
+      subject: parts.length === 1 ? parts[0].command.subject : undefined,
+      record: parts[0].command.record,
+      extraRecords: parts.length > 1 ? parts.slice(1).map((part) => part.command.record) : undefined,
+      apply: () => {
+        for (const part of parts) part.command.apply();
+      },
+      revert: () => {
+        /*
+         * Newest first, and each one guarded.
+         *
+         * `History.undo` logs a throw and advances the stack regardless, so an element that
+         * cannot be put back — its parent has since been deleted, say — must not take the rest
+         * of the batch down with it and leave half the page updated with no way back.
+         */
+        for (const part of [...parts].reverse()) {
+          try {
+            part.command.revert();
+          } catch (error) {
+            console.error('[html-editor-overlay] block sync could not be reverted', error);
+          }
+        }
+      },
+    });
+
+    for (const part of parts) {
+      this.#instances.set(part.node, { blockId: block.id, values: { ...part.values } });
+    }
+    if (block.element?.tag) this.#injectedElements.add(block.element.tag);
+    if (reselect) this.select(reselect);
+    this.#bumpRevision();
+
+    this.notify(this.#syncToast(block, parts.length), 'success', {
+      label: 'Undo',
+      run: () => this.undo(),
+    });
+    return parts.length;
+  }
+
+  /**
+   * What a sync actually did, and the one thing it could not do.
+   *
+   * A custom element can be defined once per page and no more, so a block whose module
+   * changed has a new template and an old class, and the markup swap this just performed
+   * cannot bridge that. Saying so is the difference between a feature with a documented
+   * limit and one that appears to work.
+   */
+  #syncToast(block: LibraryBlock, count: number): string {
+    const what = count === 1 ? `1 ${block.name}` : `${count} × ${block.name}`;
+    const tag = block.element?.tag;
+    if (tag && this.#injectedElements.has(tag)) {
+      return `Updated ${what}. <${tag}> is already registered, so a changed module only takes effect after a reload.`;
+    }
+    return `Updated ${what} from the library.`;
   }
 
   /**
@@ -2500,14 +2830,16 @@ export class EditorEngine {
    * inherits the instance record.
    */
   async setBlockProp(el: HTMLElement, name: string, value: string): Promise<void> {
-    const entry = this.#instances.get(el);
     const instance = this.blockInstance(el);
-    if (!entry || !instance) return;
+    if (!instance) return;
     const { block } = instance;
     const values = { ...instance.values, [name]: value };
 
     if (block.element?.tag) {
-      entry.values = values;
+      // Written back through the link rather than onto a map entry that may not exist: an
+      // element whose node was replaced under it resolves through the attribute, and reaching
+      // for `#instances.get` there found nothing and silently dropped the edit.
+      this.#instances.set(el, { blockId: block.id, values });
       this.setAttribute(name, value || null, el);
       return;
     }

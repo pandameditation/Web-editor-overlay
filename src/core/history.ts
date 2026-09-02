@@ -14,6 +14,24 @@ export interface Command {
   label: string;
   /** Semantic description that ends up in the save prompt. */
   record: ChangeRecord;
+  /**
+   * The rest of what this command changed, for a command that touched more than one element.
+   *
+   * One command is one undo step, and one undo step is one thing the user did — but "update
+   * every instance of this block" is one thing the user did to twenty elements, and the save
+   * path needs all twenty. A record carries a single anchor, which is to say a single place in
+   * a single file, so no amount of detail on one record can describe twenty of them.
+   *
+   * Alongside `record` rather than instead of it, so everything keyed off a command's identity
+   * keeps working untouched: merging still compares one record, and the save point is still a
+   * map from one id to one command.
+   *
+   * Not to be combined with `subject`. A subject reduces a run of commands to the net
+   * difference between their first and last state, which is meaningful for one thing changing
+   * repeatedly and meaningless for many things changing at once — so these records are always
+   * reported as the one-off events they are.
+   */
+  extraRecords?: readonly ChangeRecord[];
   apply(): void;
   revert(): void;
   /**
@@ -314,15 +332,26 @@ function netRecords(commands: readonly Command[]): ChangeRecord[] {
     const subject = command.subject;
     if (!subject) {
       sequence.push({ subject: null, record: command.record });
-      continue;
-    }
-    const existing = groups.get(subject);
-    if (existing) {
-      existing.push(command.record);
     } else {
-      groups.set(subject, [command.record]);
-      // Placeholder marking where this subject belongs in the timeline.
-      sequence.push({ subject, record: command.record });
+      const existing = groups.get(subject);
+      if (existing) {
+        existing.push(command.record);
+      } else {
+        groups.set(subject, [command.record]);
+        // Placeholder marking where this subject belongs in the timeline.
+        sequence.push({ subject, record: command.record });
+      }
+    }
+    /*
+     * A fan-out's other elements, each reported in its own right.
+     *
+     * Never folded into a subject group. They are twenty different elements, not twenty
+     * states of one, and reducing them to a first `before` and a last `after` would report
+     * one change and silently drop nineteen — which is exactly the shape of a save that
+     * claims to have written everything and did not.
+     */
+    for (const extra of command.extraRecords ?? []) {
+      sequence.push({ subject: null, record: extra });
     }
   }
 
@@ -381,6 +410,9 @@ function asRolledBack(command: Command): Command {
     apply: () => { },
     revert: () => { },
     record: invertRecord(command.record),
+    // Turned around too. Undoing a saved fan-out rolls back every element it touched, and
+    // the file still holds the version each of them no longer shows.
+    extraRecords: command.extraRecords?.map(invertRecord),
   };
 }
 

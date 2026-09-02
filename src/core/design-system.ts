@@ -1,4 +1,5 @@
 import {
+  BLOCK_ATTR,
   HOST_TAG,
   INJECTED_ATTR,
   INSERTED_ATTR,
@@ -635,6 +636,12 @@ export function exportHTML(
 
   for (const el of Array.from(clone.querySelectorAll(`[${INSERTED_ATTR}]`))) {
     el.removeAttribute(INSERTED_ATTR);
+  }
+
+  // Which library block an element came from. Useful for as long as the editor is on the
+  // page and meaningless the moment it is not, which is what an export is.
+  for (const el of Array.from(clone.querySelectorAll(`[${BLOCK_ATTR}]`))) {
+    el.removeAttribute(BLOCK_ATTR);
   }
 
   for (const el of Array.from(clone.querySelectorAll('[contenteditable]'))) {

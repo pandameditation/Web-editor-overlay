@@ -2,8 +2,10 @@ import { css, html, nothing, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 import { labelFor, nearestSourceRef } from '../../core/dom.js';
+import type { BlockInstance } from '../../core/editor.js';
 import { describeProps, hasComponentProps, type PropDescriptor } from '../../core/props.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
+import type { PropSpec } from '../../core/types.js';
 import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
 import { baseStyles } from '../theme.js';
@@ -149,6 +151,7 @@ export class HeoPropsPanel extends HeoElement {
         color: var(--heo-accent);
       }
       .sub .who {
+        flex: 1 1 auto;
         min-width: 0;
         overflow: hidden;
         color: var(--heo-text-dim);
@@ -159,6 +162,21 @@ export class HeoPropsPanel extends HeoElement {
       .sub .who b {
         color: var(--heo-text);
         font-weight: 550;
+      }
+      /* Never squeezed: the block's name can ellipsise, the way back cannot. */
+      .sub .sync {
+        flex: 0 0 auto;
+        gap: 4px;
+        padding: 2px 7px;
+        font-size: 10.5px;
+      }
+      /* Says "already matched" rather than "unavailable", so it reads as a state and not
+         as something switched off. */
+      .sub .sync:disabled {
+        opacity: 1;
+        border-color: transparent;
+        background: transparent;
+        color: var(--heo-text-faint);
       }
     `,
   ];
@@ -246,6 +264,11 @@ export class HeoPropsPanel extends HeoElement {
    * custom element additionally declares reactive properties on its class. When both
    * exist, the block form comes first, because that is the level the user was
    * working at.
+   *
+   * Present for every block instance, including one with no props at all. It used to appear
+   * only when there was a form to put in it, which quietly made "which component is this?" a
+   * question the editor could answer and refused to — and left the block's own identity
+   * invisible for exactly the blocks that have nothing else to show.
    */
   #renderComponent(el: HTMLElement, reactive: PropDescriptor[]): TemplateResult {
     const instance = this.editor.blockInstance(el);
@@ -262,22 +285,7 @@ export class HeoPropsPanel extends HeoElement {
       @section-toggle=${(event: CustomEvent<{ open: boolean }>) =>
         this.#remember('component', event.detail.open)}
     >
-      ${instance
-        ? html`<div class="block">
-            <div class="sub">
-              <span class="g">${icon('blocks', 11)}</span>
-              <span class="who">Inserted as <b>${instance.block.name}</b></span>
-            </div>
-            <p class="hint" style="margin:0 0 9px">
-              ${instance.block.element?.tag
-            ? 'Values are written as attributes, so the component re-renders itself.'
-            : 'Changing a value re-renders the block from its template, replacing this element.'}
-            </p>
-            ${PropForm.render(specs, instance.values, (name, value) => {
-              void this.editor.setBlockProp(el, name, value);
-            }, this.editor)}
-          </div>`
-        : nothing}
+      ${instance ? this.#renderInstance(el, instance, specs) : nothing}
       ${reactive.length
         ? html`
             ${instance ? html`<div class="divider" style="margin:12px 0 10px"></div>` : nothing}
@@ -300,6 +308,59 @@ export class HeoPropsPanel extends HeoElement {
           `
         : nothing}
     </heo-section>`;
+  }
+
+  /**
+   * Which block this element is, whether it still matches it, and the way back.
+   *
+   * The sync control is always here, drift or none, props or none. A control that appears only
+   * when it would do something is a control you cannot learn: you find it once, by accident,
+   * at the moment you needed it earlier. So it is always in the same place, and it says which
+   * of its two states it is in — which is also the answer to "did my library edit reach this?"
+   * without pressing anything.
+   *
+   * Drift is read live rather than remembered. It is one markup comparison for one element and
+   * the panel already re-renders on every revision, so a stale answer would cost more than the
+   * check does.
+   */
+  #renderInstance(
+    el: HTMLElement,
+    instance: BlockInstance,
+    specs: Record<string, PropSpec>,
+  ): TemplateResult {
+    const drifted = this.editor.blockDrift(el);
+    const isElement = Boolean(instance.block.element?.tag);
+
+    return html`<div class="block">
+      <div class="sub">
+        <span class="g">${icon('blocks', 11)}</span>
+        <span class="who">
+          ${instance.placed ? 'Inserted as' : 'Saved as'} <b>${instance.block.name}</b>
+        </span>
+        <button
+          class=${`btn sm sync${drifted ? ' primary' : ''}`}
+          type="button"
+          ?disabled=${!drifted}
+          title=${drifted
+        ? `Rebuild this element from ${instance.block.name} as the library now holds it. Anything changed here since is replaced.`
+        : `This element matches ${instance.block.name} as the library holds it.`}
+          @click=${() => void this.editor.syncBlockInstance(el)}
+        >
+          ${icon('refresh', 11)} ${drifted ? 'Update' : 'In sync'}
+        </button>
+      </div>
+      <p class="hint" style="margin:0 0 9px">
+        ${drifted
+        ? html`This has been changed since it came from the library, or the block has been
+            edited since. Updating replaces it with the template.`
+        : isElement
+          ? 'Values are written as attributes, so the component re-renders itself.'
+          : 'Changing a value re-renders the block from its template, replacing this element.'}
+      </p>
+      ${PropForm.render(specs, instance.values, (name, value) => {
+            void this.editor.setBlockProp(el, name, value);
+          }, this.editor)}
+    </div>`;
   }
 
   #renderTag(el: HTMLElement): TemplateResult {
