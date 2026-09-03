@@ -330,9 +330,9 @@ export class HeoSaveDialog extends HeoElement {
       .card {
         margin-top: 8px;
         padding: 9px 10px;
-        border: 1px solid var(--heo-border);
-        border-radius: var(--heo-radius-sm, 5px);
-        background: var(--heo-surface-raised, rgba(255, 255, 255, 0.02));
+        border: 1px solid var(--heo-line);
+        border-radius: var(--heo-r-sm);
+        background: var(--heo-raised);
       }
       .cardhead {
         display: flex;
@@ -356,15 +356,35 @@ export class HeoSaveDialog extends HeoElement {
         color: var(--heo-text-faint);
         font-size: 10.5px;
       }
+      /*
+       * A field on a raised card has to read as a field.
+       *
+       * Sunken against the card it sits on, plus the stronger line, because the card is raised
+       * already and a control the same colour as its container is one nobody can see. It was
+       * worse than merely low-contrast to begin with: both of these named theme variables that
+       * do not exist, so each declaration was invalid and dropped, leaving the select with no
+       * background and no border at all.
+       */
       .cardhead select {
         padding: 2px 6px;
-        border: 1px solid var(--heo-border);
-        border-radius: 4px;
-        background: var(--heo-surface);
+        border: 1px solid var(--heo-line-strong);
+        border-radius: 5px;
+        background: var(--heo-sunken);
         color: var(--heo-text);
         font: inherit;
         font-size: 11px;
+        cursor: pointer;
+        transition: border-color var(--heo-fast), background var(--heo-fast);
       }
+      .cardhead select:hover {
+        border-color: var(--heo-accent-line);
+        background: var(--heo-hover);
+      }
+      .cardhead select:focus-visible {
+        outline: 2px solid var(--heo-accent);
+        outline-offset: 1px;
+      }
+      /* The card's own explanation. Faint, because it describes the control above it. */
       .card > .why {
         display: block;
         margin-top: 4px;
@@ -373,14 +393,14 @@ export class HeoSaveDialog extends HeoElement {
         line-height: 1.45;
       }
       .card > .why.warn {
-        color: var(--heo-warn, #f59e0b);
+        color: var(--heo-warn);
       }
       /* Indented, because these are not a separate decision from the card above them —
          they are the rest of its sentence. */
       .sub {
         margin: 8px 0 0 10px;
         padding-left: 10px;
-        border-left: 1px solid var(--heo-border);
+        border-left: 1px solid var(--heo-line);
         display: flex;
         flex-direction: column;
         gap: 4px;
@@ -402,14 +422,14 @@ export class HeoSaveDialog extends HeoElement {
         gap: 5px;
         margin-top: 8px;
         padding: 7px 9px;
-        border: 1px solid var(--heo-warn, #f59e0b);
-        border-radius: var(--heo-radius-sm, 5px);
-        color: var(--heo-warn, #f59e0b);
+        border: 1px solid var(--heo-warn);
+        border-radius: var(--heo-r-sm);
+        color: var(--heo-warn);
         font-size: 10.5px;
         line-height: 1.45;
       }
-      /* The line under a checkbox explains it; it is not a caution. It was inheriting the
-         amber the choice rows use for a caveat and reading as one. */
+      /* The line under a checkbox explains it; it is not a caution. It inherits the amber the
+         choice rows use for a caveat, which read as a warning about the thing being offered. */
       .card .sub .choice .why {
         color: var(--heo-text-faint);
       }
@@ -417,7 +437,7 @@ export class HeoSaveDialog extends HeoElement {
         display: flex;
         align-items: flex-start;
         gap: 5px;
-        color: var(--heo-warn, #f59e0b);
+        color: var(--heo-warn);
       }
       .pick h3 {
         margin: 0 0 3px;
