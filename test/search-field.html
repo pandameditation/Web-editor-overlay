@@ -28,6 +28,10 @@
     .card {
       padding: 8px;
     }
+
+    section p {
+      letter-spacing: 0.013em;
+    }
   </style>
 </head>
 
@@ -221,9 +225,85 @@
         sectionsBefore: headingsOf().length,
       };
 
+      // Named for what it now covers: properties, values, classes and rules, not just names.
+      results.styles.saysWhatItSearches =
+        filterField.getAttribute('label') === 'Search in element';
+
       await typeInto(filterField, 'shadow', stylePanel);
       results.styles.narrowsTheSections = headingsOf().length < results.styles.sectionsBefore;
       results.styles.keepsTheMatchingOne = headingsOf().includes('Effects');
+
+      /* ---------------------------------------------------------------- *
+       * What the search reaches. The bug being pinned first: margin and
+       * padding are drawn by the hand-written Spacing section rather than
+       * from SECTIONS, and the filter only ever looked at SECTIONS — so the
+       * two most-used properties in CSS could not be found by name.
+       * ---------------------------------------------------------------- */
+      await typeInto(filterField, 'margin', stylePanel);
+      results.styles.findsMargin = headingsOf().includes('Spacing');
+      await typeInto(filterField, 'padding', stylePanel);
+      results.styles.findsPadding = headingsOf().includes('Spacing');
+
+      // A value, not a name. `.card` declares padding: 8px and nothing is called "8px".
+      await typeInto(filterField, '8px', stylePanel);
+      results.styles.findsByValue = headingsOf().includes('Classes');
+
+      // A class by name.
+      await typeInto(filterField, 'card', stylePanel);
+      results.styles.findsAClass = headingsOf().includes('Classes');
+
+      // A stylesheet rule by a value only it declares: `section p` is not one of the
+      // element's classes, so it lives under CSS rules.
+      await typeInto(filterField, '0.013em', stylePanel);
+      results.styles.findsACssRule = headingsOf().includes('CSS rules');
+
+      /* ---------------------------------------------------------------- *
+       * Out of rows: the completions arrive in the panel, not in the popup.
+       * ---------------------------------------------------------------- */
+      const nomatch = () => stylePanel.shadowRoot.querySelector('.nomatch');
+      const offered = () =>
+        Array.from(stylePanel.shadowRoot.querySelectorAll('.nomatch .offer .option')).map((b) =>
+          b.querySelector('.name').textContent.trim(),
+        );
+
+      // A real property this element has no row for: the verdict says so rather than
+      // leaving the user to find out inside the dialog.
+      await typeInto(filterField, 'flex-grow', stylePanel);
+      results.styles.emptyPanelExplainsItself = Boolean(nomatch());
+      results.styles.confirmsARealProperty = Boolean(
+        stylePanel.shadowRoot.querySelector('.nomatch .verdict.yes'),
+      );
+
+      // A typo. Not a property, but close enough to one to be worth offering.
+      await typeInto(filterField, 'isolatio', stylePanel);
+      results.styles.flagsATypo = Boolean(
+        stylePanel.shadowRoot.querySelector('.nomatch .verdict.no'),
+      );
+      results.styles.offersTheNearMiss = offered().includes('isolation');
+
+      // And taking one seeds the add popup with it, so the completion is the whole gesture.
+      const isolationRow = Array.from(
+        stylePanel.shadowRoot.querySelectorAll('.nomatch .offer .option'),
+      ).find((b) => b.querySelector('.name').textContent.trim() === 'isolation');
+      isolationRow?.click();
+      await stylePanel.updateComplete;
+      await frames();
+      results.styles.takingOneSeedsTheAdder =
+        (stylePanel.draftRows ?? []).length === 1 &&
+        stylePanel.draftRows[0].property === 'isolation';
+      stylePanel.shadowRoot
+        .querySelector('.addpop .pophead button')
+        ?.click();
+      await stylePanel.updateComplete;
+
+      // Nothing resembles it either: said plainly, with no list of red herrings.
+      await typeInto(filterField, 'zzzznope', stylePanel);
+      results.styles.saysWhenNothingIsClose =
+        Boolean(stylePanel.shadowRoot.querySelector('.nomatch .verdict.no')) &&
+        offered().length === 0;
+
+      // Back to the query the add-popup block below is written against.
+      await typeInto(filterField, 'shadow', stylePanel);
 
       /* The add popup: seeded from the query, several rows, one change. */
       filterField.shadowRoot.querySelector('.go').click();
@@ -297,6 +377,18 @@
         results.styles.extractIsInTheClassesSection &&
         results.styles.narrowsTheSections &&
         results.styles.keepsTheMatchingOne &&
+        results.styles.saysWhatItSearches &&
+        results.styles.findsMargin &&
+        results.styles.findsPadding &&
+        results.styles.findsByValue &&
+        results.styles.findsAClass &&
+        results.styles.findsACssRule &&
+        results.styles.emptyPanelExplainsItself &&
+        results.styles.confirmsARealProperty &&
+        results.styles.flagsATypo &&
+        results.styles.offersTheNearMiss &&
+        results.styles.takingOneSeedsTheAdder &&
+        results.styles.saysWhenNothingIsClose &&
         results.styles.popupOpened &&
         results.styles.seededFromTheQuery &&
         results.styles.takesMoreThanOneRow &&

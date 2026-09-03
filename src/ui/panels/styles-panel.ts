@@ -164,6 +164,26 @@ const SECTIONS: SectionSpec[] = [
   },
 ];
 
+/**
+ * What the Spacing section covers, named where the search can see it.
+ *
+ * Spacing is drawn by hand rather than from SECTIONS, because a box editor is not a list of
+ * rows — and the cost of that was a search that could not find `margin` or `padding` at all.
+ * Declaring the list here is what lets the filter and the section agree about what is in it.
+ */
+const SPACING_PROPERTIES = [
+  'margin',
+  'padding',
+  'margin-top',
+  'margin-right',
+  'margin-bottom',
+  'margin-left',
+  'padding-top',
+  'padding-right',
+  'padding-bottom',
+  'padding-left',
+];
+
 /** Properties rendered as a segmented control instead of a text field. */
 const SEGMENTED: Record<string, Array<{ value: string; label?: string; icon?: string; title?: string }>> = {
   'flex-direction': [
@@ -617,6 +637,93 @@ export class HeoStylesPanel extends HeoElement {
         font-size: 9.5px;
       }
 
+      /*
+       * Ran out of rows: the completions, inline.
+       *
+       * Panel-side rather than the search field's popover, which is what filter mode is for --
+       * the results are the panel. A list that floated over the rows would also be covering the
+       * very thing it is reporting on.
+       */
+      .nomatch {
+        display: grid;
+        gap: 8px;
+        margin: 12px;
+        padding: 11px;
+        border: 1px solid var(--heo-line);
+        border-radius: var(--heo-r-md);
+        background: var(--heo-sunken);
+      }
+      .nomatch .lede {
+        margin: 0;
+        color: var(--heo-text-dim);
+        font-size: 11.5px;
+        line-height: 1.45;
+      }
+      .nomatch .verdict {
+        display: flex;
+        align-items: flex-start;
+        gap: 6px;
+        margin: 0;
+        font-size: 10.5px;
+        line-height: 1.5;
+      }
+      .nomatch .verdict.yes {
+        color: var(--heo-success);
+      }
+      .nomatch .verdict.no {
+        color: var(--heo-text-faint);
+      }
+      .nomatch .verdict code {
+        color: var(--heo-text);
+      }
+      /* Capped and scrolled: twelve completions must not push the add button off screen. */
+      .nomatch .offer {
+        display: grid;
+        gap: 2px;
+        max-height: 210px;
+        overflow-y: auto;
+        padding: 3px;
+        border: 1px solid var(--heo-line);
+        border-radius: var(--heo-r-sm);
+        background: var(--heo-bg);
+      }
+      .nomatch .option {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        width: 100%;
+        height: 24px;
+        padding: 0 7px;
+        border: 0;
+        border-radius: 5px;
+        background: transparent;
+        color: var(--heo-text-dim);
+        text-align: left;
+        cursor: pointer;
+      }
+      .nomatch .option:hover {
+        background: var(--heo-accent-soft);
+        color: var(--heo-text);
+      }
+      .nomatch .option .name {
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        font-family: var(--heo-mono);
+        font-size: 11px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .nomatch .option .meta {
+        flex: 0 0 auto;
+        color: var(--heo-text-faint);
+        font-size: 10px;
+      }
+      .nomatch > .btn {
+        justify-self: start;
+      }
+
       /* Add declaration */
       .adder {
         display: grid;
@@ -747,6 +854,15 @@ export class HeoStylesPanel extends HeoElement {
     }
 
     const filtering = Boolean(this.filter.trim());
+    /*
+     * Computed once, used three times.
+     *
+     * #matchingRules walks every stylesheet through stateRules, and this render runs on every
+     * keystroke while filtering — so the count beside the field, the empty-state test and the
+     * CSS rules section all read the same list rather than each rebuilding it.
+     */
+    const matching = this.#matchingRules(el, rules);
+    const found = filtering ? this.#matchCount(el, computed, declared, matching) : -1;
 
     return html`
       <div class="top">
@@ -760,10 +876,10 @@ export class HeoStylesPanel extends HeoElement {
           subject lives anyway.
         -->
         <heo-search-field
-          label="Find a property"
-          placeholder="Find a property…"
+          label="Search in element"
+          placeholder="Search in element…"
           .value=${this.filter}
-          .count=${filtering ? this.#matchCount(computed, declared) : -1}
+          .count=${found}
           action=${this.#addLabel()}
           action-icon="plus"
           action-compact
@@ -775,25 +891,13 @@ export class HeoStylesPanel extends HeoElement {
       </div>
 
       ${this.#renderModified(el, computed, declared, origins, inline)}
-      ${filtering ? nothing : html`${this.#renderClasses(el)} ${this.#renderCssRules(el, rules, cascade)}`}
-      ${filtering ? nothing : this.#renderSpacing(el, computed, declared, origins)}
+      ${this.#renderClasses(el)} ${this.#renderCssRules(el, matching, cascade)}
+      ${this.#renderSpacing(el, computed, declared, origins)}
       ${SECTIONS.filter((section) => !section.when || section.when(computed)).map((section) =>
-      this.#renderSection(section, el, computed, declared, origins),
-    )}
-      ${filtering ? nothing : this.#renderParent(el, computed, declared, origins)}
-      ${filtering && this.#matchCount(computed, declared) === 0
-        ? html`<div class="empty">
-            Nothing matches “${this.filter.trim()}”.
-            <button
-              class="btn sm"
-              type="button"
-              style="margin-top:9px"
-              @click=${() => this.#openAdder(this.filter.trim())}
-            >
-              ${icon('plus', 12)} ${this.#addLabel()}
-            </button>
-          </div>`
-        : nothing}
+        this.#renderSection(section, el, computed, declared, origins),
+      )}
+      ${this.#renderParent(el, computed, declared, origins)}
+      ${found === 0 ? this.#renderNoMatch() : nothing}
       ${this.adderOpen ? this.#renderAddPopup(el) : nothing}
     `;
   }
@@ -819,16 +923,22 @@ export class HeoStylesPanel extends HeoElement {
     computed: CSSStyleDeclaration,
     declared: Map<string, string>,
     origins: Map<string, DeclarationOrigin>,
-  ): TemplateResult {
+  ): TemplateResult | typeof nothing {
     const parent = selectableParent(el);
     const parentComputed = parent ? getComputedStyle(parent) : null;
-    const own = ['flex', 'align-self', 'order'];
-    if (parentComputed?.display.includes('grid')) own.push('grid-column', 'grid-row');
+    const all = ['flex', 'align-self', 'order'];
+    if (parentComputed?.display.includes('grid')) all.push('grid-column', 'grid-row');
+    const filtering = Boolean(this.filter.trim());
+    const own = all.filter((property) => this.#matches(property, declared.get(property)));
+    // The parent's own controls and the cap notices are about the parent, and the field says
+    // "search in element" — so while filtering this section is its matching rows or nothing.
+    if (filtering && !own.length) return nothing;
 
-    const caps = [
-      ...sizeConstraints(el, 'width'),
-      ...sizeConstraints(el, 'height'),
-    ].filter((cap) => cap.binding);
+    const caps = filtering
+      ? []
+      : [...sizeConstraints(el, 'width'), ...sizeConstraints(el, 'height')].filter(
+        (cap) => cap.binding,
+      );
     const setCount = own.filter((property) => declared.has(property)).length;
 
     // Open itself the first time a cap turns up for this element: it is the answer
@@ -844,7 +954,7 @@ export class HeoStylesPanel extends HeoElement {
       heading="In its parent"
       glyph="moveOut"
       badge=${caps.length ? String(caps.length) : setCount ? String(setCount) : ''}
-      ?open=${sectionOpen('child', caps.length > 0 || setCount > 0)}
+      ?open=${filtering ? true : sectionOpen('child', caps.length > 0 || setCount > 0)}
       @section-toggle=${(event: CustomEvent<{ open: boolean }>) =>
         this.#remember('child', event.detail.open)}
     >
@@ -856,11 +966,13 @@ export class HeoStylesPanel extends HeoElement {
         )}
       </div>
 
-      ${parent && parentComputed
-        ? this.#renderParentControls(parent, parentComputed)
-        : html`<p class="hint" style="margin:9px 0 0">
-            This element has no editable parent, so its size is decided by the viewport.
-          </p>`}
+      ${filtering
+        ? nothing
+        : parent && parentComputed
+          ? this.#renderParentControls(parent, parentComputed)
+          : html`<p class="hint" style="margin:9px 0 0">
+              This element has no editable parent, so its size is decided by the viewport.
+            </p>`}
     </heo-section>`;
   }
 
@@ -978,7 +1090,8 @@ export class HeoStylesPanel extends HeoElement {
     declared: Map<string, string>,
     origins: Map<string, DeclarationOrigin>,
     inline: Record<string, string>,
-  ): TemplateResult {
+  ): TemplateResult | typeof nothing {
+    const filtering = Boolean(this.filter.trim());
     const properties = [...declared.keys()]
       // Longhands synthesised from a box shorthand are already represented by the
       // shorthand itself; listing both would double every margin and padding.
@@ -989,17 +1102,22 @@ export class HeoStylesPanel extends HeoElement {
       // one edit nobody wants — an inline override on this element, forking the
       // design instead of fixing the rule that was actually responsible.
       .filter((property) => origins.get(property)?.kind === 'inline')
+      // Narrowed by the search like every other surface, on the name or the value.
+      .filter((property) => this.#matches(property, declared.get(property)))
       .sort((a, b) => {
         const rank = (property: string): number => (inline[property] !== undefined ? 0 : 1);
         return rank(a) - rank(b) || a.localeCompare(b);
       });
     const inlineCount = Object.keys(inline).length;
+    // While filtering the section is only worth drawing when it has a row: its empty state is an
+    // explanation of the cascade, which is not an answer to what was typed.
+    if (filtering && !properties.length) return nothing;
 
     return html`<heo-section
       heading="Set on this element"
       glyph="sliders"
       badge=${properties.length ? String(properties.length) : ''}
-      ?open=${sectionOpen('modified', properties.length > 0)}
+      ?open=${filtering ? true : sectionOpen('modified', properties.length > 0)}
       @section-toggle=${(event: CustomEvent<{ open: boolean }>) =>
         this.#remember('modified', event.detail.open)}
     >
@@ -1020,7 +1138,7 @@ export class HeoStylesPanel extends HeoElement {
           (property) => this.#renderRow(property, el, computed, declared, undefined, origins),
         )}
             </div>
-            ${inlineCount
+            ${inlineCount && !filtering
             ? html`<button
                   class="btn sm"
                   type="button"
@@ -1056,22 +1174,20 @@ export class HeoStylesPanel extends HeoElement {
    */
   #renderCssRules(
     el: HTMLElement,
-    rules: AppliedRule[],
+    all: AppliedRule[],
     cascade: Map<string, { from: AppliedRule }>,
-  ): TemplateResult {
-    // What belongs here: stylesheet rules that are not the element's own classes.
-    // Inline is "Set on this element"; a bare `.card` is "Classes". Both of those
-    // edit the same declarations somewhere better suited to them.
-    const direct = rules.filter(
-      (rule) => rule.origin === 'stylesheet' && !fromElementClass(rule.selector, el),
-    );
-    const all = [...direct, ...stateRules(el)].sort((a, b) => b.specificity - a.specificity);
+  ): TemplateResult | typeof nothing {
+    // Already narrowed by #matchingRules in render, because the count beside the search field is
+    // drawn from the same list and the two must not disagree. Inline is "Set on this element"; a
+    // bare single-class selector is "Classes". Both edit the same declarations somewhere better.
+    const filtering = Boolean(this.filter.trim());
+    if (filtering && !all.length) return nothing;
 
     return html`<heo-section
       heading="CSS rules"
       glyph="code"
       badge=${all.length ? String(all.length) : ''}
-      ?open=${sectionOpen('cssrules', all.length > 0)}
+      ?open=${filtering ? true : sectionOpen('cssrules', all.length > 0)}
       @section-toggle=${(event: CustomEvent<{ open: boolean }>) =>
         this.#remember('cssrules', event.detail.open)}
     >
@@ -1219,31 +1335,45 @@ export class HeoStylesPanel extends HeoElement {
     this.sectionsVersion += 1;
   }
 
-  #renderClasses(el: HTMLElement): TemplateResult {
+  /**
+   * The element's classes, and the way to add one.
+   *
+   * Searchable by name and by what the class declares, so `1px solid` finds the class that sets
+   * it. Hiding this section while filtering — which is what it used to do — meant a search could
+   * not answer the question a class is most often the answer to: where is this value coming from.
+   */
+  #renderClasses(el: HTMLElement): TemplateResult | typeof nothing {
     const classes = Array.from(el.classList).filter((name) => !name.startsWith('heo-'));
+    const filtering = Boolean(this.filter.trim());
+    const shown = filtering ? this.#matchingClasses(el) : classes;
+    // Nothing here matches, and while filtering the affordances below are not what was asked for.
+    if (filtering && !shown.length) return nothing;
     return html`<heo-section
       heading="Classes"
       glyph="blocks"
-      badge=${classes.length ? String(classes.length) : ''}
-      ?open=${sectionOpen('classes', classes.length > 0)}
+      badge=${shown.length ? String(shown.length) : ''}
+      ?open=${filtering ? true : sectionOpen('classes', classes.length > 0)}
       @section-toggle=${(event: CustomEvent<{ open: boolean }>) =>
         this.#remember('classes', event.detail.open)}
     >
       <!-- Moved off the panel's first line. Making a class out of what is set here is a thing
-           about classes, so it belongs with them. -->
-      <button
-        class="btn sm"
-        type="button"
-        style="margin-bottom:9px"
-        title="Turn this element's inline styles into a reusable class"
-        @click=${() => this.editor.beginClassExtraction(el)}
-      >
-        ${icon('droplet', 12)} Extract class
-      </button>
-      ${classes.length
+           about classes, so it belongs with them. Withheld while filtering: a search asks what is
+           already here, and this makes something new. -->
+      ${filtering
+        ? nothing
+        : html`<button
+            class="btn sm"
+            type="button"
+            style="margin-bottom:9px"
+            title="Turn this element's inline styles into a reusable class"
+            @click=${() => this.editor.beginClassExtraction(el)}
+          >
+            ${icon('droplet', 12)} Extract class
+          </button>`}
+      ${shown.length
         ? html`<div class="chips">
             ${repeat(
-          classes,
+          shown,
           (name) => name,
           (name) => {
             const defined = this.editor.classes.get(name);
@@ -1285,26 +1415,28 @@ export class HeoStylesPanel extends HeoElement {
             No classes yet. Adding one keeps styling reusable instead of inline.
           </p>`}
 
-      ${this.openClass && classes.includes(this.openClass)
+      ${this.openClass && shown.includes(this.openClass)
         ? this.#renderOpenClass(this.openClass, el)
         : nothing}
 
-      <heo-value-field
-        label="class"
-        action="Add this class"
-        action-icon="plus"
-        .suggestions=${classSuggestions(this.editor, this.classDraft)}
-        placeholder="find or type a class name"
-        @value-input=${(event: CustomEvent<{ value: string }>) => {
-        this.classDraft = event.detail.value;
-      }}
-        @value-submit=${(event: CustomEvent<{ value: string }>) =>
-        this.#addClass(el, event.detail.value, event.target as HeoValueField)}
-      ></heo-value-field>
-      <p class="hint" style="margin:6px 0 0">
-        Search the project's classes or type a new name, then press Enter or the add
-        button.
-      </p>
+      ${filtering
+        ? nothing
+        : html`<heo-value-field
+              label="class"
+              action="Add this class"
+              action-icon="plus"
+              .suggestions=${classSuggestions(this.editor, this.classDraft)}
+              placeholder="find or type a class name"
+              @value-input=${(event: CustomEvent<{ value: string }>) => {
+            this.classDraft = event.detail.value;
+          }}
+              @value-submit=${(event: CustomEvent<{ value: string }>) =>
+            this.#addClass(el, event.detail.value, event.target as HeoValueField)}
+            ></heo-value-field>
+            <p class="hint" style="margin:6px 0 0">
+              Search the project's classes or type a new name, then press Enter or the add
+              button.
+            </p>`}
     </heo-section>`;
   }
 
@@ -1507,26 +1639,33 @@ export class HeoStylesPanel extends HeoElement {
     field?.focusInput();
   }
 
+  /**
+   * Spacing: the box editor, plus the two shorthands as rows.
+   *
+   * Searchable now, which it was not. `margin` and `padding` are not in SECTIONS — the box editor
+   * is a diagram, not a list of rows, so this section is written by hand — and the filter only ever
+   * looked at SECTIONS, so the two most-reached-for properties in CSS could not be found by typing
+   * their names. The section narrows itself instead: the box editor stays for any spacing query,
+   * since it is the editor for all eight sides at once, and the shorthand rows come and go with
+   * the query like every other row.
+   */
   #renderSpacing(
     el: HTMLElement,
     computed: CSSStyleDeclaration,
     declared: Map<string, string>,
     origins: Map<string, DeclarationOrigin>,
-  ): TemplateResult {
-    const longhands = [
-      'margin-top',
-      'margin-right',
-      'margin-bottom',
-      'margin-left',
-      'padding-top',
-      'padding-right',
-      'padding-bottom',
-      'padding-left',
-    ];
+  ): TemplateResult | typeof nothing {
+    const longhands = SPACING_PROPERTIES.filter((property) => property.includes('-'));
     const declaredBox: Record<string, string> = {};
     for (const property of longhands) declaredBox[property] = declared.get(property) ?? '';
     const computedBox: Record<string, string> = { width: computed.width, height: computed.height };
     for (const property of longhands) computedBox[property] = computed.getPropertyValue(property);
+
+    const hits = SPACING_PROPERTIES.filter((property) =>
+      this.#matches(property, declared.get(property)),
+    );
+    if (!hits.length) return nothing;
+    const shorthands = ['margin', 'padding'].filter((property) => hits.includes(property));
 
     const touched = longhands.filter((property) => declaredBox[property]).length;
 
@@ -1534,7 +1673,7 @@ export class HeoStylesPanel extends HeoElement {
       heading="Spacing"
       glyph="wrap"
       badge=${touched ? String(touched) : ''}
-      ?open=${sectionOpen('spacing', true)}
+      ?open=${this.filter.trim() ? true : sectionOpen('spacing', true)}
       @section-toggle=${(event: CustomEvent<{ open: boolean }>) =>
         this.#remember('spacing', event.detail.open)}
     >
@@ -1546,11 +1685,13 @@ export class HeoStylesPanel extends HeoElement {
         this.editor.setStyles(event.detail.declarations, 'Adjust spacing', el)}
       ></heo-box-editor>
 
-      <div class="rows" style="margin-top:10px">
-        ${['margin', 'padding'].map((property) =>
+      ${shorthands.length
+        ? html`<div class="rows" style="margin-top:10px">
+            ${shorthands.map((property) =>
           this.#renderRow(property, el, computed, declared, `all sides`, origins),
         )}
-      </div>
+          </div>`
+        : nothing}
     </heo-section>`;
   }
 
@@ -1561,7 +1702,9 @@ export class HeoStylesPanel extends HeoElement {
     declared: Map<string, string>,
     origins: Map<string, DeclarationOrigin>,
   ): TemplateResult | typeof nothing {
-    const properties = section.properties.filter((property) => this.#matches(property));
+    const properties = section.properties.filter((property) =>
+      this.#matches(property, declared.get(property)),
+    );
     // Searched and nothing here matches: the section goes rather than standing open and empty.
     if (!properties.length) return nothing;
     const setCount = properties.filter((property) => declared.has(property)).length;
@@ -1671,30 +1814,167 @@ export class HeoStylesPanel extends HeoElement {
   /* Finding a property, and adding one                                     */
   /* ---------------------------------------------------------------------- */
 
-  /** Whether a property survives the filter. No filter means everything does. */
-  #matches(property: string): boolean {
+  /**
+   * Whether any of these strings contains what is being searched for.
+   *
+   * One predicate for every surface, so "search in element" means the same thing wherever it is
+   * applied: a property name, a value, a class name, a selector. Empty query matches everything,
+   * which is what makes the unfiltered panel fall out of the same code path.
+   */
+  #hit(...texts: Array<string | undefined>): boolean {
     const needle = this.filter.trim().toLowerCase();
-    return !needle || property.toLowerCase().includes(needle);
+    if (!needle) return true;
+    return texts.some((text) => text?.toLowerCase().includes(needle));
   }
 
   /**
-   * How many property rows the filter is showing, across every surface that draws them.
+   * Whether a property row survives the filter.
    *
-   * Counted rather than inferred so the number beside the field and the rows on screen cannot
-   * disagree — which is the whole reason the count lives here and not in the control.
+   * The value counts as well as the name, because half of what a user is looking for is a value:
+   * which rows mention `var(--brand)`, where `1px solid` is coming from, what else is `flex`.
+   * Searching only names meant the panel could not answer any of those.
    */
-  #matchCount(computed: CSSStyleDeclaration, declared: Map<string, string>): number {
-    const inSections = SECTIONS.filter((section) => !section.when || section.when(computed))
-      .flatMap((section) => section.properties)
-      .filter((property) => this.#matches(property));
-    const own = [...declared.keys()].filter((property) => this.#matches(property));
-    return new Set([...inSections, ...own]).size;
+  #matches(property: string, value?: string): boolean {
+    return this.#hit(property, value);
+  }
+
+  /** The element's classes the query reaches — by name, or by what the class declares. */
+  #matchingClasses(el: HTMLElement): string[] {
+    return Array.from(el.classList)
+      .filter((name) => !name.startsWith('heo-'))
+      .filter((name) => {
+        if (this.#hit(name)) return true;
+        const entry = this.editor.classes.get(name);
+        if (!entry) return false;
+        return Object.entries(entry.declarations).some(([property, value]) =>
+          this.#hit(property, value),
+        );
+      });
+  }
+
+  /** The rules in the CSS rules section the query reaches — by selector, or by declaration. */
+  #matchingRules(el: HTMLElement, rules: AppliedRule[]): AppliedRule[] {
+    const direct = rules.filter(
+      (rule) => rule.origin === 'stylesheet' && !fromElementClass(rule.selector, el),
+    );
+    return [...direct, ...stateRules(el)]
+      .sort((a, b) => b.specificity - a.specificity)
+      .filter(
+        (rule) =>
+          this.#hit(rule.selector, rule.matchedSelector, rule.source, rule.condition) ||
+          rule.declarations.some((one) => this.#hit(one.property, one.value)),
+      );
+  }
+
+  /**
+   * How many things the filter is showing, across every surface that draws one.
+   *
+   * Counted rather than inferred so the number beside the field and what is on screen cannot
+   * disagree — which is the whole reason the count lives here and not in the control. Properties
+   * are de-duplicated across surfaces because one property drawn in two sections is still one
+   * answer to "is this here"; a class and a rule each count once as themselves.
+   */
+  #matchCount(
+    el: HTMLElement,
+    computed: CSSStyleDeclaration,
+    declared: Map<string, string>,
+    matchingRules: readonly AppliedRule[],
+  ): number {
+    const properties = new Set<string>();
+    const consider = (property: string): void => {
+      if (this.#matches(property, declared.get(property))) properties.add(property);
+    };
+    for (const section of SECTIONS.filter((section) => !section.when || section.when(computed))) {
+      for (const property of section.properties) consider(property);
+    }
+    for (const property of SPACING_PROPERTIES) consider(property);
+    for (const property of declared.keys()) consider(property);
+    return properties.size + this.#matchingClasses(el).length + matchingRules.length;
   }
 
   /** What the add action would do, named after what has been typed. */
   #addLabel(): string {
     const seed = this.filter.trim();
     return seed ? `Add ${seed}` : 'Add a declaration';
+  }
+
+  /**
+   * What to show once the panel below has run out of rows.
+   *
+   * The completions belong here, not inside the add popup. Learning whether `flx` is a real
+   * property only after opening a dialog and reading "nothing matches that" is one step too late:
+   * by then the user has committed to adding something and still does not know what to type. So
+   * the moment the panel empties, the field answers the question it just raised — here is what
+   * exists with that in the name, and here is whether the thing you typed is a property at all.
+   *
+   * Validity comes from the browser rather than the catalogue. CSS.supports with `initial` is true
+   * for any property the engine knows, which is a much larger set than the catalogue lists — so a
+   * real property that is merely absent from it, `scroll-margin` for one, is not called invalid.
+   */
+  #renderNoMatch(): TemplateResult {
+    const seed = this.filter.trim();
+    const near = searchProperties(seed, 12).filter((meta) => meta.name !== seed);
+    const real = seed ? supportsProperty(seed) : false;
+
+    return html`<div class="nomatch">
+      <p class="lede">
+        Nothing on <b>${labelFor(this.editor.selected ?? document.body)}</b> matches
+        “${seed}”.
+      </p>
+
+      ${real
+        ? html`<p class="verdict yes">
+            ${icon('check', 11)}
+            <span><code class="mono">${seed}</code> is a CSS property. It is just not set here.</span>
+          </p>`
+        : near.length
+          ? html`<p class="verdict no">
+              ${icon('alert', 11)}
+              <span>
+                <code class="mono">${seed}</code> is not a property name. Did you mean one of
+                these?
+              </span>
+            </p>`
+          : html`<p class="verdict no">
+              ${icon('alert', 11)}
+              <span>
+                <code class="mono">${seed}</code> is not a property name, and nothing resembles it.
+              </span>
+            </p>`}
+
+      ${near.length
+        ? html`<div class="offer" role="list">
+            ${near.map(
+          (meta) => html`<button
+                class="option"
+                type="button"
+                role="listitem"
+                title=${`Add ${meta.name} to this element`}
+                @click=${() => this.#openAdder(meta.name)}
+              >
+                <span class="name">${meta.name}</span>
+                <span class="meta">${PROPERTY_GROUP_LABELS[meta.group]}</span>
+              </button>`,
+        )}
+          </div>`
+        : nothing}
+
+      <!--
+        Offered only for a name the engine accepts. Inviting someone to add a misspelling one
+        line under "that is not a property name" is a contradiction, and the commit would refuse
+        it anyway - so the completions above are the way forward instead. Nothing is blocked by
+        this: the field's own add button is always there for a name this check is wrong about.
+      -->
+      ${real
+        ? html`<button class="btn sm primary" type="button" @click=${() => this.#openAdder(seed)}>
+            ${icon('plus', 12)} ${this.#addLabel()}
+          </button>`
+        : near.length
+          ? nothing
+          : html`<p class="hint" style="margin:0">
+              Try a shorter query, or add a declaration with the button in the search field.
+            </p>`}
+    </div>`;
   }
 
   /**
@@ -2071,6 +2351,21 @@ function expand(parts: string[]): [string, string, string, string] {
   if (parts.length === 2) return [parts[0], parts[1], parts[0], parts[1]];
   if (parts.length === 3) return [parts[0], parts[1], parts[2], parts[1]];
   return [parts[0], parts[1], parts[2], parts[3]];
+}
+
+/**
+ * Whether the engine knows this property name at all.
+ *
+ * `initial` is accepted by every property that exists and by nothing that does not, which makes
+ * this a real answer rather than a lookup in a list the editor happens to ship. Guarded because a
+ * name with a stray bracket in it can make CSS.supports throw rather than return false.
+ */
+function supportsProperty(name: string): boolean {
+  try {
+    return CSS.supports(name, 'initial');
+  } catch {
+    return false;
+  }
 }
 
 function shorten(value: string, max = 22): string {
