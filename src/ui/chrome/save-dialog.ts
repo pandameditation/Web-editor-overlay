@@ -324,37 +324,94 @@ export class HeoSaveDialog extends HeoElement {
       .pickhead > .btn {
         flex: 0 0 auto;
       }
-      /* The current state, above the controls that change it. Dimmer than the choices on
-         purpose: it is what is, not what to do. */
-      .persist {
-        display: flex;
-        flex-direction: column;
-        gap: 2px;
-        margin: 0 0 9px;
-        padding: 7px 9px;
+      /* One card per payload: the styles and the block library. The card is the unit that
+         carries a destination, its qualifications and its own actions, so a destructive
+         button sits on the thing it acts on rather than loose in the section. */
+      .card {
+        margin-top: 8px;
+        padding: 9px 10px;
         border: 1px solid var(--heo-border);
         border-radius: var(--heo-radius-sm, 5px);
-        background: var(--heo-surface-sunken, rgba(0, 0, 0, 0.14));
-        font-size: 10.5px;
-        line-height: 1.5;
+        background: var(--heo-surface-raised, rgba(255, 255, 255, 0.02));
       }
-      .persist .row {
+      .cardhead {
         display: flex;
-        align-items: baseline;
-        gap: 4px;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .cardhead > .text {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 6px;
+        min-width: 0;
+      }
+      .cardhead .name {
+        color: var(--heo-text);
+        font-size: 11.5px;
+        font-weight: 600;
+      }
+      .cardhead .detail {
         color: var(--heo-text-faint);
+        font-size: 10.5px;
       }
-      .persist .what {
-        min-width: 62px;
-        color: var(--heo-text-dim, var(--heo-text));
+      .cardhead select {
+        padding: 2px 6px;
+        border: 1px solid var(--heo-border);
+        border-radius: 4px;
+        background: var(--heo-surface);
+        color: var(--heo-text);
+        font: inherit;
+        font-size: 11px;
       }
-      .persist .row.unfiled .sep,
-      .persist .row.removing .sep {
+      .card > .why {
+        display: block;
+        margin-top: 4px;
+        color: var(--heo-text-faint);
+        font-size: 10.5px;
+        line-height: 1.45;
+      }
+      .card > .why.warn {
         color: var(--heo-warn, #f59e0b);
       }
-      .persist .hintrow {
-        margin-top: 3px;
-        display: block;
+      /* Indented, because these are not a separate decision from the card above them —
+         they are the rest of its sentence. */
+      .sub {
+        margin: 8px 0 0 10px;
+        padding-left: 10px;
+        border-left: 1px solid var(--heo-border);
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .subhead {
+        color: var(--heo-text-faint);
+        font-size: 10px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      .tally {
+        color: var(--heo-text-faint);
+        font-size: 10.5px;
+      }
+      /* Only shown when something has nowhere to go, so it is allowed to look like a warning. */
+      .stranded-note {
+        display: flex;
+        align-items: flex-start;
+        gap: 5px;
+        margin-top: 8px;
+        padding: 7px 9px;
+        border: 1px solid var(--heo-warn, #f59e0b);
+        border-radius: var(--heo-radius-sm, 5px);
+        color: var(--heo-warn, #f59e0b);
+        font-size: 10.5px;
+        line-height: 1.45;
+      }
+      /* The line under a checkbox explains it; it is not a caution. It was inheriting the
+         amber the choice rows use for a caveat and reading as one. */
+      .card .sub .choice .why {
+        color: var(--heo-text-faint);
       }
       .lead.warn {
         display: flex;
@@ -846,9 +903,10 @@ export class HeoSaveDialog extends HeoElement {
    */
   #renderFiles(): TemplateResult {
     const { project, writePlan, planning } = this.state.value;
-    const targets = this.editor.styleTargets();
-    const chosen = this.editor.designSystemTarget;
-    const hasSystem = Boolean(this.#designSystemCSS());
+    // Whether there is a real choice of destination to offer. The Styles card names where the
+    // CSS goes either way; only a project with more than one writable stylesheet gets a select.
+    const canChooseDestination =
+      this.editor.styleTargets().length > 1 && Boolean(this.#designSystemCSS());
 
     return html`
       <header>
@@ -894,31 +952,20 @@ export class HeoSaveDialog extends HeoElement {
       </header>
 
       <div class="content">
-        ${hasSystem && targets.length > 1
-        ? html`<div class="destination">
-              <label for="heo-ds-target">New tokens, classes and rules go in</label>
-              <select
-                id="heo-ds-target"
-                .value=${chosen}
-                @change=${(event: Event) =>
-            this.editor.setDesignSystemTarget((event.target as HTMLSelectElement).value)}
-              >
-                ${targets.map(
-              (target) => html`<option value=${target.value} ?selected=${target.value === chosen}>
-                      ${target.label}
-                    </option>`,
-            )}
-              </select>
-              <span class="hint">
-                A page that keeps its CSS in files should keep its tokens there too. "Keep in the
-                page" leaves them in the &lt;style&gt; block they are rendering from now.
-              </span>
-            </div>`
-        : nothing}
-        ${this.#renderDesignSystemScope()} ${this.#renderBlockLibrary()}
-        ${planning
+        ${this.#renderDesignSystem({ destination: canChooseDestination })}
+
+        <!--
+          The file changes, under a heading of their own.
+          They used to sit straight after the design-system controls with nothing between them,
+          so the list of files read as part of the same question. It is the opposite question:
+          everything above is a choice, and this is the consequence.
+        -->
+        <section class="pick">
+          <h3>Files</h3>
+          ${planning
         ? html`<div class="empty">Reading the project files…</div>`
         : this.#renderPlan()}
+        </section>
       </div>
 
       <footer>
@@ -1073,25 +1120,27 @@ export class HeoSaveDialog extends HeoElement {
     const on = this.state.value.saveBlockLibrary;
     const removing = this.state.value.removeBlockLibrary;
 
-    return html`<section class="pick">
-      <div class="pickhead">
-        <h3 id="heo-blocks">Block library</h3>
+    return html`<div class="card">
+      <div class="cardhead">
+        <span class="text">
+          <span class="name" id="heo-blocks">Block library</span>
+          <span class="detail">
+            ${count
+        ? html`${count} block${count === 1 ? '' : 's'} · as a
+              <code class="mono">&lt;script type="application/heo-seed"&gt;</code>`
+        : 'nothing new to write'}
+          </span>
+        </span>
         ${this.#renderLibraryRemoval(carrying, removing)}
       </div>
-      <p class="lead">
-        The page carries the components you placed. It does not carry the templates they came
-        from, so on the next load there is no way to make another one.
-      </p>
       ${removing
-        ? html`<p class="lead warn">
-            ${icon('alert', 11)} The next save takes the library out of this page: the
-            <code class="mono">&lt;script type="application/heo-seed"&gt;</code> goes, and so does
-            every <code class="mono">data-heo-block</code> linking an element to a template. Undo
-            brings both back.
-          </p>`
+        ? html`<span class="why warn">
+            ${icon('alert', 11)} The next save takes it out of this page — the seed script and every
+            <code class="mono">data-heo-block</code> link. Undo brings both back.
+          </span>`
         : nothing}
       ${count
-        ? html`<div class="choices" role="group" aria-labelledby="heo-blocks">
+        ? html`<div class="sub" role="group" aria-labelledby="heo-blocks">
         <label class=${`choice${on ? ' on' : ''}`}>
           <input
             type="checkbox"
@@ -1113,7 +1162,7 @@ export class HeoSaveDialog extends HeoElement {
         </label>
       </div>`
         : nothing}
-    </section>`;
+    </div>`;
   }
 
   /**
@@ -1174,46 +1223,97 @@ export class HeoSaveDialog extends HeoElement {
    * "no rules yet" and "rules kept nowhere" are opposite facts and a missing row would read as
    * either.
    */
-  #renderPersistence(): TemplateResult {
-    const parts = this.editor.designSystemPersistence();
-    const NOTE: Record<string, string> = {
-      filed: 'kept in',
-      unfiled: 'not kept anywhere —',
-      empty: 'nothing yet',
-      removing: 'being removed from',
-    };
+  /**
+   * The one thing the cards above cannot say for themselves.
+   *
+   * This started as a four-row table of "tokens kept in styles.css, classes kept in styles.css,
+   * rules kept in styles.css, blocks kept in this page" sitting above the controls. Once each card
+   * named its own destination that table was saying the same thing a second time in a dimmer
+   * colour, which is worse than saying it once — a reader has to compare them to find out they
+   * agree. What is left is the case the cards genuinely do not cover: a part that is going nowhere,
+   * which is the only state here that is a problem rather than information.
+   */
+  #renderUnfiled(): TemplateResult | typeof nothing {
+    const stranded = this.editor
+      .designSystemPersistence()
+      .filter((entry) => entry.state === 'unfiled');
+    if (!stranded.length) return nothing;
 
-    return html`<div class="persist">
-      ${parts.map((entry) => {
-      const label = `${entry.count} ${entry.part === 'classes' && entry.count === 1
-        ? 'class'
-        : entry.part === 'library'
-          ? `block${entry.count === 1 ? '' : 's'}`
-          : entry.part.replace(/s$/, '') + (entry.count === 1 ? '' : 's')
-        }`;
-      return html`<span class=${`row ${entry.state}`}>
-          <span class="what">${label}</span>
-          <span class="sep">${NOTE[entry.state]}</span>
-          ${entry.state === 'empty'
-          ? nothing
-          : html`<code class="mono">${entry.where}</code>`}
-        </span>`;
-    })}
-      ${parts.some((entry) => entry.state === 'unfiled')
-        ? html`<span class="row hintrow">
-            Anything not kept in a file lives in this session only. Connect a folder to write it,
-            or take the design system with you as a seed.
-          </span>`
-        : nothing}
+    return html`<div class="stranded-note">
+      ${icon('alert', 11)}
+      <span>
+        ${stranded.map((entry) => entry.part).join(', ')} are not kept in any file, so they live in
+        this session only. Connect a folder to write them, or take the design system with you as a
+        seed.
+      </span>
     </div>`;
   }
 
-  #renderDesignSystemScope(): TemplateResult | typeof nothing {
+  /**
+   * Everything the design system decides, in one section, in the order it is decided.
+   *
+   * This was three sibling blocks — a destination `<select>`, an extent radio group and a library
+   * tick — each with its own heading and two sentences of preamble, sitting between the change
+   * list and the file list. Read top to bottom it asked "where", "how much" and "at all" as though
+   * they were unrelated questions about unrelated things, and the wall of prose made the actual
+   * controls hard to find.
+   *
+   * They are two things, not three. Tokens, classes and rules are CSS, they go to one file, and
+   * the only remaining question is how much of them travels — so the extent belongs *inside* the
+   * destination, indented under it, as a qualification of the same answer. The block library is
+   * separate because it is a different payload with only one possible home, and its destructive
+   * action belongs on its own card rather than loose in the section.
+   */
+  #renderDesignSystem(options: { destination: boolean }): TemplateResult | typeof nothing {
+    const styles = this.#renderStyles(options.destination);
+    const library = this.#renderBlockLibrary();
+    if (styles === nothing && library === nothing) return nothing;
+
+    return html`<section class="pick group">
+      <div class="pickhead">
+        <h3>Design system updates</h3>
+        <span class="tally">${this.#tally()}</span>
+      </div>
+      ${styles}
+      ${library}
+      ${this.#renderUnfiled()}
+    </section>`;
+  }
+
+  /**
+   * What this session has to hand over, as counts.
+   *
+   * Directly under the heading, because it is the one thing someone wants before deciding
+   * anything: how much is there. The controls below only matter if the answer is "some".
+   */
+  #tally(): string {
+    const extent = this.editor.designSystemExtent(this.state.value.designSystemScope);
+    const parts = [
+      extent.tokens && `${extent.tokens} token${extent.tokens === 1 ? '' : 's'}`,
+      extent.classes && `${extent.classes} class${extent.classes === 1 ? '' : 'es'}`,
+      extent.rules && `${extent.rules} rule${extent.rules === 1 ? '' : 's'}`,
+      this.editor.blockLibrarySize() &&
+      `${this.editor.blockLibrarySize()} block${this.editor.blockLibrarySize() === 1 ? '' : 's'}`,
+    ].filter((part): part is string => Boolean(part));
+    return parts.length ? parts.join(' • ') : 'nothing new';
+  }
+
+  /**
+   * The Styles card: where the CSS goes, and how much of it.
+   *
+   * One card naming the destination, with the extent as indented cards beneath it. The nesting is
+   * the argument: "only what this page uses" is not a separate decision from "put it in
+   * styles.css", it is the rest of that sentence.
+   */
+  #renderStyles(withDestination: boolean): TemplateResult | typeof nothing {
     const all = this.editor.designSystemExtent('all');
     // Nothing authored or imported, so there is no question to ask.
     if (!all.tokens && !all.classes && !all.rules) return nothing;
     const used = this.editor.designSystemExtent('used');
     const chosen = this.state.value.designSystemScope;
+    const targets = this.editor.styleTargets();
+    const target = this.editor.designSystemTarget;
+    const label = targets.find((entry) => entry.value === target)?.label ?? 'this page';
 
     const count = (extent: { tokens: number; classes: number; rules: number }): string => {
       const parts = [
@@ -1230,16 +1330,35 @@ export class HeoSaveDialog extends HeoElement {
       { value: 'none', label: 'Leave it out', detail: 'nothing' },
     ] as const;
 
-    return html`<section class="pick">
-      <h3 id="heo-ds-scope">Design system</h3>
-      <p class="lead">
-        The tokens, classes and rules this session owns, imported or authored. A page usually
-        speaks a fraction of an imported system.
-      </p>
-      ${this.#renderPersistence()}
-      <div class="choices" role="radiogroup" aria-labelledby="heo-ds-scope">
+    return html`<div class="card">
+      <div class="cardhead">
+        <span class="text">
+          <span class="name">Tokens, classes and rules go in</span>
+          ${withDestination
+        ? html`<select
+                id="heo-ds-target"
+                .value=${target}
+                @change=${(event: Event) =>
+            this.editor.setDesignSystemTarget((event.target as HTMLSelectElement).value)}
+              >
+                ${targets.map(
+              (entry) => html`<option value=${entry.value} ?selected=${entry.value === target}>
+                      ${entry.label}
+                    </option>`,
+            )}
+              </select>`
+        : html`<code class="mono">${label}</code>`}
+        </span>
+      </div>
+      <span class="why">
+        A page that keeps its CSS in files should keep its tokens there too. Keeping them in the
+        page leaves them in the &lt;style&gt; block they render from now.
+      </span>
+
+      <div class="sub" role="radiogroup" aria-label="What to keep">
+        <span class="subhead">What to keep</span>
         ${options.map(
-      (option) => html`<label class=${`choice${chosen === option.value ? ' on' : ''}`}>
+          (option) => html`<label class=${`choice${chosen === option.value ? ' on' : ''}`}>
             <input
               type="radio"
               name="heo-ds-scope"
@@ -1252,18 +1371,18 @@ export class HeoSaveDialog extends HeoElement {
               <span class="detail">${option.detail}</span>
             </span>
           </label>`,
-    )}
+        )}
       </div>
-    </section>`;
+    </div>`;
   }
 
   /**
    * The one button that commits, drawn the same wherever it appears.
    *
-   * Its label is the answer to "what happens if I press this", which changes with the
-   * connection: a project makes saving a write to named files, and calling that "Save
-   * changes" would be the one place this dialog was coy about what it does.
-   */
+     * Its label is the answer to "what happens if I press this", which changes with the
+     * connection: a project makes saving a write to named files, and calling that "Save
+     * changes" would be the one place this dialog was coy about what it does.
+     */
   #renderPrimary(known?: BundlePackaging): TemplateResult {
     const { saving, project, writePlan, planning } = this.state.value;
     const records = this.editor.records;
@@ -1508,7 +1627,8 @@ export class HeoSaveDialog extends HeoElement {
           </div>
         </section>
 
-        ${this.#renderDesignSystemScope()} ${this.#renderBlockLibrary()}
+        <!-- No destination select here: a standalone copy has nowhere but itself to put the CSS. -->
+        ${this.#renderDesignSystem({ destination: false })}
         ${this.#renderPackaging(offerArchive)} ${this.#renderNaming(shape)}
 
         ${limit

@@ -1,0 +1,10 @@
+/* A token the project declares itself, which an edit has to patch rather than override. */
+:root {
+  --brand: #ff0000;
+  --gap: 12px;
+}
+
+.card {
+  color: var(--brand);
+  padding: var(--gap);
+}

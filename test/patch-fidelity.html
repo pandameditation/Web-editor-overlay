@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Edits that should patch their file, not rewrite it</title>
+  <link rel="stylesheet" href="./patch-fidelity.css">
+</head>
+
+<body>
+  <main>
+    <p id="para">Some <em>original</em> words.</p>
+    <div class="card" id="card">A card.</div>
+  </main>
+
+  <!-- Inline, so its body is text in this file and the patcher can replace it. -->
+  <script id="inline-js">
+    window.__fixtureCounter = 1;
+  </script>
+
+  <div id="report">
+    <pre id="progress">start</pre>
+    <pre id="out">pending</pre>
+  </div>
+
+  <script type="module">
+    (async () => {
+      const errors = [];
+      addEventListener('error', (e) => errors.push('error: ' + e.message));
+      addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + String(e.reason)));
+
+      const progress = document.getElementById('progress');
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const results = {};
+
+      const { mount } = await import('../dist/html-editor-overlay.js');
+
+      const directory = decodeURIComponent(location.pathname).replace(/[^/]*$/, '');
+      const [pageHTML, cssText] = await Promise.all([
+        fetch(location.href).then((r) => r.text()),
+        fetch('./patch-fidelity.css').then((r) => r.text()),
+      ]);
+      const files = new Map([
+        ['patch-fidelity.html', pageHTML],
+        ['patch-fidelity.css', cssText],
+      ]);
+      const project = {
+        kind: 'directory',
+        label: 'memory',
+        resolve(url) {
+          const parsed = new URL(url, location.href);
+          if (parsed.origin !== location.origin && parsed.protocol !== 'file:') return null;
+          const path = decodeURIComponent(parsed.pathname);
+          return path.startsWith(directory) ? path.slice(directory.length) : null;
+        },
+        read: async (path) => (files.has(path) ? files.get(path) : null),
+        write: async (path, text) => { files.set(path, text); },
+        ensureWritable: async () => true,
+        release: async () => { },
+      };
+
+      const api = mount({ theme: 'dark', presets: false, detectScriptContent: false });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await engine.attachProject(project, { quiet: true });
+      await frames();
+
+      const plan = () => engine.previewWritePlan();
+      const writeFor = (p, kind) => p?.writes.find((w) => w.kind === kind) ?? null;
+      const SECTION = '/* heo:design-system start';
+
+      /* ------------------------------------------------------------------ *
+       * 1. A token the project declares is patched where it is declared.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'token';
+      const rule = engine.tokens.originRule('brand');
+      results.token = {
+        // The location has to survive the scan, or there is nothing to patch against.
+        foundItsRule: Boolean(rule),
+        selector: rule ? rule.selectorText : null,
+        startedAt: engine.tokens.get('brand')?.value ?? null,
+      };
+
+      if (rule) {
+        // Exactly what the Tokens panel now does for a token that has an origin rule.
+        engine.setRuleDeclaration(rule, '--brand', '#00ff00');
+        await frames();
+        const sheetWrite = writeFor(await plan(), 'stylesheet');
+        results.token.registryFollowed = engine.tokens.get('brand')?.value ?? null;
+        results.token.wroteTheStylesheet = Boolean(sheetWrite);
+        results.token.path = sheetWrite ? sheetWrite.path : null;
+        results.token.patchedInPlace = sheetWrite
+          ? /:root\s*\{[^}]*--brand:\s*#00ff00/.test(sheetWrite.after)
+          : false;
+        // The whole complaint: no second declaration appended in a managed block.
+        results.token.appendedASection = sheetWrite ? sheetWrite.after.includes(SECTION) : null;
+        results.token.stillHasOldValue = sheetWrite
+          ? sheetWrite.after.includes('--brand: #ff0000')
+          : null;
+        results.token.reason = sheetWrite ? sheetWrite.reason : null;
+      }
+      results.token.ok =
+        results.token.foundItsRule &&
+        results.token.registryFollowed === '#00ff00' &&
+        results.token.patchedInPlace === true &&
+        results.token.appendedASection === false &&
+        results.token.stillHasOldValue === false;
+
+      // Undo has to put the panel back in step with the page too.
+      engine.undo();
+      await frames();
+      results.tokenUndo = {
+        value: engine.tokens.get('brand')?.value ?? null,
+        ok: engine.tokens.get('brand')?.value === '#ff0000',
+      };
+      engine.redo();
+      await frames();
+
+      /* ------------------------------------------------------------------ *
+       * 2. An inline script edit patches the markup.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'inline script';
+
+      /** Walk shadow roots, since every panel lives inside the overlay's own tree. */
+      const deepFind = (tag, root = document) => {
+        const direct = root.querySelector?.(tag);
+        if (direct) return direct;
+        for (const host of root.querySelectorAll ? root.querySelectorAll('*') : []) {
+          if (host.shadowRoot) {
+            const found = deepFind(tag, host.shadowRoot);
+            if (found) return found;
+          }
+        }
+        return null;
+      };
+      const clickApply = async (panel) => {
+        const apply = Array.from(panel.shadowRoot.querySelectorAll('button')).find(
+          (button) => button.textContent.trim().toLowerCase().startsWith('apply'),
+        );
+        if (apply) apply.click();
+        await frames();
+        return Boolean(apply);
+      };
+
+      engine.openCode('js');
+      await frames();
+      const js = deepFind('heo-js-panel');
+      results.inlineScript = { panelFound: Boolean(js) };
+      if (js) {
+        // The first non-overlay inline script in document order, which is `#inline-js`.
+        js.selectedId = 'script-inline-1';
+        js.draft = 'window.__fixtureCounter = 2;';
+        js.dirty = true;
+        await js.updateComplete;
+        results.inlineScript.applyFound = await clickApply(js);
+      }
+      const docWrite = writeFor(await plan(), 'document');
+      results.inlineScript.liveTextChanged =
+        (document.getElementById('inline-js').textContent ?? '').includes('= 2');
+      results.inlineScript.reason = docWrite ? docWrite.reason : null;
+      // "patched in place" is the whole point: warnings mean it fell back to serializing.
+      results.inlineScript.patched = docWrite
+        ? docWrite.reason.includes('patched in place')
+        : false;
+      results.inlineScript.warnings = docWrite ? (docWrite.warnings ?? []).length : null;
+      results.inlineScript.carriesTheNewCode = docWrite
+        ? docWrite.after.includes('__fixtureCounter = 2')
+        : false;
+      results.inlineScript.ok =
+        results.inlineScript.liveTextChanged === true &&
+        results.inlineScript.patched === true &&
+        results.inlineScript.warnings === 0 &&
+        results.inlineScript.carriesTheNewCode === true;
+
+      /* ------------------------------------------------------------------ *
+       * 3. Rewriting an element's contents patches the markup.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'contents';
+      const para = document.getElementById('para');
+      api.select(para);
+      await frames();
+      engine.openCode('html');
+      await frames();
+
+      // Drive the real panel, so what is under test is the workflow the report names.
+      const panel = deepFind('heo-code-panel');
+      results.contents = { panelFound: Boolean(panel) };
+      if (panel) {
+        /*
+         * Scope first, draft second, and the order matters.
+         *
+         * The panel reloads its buffer from the element whenever the target or the scope changes,
+         * so setting both at once has the resync throw the draft away and Apply then finds nothing
+         * to do. Letting the scope change settle first leaves the draft standing.
+         */
+        panel.mode = 'inner';
+        await panel.updateComplete;
+        await frames();
+        panel.draft = 'Rewritten <em>contents</em> here.';
+        panel.dirty = true;
+        await panel.updateComplete;
+        results.contents.applyFound = await clickApply(panel);
+      }
+      const liveParagraph = document.getElementById('para');
+      results.contents.diagnostics = {
+        mode: panel ? panel.mode : null,
+        stillConnected: para.isConnected,
+        sameNode: liveParagraph === para,
+        liveHTML: liveParagraph ? liveParagraph.innerHTML : null,
+        heldHTML: para.innerHTML,
+      };
+      results.contents.paragraphChanged = Boolean(
+        liveParagraph && liveParagraph.innerHTML.includes('Rewritten'),
+      );
+      const contentsWrite = writeFor(await plan(), 'document');
+      results.contents.reason = contentsWrite ? contentsWrite.reason : null;
+      results.contents.patched = contentsWrite
+        ? contentsWrite.reason.includes('patched in place')
+        : false;
+      results.contents.warnings = contentsWrite ? (contentsWrite.warnings ?? []).length : null;
+      /*
+       * Checked as parsed markup, not as text.
+       *
+       * The document write carries this fixture's own inline script, which contains the draft
+       * string as a literal — so a substring search finds it whether or not the paragraph changed.
+       */
+      results.contents.carriesTheNewText = contentsWrite
+        ? (new DOMParser()
+          .parseFromString(contentsWrite.after, 'text/html')
+          .getElementById('para')?.innerHTML ?? '').includes('Rewritten')
+        : false;
+      results.contents.ok =
+        results.contents.paragraphChanged &&
+        results.contents.patched === true &&
+        results.contents.warnings === 0 &&
+        results.contents.carriesTheNewText === true;
+
+      const failed = Object.entries(results)
+        .filter(([, value]) => value && typeof value === 'object' && value.ok === false)
+        .map(([key]) => key);
+
+      document.getElementById('out').textContent = 'RESULTS:' + JSON.stringify(
+        { ok: failed.length === 0, failed, ...results, errors }, null, 1,
+      ) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"ok":false,"__fatal":' + JSON.stringify(String((e && e.stack) || e)) + '}:END';
+    });
+  </script>
+</body>
+
+</html>

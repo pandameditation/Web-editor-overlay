@@ -1,6 +1,7 @@
 import { IGNORE_ATTR } from './constants.js';
 import type { FileHost } from './file-host.js';
 import { nextChangeId, type Command } from './history.js';
+import { anchorFor } from './mutations.js';
 import { DOCUMENT_TARGET } from './sheets.js';
 
 /**
@@ -201,7 +202,20 @@ export function writeScriptSource(source: ScriptSource, code: string): Command |
     subject: `script:${source.id}`,
     record: {
       id: nextChangeId(),
-      kind: 'attribute',
+      /*
+       * An inline script is a text edit, an external one is not.
+       *
+       * The distinction decides whether the save can patch the file, and getting it wrong cost
+       * every inline script edit a whole-file rewrite. An inline `<script>` *is* in the HTML: its
+       * body is the text between two tags, which is precisely what the patcher's text edit
+       * replaces. Recording it as `'attribute'` sent it down a path that then asked which
+       * attribute had changed, found no answer and no anchor, and gave up on the file.
+       *
+       * An external script has no text in the page at all — its record is a courier for a
+       * separate file, handled before the document is ever considered — so it keeps the shape it
+       * had, and the kind it is given is never used to patch anything.
+       */
+      kind: source.remote ? 'attribute' : 'text',
       summary: source.remote
         ? `Edit the JavaScript in ${source.label} (not applied to the running page)`
         : `Edit the JavaScript in ${source.label}`,
@@ -209,6 +223,16 @@ export function writeScriptSource(source: ScriptSource, code: string): Command |
       group: `script:${source.id}`,
       before: summarize(before),
       after: summarize(after),
+      /*
+       * How to find the tag again in the file.
+       *
+       * The other half of the same bug: with no anchor the patcher cannot say which `<script>`
+       * this is, so it declined and the page was serialized. `anchorFor` gives it the id when the
+       * tag has one and its position inside a findable container when it does not — and for a
+       * text edit the old body can stand in as well, which for a script is about as distinctive
+       * as an anchor gets.
+       */
+      ...(element && !source.remote ? { anchor: anchorFor(element) } : {}),
       detail: {
         file: source.href ?? source.label,
         scope: source.remote ? 'external script' : 'inline script',

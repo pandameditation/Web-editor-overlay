@@ -798,6 +798,29 @@ export class HeoTokensPanel extends HeoElement {
    */
   #setToken(token: DesignToken, value: string): void {
     if (!value.trim() || value === token.value) return;
+
+    /*
+     * A token the project already declares is edited where it is declared.
+     *
+     * The alternative — and what this used to do unconditionally — is to treat every edit as a new
+     * declaration the editor owns, emit it into the managed block, and let the save append that
+     * block to the end of the target stylesheet. For a token the editor invented that is right.
+     * For one the file already has it is not: the file ends up declaring `--brand` twice, the
+     * original left behind with the old value, and the reader has to know about cascade order to
+     * work out which one is in effect.
+     *
+     * `setRuleDeclaration` is the path that already does this correctly for every other
+     * declaration in the page — it captures the rule's position at edit time, patches that one
+     * line on save, and has its own undo handling. Reusing it means a token edit and a colour
+     * edit reach a stylesheet the same way, rather than by two mechanisms that agree until they
+     * do not.
+     */
+    const rule = this.editor.tokens.originRule(token.name);
+    if (rule) {
+      this.editor.setRuleDeclaration(rule, `--${token.name}`, value);
+      return;
+    }
+
     const previous = { ...token };
     this.editor.history.commit({
       label: `Set --${token.name}`,

@@ -1926,13 +1926,30 @@ export class EditorEngine {
       apply: () => {
         if (after) rule.style.setProperty(property, after);
         else rule.style.removeProperty(property);
+        this.#resyncTokens(property);
       },
       revert: () => {
         if (before) rule.style.setProperty(property, before, beforePriority);
         else rule.style.removeProperty(property);
+        this.#resyncTokens(property);
       },
     });
     if (target) this.#bumpRevision();
+  }
+
+  /**
+   * Re-read the tokens after a custom property is written straight into a rule.
+   *
+   * A token edited in its own stylesheet is applied by mutating the CSSOM, which the registry has
+   * no way to observe — so without this the page rendered the new value while the Tokens panel
+   * went on showing the old one, and undo left them disagreeing the other way round. Rescanning is
+   * cheap and it is the same read that established the value in the first place, so the two
+   * cannot drift.
+   *
+   * Only for custom properties: every other declaration is nothing to do with the token registry.
+   */
+  #resyncTokens(property: string): void {
+    if (property.startsWith('--')) this.tokens.scanDocument();
   }
 
   /* ---------------------------------------------------------------------- */

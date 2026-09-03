@@ -90,6 +90,8 @@ export function prettifyTokenName(name: string): string {
 
 export class TokenRegistry {
   #tokens = new Map<string, DesignToken>();
+  /** Which live rule each stylesheet token was declared in. See `originRule`. */
+  #origins = new Map<string, CSSStyleRule>();
   #sheet = new ManagedStyleSheet(TOKEN_STYLE_ID);
   #listeners = new Set<() => void>();
   #usageCache: Map<string, number> | null = null;
@@ -108,15 +110,33 @@ export class TokenRegistry {
    */
   scanDocument(): void {
     const found: DesignToken[] = [];
+    this.#origins.clear();
     for (const sheet of Array.from(document.styleSheets)) {
       // Skip our own generated sheets so scanning is idempotent.
       if (sheet.ownerNode instanceof Element && sheet.ownerNode.hasAttribute('data-heo-generated')) {
         continue;
       }
-      collectTokens(sheet, found);
+      collectTokens(sheet, found, this.#origins);
     }
-    for (const sheet of document.adoptedStyleSheets ?? []) collectTokens(sheet, found);
+    for (const sheet of document.adoptedStyleSheets ?? []) {
+      collectTokens(sheet, found, this.#origins);
+    }
     this.#adopt(found);
+  }
+
+  /**
+   * The live rule a token was read out of, when it came from a stylesheet.
+   *
+   * What makes an edit to an existing token a one-line diff. Without it the only way to change
+   * `--brand` was to declare it again in the editor's own managed block, which lands at the
+   * bottom of whichever file the design system is pointed at — so the file ended up with the
+   * token twice and the original declaration untouched and now wrong.
+   *
+   * Null for a token the editor itself created, which has no declaration anywhere yet and
+   * genuinely does belong in the managed block.
+   */
+  originRule(name: string): CSSStyleRule | null {
+    return this.#origins.get(name.replace(/^--/, '')) ?? null;
   }
 
   /**
@@ -409,7 +429,23 @@ export class TokenRegistry {
  * containers are stepped over rather than thrown from: a page with one cross-origin
  * sheet should still get the tokens from all the others.
  */
-function collectTokens(container: CSSStyleSheet | CSSGroupingRule, found: DesignToken[]): void {
+function collectTokens(
+  container: CSSStyleSheet | CSSGroupingRule,
+  found: DesignToken[],
+  /**
+   * Where each token was found, when the rule is one that can be edited later.
+   *
+   * Kept beside the token rather than on it, because a `DesignToken` is exported, seeded and
+   * round-tripped as JSON and a live `CSSStyleRule` has no business travelling in that. This map
+   * is session state, like the sheet ids in `sheets.ts`, and it is what lets an edit to a token
+   * the project already declares be written back to the declaration instead of appended as an
+   * override at the bottom of a file.
+   *
+   * Absent for text-parsed CSS: those rules belong to a throwaway sheet, so a reference to one
+   * would name a rule that no longer exists by the time anyone tried to use it.
+   */
+  origins?: Map<string, CSSStyleRule>,
+): void {
   let list: CSSRuleList;
   try {
     list = container.cssRules;
@@ -432,6 +468,14 @@ function collectTokens(container: CSSStyleSheet | CSSGroupingRule, found: Design
           label: prettifyTokenName(name),
           origin: 'stylesheet',
         });
+        /*
+         * The last declaration wins, which is also what the browser decided.
+         *
+         * A token declared twice — a base value and a media-query override — is collected twice,
+         * and the value kept is the later one. The rule remembered has to be the same one, or an
+         * edit would patch the declaration that is not in effect.
+         */
+        origins?.set(name, rule);
       }
       continue;
     }
@@ -440,7 +484,7 @@ function collectTokens(container: CSSStyleSheet | CSSGroupingRule, found: Design
       rule instanceof CSSSupportsRule ||
       (typeof CSSContainerRule !== 'undefined' && rule instanceof CSSContainerRule)
     ) {
-      collectTokens(rule, found);
+      collectTokens(rule, found, origins);
     }
   }
 }

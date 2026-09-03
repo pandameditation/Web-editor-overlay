@@ -2,6 +2,7 @@ import { css, html, nothing, type TemplateResult } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
 import { HOST_TAG } from '../../core/constants.js';
 import { labelFor, nearestSourceRef } from '../../core/dom.js';
+import { setInnerHTML } from '../../core/mutations.js';
 import { copyToClipboard } from '../../core/design-system.js';
 import { formatHTML, sanitizeFragment, scrubElement } from '../../core/sanitize.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
@@ -439,24 +440,25 @@ export class HeoCodePanel extends HeoElement {
       this.dirty = false;
       return;
     }
-    this.editor.history.commit({
-      label: `Edit contents of ${labelFor(el)}`,
-      record: {
-        id: `h${Date.now().toString(36)}`,
-        kind: 'replace',
-        summary: `Rewrite the contents of ${labelFor(el)}`,
-        target: labelFor(el),
-        source: nearestSourceRef(el),
-        detail: { html: after },
-        at: Date.now(),
-      },
-      apply: () => {
-        el.innerHTML = after;
-      },
-      revert: () => {
-        el.innerHTML = before;
-      },
-    });
+    /*
+     * Through `setInnerHTML`, not a hand-built record, and that is the fix for a real bug.
+     *
+     * This used to commit a `kind: 'replace'` record assembled here. Two things were wrong with
+     * it, and together they forced a whole-file rewrite for an edit the patcher handles natively.
+     * `'replace'` is a *structural* kind — it means the element node was swapped, so the save
+     * rebuilds the container's children in file order — and rebuilding needs the container's
+     * anchor, which a record built by hand does not have. So every Apply here reported "no
+     * container was recorded for Rewrite the contents of …" and serialized the page, while the
+     * same edit made directly on the page patched one line.
+     *
+     * Rewriting an element's contents is not structural at all: nothing moves, no sibling is
+     * touched, and `html-patch` has a primitive for exactly it. `setInnerHTML` records it as
+     * `kind: 'text'` with a full anchor, which is the same shape inline text editing produces.
+     */
+    const command = setInnerHTML(el, before, after);
+    command.label = `Edit contents of ${labelFor(el)}`;
+    command.record.summary = `Rewrite the contents of ${labelFor(el)}`;
+    this.editor.history.commit(command);
     this.dirty = false;
     this.#loadedFor = null;
     this.#appliedAt = this.editor.history.size;
