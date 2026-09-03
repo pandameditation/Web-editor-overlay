@@ -1040,8 +1040,8 @@ export class HeoSaveDialog extends HeoElement {
               <code class="mono">&lt;script type="application/heo-seed"&gt;</code> in the head
             </span>
             <span class="why">
-              Data, not code — the browser runs nothing. The editor reads it back on the next
-              load and the library is there again.
+              Persists the library in
+              the page so the blocks can be reused later and implemented blocks can sync to the library
             </span>
           </span>
         </label>
