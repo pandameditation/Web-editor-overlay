@@ -25,6 +25,7 @@ import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
 import { baseStyles } from '../theme.js';
 import { buildSuggestions, classSuggestions, valueKindFor } from '../suggestions.js';
+import { adderStyles } from './adder.js';
 import { ClassEditor, focusDeclaration, type DeclarationTarget } from './class-editor.js';
 import type { HeoValueField } from '../controls/value-field.js';
 import '../controls/value-field.js';
@@ -244,6 +245,7 @@ export class HeoStylesPanel extends HeoElement {
   static override styles = [
     baseStyles,
     ClassEditor.styles,
+    adderStyles,
     css`
       :host {
         display: block;
@@ -256,66 +258,6 @@ export class HeoStylesPanel extends HeoElement {
         gap: 6px;
         padding: 10px 12px;
         border-bottom: 1px solid var(--heo-line);
-      }
-
-      /*
-       * The add-a-declaration popup.
-       *
-       * In the top layer, because the dock clips its descendants and carries a backdrop filter, so
-       * anything painted normally is cut off by the panel it belongs to. A popup and not a modal:
-       * adding a declaration is done while reading the rows above it, and a modal would hide the
-       * very thing being compared against.
-       */
-      .addpop {
-        position: fixed;
-        margin: 0;
-        padding: 9px;
-        border: 1px solid var(--heo-line-strong);
-        border-radius: var(--heo-r-md);
-        background: var(--heo-bg);
-        box-shadow: var(--heo-shadow-lg);
-        display: grid;
-        gap: 8px;
-        z-index: 2147483000;
-      }
-      .addpop::backdrop {
-        background: transparent;
-      }
-      .pophead {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        color: var(--heo-text-dim);
-        font-size: 11px;
-      }
-      .pophead > span {
-        flex: 1 1 auto;
-        min-width: 0;
-      }
-      .poprows {
-        display: grid;
-        gap: 6px;
-        max-height: 40vh;
-        overflow-y: auto;
-      }
-      /* Property and value side by side: they are one declaration, not two settings. The value
-         gets the wider share, since it is the half that holds an expression. */
-      .poprow {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) auto;
-        gap: 5px;
-        align-items: center;
-      }
-      .popfoot {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-      }
-      .popfoot .spacer {
-        flex: 1 1 auto;
-      }
-      .top .spacer {
-        flex: 1 1 auto;
       }
 
       .rows {
@@ -637,93 +579,6 @@ export class HeoStylesPanel extends HeoElement {
         font-size: 9.5px;
       }
 
-      /*
-       * Ran out of rows: the completions, inline.
-       *
-       * Panel-side rather than the search field's popover, which is what filter mode is for --
-       * the results are the panel. A list that floated over the rows would also be covering the
-       * very thing it is reporting on.
-       */
-      .nomatch {
-        display: grid;
-        gap: 8px;
-        margin: 12px;
-        padding: 11px;
-        border: 1px solid var(--heo-line);
-        border-radius: var(--heo-r-md);
-        background: var(--heo-sunken);
-      }
-      .nomatch .lede {
-        margin: 0;
-        color: var(--heo-text-dim);
-        font-size: 11.5px;
-        line-height: 1.45;
-      }
-      .nomatch .verdict {
-        display: flex;
-        align-items: flex-start;
-        gap: 6px;
-        margin: 0;
-        font-size: 10.5px;
-        line-height: 1.5;
-      }
-      .nomatch .verdict.yes {
-        color: var(--heo-success);
-      }
-      .nomatch .verdict.no {
-        color: var(--heo-text-faint);
-      }
-      .nomatch .verdict code {
-        color: var(--heo-text);
-      }
-      /* Capped and scrolled: twelve completions must not push the add button off screen. */
-      .nomatch .offer {
-        display: grid;
-        gap: 2px;
-        max-height: 210px;
-        overflow-y: auto;
-        padding: 3px;
-        border: 1px solid var(--heo-line);
-        border-radius: var(--heo-r-sm);
-        background: var(--heo-bg);
-      }
-      .nomatch .option {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 8px;
-        width: 100%;
-        height: 24px;
-        padding: 0 7px;
-        border: 0;
-        border-radius: 5px;
-        background: transparent;
-        color: var(--heo-text-dim);
-        text-align: left;
-        cursor: pointer;
-      }
-      .nomatch .option:hover {
-        background: var(--heo-accent-soft);
-        color: var(--heo-text);
-      }
-      .nomatch .option .name {
-        flex: 1 1 auto;
-        min-width: 0;
-        overflow: hidden;
-        font-family: var(--heo-mono);
-        font-size: 11px;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .nomatch .option .meta {
-        flex: 0 0 auto;
-        color: var(--heo-text-faint);
-        font-size: 10px;
-      }
-      .nomatch > .btn {
-        justify-self: start;
-      }
-
       /* Add declaration */
       .adder {
         display: grid;
@@ -897,7 +752,9 @@ export class HeoStylesPanel extends HeoElement {
         this.#renderSection(section, el, computed, declared, origins),
       )}
       ${this.#renderParent(el, computed, declared, origins)}
-      ${found === 0 ? this.#renderNoMatch() : nothing}
+      <!-- Withheld while the popup is up: the user has acted on these completions, and leaving
+           them behind the popup restates a question that has been answered. -->
+      ${found === 0 && !this.adderOpen ? this.#renderNoMatch() : nothing}
       ${this.adderOpen ? this.#renderAddPopup(el) : nothing}
     `;
   }

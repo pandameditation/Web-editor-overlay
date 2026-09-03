@@ -307,6 +307,16 @@ export function setStyleProperties(
 /* Attributes and classes                                                      */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * One attribute. `null` removes it; `''` sets it to the empty string.
+ *
+ * The two used to mean the same thing, and that was a bug with two victims already in the tree: a
+ * boolean attribute is written as `disabled=""`, so every checkbox in the props panel removed the
+ * attribute it meant to add, and an empty `alt` is how an image is marked decorative, so the media
+ * panel deleted the attribute that carried that meaning. `null` was always the way to say remove --
+ * the signature says so -- and nothing else in the tree passed `''`, since every other caller
+ * normalises through `value || null`.
+ */
 export function setAttribute(el: HTMLElement, name: string, value: string | null): Command {
   const before = el.getAttribute(name);
   return {
@@ -319,12 +329,61 @@ export function setAttribute(el: HTMLElement, name: string, value: string | null
       detail: { attribute: name, value: value ?? '' },
     }),
     apply: () => {
-      if (value === null || value === '') el.removeAttribute(name);
+      if (value === null) el.removeAttribute(name);
       else el.setAttribute(name, value);
     },
     revert: () => {
       if (before === null) el.removeAttribute(name);
       else el.setAttribute(name, before);
+    },
+  };
+}
+
+/**
+ * Several attributes at once, as one entry on the undo stack.
+ *
+ * The counterpart to `setStyleProperties`, and added for the same reason: a user adding `role` and
+ * `aria-label` together made one decision, and looping the single setter would have charged them
+ * two undos for it. An empty value writes an empty attribute, as it does in `setAttribute`, which
+ * is what a boolean attribute is.
+ *
+ * One record *per attribute*, through `extraRecords`, rather than one record describing the batch.
+ * That is not bookkeeping neatness — the save path builds its file patch from `detail.attribute`,
+ * one patch per name, and a record that named only the first attribute would have written one of
+ * them to disk and silently dropped the rest. A record with no `detail.attribute` at all is worse
+ * still: the surgical patch refuses the whole document and the save falls back to rewriting it.
+ *
+ * No `mergeKey` and no `subject`: a batch is a deliberate act with a beginning and an end, so
+ * there is nothing for a later edit to coalesce into, and `subject` is documented as being for one
+ * thing changing repeatedly rather than many things changing at once.
+ */
+export function setAttributes(
+  el: HTMLElement,
+  values: Record<string, string>,
+  label = 'Set attributes',
+): Command {
+  const names = Object.keys(values);
+  const before = new Map(names.map((name) => [name, el.getAttribute(name)]));
+  const write = (name: string, value: string | null): void => {
+    if (value === null) el.removeAttribute(name);
+    else el.setAttribute(name, value);
+  };
+  const describe = (name: string): ChangeRecord =>
+    record(el, 'attribute', `Set ${name}="${values[name]}" on ${labelFor(el)}`, {
+      before: before.get(name) ?? undefined,
+      after: values[name] || undefined,
+      detail: { attribute: name, value: values[name] },
+    });
+
+  return {
+    label,
+    record: describe(names[0]),
+    extraRecords: names.slice(1).map(describe),
+    apply: () => {
+      for (const name of names) write(name, values[name]);
+    },
+    revert: () => {
+      for (const name of names) write(name, before.get(name) ?? null);
     },
   };
 }

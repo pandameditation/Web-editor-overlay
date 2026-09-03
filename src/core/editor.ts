@@ -82,6 +82,7 @@ import {
   retagElement,
   sameStructure,
   setAttribute,
+  setAttributes,
   setClassList,
   setInnerHTML,
   setStyleProperties,
@@ -1463,6 +1464,23 @@ export class EditorEngine {
   setAttribute(name: string, value: string | null, el = this.store.value.selected): void {
     if (!el) return;
     this.history.commit(setAttribute(el, name, value));
+    this.#bumpRevision();
+  }
+
+  /**
+   * Several attributes as one change.
+   *
+   * The attribute counterpart to `setStyles`. Refusals are the caller's job: this is the same
+   * unguarded primitive `setAttribute` is, and the props panel screens names and values through
+   * `attributeRefusal` before it gets here, exactly as the markup path screens through `sanitize`.
+   */
+  setAttributes(
+    values: Record<string, string>,
+    label?: string,
+    el = this.store.value.selected,
+  ): void {
+    if (!el || !Object.keys(values).length) return;
+    this.history.commit(setAttributes(el, values, label));
     this.#bumpRevision();
   }
 

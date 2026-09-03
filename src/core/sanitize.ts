@@ -13,7 +13,21 @@ import type { PropSpec } from './types.js';
 
 const SAFE_DATA_URL = /^data:image\/(?:gif|jpeg|jpg|png|webp|avif|svg\+xml)[;,]/i;
 const SAFE_PROTOCOL = /^(?:https?:|mailto:|tel:|blob:|file:)$/;
-const URL_ATTRS = new Set(['href', 'src', 'srcset', 'poster', 'action', 'formaction', 'xlink:href']);
+/**
+ * Attributes whose value is a URL, and therefore has to be vetted.
+ *
+ * Exported because the props panel now lets a user type an attribute name of their own, so the
+ * same list has to gate that door as gates pasted markup. One list, or the two doors drift.
+ */
+export const URL_ATTRIBUTES = new Set([
+  'href',
+  'src',
+  'srcset',
+  'poster',
+  'action',
+  'formaction',
+  'xlink:href',
+]);
 const MEDIA_TAGS = /^(?:img|source|video|audio|track|image)$/i;
 
 export function escapeHTML(value: unknown): string {
@@ -100,7 +114,7 @@ export function scrubElement(root: ParentNode): SanitizeReport {
         report.styles += 1;
         continue;
       }
-      if (URL_ATTRS.has(name)) {
+      if (URL_ATTRIBUTES.has(name)) {
         const allowData = MEDIA_TAGS.test(el.tagName);
         if (name === 'srcset') {
           const candidates = value.split(',').map((entry) => entry.trim()).filter(Boolean);

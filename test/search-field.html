@@ -41,6 +41,7 @@
     <section>
       <h2>Section</h2>
       <p class="card" id="para">Words about tokens.</p>
+      <a id="link" href="/somewhere">A link</a>
     </section>
   </main>
 
@@ -399,7 +400,209 @@
         results.styles.undoTakesBothBack;
 
       /* ------------------------------------------------------------------ *
-       * 4. Code: a finder with no create action, in the panel and expanded.
+       * 4. Props: the same field, over attributes, able to add any of them.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'props';
+      engine.select(document.getElementById('link'));
+      engine.setDockTab('props');
+      await frames();
+      await wait(120);
+      const propsPanel = deep('heo-props-panel');
+      const propsField = propsPanel.shadowRoot.querySelector('.id heo-search-field');
+      const propHeadings = () =>
+        Array.from(propsPanel.shadowRoot.querySelectorAll('heo-section')).map((s) => s.heading);
+      const propRows = () =>
+        Array.from(propsPanel.shadowRoot.querySelectorAll('.row .name .t')).map((n) =>
+          n.textContent.trim(),
+        );
+
+      results.props = {
+        // Same primitive, same place, same accessible name as the one in Styles.
+        isTheSharedField: propsField?.tagName.toLowerCase() === 'heo-search-field',
+        saysWhatItSearches: propsField?.getAttribute('label') === 'Search in element',
+        sectionsBefore: propHeadings().length,
+      };
+
+      // A tag-specific attribute, by name.
+      await typeInto(propsField, 'target', propsPanel);
+      results.props.narrows = propHeadings().length < results.props.sectionsBefore;
+      results.props.findsByName = propRows().some((n) => /target/i.test(n));
+
+      // By the friendly label the panel shows instead of the attribute name.
+      await typeInto(propsField, 'Link URL', propsPanel);
+      results.props.findsByLabel = propRows().length > 0;
+
+      // By what is written in it: the href is /somewhere and nothing is named that.
+      await typeInto(propsField, 'somewhere', propsPanel);
+      results.props.findsByValue = propRows().some((n) => /link url/i.test(n));
+
+      /* Out of rows: the completions, the same as in Styles. */
+      const propsNoMatch = () => propsPanel.shadowRoot.querySelector('.nomatch');
+      const propsOffered = () =>
+        Array.from(propsPanel.shadowRoot.querySelectorAll('.nomatch .offer .option')).map((b) =>
+          b.querySelector('.name').textContent.trim(),
+        );
+
+      // A real attribute this element has no row for.
+      await typeInto(propsField, 'aria-current', propsPanel);
+      results.props.emptyPanelExplainsItself = Boolean(propsNoMatch());
+      results.props.confirmsARealAttribute = Boolean(
+        propsPanel.shadowRoot.querySelector('.nomatch .verdict.yes'),
+      );
+
+      // A name the catalogue does not list. HTML has no CSS.supports, so this must NOT be
+      // called invalid — it is legal, and data-* is the name reserved for it.
+      await typeInto(propsField, 'wobble', propsPanel);
+      results.props.allowsNonStandardNames = Boolean(
+        propsPanel.shadowRoot.querySelector('.nomatch .verdict.no'),
+      );
+      results.props.stillOffersToAddIt = Array.from(
+        propsPanel.shadowRoot.querySelectorAll('.nomatch button'),
+      ).some((b) => /add wobble/i.test(b.textContent));
+
+      // An event handler is refused outright, before any dialog opens: the overlay writes into a
+      // live page and serialises it, so an onclick added here would run AND be saved.
+      await typeInto(propsField, 'onclick', propsPanel);
+      results.props.refusesEventHandlers = Boolean(
+        propsPanel.shadowRoot.querySelector('.nomatch .verdict.stop'),
+      );
+      results.props.offersNoWayToAddOne = !Array.from(
+        propsPanel.shadowRoot.querySelectorAll('.nomatch button'),
+      ).some((b) => /add onclick/i.test(b.textContent));
+
+      /*
+       * Near misses, and taking one seeds the popup.
+       *
+       * `aria-press` and not `aria-lab`: the panel already draws an aria-label row for every
+       * element, so that query has a match and the no-match block correctly never appears.
+       */
+      await typeInto(propsField, 'aria-press', propsPanel);
+      results.props.offersTheNearMiss = propsOffered().includes('aria-pressed');
+      Array.from(propsPanel.shadowRoot.querySelectorAll('.nomatch .offer .option'))
+        .find((b) => b.querySelector('.name').textContent.trim() === 'aria-pressed')
+        ?.click();
+      await propsPanel.updateComplete;
+      await frames();
+      results.props.takingOneSeedsTheAdder =
+        (propsPanel.draftRows ?? []).length === 1 &&
+        propsPanel.draftRows[0].name === 'aria-pressed';
+
+      /* The popup: several arbitrary attributes, one undo entry. */
+      const fillAttrRow = async (index, name, value) => {
+        const row = propsPanel.shadowRoot.querySelectorAll('.poprow')[index];
+        const nameInput = row.querySelector('heo-search-field').shadowRoot.querySelector('input');
+        nameInput.value = name;
+        nameInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        await propsPanel.updateComplete;
+        const valueInput = propsPanel.shadowRoot
+          .querySelectorAll('.poprow')[index]
+          .querySelector('heo-value-field')
+          .shadowRoot.querySelector('input');
+        valueInput.value = value;
+        valueInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        await propsPanel.updateComplete;
+        await frames();
+      };
+      const propsPopButton = (pattern) =>
+        Array.from(propsPanel.shadowRoot.querySelectorAll('.popfoot button')).find((b) =>
+          pattern.test(b.textContent),
+        );
+
+      propsPopButton(/another/i)?.click();
+      await propsPanel.updateComplete;
+      await frames();
+      propsPopButton(/another/i)?.click();
+      await propsPanel.updateComplete;
+      await frames();
+      results.props.takesMoreThanOneRow =
+        propsPanel.shadowRoot.querySelectorAll('.poprow').length === 3;
+
+      // One standard, one arbitrary, one boolean with no value at all.
+      await fillAttrRow(0, 'aria-label', 'Go somewhere');
+      await fillAttrRow(1, 'data-analytics-id', 'hero-cta');
+      await fillAttrRow(2, 'hidden', '');
+
+      const attrChangesBefore = engine.records.length;
+      const undoDepthBefore = engine.history.size;
+      propsPopButton(/add (\d+ )?attributes?/i)?.click();
+      await frames();
+      await wait(150);
+
+      const link = document.getElementById('link');
+      results.props.standardLanded = link.getAttribute('aria-label') === 'Go somewhere';
+      // The point of the whole feature: a name no table in the codebase knows about.
+      results.props.arbitraryLanded = link.getAttribute('data-analytics-id') === 'hero-cta';
+      /*
+       * A boolean attribute is written as the empty string, and that used to be impossible:
+       * setAttribute treated '' as removal, so every checkbox in this panel removed what it
+       * meant to add. null is how removal is asked for.
+       */
+      results.props.booleanLanded = link.hasAttribute('hidden');
+      // One decision, one step on the undo stack -- three trips through a one-shot form would
+      // have been three.
+      results.props.oneUndoEntry = engine.history.size === undoDepthBefore + 1;
+      /*
+       * ...but three entries in the change set, and that is not a contradiction.
+       *
+       * The save path builds its file patch per attribute, from `detail.attribute`. One record
+       * describing the batch would have written the first attribute to disk and silently dropped
+       * the other two, so the command reports one record each through `extraRecords`.
+       */
+      results.props.everyAttributeIsRecorded =
+        engine.records.length === attrChangesBefore + 3;
+      results.props.popupClosed = !propsPanel.shadowRoot.querySelector('.addpop');
+
+      engine.undo();
+      await frames();
+      results.props.undoTakesAllBack =
+        !link.hasAttribute('aria-label') &&
+        !link.hasAttribute('data-analytics-id') &&
+        !link.hasAttribute('hidden');
+
+      // A javascript: URL is refused on the way in, the same as it is in pasted markup.
+      const hrefBefore = link.getAttribute('href');
+      engine.select(link);
+      await typeInto(propsField, '', propsPanel);
+      await frames();
+      propsPanel.shadowRoot
+        .querySelector('.id heo-search-field')
+        .shadowRoot.querySelector('.go')
+        .click();
+      await propsPanel.updateComplete;
+      await frames();
+      await fillAttrRow(0, 'href', 'javascript:alert(1)');
+      propsPopButton(/add (\d+ )?attributes?/i)?.click();
+      await frames();
+      await wait(80);
+      results.props.refusesJavascriptUrls = link.getAttribute('href') === hrefBefore;
+
+      results.props.ok =
+        results.props.isTheSharedField &&
+        results.props.saysWhatItSearches &&
+        results.props.narrows &&
+        results.props.findsByName &&
+        results.props.findsByLabel &&
+        results.props.findsByValue &&
+        results.props.emptyPanelExplainsItself &&
+        results.props.confirmsARealAttribute &&
+        results.props.allowsNonStandardNames &&
+        results.props.stillOffersToAddIt &&
+        results.props.refusesEventHandlers &&
+        results.props.offersNoWayToAddOne &&
+        results.props.offersTheNearMiss &&
+        results.props.takingOneSeedsTheAdder &&
+        results.props.takesMoreThanOneRow &&
+        results.props.standardLanded &&
+        results.props.arbitraryLanded &&
+        results.props.booleanLanded &&
+        results.props.oneUndoEntry &&
+        results.props.everyAttributeIsRecorded &&
+        results.props.popupClosed &&
+        results.props.undoTakesAllBack &&
+        results.props.refusesJavascriptUrls;
+
+      /* ------------------------------------------------------------------ *
+       * 5. Code: a finder with no create action, in the panel and expanded.
        * ------------------------------------------------------------------ */
       progress.textContent = 'code';
       // The code view projects the selection, so the needle below is only in the buffer if the
