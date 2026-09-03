@@ -16,6 +16,7 @@ import {
   type SizeConstraint,
 } from '../../core/css.js';
 import { labelFor, selectableParent } from '../../core/dom.js';
+import { listen, unlisten } from '../../core/shield.js';
 import { resolvesOffsets } from '../../core/transform.js';
 import { normalizeClassName } from '../../core/classes.js';
 import type { DesignClass } from '../../core/types.js';
@@ -235,6 +236,63 @@ export class HeoStylesPanel extends HeoElement {
         gap: 6px;
         padding: 10px 12px;
         border-bottom: 1px solid var(--heo-line);
+      }
+
+      /*
+       * The add-a-declaration popup.
+       *
+       * In the top layer, because the dock clips its descendants and carries a backdrop filter, so
+       * anything painted normally is cut off by the panel it belongs to. A popup and not a modal:
+       * adding a declaration is done while reading the rows above it, and a modal would hide the
+       * very thing being compared against.
+       */
+      .addpop {
+        position: fixed;
+        margin: 0;
+        padding: 9px;
+        border: 1px solid var(--heo-line-strong);
+        border-radius: var(--heo-r-md);
+        background: var(--heo-bg);
+        box-shadow: var(--heo-shadow-lg);
+        display: grid;
+        gap: 8px;
+        z-index: 2147483000;
+      }
+      .addpop::backdrop {
+        background: transparent;
+      }
+      .pophead {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--heo-text-dim);
+        font-size: 11px;
+      }
+      .pophead > span {
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+      .poprows {
+        display: grid;
+        gap: 6px;
+        max-height: 40vh;
+        overflow-y: auto;
+      }
+      /* Property and value side by side: they are one declaration, not two settings. The value
+         gets the wider share, since it is the half that holds an expression. */
+      .poprow {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) auto;
+        gap: 5px;
+        align-items: center;
+      }
+      .popfoot {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .popfoot .spacer {
+        flex: 1 1 auto;
       }
       .top .spacer {
         flex: 1 1 auto;
@@ -623,10 +681,23 @@ export class HeoStylesPanel extends HeoElement {
   /** Name typed for the copy, empty while the suggested one will do. */
   @state() private forkDraft = '';
   @state() private classProperty = '';
-  @state() private newProperty = '';
+  /** What the panel is being filtered by. Empty shows every section. */
+  @state() private filter = '';
+  /** Whether the add-a-declaration popup is up. */
+  @state() private adderOpen = false;
+  /** Where it is placed, computed against the trigger when it opens. */
+  @state() private adderStyle = '';
+  /**
+   * The declarations being written, one row each.
+   *
+   * A list rather than a single pair, because setting one property is rarely the whole intention —
+   * a shadow is a colour and an offset, a grid is a template and a gap. The old form could only
+   * take one at a time, so three declarations meant three trips through the same box and three
+   * separate entries on the undo stack.
+   */
+  @state() private draftRows: Array<{ property: string; value: string }> = [];
   /** The element whose size cap has already auto-opened the parent section. */
   #capsShownFor: HTMLElement | null = null;
-  @state() private newValue = '';
   @state() private sectionsVersion = 0;
   /**
    * Which CSS rule groups are open, and the add-property draft inside each.
@@ -675,28 +746,55 @@ export class HeoStylesPanel extends HeoElement {
       }
     }
 
+    const filtering = Boolean(this.filter.trim());
+
     return html`
       <div class="top">
         <span class="chip">${icon('cursor', 11)} ${labelFor(el)}</span>
-        <span class="spacer"></span>
-        <button
-          class="btn sm"
-          type="button"
-          title="Turn this element's inline styles into a reusable class"
-          @click=${() => this.editor.beginClassExtraction(el)}
-        >
-          ${icon('droplet', 12)} Extract class
-        </button>
+        <!--
+          The filter sits on the first line, in the room Extract class used to take.
+
+          It is the most-wanted thing in a panel this long — there are more than a hundred
+          properties across a dozen sections — so it belongs where the eye already is rather than
+          buried among them. Extract class moved into Classes, which is where the rest of that
+          subject lives anyway.
+        -->
+        <heo-search-field
+          label="Find a property"
+          placeholder="Find a property…"
+          .value=${this.filter}
+          .count=${filtering ? this.#matchCount(computed, declared) : -1}
+          action=${this.#addLabel()}
+          action-icon="plus"
+          action-compact
+          @search-input=${(event: CustomEvent<{ value: string }>) => {
+        this.filter = event.detail.value;
+      }}
+          @search-submit=${() => this.#openAdder(this.filter.trim())}
+        ></heo-search-field>
       </div>
 
       ${this.#renderModified(el, computed, declared, origins, inline)}
-      ${this.#renderClasses(el)} ${this.#renderCssRules(el, rules, cascade)}
-      ${this.#renderSpacing(el, computed, declared, origins)}
+      ${filtering ? nothing : html`${this.#renderClasses(el)} ${this.#renderCssRules(el, rules, cascade)}`}
+      ${filtering ? nothing : this.#renderSpacing(el, computed, declared, origins)}
       ${SECTIONS.filter((section) => !section.when || section.when(computed)).map((section) =>
       this.#renderSection(section, el, computed, declared, origins),
     )}
-      ${this.#renderParent(el, computed, declared, origins)}
-      ${this.#renderAdder(el)}
+      ${filtering ? nothing : this.#renderParent(el, computed, declared, origins)}
+      ${filtering && this.#matchCount(computed, declared) === 0
+        ? html`<div class="empty">
+            Nothing matches “${this.filter.trim()}”.
+            <button
+              class="btn sm"
+              type="button"
+              style="margin-top:9px"
+              @click=${() => this.#openAdder(this.filter.trim())}
+            >
+              ${icon('plus', 12)} ${this.#addLabel()}
+            </button>
+          </div>`
+        : nothing}
+      ${this.adderOpen ? this.#renderAddPopup(el) : nothing}
     `;
   }
 
@@ -1131,6 +1229,17 @@ export class HeoStylesPanel extends HeoElement {
       @section-toggle=${(event: CustomEvent<{ open: boolean }>) =>
         this.#remember('classes', event.detail.open)}
     >
+      <!-- Moved off the panel's first line. Making a class out of what is set here is a thing
+           about classes, so it belongs with them. -->
+      <button
+        class="btn sm"
+        type="button"
+        style="margin-bottom:9px"
+        title="Turn this element's inline styles into a reusable class"
+        @click=${() => this.editor.beginClassExtraction(el)}
+      >
+        ${icon('droplet', 12)} Extract class
+      </button>
       ${classes.length
         ? html`<div class="chips">
             ${repeat(
@@ -1451,19 +1560,24 @@ export class HeoStylesPanel extends HeoElement {
     computed: CSSStyleDeclaration,
     declared: Map<string, string>,
     origins: Map<string, DeclarationOrigin>,
-  ): TemplateResult {
-    const setCount = section.properties.filter((property) => declared.has(property)).length;
+  ): TemplateResult | typeof nothing {
+    const properties = section.properties.filter((property) => this.#matches(property));
+    // Searched and nothing here matches: the section goes rather than standing open and empty.
+    if (!properties.length) return nothing;
+    const setCount = properties.filter((property) => declared.has(property)).length;
     return html`<heo-section
       heading=${section.heading}
       glyph=${section.glyph}
       badge=${setCount ? String(setCount) : ''}
-      ?open=${sectionOpen(section.id, section.id === 'layout' || section.id === 'typography')}
+      ?open=${this.filter.trim()
+        ? true
+        : sectionOpen(section.id, section.id === 'layout' || section.id === 'typography')}
       @section-toggle=${(event: CustomEvent<{ open: boolean }>) =>
         this.#remember(section.id, event.detail.open)}
     >
       ${section.note ? html`<p class="hint" style="margin:0 0 9px">${section.note}</p>` : nothing}
       <div class="rows">
-        ${section.properties.map((property) =>
+        ${properties.map((property) =>
           this.#renderRow(property, el, computed, declared, undefined, origins),
         )}
       </div>
@@ -1553,88 +1667,283 @@ export class HeoStylesPanel extends HeoElement {
 
   /* ---------------------------------------------------------------------- */
 
-  #renderAdder(el: HTMLElement): TemplateResult {
-    const matches = searchProperties(this.newProperty, 14).map((meta) => ({
-      value: meta.name,
-      hint: PROPERTY_GROUP_LABELS[meta.group],
-    }));
-    return html`<heo-section
-      heading="Add a declaration"
-      glyph="plus"
-      ?open=${sectionOpen('adder', false)}
-      @section-toggle=${(event: CustomEvent<{ open: boolean }>) =>
-        this.#remember('adder', event.detail.open)}
-    >
-      <div class="adder">
-        <!--
-          The shared field, in suggest mode.
+  /* ---------------------------------------------------------------------- */
+  /* Finding a property, and adding one                                     */
+  /* ---------------------------------------------------------------------- */
 
-          This was a bare input with a hand-rolled list under it and no keyboard support at all:
-          arrows did nothing, Enter did nothing, Escape did nothing, so the only way to take a
-          suggestion was to reach for the mouse. Nothing about that was specific to CSS properties,
-          which is why it is now the same control the rest of the editor searches with.
-        -->
-        <heo-search-field
-          mode="suggest"
-          label="CSS property"
-          placeholder="property, e.g. scroll-margin-top"
-          .value=${this.newProperty}
-          .suggestions=${matches}
-          @search-input=${(event: CustomEvent<{ value: string }>) => {
-        this.newProperty = event.detail.value;
-      }}
-          @search-pick=${() => this.#focusNewValue()}
-          @search-submit=${() => this.#commitNew(el)}
-        ></heo-search-field>
-
-        <heo-value-field
-          .value=${this.newValue}
-          .kind=${this.newProperty ? valueKindFor(this.newProperty) : 'text'}
-          .property=${this.newProperty}
-          .suggestions=${this.newProperty ? buildSuggestions(this.editor, this.newProperty, el) : []}
-          placeholder="value"
-          @value-change=${(event: CustomEvent<{ value: string }>) => {
-        this.newValue = event.detail.value;
-        this.#commitNew(el);
-      }}
-        ></heo-value-field>
-
-        <button
-          class="btn"
-          type="button"
-          ?disabled=${!this.newProperty.trim() || !this.newValue.trim()}
-          @click=${() => this.#commitNew(el)}
-        >
-          ${icon('plus', 12)} Add declaration
-        </button>
-      </div>
-    </heo-section>`;
+  /** Whether a property survives the filter. No filter means everything does. */
+  #matches(property: string): boolean {
+    const needle = this.filter.trim().toLowerCase();
+    return !needle || property.toLowerCase().includes(needle);
   }
 
   /**
-   * After a property is chosen, put the caret where the rest of the declaration goes.
+   * How many property rows the filter is showing, across every surface that draws them.
    *
-   * Choosing `scroll-margin-top` is never the goal; it is the first half of a sentence. The old
-   * picker left focus in the property box, so every declaration needed a deliberate reach for the
-   * value field.
+   * Counted rather than inferred so the number beside the field and the rows on screen cannot
+   * disagree — which is the whole reason the count lives here and not in the control.
    */
-  #focusNewValue(): void {
-    const field = this.renderRoot.querySelector<HeoValueField>('.adder heo-value-field');
-    field?.focusInput?.({ select: true });
+  #matchCount(computed: CSSStyleDeclaration, declared: Map<string, string>): number {
+    const inSections = SECTIONS.filter((section) => !section.when || section.when(computed))
+      .flatMap((section) => section.properties)
+      .filter((property) => this.#matches(property));
+    const own = [...declared.keys()].filter((property) => this.#matches(property));
+    return new Set([...inSections, ...own]).size;
   }
 
-  #commitNew(el: HTMLElement): void {
-    const property = this.newProperty.trim();
-    const value = this.newValue.trim();
-    if (!property || !value) return;
-    if (!CSS.supports(property, value) && !value.includes('var(--')) {
-      this.editor.notify(`The browser does not accept ${property}: ${value}.`, 'error');
+  /** What the add action would do, named after what has been typed. */
+  #addLabel(): string {
+    const seed = this.filter.trim();
+    return seed ? `Add ${seed}` : 'Add a declaration';
+  }
+
+  /**
+   * Open the popup, seeded with whatever was being looked for.
+   *
+   * Searching for a property and not finding it is the most common way somebody arrives at wanting
+   * to add one, so the query carries over rather than having to be typed a second time.
+   */
+  #openAdder(seed = ''): void {
+    this.draftRows = [{ property: seed, value: '' }];
+    /*
+     * Measured before it opens, not after.
+     *
+     * The anchor is already on screen — it is what was just clicked — while the popup is not, so
+     * there is nothing to wait for. Positioning it afterwards meant one frame painted at the
+     * element's static position, which for a panel pinned to the right edge put it across the page.
+     */
+    this.#positionAdder();
+    this.adderOpen = true;
+    void this.updateComplete.then(() => {
+      // Re-measured once it exists, since its height decides whether it flips above the field.
+      this.#positionAdder();
+      const popup = this.renderRoot.querySelector<HTMLElement>('.addpop');
+      if (popup && typeof popup.showPopover === 'function' && !popup.matches(':popover-open')) {
+        try {
+          popup.showPopover();
+        } catch {
+          /* already open, or popovers are unsupported: it still renders in place */
+        }
+      }
+    });
+  }
+
+  /*
+   * Dismissed by a press anywhere else, through `listen`.
+   *
+   * `listen` and not `addEventListener`, for the reason the other popovers document: the event
+   * shield suppresses `pointerdown` for the page, so a plain listener never hears the press that
+   * should close this.
+   */
+  #onOutsidePress = (event: Event): void => {
+    if (!this.adderOpen) return;
+    if (event.composedPath().some((node) => node instanceof HTMLElement && node.classList?.contains('addpop'))) {
       return;
     }
-    this.editor.setStyle(property, value, el);
-    this.newProperty = '';
-    this.newValue = '';
+    if (event.composedPath().includes(this.renderRoot.querySelector('.top') as EventTarget)) return;
+    this.#closeAdder();
+  };
+
+  /*
+   * Kept under its anchor when the world moves.
+   *
+   * A fixed popup is placed once against a rect that anything can invalidate: the panel scrolls
+   * under it, the dock is dragged, the window is resized. Without this it stays where it was and
+   * ends up pointing at nothing — and since it is clamped to the viewport, a narrower window is
+   * exactly the case where the first placement is furthest from where it belongs.
+   */
+  #onViewportChange = (): void => {
+    if (this.adderOpen) this.#positionAdder();
+  };
+
+  override connectedCallback(): void {
+    super.connectedCallback();
+    listen(document, 'pointerdown', this.#onOutsidePress, true);
+    listen(window, 'scroll', this.#onViewportChange, true);
+    listen(window, 'resize', this.#onViewportChange);
   }
+
+  override disconnectedCallback(): void {
+    super.disconnectedCallback();
+    unlisten(document, 'pointerdown', this.#onOutsidePress, true);
+    unlisten(window, 'scroll', this.#onViewportChange, true);
+    unlisten(window, 'resize', this.#onViewportChange);
+  }
+
+  #closeAdder(): void {
+    this.adderOpen = false;
+    this.draftRows = [];
+  }
+
+  /**
+   * Placed against the field that opened it, in the top layer.
+   *
+   * A popup rather than a modal, which is the point: adding a declaration is a small act done while
+   * reading the panel, and a modal would black out the very rows the user is comparing against. The
+   * top layer is needed all the same, because the dock clips its descendants and carries a backdrop
+   * filter, so anything painted normally is cut off by the panel it belongs to.
+   */
+  #positionAdder(): void {
+    const field =
+      this.renderRoot.querySelector('.top heo-search-field') ?? this.renderRoot.querySelector('.top');
+    const anchor = field?.getBoundingClientRect();
+    if (!anchor) return;
+    const width = Math.min(Math.max(anchor.width, 300), Math.max(300, innerWidth - 16));
+    // Absent on the first pass, which is the point of the estimate: the popup does not exist yet.
+    const height = this.renderRoot.querySelector('.addpop')?.getBoundingClientRect().height || 240;
+    const spaceBelow = innerHeight - anchor.bottom;
+    const above = spaceBelow < height + 12 && anchor.top > spaceBelow;
+    const top = above ? Math.max(8, anchor.top - height - 6) : anchor.bottom + 6;
+    const left = Math.min(Math.max(8, anchor.left), Math.max(8, innerWidth - width - 8));
+    this.adderStyle = `top:${Math.round(top)}px;left:${Math.round(left)}px;width:${Math.round(width)}px`;
+  }
+
+  /**
+   * The popup: a property and its value side by side, as many times as needed.
+   *
+   * Side by side because they are one declaration, and stacking them made a pair of unrelated
+   * boxes. Repeatable because the useful unit of work is a rule, not a property — and committing
+   * the rows together means one undo entry for a change the user made as one decision.
+   */
+  #renderAddPopup(el: HTMLElement): TemplateResult {
+    const ready = this.draftRows.filter((row) => row.property.trim() && row.value.trim()).length;
+
+    return html`<div
+      class="addpop"
+      popover="manual"
+      style=${this.adderStyle}
+      role="dialog"
+      aria-label="Add declarations"
+      @keydown=${(event: KeyboardEvent) => {
+        if (event.key !== 'Escape') return;
+        event.preventDefault();
+        // Not allowed to bubble: the global keymap reads Escape as "deselect", and closing a
+        // popup is not a request to change what is selected.
+        event.stopPropagation();
+        this.#closeAdder();
+      }}
+    >
+      <div class="pophead">
+        <span>Add declarations to <code class="mono">${labelFor(el)}</code></span>
+        <button
+          class="btn icon ghost sm"
+          type="button"
+          aria-label="Close"
+          @click=${() => this.#closeAdder()}
+        >
+          ${icon('close', 11)}
+        </button>
+      </div>
+
+      <div class="poprows">
+        ${this.draftRows.map((row, index) => this.#renderDraftRow(el, row, index))}
+      </div>
+
+      <div class="popfoot">
+        <button
+          class="btn sm"
+          type="button"
+          title="Add another declaration to this batch"
+          @click=${() => {
+        this.draftRows = [...this.draftRows, { property: '', value: '' }];
+      }}
+        >
+          ${icon('plus', 12)} Another
+        </button>
+        <span class="spacer"></span>
+        <button
+          class="btn sm primary"
+          type="button"
+          ?disabled=${ready === 0}
+          @click=${() => this.#commitRows(el)}
+        >
+          ${icon('check', 12)}
+          ${ready > 1 ? `Add ${ready} declarations` : 'Add declaration'}
+        </button>
+      </div>
+    </div>`;
+  }
+
+  #renderDraftRow(
+    el: HTMLElement,
+    row: { property: string; value: string },
+    index: number,
+  ): TemplateResult {
+    const matches = searchProperties(row.property, 14).map((meta) => ({
+      value: meta.name,
+      hint: PROPERTY_GROUP_LABELS[meta.group],
+    }));
+    const update = (next: Partial<{ property: string; value: string }>): void => {
+      this.draftRows = this.draftRows.map((entry, at) =>
+        at === index ? { ...entry, ...next } : entry,
+      );
+    };
+
+    return html`<div class="poprow">
+      <heo-search-field
+        mode="suggest"
+        label="CSS property"
+        placeholder="property"
+        .value=${row.property}
+        .suggestions=${matches}
+        @search-input=${(event: CustomEvent<{ value: string }>) =>
+        update({ property: event.detail.value })}
+      ></heo-search-field>
+      <heo-value-field
+        .value=${row.value}
+        .kind=${row.property ? valueKindFor(row.property) : 'text'}
+        .property=${row.property}
+        .suggestions=${row.property ? buildSuggestions(this.editor, row.property, el) : []}
+        placeholder="value"
+        @value-input=${(event: CustomEvent<{ value: string }>) =>
+        update({ value: event.detail.value })}
+        @value-change=${(event: CustomEvent<{ value: string }>) =>
+        update({ value: event.detail.value })}
+      ></heo-value-field>
+      <button
+        class="btn icon ghost sm"
+        type="button"
+        ?disabled=${this.draftRows.length < 2}
+        title="Remove this row"
+        aria-label="Remove this row"
+        @click=${() => {
+        this.draftRows = this.draftRows.filter((_entry, at) => at !== index);
+      }}
+      >
+        ${icon('close', 11)}
+      </button>
+    </div>`;
+  }
+
+  /**
+   * Write every complete row, as one change.
+   *
+   * Incomplete rows are ignored rather than refused: a half-typed fourth row is somebody having
+   * changed their mind, not an error to report. A value the browser rejects still is one, and it is
+   * named individually so the message says which row to fix.
+   */
+  #commitRows(el: HTMLElement): void {
+    const declarations: Record<string, string> = {};
+    for (const row of this.draftRows) {
+      const property = row.property.trim();
+      const value = row.value.trim();
+      if (!property || !value) continue;
+      if (!CSS.supports(property, value) && !value.includes('var(--')) {
+        this.editor.notify(`The browser does not accept ${property}: ${value}.`, 'error');
+        return;
+      }
+      declarations[property] = value;
+    }
+    const count = Object.keys(declarations).length;
+    if (!count) return;
+    this.editor.setStyles(
+      declarations,
+      count === 1 ? 'Add a declaration' : `Add ${count} declarations`,
+      el,
+    );
+    this.#closeAdder();
+  }
+
   #remember(id: string, open: boolean): void {
     userToggled.set(id, open);
     this.sectionsVersion += 1;

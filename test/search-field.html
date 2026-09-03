@@ -5,11 +5,29 @@
   <meta charset="utf-8">
   <title>The shared search field, and what each panel does with it</title>
   <style>
-    body { margin: 0; padding: 24px; font-family: system-ui, sans-serif; }
-    :root { --brand: #ff3355; --gap: 12px; --ink: #223344; }
-    h1 { font-size: 22px; }
-    section h2 { color: #445566; }
-    .card { padding: 8px; }
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: system-ui, sans-serif;
+    }
+
+    :root {
+      --brand: #ff3355;
+      --gap: 12px;
+      --ink: #223344;
+    }
+
+    h1 {
+      font-size: 22px;
+    }
+
+    section h2 {
+      color: #445566;
+    }
+
+    .card {
+      padding: 8px;
+    }
   </style>
 </head>
 
@@ -173,66 +191,157 @@
         results.tokens.saysWhenNothingMatches;
 
       /* ------------------------------------------------------------------ *
-       * 3. Styles: the property picker is now keyboard-driven.
+       * 3. Styles: filter on the first line, add through a popup.
        * ------------------------------------------------------------------ */
       progress.textContent = 'styles';
+      // Selected deliberately: the library block left `main` selected, and a panel that writes to
+      // whatever is selected needs the assertions to be about the same element.
+      engine.select(document.getElementById('para'));
       engine.setDockTab('styles');
       await frames();
       const stylePanel = deep('heo-styles-panel');
-      const adder = Array.from(stylePanel.shadowRoot.querySelectorAll('heo-section')).find((s) =>
-        (s.heading ?? '').includes('Add a declaration'),
-      );
-      adder.open = true;
-      await adder.updateComplete;
-      await frames();
-      const propField = stylePanel.shadowRoot.querySelector('.adder heo-search-field');
+      const filterField = stylePanel.shadowRoot.querySelector('.top heo-search-field');
+      const headingsOf = () =>
+        Array.from(stylePanel.shadowRoot.querySelectorAll('heo-section')).map((s) => s.heading);
 
-      // A prefix the property catalogue actually holds — `scroll-margin` is not in it, so it
-      // suggests nothing, correctly.
-      await typeInto(propField, 'padding', stylePanel);
-      const options = () => propField.shadowRoot.querySelectorAll('.option');
       results.styles = {
-        hasTheField: Boolean(propField),
-        suggestsProperties: options().length > 0,
-        // The gap this closed: the old hand-rolled list had no keyboard support at all.
-        arrowsHighlight: false,
-        enterTakesTheHighlighted: false,
+        filterIsOnTheFirstLine: Boolean(filterField),
+        // Freed up by moving Extract class into Classes, where the rest of that subject lives.
+        extractIsNoLongerOnTheFirstLine: !Array.from(
+          stylePanel.shadowRoot.querySelectorAll('.top button'),
+        ).some((b) => /extract/i.test(b.textContent)),
+        extractIsInTheClassesSection: (() => {
+          const classes = Array.from(stylePanel.shadowRoot.querySelectorAll('heo-section')).find(
+            (s) => s.heading === 'Classes',
+          );
+          return Boolean(
+            classes && Array.from(classes.querySelectorAll('button')).some((b) => /extract/i.test(b.textContent)),
+          );
+        })(),
+        sectionsBefore: headingsOf().length,
       };
-      await press(propField, 'ArrowDown');
-      results.styles.arrowsHighlight = Boolean(
-        propField.shadowRoot.querySelector('.option[aria-selected="true"]'),
-      );
-      const highlighted = propField.shadowRoot
-        .querySelector('.option[aria-selected="true"]')
-        ?.querySelector('.name')?.textContent?.trim();
-      await press(propField, 'Enter');
-      results.styles.enterTakesTheHighlighted =
-        propField.shadowRoot.querySelector('input').value === highlighted;
+
+      await typeInto(filterField, 'shadow', stylePanel);
+      results.styles.narrowsTheSections = headingsOf().length < results.styles.sectionsBefore;
+      results.styles.keepsTheMatchingOne = headingsOf().includes('Effects');
+
+      /* The add popup: seeded from the query, several rows, one change. */
+      filterField.shadowRoot.querySelector('.go').click();
+      await stylePanel.updateComplete;
+      await frames();
+      const popup = () => stylePanel.shadowRoot.querySelector('.addpop');
+      const popButton = (pattern) =>
+        Array.from(stylePanel.shadowRoot.querySelectorAll('.popfoot button')).find((b) =>
+          pattern.test(b.textContent),
+        );
+      results.styles.popupOpened = Boolean(popup());
+      results.styles.seededFromTheQuery =
+        popup()?.querySelector('heo-search-field')?.shadowRoot?.querySelector('input')?.value === 'shadow';
+
+      // A second row, so the batch is genuinely a batch.
+      popButton(/another/i)?.click();
+      await stylePanel.updateComplete;
+      await frames();
+      results.styles.takesMoreThanOneRow =
+        stylePanel.shadowRoot.querySelectorAll('.poprow').length === 2;
+
+      /*
+       * Filled through the real inputs rather than by assigning the panel's state.
+       *
+       * Writing `draftRows` directly looks simpler and is wrong: handing a value field a new
+       * `.value` makes it announce that value back, which overwrites the row that was just set.
+       * Typing is what the control is built for and what a user does.
+       */
+      const fillRow = async (index, property, value) => {
+        const row = stylePanel.shadowRoot.querySelectorAll('.poprow')[index];
+        const nameInput = row.querySelector('heo-search-field').shadowRoot.querySelector('input');
+        nameInput.value = property;
+        nameInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        await stylePanel.updateComplete;
+        const valueInput = stylePanel.shadowRoot
+          .querySelectorAll('.poprow')[index]
+          .querySelector('heo-value-field')
+          .shadowRoot.querySelector('input');
+        valueInput.value = value;
+        valueInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        await stylePanel.updateComplete;
+        await frames();
+      };
+      await fillRow(0, 'box-shadow', '0 1px 2px #0003');
+      await fillRow(1, 'opacity', '0.9');
+      // Both rows held on to what was typed, which is what makes the batch below meaningful.
+      results.styles.rowsTookWhatWasTyped =
+        (stylePanel.draftRows ?? []).map((r) => `${r.property}=${r.value}`).join('|') ===
+        'box-shadow=0 1px 2px #0003|opacity=0.9';
+      const changesBefore = engine.records.length;
+      // "Add 2 declarations" with two rows ready, "Add declaration" with one: the count is part of
+      // the label so the button says what it is about to do.
+      popButton(/add (\d+ )?declarations?/i)?.click();
+      await frames();
+      await wait(120);
+
+      const target = document.getElementById('para');
+      results.styles.bothLanded =
+        target.style.boxShadow !== '' && target.style.opacity === '0.9';
+      // One entry, because the user made one decision. Two trips through the old form meant two.
+      results.styles.oneUndoEntry = engine.records.length === changesBefore + 1;
+      results.styles.popupClosed = !popup();
+      engine.undo();
+      await frames();
+      results.styles.undoTakesBothBack =
+        target.style.opacity === '' && target.style.boxShadow === '';
+
       results.styles.ok =
-        results.styles.hasTheField &&
-        results.styles.suggestsProperties &&
-        results.styles.arrowsHighlight &&
-        results.styles.enterTakesTheHighlighted;
+        results.styles.filterIsOnTheFirstLine &&
+        results.styles.extractIsNoLongerOnTheFirstLine &&
+        results.styles.extractIsInTheClassesSection &&
+        results.styles.narrowsTheSections &&
+        results.styles.keepsTheMatchingOne &&
+        results.styles.popupOpened &&
+        results.styles.seededFromTheQuery &&
+        results.styles.takesMoreThanOneRow &&
+        results.styles.rowsTookWhatWasTyped &&
+        results.styles.bothLanded &&
+        results.styles.oneUndoEntry &&
+        results.styles.popupClosed &&
+        results.styles.undoTakesBothBack;
 
       /* ------------------------------------------------------------------ *
        * 4. Code: a finder with no create action, in the panel and expanded.
        * ------------------------------------------------------------------ */
       progress.textContent = 'code';
+      // The code view projects the selection, so the needle below is only in the buffer if the
+      // selection is the one this block was written against.
+      engine.select(document.querySelector('main'));
       engine.openCode('html');
       await frames();
       await wait(150);
       const codePanel = deep('heo-code-panel');
-      const codeField = codePanel.shadowRoot.querySelector('.find heo-search-field');
+      // The bar belongs to the editor now, not to the panel: that is what gives CSS and JS the
+      // same finder instead of leaving it to whichever panel happened to be built first.
       const editor = codePanel.shadowRoot.querySelector('heo-code-editor');
+      const codeField = editor.shadowRoot.querySelector('.findbar heo-search-field');
 
       results.code = {
         hasTheField: Boolean(codeField),
         // No plus here: there is nothing in a buffer to create.
         offersNoCreateAction: !codeField.shadowRoot.querySelector('.go'),
-        hasPrevNext: codePanel.shadowRoot.querySelectorAll('.find button').length === 2,
+        hasPrevNext: editor.shadowRoot.querySelectorAll('.findbar button').length === 2,
       };
 
-      await typeInto(codeField, 'section', codePanel);
+      await typeInto(codeField, 'section', editor);
+      await wait(120);
+      /*
+       * The bug this is here for: revealing used to focus the textarea, so every character typed
+       * moved focus out of the query box and the next one went into the document instead.
+       */
+      results.code.keepsFocusWhileTyping =
+        editor.shadowRoot.activeElement !== editor.shadowRoot.querySelector('textarea');
+      // And the matches are drawn where they can actually be seen, not left to a transparent
+      // textarea's selection.
+      results.code.marksEveryMatch = editor.shadowRoot.querySelectorAll('pre mark.hit').length;
+      results.code.picksOutTheCurrentOne =
+        editor.shadowRoot.querySelectorAll('pre mark.hit.on').length === 1;
       await wait(120);
       const area = editor.shadowRoot.querySelector('textarea');
       results.code.matchesFound = editor.matchOffsets('section').length;
@@ -251,6 +360,9 @@
         editor.matchOffsets('section').length === results.code.matchesFound;
 
       results.code.ok =
+        results.code.keepsFocusWhileTyping &&
+        results.code.marksEveryMatch > 1 &&
+        results.code.picksOutTheCurrentOne &&
         results.code.hasTheField &&
         results.code.offersNoCreateAction &&
         results.code.hasPrevNext &&
@@ -258,6 +370,23 @@
         results.code.selectedAMatch &&
         results.code.enterAdvances &&
         results.code.stillOnAMatch;
+
+      /* Every editor that fills its panel has it, which is what the Code panel alone did not give. */
+      progress.textContent = 'css and js';
+      for (const [tab, tag] of [['css', 'heo-css-panel'], ['js', 'heo-js-panel']]) {
+        engine.setDockTab('code');
+        engine.setCodeTab(tab);
+        await frames();
+        await wait(200);
+        const panel = deep(tag);
+        const ed = panel?.shadowRoot?.querySelector('heo-code-editor');
+        results[`${tab}Finder`] = {
+          panelFound: Boolean(panel),
+          hasTheFinder: Boolean(ed?.shadowRoot?.querySelector('.findbar heo-search-field')),
+        };
+        results[`${tab}Finder`].ok =
+          results[`${tab}Finder`].panelFound && results[`${tab}Finder`].hasTheFinder;
+      }
 
       /* The expanded view renders the same panel, so it gets the finder for free. */
       engine.openCodeWorkspace('html');
@@ -269,7 +398,9 @@
         workspaceOpen: Boolean(workspace),
         reusesThePanel: Boolean(expandedPanel),
         soItHasTheFinder: Boolean(
-          expandedPanel?.shadowRoot?.querySelector('.find heo-search-field'),
+          expandedPanel?.shadowRoot
+            ?.querySelector('heo-code-editor')
+            ?.shadowRoot?.querySelector('.findbar heo-search-field'),
         ),
       };
       results.expanded.ok =

@@ -3528,8 +3528,16 @@
         const fixed = Array.from(panelBody.children)
           .filter((child) => child.tagName.toLowerCase() !== 'heo-code-editor')
           .reduce((sum, child) => sum + child.getBoundingClientRect().height + 8, 0);
-        const status = editor.shadowRoot.querySelector('.status')?.getBoundingClientRect().height ?? 0;
-        const forBuffer = panelBody.getBoundingClientRect().height - 20 - fixed - status - 4;
+        /*
+         * Every fixed row the editor owns, not just the status line: the find bar is one too,
+         * and naming them one by one meant this check quietly shrank each time the editor grew
+         * a row. What is being asserted is that the shell takes whatever is left, so the room
+         * left is the frame minus its non-shell children.
+         */
+        const chrome = Array.from(editor.shadowRoot.querySelector('.frame').children)
+          .filter((child) => !child.classList.contains('shell'))
+          .reduce((sum, child) => sum + child.getBoundingClientRect().height, 0);
+        const forBuffer = panelBody.getBoundingClientRect().height - 20 - fixed - chrome - 4;
         const shell = editor.shadowRoot.querySelector('.shell').getBoundingClientRect().height;
         return shell / forBuffer > 0.9;
       });

@@ -5,6 +5,7 @@ import { enterModal, exitModal } from '../../core/modal.js';
 import { highlight, type CodeLanguage } from './highlight.js';
 import { icon } from '../icons.js';
 import { baseStyles } from '../theme.js';
+import './search-field.js';
 
 /**
  * A compact code editor.
@@ -213,6 +214,56 @@ export class HeoCodeEditor extends LitElement {
       }
       textarea::selection {
         background: var(--heo-accent-soft);
+      }
+
+      /*
+       * Floated over the buffer's top-right, not stacked above it.
+       *
+       * A row in the frame's column looked tidier and cost the buffer its height: the panel
+       * body is a column that deliberately does not scroll, so in a short dock a 36px bar left
+       * the buffer four pixels tall. Out of flow it costs nothing at any panel height, and it
+       * is where a find box already lives in the editors people use.
+       */
+      .findbar {
+        position: absolute;
+        z-index: 3;
+        top: 5px;
+        right: 5px;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        max-width: calc(100% - 10px);
+        padding: 3px;
+        border: 1px solid var(--heo-line-strong);
+        border-radius: var(--heo-r-sm);
+        /* Opaque: it sits on top of code, and a translucent one made both unreadable. */
+        background: var(--heo-bg);
+        box-shadow: var(--heo-shadow-md);
+      }
+      .findbar heo-search-field {
+        flex: 1 1 auto;
+        min-width: 0;
+        width: 172px;
+      }
+
+      /*
+       * Every match tinted, the current one filled.
+       *
+       * Two levels because one is not enough to step with: a single colour tells you where the
+       * matches are and never which one the arrows are on. The mark element brings its own browser
+       * styling, so colour and background are both set here rather than inherited.
+       */
+      mark.hit {
+        border-radius: 2px;
+        background: color-mix(in oklab, var(--heo-warn) 30%, transparent);
+        color: inherit;
+        /* The layer is only a backdrop; the textarea above it takes every pointer event. */
+        pointer-events: none;
+      }
+      mark.hit.on {
+        background: var(--heo-warn);
+        color: oklch(22% 0.02 265);
+        box-shadow: 0 0 0 1px var(--heo-warn);
       }
 
       /* Token colours. Tuned for the dark chrome, with light-mode overrides. */
@@ -499,6 +550,10 @@ export class HeoCodeEditor extends LitElement {
   @state() private projection = '';
   @state() private expanded = false;
 
+  /** What is being looked for in this buffer, and which match is current. */
+  @state() private find = '';
+  @state() private findAt = 0;
+
   @query('textarea') private area!: HTMLTextAreaElement;
   @query('pre') private pre!: HTMLPreElement;
   @query('.gutter') private gutter!: HTMLElement;
@@ -608,14 +663,22 @@ export class HeoCodeEditor extends LitElement {
    * own selection is the one thing guaranteed to be visible, themable and already understood. It
    * also leaves the caret on the match, so typing replaces it.
    */
-  revealMatch(query: string, index: number): number {
+  revealMatch(query: string, index: number, options: { focus?: boolean } = {}): number {
     const hits = this.matchOffsets(query);
     const area = this.area;
     if (!hits.length || !area) return -1;
 
     const wrapped = ((index % hits.length) + hits.length) % hits.length;
     const start = hits[wrapped];
-    area.focus();
+    /*
+     * Focus is not taken unless it is asked for, and by default it is not.
+     *
+     * Focusing here is what made the find box unusable: revealing runs on every keystroke, so each
+     * character moved focus into the textarea and the next one went into the buffer instead of the
+     * query. The caret belongs wherever the user put it; a find box that types into the document
+     * it is searching is worse than no find box.
+     */
+    if (options.focus) area.focus();
     area.setSelectionRange(start, start + query.trim().length);
 
     /*
@@ -722,9 +785,75 @@ export class HeoCodeEditor extends LitElement {
     `;
   }
 
+  /**
+   * Find in this buffer. Offered on the editors that fill their panel, not on every small field.
+   *
+   * Here rather than in each panel, which is the point: the editor owns the buffer, the projection,
+   * the scrolling and the layer the matches are drawn on. Built in the Code panel first, it worked
+   * only there — CSS and JS have exactly the same need and got nothing, and the expanded view only
+   * inherited it by the accident of rendering the same panel. One bar in the control covers every
+   * consumer, in both the inline and the expanded shapes.
+   *
+   * No create action: there is nothing in a buffer to create. Enter steps forward the way every
+   * find box does, and the arrows make that discoverable without knowing it.
+   */
+  #renderFind(): TemplateResult | typeof nothing {
+    if (!this.fill) return nothing;
+    const total = this.matchOffsets(this.find).length;
+    const stepping = Boolean(this.find.trim()) && total > 0;
+
+    return html`<div class="findbar">
+      <heo-search-field
+        label=${`Find in the ${this.language.toUpperCase()}`}
+        placeholder=${`Find in the ${this.language.toUpperCase()}…`}
+        .value=${this.find}
+        .count=${total}
+        @search-input=${(event: CustomEvent<{ value: string }>) => this.#onFind(event.detail.value)}
+        @search-submit=${() => this.#step(1)}
+      ></heo-search-field>
+      <button
+        class="btn icon ghost sm"
+        type="button"
+        ?disabled=${!stepping}
+        title="Previous match"
+        aria-label="Previous match"
+        @click=${() => this.#step(-1)}
+      >
+        ${icon('chevronUp', 12)}
+      </button>
+      <button
+        class="btn icon ghost sm"
+        type="button"
+        ?disabled=${!stepping}
+        title="Next match"
+        aria-label="Next match"
+        @click=${() => this.#step(1)}
+      >
+        ${icon('chevronDown', 12)}
+      </button>
+    </div>`;
+  }
+
+  /** A new query starts from the top, and shows its first match while it is being typed. */
+  #onFind(next: string): void {
+    this.find = next;
+    this.findAt = 0;
+    if (!next.trim()) return;
+    // After the render that knows the new query, so the offsets are measured against it.
+    void this.updateComplete.then(() => {
+      this.findAt = this.revealMatch(next, 0);
+    });
+  }
+
+  #step(delta: number): void {
+    if (!this.find.trim()) return;
+    this.findAt = this.revealMatch(this.find, this.findAt + delta);
+  }
+
   #renderShell(height: string): TemplateResult {
     return html`
       <div class="shell" style=${this.fill ? nothing : `height:${height}`}>
+        ${this.#renderFind()}
         <div class="gutter">${this.#renderGutter()}</div>
         <div class="area">
           <pre aria-hidden="true"><code>${unsafeHTML(this.#highlighted())}</code></pre>
@@ -757,10 +886,20 @@ export class HeoCodeEditor extends LitElement {
    */
   #highlighted(): string {
     const marked = new RegExp(`^(\\s*)(${FOLD_MARK} \\d+ lines? ${FOLD_MARK})$`, 'gm');
-    return highlight(`${this.projection}\n`, this.language).replace(
+    const painted = highlight(`${this.projection}\n`, this.language).replace(
       marked,
       (_full, indent: string, pill: string) => `${indent}<span class="t-fold">${pill}</span>`,
     );
+    /*
+     * Matches are drawn here rather than left to the textarea's own selection.
+     *
+     * The textarea is transparent — every colour on screen comes from this layer behind it — so a
+     * selection is a faint tint under invisible text, and only while the textarea has focus. Since
+     * finding must not take focus, relying on it would mean marking nothing at all. Drawing the
+     * matches into the layer that is actually visible shows all of them at once and lets the
+     * current one be picked out from the rest, which is what makes stepping through legible.
+     */
+    return markMatches(painted, this.find.trim(), this.findAt);
   }
 
   /**
@@ -1381,4 +1520,56 @@ declare global {
   interface HTMLElementTagNameMap {
     'heo-code-editor': HeoCodeEditor;
   }
+}
+
+/**
+ * Wrap every occurrence of `needle` in already-highlighted HTML, leaving the markup alone.
+ *
+ * The highlighting has to happen first — it is context-sensitive, so splitting the source around
+ * matches and tokenising the pieces would mis-colour anything straddling a boundary. That means
+ * marking has to be done on the output, which is HTML, so the walk tracks whether it is inside a
+ * tag and only ever touches text.
+ *
+ * Two known limits, both benign. A match split across a syntax span is not marked, because half of
+ * it is on either side of a tag. And a needle containing a character the highlighter escapes — a
+ * bare `<` or `&` — will not be found here even though the buffer contains it, since the text at
+ * this point says `&lt;`. Both are cases where the mark is missing, never wrong or misplaced.
+ */
+function markMatches(html: string, needle: string, current: number): string {
+  const wanted = needle.toLowerCase();
+  if (!wanted) return html;
+
+  let out = '';
+  let cursor = 0;
+  let hit = 0;
+
+  while (cursor < html.length) {
+    const lt = html.indexOf('<', cursor);
+    const text = lt === -1 ? html.slice(cursor) : html.slice(cursor, lt);
+
+    let at = 0;
+    const lower = text.toLowerCase();
+    for (; ;) {
+      const found = lower.indexOf(wanted, at);
+      if (found === -1) break;
+      out += text.slice(at, found);
+      out += `<mark class="hit${hit === current ? ' on' : ''}">`;
+      out += text.slice(found, found + needle.length);
+      out += '</mark>';
+      at = found + needle.length;
+      hit += 1;
+    }
+    out += text.slice(at);
+
+    if (lt === -1) break;
+    const gt = html.indexOf('>', lt);
+    if (gt === -1) {
+      out += html.slice(lt);
+      break;
+    }
+    out += html.slice(lt, gt + 1);
+    cursor = gt + 1;
+  }
+
+  return out;
 }
