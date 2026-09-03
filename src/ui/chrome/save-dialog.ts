@@ -313,6 +313,55 @@ export class HeoSaveDialog extends HeoElement {
       .plan.refreshing {
         opacity: 0.45;
       }
+      /* The heading keeps its line and the action sits at the far edge of it, so a destructive
+         button is nowhere near the checkbox it is the opposite of. */
+      .pickhead {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .pickhead > .btn {
+        flex: 0 0 auto;
+      }
+      /* The current state, above the controls that change it. Dimmer than the choices on
+         purpose: it is what is, not what to do. */
+      .persist {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        margin: 0 0 9px;
+        padding: 7px 9px;
+        border: 1px solid var(--heo-border);
+        border-radius: var(--heo-radius-sm, 5px);
+        background: var(--heo-surface-sunken, rgba(0, 0, 0, 0.14));
+        font-size: 10.5px;
+        line-height: 1.5;
+      }
+      .persist .row {
+        display: flex;
+        align-items: baseline;
+        gap: 4px;
+        color: var(--heo-text-faint);
+      }
+      .persist .what {
+        min-width: 62px;
+        color: var(--heo-text-dim, var(--heo-text));
+      }
+      .persist .row.unfiled .sep,
+      .persist .row.removing .sep {
+        color: var(--heo-warn, #f59e0b);
+      }
+      .persist .hintrow {
+        margin-top: 3px;
+        display: block;
+      }
+      .lead.warn {
+        display: flex;
+        align-items: flex-start;
+        gap: 5px;
+        color: var(--heo-warn, #f59e0b);
+      }
       .pick h3 {
         margin: 0 0 3px;
         color: var(--heo-text);
@@ -703,6 +752,8 @@ export class HeoSaveDialog extends HeoElement {
         s.designSystemScope,
         // And whether the block library goes with it, offered beside it in both.
         s.saveBlockLibrary,
+        // And whether it is being taken out, which is a different answer to a different question.
+        s.removeBlockLibrary,
       ] as const,
     shallowArrayEquals,
   );
@@ -1016,22 +1067,37 @@ export class HeoSaveDialog extends HeoElement {
    */
   #renderBlockLibrary(): TemplateResult | typeof nothing {
     const count = this.editor.blockLibrarySize();
-    if (!count) return nothing;
+    const carrying = this.editor.blockLibraryInPage();
+    // Nothing to write and nothing already there to take out, so there is no question to ask.
+    if (!count && !carrying) return nothing;
     const on = this.state.value.saveBlockLibrary;
+    const removing = this.state.value.removeBlockLibrary;
 
     return html`<section class="pick">
-      <h3 id="heo-blocks">Block library</h3>
+      <div class="pickhead">
+        <h3 id="heo-blocks">Block library</h3>
+        ${this.#renderLibraryRemoval(carrying, removing)}
+      </div>
       <p class="lead">
         The page carries the components you placed. It does not carry the templates they came
         from, so on the next load there is no way to make another one.
       </p>
-      <div class="choices" role="group" aria-labelledby="heo-blocks">
+      ${removing
+        ? html`<p class="lead warn">
+            ${icon('alert', 11)} The next save takes the library out of this page: the
+            <code class="mono">&lt;script type="application/heo-seed"&gt;</code> goes, and so does
+            every <code class="mono">data-heo-block</code> linking an element to a template. Undo
+            brings both back.
+          </p>`
+        : nothing}
+      ${count
+        ? html`<div class="choices" role="group" aria-labelledby="heo-blocks">
         <label class=${`choice${on ? ' on' : ''}`}>
           <input
             type="checkbox"
             .checked=${on}
             @change=${(event: Event) =>
-        this.editor.setSaveBlockLibrary((event.target as HTMLInputElement).checked)}
+            this.editor.setSaveBlockLibrary((event.target as HTMLInputElement).checked)}
           />
           <span class="text">
             <span class="name">Write the library into the page</span>
@@ -1045,8 +1111,101 @@ export class HeoSaveDialog extends HeoElement {
             </span>
           </span>
         </label>
-      </div>
+      </div>`
+        : nothing}
     </section>`;
+  }
+
+  /**
+   * The way to stop the page carrying a library at all.
+   *
+   * On the section's own header rather than as a fourth choice, because it is not an answer to
+   * "does the library travel this time" — it is an instruction about what is already in the file.
+   * Unticking the box and removing the library read as the same thing and are not: one leaves the
+   * seed exactly where it is, which is what makes an unticked save safe.
+   *
+   * Absent when the page carries nothing, so the action never offers to remove what is not there.
+   */
+  #renderLibraryRemoval(carrying: boolean, removing: boolean): TemplateResult | typeof nothing {
+    if (!carrying) return nothing;
+    if (removing) {
+      return html`<button
+        class="btn sm"
+        type="button"
+        title="Keep the library in the page after all"
+        @click=${() => this.editor.undo()}
+      >
+        ${icon('undo', 11)} Keep it
+      </button>`;
+    }
+    return html`<button
+      class="btn sm danger"
+      type="button"
+      title="Take the seed script and every instance link out of this page on the next save"
+      @click=${() =>
+        this.editor.askToConfirm({
+          title: 'Remove the block library from this page?',
+          message:
+            'The seed script goes, and so does every data-heo-block attribute tying an element to a template.',
+          detail:
+            'The elements themselves are untouched — they keep their markup and stop being components. The library stays in this session, so you can write it back by ticking the box again.',
+          confirmLabel: 'Remove it',
+          tone: 'danger',
+          reversible: true,
+          run: () => {
+            this.editor.removeBlockLibraryFromPage();
+          },
+        })}
+    >
+      ${icon('trash', 11)} Remove block library
+    </button>`;
+  }
+
+  /**
+   * What is kept where, said plainly, before the controls that change it.
+   *
+   * "Is my design system persisted?" had no answer anywhere in this dialog. There were three
+   * controls that decide it — the destination select, the extent radios and the library tick — and
+   * between them they describe the *next* save, never the current state. So the seed read as the
+   * only way to keep a design system, when for tokens, classes and rules it is the manual
+   * fallback and a file is the normal answer.
+   *
+   * One row per part, each naming its destination. Parts with nothing in them are still listed:
+   * "no rules yet" and "rules kept nowhere" are opposite facts and a missing row would read as
+   * either.
+   */
+  #renderPersistence(): TemplateResult {
+    const parts = this.editor.designSystemPersistence();
+    const NOTE: Record<string, string> = {
+      filed: 'kept in',
+      unfiled: 'not kept anywhere —',
+      empty: 'nothing yet',
+      removing: 'being removed from',
+    };
+
+    return html`<div class="persist">
+      ${parts.map((entry) => {
+      const label = `${entry.count} ${entry.part === 'classes' && entry.count === 1
+        ? 'class'
+        : entry.part === 'library'
+          ? `block${entry.count === 1 ? '' : 's'}`
+          : entry.part.replace(/s$/, '') + (entry.count === 1 ? '' : 's')
+        }`;
+      return html`<span class=${`row ${entry.state}`}>
+          <span class="what">${label}</span>
+          <span class="sep">${NOTE[entry.state]}</span>
+          ${entry.state === 'empty'
+          ? nothing
+          : html`<code class="mono">${entry.where}</code>`}
+        </span>`;
+    })}
+      ${parts.some((entry) => entry.state === 'unfiled')
+        ? html`<span class="row hintrow">
+            Anything not kept in a file lives in this session only. Connect a folder to write it,
+            or take the design system with you as a seed.
+          </span>`
+        : nothing}
+    </div>`;
   }
 
   #renderDesignSystemScope(): TemplateResult | typeof nothing {
@@ -1077,6 +1236,7 @@ export class HeoSaveDialog extends HeoElement {
         The tokens, classes and rules this session owns, imported or authored. A page usually
         speaks a fraction of an imported system.
       </p>
+      ${this.#renderPersistence()}
       <div class="choices" role="radiogroup" aria-labelledby="heo-ds-scope">
         ${options.map(
       (option) => html`<label class=${`choice${chosen === option.value ? ' on' : ''}`}>

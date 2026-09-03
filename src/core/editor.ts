@@ -80,6 +80,7 @@ import {
   removeElement,
   replaceElement,
   retagElement,
+  sameStructure,
   setAttribute,
   setClassList,
   setInnerHTML,
@@ -364,6 +365,21 @@ export interface ConfirmRequest {
  * reorder. A resize is none of those things — the element stays solid and where it is, and what
  * the user needs to see is the number they are producing.
  */
+/**
+ * Where one part of the design system is kept, for the save dialog's status.
+ *
+ * `state` is deliberately four values rather than a boolean. "Nothing to keep" and "kept nowhere"
+ * look the same in a checkbox and mean opposite things to the person reading it: one is fine and
+ * the other is work about to be lost.
+ */
+export interface DesignSystemPart {
+  part: 'tokens' | 'classes' | 'rules' | 'library';
+  count: number;
+  /** A project-relative path, a stylesheet label, or `'this page'`. */
+  where: string;
+  state: 'filed' | 'unfiled' | 'empty' | 'removing';
+}
+
 export interface TransformState {
   element: HTMLElement;
   mode: TransformMode;
@@ -463,6 +479,15 @@ export interface EditorState {
    * addition to a file they own and not something to do on their behalf.
    */
   saveBlockLibrary: boolean;
+  /**
+   * Take the library out of the page on the next save, rather than leaving or updating it.
+   *
+   * The third state the tick cannot hold. Unticking says "do not update it this time", which has
+   * to leave a library already in the file alone — otherwise every save with the box clear would
+   * quietly delete work. So getting rid of it is a separate, deliberate act, and this is how it
+   * is remembered between asking for it and the save that carries it out.
+   */
+  removeBlockLibrary: boolean;
   extraction: Extraction | null;
   /** A destructive action waiting to be confirmed. */
   confirm: ConfirmRequest | null;
@@ -706,6 +731,7 @@ export class EditorEngine {
       // Unlike the design system's extent, off: this one adds a tag to the markup rather than
       // deciding how much CSS an existing block carries.
       saveBlockLibrary: false,
+      removeBlockLibrary: false,
       extraction: null,
       confirm: null,
       transform: null,
@@ -2151,7 +2177,7 @@ export class EditorEngine {
        * each one stood for. Where they disagree, `blockDrift` reports the element as differing
        * from its template, which is true and is the user's to resolve.
        */
-      if (pending.element?.isConnected) this.#linkInstance(pending.element, block);
+      if (pending.element?.isConnected) this.#linkCaptured(pending.element, block);
 
       // Counted rather than checked for drift: an instance count is a selector, while drift is
       // a markup comparison per element, and this runs on the way out of a dialog.
@@ -2175,6 +2201,29 @@ export class EditorEngine {
       this.updateExtraction({ error: error instanceof Error ? error.message : String(error) });
       return false;
     }
+  }
+
+  /**
+   * Link the element a block was captured from, as a change rather than a side effect.
+   *
+   * The link has to be *recorded*, not merely set, and that is the difference between the
+   * component surviving a save and quietly not. An element captured from the page is already in
+   * the file, so the patch path copies its bytes across verbatim — it only serializes children
+   * the file has never seen. Setting `data-heo-block` on the live node produced no record, so
+   * there was nothing for the patcher to place, and the attribute never reached the file. The
+   * library came back on the next load with nothing in the page claiming to be an instance of
+   * it, and the only way to get the link written was to sync the block by hand, because a sync
+   * replaces the element and *that* makes it new markup.
+   *
+   * Skipped for an element the user just inserted: it is not in the file yet, so its container's
+   * rebuild serializes it whole and carries the attribute with it.
+   */
+  #linkCaptured(el: HTMLElement, block: LibraryBlock): void {
+    const fresh = el.closest(`[${INSERTED_ATTR}]`);
+    if (!fresh && el.getAttribute(BLOCK_ATTR) !== block.id) {
+      this.history.commit(setAttribute(el, BLOCK_ATTR, block.id));
+    }
+    this.#linkInstance(el, block);
   }
 
   /** Props a block already declares, so editing one keeps its descriptions. */
@@ -2341,9 +2390,109 @@ export class EditorEngine {
 
   setSaveBlockLibrary(save: boolean): void {
     if (this.store.value.saveBlockLibrary === save) return;
-    this.store.patch({ saveBlockLibrary: save });
+    // Ticking it back on cancels a pending removal: the two are opposite answers to one question,
+    // and leaving both set would write the library and then delete it.
+    this.store.patch({ saveBlockLibrary: save, removeBlockLibrary: save ? false : this.store.value.removeBlockLibrary });
     // Both routes describe what they will write before writing it, so both descriptions are now
     // out of date.
+    this.#replanSave();
+  }
+
+  /**
+   * Whether a save should take the library out of the page.
+   *
+   * Asked for outright, or implied. The implied case is deleting the last custom block with the
+   * box still ticked: there is nothing left to write, so the seed would have been left exactly as
+   * the previous save wrote it — the library gone from the session and still in the markup, which
+   * is the one outcome nobody chose.
+   */
+  #removingLibrary(): boolean {
+    if (this.store.value.removeBlockLibrary) return true;
+    return (
+      this.store.value.saveBlockLibrary &&
+      this.blockLibrarySize() === 0 &&
+      this.blockLibraryInPage()
+    );
+  }
+
+  /** Whether the page is carrying a library that could be taken out of it. */
+  blockLibraryInPage(): boolean {
+    return (
+      Boolean(document.querySelector(SEED_SCRIPT_SELECTOR)) ||
+      Boolean(document.querySelector(`[${BLOCK_ATTR}]`))
+    );
+  }
+
+  /**
+   * Take the block library out of the page, as a change like any other.
+   *
+   * Distinct from unticking, and the distinction is the whole reason this exists. Unticking means
+   * "do not update it this time", which must leave a library already in the file where it is —
+   * otherwise a save with the box clear would silently delete it. Getting rid of it is a separate
+   * intention and it needs a separate action.
+   *
+   * Both halves go, because either on its own is worse than neither. A seed with no links is a
+   * library nothing in the page claims to use; links with no seed name a template that is not
+   * there. So the instance attributes are removed here as real recorded changes — which is what
+   * lets the patch path write them into the file, and what makes the whole thing undoable — and
+   * the flag tells the save to delete the seed region as well.
+   */
+  removeBlockLibraryFromPage(): number {
+    const links = Array.from(document.querySelectorAll(`[${BLOCK_ATTR}]`)).filter(
+      (node): node is HTMLElement => node instanceof HTMLElement && !node.closest(`[${IGNORE_ATTR}]`),
+    );
+    const seeds = Array.from(document.querySelectorAll(SEED_SCRIPT_SELECTOR));
+    if (!links.length && !seeds.length) {
+      this.notify('This page is not carrying a block library.', 'info');
+      return 0;
+    }
+
+    const commands = links.map((el) => setAttribute(el, BLOCK_ATTR, null));
+    /*
+     * The seed tag is put back by `revert` rather than recorded as a deletion.
+     *
+     * A `<script>` in `<head>` is not an element the structural patcher should be asked to place,
+     * and it does not need to be: the file's copy is removed by the marker-region delete, and the
+     * live node only has to stop being serialized. Restoring it on undo keeps the page and the
+     * file agreeing about what the next save would write.
+     */
+    const parents = seeds.map((tag) => ({ tag, parent: tag.parentNode, next: tag.nextSibling }));
+
+    this.history.commit({
+      label: 'Remove the block library from the page',
+      record: {
+        id: nextChangeId(),
+        kind: 'block',
+        summary: `Remove the block library from the page${links.length ? ` and its ${links.length} instance link${links.length === 1 ? '' : 's'}` : ''}`,
+        target: 'block library',
+        detail: { block: 'library' },
+        at: Date.now(),
+      },
+      extraRecords: commands.map((command) => command.record),
+      apply: () => {
+        for (const command of commands) command.apply();
+        for (const { tag } of parents) tag.remove();
+        this.store.patch({ removeBlockLibrary: true, saveBlockLibrary: false });
+      },
+      revert: () => {
+        for (const { tag, parent, next } of parents) parent?.insertBefore(tag, next);
+        for (const command of [...commands].reverse()) command.revert();
+        this.store.patch({ removeBlockLibrary: false });
+      },
+    });
+
+    this.#bumpRevision();
+    this.#replanSave();
+    this.notify(
+      `The block library will be removed from the page on the next save.`,
+      'info',
+      { label: 'Undo', run: () => this.undo() },
+    );
+    return links.length;
+  }
+
+  /** Rebuild whichever save description is currently on screen. */
+  #replanSave(): void {
     if (this.store.value.writePlan) void this.previewWritePlan();
     if (this.store.value.bundlePlan) void this.previewBundle();
   }
@@ -3052,7 +3201,7 @@ export class EditorEngine {
     // Nothing to compare against. Reported as "nothing to do" rather than as stale, because
     // the alternative is offering an update that would replace the element with nothing.
     if (!merged) return false;
-    return cleanMarkup(el) !== cleanMarkup(merged);
+    return !sameStructure(cleanMarkup(el), cleanMarkup(merged));
   }
 
   /**
@@ -4896,6 +5045,62 @@ export class EditorEngine {
     return designSystemParts(this, this.store.value.designSystemScope);
   }
 
+  /**
+   * Where each part of the design system is kept, part by part.
+   *
+   * The status the save dialog was missing. "Is my design system persisted, and where" is not a
+   * question the dialog could answer: it offered a destination `<select>` and an extent choice and
+   * a library tick, three controls describing one thing, and nothing said what the current answer
+   * was. So the seed looked like the only way to keep a design system, when for three of its four
+   * parts it is the manual fallback.
+   *
+   * Facts only — counts, a destination and whether that destination is a file a save can write.
+   * The sentences belong to the dialog, which is where the reader is.
+   *
+   * Read from the same getters the save uses, so this cannot describe a destination the save
+   * would not use. That consistency is the point of putting it here rather than in the UI.
+   */
+  designSystemPersistence(): DesignSystemPart[] {
+    const extent = this.designSystemExtent(this.store.value.designSystemScope);
+    const target = this.designSystemTarget;
+    const inDocument = target === DOCUMENT_TARGET;
+    const connected = Boolean(this.store.value.project);
+    const label = this.styleTargets().find((entry) => entry.value === target)?.label ?? target;
+
+    /*
+     * The document is a file too, and forgetting that is what made the old UI read as though
+     * "Keep in the page" meant "not saved". It is saved — by the write that saves the page.
+     */
+    const cssWhere = inDocument ? 'this page' : label;
+    const cssFiled = inDocument || connected;
+    const css = (count: number): DesignSystemPart['state'] =>
+      count === 0 ? 'empty' : cssFiled ? 'filed' : 'unfiled';
+
+    const carrying = this.blockLibraryInPage();
+    const blocks = this.blockLibrarySize();
+    const willWrite = this.store.value.saveBlockLibrary && !this.#removingLibrary();
+
+    return [
+      { part: 'tokens', count: extent.tokens, where: cssWhere, state: css(extent.tokens) },
+      { part: 'classes', count: extent.classes, where: cssWhere, state: css(extent.classes) },
+      { part: 'rules', count: extent.rules, where: cssWhere, state: css(extent.rules) },
+      {
+        part: 'library',
+        count: blocks,
+        // Its only possible home, so there is no destination to name — only whether it has one.
+        where: 'this page',
+        state:
+          blocks === 0 && !carrying
+            ? 'empty'
+            : this.#removingLibrary()
+              ? 'removing'
+              : willWrite || carrying
+                ? 'filed'
+                : 'unfiled',
+      },
+    ];
+  }
+
   /** How many entries each extent would write, for putting numbers on the choice. */
   designSystemExtent(scope: DesignSystemScope): {
     tokens: number;
@@ -5142,6 +5347,7 @@ export class EditorEngine {
       designSystemCSS: this.designSystemParts(),
       designSystemTarget: target,
       blockLibrarySeed: this.blockLibrarySeed(),
+      removeBlockLibrary: this.#removingLibrary(),
       generatedRegions: this.#generatedRegions(),
     };
   }
@@ -5655,6 +5861,7 @@ export class EditorEngine {
       // The library, when it was asked to travel. Serializing the page cannot pick this up on
       // its own: the seed describes the library, and the library is not in the DOM.
       seedScript: this.blockLibrarySeed(),
+      removeBlockLibrary: this.#removingLibrary(),
     });
   }
 

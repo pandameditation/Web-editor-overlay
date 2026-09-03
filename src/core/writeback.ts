@@ -20,6 +20,7 @@ import {
   indentOf,
   parseSourceMarker,
   patchHTML,
+  dropBlockLinks,
   upsertSeedBlock,
   upsertStyleBlock,
   type ElementAnchor,
@@ -179,6 +180,16 @@ export interface WriteSubject {
    * go anywhere but the markup, so there is no target to choose — only whether to write it.
    */
   blockLibrarySeed?: string;
+  /**
+   * Take the library out of the file rather than leaving or updating it.
+   *
+   * The third state `blockLibrarySeed` cannot express. Empty means "not this time", which has to
+   * leave a library already in the file alone — so wanting it gone needs saying separately, and
+   * it takes the instance links with it: a `data-heo-block` naming a template the file no longer
+   * carries is a dangling reference, which is the thing the link was kept out of exports to avoid
+   * in the first place.
+   */
+  removeBlockLibrary?: boolean;
   /**
    * How many elements in `html` the page's own code built rather than the file declaring.
    *
@@ -409,10 +420,20 @@ export async function buildWritePlan(
   const systemTarget = subject.designSystemTarget;
   const systemCSS = designSystemCSSText(subject.designSystemCSS);
   const systemKinds = listPhrase(designSystemKinds(subject.designSystemCSS));
+  /*
+   * Whether the design system reached a file, so step 5 can account for the records that
+   * describe it. This step is driven by the CSS text rather than by the records, which is right —
+   * it is delivered wholesale — but it left nobody responsible for saying that a token edit had
+   * gone nowhere.
+   */
+  let systemFiled = false;
+  let systemPath: string | null = null;
   if (systemTarget && systemTarget !== DOCUMENT_TARGET) {
     const path = host.resolve(systemTarget);
+    systemPath = path;
     if (!path) {
       // Not fatal: the CSS is still in the page and still in the prompt.
+      systemFiled = true;
       unwritable.push({
         record: designSystemRecord(systemCSS),
         reason: reasonForUnreachable(systemTarget, host),
@@ -423,6 +444,7 @@ export async function buildWritePlan(
       const base = existing ? existing.after : (before ?? '');
       const after = upsertSection(base, systemCSS);
       if (after !== before) {
+        systemFiled = true;
         if (existing) {
           existing.after = after;
           existing.reason = `${existing.reason}, plus ${systemKinds}`;
@@ -456,6 +478,7 @@ export async function buildWritePlan(
    */
   const systemInDocument = subject.designSystemTarget === DOCUMENT_TARGET;
   const blockSeed = subject.blockLibrarySeed?.trim() ?? '';
+  const removeLibrary = subject.removeBlockLibrary === true;
   /*
    * Whether an element belongs to a region the page built.
    *
@@ -467,7 +490,9 @@ export async function buildWritePlan(
     regions.some((region) => region === el || region.contains(el));
   const documentRecords: ChangeRecord[] = [];
   for (const record of records) {
-    if (!isDocumentChange(record, systemInDocument, Boolean(blockSeed))) continue;
+    // Removing the library is a document change too: the seed region and the links it justified
+    // both live in the markup, so the file has to be reached even with no seed to put in it.
+    if (!isDocumentChange(record, systemInDocument, Boolean(blockSeed) || removeLibrary)) continue;
     const rendered = record.detail?.rendered;
     if (rendered) {
       unwritable.push({ record, reason: rendered });
@@ -516,6 +541,7 @@ export async function buildWritePlan(
             // `isDocumentChange` exists to prevent.
             systemInDocument ? systemCSS : '',
             blockSeed,
+            removeLibrary,
           );
       if (patched) {
         if (patched.html !== before) {
@@ -577,6 +603,56 @@ export async function buildWritePlan(
     }
   }
 
+  /* ---- 5. Design-system and library changes that reached no file ---- */
+
+  /*
+   * The step that stops a change disappearing.
+   *
+   * Steps 3 and 4 divide these between them by destination and neither owned the case where
+   * *neither* applied, so a real, ticked, undoable change could produce no write and no
+   * explanation. The plan then said "every change is already in the files" — which is how
+   * deleting a token and pressing save produced a dialog with nothing to write and no reason.
+   *
+   * Three ways it happens, and they want different things said. The design system's CSS may be
+   * unchanged by the edit: deleting a token the page's own stylesheet declares removes it from the
+   * editor's list, and the editor never wrote it, so there is nothing of the editor's to rewrite.
+   * The library may have nowhere to go because the box is clear. And the document write may simply
+   * not have happened.
+   */
+  const documentFiled = writes.some((write) => write.kind === 'document');
+  const systemHome = systemPath ?? (systemInDocument ? 'this page' : systemTarget);
+  for (const record of records) {
+    if (!DESIGN_SYSTEM.has(record.kind)) continue;
+
+    if (record.kind === 'block') {
+      if (blockSeed || removeLibrary) {
+        if (!documentFiled) {
+          unwritable.push({
+            record,
+            reason:
+              'The library is written into the markup, and this save is not writing the markup.',
+          });
+        }
+        continue;
+      }
+      unwritable.push({
+        record,
+        reason:
+          'The block library is not being written into the page, so this has nowhere to go. ' +
+          'Tick “Write the library into the page” above to persist it.',
+      });
+      continue;
+    }
+
+    if (systemInDocument ? documentFiled : systemFiled) continue;
+    unwritable.push({
+      record,
+      reason: systemCSS.trim()
+        ? `The design system in ${systemHome} already matches this session, so this change does not alter it.`
+        : `Nothing of the editor's design system is left to write, and ${systemHome} has no block of it to clear. A value the page's own stylesheet declares is removed by editing that file.`,
+    });
+  }
+
   return { writes, unwritable };
 }
 
@@ -599,6 +675,7 @@ export function patchDocumentSource(
 ): { html: string } | { why: string[] } {
   const systemInDocument = subject.designSystemTarget === DOCUMENT_TARGET;
   const blockSeed = subject.blockLibrarySeed?.trim() ?? '';
+  const removeLibrary = subject.removeBlockLibrary === true;
   const regions = subject.generatedRegions ?? [];
   const isGenerated = (el: HTMLElement): boolean =>
     regions.some((region) => region === el || region.contains(el));
@@ -607,7 +684,8 @@ export function patchDocumentSource(
   // page's own code owns.
   const documentRecords = subject.records.filter(
     (record) =>
-      isDocumentChange(record, systemInDocument, Boolean(blockSeed)) && !record.detail?.rendered,
+      isDocumentChange(record, systemInDocument, Boolean(blockSeed) || removeLibrary) &&
+      !record.detail?.rendered,
   );
   if (!documentRecords.length) return { why: ['nothing in this change set belongs to the markup'] };
 
@@ -620,6 +698,7 @@ export function patchDocumentSource(
     why,
     systemInDocument ? designSystemCSSText(subject.designSystemCSS) : '',
     blockSeed,
+    removeLibrary,
   );
   return patched ?? { why: why.length ? why : ['no change could be placed in the file'] };
 }
@@ -1021,6 +1100,7 @@ function tryPatchDocument(
   why: string[],
   designSystemCSS = '',
   blockLibrarySeed = '',
+  removeBlockLibrary = false,
 ): { html: string } | null {
   if (!records.length) return null;
 
@@ -1142,9 +1222,19 @@ function tryPatchDocument(
    * design system leaves the seed byte-identical and a save that changes only the library leaves
    * the CSS alone. Both are no-ops when their payload is empty.
    */
-  return {
-    html: upsertSeedBlock(upsertStyleBlock(reconciled.html, designSystemCSS), blockLibrarySeed),
-  };
+  /*
+   * Removal is the third state, and it happens last of all.
+   *
+   * After the region is written rather than instead of writing it, so the two instructions cannot
+   * be given at once by accident: `removeBlockLibrary` forces the seed empty upstream, and this
+   * then takes out whatever the file was already carrying, links included.
+   */
+  const withBlocks = upsertSeedBlock(
+    upsertStyleBlock(reconciled.html, designSystemCSS),
+    blockLibrarySeed,
+    removeBlockLibrary,
+  );
+  return { html: removeBlockLibrary ? dropBlockLinks(withBlocks) : withBlocks };
 }
 
 function anchorKey(anchor: ElementAnchor): string {

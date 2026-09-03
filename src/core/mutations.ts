@@ -890,3 +890,22 @@ export function cleanMarkup(el: HTMLElement, keep: readonly string[] = []): stri
 function exact(value: string): string {
   return value;
 }
+
+/**
+ * Whether two pieces of markup are the same but for pretty-printing.
+ *
+ * Exists because "Save as a reusable block" reported the element it had just been captured from
+ * as already out of date. The block's markup is stored formatted — that is what the dialog shows
+ * and what the author edits — so re-rendering the template puts a newline and an indent between
+ * every pair of tags, while the element it came from has whatever the file had. Comparing the two
+ * byte for byte therefore always differed, and the component was born drifted.
+ *
+ * Only whitespace that *contains a newline* is collapsed, and that restraint is the whole point.
+ * A single space between two inline elements is content — `<b>a</b> <i>b</i>` does not render like
+ * `<b>a</b><i>b</i>` — so a blanket `>\s+<` would have declared a real difference to be none. A
+ * newline between tags is what a formatter adds and what no author relies on.
+ */
+export function sameStructure(a: string, b: string): boolean {
+  const collapse = (html: string): string => html.replace(/>[ \t]*\r?\n\s*</g, '><').trim();
+  return collapse(a) === collapse(b);
+}

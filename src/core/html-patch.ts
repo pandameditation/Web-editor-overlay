@@ -673,7 +673,16 @@ export const SEED_BLOCK_END = '<!-- heo:blocks end -->';
  * library that is already in this file" — and by the time a second save runs, that block may
  * have been edited by hand.
  */
-export function upsertSeedBlock(html: string, seed: string): string {
+export function upsertSeedBlock(html: string, seed: string, remove = false): string {
+  /*
+   * Removing is its own instruction, and it has to be, because "no seed" is ambiguous.
+   *
+   * An empty seed means "the user did not ask for the library to travel this time", which must
+   * leave a library already in the file alone. Wanting it *gone* is a different statement and had
+   * no way to be made: unticking the box stopped updating the block and left it there for ever.
+   */
+  if (remove) return dropManagedBlock(html, SEED_BLOCK_START, SEED_BLOCK_END);
+
   const body = seed.trim();
   if (!body) return html;
   if (!html.includes(SEED_BLOCK_START) && html.includes(body)) return html;
@@ -681,6 +690,33 @@ export function upsertSeedBlock(html: string, seed: string): string {
   return upsertManagedBlock(html, SEED_BLOCK_START, SEED_BLOCK_END, (indent) =>
     seedBlock(body, indent),
   );
+}
+
+/**
+ * Take out the instance links, wherever they are in the text.
+ *
+ * The companion to removing the seed. The per-element attribute removals are recorded as real
+ * changes and the patcher places the ones it can anchor, but an instance the patcher cannot find
+ * would keep its `data-heo-block` and end up naming a template the file no longer carries. This
+ * is a text pass over an attribute the editor writes itself, in a shape it controls, so matching
+ * it literally is safe in a way that parsing attributes generally is not.
+ */
+export function dropBlockLinks(html: string): string {
+  return html.replace(/\s+data-heo-block="[^"]*"/g, '');
+}
+
+/** Delete a marked region and close the gap, leaving a file with no region untouched. */
+function dropManagedBlock(html: string, startMarker: string, endMarker: string): string {
+  const start = html.indexOf(startMarker);
+  const end = html.indexOf(endMarker);
+  if (start === -1 || end <= start) return html;
+  const finish = end + endMarker.length;
+  // The whole line the region sat on, so removing it does not leave its indentation behind as a
+  // trailing-whitespace line the next diff would report.
+  const lineStart = html.lastIndexOf('\n', Math.max(0, start - 1)) + 1;
+  const head = html.slice(0, lineStart).replace(/[ \t]+$/, '');
+  const tail = html.slice(finish).replace(/^[ \t]*\r?\n/, '');
+  return `${head}${tail}`;
 }
 
 /**

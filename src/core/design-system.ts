@@ -532,6 +532,13 @@ export interface ExportOptions {
    * Absent or empty writes nothing, which is what an unticked box means.
    */
   seedScript?: string;
+  /**
+   * Take a library the page is already carrying out of the copy.
+   *
+   * The state an empty `seedScript` cannot express: that one means "do not update it", which has
+   * to leave an existing seed alone, so removal has to be asked for separately.
+   */
+  removeBlockLibrary?: boolean;
 }
 
 export function exportHTML(
@@ -667,6 +674,17 @@ export function exportHTML(
     for (const el of Array.from(clone.querySelectorAll(`[${BLOCK_ATTR}]`))) {
       el.removeAttribute(BLOCK_ATTR);
     }
+  }
+
+  /*
+   * Removing the library takes out what the page was already carrying.
+   *
+   * Distinct from writing no seed, which leaves a seed already in the markup where it is. The
+   * links are handled just above — an empty `seedScript` strips them — so this only has to deal
+   * with the tag itself, which the serializer would otherwise copy across like any other markup.
+   */
+  if (options.removeBlockLibrary) {
+    for (const tag of Array.from(clone.querySelectorAll(SEED_SCRIPT_SELECTOR))) tag.remove();
   }
 
   for (const el of Array.from(clone.querySelectorAll('[contenteditable]'))) {

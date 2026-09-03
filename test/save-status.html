@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Saving the library: linking, removing, and saying where things are kept</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 28px;
+      font-family: system-ui, sans-serif;
+    }
+
+    #report {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+    }
+  </style>
+</head>
+
+<body>
+  <main>
+    <!-- Already in the file, which is the case the instance link used to be lost in. -->
+    <div id="card">
+      <h3 id="card-title">Promo</h3>
+      <p id="card-body">Some words.</p>
+    </div>
+  </main>
+
+  <div id="report">
+    <pre id="progress">start</pre>
+    <pre id="out">pending</pre>
+  </div>
+
+  <script type="module">
+    (async () => {
+      const errors = [];
+      addEventListener('error', (e) => errors.push('error: ' + e.message));
+      addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + String(e.reason)));
+
+      const progress = document.getElementById('progress');
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const results = {};
+
+      const { mount } = await import('../dist/html-editor-overlay.js');
+
+      /** A project in a Map, so the write plan has real files to read. */
+      const directory = decodeURIComponent(location.pathname).replace(/[^/]*$/, '');
+      const pageHTML = await fetch(location.href).then((r) => r.text());
+      const files = new Map([['save-status.html', pageHTML]]);
+      const project = {
+        kind: 'directory',
+        label: 'memory',
+        resolve(url) {
+          const parsed = new URL(url, location.href);
+          if (parsed.origin !== location.origin && parsed.protocol !== 'file:') return null;
+          const path = decodeURIComponent(parsed.pathname);
+          return path.startsWith(directory) ? path.slice(directory.length) : null;
+        },
+        read: async (path) => (files.has(path) ? files.get(path) : null),
+        write: async (path, text) => { files.set(path, text); },
+        ensureWritable: async () => true,
+        release: async () => { },
+      };
+
+      const api = mount({ theme: 'dark', detectScriptContent: false });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await engine.attachProject(project, { quiet: true });
+      await frames();
+
+      const card = document.getElementById('card');
+      const documentWrite = (plan) => plan?.writes.find((write) => write.kind === 'document') ?? null;
+
+      /*
+       * Parsed, not searched as text.
+       *
+       * This fixture's own script mentions the seed MIME type and the link attribute by name, and
+       * the document write carries the page's inline scripts — so a substring check finds those
+       * mentions and reports a seed in a document that has none.
+       */
+      const survey = (html) => {
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        /*
+         * The marker is looked for as a comment NODE, not as a substring.
+         *
+         * Searching the text finds this fixture's own mention of the marker and reports a region
+         * that is not there. Parsing puts script contents inside a script node, where a comment
+         * scan cannot reach them.
+         */
+        const walker = doc.createNodeIterator(doc, NodeFilter.SHOW_COMMENT);
+        let markers = 0;
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          if (node.nodeValue && node.nodeValue.includes('heo:blocks')) markers += 1;
+        }
+        return {
+          seeds: doc.querySelectorAll('script[type="application/heo-seed"]').length,
+          links: doc.querySelectorAll('[data-heo-block]').length,
+          markers,
+        };
+      };
+
+      /* ------------------------------------------------------------------ *
+       * 1. Save as a reusable block: linked, synced, and it reaches the file.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'extraction';
+      api.select(card);
+      await frames();
+      engine.beginBlockExtraction(card);
+      engine.updateExtraction({ name: 'Promo card' });
+      const committed = engine.commitExtraction();
+      await frames();
+
+      const block = engine.library.get('promo-card') ?? engine.library.list().find((b) => b.name === 'Promo card');
+      results.extraction = {
+        committed,
+        blockInLibrary: Boolean(block),
+        // The link is on the element, so selecting it again finds the Components section.
+        linked: card.getAttribute('data-heo-block'),
+        hasComponentSection: Boolean(engine.blockInstance(card)),
+        // The whole complaint: formatting must not make a freshly captured block read as stale.
+        driftsImmediately: engine.blockDrift(card),
+        // And the link has to be a recorded change, or the patch path has nothing to write.
+        linkRecorded: engine.records.some(
+          (record) => record.kind === 'attribute' && record.detail?.attribute === 'data-heo-block',
+        ),
+      };
+      results.extraction.ok =
+        committed &&
+        results.extraction.blockInLibrary &&
+        Boolean(results.extraction.linked) &&
+        results.extraction.hasComponentSection &&
+        results.extraction.driftsImmediately === false &&
+        results.extraction.linkRecorded;
+
+      /* ------------------------------------------------------------------ *
+       * 2. Ticked: the file gets both the seed and the link.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'plan with the library';
+      engine.setSaveBlockLibrary(true);
+      const withLibrary = documentWrite(await engine.previewWritePlan());
+      const withLibrarySurvey = withLibrary ? survey(withLibrary.after) : null;
+      results.writesTheLink = {
+        wrote: Boolean(withLibrary),
+        seed: withLibrarySurvey ? withLibrarySurvey.seeds === 1 : false,
+        link: withLibrarySurvey ? withLibrarySurvey.links === 1 : false,
+      };
+      results.writesTheLink.ok =
+        results.writesTheLink.seed && results.writesTheLink.link;
+
+      /*
+       * Actually write it, so the removal below has something to remove.
+       *
+       * Without this the file on disk never receives the seed, and a plan that proposes taking it
+       * out correctly finds nothing to change — which would make the removal test pass or fail for
+       * the wrong reason.
+       */
+      await engine.writeToProject();
+      const disk = survey(files.get('save-status.html'));
+      results.onDisk = { seed: disk.seeds === 1, link: disk.links === 1, markers: disk.markers };
+      results.onDisk.ok = results.onDisk.seed && results.onDisk.link;
+
+      /* ------------------------------------------------------------------ *
+       * 3. The status says what is kept where.
+       * ------------------------------------------------------------------ */
+      const status = engine.designSystemPersistence();
+      results.status = {
+        parts: status.map((entry) => entry.part),
+        library: status.find((entry) => entry.part === 'library'),
+      };
+      results.status.ok =
+        results.status.parts.join(',') === 'tokens,classes,rules,library' &&
+        results.status.library.state === 'filed' &&
+        results.status.library.count === 1;
+
+      /* ------------------------------------------------------------------ *
+       * 4. Remove block library: seed and links go, and undo brings them back.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'removal';
+      results.carryingBeforeRemoval = engine.blockLibraryInPage();
+      engine.removeBlockLibraryFromPage();
+      await frames();
+
+      const afterRemoval = documentWrite(await engine.previewWritePlan());
+      const removed = afterRemoval ? survey(afterRemoval.after) : null;
+      results.removal = {
+        flagSet: engine.store.value.removeBlockLibrary === true,
+        tickCleared: engine.store.value.saveBlockLibrary === false,
+        goneFromPage: document.querySelectorAll('[data-heo-block]').length === 0,
+        proposesAWrite: Boolean(afterRemoval),
+        // The file, not just the page: the seed region and every link have to go from the text.
+        seedsInFile: removed ? removed.seeds : null,
+        linksInFile: removed ? removed.links : null,
+        markersInFile: removed ? removed.markers : null,
+        statusSaysRemoving:
+          engine.designSystemPersistence().find((entry) => entry.part === 'library').state === 'removing',
+      };
+      results.removal.ok =
+        results.removal.flagSet &&
+        results.removal.tickCleared &&
+        results.removal.goneFromPage &&
+        results.removal.seedsInFile === 0 &&
+        results.removal.linksInFile === 0 &&
+        results.removal.markersInFile === 0 &&
+        results.removal.statusSaysRemoving;
+
+      engine.undo();
+      await frames();
+      results.removalUndone = {
+        linkBack: card.getAttribute('data-heo-block') === 'promo-card',
+        flagCleared: engine.store.value.removeBlockLibrary === false,
+      };
+      results.removalUndone.ok =
+        results.removalUndone.linkBack && results.removalUndone.flagCleared;
+
+      /* ------------------------------------------------------------------ *
+       * 5. A library change with nowhere to go is explained, not dropped.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'unwritable accounting';
+      engine.setSaveBlockLibrary(false);
+      /*
+       * A different block, deliberately.
+       *
+       * Adding and then removing the same one nets to nothing on the undo stack — same subject,
+       * so the two records collapse — and a change that no longer exists is not the case being
+       * tested. This is a library change that is real, ticked, and has nowhere to go.
+       */
+      engine.upsertBlock({
+        id: 'extra-card',
+        name: 'Extra card',
+        kind: 'component',
+        html: '<div class="extra">Extra</div>',
+        origin: 'user',
+      });
+      const plan = await engine.previewWritePlan();
+      const blockReasons = (plan?.unwritable ?? [])
+        .filter((entry) => entry.record.kind === 'block')
+        .map((entry) => entry.reason);
+      results.explained = {
+        reasons: blockReasons,
+        // It used to vanish: no write, no unwritable entry, and a plan claiming everything
+        // was already in the files.
+        accountedFor: blockReasons.length > 0,
+        actionable: blockReasons.some((reason) => reason.includes('Write the library into the page')),
+      };
+      results.explained.ok = results.explained.accountedFor && results.explained.actionable;
+
+      const failed = Object.entries(results)
+        .filter(([, value]) => value && typeof value === 'object' && value.ok === false)
+        .map(([key]) => key);
+
+      document.getElementById('out').textContent = 'RESULTS:' + JSON.stringify(
+        { ok: failed.length === 0, failed, ...results, errors }, null, 1,
+      ) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"ok":false,"__fatal":' + JSON.stringify(String((e && e.stack) || e)) + '}:END';
+    });
+  </script>
+</body>
+
+</html>
