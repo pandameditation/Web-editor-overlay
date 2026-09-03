@@ -110,6 +110,12 @@
         };
       };
 
+      // On out of the box: losing a block on reload is worse than adding a tag to the markup.
+      results.tickedByDefault = { on: engine.store.value.saveBlockLibrary === true };
+      results.tickedByDefault.ok = results.tickedByDefault.on;
+
+      engine.setSaveBlockLibrary(false);
+      await frames();
       const off = engine.exportHTML();
       const offSurvey = survey(off);
       results.untickedCarriesNeither = {
@@ -193,6 +199,7 @@
 
       const failed = [
         ...(results.authored.hasComponentSection ? [] : ['authored']),
+        ...(results.tickedByDefault.ok ? [] : ['tickedByDefault']),
         ...(results.untickedCarriesNeither.ok ? [] : ['unticked']),
         ...(results.tickedCarriesBoth.ok ? [] : ['ticked']),
         ...(results.afterReload.ok ? [] : ['afterReload']),

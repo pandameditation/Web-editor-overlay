@@ -475,8 +475,8 @@ export interface EditorState {
    * a module, so the only thing that can carry one is the seed format. Different payload,
    * different destination, different question.
    *
-   * Off by default. Ticking it adds a script tag to somebody's HTML, which is a visible
-   * addition to a file they own and not something to do on their behalf.
+   * On by default, and only consequential when there is something to carry: a library of nothing
+   * but presets produces no seed and no tag, because the next load rebuilds those for itself.
    */
   saveBlockLibrary: boolean;
   /**
@@ -728,9 +728,19 @@ export class EditorEngine {
       // Everything, by default: leaving something out is the deliberate act, and a save that
       // quietly dropped part of the vocabulary would be the worse surprise.
       designSystemScope: 'all',
-      // Unlike the design system's extent, off: this one adds a tag to the markup rather than
-      // deciding how much CSS an existing block carries.
-      saveBlockLibrary: false,
+      /*
+       * On, because a library that does not travel is a library that is lost.
+       *
+       * It was off, on the principle that adding a tag to someone's markup should be asked for.
+       * But the thing being asked about is work the user did in this session — blocks they made —
+       * and the alternative to writing them is losing them on reload. Withholding that by default
+       * made the safe-looking option the destructive one.
+       *
+       * It costs nothing when there is nothing to carry: `blockLibrarySeed` returns empty for a
+       * library that is all presets, so a page with no blocks of its own gets no tag and the row
+       * is not even drawn.
+       */
+      saveBlockLibrary: true,
       removeBlockLibrary: false,
       extraction: null,
       confirm: null,
@@ -780,18 +790,8 @@ export class EditorEngine {
      * survives, because a seed carrying only blocks cannot be overwritten by options carrying
      * only tokens.
      */
-    const carriesSeed = this.#seedFromDocument();
+    this.#seedFromDocument();
     this.#seedFromOptions();
-    /*
-     * A page that already carries its library keeps carrying it.
-     *
-     * The tick defaults off because writing a script into someone's markup should be asked for.
-     * But once it is in the file the asking is done, and leaving the default off meant the next
-     * save silently stopped updating it: add a block, save, and the file still held the previous
-     * library with no indication that the new one had been left behind. Opting in is a decision
-     * about this page, so the page is where it is remembered.
-     */
-    if (carriesSeed) this.store.patch({ saveBlockLibrary: true });
 
     this.#listeners.push(
       this.history.onChange(() => {
@@ -909,17 +909,15 @@ export class EditorEngine {
    * hand-edited, and silence would leave someone staring at a file that plainly contains their
    * library, wondering why it is not there.
    */
-  #seedFromDocument(): boolean {
+  #seedFromDocument(): void {
     const block = document.querySelector(SEED_SCRIPT_SELECTOR);
     const text = block?.textContent?.trim();
-    if (!text) return false;
+    if (!text) return;
     try {
       this.#applySeed(text);
-      return true;
     } catch (error) {
       console.error('[html-editor-overlay] could not read the seed in this page', error);
       this.notify('This page carries a design system the editor could not read.', 'error');
-      return false;
     }
   }
 

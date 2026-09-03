@@ -99,17 +99,23 @@ export interface BundleOptions {
 }
 
 export const DEFAULT_BUNDLE_OPTIONS: BundleOptions = {
-  styles: true,
-  scripts: true,
-  images: true,
   /*
-   * Off by default, unlike the rest.
+   * Nothing is folded in unless it is asked for.
    *
-   * Base64 costs a third, and a font family is the largest thing on most pages — several
-   * hundred kilobytes for four weights, against a few for the pictures. A default that
-   * silently quadruples the file is the wrong one, and a link to a font that fails to load
-   * degrades to a fallback face rather than to a broken page.
+   * These were on, on the reasoning that a standalone copy should stand alone. The reasoning was
+   * about the wrong default: embedding rewrites every asset in the document as a data URI, which
+   * is a large, irreversible change to the file's shape — and the page it was made from already
+   * worked, because its links already resolved. So the safe default is to change nothing and let
+   * them go on resolving, and folding assets in is the deliberate act, taken by someone who knows
+   * the copy is going somewhere those links will not reach.
+   *
+   * Fonts were already off for a narrower version of the same argument: base64 costs a third, and
+   * a family of four weights is the largest thing on most pages. That argument applies to the
+   * others too, just less dramatically.
    */
+  styles: false,
+  scripts: false,
+  images: false,
   fonts: false,
   // One file is the useful default: it is the thing a zip cannot be, which is openable by
   // double-clicking it.
