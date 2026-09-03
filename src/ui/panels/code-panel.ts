@@ -11,6 +11,7 @@ import { icon } from '../icons.js';
 import { baseStyles } from '../theme.js';
 import type { HeoCodeEditor } from '../controls/code-editor.js';
 import '../controls/code-editor.js';
+import '../controls/search-field.js';
 import '../controls/segmented.js';
 
 /**
@@ -75,6 +76,17 @@ export class HeoCodePanel extends HeoElement {
         flex: 1 1 auto;
         min-height: 0;
         padding: 10px 12px;
+      }
+      /* Above the editor, full width, on the same gutter as the buffer it searches. */
+      .find {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        padding-bottom: 7px;
+      }
+      .find heo-search-field {
+        flex: 1 1 auto;
+        min-width: 0;
       }
       .body > heo-code-editor {
         flex: 1 1 auto;
@@ -144,6 +156,10 @@ export class HeoCodePanel extends HeoElement {
   #appliedTo: HTMLElement | null = null;
 
   @query('heo-code-editor') private codeEditor?: HeoCodeEditor;
+
+  /** What is being looked for in the buffer, and which match the arrows are on. */
+  @state() private find = '';
+  @state() private findAt = 0;
 
   /**
    * Load the buffer before rendering, not during it.
@@ -229,6 +245,7 @@ export class HeoCodePanel extends HeoElement {
       </div>
 
       <div class="body">
+        ${this.#renderFind()}
         <heo-code-editor
           fill
           .expandable=${!this.embedded}
@@ -408,6 +425,75 @@ export class HeoCodePanel extends HeoElement {
       return;
     }
     this.error = '';
+  }
+
+  /**
+   * Find in the buffer. No create action, because there is nothing here to create.
+   *
+   * The one panel where the shared field is purely a finder, which is why it carries prev/next
+   * instead of a plus. Enter steps forward, matching every find box anywhere; the arrows exist so
+   * the behaviour is discoverable without knowing that.
+   *
+   * The count comes from the editor rather than from a regex here, so the number beside the box and
+   * the thing the arrows step through cannot disagree about what counts as a match.
+   */
+  #renderFind(): TemplateResult {
+    const total = this.codeEditor?.matchOffsets(this.find).length ?? 0;
+    const stepping = Boolean(this.find.trim()) && total > 0;
+
+    return html`<div class="find">
+      <heo-search-field
+        label="Find in code"
+        placeholder="Find in code…"
+        .value=${this.find}
+        .count=${total}
+        @search-input=${(event: CustomEvent<{ value: string }>) => this.#onFind(event.detail.value)}
+        @search-submit=${() => this.#step(1)}
+      ></heo-search-field>
+      <button
+        class="btn icon ghost sm"
+        type="button"
+        ?disabled=${!stepping}
+        title="Previous match"
+        aria-label="Previous match"
+        @click=${() => this.#step(-1)}
+      >
+        ${icon('chevronUp', 12)}
+      </button>
+      <button
+        class="btn icon ghost sm"
+        type="button"
+        ?disabled=${!stepping}
+        title="Next match"
+        aria-label="Next match"
+        @click=${() => this.#step(1)}
+      >
+        ${icon('chevronDown', 12)}
+      </button>
+    </div>`;
+  }
+
+  /**
+   * A new query starts from the top rather than from wherever the last one had got to.
+   *
+   * Revealing on every keystroke as well, so the first match is shown while typing — the same
+   * incremental behaviour a browser's own find has, and the reason a find box feels immediate
+   * rather than like a form to submit.
+   */
+  #onFind(next: string): void {
+    this.find = next;
+    this.findAt = 0;
+    if (!next.trim()) return;
+    // After the render that has the new query, so the count beside the box is already right.
+    void this.updateComplete.then(() => {
+      this.findAt = this.codeEditor?.revealMatch(next, 0) ?? -1;
+    });
+  }
+
+  #step(delta: number): void {
+    if (!this.find.trim()) return;
+    const at = this.codeEditor?.revealMatch(this.find, this.findAt + delta) ?? -1;
+    this.findAt = at;
   }
 
   #apply(el: HTMLElement): void {

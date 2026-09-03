@@ -571,6 +571,68 @@ export class HeoCodeEditor extends LitElement {
     this.area?.focus();
   }
 
+  /* ---------------------------------------------------------------------- */
+  /* Finding text                                                           */
+  /* ---------------------------------------------------------------------- */
+
+  /**
+   * Where every match of `query` starts, in what the editor is currently showing.
+   *
+   * The *projection*, not the full buffer, and that is the honest choice rather than a shortcut.
+   * When a region is folded its text is not on screen, so reporting a match inside it would put a
+   * number next to a search box and then have nothing to reveal when the user pressed next. The
+   * rule a reader can hold is "it finds what you can see"; folding is opt-in per tag, so on most
+   * buffers the two are the same text anyway.
+   *
+   * Case-insensitive, because a find box that made someone match the capitalisation of a tag name
+   * would be answering a question nobody asked.
+   */
+  matchOffsets(query: string): number[] {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return [];
+    const hay = this.projection.toLowerCase();
+    const out: number[] = [];
+    for (let at = hay.indexOf(needle); at !== -1; at = hay.indexOf(needle, at + needle.length)) {
+      out.push(at);
+    }
+    return out;
+  }
+
+  /**
+   * Select the nth match and scroll it into view. Returns the index reached, or -1 for no match.
+   *
+   * The index wraps in both directions, so a host can hand it `current + 1` or `current - 1`
+   * without bounds-checking and get the behaviour every find box in every editor has.
+   *
+   * Selecting rather than highlighting: the textarea is the real control here, and the browser's
+   * own selection is the one thing guaranteed to be visible, themable and already understood. It
+   * also leaves the caret on the match, so typing replaces it.
+   */
+  revealMatch(query: string, index: number): number {
+    const hits = this.matchOffsets(query);
+    const area = this.area;
+    if (!hits.length || !area) return -1;
+
+    const wrapped = ((index % hits.length) + hits.length) % hits.length;
+    const start = hits[wrapped];
+    area.focus();
+    area.setSelectionRange(start, start + query.trim().length);
+
+    /*
+     * Centred by line rather than left to the browser.
+     *
+     * `setSelectionRange` does not scroll, and the alternatives are worse: `scrollIntoView` on a
+     * textarea moves the whole panel, and reading `scrollHeight` mid-layout is how the two stacked
+     * layers get out of step. A line number times the line height is arithmetic that cannot
+     * disagree with itself.
+     */
+    const line = this.projection.slice(0, start).split('\n').length - 1;
+    const lineHeight = Number.parseFloat(getComputedStyle(area).lineHeight) || 18;
+    area.scrollTop = Math.max(0, line * lineHeight - area.clientHeight / 2);
+    this.#syncScroll();
+    return wrapped;
+  }
+
   override render(): TemplateResult {
     return this.expanded ? this.#renderExpanded() : this.#renderInline();
   }

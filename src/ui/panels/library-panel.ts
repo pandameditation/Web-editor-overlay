@@ -11,6 +11,7 @@ import { baseStyles } from '../theme.js';
 import { PropForm } from './prop-form.js';
 import '../controls/section.js';
 import '../controls/segmented.js';
+import '../controls/search-field.js';
 
 
 /**
@@ -379,19 +380,24 @@ export class HeoLibraryPanel extends HeoElement {
 
     return html`
       <div class="top">
-        <div class="search">
-          ${icon('search', 13)}
-          <input
-            type="text"
-            placeholder="Search blocks…"
-            .value=${this.query}
-            spellcheck="false"
-            aria-label="Search blocks"
-            @input=${(event: Event) => {
-        this.query = (event.target as HTMLInputElement).value;
+        <!--
+          The shared field, in filter mode: the cards below are the results, so there is no list
+          for it to own. Its action is the same offer the end of the list makes, put where someone
+          who has just failed to find something is already looking.
+        -->
+        <heo-search-field
+          label="Search blocks"
+          placeholder="Search blocks…"
+          .value=${this.query}
+          .count=${blocks.length}
+          action=${this.#createLabel()}
+          action-icon="plus"
+          action-compact
+          @search-input=${(event: CustomEvent<{ value: string }>) => {
+        this.query = event.detail.value;
       }}
-          />
-        </div>
+          @search-submit=${() => this.#create()}
+        ></heo-search-field>
         <heo-segmented
           .options=${[
         { value: 'all', label: 'All' },
@@ -622,15 +628,33 @@ export class HeoLibraryPanel extends HeoElement {
    * could not express half of what a block can hold. There is one dialog now, and both
    * this and a card's edit action are ways into it.
    */
-  #renderCreateButton(): TemplateResult {
+  /**
+   * What creating would make, given what has been typed.
+   *
+   * Shared by the field's action and the buttons below the list so the three cannot describe the
+   * same act differently. Seeded from the query because "Create" and `Create "hero banner"` are
+   * different promises, and the second one is the reason somebody is still reading.
+   */
+  #createLabel(): string {
     const seed = this.query.trim();
+    return seed ? `Create "${seed}"` : 'Create a block';
+  }
+
+  #create(): void {
+    this.editor.beginBlockDraft(
+      this.query.trim(),
+      this.kind === 'all' ? 'component' : this.kind,
+    );
+  }
+
+  #renderCreateButton(): TemplateResult {
     return html`<button
       class="btn sm"
       type="button"
       title="Author a new block"
-      @click=${() => this.editor.beginBlockDraft(seed, this.kind === 'all' ? 'component' : this.kind)}
+      @click=${() => this.#create()}
     >
-      ${icon('plus', 12)} ${seed ? `Create "${seed}"` : 'Create a block'}
+      ${icon('plus', 12)} ${this.#createLabel()}
     </button>`;
   }
 

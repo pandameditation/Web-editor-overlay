@@ -27,6 +27,7 @@ import { buildSuggestions, classSuggestions, valueKindFor } from '../suggestions
 import { ClassEditor, focusDeclaration, type DeclarationTarget } from './class-editor.js';
 import type { HeoValueField } from '../controls/value-field.js';
 import '../controls/value-field.js';
+import '../controls/search-field.js';
 import '../controls/box-editor.js';
 import '../controls/segmented.js';
 import '../controls/section.js';
@@ -626,7 +627,6 @@ export class HeoStylesPanel extends HeoElement {
   /** The element whose size cap has already auto-opened the parent section. */
   #capsShownFor: HTMLElement | null = null;
   @state() private newValue = '';
-  @state() private propertyPickerOpen = false;
   @state() private sectionsVersion = 0;
   /**
    * Which CSS rule groups are open, and the add-property draft inside each.
@@ -1554,7 +1554,10 @@ export class HeoStylesPanel extends HeoElement {
   /* ---------------------------------------------------------------------- */
 
   #renderAdder(el: HTMLElement): TemplateResult {
-    const matches = this.propertyPickerOpen ? searchProperties(this.newProperty, 14) : [];
+    const matches = searchProperties(this.newProperty, 14).map((meta) => ({
+      value: meta.name,
+      hint: PROPERTY_GROUP_LABELS[meta.group],
+    }));
     return html`<heo-section
       heading="Add a declaration"
       glyph="plus"
@@ -1563,45 +1566,26 @@ export class HeoStylesPanel extends HeoElement {
         this.#remember('adder', event.detail.open)}
     >
       <div class="adder">
-        <div class="pick">
-          <input
-            class="input mono"
-            type="text"
-            placeholder="property, e.g. scroll-margin-top"
-            .value=${this.newProperty}
-            spellcheck="false"
-            autocomplete="off"
-            aria-label="CSS property"
-            @input=${(event: Event) => {
-        this.newProperty = (event.target as HTMLInputElement).value;
-        this.propertyPickerOpen = true;
+        <!--
+          The shared field, in suggest mode.
+
+          This was a bare input with a hand-rolled list under it and no keyboard support at all:
+          arrows did nothing, Enter did nothing, Escape did nothing, so the only way to take a
+          suggestion was to reach for the mouse. Nothing about that was specific to CSS properties,
+          which is why it is now the same control the rest of the editor searches with.
+        -->
+        <heo-search-field
+          mode="suggest"
+          label="CSS property"
+          placeholder="property, e.g. scroll-margin-top"
+          .value=${this.newProperty}
+          .suggestions=${matches}
+          @search-input=${(event: CustomEvent<{ value: string }>) => {
+        this.newProperty = event.detail.value;
       }}
-            @focus=${() => {
-        this.propertyPickerOpen = true;
-      }}
-            @blur=${() => setTimeout(() => {
-        this.propertyPickerOpen = false;
-      }, 140)}
-          />
-          ${matches.length
-        ? html`<div class="options">
-                ${matches.map(
-          (meta) => html`<button
-                    class="option"
-                    type="button"
-                    @pointerdown=${(event: Event) => event.preventDefault()}
-                    @click=${() => {
-              this.newProperty = meta.name;
-              this.propertyPickerOpen = false;
-            }}
-                  >
-                    <span>${meta.name}</span>
-                    <span>${PROPERTY_GROUP_LABELS[meta.group]}</span>
-                  </button>`,
-        )}
-              </div>`
-        : nothing}
-        </div>
+          @search-pick=${() => this.#focusNewValue()}
+          @search-submit=${() => this.#commitNew(el)}
+        ></heo-search-field>
 
         <heo-value-field
           .value=${this.newValue}
@@ -1625,6 +1609,18 @@ export class HeoStylesPanel extends HeoElement {
         </button>
       </div>
     </heo-section>`;
+  }
+
+  /**
+   * After a property is chosen, put the caret where the rest of the declaration goes.
+   *
+   * Choosing `scroll-margin-top` is never the goal; it is the first half of a sentence. The old
+   * picker left focus in the property box, so every declaration needed a deliberate reach for the
+   * value field.
+   */
+  #focusNewValue(): void {
+    const field = this.renderRoot.querySelector<HeoValueField>('.adder heo-value-field');
+    field?.focusInput?.({ select: true });
   }
 
   #commitNew(el: HTMLElement): void {

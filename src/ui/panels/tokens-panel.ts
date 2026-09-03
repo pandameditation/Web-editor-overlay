@@ -17,6 +17,11 @@ import { DesignTransfer, type DesignTransferHost } from './design-transfer.js';
 import { type HeoSelectorField } from '../controls/selector-field.js';
 import { type HeoValueField } from '../controls/value-field.js';
 import '../controls/section.js';
+import '../controls/search-field.js';
+import '../controls/segmented.js';
+
+/** Which of the three registries the panel's search is scoped to. */
+type Facet = 'all' | 'tokens' | 'classes' | 'rules';
 
 const openGroups = new Set<string>(['component', 'color', 'space', 'classes', 'rules']);
 
@@ -59,6 +64,15 @@ export class HeoTokensPanel extends HeoElement {
       }
       .bar .spacer {
         flex: 1 1 auto;
+      }
+
+      /* The search and its scope, directly under the counts bar and above everything it
+         narrows, so the thing doing the filtering sits over the thing being filtered. */
+      .find {
+        display: grid;
+        gap: 7px;
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--heo-line);
       }
 
       .rows {
@@ -193,6 +207,10 @@ export class HeoTokensPanel extends HeoElement {
     shallowArrayEquals,
   );
 
+  /** What the panel is being searched for. Empty shows everything. */
+  @state() private query = '';
+  /** Which registry the search and its action are about. */
+  @state() private facet: Facet = 'all';
   @state() private newName = '';
   @state() private newValue = '';
   @state() private newGroup: TokenGroup = 'color';
@@ -249,16 +267,183 @@ export class HeoTokensPanel extends HeoElement {
         </button>
       </div>
 
-      ${el ? this.#renderComponentTokens(el, usage) : nothing}
-      ${this.#renderCreate()}
-      ${TOKEN_GROUPS.map((group) => this.#renderGroup(group, usage)).filter(Boolean)}
-      ${this.#renderClasses(el)}
-      ${this.#renderRules(el)}
+      ${this.#renderFind()}
+      ${this.#shows('tokens') && el ? this.#renderComponentTokens(el, usage) : nothing}
+      ${this.#shows('tokens') && !this.query ? this.#renderCreate() : nothing}
+      ${this.#shows('tokens')
+        ? TOKEN_GROUPS.map((group) => this.#renderGroup(group, usage)).filter(Boolean)
+        : nothing}
+      ${this.#shows('classes') ? this.#renderClasses(el) : nothing}
+      ${this.#shows('rules') ? this.#renderRules(el) : nothing}
+      ${this.query ? this.#renderNoMatches() : nothing}
       ${this.#renderTransfer()}
     `;
   }
 
   /* ---------------------------------------------------------------------- */
+
+  /**
+   * One box for the whole panel, and one strip saying which registry it is asking about.
+   *
+   * This panel holds three registries and had no way to look anything up in any of them. On a page
+   * with a real design system that is a hundred-odd tokens, every class and every rule the page
+   * declares, all rendered at once and reachable only by scrolling — while the panel's own three
+   * "add" forms sat at three different depths. So: one field, and a strip that scopes it.
+   *
+   * The facet does double duty. It narrows what is searched, and it decides what the field's action
+   * makes — asking for a token, a class and a rule are three different acts and the button says
+   * which one it is about to perform, rather than offering a generic plus that has to guess.
+   */
+  #renderFind(): TemplateResult {
+    const counts = this.#counts();
+    const total =
+      (this.#shows('tokens') ? counts.tokens : 0) +
+      (this.#shows('classes') ? counts.classes : 0) +
+      (this.#shows('rules') ? counts.rules : 0);
+
+    return html`<div class="find">
+      <heo-search-field
+        label="Search the design system"
+        placeholder="Search tokens, classes and rules…"
+        .value=${this.query}
+        .count=${total}
+        action=${this.#addLabel()}
+        action-icon="plus"
+        action-compact
+        @search-input=${(event: CustomEvent<{ value: string }>) => {
+        this.query = event.detail.value;
+      }}
+        @search-submit=${() => this.#addFromQuery()}
+      ></heo-search-field>
+      <heo-segmented
+        .options=${[
+        { value: 'all', label: 'All' },
+        { value: 'tokens', label: `Tokens${counts.tokens ? ` ${counts.tokens}` : ''}` },
+        { value: 'classes', label: `Classes${counts.classes ? ` ${counts.classes}` : ''}` },
+        { value: 'rules', label: `Rules${counts.rules ? ` ${counts.rules}` : ''}` },
+      ]}
+        .value=${this.facet}
+        label="What to search"
+        @segment-change=${(event: CustomEvent<{ value: string }>) => {
+        this.facet = (event.detail.value || 'all') as Facet;
+      }}
+      ></heo-segmented>
+    </div>`;
+  }
+
+  /** Whether a family of things is on screen, given the facet. */
+  #shows(family: 'tokens' | 'classes' | 'rules'): boolean {
+    return this.facet === 'all' || this.facet === family;
+  }
+
+  /** How many of each family match the query, for the strip and the field's count. */
+  #counts(): { tokens: number; classes: number; rules: number } {
+    return {
+      tokens: this.#matchTokens(this.editor.tokens.list()).length,
+      classes: this.#matchClasses(this.editor.classes.list()).length,
+      rules: this.#matchRules(this.editor.rules.list()).length,
+    };
+  }
+
+  /*
+   * The three matchers.
+   *
+   * Name and value both, because half of looking for a token is looking for a colour you can
+   * remember but cannot name. Kept as three small functions rather than one generic one: the field
+   * worth matching differs per registry, and a single predicate over "the interesting string" is
+   * how a search starts quietly missing things.
+   */
+  #matchTokens(tokens: readonly DesignToken[]): DesignToken[] {
+    const needle = this.query.trim().toLowerCase();
+    if (!needle) return [...tokens];
+    return tokens.filter(
+      (token) =>
+        token.name.toLowerCase().includes(needle) ||
+        token.value.toLowerCase().includes(needle) ||
+        (token.label ?? '').toLowerCase().includes(needle),
+    );
+  }
+
+  #matchClasses(classes: readonly DesignClass[]): DesignClass[] {
+    const needle = this.query.trim().toLowerCase();
+    if (!needle) return [...classes];
+    return classes.filter(
+      (entry) =>
+        entry.name.toLowerCase().includes(needle) ||
+        Object.entries(entry.declarations).some(([property, value]) =>
+          `${property}: ${value}`.toLowerCase().includes(needle),
+        ),
+    );
+  }
+
+  #matchRules(rules: readonly DesignRule[]): DesignRule[] {
+    const needle = this.query.trim().toLowerCase();
+    if (!needle) return [...rules];
+    return rules.filter(
+      (entry) =>
+        entry.selector.toLowerCase().includes(needle) ||
+        Object.entries(entry.declarations).some(([property, value]) =>
+          `${property}: ${value}`.toLowerCase().includes(needle),
+        ),
+    );
+  }
+
+  /** What the action would make, named after the facet so the button never has to guess. */
+  #addLabel(): string {
+    const seed = this.query.trim();
+    switch (this.facet) {
+      case 'classes':
+        return seed ? `Create the .${normalizeClassName(seed) || seed} class` : 'Create a class';
+      case 'rules':
+        return seed ? `Create a rule for ${seed}` : 'Create a rule';
+      default:
+        return seed ? `Create the --${seed.replace(/^--/, '')} token` : 'Create a token';
+    }
+  }
+
+  /**
+   * Create whatever the facet is about, seeded with what was typed.
+   *
+   * A class and a rule can be made from a name alone, so they are made. A token cannot — it needs a
+   * value — so this opens the New token form with the name filled in and puts the caret where the
+   * missing half goes, rather than inventing a value or refusing outright.
+   */
+  #addFromQuery(): void {
+    const seed = this.query.trim();
+    if (this.facet === 'classes') {
+      this.#createClass(seed);
+      return;
+    }
+    if (this.facet === 'rules') {
+      if (!seed) {
+        openGroups.add('rules');
+        this.version += 1;
+        return;
+      }
+      this.#createRule(seed);
+      return;
+    }
+    this.newName = seed.replace(/^--/, '');
+    this.query = '';
+    openGroups.add('create');
+    this.version += 1;
+  }
+
+  /**
+   * Said once, at the bottom, rather than per empty section.
+   *
+   * With a query on, a section with no matches renders nothing at all, so three empty registries
+   * would leave the panel looking broken instead of looking searched.
+   */
+  #renderNoMatches(): TemplateResult | typeof nothing {
+    const counts = this.#counts();
+    const total =
+      (this.#shows('tokens') ? counts.tokens : 0) +
+      (this.#shows('classes') ? counts.classes : 0) +
+      (this.#shows('rules') ? counts.rules : 0);
+    if (total > 0) return nothing;
+    return html`<div class="empty">Nothing matches “${this.query.trim()}”.</div>`;
+  }
 
   #renderComponentTokens(el: HTMLElement, usage: Map<string, number>): TemplateResult {
     const tokens = this.editor.tokens.usedBy(el);
@@ -299,7 +484,7 @@ export class HeoTokensPanel extends HeoElement {
   }
 
   #renderGroup(group: TokenGroup, usage: Map<string, number>): TemplateResult | typeof nothing {
-    const tokens = this.editor.tokens.list(group);
+    const tokens = this.#matchTokens(this.editor.tokens.list(group));
     if (!tokens.length) return nothing;
     return html`<heo-section
       heading=${TOKEN_GROUP_LABELS[group]}
@@ -421,8 +606,10 @@ export class HeoTokensPanel extends HeoElement {
     </heo-section>`;
   }
 
-  #renderClasses(el: HTMLElement | null): TemplateResult {
-    const classes = this.editor.classes.list();
+  #renderClasses(el: HTMLElement | null): TemplateResult | typeof nothing {
+    const classes = this.#matchClasses(this.editor.classes.list());
+    // Searched and nothing matched: the section goes rather than claiming the registry is empty.
+    if (this.query.trim() && !classes.length) return nothing;
     const usage = this.editor.classes.usage();
 
     return html`<heo-section
@@ -526,10 +713,13 @@ export class HeoTokensPanel extends HeoElement {
    * than a scratchpad: the rules already in the file are the ones most likely to need
    * changing, and a rule written last session is in the file now.
    */
-  #renderRules(el: HTMLElement | null): TemplateResult {
-    const rules = this.editor.rules.list();
+  #renderRules(el: HTMLElement | null): TemplateResult | typeof nothing {
+    const rules = this.#matchRules(this.editor.rules.list());
+    if (this.query.trim() && !rules.length) return nothing;
     const matches = this.editor.rules.matches();
-    const authored = this.editor.rules.authored().length;
+    const authored = rules.filter((entry) =>
+      this.editor.rules.authored().some((own) => own.selector === entry.selector),
+    ).length;
     const fromPage = rules.length - authored;
 
     return html`<heo-section

@@ -1100,7 +1100,18 @@
       check('theLibraryPanelHasNoFormOfItsOwn', () =>
         !Array.from(libPanel.shadowRoot.querySelectorAll('heo-section'))
           .some((s) => /create a block|editing/i.test(s.heading ?? '')));
-      const blockSearch = libPanel.shadowRoot.querySelector('input[aria-label="Search blocks"]');
+      /*
+       * One shadow root deeper than it used to be.
+       *
+       * The panel's hand-rolled search box became the shared `heo-search-field`, so the input now
+       * belongs to that control rather than to the panel. The accessible name is unchanged, which
+       * is the part worth pinning — it is what a user of a screen reader hears.
+       */
+      const blockSearchField = libPanel.shadowRoot.querySelector('heo-search-field');
+      const blockSearch = blockSearchField.shadowRoot.querySelector('input[aria-label="Search blocks"]');
+      check('theBlockSearchIsTheSharedField', () => Boolean(blockSearchField && blockSearch));
+      check('andItOffersCreatingFromTheFieldItself', () =>
+        Boolean(blockSearchField.shadowRoot.querySelector('.go')));
       typeInto2(blockSearch, 'zzz-no-such-block');
       await wait(120);
       await frame();
