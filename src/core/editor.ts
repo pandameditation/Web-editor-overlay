@@ -78,6 +78,8 @@ import {
   moveCommandFromOrigin,
   moveElement,
   removeElement,
+  inlineAuthoredValue,
+  previewInline,
   replaceElement,
   retagElement,
   sameStructure,
@@ -681,7 +683,14 @@ export class EditorEngine {
    * At most one at a time: a preview belongs to the field the user is currently in,
    * and moving to another field commits or abandons the last one.
    */
-  #preview: { el: HTMLElement; property: string; before: string; priority: string } | null = null;
+  /*
+   * No `priority` field: `!important` travels inside `before`.
+   *
+   * The value comes from the style attribute text now, where `!important` is part of what was
+   * written. A separate priority read off the CSSOM would have been empty in exactly the case it
+   * exists for, which is worse than not having it.
+   */
+  #preview: { el: HTMLElement; property: string; before: string } | null = null;
   /** Declarations a class had before its live preview started. */
   #classPreview: { name: string; declarations: Record<string, string> } | null = null;
   /**
@@ -1226,12 +1235,13 @@ export class EditorEngine {
     this.#preview ??= {
       el,
       property,
-      before: el.style.getPropertyValue(property),
-      priority: el.style.getPropertyPriority(property),
+      // The authored value of this exact name, so a preview of `-webkit-transform` reverts to
+      // what that declaration said rather than to whatever `transform` happens to hold.
+      before: inlineAuthoredValue(el, property),
     };
-    const next = value.trim();
-    if (next) el.style.setProperty(property, next);
-    else el.style.removeProperty(property);
+    // Through the same list the commands edit, so a preview of an aliased name paints under that
+    // name instead of adding a second declaration under the canonical one for the drag's duration.
+    previewInline(el, property, value.trim());
   }
 
   /**
@@ -1261,16 +1271,10 @@ export class EditorEngine {
     el: HTMLElement;
     property: string;
     before: string;
-    priority: string;
   } | null {
     const preview = this.#preview;
     return preview
-      ? {
-        el: preview.el,
-        property: preview.property,
-        before: preview.before,
-        priority: preview.priority,
-      }
+      ? { el: preview.el, property: preview.property, before: preview.before }
       : null;
   }
 
@@ -1324,12 +1328,7 @@ export class EditorEngine {
     const preview = this.#preview;
     this.#preview = null;
     if (!preview) return;
-    if (preview.before) {
-      preview.el.style.setProperty(preview.property, preview.before, preview.priority);
-    } else {
-      preview.el.style.removeProperty(preview.property);
-    }
-    tidyStyleAttribute(preview.el);
+    previewInline(preview.el, preview.property, preview.before);
   }
 
   /**

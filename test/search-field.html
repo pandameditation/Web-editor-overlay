@@ -395,23 +395,41 @@
       results.styles.focusesTheMissingHalf =
         focused?.tagName.toLowerCase() === 'heo-value-field';
 
-      // A disabled primary action that says what it wants, rather than ignoring the click.
       const commitBtn = () =>
         Array.from(stylePanel.shadowRoot.querySelectorAll('.popfoot button')).find((b) =>
           /add (\d+ )?declarations?/i.test(b.textContent),
         );
+      const stretchInput = stylePanel.shadowRoot
+        .querySelector('.poprow heo-value-field')
+        .shadowRoot.querySelector('input');
+      const setStretch = async (text) => {
+        stretchInput.value = text;
+        stretchInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        await stylePanel.updateComplete;
+        await frames();
+      };
+
+      /*
+       * Live on arrival, because the row is seeded with a starting value.
+       *
+       * The same thing the class editor has always done when a property is added there: a
+       * declaration with no value neither renders nor says what kind of value it wants. It also
+       * means pressing the button in the verdict writes the declaration, which is what pressing it
+       * looks like it should do.
+       */
+      results.styles.arrivesReadyToCommit =
+        Boolean(commitBtn()) && commitBtn().disabled === false;
+      results.styles.seededAValue = Boolean((stylePanel.draftRows ?? [])[0]?.value);
+
+      // And when a row IS genuinely incomplete, the button says what it wants rather than
+      // ignoring the click -- which is what the reported bug felt like.
+      await setStretch('');
       results.styles.saysWhyItCannotCommit =
         commitBtn().disabled === true &&
         /property and a value/i.test(commitBtn().getAttribute('title') ?? '') &&
         Boolean(stylePanel.shadowRoot.querySelector('.popfoot .why'));
 
-      const stretchInput = stylePanel.shadowRoot
-        .querySelector('.poprow heo-value-field')
-        .shadowRoot.querySelector('input');
-      stretchInput.value = '50%';
-      stretchInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-      await stylePanel.updateComplete;
-      await frames();
+      await setStretch('50%');
       commitBtn()?.click();
       await stylePanel.updateComplete;
       await wait(150);
@@ -437,6 +455,187 @@
         );
       })();
       engine.undo();
+      await frames();
+
+      /* ---------------------------------------------------------------- *
+       * The name the author wrote is the name that gets written.
+       *
+       * The CSSOM canonicalises a family of legacy aliases on the way in --
+       * word-wrap to overflow-wrap, grid-gap to gap, -webkit-transform to
+       * transform, and font-stretch to font-width in recent builds. Someone
+       * writing the prefixed or legacy name is answering a support question
+       * deliberately, and rewriting it overrules them.
+       * ---------------------------------------------------------------- */
+      engine.setStyle('word-wrap', 'break-word', target);
+      await frames();
+      results.styles.keepsTheAuthoredName = (target.getAttribute('style') ?? '').includes(
+        'word-wrap: break-word',
+      );
+      // Not a one-off repair: the attribute is re-serialised from the CSSOM on every later
+      // inline write, so an unrelated edit is what used to undo the spelling.
+      engine.setStyle('color', 'rgb(1, 2, 3)', target);
+      await frames();
+      results.styles.survivesALaterEdit = (target.getAttribute('style') ?? '').includes(
+        'word-wrap: break-word',
+      );
+      // And it still applies, because the browser understands the alias perfectly well.
+      results.styles.theAliasStillApplies =
+        getComputedStyle(target).overflowWrap === 'break-word';
+
+      await frames();
+      await wait(120);
+      const setSection = () =>
+        Array.from(stylePanel.shadowRoot.querySelectorAll('heo-section')).find(
+          (s) => s.heading === 'Set on this element',
+        );
+      const authoredRows = Array.from(setSection().querySelectorAll('.row .pn')).map((n) =>
+        n.textContent.trim(),
+      );
+      results.styles.panelShowsTheAuthoredName = authoredRows.includes('word-wrap');
+      /*
+       * And shows it once. Reading the inline rule from the CSSOM while reading the inline
+       * declarations from the attribute listed one declaration twice, under both names, as
+       * though the element declared each of them.
+       */
+      results.styles.andNotAlsoTheCanonicalOne = !authoredRows.includes('overflow-wrap');
+
+      /*
+       * Two spellings of one property, side by side.
+       *
+       * The oldest trick in CSS: write the prefixed name, then the standard one, and let each
+       * browser take the one it knows. The CSSOM cannot express it -- both are one entry to it --
+       * which is why inline declarations are edited as attribute text instead.
+       */
+      engine.setStyle('-webkit-transform', 'scale(2)', target);
+      await frames();
+      engine.setStyle('transform', 'scale(3)', target);
+      await frames();
+      const bothSpellings = target.getAttribute('style') ?? '';
+      results.styles.keepsBothSpellings =
+        bothSpellings.includes('-webkit-transform: scale(2)') &&
+        bothSpellings.includes('transform: scale(3)');
+      // CSS order is precedence, so the one written last is the one that renders.
+      results.styles.laterSpellingWins = getComputedStyle(target).transform.startsWith('matrix(3');
+      // And each is its own row, editable without disturbing the other.
+      engine.setStyle('-webkit-transform', 'scale(4)', target);
+      await frames();
+      results.styles.editingOneLeavesTheOther =
+        (target.getAttribute('style') ?? '').includes('-webkit-transform: scale(4)') &&
+        (target.getAttribute('style') ?? '').includes('transform: scale(3)');
+      engine.setStyle('-webkit-transform', '', target);
+      engine.setStyle('transform', '', target);
+      await frames();
+
+      /*
+       * Through a live preview too, which paints without going through a command -- so it goes
+       * through the same list, or dragging an aliased value grows a second row under the
+       * canonical name for as long as the drag lasts.
+       */
+      engine.previewStyle('word-wrap', 'anywhere', target);
+      await frames();
+      results.styles.survivesAPreview =
+        (target.getAttribute('style') ?? '').includes('word-wrap: anywhere') &&
+        !(target.getAttribute('style') ?? '').includes('overflow-wrap');
+      engine.cancelPreview();
+      await frames();
+      results.styles.previewRollbackKeepsIt = (target.getAttribute('style') ?? '').includes(
+        'word-wrap: break-word',
+      );
+
+      engine.setStyle('word-wrap', '', target);
+      engine.setStyle('color', '', target);
+      await frames();
+
+
+      /* ---------------------------------------------------------------- *
+       * One validation, for all three surfaces that add a declaration.
+       *
+       * The Styles panel, a CSS rule and a reusable class each had their own
+       * opinion. Styles checked the value and refused anything this browser
+       * rejected, but never noticed the property was already set. The class
+       * editor, which CSS rules share, deduplicated but checked nothing at
+       * all -- so `flx: 1` was impossible here and trivial there.
+       *
+       * The rule now: refuse what cannot be a declaration, and merely warn
+       * about what only this browser dislikes. Those are different questions.
+       * ---------------------------------------------------------------- */
+      const said = [];
+      const realNotify = engine.notify.bind(engine);
+      engine.notify = (message, kind) => {
+        said.push(`${kind}: ${message}`);
+        return realNotify(message, kind);
+      };
+      /* Driven through the popup, which is the panel's only way in. */
+      const addDeclaration = async (property, value) => {
+        said.length = 0;
+        if (popup()) {
+          stylePanel.shadowRoot.querySelector('.addpop .pophead button').click();
+          await stylePanel.updateComplete;
+          await frames();
+        }
+        filterField.shadowRoot.querySelector('.go').click();
+        await stylePanel.updateComplete;
+        await frames();
+        await wait(120);
+        const nameInput = stylePanel.shadowRoot
+          .querySelector('.poprow heo-search-field')
+          .shadowRoot.querySelector('input');
+        nameInput.value = property;
+        nameInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        await stylePanel.updateComplete;
+        await frames();
+        const valueInput = stylePanel.shadowRoot
+          .querySelector('.poprow heo-value-field')
+          .shadowRoot.querySelector('input');
+        valueInput.value = value;
+        valueInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        await stylePanel.updateComplete;
+        await frames();
+        commitBtn()?.click();
+        await stylePanel.updateComplete;
+        await wait(150);
+        return {
+          said: [...said],
+          stillOpen: Boolean(popup()),
+          style: target.getAttribute('style') ?? '',
+        };
+      };
+
+      // A property THIS browser does not know is written anyway, and said out loud. Refusing it
+      // made the editor unable to express a declaration for any browser but its own -- and
+      // `font-width` is the spec's own name for the widely supported `font-stretch`.
+      const unknown = await addDeclaration('font-width', '125%');
+      results.styles.unsupportedIsStillWritten = unknown.style.includes('font-width: 125%');
+      results.styles.unsupportedIsFlagged = unknown.said.some((n) => /does not know/i.test(n));
+
+      // Deprecated but supported: allowed, with advice naming what replaced it.
+      const legacy = await addDeclaration('word-wrap', 'break-word');
+      results.styles.deprecatedIsAllowed = legacy.style.includes('word-wrap: break-word');
+      results.styles.deprecatedIsAdvised = legacy.said.some((n) => /deprecated/i.test(n));
+
+      // The dedupe the panel never had, which a class always did.
+      const twice = await addDeclaration('word-wrap', 'anywhere');
+      results.styles.duplicateIsRefused = twice.said.some((n) => /already sets/i.test(n));
+      results.styles.refusalKeepsThePopupOpen = twice.stillOpen;
+
+      // The validity check a class never had, which the panel always did.
+      const junk = await addDeclaration('not a property', '1');
+      results.styles.junkIsRefused = junk.said.some((n) => /is not a property name/i.test(n));
+      results.styles.junkIsNotWritten = !junk.style.includes('not a property');
+
+      // And the trailing colon typed out of habit is normalised, not treated as gibberish:
+      // CSS.supports('letter-spacing:', 'initial') is false, so it used to look invented.
+      const colon = await addDeclaration('letter-spacing:', '2px');
+      results.styles.trailingColonIsNormalised = colon.style.includes('letter-spacing: 2px');
+
+      engine.notify = realNotify;
+      if (popup()) {
+        stylePanel.shadowRoot.querySelector('.addpop .pophead button').click();
+        await stylePanel.updateComplete;
+      }
+      for (const name of ['font-width', 'word-wrap', 'letter-spacing']) {
+        engine.setStyle(name, '', target);
+      }
       await frames();
 
       results.styles.ok =
@@ -466,11 +665,32 @@
         results.styles.popupClosed &&
         results.styles.undoTakesBothBack &&
         results.styles.knowsUncataloguedProperties &&
+        results.styles.unsupportedIsStillWritten &&
+        results.styles.unsupportedIsFlagged &&
+        results.styles.deprecatedIsAllowed &&
+        results.styles.deprecatedIsAdvised &&
+        results.styles.duplicateIsRefused &&
+        results.styles.refusalKeepsThePopupOpen &&
+        results.styles.junkIsRefused &&
+        results.styles.junkIsNotWritten &&
+        results.styles.trailingColonIsNormalised &&
+        results.styles.arrivesReadyToCommit &&
+        results.styles.seededAValue &&
         results.styles.focusesTheMissingHalf &&
         results.styles.saysWhyItCannotCommit &&
         results.styles.uncataloguedLanded &&
         results.styles.filterClearedSoTheResultShows &&
-        results.styles.showsUnderSetOnThisElement;
+        results.styles.showsUnderSetOnThisElement &&
+        results.styles.keepsTheAuthoredName &&
+        results.styles.survivesALaterEdit &&
+        results.styles.theAliasStillApplies &&
+        results.styles.panelShowsTheAuthoredName &&
+        results.styles.andNotAlsoTheCanonicalOne &&
+        results.styles.survivesAPreview &&
+        results.styles.previewRollbackKeepsIt &&
+        results.styles.keepsBothSpellings &&
+        results.styles.laterSpellingWins &&
+        results.styles.editingOneLeavesTheOther;
 
       /* ------------------------------------------------------------------ *
        * 4. Props: the same field, over attributes, able to add any of them.

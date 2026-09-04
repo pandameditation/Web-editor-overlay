@@ -1,4 +1,5 @@
 import { INSERTED_ATTR, SOURCE_ATTR } from './constants.js';
+import { parseDeclarations } from './css.js';
 import { directText, labelFor, nearestSourceRef, selectorFor } from './dom.js';
 import type { ElementAnchor } from './html-patch.js';
 import { nextChangeId, type Command } from './history.js';
@@ -211,6 +212,89 @@ export function setTextContent(el: HTMLElement, after: string): Command {
 /* Style                                                                       */
 /* -------------------------------------------------------------------------- */
 
+/* -------------------------------------------------------------------------- */
+/* The style attribute as a list of authored declarations                      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Inline declarations are edited as attribute text, not through `el.style`.
+ *
+ * The CSSOM is a lossy projection of the style attribute, in two ways that both matter here.
+ *
+ * It renames. `word-wrap` becomes `overflow-wrap`, `grid-gap` becomes `gap`, a `-webkit-` prefix
+ * with a standard equivalent loses the prefix, and in recent builds `font-stretch` becomes
+ * `font-width`. Every one of those is a name somebody chose deliberately, usually to reach a
+ * browser that does not know the other one.
+ *
+ * And it deduplicates. `-webkit-transform` and `transform` are one entry to the CSSOM, so the
+ * oldest trick in CSS — write the prefixed name, then the standard one, and let each browser take
+ * the one it understands — cannot be expressed through it at all. The same is true of
+ * `font-stretch` alongside `font-width`: the first is deprecated in the spec but widely supported,
+ * the second is correct but not, and wanting both is the reasonable position.
+ *
+ * So the attribute text is the source of truth and the CSSOM is left to do what it is good at:
+ * parsing that text and rendering the result, applying its own last-one-wins precedence between
+ * declarations it considers equivalent. Writes here match on the exact name given, which is what
+ * lets two spellings of the same property sit side by side.
+ */
+type Declaration = [name: string, value: string];
+
+function authoredEntries(el: HTMLElement): Declaration[] {
+  return Object.entries(parseDeclarations(el.getAttribute('style') ?? ''));
+}
+
+/** The authored value of one exact name, or the empty string when it is not there. */
+function authoredValue(el: HTMLElement, property: string): string {
+  const wanted = property.trim().toLowerCase();
+  return authoredEntries(el).find(([name]) => name.toLowerCase() === wanted)?.[1] ?? '';
+}
+
+/**
+ * Apply declarations to the attribute, by exact name. An empty value removes one.
+ *
+ * Matching is on the name as written rather than on what the browser considers the same property,
+ * so setting `transform` leaves an existing `-webkit-transform` alone. Existing declarations keep
+ * their position and new ones are appended, because in CSS order is precedence: a fallback pair
+ * only works if the standard name comes last, and that is the author's decision to make.
+ */
+function writeInline(el: HTMLElement, declarations: Record<string, string>): void {
+  const entries = authoredEntries(el);
+  for (const [rawName, rawValue] of Object.entries(declarations)) {
+    const name = rawName.trim();
+    if (!name) continue;
+    const value = rawValue.trim();
+    const at = entries.findIndex(([existing]) => existing.toLowerCase() === name.toLowerCase());
+    if (!value) {
+      if (at >= 0) entries.splice(at, 1);
+      continue;
+    }
+    if (at >= 0) entries[at] = [name, value];
+    else entries.push([name, value]);
+  }
+  const text = entries.map(([name, value]) => `${name}: ${value}`).join('; ');
+  if (text) el.setAttribute('style', `${text};`);
+  else el.removeAttribute('style');
+}
+
+/**
+ * Put the attribute back exactly as it was.
+ *
+ * Snapshotting the whole string rather than the properties being changed, because that is the only
+ * way to undo an edit to a list: a per-property revert cannot restore the position of a
+ * declaration it removed, and cannot know whether the attribute existed at all beforehand.
+ */
+function restoreStyleAttribute(el: HTMLElement, text: string | null): void {
+  if (text === null) el.removeAttribute('style');
+  else el.setAttribute('style', text);
+}
+
+/** Exported for the live-preview path, which paints without going through a command. */
+export function previewInline(el: HTMLElement, property: string, value: string): void {
+  writeInline(el, { [property]: value });
+}
+
+export { authoredValue as inlineAuthoredValue };
+
 /**
  * Set or remove one inline CSS declaration.
  *
@@ -218,8 +302,8 @@ export function setTextContent(el: HTMLElement, after: string): Command {
  * button and "revert to inherited" both work.
  */
 export function setStyleProperty(el: HTMLElement, property: string, value: string): Command {
-  const before = el.style.getPropertyValue(property);
-  const beforePriority = el.style.getPropertyPriority(property);
+  const beforeAttribute = el.getAttribute('style');
+  const before = authoredValue(el, property);
   const after = value.trim();
 
   return {
@@ -231,16 +315,8 @@ export function setStyleProperty(el: HTMLElement, property: string, value: strin
       after: after || undefined,
       detail: { property, value: after },
     }),
-    apply: () => {
-      if (after) el.style.setProperty(property, after);
-      else el.style.removeProperty(property);
-      tidyStyleAttribute(el);
-    },
-    revert: () => {
-      if (before) el.style.setProperty(property, before, beforePriority);
-      else el.style.removeProperty(property);
-      tidyStyleAttribute(el);
-    },
+    apply: () => writeInline(el, { [property]: after }),
+    revert: () => restoreStyleAttribute(el, beforeAttribute),
   };
 }
 
@@ -263,10 +339,10 @@ export function setStyleProperties(
   label = 'Update styles',
 ): Command {
   const entries = Object.entries(declarations);
+  const beforeAttribute = el.getAttribute('style');
   const before = entries.map(([property]) => ({
     property,
-    value: el.style.getPropertyValue(property),
-    priority: el.style.getPropertyPriority(property),
+    value: authoredValue(el, property),
   }));
 
   return {
@@ -286,20 +362,8 @@ export function setStyleProperties(
         .join('; '),
       detail: Object.fromEntries(entries),
     }),
-    apply: () => {
-      for (const [property, value] of entries) {
-        if (value) el.style.setProperty(property, value);
-        else el.style.removeProperty(property);
-      }
-      tidyStyleAttribute(el);
-    },
-    revert: () => {
-      for (const item of before) {
-        if (item.value) el.style.setProperty(item.property, item.value, item.priority);
-        else el.style.removeProperty(item.property);
-      }
-      tidyStyleAttribute(el);
-    },
+    apply: () => writeInline(el, declarations),
+    revert: () => restoreStyleAttribute(el, beforeAttribute),
   };
 }
 

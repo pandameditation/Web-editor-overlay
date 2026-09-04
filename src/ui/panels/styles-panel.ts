@@ -15,6 +15,11 @@ import {
   type AppliedRule,
   type SizeConstraint,
 } from '../../core/css.js';
+import {
+  checkDeclaration,
+  normalizeProperty,
+  propertyIsKnown,
+} from '../../core/declarations.js';
 import { labelFor, selectableParent } from '../../core/dom.js';
 import { listen, unlisten } from '../../core/shield.js';
 import { resolvesOffsets } from '../../core/transform.js';
@@ -26,7 +31,12 @@ import { icon } from '../icons.js';
 import { baseStyles } from '../theme.js';
 import { buildSuggestions, classSuggestions, valueKindFor } from '../suggestions.js';
 import { adderStyles } from './adder.js';
-import { ClassEditor, focusDeclaration, type DeclarationTarget } from './class-editor.js';
+import {
+  ClassEditor,
+  focusDeclaration,
+  initialValueFor,
+  type DeclarationTarget,
+} from './class-editor.js';
 import type { HeoValueField } from '../controls/value-field.js';
 import '../controls/value-field.js';
 import '../controls/search-field.js';
@@ -1771,7 +1781,7 @@ export class HeoStylesPanel extends HeoElement {
   #renderNoMatch(): TemplateResult {
     const seed = this.filter.trim();
     const near = searchProperties(seed, 12).filter((meta) => meta.name !== seed);
-    const real = seed ? supportsProperty(seed) : false;
+    const real = seed ? propertyIsKnown(seed) : false;
 
     return html`<div class="nomatch">
       <p class="lede">
@@ -1788,14 +1798,16 @@ export class HeoStylesPanel extends HeoElement {
           ? html`<p class="verdict no">
               ${icon('alert', 11)}
               <span>
-                <code class="mono">${seed}</code> is not a property name. Did you mean one of
-                these?
+                This browser does not recognise <code class="mono">${seed}</code>. It can still be
+                written — for another browser, or for one that has yet to catch up — or you may
+                have meant one of these:
               </span>
             </p>`
           : html`<p class="verdict no">
               ${icon('alert', 11)}
               <span>
-                <code class="mono">${seed}</code> is not a property name, and nothing resembles it.
+                This browser does not recognise <code class="mono">${seed}</code>, and nothing
+                resembles it. It can still be written if you are aiming at a browser that does.
               </span>
             </p>`}
 
@@ -1817,20 +1829,23 @@ export class HeoStylesPanel extends HeoElement {
         : nothing}
 
       <!--
-        Offered only for a name the engine accepts. Inviting someone to add a misspelling one
-        line under "that is not a property name" is a contradiction, and the commit would refuse
-        it anyway - so the completions above are the way forward instead. Nothing is blocked by
-        this: the field's own add button is always there for a name this check is wrong about.
+        Offered whatever the verdict says, and only styled as the primary action when this browser
+        agrees the property exists. It used to be withheld for anything CSS.supports rejected,
+        which quietly made the editor unable to write a declaration aimed at a different browser —
+        and CSS.supports is an answer about this engine, not about CSS.
       -->
-      ${real
-        ? html`<button class="btn sm primary" type="button" @click=${() => this.#openAdder(seed)}>
+      ${seed
+        ? html`<button
+            class=${`btn sm${real ? ' primary' : ''}`}
+            type="button"
+            title=${real
+          ? `Add ${seed} to this element`
+          : `Add ${seed} anyway — this browser will ignore it`}
+            @click=${() => this.#openAdder(seed)}
+          >
             ${icon('plus', 12)} ${this.#addLabel()}
           </button>`
-        : near.length
-          ? nothing
-          : html`<p class="hint" style="margin:0">
-              Try a shorter query, or add a declaration with the button in the search field.
-            </p>`}
+        : nothing}
     </div>`;
   }
 
@@ -1841,7 +1856,17 @@ export class HeoStylesPanel extends HeoElement {
    * to add one, so the query carries over rather than having to be typed a second time.
    */
   #openAdder(seed = ''): void {
-    this.draftRows = [{ property: seed, value: '' }];
+    /*
+     * Seeded with a starting value, not just a name.
+     *
+     * The same thing the class editor has always done when a property is added there, and the
+     * reason is the same: a declaration with no value neither renders nor says what kind of value
+     * it wants. It also means the commit button is live the moment the popup opens, so arriving
+     * from "font-stretch is a CSS property, it is just not set here" and pressing the button
+     * writes the declaration -- which is what pressing it looks like it should do.
+     */
+    const property = normalizeProperty(seed);
+    this.draftRows = [{ property, value: property ? initialValueFor(property) : '' }];
     /*
      * Measured before it opens, not after.
      *
@@ -1872,7 +1897,7 @@ export class HeoStylesPanel extends HeoElement {
        * button stayed disabled. Clicking it then did nothing, correctly and unhelpfully.
        */
       const row = this.renderRoot.querySelector('.poprow');
-      const target = seed
+      const target = property
         ? row?.querySelector('heo-value-field')
         : row?.querySelector('heo-search-field');
       target?.shadowRoot?.querySelector<HTMLInputElement>('input')?.focus();
@@ -2081,22 +2106,45 @@ export class HeoStylesPanel extends HeoElement {
    * named individually so the message says which row to fix.
    */
   #commitRows(el: HTMLElement): void {
+    /*
+     * Vetted through the shared check, so this agrees with a class and with a CSS rule.
+     *
+     * The three surfaces used to disagree. Here the value was checked and anything this browser
+     * rejected was refused outright; in a class nothing was checked at all but adding a property
+     * twice was caught. So `flx: 1` was impossible here and trivial there, and `font-stretch`
+     * added twice was caught there and silently duplicated here.
+     */
+    const inline = inlineDeclarations(el);
     const declarations: Record<string, string> = {};
+    const advice: string[] = [];
+
     for (const row of this.draftRows) {
-      const property = row.property.trim();
-      const value = row.value.trim();
-      if (!property || !value) continue;
-      if (!CSS.supports(property, value) && !value.includes('var(--')) {
-        this.editor.notify(`The browser does not accept ${property}: ${value}.`, 'error');
+      if (!row.property.trim()) continue;
+      const verdict = checkDeclaration({
+        property: row.property,
+        value: row.value,
+        // Both what the element already declares and what earlier rows in this same batch claimed,
+        // so a name typed into two rows is caught before it silently overwrites itself.
+        existing: { ...inline, ...declarations },
+        label: labelFor(el),
+      });
+      if (verdict.refusal) {
+        this.editor.notify(verdict.refusal, 'error');
         return;
       }
-      declarations[property] = value;
+      if (!verdict.property) continue;
+      // A value is no longer required: the popup seeds one, and a property with an empty value is
+      // a row waiting to be filled rather than an error.
+      const value = row.value.trim() || initialValueFor(verdict.property);
+      declarations[verdict.property] = value;
+      if (verdict.advice) advice.push(verdict.advice);
     }
-    const count = Object.keys(declarations).length;
-    if (!count) return;
+
+    const names = Object.keys(declarations);
+    if (!names.length) return;
     this.editor.setStyles(
       declarations,
-      count === 1 ? 'Add a declaration' : `Add ${count} declarations`,
+      names.length === 1 ? 'Add a declaration' : `Add ${names.length} declarations`,
       el,
     );
     this.#closeAdder();
@@ -2110,11 +2158,16 @@ export class HeoStylesPanel extends HeoElement {
      * question nobody is still asking.
      */
     this.#clearFilter();
+
+    const added =
+      names.length === 1
+        ? `Added ${names[0]} to ${labelFor(el)}.`
+        : `Added ${names.length} declarations to ${labelFor(el)}.`;
+    // One notice, and the advice decides its tone: everything landed either way, so a warning here
+    // means "this worked, and here is something you may not have known".
     this.editor.notify(
-      count === 1
-        ? `Added ${Object.keys(declarations)[0]} to ${labelFor(el)}.`
-        : `Added ${count} declarations to ${labelFor(el)}.`,
-      'success',
+      advice.length ? `${added} ${advice.join(' ')}` : added,
+      advice.length ? 'warn' : 'success',
     );
   }
 
@@ -2138,7 +2191,7 @@ export class HeoStylesPanel extends HeoElement {
 }
 
 /** An in-flight live preview, as the panel needs to see it. */
-type StylePreview = { property: string; before: string; priority: string };
+type StylePreview = { property: string; before: string };
 
 /**
  * The element's inline declarations, as authored rather than as painted.
@@ -2154,8 +2207,8 @@ function authoredInline(el: HTMLElement, preview: StylePreview | null): Record<s
   const inline = inlineDeclarations(el);
   if (!preview) return inline;
   if (preview.before) {
-    inline[preview.property] =
-      preview.priority === 'important' ? `${preview.before} !important` : preview.before;
+    // `before` is the authored text, so any `!important` is already in it.
+    inline[preview.property] = preview.before;
   } else {
     delete inline[preview.property];
   }
@@ -2258,21 +2311,6 @@ function expand(parts: string[]): [string, string, string, string] {
   if (parts.length === 2) return [parts[0], parts[1], parts[0], parts[1]];
   if (parts.length === 3) return [parts[0], parts[1], parts[2], parts[1]];
   return [parts[0], parts[1], parts[2], parts[3]];
-}
-
-/**
- * Whether the engine knows this property name at all.
- *
- * `initial` is accepted by every property that exists and by nothing that does not, which makes
- * this a real answer rather than a lookup in a list the editor happens to ship. Guarded because a
- * name with a stray bracket in it can make CSS.supports throw rather than return false.
- */
-function supportsProperty(name: string): boolean {
-  try {
-    return CSS.supports(name, 'initial');
-  } catch {
-    return false;
-  }
 }
 
 function shorten(value: string, max = 22): string {

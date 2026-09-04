@@ -153,6 +153,17 @@ export const CSS_PROPERTIES: PropertyMeta[] = [
   { name: 'font-size', group: 'typography', control: 'length', tokens: 'size' },
   { name: 'font-weight', group: 'typography', control: 'keyword', keywords: [...K.weight] },
   { name: 'font-style', group: 'typography', control: 'keyword', keywords: ['normal', 'italic', 'oblique'] },
+  /*
+   * Both spellings of the same property, on purpose.
+   *
+   * `font-width` is what the spec calls it and `font-stretch` is the deprecated alias -- and yet
+   * the alias is the one browsers actually support, so an author needs to be able to reach either.
+   * Listing both is also what makes them findable: neither was in the catalogue, so searching
+   * `font-stretch` found nothing and the panel had no control to offer for it.
+   */
+  { name: 'font-stretch', group: 'typography', control: 'length', keywords: ['normal', 'condensed', 'semi-condensed', 'expanded', 'semi-expanded', '50%', '100%', '200%'], hint: '50% - 200%' },
+  { name: 'font-width', group: 'typography', control: 'length', keywords: ['normal', 'condensed', 'semi-condensed', 'expanded', 'semi-expanded', '50%', '100%', '200%'], hint: '50% - 200%' },
+  { name: 'font-variant', group: 'typography', control: 'text', hint: 'small-caps' },
   { name: 'line-height', group: 'typography', control: 'length', tokens: 'size', hint: '1.5' },
   { name: 'letter-spacing', group: 'typography', control: 'length', keywords: ['normal'] },
   { name: 'word-spacing', group: 'typography', control: 'length', keywords: ['normal'] },
@@ -327,7 +338,14 @@ export function appliedRules(el: HTMLElement): AppliedRule[] {
       origin: 'inline',
       source: 'inline',
       specificity: 10_000,
-      declarations: readDeclarations(el.style),
+      /*
+       * From the attribute, so this agrees with `inlineDeclarations`.
+       *
+       * Reading the CSSOM here and the attribute there meant one declaration written with a
+       * legacy name appeared twice in the panel, once under the name the author used and once
+       * under the name the browser prefers -- as though the element declared both.
+       */
+      declarations: toAppliedDeclarations(inlineDeclarations(el)),
     });
   }
   return rules;
@@ -586,8 +604,13 @@ export function stateRules(el: HTMLElement): AppliedRule[] {
  * shorthands itself for the per-side editor.
  */
 function readDeclarations(style: CSSStyleDeclaration): AppliedDeclaration[] {
+  return toAppliedDeclarations(parseDeclarations(style.cssText));
+}
+
+/** The same shape, from declarations already parsed out of authored text. */
+function toAppliedDeclarations(declarations: Record<string, string>): AppliedDeclaration[] {
   const out: AppliedDeclaration[] = [];
-  for (const [property, raw] of Object.entries(parseDeclarations(style.cssText))) {
+  for (const [property, raw] of Object.entries(declarations)) {
     const important = /!\s*important\s*$/i.test(raw);
     out.push({
       property,
@@ -867,16 +890,22 @@ export function joinBoxValue(sides: [string, string, string, string]): string {
 }
 
 /**
- * The element's inline declarations, parsed from `cssText`.
+ * The element's inline declarations, as authored.
  *
- * Indexing into `style` misses shorthands whose value contains `var()`: the
- * browser stores those as a pending-substitution value that does not enumerate
- * as its longhands, so `padding: var(--space-lg)` is invisible to an index walk.
- * Parsing the serialized text keeps declarations exactly as they were authored,
- * which is also what should end up in an extracted class.
+ * Read from the `style` *attribute* rather than from `style.cssText`. The two are usually the
+ * same string, and where they differ the attribute is the honest one: `cssText` is serialised
+ * back out of the CSSOM, which canonicalises a family of legacy property names on the way in --
+ * `word-wrap` to `overflow-wrap`, `grid-gap` to `gap`, `-webkit-transform` to `transform`,
+ * `font-stretch` to `font-width` in recent builds. Reading the attribute is what lets a panel
+ * show, and an extracted class carry, the name the author actually wrote.
+ *
+ * Parsed as text rather than indexed either way, because indexing into `style` misses shorthands
+ * whose value contains `var()`: the browser stores those as a pending-substitution value that
+ * does not enumerate as its longhands, so `padding: var(--space-lg)` is invisible to an index
+ * walk.
  */
 export function inlineDeclarations(el: HTMLElement): Record<string, string> {
-  return parseDeclarations(el.style.cssText);
+  return parseDeclarations(el.getAttribute('style') ?? '');
 }
 
 /**

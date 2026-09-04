@@ -1,6 +1,7 @@
 import { css, html, nothing, type CSSResult, type TemplateResult } from 'lit';
 import { repeat } from 'lit/directives/repeat.js';
 import { propertyMeta, resolveValue, searchProperties } from '../../core/css.js';
+import { checkDeclaration } from '../../core/declarations.js';
 import type { EditorEngine } from '../../core/editor.js';
 import type { DesignClass } from '../../core/types.js';
 import { icon } from '../icons.js';
@@ -357,17 +358,31 @@ export const ClassEditor = {
      * kind of value the new field expects.
      */
     const commitProperty = (): void => {
-      const property = host.newProperty.trim().toLowerCase().replace(/:+$/, '');
-      if (!property) return;
-      host.onNewProperty('');
-      if (target.declarations[property] !== undefined) {
-        engine.notify(`${target.label} already sets ${property}.`, 'info');
-      } else {
-        target.commit(property, initialValueFor(property));
+      /*
+       * Vetted through the shared check, so this agrees with the Styles panel.
+       *
+       * Both halves of it are new here. Nothing was ever checked for validity, so `flx` went into
+       * a class or a rule and into the exported file, while the Styles panel refused the same
+       * thing outright — and the duplicate check that did exist lived only here. One function now
+       * answers for all three surfaces, which is what stops them drifting apart again.
+       */
+      const verdict = checkDeclaration({
+        property: host.newProperty,
+        existing: target.declarations,
+        label: target.label,
+      });
+      if (!verdict.property) return;
+      if (verdict.refusal) {
+        engine.notify(verdict.refusal, verdict.refusal.includes('already sets') ? 'info' : 'error');
+        // The draft stays put for a refusal, so the name can be corrected rather than retyped.
+        return;
       }
+      host.onNewProperty('');
+      if (verdict.advice) engine.notify(verdict.advice, 'warn');
+      target.commit(verdict.property, initialValueFor(verdict.property));
       // Naming a property is never the goal; giving it a value is. Hand the caret to
       // the field that was just created, with its own autocomplete already loaded.
-      host.onFocus?.(property);
+      host.onFocus?.(verdict.property);
     };
 
     return html`
