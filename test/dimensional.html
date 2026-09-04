@@ -12,6 +12,7 @@
       --space-lg: 24px;
       --space-xl: 48px;
       --brand: #ff3355;
+      --shadow-md: 0 8px 24px -6px rgb(0 0 0 / 18%);
     }
 
     body {
@@ -272,18 +273,44 @@
         await frames();
         await wait(250);
         const tokensPanel = deep('heo-tokens-panel');
-        const tokenFields = Array.from(
-          tokensPanel.shadowRoot.querySelectorAll('heo-value-field'),
+        for (const section of tokensPanel.shadowRoot.querySelectorAll('heo-section')) {
+          section.open = true;
+        }
+        await tokensPanel.updateComplete;
+        await wait(200);
+
+        const tokenRows = Array.from(tokensPanel.shadowRoot.querySelectorAll('.token')).map(
+          (row) => {
+            const field = row.querySelector('heo-value-field');
+            return {
+              name: field?.label ?? '',
+              kind: field?.kind,
+              well: Boolean(row.querySelector('.preview')),
+              gauge: Boolean(field?.shadowRoot.querySelector('.gauge')),
+              width: Math.round(field?.getBoundingClientRect().width ?? 0),
+            };
+          },
         );
-        // A size or radius token drew the bar preview but was handed kind="text", so it could
-        // neither be scrubbed nor stepped -- the preview and the control disagreed.
+        const dimensional = tokenRows.filter((r) => /space|size|radius/.test(r.name));
+        const shadow = tokenRows.filter((r) => /shadow/.test(r.name));
+        const colour = tokenRows.filter((r) => /brand/.test(r.name));
+
         results.tokensPanel = {
-          everyDimensionalTokenScrubs: tokenFields
-            .filter((f) => f.label && /space|size|radius/.test(f.label))
-            .every((f) => f.kind === 'length'),
-          fieldsHaveTheLabelHandle: tokenFields.some((f) =>
-            f.shadowRoot.querySelector('.scrub'),
-          ),
+          // A size or radius token drew the bar preview but was handed kind="text", so it could
+          // neither be scrubbed nor stepped -- the preview and the control disagreed.
+          everyDimensionalTokenScrubs:
+            dimensional.length > 0 && dimensional.every((r) => r.kind === 'length' && r.gauge),
+          /*
+           * And none of them still carries the read-only well beside it. Once the field draws its
+           * own gauge that well is the same reading twice, and it was costing the field 28px of the
+           * width the handle now needs.
+           */
+          noDuplicateWell: dimensional.every((r) => !r.well),
+          // Which is the width a colour row has had all along, for the same reason.
+          asWideAsAColourRow:
+            colour.length > 0 && dimensional.every((r) => r.width === colour[0].width),
+          // The well stays where the field cannot replace it: a shadow is not a length.
+          shadowKeepsItsWell: shadow.length > 0 && shadow.every((r) => r.well && !r.gauge),
         };
 
       } catch (error) {

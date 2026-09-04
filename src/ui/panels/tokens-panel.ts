@@ -10,7 +10,7 @@ import type { DesignClass, DesignRule, DesignToken, TokenGroup } from '../../cor
 import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
 import { classSuggestions } from '../suggestions.js';
-import { baseStyles, swatchStyle } from '../theme.js';
+import { baseStyles } from '../theme.js';
 import { ClassEditor, focusDeclaration } from './class-editor.js';
 import { RuleEditor, type RuleEditorHost } from './rule-editor.js';
 import { DesignTransfer, type DesignTransferHost } from './design-transfer.js';
@@ -88,8 +88,9 @@ export class HeoTokensPanel extends HeoElement {
         align-items: center;
         gap: 6px;
       }
-      /* A colour field already draws its own swatch, so the preview column would
-         only repeat it. */
+      /* A colour field draws its own swatch and a length field its own gauge, so for those the
+         preview column would only repeat what is already there -- and take the width the field
+         needs for the handle. */
       .token.no-preview {
         grid-template-columns: minmax(0, 1fr) auto auto;
       }
@@ -107,11 +108,6 @@ export class HeoTokensPanel extends HeoElement {
       .token .preview .fill {
         width: 100%;
         height: 100%;
-      }
-      .token .preview .bar-fill {
-        height: 4px;
-        border-radius: 2px;
-        background: var(--heo-accent);
       }
       .token .preview .glyph {
         color: var(--heo-text-faint);
@@ -512,8 +508,18 @@ export class HeoTokensPanel extends HeoElement {
   #renderToken(token: DesignToken, usage: Map<string, number>): TemplateResult {
     const count = usage.get(token.name) ?? 0;
     const isColor = token.group === 'color';
-    return html`<div class=${`token${isColor ? ' no-preview' : ''}`}>
-      ${isColor
+    /*
+     * The value field draws its own leading affordance for a colour or a length, so the well beside
+     * it would be a second copy of the same reading -- and worse than redundant, since it takes
+     * 28px off the field that now has a drag handle of its own to fit. The rule was already here
+     * for colours; a length is the same situation, arrived at later.
+     *
+     * What is left in the well is what the field cannot show: a shadow, and a glyph naming the
+     * group for everything else.
+     */
+    const ownsItsPreview = isColor || DIMENSIONAL_GROUPS.has(token.group);
+    return html`<div class=${`token${ownsItsPreview ? ' no-preview' : ''}`}>
+      ${ownsItsPreview
         ? nothing
         : html`<span class="preview" title=${token.value}>${this.#preview(token)}</span>`}
       <heo-value-field
@@ -541,13 +547,15 @@ export class HeoTokensPanel extends HeoElement {
     </div>`;
   }
 
+  /**
+   * What goes in the well, for the groups that still have one.
+   *
+   * Colour and length are absent by design rather than by omission: their fields draw a swatch and
+   * a gauge respectively, so `#renderToken` skips the well entirely for them. Both branches used to
+   * live here and neither could be reached -- the colour one had already been dead for as long as
+   * `no-preview` has existed.
+   */
   #preview(token: DesignToken): TemplateResult {
-    if (token.group === 'color') {
-      return html`<span class="fill swatch" style=${swatchStyle(token.value)}></span>`;
-    }
-    if (token.group === 'space' || token.group === 'size' || token.group === 'radius') {
-      return html`<span class="bar-fill" style=${`width:min(18px, max(2px, ${token.value}))`}></span>`;
-    }
     if (token.group === 'shadow') {
       return html`<span
         class="fill"
