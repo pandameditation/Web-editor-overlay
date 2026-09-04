@@ -2,8 +2,16 @@ import { css, html, LitElement, nothing, type PropertyValues, type TemplateResul
 import { customElement, property, query, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 import { DIRTY_ATTR, EDIT_DISCARDED_EVENT } from '../../core/constants.js';
-import { formatLength, nextUnit, parseLength, toHexColor } from '../../core/css.js';
+import {
+  formatCssFunction,
+  formatLength,
+  nextUnit,
+  parseCssFunction,
+  parseLength,
+  toHexColor,
+} from '../../core/css.js';
 import { listen, unlisten } from '../../core/shield.js';
+import { anchoredStyle } from '../place.js';
 import { icon } from '../icons.js';
 import { baseStyles, swatchStyle } from '../theme.js';
 
@@ -26,6 +34,13 @@ export interface ValueSuggestion {
    * value of an expression is something to read, not something to switch to.
    */
   info?: boolean;
+  /**
+   * Picking this opens a composer instead of committing a value.
+   *
+   * A function cannot be offered as a completion the way `16px` can: it takes several values, and a
+   * list row has nowhere to ask for several values. So the row is a way in rather than an answer.
+   */
+  opens?: FunctionName;
 }
 
 export type ValueKind = 'text' | 'length' | 'number' | 'color' | 'keyword';
@@ -283,6 +298,113 @@ export class HeoValueField extends LitElement {
           transform: translateY(-3px);
         }
       }
+      /* ---- Function composer ---- */
+
+      /* Wider than a value field: three labelled rows each holding a field of its own do not fit the
+         width of the box that opened them, and a form that scrolls sideways is not a form.
+
+         A column whose rows scroll, not a box that scrolls. Placement caps the height so the
+         composer always fits on screen, and the popup class scrolls -- which would put the footer
+         holding Apply below the fold. The head and foot stay; the rows give way. */
+      .composer {
+        display: flex;
+        flex-direction: column;
+        gap: 7px;
+        min-width: 296px;
+        padding: 9px;
+        overflow: hidden;
+      }
+      .composer > .cm-head,
+      .composer > .cm-out,
+      .composer > .cm-foot,
+      .composer > .btn {
+        flex: 0 0 auto;
+      }
+      .cm-head {
+        display: flex;
+        align-items: baseline;
+        gap: 6px;
+      }
+      .cm-name {
+        color: var(--heo-text);
+        font-family: var(--heo-mono);
+        font-size: 11.5px;
+      }
+      .cm-what {
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        color: var(--heo-text-faint);
+        font-size: 10px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .cm-rows {
+        display: grid;
+        gap: 5px;
+        flex: 0 1 auto;
+        min-height: 0;
+        overflow-y: auto;
+      }
+      /* The label column is fixed so the nested fields line up; the trailing track collapses when a
+         row cannot be removed. */
+      .cm-row {
+        display: grid;
+        grid-template-columns: 58px minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 6px;
+      }
+      .cm-label {
+        overflow: hidden;
+        color: var(--heo-text-dim);
+        font-size: 10.5px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        cursor: help;
+      }
+      .cm-op {
+        height: 26px;
+        padding: 0 4px;
+        border: 1px solid var(--heo-line);
+        border-radius: var(--heo-r-sm);
+        background: var(--heo-sunken);
+        color: var(--heo-text);
+        font-family: var(--heo-mono);
+        font-size: 12px;
+        text-align: center;
+      }
+      /* The value being built, spelled out. The rows say what the parts are; this says what the
+         declaration will be, which is the thing actually being written. */
+      .cm-out {
+        min-width: 0;
+        overflow-x: auto;
+        padding: 5px 7px;
+        border-radius: var(--heo-r-sm);
+        background: var(--heo-sunken);
+        color: var(--heo-text-dim);
+        font-family: var(--heo-mono);
+        font-size: 10.5px;
+        white-space: nowrap;
+      }
+      .cm-out.bad {
+        color: var(--heo-danger);
+      }
+      .cm-foot {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .cm-foot .spacer {
+        flex: 1 1 auto;
+      }
+      .cm-why {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        color: var(--heo-danger);
+        font-size: 10px;
+      }
+
       .group {
         padding: 6px 8px 3px;
         color: var(--heo-text-faint);
@@ -403,6 +525,18 @@ export class HeoValueField extends LitElement {
   @state() private highlight = -1;
   @state() private scrubbing = false;
   @state() private popupStyle = '';
+  /**
+   * The function being composed, or null when none is.
+   *
+   * Held here rather than in a separate control so the composer and the list share one popover: two
+   * in the top layer at once look like a rendering fault, and only one can be the one the keyboard
+   * is driving.
+   */
+  @state() private composer: {
+    fn: FunctionName;
+    parts: string[];
+    operators: string[];
+  } | null = null;
 
   @query('input[type="text"]') private textInput!: HTMLInputElement;
   @query('input[type="color"]') private colorInput?: HTMLInputElement;
@@ -436,6 +570,12 @@ export class HeoValueField extends LitElement {
     if (event.composedPath().includes(this)) return;
     this.open = false;
     this.highlight = -1;
+    // Abandoning a composer by pressing elsewhere discards it, and the live preview it painted has
+    // to go with it — this field's own value never changed.
+    if (this.composer) {
+      this.composer = null;
+      this.dispatchEvent(new CustomEvent('value-revert', { bubbles: true, composed: true }));
+    }
   };
 
   override connectedCallback(): void {
@@ -577,6 +717,31 @@ export class HeoValueField extends LitElement {
     return this.numeric || this.kind === 'length' || this.kind === 'number';
   }
 
+  /**
+   * The fields whose popups this one is rendered inside, innermost first.
+   *
+   * `contains` cannot answer this: a composer's part lives in its host's shadow root, and containment
+   * does not cross that boundary. Walking the host chain does. Bounded, because a cycle here would
+   * hang the field rather than misplace it.
+   */
+  #hostFields(): HeoValueField[] {
+    const out: HeoValueField[] = [];
+    let node: Node = this;
+    for (let depth = 0; depth < 8; depth += 1) {
+      const root = node.getRootNode();
+      if (!(root instanceof ShadowRoot)) break;
+      const host = root.host;
+      if (host instanceof HeoValueField) out.push(host);
+      node = host;
+    }
+    return out;
+  }
+
+  /** Whether this field's own suggestion list is up. Read by a composer hosting it. */
+  get listIsOpen(): boolean {
+    return this.open && !this.composer;
+  }
+
   /** True when there is a list worth showing, i.e. when opening it does something. */
   get #canOpen(): boolean {
     return (
@@ -615,10 +780,23 @@ export class HeoValueField extends LitElement {
   }
 
   private get filtered(): ValueSuggestion[] {
-    const needle = this.draft.trim().toLowerCase();
+    /*
+     * Filtering is for searching, and you are only searching once you have changed the text.
+     *
+     * The draft starts out as the field's committed value, so treating it as a query meant opening
+     * the list on `width: 220px` filtered every token out — "220px" matches no token name — and the
+     * list showed one row: the value already in the box. The palette was reachable only by first
+     * deleting the value, which is the opposite of offering it.
+     *
+     * It showed up worst inside the clamp composer, where each part always holds a value, so the
+     * token list was always empty and "use the design tokens for the bounds" was impossible.
+     */
+    const searching = this.draft.trim() !== this.value.trim();
+    const needle = searching ? this.draft.trim().toLowerCase() : '';
     const units = this.#unitSuggestions();
+    const functions = this.#functionSuggestions();
     const all = this.suggestions;
-    if (!needle) return [...this.#computedSuggestion(), ...units, ...all];
+    if (!needle) return [...this.#computedSuggestion(), ...units, ...all, ...functions];
 
     const scored = all.filter(
       (item) =>
@@ -637,11 +815,49 @@ export class HeoValueField extends LitElement {
     const unitValues = new Set(units.map((unit) => unit.value));
     // The resolved value leads even while filtering: it is context for what is being
     // typed rather than a match for it.
+    /*
+     * Functions narrow only when the query is about a function.
+     *
+     * The draft is usually the field's committed value rather than a search — open the list on a
+     * width of `16px` and the needle is "16px", which matches no function name and filtered every
+     * one of them out. So they were unreachable from precisely the state a user opens the list in.
+     *
+     * Treated like the unit completions instead, which are synthesised and always offered when they
+     * apply: four rows, grouped and last, so they cost little and are always findable. Typing "cl"
+     * still narrows to the one, which is what keeps the list a search when it is used as one.
+     */
+    const named = functions.filter(
+      (item) =>
+        item.value.toLowerCase().startsWith(needle) ||
+        (item.label ?? '').toLowerCase().startsWith(needle),
+    );
     return [
       ...this.#computedSuggestion(),
       ...units,
       ...scored.filter((item) => !unitValues.has(item.value)),
+      ...(named.length ? named : functions),
     ];
+  }
+
+  /**
+   * The CSS functions worth offering on a dimensional value.
+   *
+   * Only where a length makes sense, and only these four: they are the ones that answer a question a
+   * single number cannot. Each opens a form rather than inserting text, because each takes several
+   * values — see FUNCTIONS for what differs between them.
+   */
+  #functionSuggestions(): ValueSuggestion[] {
+    if (!this.isNumeric || this.kind === 'number') return [];
+    return (Object.keys(FUNCTIONS) as FunctionName[]).map((fn) => {
+      const existing = parseCssFunction(this.draft, [fn]);
+      return {
+        value: `${fn}()`,
+        label: existing ? `${fn}() — edit` : `${fn}()`,
+        hint: FUNCTIONS[fn].what,
+        group: 'Functions',
+        opens: fn,
+      };
+    });
   }
 
   /**
@@ -868,7 +1084,151 @@ export class HeoValueField extends LitElement {
     `;
   }
 
+  /**
+   * The composer, in place of the list.
+   *
+   * Every part is a `heo-value-field` in its own right, and that is the whole point: a bound of a
+   * clamp is a length like any other, so it gets the project's tokens, the unit chip, the gauge and
+   * the scrub without a line of that being written again.
+   *
+   * The nested events are stopped here. They bubble and compose, so left alone the host panel would
+   * hear a part's value as though it were the whole declaration and write `10px` where
+   * `clamp(10px, …)` was meant.
+   */
+  #renderComposer(): TemplateResult {
+    const state = this.composer!;
+    const spec = FUNCTIONS[state.fn];
+    const composed = this.#composed();
+    const invalid = !CSS.supports(this.property || 'width', composed);
+
+    return html`<div
+      class="popup composer"
+      popover="manual"
+      style=${this.popupStyle}
+      role="dialog"
+      aria-label=${`Compose a ${state.fn}()`}
+      @keydown=${this.#onComposerKey}
+    >
+      <div class="cm-head">
+        <span class="cm-name">${state.fn}()</span>
+        <span class="cm-what">${spec.what}</span>
+        <button class="mini" type="button" title="Cancel" @click=${() => this.#closeComposer()}>
+          ${icon('close', 11)}
+        </button>
+      </div>
+
+      <div class="cm-rows">
+        ${state.parts.map((part, index) => this.#renderPart(state, spec, part, index))}
+      </div>
+
+      ${spec.variadic
+        ? html`<button
+            class="btn sm"
+            type="button"
+            title=${`Add another value to this ${state.fn}()`}
+            @click=${() => this.#addPart()}
+          >
+            ${icon('plus', 12)} Another
+          </button>`
+        : nothing}
+
+      <code class=${`cm-out${invalid ? ' bad' : ''}`}>${composed}</code>
+      <div class="cm-foot">
+        ${invalid
+        ? html`<span class="cm-why">${icon('alert', 11)} Not a value this browser accepts</span>`
+        : nothing}
+        <span class="spacer"></span>
+        <button class="btn sm primary" type="button" @click=${() => this.#applyComposer()}>
+          ${icon('check', 12)} Apply
+        </button>
+      </div>
+    </div>`;
+  }
+
+  #renderPart(
+    state: { fn: FunctionName; parts: string[]; operators: string[] },
+    spec: ComposerSpec,
+    part: string,
+    index: number,
+  ): TemplateResult {
+    const label = spec.labels?.[index];
+    const removable = spec.variadic && state.parts.length > spec.least;
+
+    return html`<div class="cm-row">
+      ${spec.operators && index > 0
+        ? html`<select
+            class="cm-op"
+            aria-label="Operator"
+            @change=${(event: Event) =>
+        this.#setOperator(index - 1, (event.target as HTMLSelectElement).value)}
+          >
+            ${['+', '-', '*', '/'].map(
+          (op) => html`<option value=${op} ?selected=${state.operators[index - 1] === op}>
+                ${op}
+              </option>`,
+        )}
+          </select>`
+        : html`<span class="cm-label" title=${label?.hint ?? ''}>
+            ${label?.label ?? `Value ${index + 1}`}
+          </span>`}
+      <heo-value-field
+        .value=${part}
+        kind="length"
+        .property=${this.property}
+        .suggestions=${this.suggestions}
+        placeholder=${label?.hint ?? 'a length'}
+        @value-input=${(event: Event) => {
+        event.stopPropagation();
+        this.#setPart(index, (event as CustomEvent<{ value: string }>).detail.value);
+      }}
+        @value-change=${(event: Event) => {
+        event.stopPropagation();
+        this.#setPart(index, (event as CustomEvent<{ value: string }>).detail.value);
+      }}
+        @value-revert=${(event: Event) => event.stopPropagation()}
+      ></heo-value-field>
+      ${removable
+        ? html`<button
+            class="mini"
+            type="button"
+            title="Remove this value"
+            aria-label="Remove this value"
+            @click=${() => this.#removePart(index)}
+          >
+            ${icon('close', 11)}
+          </button>`
+        : nothing}
+    </div>`;
+  }
+
+  /** Enter applies and Escape cancels, wherever the caret is inside the composer. */
+  #onComposerKey = (event: KeyboardEvent): void => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      this.#closeComposer();
+      return;
+    }
+    if (event.key !== 'Enter') return;
+    /*
+     * Enter applies, unless a part's own list is driving it.
+     *
+     * A part is a full field, so Enter there may be accepting a token from its dropdown. Applying
+     * the whole function at the same moment would close the composer on the keystroke that was
+     * choosing one of its values.
+     */
+    const target = event.composedPath()[0];
+    if (target instanceof HTMLElement) {
+      const owner = (target.getRootNode() as ShadowRoot).host;
+      if (owner instanceof HeoValueField && owner !== this && owner.listIsOpen) return;
+    }
+    event.preventDefault();
+    this.#applyComposer();
+  };
+
   #renderPopup(): TemplateResult {
+    // The composer replaces the list while it is up: it answers the question the list was asking.
+    if (this.composer) return this.#renderComposer();
     const items = this.filtered;
     if (!items.length) {
       return html`<div class="popup" popover="manual" style=${this.popupStyle} role="listbox">
@@ -1010,6 +1370,15 @@ export class HeoValueField extends LitElement {
   #onFocusOut(): void {
     clearTimeout(this.#blurTimer);
     this.#blurTimer = setTimeout(() => {
+      /*
+       * A composer owns its own lifetime.
+       *
+       * Its parts are fields, so focus moves in and out of them constantly, and each move looked
+       * from here like the field being abandoned — which closed the popup and, because the draft
+       * still equalled the value, announced a revert that rolled the composed preview back off the
+       * page. Apply and Cancel are the only two ways out, and both are explicit.
+       */
+      if (this.composer) return;
       if (!this.#focusKeepsListOpen()) this.closePopup();
       if (this.#hasFocus()) return;
       // A submit control has an explicit trigger, so looking away is not an
@@ -1140,10 +1509,18 @@ export class HeoValueField extends LitElement {
   }
 
   #openPopup(): void {
-    // One list at a time. Stacked popovers in the top layer look like a rendering
-    // fault, and only one of them can be the one the keyboard is driving.
+    /*
+     * One list at a time, except the one this is standing inside.
+     *
+     * Stacked popovers in the top layer look like a rendering fault, and only one can be the one the
+     * keyboard is driving — so opening a list closes every other. A composer breaks that assumption:
+     * its parts are fields in their own right, rendered inside this field's popup, so "close every
+     * other" would close the popup containing the field that just opened one, and the part would
+     * vanish under the cursor mid-edit.
+     */
+    const hosts = new Set(this.#hostFields());
     for (const other of openFields) {
-      if (other !== this) other.closePopup();
+      if (other !== this && !hosts.has(other)) other.closePopup();
     }
     openFields.add(this);
     this.open = true;
@@ -1165,26 +1542,152 @@ export class HeoValueField extends LitElement {
    * the cost of having to recompute on scroll and resize.
    */
   #positionPopup(): void {
-    const anchor = this.getBoundingClientRect();
-    const popup = this.renderRoot.querySelector('.popup');
-    const height = popup?.getBoundingClientRect().height ?? 240;
-    const width = Math.max(anchor.width, 200);
-
-    const spaceBelow = innerHeight - anchor.bottom;
-    const above = spaceBelow < height + 12 && anchor.top > spaceBelow;
-    const top = above ? Math.max(8, anchor.top - height - 5) : anchor.bottom + 5;
-    const left = Math.min(Math.max(8, anchor.left), Math.max(8, innerWidth - width - 8));
-
-    this.popupStyle = `top:${Math.round(top)}px;left:${Math.round(left)}px;width:${Math.round(width)}px;max-height:${Math.round(above ? anchor.top - 16 : spaceBelow - 16)}px`;
+    this.popupStyle = anchoredStyle({
+      anchor: this.getBoundingClientRect(),
+      popup: this.renderRoot.querySelector('.popup')?.getBoundingClientRect(),
+      // A composer is wider than a list: three labelled rows each holding a field of their own.
+      minWidth: this.composer ? 296 : 200,
+    });
   }
 
   #choose(item: ValueSuggestion): void {
+    /*
+     * A row that opens a composer is a way in, not an answer.
+     *
+     * Nothing is committed here: `clamp()` as a literal is not a value, and `#commit` would adopt
+     * it, so the next keystroke would be editing an empty function rather than filling one in. The
+     * value the field already holds stays behind the form until Apply.
+     */
+    if (item.opens) {
+      this.#openComposer(item.opens);
+      return;
+    }
     this.draft = item.value;
     this.open = false;
     this.highlight = -1;
     this.#highlightMoved = false;
     if (this.action) this.#submit();
     else this.#commit();
+  }
+
+  /* ---- Function composer ---- */
+
+  /**
+   * Open the composer, seeded from what is on screen.
+   *
+   * An existing call of the same function is taken apart, so opening it is editing it rather than
+   * starting again. What is deliberately *not* a seed is the text in the box: reaching the row means
+   * having typed a search for it, and `clamp` is not a length. See `seedFor`.
+   */
+  #openComposer(fn: FunctionName): void {
+    const existing = parseCssFunction(this.draft, [fn]);
+    /*
+     * The search that found the row is discarded with it.
+     *
+     * Typing "clamp" to reach the function leaves "clamp" in the box, and the box commits what is in
+     * it when focus leaves — so abandoning the composer wrote `width: clamp` onto the element. The
+     * query was a means of finding the row, never a value.
+     */
+    if (!existing) this.draft = this.value;
+    this.composer = existing
+      ? { fn, parts: existing.parts, operators: existing.operators }
+      : { fn, ...seedFor(fn, this.computed) };
+    this.open = true;
+    this.highlight = -1;
+    /*
+     * The caret lands in the first part, selected.
+     *
+     * Opening a form with nothing focused makes it look inert: the composer arrived with its parts
+     * filled in and no obvious way to change them, and typing went to the document — where the
+     * global keymap was listening. Selected rather than merely focused, because the part is already
+     * holding a seeded guess, and the first thing anyone does is replace it.
+     */
+    void this.updateComplete.then(() => {
+      this.#positionPopup();
+      const first = this.renderRoot.querySelector<HeoValueField>('.cm-row heo-value-field');
+      first?.focusInput({ select: true });
+      // Re-placed once the parts have laid out, since their height is what decides whether the
+      // composer flips above the field.
+      requestAnimationFrame(() => {
+        if (this.composer) this.#positionPopup();
+      });
+    });
+  }
+
+  #closeComposer(): void {
+    const painted = Boolean(this.composer);
+    this.composer = null;
+    this.open = false;
+    // Cancelling has to undo the live preview, or the page keeps the last part that was typed while
+    // the field goes on showing the value it never left.
+    if (painted) {
+      this.dispatchEvent(new CustomEvent('value-revert', { bubbles: true, composed: true }));
+    }
+  }
+
+  #composed(state = this.composer): string {
+    if (!state) return '';
+    return formatCssFunction({ name: state.fn, parts: state.parts, operators: state.operators });
+  }
+
+  /** Update the composer and preview the result, the way typing in the field does. */
+  #updateComposer(next: { fn: FunctionName; parts: string[]; operators: string[] }): void {
+    this.composer = next;
+    this.dispatchEvent(
+      new CustomEvent('value-input', {
+        detail: { value: this.#composed(next) },
+        bubbles: true,
+        composed: true,
+      }),
+    );
+  }
+
+  #setPart(index: number, value: string): void {
+    const state = this.composer;
+    if (!state) return;
+    this.#updateComposer({
+      ...state,
+      parts: state.parts.map((part, at) => (at === index ? value : part)),
+    });
+  }
+
+  #setOperator(index: number, operator: string): void {
+    const state = this.composer;
+    if (!state) return;
+    this.#updateComposer({
+      ...state,
+      operators: state.operators.map((op, at) => (at === index ? operator : op)),
+    });
+  }
+
+  #addPart(): void {
+    const state = this.composer;
+    if (!state) return;
+    this.#updateComposer({
+      ...state,
+      parts: [...state.parts, state.parts[state.parts.length - 1] ?? '0px'],
+      operators: FUNCTIONS[state.fn].operators ? [...state.operators, '+'] : state.operators,
+    });
+  }
+
+  #removePart(index: number): void {
+    const state = this.composer;
+    if (!state) return;
+    this.#updateComposer({
+      ...state,
+      parts: state.parts.filter((_part, at) => at !== index),
+      // The operator that joined this part to the one before it goes with it; the first part has
+      // none, so removing it drops the operator that followed instead.
+      operators: state.operators.filter((_op, at) => at !== Math.max(0, index - 1)),
+    });
+  }
+
+  #applyComposer(): void {
+    if (!this.composer) return;
+    this.draft = this.#composed();
+    this.composer = null;
+    this.open = false;
+    this.#commit();
   }
 
   /**
@@ -1230,6 +1733,9 @@ export class HeoValueField extends LitElement {
     if (!this.open) return;
     this.open = false;
     this.highlight = -1;
+    // The composer goes with it. Left set, an abandoned form would stand in for the list the next
+    // time one was asked for.
+    this.composer = null;
   }
 
   /**
@@ -1513,6 +2019,76 @@ function rungOf(item: ValueSuggestion): SnapRung | null {
     label: item.label ?? item.value,
     token: Boolean(item.token),
   };
+}
+
+export type FunctionName = 'clamp' | 'min' | 'max' | 'calc';
+
+interface ComposerSpec {
+  /** One line saying what the function is for, under its name. */
+  what: string;
+  /** Fixed labels, where the parts mean different things. Absent means they are a plain list. */
+  labels?: Array<{ label: string; hint: string }>;
+  /** Fewest parts a valid call needs, and so the point below which rows stop being removable. */
+  least: number;
+  variadic: boolean;
+  /** Whether an operator sits between parts rather than a comma. */
+  operators: boolean;
+}
+
+/**
+ * The functions the composer knows, and the shape of each.
+ *
+ * All four get a form, not only `clamp`, because the reason `clamp` needed one applies to every one
+ * of them: they take several values and a list row has nowhere to ask for several values. What
+ * differs is only arity and how the parts are joined, which is what this table holds — so adding a
+ * fifth is a row here rather than a second composer.
+ */
+const FUNCTIONS: Record<FunctionName, ComposerSpec> = {
+  clamp: {
+    what: 'a floor, an ideal and a ceiling',
+    labels: [
+      { label: 'Minimum', hint: 'never smaller than' },
+      { label: 'Ideal', hint: 'what it wants to be' },
+      { label: 'Maximum', hint: 'never larger than' },
+    ],
+    least: 3,
+    variadic: false,
+    operators: false,
+  },
+  min: { what: 'whichever is smallest', least: 2, variadic: true, operators: false },
+  max: { what: 'whichever is largest', least: 2, variadic: true, operators: false },
+  calc: { what: 'arithmetic on lengths', least: 2, variadic: true, operators: true },
+};
+
+/**
+ * Starting parts for a function that is not already there.
+ *
+ * Seeded from the resolved value, never from the text in the box. Reaching the row means having
+ * typed a search to find it, and "clamp" is not a length — it used to become the ideal value, so
+ * composing a clamp began from a bound reading `clamp`. Where there is nothing to go on, 18px: a
+ * plausible body size, and a number large enough to see move.
+ *
+ * The defaults differ per function because the useful starting point does. A clamp wants bounds
+ * either side of the value, since one whose three parts are equal is valid and pointless. A calc
+ * wants `100% - something`, which is what very nearly every calc in the wild is.
+ */
+function seedFor(fn: FunctionName, computed: string): { parts: string[]; operators: string[] } {
+  const base = parseLength(computed.trim()) ?? { number: 18, unit: 'px' };
+  const unit = base.unit || 'px';
+  const at = (factor: number): string => formatLength(round(base.number * factor), unit);
+  switch (fn) {
+    case 'clamp':
+      return { parts: [at(0.75), at(1), at(1.5)], operators: [] };
+    case 'calc':
+      return { parts: ['100%', at(1)], operators: ['-'] };
+    default:
+      return { parts: [at(1), at(1.5)], operators: [] };
+  }
+}
+
+/** Three decimals is what `formatLength` keeps, so a seeded part matches what a drag would write. */
+function round(value: number): number {
+  return Math.round(value * 1000) / 1000;
 }
 
 /** Short explanations shown beside unit completions. */

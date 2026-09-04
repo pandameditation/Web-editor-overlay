@@ -28,6 +28,7 @@ import type { DesignClass } from '../../core/types.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
+import { anchoredStyle } from '../place.js';
 import { baseStyles } from '../theme.js';
 import { buildSuggestions, classSuggestions, valueKindFor } from '../suggestions.js';
 import { adderStyles } from './adder.js';
@@ -1964,14 +1965,13 @@ export class HeoStylesPanel extends HeoElement {
       this.renderRoot.querySelector('.top heo-search-field') ?? this.renderRoot.querySelector('.top');
     const anchor = field?.getBoundingClientRect();
     if (!anchor) return;
-    const width = Math.min(Math.max(anchor.width, 300), Math.max(300, innerWidth - 16));
-    // Absent on the first pass, which is the point of the estimate: the popup does not exist yet.
-    const height = this.renderRoot.querySelector('.addpop')?.getBoundingClientRect().height || 240;
-    const spaceBelow = innerHeight - anchor.bottom;
-    const above = spaceBelow < height + 12 && anchor.top > spaceBelow;
-    const top = above ? Math.max(8, anchor.top - height - 6) : anchor.bottom + 6;
-    const left = Math.min(Math.max(8, anchor.left), Math.max(8, innerWidth - width - 8));
-    this.adderStyle = `top:${Math.round(top)}px;left:${Math.round(left)}px;width:${Math.round(width)}px`;
+    this.adderStyle = anchoredStyle({
+      anchor,
+      // Absent on the first pass, which is the point of the estimate: the popup does not exist yet.
+      popup: this.renderRoot.querySelector('.addpop')?.getBoundingClientRect(),
+      minWidth: 300,
+      gap: 6,
+    });
   }
 
   /**

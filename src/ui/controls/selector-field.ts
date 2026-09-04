@@ -15,6 +15,7 @@ import {
 import { listen, unlisten } from '../../core/shield.js';
 import { ManagedStyleSheet } from '../../core/stylesheet.js';
 import { icon } from '../icons.js';
+import { anchoredStyle } from '../place.js';
 import { baseStyles } from '../theme.js';
 
 /**
@@ -776,18 +777,12 @@ export class HeoSelectorField extends LitElement {
   }
 
   #position(): void {
-    const anchor = this.getBoundingClientRect();
-    const popup = this.renderRoot.querySelector('.popup');
-    const height = popup?.getBoundingClientRect().height ?? 260;
-    const width = Math.max(anchor.width, 240);
-
-    const spaceBelow = innerHeight - anchor.bottom;
-    const above = spaceBelow < height + 12 && anchor.top > spaceBelow;
-    const top = above ? Math.max(8, anchor.top - height - 5) : anchor.bottom + 5;
-    const left = Math.min(Math.max(8, anchor.left), Math.max(8, innerWidth - width - 8));
-    const room = Math.round(above ? anchor.top - 16 : spaceBelow - 16);
-
-    this.popupStyle = `top:${Math.round(top)}px;left:${Math.round(left)}px;width:${Math.round(width)}px;max-height:${room}px`;
+    this.popupStyle = anchoredStyle({
+      anchor: this.getBoundingClientRect(),
+      popup: this.renderRoot.querySelector('.popup')?.getBoundingClientRect(),
+      estimate: 260,
+      minWidth: 240,
+    });
   }
 
   /**

@@ -266,6 +266,379 @@
         await frames();
 
         /* ------------------------------------------------------------------ *
+         * 6b. CSS functions: a list row that opens a form, because several
+         *     values cannot be offered as a completion.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'functions';
+        engine.setStyle('width', '16px', para);
+        await frames();
+        await wait(150);
+
+        /*
+         * Re-queried, never held.
+         *
+         * The panel re-renders on every store change, and previewing a part is a store change -- so
+         * an element captured once goes stale mid-test and every assertion after it reads a detached
+         * node. Everything below asks the panel again.
+         */
+        const wf = () => fieldFor('width');
+        const listOf = (field) => field.shadowRoot.querySelector('.popup');
+        const ensureList = async (field) => {
+          // The chevron toggles, so clicking it on an already-open list closes it.
+          if (!listOf(field)) {
+            field.shadowRoot.querySelector('[aria-label="Show tokens and values"]')?.click();
+          }
+          await field.updateComplete;
+          await frames();
+          await wait(80);
+        };
+        const listRows = (field) =>
+          Array.from(field.shadowRoot.querySelectorAll('.popup [role="option"]'));
+        const pickFunction = async (field, name) => {
+          await ensureList(field);
+          listRows(field)
+            .find((b) => new RegExp(`^\\s*${name}\\(\\)`).test(b.textContent.trim()))
+            ?.click();
+          await field.updateComplete;
+          await frames();
+          await wait(80);
+        };
+        const composer = (field) => field.shadowRoot.querySelector('.popup.composer');
+        const partFields = (field) =>
+          Array.from(field.shadowRoot.querySelectorAll('.cm-row heo-value-field'));
+        const partValues = (field) => partFields(field).map((f) => f.value);
+        const readout = (field) => field.shadowRoot.querySelector('.cm-out')?.textContent?.trim();
+        const apply = async (field) => {
+          field.shadowRoot.querySelector('.cm-foot .btn.primary')?.click();
+          await frames();
+          await wait(150);
+        };
+        const setPart = async (field, index, text) => {
+          const part = partFields(field)[index];
+          const input = part.shadowRoot.querySelector('input[type="text"]');
+          input.value = text;
+          input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+          await part.updateComplete;
+          await field.updateComplete;
+          await frames();
+        };
+
+        await ensureList(wf());
+        const listText = listOf(wf())?.textContent ?? '';
+        results.functions = {
+          // Offered from the kind alone, like the unit completions beside them -- so every
+          // dimensional field has them, the Tokens panel's included.
+          offersAllFour:
+            /clamp\(\)/.test(listText) &&
+            /min\(\)/.test(listText) &&
+            /max\(\)/.test(listText) &&
+            /calc\(\)/.test(listText),
+          // Not on a keyword property: there is no length there for a function to produce.
+          notOnKeywordProperties: await (async () => {
+            const display = fieldFor('display');
+            await ensureList(display);
+            const text = listOf(display)?.textContent ?? '';
+            display.closePopup();
+            return !/clamp\(\)/.test(text);
+          })(),
+        };
+        wf().closePopup();
+        await frames();
+
+        /* --- The seed must not be the search query that reached the row. --- */
+        progress.textContent = 'seed';
+        const typed = wf().shadowRoot.querySelector('input[type="text"]');
+        typed.focus();
+        typed.value = 'clamp';
+        typed.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        await wf().updateComplete;
+        await frames();
+        await wait(80);
+        await pickFunction(wf(), 'clamp');
+        results.seed = {
+          opensAComposer: Boolean(composer(wf())),
+          /*
+           * None of the parts is the word that was typed. Before, the draft was used as the ideal
+           * value -- so composing a clamp began from a bound reading `clamp`.
+           */
+          noPartIsTheQuery:
+            partValues(wf()).length === 3 && partValues(wf()).every((v) => !/clamp/i.test(v)),
+          everyPartIsALength: partValues(wf()).every((v) => /^-?[\d.]+[a-z%]*$/i.test(v)),
+          // Bounds either side of the ideal, since a clamp whose parts are equal is pointless.
+          boundsStraddleTheIdeal: partValues(wf())[0] !== partValues(wf())[2],
+        };
+        /*
+         * And abandoning the composer does not leave the query behind as a value.
+         *
+         * The box commits what is in it when focus leaves, so typing "clamp" to reach the row and
+         * then backing out wrote `width: clamp` onto the element.
+         */
+        wf().closePopup();
+        await frames();
+        await wait(200);
+        results.seed.queryDidNotBecomeTheValue = para.style.width === '16px';
+
+        /* --- REUSE: each part is a full value field, so it has the lot. --- */
+        progress.textContent = 'reuse';
+        /*
+         * On `gap`, not `width`. A part inherits the host's suggestions, and the token group for
+         * `width` is `size` -- of which this page declares none. `gap` draws from `space`, the scale
+         * the fixture has, so this tests the wiring rather than the fixture.
+         */
+        engine.setStyle('gap', '16px', para);
+        await frames();
+        await wait(150);
+        const cf = () => fieldFor('gap');
+        await pickFunction(cf(), 'clamp');
+        const part0 = () => partFields(cf())[0];
+        results.reuse = {
+          partsAreValueFields: partFields(cf()).length === 3,
+          // The gauge handle, the unit chip and the token list all come along for free.
+          partHasTheGauge: Boolean(part0()?.shadowRoot.querySelector('.gauge')),
+          partHasTheUnitBox: Boolean(part0()?.shadowRoot.querySelector('.unit')),
+          partOffersTheProjectTokens: (part0()?.suggestions ?? []).some((x) => x.token),
+          // And it knows which property it is for, so its own suggestions are the right ones.
+          partKnowsTheProperty: part0()?.property === 'gap',
+        };
+
+        /*
+         * A part's own dropdown must not close the composer it lives in.
+         *
+         * "One list at a time" closes every other open list, and the composer IS a list -- so
+         * without exempting the host chain, opening a part's tokens tore down the popup containing
+         * the part, mid-edit.
+         */
+        await ensureList(part0());
+        results.reuse.partsListSurvives =
+          Boolean(listOf(part0())) && Boolean(composer(cf()));
+
+        /*
+         * The tokens are actually listed, which they were not.
+         *
+         * A part always holds a value, and the list used to treat that value as a search query -- so
+         * `12px` matched no token name and the palette was empty in the one place tokens were most
+         * wanted. Filtering now waits until the text differs from the committed value.
+         */
+        results.reuse.partListsTheTokens = listRows(part0()).some((b) =>
+          /space-/.test(b.textContent),
+        );
+
+        // Taking a token in a part keeps it as a token.
+        listRows(part0())
+          .find((b) => /space-/.test(b.textContent))
+          ?.click();
+        await frames();
+        await wait(100);
+        results.reuse.partTakesATokenSpelling = /var\(--space-/.test(partValues(cf())[0] ?? '');
+        results.reuse.readoutHasTheToken = /var\(--space-/.test(readout(cf()) ?? '');
+        /*
+         * And the page is painted with the whole function, not the bare bound.
+         *
+         * A part's `value-change` bubbles and composes, so unstopped it would reach the panel as
+         * though it were the whole declaration -- one bound standing in for the gap. Previewing is
+         * intended; previewing a fragment is the bug.
+         */
+        results.reuse.partDidNotEscapeAsTheWholeValue = para.style.gap.startsWith('clamp(');
+
+        await apply(cf());
+        results.reuse.appliesAFunctionOfTokens =
+          /^clamp\(var\(--space-/.test(para.style.gap) && para.style.gap.endsWith(')');
+        engine.setStyle('gap', '', para);
+        await frames();
+
+        /* --- clamp: three fixed parts, applied and reopened. --- */
+        progress.textContent = 'clamp';
+        engine.setStyle('width', '16px', para);
+        await frames();
+        await wait(150);
+        await pickFunction(wf(), 'clamp');
+        /*
+         * Measured on arrival, before a part is touched.
+         *
+         * Editing a part previews live, which paints the style attribute on purpose -- so checking
+         * this after typing bounds would be asking the preview not to work. What must not happen is
+         * the *row* committing: `clamp()` as a literal is not a value, and adopting it would make
+         * the next keystroke an edit of an empty function.
+         */
+        results.clampArrival = {
+          didNotCommitTheBareFunction: para.style.width === '16px',
+          openedTheComposer: Boolean(composer(wf())),
+        };
+        await setPart(wf(), 0, '10px');
+        await setPart(wf(), 1, '5vw');
+        await setPart(wf(), 2, '40px');
+        results.clamp = {
+          showsWhatWillBeWritten: readout(wf()) === 'clamp(10px, 5vw, 40px)',
+          // Fixed arity: there is no way to add a fourth bound to a clamp.
+          hasNoAnotherButton: !Array.from(
+            wf().shadowRoot.querySelectorAll('.popup.composer button'),
+          ).some((b) => /another/i.test(b.textContent)),
+        };
+        await apply(wf());
+        results.clamp.applyWritesTheFunction = para.style.width === 'clamp(10px, 5vw, 40px)';
+        results.clamp.closesOnApply = !composer(wf());
+        const resolvedWidth = Number.parseFloat(getComputedStyle(para).width);
+        results.clamp.pageHonoursIt = resolvedWidth >= 10 && resolvedWidth <= 40;
+        // Re-opening on an existing call is editing, not starting again.
+        await pickFunction(wf(), 'clamp');
+        results.clamp.reopensWithTheSameParts = partValues(wf()).join('|') === '10px|5vw|40px';
+        // Cancelling takes the preview back rather than leaving the last part on the page.
+        await setPart(wf(), 2, '999px');
+        wf().shadowRoot.querySelector('.cm-head .mini')?.click();
+        await frames();
+        await wait(150);
+        results.clamp.cancelRestoresTheValue = para.style.width === 'clamp(10px, 5vw, 40px)';
+
+        /* --- min/max: a variadic list, same composer. --- */
+        progress.textContent = 'minmax';
+        engine.setStyle('width', '100px', para);
+        await frames();
+        await wait(150);
+        await pickFunction(wf(), 'min');
+        const another = () =>
+          Array.from(wf().shadowRoot.querySelectorAll('.popup.composer button')).find((b) =>
+            /another/i.test(b.textContent),
+          );
+        results.minmax = {
+          startsWithTwo: partFields(wf()).length === 2,
+          canAddARow: Boolean(another()),
+        };
+        another()?.click();
+        await wf().updateComplete;
+        await frames();
+        results.minmax.addedARow = partFields(wf()).length === 3;
+        await setPart(wf(), 0, '50%');
+        await setPart(wf(), 1, '300px');
+        await setPart(wf(), 2, '80vw');
+        results.minmax.joinsWithCommas = readout(wf()) === 'min(50%, 300px, 80vw)';
+        // ...and removed, down to the two a call needs.
+        wf().shadowRoot.querySelectorAll('.cm-row .mini')[2]?.click();
+        await wf().updateComplete;
+        await frames();
+        results.minmax.removedARow = partFields(wf()).length === 2;
+        await apply(wf());
+        results.minmax.applies = para.style.width === 'min(50%, 300px)';
+
+        /* --- calc: operators between the parts rather than commas. --- */
+        progress.textContent = 'calc';
+        engine.setStyle('width', '32px', para);
+        await frames();
+        await wait(150);
+        await pickFunction(wf(), 'calc');
+        results.calc = {
+          // Seeded as `100% - something`, which is what very nearly every calc in the wild is.
+          seededAsTheCommonCase: readout(wf()) === 'calc(100% - 32px)',
+          hasAnOperatorControl: Boolean(wf().shadowRoot.querySelector('.cm-row .cm-op')),
+        };
+        const op = wf().shadowRoot.querySelector('.cm-row .cm-op');
+        op.value = '+';
+        op.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+        await wf().updateComplete;
+        await frames();
+        results.calc.operatorChangesTheJoin = readout(wf()) === 'calc(100% + 32px)';
+        await apply(wf());
+        results.calc.applies = para.style.width === 'calc(100% + 32px)';
+        results.calc.pageHonoursIt = getComputedStyle(para).width !== '32px';
+        engine.setStyle('width', '', para);
+        await frames();
+
+        /* ------------------------------------------------------------------ *
+         * 6c. The caret lands in the form, and the form lands on screen.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'placement';
+        engine.setStyle('width', '16px', para);
+        await frames();
+        await wait(150);
+        await pickFunction(wf(), 'clamp');
+        /*
+         * Opening a form with nothing focused makes it look inert: the composer arrived filled in
+         * with no obvious way to change anything, and typing went to the document -- where the
+         * global keymap was listening.
+         */
+        const focusedPart = wf().shadowRoot.activeElement;
+        results.focus = {
+          landsInTheFirstPart:
+            focusedPart === partFields(wf())[0] &&
+            partFields(wf())[0].shadowRoot.activeElement ===
+            partFields(wf())[0].shadowRoot.querySelector('input[type="text"]'),
+          // Selected, because the part holds a seeded guess and the first act is to replace it.
+          andSelectsIt:
+            partFields(wf())[0].shadowRoot.querySelector('input[type="text"]').selectionStart === 0,
+        };
+
+        /* Every popover, fully on screen. */
+        const onScreen = (box) =>
+          box.top >= 0 &&
+          box.left >= 0 &&
+          box.bottom <= innerHeight + 0.5 &&
+          box.right <= innerWidth + 0.5;
+        const fits = (field, selector = '.popup') => {
+          const el = field.shadowRoot.querySelector(selector);
+          return el ? onScreen(el.getBoundingClientRect()) : null;
+        };
+        results.placement = {
+          composerFitsWhereItOpened: fits(wf(), '.popup.composer'),
+          // The footer is the whole point: a popover whose Apply is off the fold is broken.
+          applyIsReachable: (() => {
+            const foot = wf().shadowRoot.querySelector('.cm-foot');
+            return foot ? onScreen(foot.getBoundingClientRect()) : null;
+          })(),
+        };
+        wf().closePopup();
+        await frames();
+
+        /*
+         * The case that was broken: an anchor low in the viewport.
+         *
+         * `top = anchor.bottom + gap` had no upper bound, and the flip only happened when there was
+         * MORE room above -- which is a different question from whether the popover fits below. So a
+         * row near the fold opened a popover that ran off the bottom of the screen.
+         */
+        const dock = deep('heo-dock');
+        const scroller =
+          dock?.shadowRoot?.querySelector('.body') ??
+          panel.shadowRoot.host.parentElement ??
+          null;
+        // Drive the panel to its end so the last dimensional row sits against the viewport edge.
+        const rows = Array.from(panel.shadowRoot.querySelectorAll('.row'));
+        const lowest = rows
+          .map((row) => ({ row, box: row.getBoundingClientRect() }))
+          .filter((x) => x.box.height > 0)
+          .sort((a, b) => b.box.top - a.box.top)[0];
+        results.placement.foundALowRow = Boolean(lowest);
+        if (lowest) {
+          results.placement.rowIsNearTheFold = lowest.box.bottom > innerHeight - 160;
+          const lowField = lowest.row.querySelector('heo-value-field');
+          if (lowField) {
+            await ensureList(lowField);
+            const box = lowField.shadowRoot.querySelector('.popup')?.getBoundingClientRect();
+            results.placement.aLowAnchorStaysOnScreen = box ? onScreen(box) : null;
+            lowField.closePopup();
+            await frames();
+          }
+        }
+
+        /* And the add-a-declaration popup, which had no max-height at all. */
+        const styleSearch = panel.shadowRoot.querySelector('.top heo-search-field');
+        styleSearch.shadowRoot.querySelector('.go').click();
+        await panel.updateComplete;
+        await frames();
+        await wait(150);
+        const addpop = panel.shadowRoot.querySelector('.addpop');
+        results.placement.addPopupFitsOnScreen = addpop
+          ? onScreen(addpop.getBoundingClientRect())
+          : null;
+        results.placement.addPopupFooterIsReachable = (() => {
+          const foot = panel.shadowRoot.querySelector('.popfoot');
+          return foot ? onScreen(foot.getBoundingClientRect()) : null;
+        })();
+        panel.shadowRoot.querySelector('.addpop .pophead button')?.click();
+        await panel.updateComplete;
+        await frames();
+        engine.setStyle('width', '', para);
+        await frames();
+
+        /* ------------------------------------------------------------------ *
          * 7. Shift still means x10 where there is no scale to walk.
          * ------------------------------------------------------------------ */
         progress.textContent = 'tokens panel';

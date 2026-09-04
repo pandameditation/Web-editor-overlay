@@ -968,6 +968,110 @@ export function splitTopLevel(value: string): string[] {
   return parts;
 }
 
+/**
+ * A CSS function taken apart, so a form can be offered for it.
+ *
+ * `operators` is what separates the two shapes a function comes in. `clamp`, `min` and `max` take a
+ * comma-separated list, so it is empty. `calc` takes an expression, so it holds the arithmetic
+ * between the parts and is one shorter than `parts`.
+ */
+export interface CssFunctionParts {
+  name: string;
+  parts: string[];
+  operators: string[];
+}
+
+/** Operators `calc()` accepts. `+` and `-` require surrounding whitespace; the spec says so. */
+const CALC_SPLIT = /\s+([+\-])\s+|\s*([*/])\s*/;
+
+/**
+ * Take a function value apart, or null when it is not one of `allowed`.
+ *
+ * Split on top-level separators so a nested function survives: `clamp(1rem, calc(2vw + 1rem), 3rem)`
+ * has three parts, not four. A part count the function cannot accept returns null rather than being
+ * reinterpreted -- a `clamp` with two arguments is something the author wrote, not something to
+ * guess at.
+ */
+export function parseCssFunction(
+  value: string,
+  allowed: readonly string[] = ['clamp', 'min', 'max', 'calc'],
+): CssFunctionParts | null {
+  const match = /^\s*([a-z-]+)\s*\((.*)\)\s*$/is.exec(String(value ?? '').trim());
+  if (!match) return null;
+  const name = match[1].toLowerCase();
+  if (!allowed.includes(name)) return null;
+  const inner = match[2];
+
+  if (name === 'calc') {
+    const parts: string[] = [];
+    const operators: string[] = [];
+    let current = '';
+    let depth = 0;
+    for (let index = 0; index < inner.length; index += 1) {
+      const ch = inner[index];
+      if (ch === '(') depth += 1;
+      else if (ch === ')') depth = Math.max(0, depth - 1);
+      if (depth === 0) {
+        const rest = inner.slice(index);
+        const hit = CALC_SPLIT.exec(rest);
+        if (hit && hit.index === 0) {
+          parts.push(current.trim());
+          operators.push(hit[1] ?? hit[2]);
+          index += hit[0].length - 1;
+          current = '';
+          continue;
+        }
+      }
+      current += ch;
+    }
+    if (current.trim()) parts.push(current.trim());
+    if (parts.length < 2) return null;
+    return { name, parts, operators };
+  }
+
+  const parts = splitTopLevelCommas(inner);
+  if (name === 'clamp' && parts.length !== 3) return null;
+  if (parts.length < 2) return null;
+  return { name, parts, operators: [] };
+}
+
+/** Put one back together, as it will be written. */
+export function formatCssFunction(fn: CssFunctionParts): string {
+  const parts = fn.parts.map((part) => part.trim()).filter(Boolean);
+  if (fn.operators.length) {
+    const body = parts.reduce(
+      (text, part, index) => (index === 0 ? part : `${text} ${fn.operators[index - 1] ?? '+'} ${part}`),
+      '',
+    );
+    return `${fn.name}(${body})`;
+  }
+  return `${fn.name}(${parts.join(', ')})`;
+}
+
+/**
+ * Split on commas that are not inside brackets.
+ *
+ * The counterpart to `splitTopLevel`, which splits on whitespace. Needed separately because a CSS
+ * function's arguments are comma-separated and its own arguments may be functions.
+ */
+export function splitTopLevelCommas(value: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let current = '';
+  for (const ch of String(value ?? '')) {
+    if (ch === '(' || ch === '[') depth += 1;
+    else if (ch === ')' || ch === ']') depth = Math.max(0, depth - 1);
+    if (ch === ',' && depth === 0) {
+      parts.push(current.trim());
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  if (current.trim()) parts.push(current.trim());
+  return parts;
+}
+
 /** Resolve a value that may be a `var()` reference against the element. */
 export function resolveValue(el: HTMLElement, value: string): string {
   if (!isTokenValue(value)) return value;

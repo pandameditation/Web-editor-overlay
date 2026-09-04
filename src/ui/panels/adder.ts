@@ -22,6 +22,10 @@ export const adderStyles = css`
    * adding something is done while reading the rows above it, and a modal would hide the very
    * thing being compared against.
    */
+  /* A column whose rows scroll, not a box that scrolls.
+     Placement caps the height so the popup always fits on screen, and if the whole box scrolled that
+     cap would put the footer -- the row holding Apply -- below the fold. The head and foot stay put
+     and the rows give way instead. */
   .addpop {
     position: fixed;
     margin: 0;
@@ -30,9 +34,15 @@ export const adderStyles = css`
     border-radius: var(--heo-r-md);
     background: var(--heo-bg);
     box-shadow: var(--heo-shadow-lg);
-    display: grid;
+    display: flex;
+    flex-direction: column;
     gap: 8px;
+    overflow: hidden;
     z-index: 2147483000;
+  }
+  .addpop > .pophead,
+  .addpop > .popfoot {
+    flex: 0 0 auto;
   }
   .addpop::backdrop {
     background: transparent;
@@ -51,6 +61,8 @@ export const adderStyles = css`
   .poprows {
     display: grid;
     gap: 6px;
+    flex: 0 1 auto;
+    min-height: 0;
     max-height: 40vh;
     overflow-y: auto;
   }

@@ -11,6 +11,7 @@ import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import type { BlockKind, PropSpec } from '../../core/types.js';
 import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
+import { anchoredStyle } from '../place.js';
 import { baseStyles, surfaceStyles } from '../theme.js';
 import { buildSuggestions, classSuggestions, valueKindFor } from '../suggestions.js';
 import type { ValueSuggestion } from '../controls/value-field.js';
@@ -1159,12 +1160,13 @@ export class HeoExtractDialog extends HeoElement {
         // just stays in the normal painting order.
       }
     }
-    const anchor = this.nameInput.getBoundingClientRect();
-    const height = popup.getBoundingClientRect().height || 220;
-    const below = innerHeight - anchor.bottom;
-    const above = below < height + 12 && anchor.top > below;
-    const top = above ? Math.max(8, anchor.top - height - 5) : anchor.bottom + 5;
-    const style = `top:${Math.round(top)}px;left:${Math.round(anchor.left)}px;width:${Math.round(anchor.width)}px;max-height:${Math.round((above ? anchor.top : below) - 16)}px`;
+    const style = anchoredStyle({
+      anchor: this.nameInput.getBoundingClientRect(),
+      popup: popup.getBoundingClientRect(),
+      estimate: 220,
+      // This list is as wide as the field it belongs to, which is already generous here.
+      minWidth: 0,
+    });
     // Guarded, or setting the state property from `updated` would loop.
     if (style !== this.namePopupStyle) this.namePopupStyle = style;
   }
