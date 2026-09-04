@@ -23,6 +23,8 @@ import '../controls/segmented.js';
 /** Which of the three registries the panel's search is scoped to. */
 type Facet = 'all' | 'tokens' | 'classes' | 'rules';
 
+const DIMENSIONAL_GROUPS = new Set<TokenGroup>(['space', 'size', 'radius']);
+
 const openGroups = new Set<string>(['component', 'color', 'space', 'classes', 'rules']);
 
 /**
@@ -500,6 +502,13 @@ export class HeoTokensPanel extends HeoElement {
     </heo-section>`;
   }
 
+  /*
+   * Which groups are lengths, and therefore draggable.
+   *
+   * `space` was the only one listed, so a size or radius token drew the bar preview -- which is a
+   * length readout -- while its field was a plain text box that could not be scrubbed or stepped.
+   * The preview and the control disagreed about what kind of value it was.
+   */
   #renderToken(token: DesignToken, usage: Map<string, number>): TemplateResult {
     const count = usage.get(token.name) ?? 0;
     const isColor = token.group === 'color';
@@ -510,7 +519,7 @@ export class HeoTokensPanel extends HeoElement {
       <heo-value-field
         label=${token.name}
         .value=${token.value}
-        .kind=${isColor ? 'color' : token.group === 'space' ? 'length' : 'text'}
+        .kind=${isColor ? 'color' : DIMENSIONAL_GROUPS.has(token.group) ? 'length' : 'text'}
         .suggestions=${[]}
         @value-change=${(event: CustomEvent<{ value: string }>) =>
         this.#setToken(token, event.detail.value)}
@@ -586,7 +595,11 @@ export class HeoTokensPanel extends HeoElement {
         </div>
         <heo-value-field
           .value=${this.newValue}
-          .kind=${this.newGroup === 'color' ? 'color' : this.newGroup === 'space' ? 'length' : 'text'}
+          .kind=${this.newGroup === 'color'
+        ? 'color'
+        : DIMENSIONAL_GROUPS.has(this.newGroup)
+          ? 'length'
+          : 'text'}
           .suggestions=${[]}
           placeholder="value"
           @value-change=${(event: CustomEvent<{ value: string }>) => {

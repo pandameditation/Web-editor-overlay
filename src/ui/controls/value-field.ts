@@ -192,6 +192,37 @@ export class HeoValueField extends LitElement {
         cursor: not-allowed;
       }
 
+      /* The dimensional counterpart of the colour swatch: same slot, same 1px separator, and the
+         same relationship to the value -- it shows it and it changes it. */
+      .gauge {
+        display: grid;
+        place-items: center;
+        width: 22px;
+        border: 0;
+        border-right: 1px solid var(--heo-line);
+        background: transparent;
+        cursor: ew-resize;
+        touch-action: none;
+        user-select: none;
+        padding: 0;
+      }
+      .gauge .bar {
+        height: 4px;
+        border-radius: 2px;
+        background: var(--heo-text-faint);
+        transition:
+          background var(--heo-fast),
+          width var(--heo-fast);
+      }
+      .gauge:hover .bar,
+      .gauge.active .bar {
+        background: var(--heo-accent);
+      }
+      /* While dragging, the whole well reads as engaged rather than just the bar inside it. */
+      .gauge.active {
+        background: var(--heo-accent-soft);
+      }
+
       .color-btn {
         display: grid;
         place-items: center;
@@ -656,18 +687,15 @@ export class HeoValueField extends LitElement {
   override render(): TemplateResult {
     const parsed = this.parsed;
     const showUnit = this.isNumeric && parsed !== null && this.kind !== 'number';
-    const isColor = this.kind === 'color';
 
     return html`
       <div class="wrap">
-        ${isColor ? this.#renderColorButton() : nothing}
+        ${this.#renderLead()}
         ${this.label
         ? html`<button
               class="scrub ${this.scrubbing ? 'active' : ''} ${this.isNumeric ? '' : 'plain'}"
-              @pointerdown=${this.#onScrubStart}
-              title=${this.isNumeric
-            ? `${this.label} — drag left or right to change, or use the arrow keys`
-            : this.label}
+              @pointerdown=${this.#startScrub}
+              title=${this.isNumeric ? this.#scrubTitle() : this.label}
               tabindex="-1"
               type="button"
             >
@@ -747,6 +775,73 @@ export class HeoValueField extends LitElement {
       </div>
       ${this.open ? this.#renderPopup() : nothing}
     `;
+  }
+
+  /**
+   * The leading affordance, chosen by what kind of value this is.
+   *
+   * One slot, several jobs: a swatch that opens the colour picker, or a gauge that is the drag
+   * handle for a dimensional value. The colour button had this position to itself and was the model
+   * for the rest -- a small, always-visible thing at the head of the field that both *shows* the
+   * value and is the direct way to change it.
+   *
+   * Dimensional values had no such handle anywhere except the Tokens panel, and there only by
+   * accident: the scrub is bound to the label, and Tokens is the one panel that passes one. The
+   * Styles panel shows the property name in its own column, so giving the field a label there would
+   * print it twice — hence a handle that is not the label.
+   */
+  #renderLead(): TemplateResult | typeof nothing {
+    if (this.kind === 'color') return this.#renderColorButton();
+    if (!this.isNumeric) return nothing;
+    return this.#renderGauge();
+  }
+
+  /**
+   * A bar that reads as the size it represents, and scrubs.
+   *
+   * Deliberately the same 22px well as the Tokens panel's `.preview`, clamped the same way, because
+   * it is answering the same question there and here. The difference is that this one is a control:
+   * the read-only version could show you that `--space-lg` was bigger than `--space-sm` and left
+   * you to type the change.
+   *
+   * The bar is drawn from the *resolved* value, so a `var()` or a `calc()` still shows a length
+   * rather than collapsing to the 2px floor.
+   */
+  #renderGauge(): TemplateResult {
+    return html`<button
+      class=${`gauge${this.scrubbing ? ' active' : ''}`}
+      type="button"
+      tabindex="-1"
+      title=${this.#scrubTitle()}
+      aria-hidden="true"
+      @pointerdown=${this.#startScrub}
+    >
+      <span class="bar" style=${`width:${this.#gaugeWidth()}px`}></span>
+    </button>`;
+  }
+
+  /**
+   * The bar's length: 2px to 16px, logarithmic.
+   *
+   * Computed here rather than left to a CSS `clamp`, for two reasons. A clamp has to be handed the
+   * raw value, and `max(2px, none)` is not a length — so `max-width: none` produced an invalid
+   * declaration and a bar of no width at all, which read as a broken control rather than as "no
+   * limit set".
+   *
+   * And it is logarithmic because the range is not. Clamping linearly at 16px, which is what the
+   * Tokens panel does over a 4–48px token scale, makes every width above the ceiling look the same:
+   * `16px` and `220px` were the same bar. A log curve keeps small spacing values distinguishable
+   * while still leaving room to tell a padding from a page width.
+   */
+  #gaugeWidth(): number {
+    // The resolved value first: it is in pixels, so a `%`, a `rem` and a `var()` all become
+    // comparable instead of being drawn as whatever number happens to precede the unit.
+    const px = parseLength(this.computed.trim()) ?? parseLength(this.draft);
+    const size = Math.abs(px?.number ?? 0);
+    if (!size) return 2;
+    // log10(1)=0 → 2px, log10(1000)=3 → 16px.
+    const scaled = 2 + (Math.log10(size) / 3) * 14;
+    return Math.round(Math.min(16, Math.max(2, scaled)));
   }
 
   #renderColorButton(): TemplateResult {
@@ -1206,39 +1301,141 @@ export class HeoValueField extends LitElement {
   /* ---- Scrub gesture ---- */
 
   /**
-   * Horizontal drag on the label changes the value.
+   * The number a drag should start from, and in what unit.
    *
-   * Uses pointer capture rather than document listeners so the gesture survives
-   * the pointer leaving the control, and the vertical axis is ignored so the
-   * gesture cannot be confused with a scroll.
+   * A field showing `var(--space-lg)` used to start from zero, because `parseLength` cannot read a
+   * `var()` and the fallback was `{0, 'px'}` -- so dragging a token-valued field threw the token
+   * away and restarted the value from `0px`. The resolved value is what the user can see on screen,
+   * so that is where the drag begins; the token is only replaced once the drag actually moves.
    */
-  #onScrubStart(event: PointerEvent): void {
+  #scrubOrigin(): { number: number; unit: string } {
+    const parsed = this.parsed;
+    if (parsed) return parsed;
+    const resolved = parseLength(this.computed.trim());
+    if (resolved) return resolved;
+    return { number: 0, unit: this.kind === 'number' ? '' : 'px' };
+  }
+
+  /**
+   * The scale this property can be snapped through, ascending.
+   *
+   * Built from the same suggestions the list shows, so "hold Shift" walks exactly the values the
+   * dropdown offers -- the project's own tokens first, then the common ladder. Narrowed to the unit
+   * being dragged, because a scale that mixes `8px` with `100%` is not an ordering anyone can feel.
+   * Tokens keep their `var()` spelling, so snapping onto one adopts the token rather than flattening
+   * it to a number.
+   */
+  #snapLadder(unit: string): SnapRung[] {
+    const rungs: SnapRung[] = [];
+    const seen = new Set<number>();
+    for (const item of this.suggestions) {
+      const rung = rungOf(item);
+      if (!rung) continue;
+      // A bare `0` belongs on every ladder; anything else has to be in the same unit.
+      if (rung.number !== 0 && rung.unit !== unit) continue;
+      if (seen.has(rung.number)) continue;
+      seen.add(rung.number);
+      rungs.push(rung);
+    }
+    return rungs.sort((a, b) => a.number - b.number);
+  }
+
+  /**
+   * Horizontal drag changes the value.
+   *
+   * Pointer capture rather than document listeners, so the gesture survives the pointer leaving the
+   * control. The vertical axis is ignored so the gesture cannot be mistaken for a scroll.
+   *
+   * Two modes, and which one Shift selects depends on what the property has. Where a scale is
+   * available -- which in the Styles panel means the project's spacing and size tokens -- Shift
+   * walks that scale, because on a design-system value the useful coarse movement is "the next size
+   * up", not "ten of whatever unit this is". Where there is no scale, as in the Tokens panel, Shift
+   * keeps its usual x10 meaning. Alt is x0.1 either way.
+   */
+  #startScrub(event: PointerEvent): void {
     if (!this.isNumeric) return;
     event.preventDefault();
-    const parsed = this.parsed ?? { number: 0, unit: this.kind === 'number' ? '' : 'px' };
-    this.#scrubStart = { x: event.clientX, value: parsed.number, unit: parsed.unit };
+    const origin = this.#scrubOrigin();
+    const ladder = this.#snapLadder(origin.unit);
+    // Where on the ladder the current value sits, so a snap drag moves relative to it.
+    const nearest = ladder.reduce(
+      (best, rung, index) =>
+        Math.abs(rung.number - origin.number) < Math.abs(ladder[best].number - origin.number)
+          ? index
+          : best,
+      0,
+    );
+    const step = SCRUB_STEP[origin.unit] ?? 1;
+
+    this.#scrubStart = { x: event.clientX, value: origin.number, unit: origin.unit };
     this.scrubbing = true;
 
     const target = event.currentTarget as HTMLElement;
     target.setPointerCapture(event.pointerId);
 
+    /*
+     * A dead zone, so a press that never travels is a press.
+     *
+     * Without it a plain click on the handle emitted a change for the number already there, which
+     * put a no-op on the undo stack and, on a token-valued field, replaced the token with its own
+     * resolved number.
+     */
+    let moved = false;
+    let last = '';
+
     const move = (moveEvent: PointerEvent): void => {
       const dx = moveEvent.clientX - this.#scrubStart.x;
-      const scale = moveEvent.shiftKey ? 10 : moveEvent.altKey ? 0.1 : 1;
-      const next = this.#scrubStart.value + Math.round(dx) * scale;
-      this.draft = formatLength(next, this.#scrubStart.unit);
+      if (!moved && Math.abs(dx) < 2) return;
+      moved = true;
+
+      let next: string;
+      if (moveEvent.shiftKey && ladder.length > 1) {
+        const at = Math.min(
+          ladder.length - 1,
+          Math.max(0, nearest + Math.round(dx / SNAP_PITCH)),
+        );
+        next = ladder[at].write;
+      } else {
+        const scale = moveEvent.shiftKey ? 10 : moveEvent.altKey ? 0.1 : 1;
+        next = formatLength(
+          this.#scrubStart.value + Math.round(dx) * step * scale,
+          this.#scrubStart.unit,
+        );
+      }
+      if (next === last) return;
+      last = next;
+      this.draft = next;
       this.#emit('value-input');
     };
+
     const up = (): void => {
       target.removeEventListener('pointermove', move);
       target.removeEventListener('pointerup', up);
       target.removeEventListener('pointercancel', up);
       this.scrubbing = false;
+      // Nothing moved, so there is nothing to commit. Hand the caret over instead, which is what a
+      // click on a value is usually asking for.
+      if (!moved) {
+        this.textInput?.focus();
+        return;
+      }
       this.#commit();
     };
+
     target.addEventListener('pointermove', move);
     target.addEventListener('pointerup', up);
     target.addEventListener('pointercancel', up);
+  }
+
+  /** What the handle promises, spelled out — the gesture is invisible otherwise. */
+  #scrubTitle(): string {
+    if (!this.isNumeric) return this.label;
+    const ladder = this.#snapLadder(this.#scrubOrigin().unit);
+    const coarse =
+      ladder.length > 1
+        ? `hold Shift to step through the ${ladder.length} values on this scale`
+        : 'hold Shift for larger steps';
+    return `Drag to change${this.label ? ` ${this.label}` : ''} — ${coarse}, Alt for finer ones`;
   }
 }
 
@@ -1255,6 +1452,67 @@ declare global {
   interface HTMLElementTagNameMap {
     'heo-value-field': HeoValueField;
   }
+}
+
+/**
+ * How much one pixel of drag moves the value, per unit.
+ *
+ * A flat "one pixel is one step" is what the scrub used to do, and it makes the gesture mean
+ * something different in every unit: dragging a `rem` value moved it a whole root font size per
+ * pixel, so two pixels of travel was a 32px jump. These are chosen so a drag covers roughly the
+ * same *visual* distance whatever the unit is written in, which is what makes the unit chip and
+ * the drag work together rather than against each other.
+ */
+const SCRUB_STEP: Record<string, number> = {
+  '': 1,
+  px: 1,
+  pt: 1,
+  '%': 0.5,
+  vw: 0.5,
+  vh: 0.5,
+  svh: 0.5,
+  dvh: 0.5,
+  rem: 0.0625,
+  em: 0.0625,
+  ch: 0.25,
+  fr: 0.1,
+  ms: 10,
+  s: 0.01,
+  deg: 1,
+};
+
+/** Travel needed to advance one rung when snapping through a scale. */
+const SNAP_PITCH = 14;
+
+/** One stop on a property's scale: what to write, and where it sits numerically. */
+interface SnapRung {
+  /** The text to commit -- a `var()` reference for a token, so snapping keeps the token. */
+  write: string;
+  number: number;
+  unit: string;
+  label: string;
+  token: boolean;
+}
+
+/**
+ * The rung behind a suggestion, or null when it is not a measurable one.
+ *
+ * A token suggestion carries its resolved value in `hint`, sometimes with a usage count appended
+ * (`12px · 3×`), so the count comes off before parsing. A literal carries it in `value`. Keywords
+ * like `auto` parse to nothing and drop out, which is right -- a scale is made of sizes.
+ */
+function rungOf(item: ValueSuggestion): SnapRung | null {
+  if (item.info) return null;
+  const raw = item.token ? (item.hint ?? '').split('·')[0] : item.value;
+  const parsed = parseLength(raw.trim());
+  if (!parsed) return null;
+  return {
+    write: item.value,
+    number: parsed.number,
+    unit: parsed.unit,
+    label: item.label ?? item.value,
+    token: Boolean(item.token),
+  };
 }
 
 /** Short explanations shown beside unit completions. */

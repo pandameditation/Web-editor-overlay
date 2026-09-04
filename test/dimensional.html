@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>The dimensional value primitive: a gauge that scrubs, and a scale to snap to</title>
+  <style>
+    :root {
+      --space-xs: 4px;
+      --space-sm: 8px;
+      --space-md: 16px;
+      --space-lg: 24px;
+      --space-xl: 48px;
+      --brand: #ff3355;
+    }
+
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: system-ui, sans-serif;
+    }
+
+    .card {
+      padding: var(--space-md);
+      gap: var(--space-sm);
+    }
+  </style>
+</head>
+
+<body>
+  <main>
+    <h1 id="title">Dimensional values</h1>
+    <section>
+      <p class="card" id="para">A paragraph with a token-valued padding.</p>
+      <p id="plain">A paragraph with nothing set.</p>
+    </section>
+  </main>
+
+  <div id="report">
+    <pre id="progress">start</pre>
+    <pre id="out">pending</pre>
+  </div>
+
+  <script type="module">
+    (async () => {
+      const errors = [];
+      addEventListener('error', (e) => errors.push('error: ' + e.message));
+      addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + String(e.reason)));
+
+      const progress = document.getElementById('progress');
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const results = {};
+
+      const deep = (tag, root = document) => {
+        const direct = root.querySelector?.(tag);
+        if (direct) return direct;
+        for (const el of root.querySelectorAll?.('*') ?? []) {
+          if (el.shadowRoot) {
+            const found = deep(tag, el.shadowRoot);
+            if (found) return found;
+          }
+        }
+        return null;
+      };
+
+      /**
+       * One scrub gesture, driven through real pointer events.
+       *
+       * `setPointerCapture` needs a pointerId the browser knows about, so these are dispatched as
+       * PointerEvents with an explicit id and the capture call is tolerated if it throws.
+       */
+      const scrub = async (handle, dx, modifiers = {}) => {
+        const box = handle.getBoundingClientRect();
+        const x = box.left + box.width / 2;
+        const y = box.top + box.height / 2;
+        const opts = { bubbles: true, composed: true, pointerId: 1, pointerType: 'mouse', isPrimary: true };
+        handle.dispatchEvent(new PointerEvent('pointerdown', { ...opts, clientX: x, clientY: y }));
+        // Several steps, the way a real drag arrives, so a per-frame handler is exercised.
+        for (const fraction of [0.34, 0.67, 1]) {
+          handle.dispatchEvent(
+            new PointerEvent('pointermove', {
+              ...opts,
+              clientX: x + dx * fraction,
+              clientY: y,
+              ...modifiers,
+            }),
+          );
+        }
+        handle.dispatchEvent(new PointerEvent('pointerup', { ...opts, clientX: x + dx, clientY: y }));
+        await frames();
+        await wait(30);
+      };
+
+      try {
+        const { mount } = await import('../dist/html-editor-overlay.js');
+        const api = mount({ theme: 'dark', detectScriptContent: false });
+        const engine = api.engine;
+        api.setEditing(true);
+        await frames();
+
+        /* ------------------------------------------------------------------ *
+         * 1. The Styles panel gets the handle, without borrowing the label.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'styles';
+        const para = document.getElementById('para');
+        api.select(para);
+        engine.setDockTab('styles');
+        await frames();
+        await wait(250);
+
+        const panel = deep('heo-styles-panel');
+        const rowFor = (property) =>
+          Array.from(panel.shadowRoot.querySelectorAll('.row')).find(
+            (row) => row.dataset.property === property,
+          );
+        const fieldFor = (property) => rowFor(property)?.querySelector('heo-value-field');
+        const gaugeFor = (property) => fieldFor(property)?.shadowRoot.querySelector('.gauge');
+
+        results.styles = {
+          // A dimensional row has the handle...
+          dimensionalRowHasAGauge: Boolean(gaugeFor('width')),
+          // ...and it is NOT the property name: the row already prints that in its own column, so
+          // reusing the label the way the Tokens panel does would show it twice.
+          doesNotDuplicateThePropertyName: !fieldFor('width')?.shadowRoot.querySelector('.scrub'),
+          // A keyword row has no handle, because there is no number to drag.
+          keywordRowHasNone: !gaugeFor('display'),
+          // A colour row keeps the swatch that was always the model for this slot.
+          colourRowKeepsItsSwatch: Boolean(
+            fieldFor('color')?.shadowRoot.querySelector('.color-btn'),
+          ),
+        };
+
+        /* ------------------------------------------------------------------ *
+         * 1b. The bar says something, across the whole range values come in.
+         * ------------------------------------------------------------------ */
+        const barOf = (property) =>
+          fieldFor(property)?.shadowRoot.querySelector('.gauge .bar')?.getBoundingClientRect()
+            .width ?? null;
+        engine.setStyle('width', '220px', para);
+        engine.setStyle('min-width', '16px', para);
+        engine.setStyle('max-width', 'none', para);
+        await frames();
+        await wait(150);
+        results.gauge = {
+          /*
+           * Logarithmic, not clamped linearly. A 16px ceiling -- which is what the Tokens panel
+           * uses over a 4-48px token scale -- drew `16px` and `220px` as the same bar, and in the
+           * Styles panel the range is the full spread of CSS lengths.
+           */
+          distinguishesSmallFromLarge: barOf('width') > barOf('min-width'),
+          /*
+           * And a value that is not a length still draws something. The clamp used to be CSS,
+           * handed the raw value, so `max(2px, none)` was invalid, the declaration was dropped and
+           * the bar had no width at all -- which reads as a broken control, not as "no limit".
+           */
+          nonLengthsStillShowTheFloor: barOf('max-width') === 2,
+        };
+        for (const property of ['width', 'min-width', 'max-width']) {
+          engine.setStyle(property, '', para);
+        }
+        await frames();
+
+        /* ------------------------------------------------------------------ *
+         * 2. Dragging it changes the value, and commits once.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'drag';
+        engine.setStyle('width', '100px', para);
+        await frames();
+        /*
+         * Waited out, not hurried.
+         *
+         * Adjacent commits on the same property coalesce for 2.5s so a stepper is one undo step.
+         * Measuring across that window would have counted the setup edit and the drag as one entry
+         * and read as a pass for the wrong reason.
+         */
+        await wait(2600);
+        const undoBefore = engine.history.size;
+        await scrub(gaugeFor('width'), 30);
+        results.drag = {
+          movedTheValue: para.style.width === '130px',
+          // One gesture, one entry: the frames in between are previews, not commits.
+          oneUndoEntry: engine.history.size === undoBefore + 1,
+        };
+        engine.undo();
+        await frames();
+        results.drag.undoRestoresTheStart = para.style.width === '100px';
+
+        /* ------------------------------------------------------------------ *
+         * 3. A press that never travels is a press, not an edit.
+         * ------------------------------------------------------------------ */
+        engine.setStyle('width', '100px', para);
+        await frames();
+        await wait(120);
+        const stillBefore = engine.history.size;
+        await scrub(gaugeFor('width'), 0);
+        results.deadZone = {
+          // Without the 2px dead zone a plain click committed the number already there, which put
+          // a no-op on the undo stack.
+          clickDoesNotCommit: engine.history.size === stillBefore,
+          valueUntouched: para.style.width === '100px',
+        };
+
+        /* ------------------------------------------------------------------ *
+         * 4. A token-valued field drags from where it looks, not from zero.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'token';
+        engine.setStyle('width', 'var(--space-xl)', para);
+        await frames();
+        await wait(150);
+        await scrub(gaugeFor('width'), 10);
+        results.fromToken = {
+          /*
+           * The bug this pins. `parseLength` cannot read `var(--space-xl)`, and the old fallback
+           * was `{0, 'px'}` -- so dragging a token-valued field discarded the token and restarted
+           * from `0px`, landing on `10px` instead of near the 48px the user could see.
+           */
+          startsFromTheResolvedValue: para.style.width === '58px',
+          didNotRestartFromZero: para.style.width !== '10px',
+        };
+        engine.setStyle('width', '', para);
+        await frames();
+
+        /* ------------------------------------------------------------------ *
+         * 5. The unit decides what a pixel of travel means.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'units';
+        engine.setStyle('width', '2rem', para);
+        await frames();
+        await wait(150);
+        await scrub(gaugeFor('width'), 16);
+        /*
+         * A flat one-step-per-pixel moved a rem value a whole root font size per pixel, so 16px of
+         * travel was a 16rem jump -- 256px on screen. Scaled per unit, the same travel is 1rem.
+         */
+        results.units = { remIsNotSixteenTimesTooFast: para.style.width === '3rem' };
+        engine.setStyle('width', '', para);
+        await frames();
+
+        /* ------------------------------------------------------------------ *
+         * 6. Shift walks the project's scale, and keeps the token.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'snap';
+        engine.setStyle('gap', '8px', para);
+        await frames();
+        await wait(150);
+        const gapField = fieldFor('gap');
+        results.snap = {
+          // The ladder is the same set of values the dropdown offers, narrowed to one unit.
+          hasAScale: (gapField?.suggestions ?? []).length > 0,
+        };
+        // Two rungs' worth of travel. The control advances one rung per 14px, so this is the
+        // smallest drag that unambiguously moves rather than hovering on the boundary.
+        await scrub(gaugeFor('gap'), 28, { shiftKey: true });
+        const snapped = para.style.gap;
+        results.snap.movedUpTheScale = snapped !== '8px' && snapped !== '';
+        /*
+         * And it adopts the token rather than flattening it. Snapping onto a value the project
+         * names is the moment to use that name -- writing `16px` where `var(--space-md)` exists is
+         * how a design system quietly stops being one.
+         */
+        results.snap.keepsTheTokenSpelling = snapped.startsWith('var(--');
+        results.snap.landedOnARealToken = /var\(--space-/.test(snapped);
+        engine.setStyle('gap', '', para);
+        await frames();
+
+        /* ------------------------------------------------------------------ *
+         * 7. Shift still means x10 where there is no scale to walk.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'tokens panel';
+        engine.setDockTab('tokens');
+        await frames();
+        await wait(250);
+        const tokensPanel = deep('heo-tokens-panel');
+        const tokenFields = Array.from(
+          tokensPanel.shadowRoot.querySelectorAll('heo-value-field'),
+        );
+        // A size or radius token drew the bar preview but was handed kind="text", so it could
+        // neither be scrubbed nor stepped -- the preview and the control disagreed.
+        results.tokensPanel = {
+          everyDimensionalTokenScrubs: tokenFields
+            .filter((f) => f.label && /space|size|radius/.test(f.label))
+            .every((f) => f.kind === 'length'),
+          fieldsHaveTheLabelHandle: tokenFields.some((f) =>
+            f.shadowRoot.querySelector('.scrub'),
+          ),
+        };
+
+      } catch (error) {
+        results.fatal = String(error);
+      }
+
+      // Every group whose assertions are all true. `results.ok` is computed here rather than set
+      // in the body, so a group added later cannot be left out of the verdict by accident.
+      delete results.ok;
+      const failed = Object.entries(results)
+        .filter(([, group]) => group && typeof group === 'object')
+        .filter(([, group]) => Object.values(group).some((value) => value === false))
+        .map(([name]) => name);
+
+      document.getElementById('out').textContent =
+        'RESULTS:' +
+        JSON.stringify(
+          { ok: failed.length === 0 && !results.fatal && errors.length === 0, failed, ...results, errors },
+          null,
+          1,
+        ) +
+        ':END';
+    })();
+  </script>
+</body>
+
+</html>
