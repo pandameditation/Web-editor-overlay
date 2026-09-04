@@ -15,7 +15,7 @@ import {
 import { listen, unlisten } from '../../core/shield.js';
 import { ManagedStyleSheet } from '../../core/stylesheet.js';
 import { icon } from '../icons.js';
-import { anchoredStyle } from '../place.js';
+import { PopoverPlacer } from '../place.js';
 import { baseStyles } from '../theme.js';
 
 /**
@@ -374,6 +374,8 @@ export class HeoSelectorField extends LitElement {
   @state() private open = false;
   @state() private highlight = -1;
   @state() private popupStyle = '';
+  /** Places the popup, and refuses to let the measurement feed back into the placement. */
+  readonly #placer = new PopoverPlacer();
 
   @query('input') private input!: HTMLInputElement;
 
@@ -417,6 +419,15 @@ export class HeoSelectorField extends LitElement {
   }
 
   override willUpdate(changed: PropertyValues<this>): void {
+    /*
+     * The rows are about to change, so the cached height is stale.
+     *
+     * Without this a list that shrank as the user typed kept the placement of the taller one, and one
+     * that grew was placed as though it still fitted. This field derives its completions from the
+     * draft rather than being handed them; the draft is private state, so `#openList` and each
+     * committed value are the invalidation points instead.
+     */
+    if (changed.has('value')) this.#placer.invalidate();
     // An external write wins unless the user is mid-edit, matching `heo-value-field`.
     // `:focus-within` is the question that can be answered from inside a shadow root;
     // `document.activeElement` reports the outermost host and is always this element.
@@ -756,6 +767,8 @@ export class HeoSelectorField extends LitElement {
     // Rebuilt on open so a page that has changed is described correctly.
     this.#vocabulary = null;
     this.open = true;
+    // A fresh opening measures afresh: the rows may differ from last time.
+    this.#placer.invalidate();
     requestAnimationFrame(() => {
       if (this.open) this.#position();
     });
@@ -777,12 +790,12 @@ export class HeoSelectorField extends LitElement {
   }
 
   #position(): void {
-    this.popupStyle = anchoredStyle({
+    const style = this.#placer.style(this.renderRoot.querySelector<HTMLElement>('.popup'), {
       anchor: this.getBoundingClientRect(),
-      popup: this.renderRoot.querySelector('.popup')?.getBoundingClientRect(),
       estimate: 260,
       minWidth: 240,
     });
+    if (style !== null) this.popupStyle = style;
   }
 
   /**

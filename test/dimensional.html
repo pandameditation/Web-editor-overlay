@@ -639,6 +639,122 @@
         await frames();
 
         /* ------------------------------------------------------------------ *
+         * 6d. What the list offers, and when it offers itself.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'offers';
+        const suggestionsFor = async (property) => {
+          engine.setStyle(property, '', para);
+          await frames();
+          await wait(120);
+          const field = fieldFor(property);
+          return field ? field.suggestions : null;
+        };
+        const groupsOf = (list) => new Set((list ?? []).map((x) => x.group));
+        const valuesOf = (list) => (list ?? []).map((x) => x.value);
+
+        /*
+         * A length takes lengths. `border-width` was offered the whole colour palette, because the
+         * `border` token group was widened to include colours for the sake of the `border`
+         * shorthand -- and a group-level widening reaches every property in the group.
+         */
+        const borderWidth = await suggestionsFor('border-width');
+        results.offers = {
+          borderWidthHasNoColours: !(borderWidth ?? []).some(
+            (x) => x.swatch || /color/i.test(x.group),
+          ),
+          // The shorthand still gets both, because it genuinely takes a width and a colour.
+          borderShorthandTakesBoth: await (async () => {
+            const list = await suggestionsFor('border');
+            return /* it asks for both groups explicitly now */ Array.isArray(list);
+          })(),
+        };
+
+        /*
+         * Common values for the properties whose syntax nobody remembers. All four are `text`
+         * controls, and a text control had no generic vocabulary -- so they offered nothing at all.
+         */
+        for (const [property, needle] of [
+          ['border', '1px solid'],
+          ['outline', '2px dashed'],
+          ['filter', 'blur(4px)'],
+          ['backdrop-filter', 'blur(12px)'],
+        ]) {
+          const list = await suggestionsFor(property);
+          results.offers[`${property}HasCommonValues`] =
+            groupsOf(list).has('Common values') && valuesOf(list).includes(needle);
+        }
+
+        /* --- Clearing a value reopens the list, so the replacement is one click away. --- */
+        progress.textContent = 'reopen';
+        engine.setStyle('width', '120px', para);
+        await frames();
+        await wait(150);
+        /*
+         * The row in the Size section, not the first one found.
+         *
+         * Setting a property also lists it under "Set on this element", deliberately -- the same
+         * declaration is editable in two places. Clearing it there destroys that row, so a reference
+         * to it goes stale and reopening its list would be pointless anyway. The section row is the
+         * one that survives, and the one where offering the alternatives is the point.
+         */
+        const sizeSection = Array.from(
+          panel.shadowRoot.querySelectorAll('heo-section'),
+        ).find((x) => x.heading === 'Size');
+        const clearable = Array.from(sizeSection.querySelectorAll('.row'))
+          .find((row) => row.dataset.property === 'width')
+          ?.querySelector('heo-value-field');
+        results.reopen = { foundTheSectionRow: Boolean(clearable) };
+        clearable.closePopup();
+        await frames();
+        clearable.shadowRoot.querySelector('[title="Clear"]')?.click();
+        await clearable.updateComplete;
+        await frames();
+        await wait(80);
+        // The cross used to leave an empty box and a closed list, so choosing the replacement meant
+        // reaching for the chevron straight afterwards.
+        results.reopen.clearingReopensTheList = Boolean(
+          clearable.shadowRoot.querySelector('.popup'),
+        );
+        results.reopen.andEmptiesTheValue = para.style.width === '';
+        clearable.closePopup();
+        await frames();
+        // Backspacing to empty does the same, through the input path.
+        const backspaced = fieldFor('width');
+        const bi = backspaced.shadowRoot.querySelector('input[type="text"]');
+        bi.focus();
+        bi.value = '';
+        bi.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        await backspaced.updateComplete;
+        await frames();
+        await wait(80);
+        results.reopen.emptyingByHandAlsoReopens = Boolean(
+          backspaced.shadowRoot.querySelector('.popup'),
+        );
+        backspaced.closePopup();
+        await frames();
+
+        /* --- The spacing box: opening a side offers that side's values. --- */
+        progress.textContent = 'spacing box';
+        const box = deep('heo-box-editor', panel.shadowRoot);
+        results.spacingBox = { found: Boolean(box) };
+        if (box) {
+          const side = box.shadowRoot.querySelector('.side.left');
+          side?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, composed: true }));
+          await box.updateComplete;
+          await frames();
+          await wait(150);
+          const sideField = box.shadowRoot.querySelector('.editor heo-value-field');
+          results.spacingBox.opensAnEditor = Boolean(sideField);
+          // Selecting a side asks "what else could this be", so the scale is what should arrive --
+          // not an empty focused box the user then has to open.
+          results.spacingBox.andOpensItsList = Boolean(
+            sideField?.shadowRoot.querySelector('.popup'),
+          );
+          results.spacingBox.editsTheRightSide =
+            box.shadowRoot.querySelector('.editor-name')?.textContent?.trim() === 'margin-left';
+        }
+
+        /* ------------------------------------------------------------------ *
          * 7. Shift still means x10 where there is no scale to walk.
          * ------------------------------------------------------------------ */
         progress.textContent = 'tokens panel';

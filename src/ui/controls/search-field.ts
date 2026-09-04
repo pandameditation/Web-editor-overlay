@@ -2,7 +2,7 @@ import { css, html, LitElement, nothing, type PropertyValues, type TemplateResul
 import { customElement, property, query, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 import { listen, unlisten } from '../../core/shield.js';
-import { anchoredStyle } from '../place.js';
+import { PopoverPlacer } from '../place.js';
 import { icon } from '../icons.js';
 import { baseStyles } from '../theme.js';
 
@@ -285,6 +285,8 @@ export class HeoSearchField extends LitElement {
   @state() private open = false;
   @state() private highlight = -1;
   @state() private popupStyle = '';
+  /** Places the popup, and refuses to let the measurement feed back into the placement. */
+  readonly #placer = new PopoverPlacer();
 
   @query('input') private input!: HTMLInputElement;
 
@@ -317,6 +319,13 @@ export class HeoSearchField extends LitElement {
   }
 
   override willUpdate(changed: PropertyValues<this>): void {
+    /*
+     * The rows are about to change, so the cached height is stale.
+     *
+     * Without this a list that shrank as the user typed kept the placement of the taller one, and one
+     * that grew was placed as though it still fitted.
+     */
+    if (changed.has('suggestions') || changed.has('value')) this.#placer.invalidate();
     // An external write wins unless the user is mid-edit. `:focus-within` is the question that
     // can be answered from inside a shadow root; `document.activeElement` reports the host.
     if (changed.has('value') && !this.matches(':focus-within')) this.draft = this.value;
@@ -598,6 +607,8 @@ export class HeoSearchField extends LitElement {
     for (const other of openLists) if (other !== this) other.close();
     openLists.add(this);
     this.open = true;
+    // A fresh opening measures afresh: the rows may differ from last time.
+    this.#placer.invalidate();
     requestAnimationFrame(() => {
       if (this.open) this.#position();
     });
@@ -629,11 +640,11 @@ export class HeoSearchField extends LitElement {
   }
 
   #position(): void {
-    this.popupStyle = anchoredStyle({
+    const style = this.#placer.style(this.renderRoot.querySelector<HTMLElement>('.popup'), {
       anchor: this.getBoundingClientRect(),
-      popup: this.renderRoot.querySelector('.popup')?.getBoundingClientRect(),
       minWidth: 220,
     });
+    if (style !== null) this.popupStyle = style;
   }
 }
 

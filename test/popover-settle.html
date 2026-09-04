@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Popovers settle where they are put, and stay on screen</title>
+    <style>
+      :root {
+        --space-md: 16px;
+        --brand: #ff3355;
+        --border-thin: 1px;
+        --border-thick: 3px;
+      }
+      body { font: 14px/1.5 system-ui, sans-serif; margin: 0; padding: 24px; }
+      main { min-height: 1600px; }
+    </style>
+  </head>
+  <body>
+    <main><p id="para">A paragraph.</p></main>
+    <pre id="progress">start</pre>
+    <pre id="out">pending</pre>
+    <script type="module">
+      /*
+       * A settled popover rewrites its own style zero times after placement. One that oscillates --
+       * placement reading a height that placement itself changed -- rewrites it every frame, which
+       * pins the main thread and is what "the page stopped responding" looks like from the outside.
+       *
+       * So: open each list, watch its style attribute for two seconds, and count.
+       */
+      const out = document.getElementById('out');
+      const progress = document.getElementById('progress');
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const deep = (tag, root = document) => {
+        const direct = root.querySelector?.(tag);
+        if (direct) return direct;
+        for (const el of root.querySelectorAll?.('*') ?? []) {
+          if (el.shadowRoot) {
+            const found = deep(tag, el.shadowRoot);
+            if (found) return found;
+          }
+        }
+        return null;
+      };
+      const result = {};
+      const results = {};
+      try {
+        const { mount } = await import('../dist/html-editor-overlay.js');
+        const api = mount({ theme: 'dark', detectScriptContent: false });
+        api.setEditing(true);
+        await frames();
+        const para = document.getElementById('para');
+        api.select(para);
+        api.engine.setDockTab('styles');
+        await frames();
+        await wait(400);
+        const panel = deep('heo-styles-panel');
+        for (const section of panel.shadowRoot.querySelectorAll('heo-section')) section.open = true;
+        await panel.updateComplete;
+        await wait(300);
+
+        const fieldFor = (property) =>
+          Array.from(panel.shadowRoot.querySelectorAll('.row'))
+            .find((row) => row.dataset.property === property)
+            ?.querySelector('heo-value-field');
+
+        const watch = async (property, open) => {
+          progress.textContent = property;
+          const field = fieldFor(property);
+          if (!field) return 'no field';
+          field.scrollIntoView({ block: 'end' });
+          await frames();
+          await wait(120);
+          open(field);
+          await field.updateComplete;
+          await frames();
+          await wait(150);
+          const popup = field.shadowRoot.querySelector('.popup');
+          if (!popup) return 'no popup';
+          let writes = 0;
+          const observer = new MutationObserver((records) => {
+            for (const record of records) if (record.attributeName === 'style') writes += 1;
+          });
+          observer.observe(popup, { attributes: true, attributeFilter: ['style'] });
+          await wait(2000);
+          observer.disconnect();
+          const box = popup.getBoundingClientRect();
+          field.closePopup?.();
+          await frames();
+          return {
+            writes,
+            onScreen: box.top >= -0.5 && box.bottom <= innerHeight + 0.5,
+            top: Math.round(box.top),
+            height: Math.round(box.height),
+          };
+        };
+
+        const byChevron = (field) =>
+          field.shadowRoot.querySelector('[aria-label="Show tokens and values"]')?.click();
+
+        for (const property of ['border', 'border-width', 'border-style', 'padding', 'width']) {
+          result[property] = await watch(property, byChevron);
+        }
+
+        // And the clamp composer, whose rows shrink to fit -- the shape most at risk.
+        progress.textContent = 'composer';
+        const widthField = fieldFor('width');
+        widthField.scrollIntoView({ block: 'end' });
+        await frames();
+        byChevron(widthField);
+        await widthField.updateComplete;
+        await frames();
+        await wait(150);
+        Array.from(widthField.shadowRoot.querySelectorAll('.popup [role="option"]'))
+          .find((b) => /clamp\(\)/.test(b.textContent))
+          ?.click();
+        await widthField.updateComplete;
+        await frames();
+        await wait(200);
+        const composer = widthField.shadowRoot.querySelector('.popup.composer');
+        if (composer) {
+          let writes = 0;
+          const observer = new MutationObserver((records) => {
+            for (const record of records) if (record.attributeName === 'style') writes += 1;
+          });
+          observer.observe(composer, { attributes: true, attributeFilter: ['style'] });
+          await wait(2000);
+          observer.disconnect();
+          const box = composer.getBoundingClientRect();
+          result.composer = {
+            writes,
+            onScreen: box.top >= -0.5 && box.bottom <= innerHeight + 0.5,
+            top: Math.round(box.top),
+            height: Math.round(box.height),
+          };
+        } else {
+          result.composer = 'not opened';
+        }
+
+        /*
+         * Two properties, for every popover opened above.
+         *
+         * `writes: 0` is the one that matters. Placement runs from `updated()`, so it reads layout
+         * and then writes a state property -- and if the value it reads is one the write changed,
+         * the two chase each other every frame. That pins the main thread, which is what "the page
+         * stopped responding" looks like from outside. A settled popover rewrites its style zero
+         * times after placement.
+         */
+        const rows = Object.entries(result).filter(([, x]) => x && typeof x === 'object');
+        results.settles = rows.every(([, x]) => x.writes === 0);
+        results.staysOnScreen = rows.every(([, x]) => x.onScreen);
+        // Natural heights rather than everything squeezed to the same number, which is what
+        // measuring the already-capped box produced.
+        results.usesTheRoomAvailable = new Set(rows.map(([, x]) => x.height)).size > 1;
+        results.measured = Object.fromEntries(rows);
+        results.ok = results.settles && results.staysOnScreen && results.usesTheRoomAvailable;
+        out.textContent = 'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+      } catch (error) {
+        out.textContent =
+          'RESULTS:' + JSON.stringify({ ok: false, error: String(error), ...result }, null, 1) + ':END';
+      }
+    </script>
+  </body>
+</html>

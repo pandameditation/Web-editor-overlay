@@ -11,7 +11,7 @@ import {
   toHexColor,
 } from '../../core/css.js';
 import { listen, unlisten } from '../../core/shield.js';
-import { anchoredStyle } from '../place.js';
+import { PopoverPlacer } from '../place.js';
 import { icon } from '../icons.js';
 import { baseStyles, swatchStyle } from '../theme.js';
 
@@ -525,6 +525,8 @@ export class HeoValueField extends LitElement {
   @state() private highlight = -1;
   @state() private scrubbing = false;
   @state() private popupStyle = '';
+  /** Places the popup, and refuses to let the measurement feed back into the placement. */
+  readonly #placer = new PopoverPlacer();
   /**
    * The function being composed, or null when none is.
    *
@@ -635,6 +637,13 @@ export class HeoValueField extends LitElement {
   }
 
   override willUpdate(changed: PropertyValues<this>): void {
+    /*
+     * The rows are about to change, so the cached height is stale.
+     *
+     * Without this a list that shrank as the user typed kept the placement of the taller one -- and
+     * one that grew was placed as though it still fitted.
+     */
+    if (changed.has('suggestions') || changed.has('value')) this.#placer.invalidate();
     // Adopt an external value change unless the user is mid-edit. `:focus-within`
     // is the question that can actually be answered here: `document.activeElement`
     // reports the outermost shadow host, so comparing it against this element was
@@ -735,6 +744,16 @@ export class HeoValueField extends LitElement {
       node = host;
     }
     return out;
+  }
+
+  /**
+   * Open the list from outside.
+   *
+   * For a host that knows the user has just asked to change this value — the spacing box opening a
+   * side, for one. Silent when there is nothing to show, so a caller does not have to ask first.
+   */
+  openList(): void {
+    if (!this.open && this.#canOpen) this.#openPopup();
   }
 
   /** Whether this field's own suggestion list is up. Read by a composer hosting it. */
@@ -1497,6 +1516,16 @@ export class HeoValueField extends LitElement {
   #clear(): void {
     this.draft = '';
     this.#commit();
+    /*
+     * Emptied, so offer the alternatives.
+     *
+     * Clearing a value is rarely the end of the thought — it is how you get to a different one. The
+     * cross left an empty box and a closed list, so choosing the replacement meant reaching for the
+     * chevron straight afterwards. Backspacing to empty already reopened it, through `#onInput`;
+     * this is the same intention expressed with the button.
+     */
+    this.textInput?.focus();
+    if (this.#canOpen) this.#openPopup();
   }
 
   #toggleOpen(): void {
@@ -1524,6 +1553,8 @@ export class HeoValueField extends LitElement {
     }
     openFields.add(this);
     this.open = true;
+    // A fresh opening measures afresh: the rows may be different from last time.
+    this.#placer.invalidate();
     this.highlight = -1;
     this.#highlightMoved = false;
     // First placement happens in `updated()`, once the popover exists and has been
@@ -1542,12 +1573,12 @@ export class HeoValueField extends LitElement {
    * the cost of having to recompute on scroll and resize.
    */
   #positionPopup(): void {
-    this.popupStyle = anchoredStyle({
+    const style = this.#placer.style(this.renderRoot.querySelector<HTMLElement>('.popup'), {
       anchor: this.getBoundingClientRect(),
-      popup: this.renderRoot.querySelector('.popup')?.getBoundingClientRect(),
       // A composer is wider than a list: three labelled rows each holding a field of their own.
       minWidth: this.composer ? 296 : 200,
     });
+    if (style !== null) this.popupStyle = style;
   }
 
   #choose(item: ValueSuggestion): void {
@@ -1732,6 +1763,7 @@ export class HeoValueField extends LitElement {
     openFields.delete(this);
     if (!this.open) return;
     this.open = false;
+    this.#placer.invalidate();
     this.highlight = -1;
     // The composer goes with it. Left set, an abandoned form would stand in for the list the next
     // time one was asked for.

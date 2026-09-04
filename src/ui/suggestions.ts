@@ -19,7 +19,10 @@ export function buildSuggestions(
   element: HTMLElement | null,
 ): ValueSuggestion[] {
   const meta = propertyMeta(property);
-  const group = tokenGroupFor(meta);
+  const groups = tokenGroupsFor(meta);
+  // The group a colour swatch is decided by, and the one a heading is named after: the first, which
+  // is the property's primary kind.
+  const group = groups[0];
   const tokenItems: ValueSuggestion[] = [];
   const literalItems: ValueSuggestion[] = [];
   const seen = new Set<string>();
@@ -47,7 +50,7 @@ export function buildSuggestions(
   // "All tokens" disagreed with the compatibility rules and — for any property
   // without a declared group — listed the entire palette.
   if (element) {
-    for (const token of filterGroup(engine.tokens.usedBy(element), group)) {
+    for (const token of filterGroups(engine.tokens.usedBy(element), groups)) {
       add(token, 'Used in this component');
     }
   }
@@ -55,12 +58,12 @@ export function buildSuggestions(
   const usage = engine.tokens.usage();
   // Ranked by usage first, then narrowed, so the cut is the most-used *compatible*
   // tokens rather than whatever survived a pre-trimmed list.
-  for (const token of filterGroup(engine.tokens.usedInProject(undefined, 400), group).slice(0, 14)) {
+  for (const token of filterGroups(engine.tokens.usedInProject(undefined, 400), groups).slice(0, 14)) {
     const count = usage.get(token.name) ?? 0;
     add(token, 'Used in this project', `${token.value} · ${count}×`);
   }
 
-  for (const token of filterGroup(engine.tokens.list(), group)) {
+  for (const token of filterGroups(engine.tokens.list(), groups)) {
     add(token, group ? `All ${group} tokens` : 'All tokens');
   }
 
@@ -91,10 +94,15 @@ export function buildSuggestions(
 /**
  * Which token groups may appear on a property in a given group.
  *
- * Mostly one-to-one, with two deliberate exceptions. A spacing field accepts size
- * tokens, because a scale like `--size-2` is routinely used as a gap — but not the
- * reverse: nothing good comes of offering `--space-md` for a `font-size`. And a
- * `border` shorthand needs a width *and* a colour, so it takes both.
+ * One-to-one but for spacing, which accepts size tokens because a scale like `--size-2` is routinely
+ * used as a gap — though not the reverse: nothing good comes of offering `--space-md` for a
+ * `font-size`.
+ *
+ * `border` used to be widened to `['border', 'color']` here, for the sake of the `border` shorthand
+ * needing both. That was the wrong place to say it: the widening applies to every property in the
+ * group, so `border-width` — which takes a length and nothing else — was offered the whole colour
+ * palette. A shorthand that genuinely takes several kinds now says so itself, through
+ * `PropertyMeta.tokenGroups`.
  */
 const COMPATIBLE_GROUPS: Record<TokenGroup, TokenGroup[]> = {
   color: ['color'],
@@ -103,18 +111,18 @@ const COMPATIBLE_GROUPS: Record<TokenGroup, TokenGroup[]> = {
   radius: ['radius'],
   shadow: ['shadow'],
   font: ['font'],
-  border: ['border', 'color'],
+  border: ['border'],
   motion: ['motion'],
   other: ['other'],
 };
 
-function filterGroup(tokens: DesignToken[], group: TokenGroup | undefined): DesignToken[] {
+function filterGroups(tokens: DesignToken[], groups: TokenGroup[]): DesignToken[] {
   // No group means no token can satisfy this property, so offer none. Showing the
   // whole palette on `overflow` or `transform` was what buried the handful of
   // values that actually apply.
-  if (!group) return [];
-  const compatible = COMPATIBLE_GROUPS[group] ?? [group];
-  return tokens.filter((token) => compatible.includes(token.group));
+  if (!groups.length) return [];
+  const compatible = new Set(groups.flatMap((group) => COMPATIBLE_GROUPS[group] ?? [group]));
+  return tokens.filter((token) => compatible.has(token.group));
 }
 
 /**
@@ -125,25 +133,31 @@ function filterGroup(tokens: DesignToken[], group: TokenGroup | undefined): Desi
  * property is called. Keyword and number controls resolve to nothing, which is
  * the point — there is no token spelling of `hidden` or `700`.
  */
-function tokenGroupFor(meta: PropertyMeta): TokenGroup | undefined {
-  if (meta.tokens) return meta.tokens;
+function tokenGroupsFor(meta: PropertyMeta): TokenGroup[] {
+  // A shorthand that takes several kinds says so itself, and wins over both the single group and the
+  // control-type guess.
+  if (meta.tokenGroups?.length) return meta.tokenGroups;
+  if (meta.tokens) return [meta.tokens];
   switch (meta.control) {
     case 'color':
-      return 'color';
+      return ['color'];
     case 'box':
-      return 'space';
+      return ['space'];
     case 'length':
-      return 'size';
+      return ['size'];
     case 'shadow':
-      return 'shadow';
+      return ['shadow'];
     case 'font':
-      return 'font';
+      return ['font'];
     default:
-      return undefined;
+      return [];
   }
 }
 
 function literalsFor(meta: PropertyMeta): string[] {
+  // The property's own list wins. Without it every `text` control offered nothing, which is worst
+  // for the properties whose syntax is hardest to recall — `filter`, `backdrop-filter`, `border`.
+  if (meta.literals?.length) return meta.literals;
   switch (meta.control) {
     // `box` is margin/padding, whose per-side fields take the same lengths.
     case 'box':

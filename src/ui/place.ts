@@ -28,6 +28,16 @@ export interface PlaceRequest {
    * caller places twice — once to get it roughly right, once it can be measured.
    */
   popup?: DOMRect | null;
+  /**
+   * The popover's content height, unconstrained by the cap this function last applied.
+   *
+   * This is what decides which side to use, and it has to come from `scrollHeight` rather than the
+   * measured box, because the box has already been squeezed. Deciding from the box is a feedback
+   * loop: a list that did not fit below was capped to the space below, measured at exactly that
+   * height on the next pass, and therefore judged to fit — so it stayed pinned to the bottom of the
+   * screen in a sliver instead of flipping above, which is the reported bug.
+   */
+  content?: number;
   /** Height to assume before it can be measured. */
   estimate?: number;
   /** Narrowest useful width. The popover is at least this wide, and at least as wide as its anchor. */
@@ -70,7 +80,8 @@ export function placeAnchored(request: PlaceRequest): Placement {
    */
   const below = innerHeight - anchor.bottom - gap - margin;
   const above = anchor.top - gap - margin;
-  const wanted = popup?.height || estimate;
+  // What it would like to be, not what it was last squeezed to.
+  const wanted = request.content || popup?.height || estimate;
 
   /*
    * Below unless it does not fit and above fits better.
@@ -78,6 +89,13 @@ export function placeAnchored(request: PlaceRequest): Placement {
    * Preferring below is what makes the popover feel attached to what opened it; the previous rule
    * compared the two spaces without ever asking whether the content fits in either, so a popover
    * that would have fitted below flipped above and vice versa.
+   */
+  /*
+   * Below when it fits below; otherwise whichever side has more room.
+   *
+   * Fitting is the first question, and the previous rule never asked it — it compared the two spaces
+   * and preferred below on a tie, so a popover that would have fitted above was squeezed into a
+   * smaller space below.
    */
   const side: 'above' | 'below' = below >= wanted || below >= above ? 'below' : 'above';
   const room = side === 'below' ? below : above;
@@ -105,4 +123,58 @@ export function anchoredStyle(request: PlaceRequest): string {
 
 function clamp(value: number, low: number, high: number): number {
   return Math.min(Math.max(value, low), high);
+}
+
+/**
+ * Places one popover, without letting the measurement feed back into the placement.
+ *
+ * Every one of these controls positions from `updated()`, which is a loop waiting to happen: read
+ * layout, write a state property, re-render, read layout again. The only thing that stopped it
+ * spinning was the measurement coming back the same twice — and that is not something CSS
+ * guarantees. A popover whose rows shrink to fit (a flex column with `flex: 0 1 auto`) has a content
+ * height that *depends on* the `max-height` the previous pass applied, so the two values can chase
+ * each other. Chrome and Firefox resolve that differently, which is exactly the shape of a hang that
+ * shows up in one browser and not the other.
+ *
+ * Two defences, because the first is the correct model and the second is the one that holds when
+ * someone changes the CSS later:
+ *
+ * - The content height is a property of the *content*, not of where the popover sits, so it is
+ *   measured once per content change and cached. Repositioning re-reads nothing.
+ * - `style()` refuses to run inside itself, so a layout flush that triggers another update cannot
+ *   recurse.
+ */
+export class PopoverPlacer {
+  #content: number | null = null;
+  #placing = false;
+
+  /** Forget the measurement: the content has changed, or the popover has just opened. */
+  invalidate(): void {
+    this.#content = null;
+  }
+
+  /**
+   * The style string for this popover, or null when there is nothing to do.
+   *
+   * Null means "leave the last placement alone" — either a placement is already in flight, or there
+   * is no popover to place. Callers should treat it as a no-op rather than clearing the style.
+   */
+  style(popup: HTMLElement | null, request: Omit<PlaceRequest, 'popup' | 'content'>): string | null {
+    if (this.#placing) return null;
+    this.#placing = true;
+    try {
+      if (popup && this.#content === null) {
+        // The one layout read, taken while the popover is at whatever size it currently is. Because
+        // this is cached, the `max-height` written below can never change what it reported.
+        this.#content = popup.scrollHeight || null;
+      }
+      return anchoredStyle({
+        ...request,
+        popup: popup?.getBoundingClientRect(),
+        content: this.#content ?? undefined,
+      });
+    } finally {
+      this.#placing = false;
+    }
+  }
 }

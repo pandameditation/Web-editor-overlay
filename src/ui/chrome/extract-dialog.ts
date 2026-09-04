@@ -1163,6 +1163,7 @@ export class HeoExtractDialog extends HeoElement {
     const style = anchoredStyle({
       anchor: this.nameInput.getBoundingClientRect(),
       popup: popup.getBoundingClientRect(),
+      content: popup.scrollHeight,
       estimate: 220,
       // This list is as wide as the field it belongs to, which is already generous here.
       minWidth: 0,

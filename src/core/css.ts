@@ -45,6 +45,23 @@ export interface PropertyMeta {
   keywords?: string[];
   /** Token group whose values make sense here. */
   tokens?: TokenGroup;
+  /**
+   * Several token groups, for a shorthand that genuinely takes more than one kind.
+   *
+   * `border` wants a width *and* a colour. `tokens` cannot say that, and widening the whole `border`
+   * group to include colours instead — which is what this replaced — leaked colour tokens onto
+   * `border-width`, a property that takes only a length.
+   */
+  tokenGroups?: TokenGroup[];
+  /**
+   * Ready-made values for this property, shown under "Common values".
+   *
+   * Per-property because the control type cannot supply them: `filter`, `backdrop-filter`, `border`
+   * and `outline` are all `text` controls, and a text control has no generic vocabulary — so they
+   * offered nothing at all, which is the least helpful state for exactly the properties whose syntax
+   * nobody remembers.
+   */
+  literals?: string[];
   /** Shown as placeholder / hint text. */
   hint?: string;
 }
@@ -189,15 +206,61 @@ export const CSS_PROPERTIES: PropertyMeta[] = [
   { name: 'border-width', group: 'border', control: 'length', tokens: 'border' },
   { name: 'border-style', group: 'border', control: 'keyword', keywords: [...K.borderStyle] },
   { name: 'border-color', group: 'border', control: 'color', tokens: 'color' },
-  { name: 'border', group: 'border', control: 'text', hint: '1px solid var(--border)' },
-  { name: 'outline', group: 'border', control: 'text', hint: '2px solid' },
+  {
+    name: 'border',
+    group: 'border',
+    control: 'text',
+    hint: '1px solid var(--border)',
+    tokenGroups: ['border', 'color'],
+    literals: ['none', '1px solid', '1px solid currentColor', '2px solid', '1px dashed', '1px solid transparent'],
+  },
+  {
+    name: 'outline',
+    group: 'border',
+    control: 'text',
+    hint: '2px solid',
+    tokenGroups: ['border', 'color'],
+    literals: ['none', '1px solid', '2px solid currentColor', '2px dashed', '2px solid transparent'],
+  },
   { name: 'outline-offset', group: 'border', control: 'length' },
 
   // Effects
   { name: 'box-shadow', group: 'effects', control: 'shadow', tokens: 'shadow' },
   { name: 'text-shadow', group: 'effects', control: 'text', hint: '0 1px 2px rgb(0 0 0 / .2)' },
-  { name: 'filter', group: 'effects', control: 'text', hint: 'blur(4px)' },
-  { name: 'backdrop-filter', group: 'effects', control: 'text', hint: 'blur(12px)' },
+  {
+    name: 'filter',
+    group: 'effects',
+    control: 'text',
+    hint: 'blur(4px)',
+    literals: [
+      'none',
+      'blur(4px)',
+      'brightness(1.1)',
+      'contrast(1.2)',
+      'saturate(1.4)',
+      'grayscale(1)',
+      'sepia(0.6)',
+      'invert(1)',
+      'opacity(0.5)',
+      'hue-rotate(90deg)',
+      'drop-shadow(0 2px 4px rgb(0 0 0 / 30%))',
+    ],
+  },
+  {
+    name: 'backdrop-filter',
+    group: 'effects',
+    control: 'text',
+    hint: 'blur(12px)',
+    literals: [
+      'none',
+      'blur(12px)',
+      'blur(12px) saturate(1.4)',
+      'brightness(0.8)',
+      'saturate(1.8)',
+      'grayscale(1)',
+      'invert(1)',
+    ],
+  },
   { name: 'transform', group: 'effects', control: 'text', hint: 'translateY(-2px)' },
   { name: 'transform-origin', group: 'effects', control: 'text', hint: 'center' },
   { name: 'mix-blend-mode', group: 'effects', control: 'keyword', keywords: ['normal', 'multiply', 'screen', 'overlay', 'darken', 'lighten', 'difference'] },

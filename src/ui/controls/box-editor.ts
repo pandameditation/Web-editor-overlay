@@ -4,7 +4,7 @@ import { formatLength, parseLength } from '../../core/css.js';
 import { icon } from '../icons.js';
 import { baseStyles } from '../theme.js';
 import './value-field.js';
-import type { ValueSuggestion } from './value-field.js';
+import type { HeoValueField, ValueSuggestion } from './value-field.js';
 
 export type BoxSide = 'top' | 'right' | 'bottom' | 'left';
 const SIDES: BoxSide[] = ['top', 'right', 'bottom', 'left'];
@@ -279,6 +279,24 @@ export class HeoBoxEditor extends LitElement {
     </div>`;
   }
 
+  /**
+   * Open a side for editing, with its value list already showing.
+   *
+   * Selecting a side is asking "what else could this be", and the answer is the project's spacing
+   * scale — so the list is what should arrive, not an empty focused box the user then has to open.
+   * The field is asked for it directly rather than being left to a focus handler, because opening on
+   * focus alone would also fire when the caret merely passes through.
+   */
+  #openSide(property: string | null): void {
+    this.editing = property;
+    if (!property) return;
+    void this.updateComplete.then(() => {
+      const field = this.renderRoot.querySelector<HeoValueField>('.editor heo-value-field');
+      field?.focusInput({ select: true });
+      field?.openList();
+    });
+  }
+
   #coreLabel(): string {
     const width = this.computed.width ?? 'auto';
     const height = this.computed.height ?? 'auto';
@@ -306,9 +324,7 @@ export class HeoBoxEditor extends LitElement {
         ? `${property}: ${declared} — drag to change, double-click for tokens and units`
         : `${property} is ${computed || 'not set'} — drag to change, double-click for tokens and units`}
       @pointerdown=${(event: PointerEvent) => this.#onScrub(event, property, declared || computed)}
-      @dblclick=${() => {
-        this.editing = this.editing === property ? null : property;
-      }}
+      @dblclick=${() => this.#openSide(this.editing === property ? null : property)}
       @keydown=${(event: KeyboardEvent) => this.#onKeyDown(event, property)}
       @change=${(event: Event) => this.#commitInput(event, property)}
       @focus=${(event: Event) => this.#onFocus(event, declared, computed)}

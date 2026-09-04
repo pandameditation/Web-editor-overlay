@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Popover gestures, for driving with real input</title>
+    <style>
+      :root {
+        --space-md: 16px;
+        --brand: #ff3355;
+        --border-thin: 1px;
+        --border-thick: 3px;
+      }
+      body { font: 14px/1.5 system-ui, sans-serif; margin: 0; padding: 24px; }
+      main { min-height: 1600px; }
+    </style>
+  </head>
+  <body>
+    <main><p id="para">A paragraph.</p></main>
+    <pre id="out">pending</pre>
+    <script type="module">
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const deep = (tag, root = document) => {
+        const direct = root.querySelector?.(tag);
+        if (direct) return direct;
+        for (const el of root.querySelectorAll?.('*') ?? []) {
+          if (el.shadowRoot) {
+            const found = deep(tag, el.shadowRoot);
+            if (found) return found;
+          }
+        }
+        return null;
+      };
+
+      const { mount } = await import('../dist/html-editor-overlay.js');
+      const api = mount({ theme: 'dark', detectScriptContent: false });
+      api.setEditing(true);
+      await frames();
+      const para = document.getElementById('para');
+      api.select(para);
+      api.engine.setDockTab('styles');
+      await frames();
+      await wait(400);
+      const panel = deep('heo-styles-panel');
+      for (const section of panel.shadowRoot.querySelectorAll('heo-section')) section.open = true;
+      await panel.updateComplete;
+      await wait(300);
+
+      const fieldFor = (property) =>
+        Array.from(panel.shadowRoot.querySelectorAll('.row'))
+          .find((row) => row.dataset.property === property)
+          ?.querySelector('heo-value-field');
+
+      const centre = (el) => {
+        if (!el) return null;
+        const b = el.getBoundingClientRect();
+        if (!b.width || !b.height) return null;
+        return { x: b.left + b.width / 2, y: b.top + b.height / 2 };
+      };
+
+      /*
+       * One target, aimed fresh.
+       *
+       * Measuring every target up front does not work: scrolling the next one into view invalidates
+       * the coordinates of the last, so the harness ends up pressing wherever the panel happens to be
+       * now. Every gesture asks for its point immediately before it is made.
+       */
+      window.__names = () =>
+        JSON.stringify([
+          'chevron:border',
+          'gauge:border-width',
+          'chevron:border-width',
+          'chevron:border-style',
+          'clear:border-width',
+          'input:border',
+        ]);
+
+      window.__aim = async (name) => {
+        const [what, property] = name.split(':');
+        const field = fieldFor(property);
+        if (!field) return JSON.stringify(null);
+        field.scrollIntoView({ block: 'center' });
+        await frames();
+        await wait(120);
+        const pick = {
+          chevron: '[aria-label="Show tokens and values"]',
+          gauge: '.gauge',
+          input: 'input[type="text"]',
+          clear: '[title="Clear"]',
+        }[what];
+        const spot = centre(field.shadowRoot.querySelector(pick));
+        if (!spot) return JSON.stringify(null);
+        return JSON.stringify(what === 'gauge' ? { ...spot, drag: 40 } : spot);
+      };
+
+      /* What actually happens during a real drag on the gauge, step by step. */
+      const trace = [];
+      window.__trace = () => trace.join(' | ');
+      {
+        const field = fieldFor('border-width');
+        const gauge = field?.shadowRoot.querySelector('.gauge');
+        if (gauge) {
+          for (const type of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel', 'lostpointercapture']) {
+            gauge.addEventListener(type, (event) => {
+              if (type === 'pointermove' && trace.filter((t) => t.startsWith('pointermove')).length > 3) return;
+              trace.push(`${type}(id=${event.pointerId},trusted=${event.isTrusted})`);
+              if (type === 'pointerdown') {
+                // Does capture succeed here at all?
+                try {
+                  gauge.setPointerCapture(event.pointerId);
+                  trace.push('capture:ok');
+                } catch (error) {
+                  trace.push(`capture:THREW ${error.name}`);
+                }
+                trace.push(`hasCapture=${gauge.hasPointerCapture?.(event.pointerId)}`);
+              }
+            }, true);
+          }
+        }
+      }
+
+      window.__note = () => {
+        const bits = [];
+        for (const property of ['border', 'border-width', 'border-style']) {
+          const field = fieldFor(property);
+          if (!field) continue;
+          bits.push(
+            `${property}=${JSON.stringify(field.value)}` +
+            `${field.shadowRoot.querySelector('.popup') ? ' [list]' : ''}`,
+          );
+        }
+        return bits.join(' ');
+      };
+
+      document.getElementById('out').textContent = 'ready';
+    </script>
+  </body>
+</html>

@@ -838,6 +838,7 @@ export class HeoPropsPanel extends HeoElement {
       anchor,
       // Absent on the first pass, which is what the estimate is for: the popup does not exist yet.
       popup: this.renderRoot.querySelector('.addpop')?.getBoundingClientRect(),
+      content: this.renderRoot.querySelector('.addpop')?.scrollHeight,
       minWidth: 320,
       gap: 6,
     });
