@@ -1862,6 +1862,20 @@ export class HeoStylesPanel extends HeoElement {
           /* already open, or popovers are unsupported: it still renders in place */
         }
       }
+      /*
+       * Focused on the half that is missing.
+       *
+       * The popup used to open with nothing focused at all, which made a working feature look
+       * broken: arriving from "font-stretch is a CSS property, it is just not set here" and
+       * pressing the button gave a popup with the name already filled and no caret, so the value
+       * being typed went to the document — where the global keymap was listening — and the commit
+       * button stayed disabled. Clicking it then did nothing, correctly and unhelpfully.
+       */
+      const row = this.renderRoot.querySelector('.poprow');
+      const target = seed
+        ? row?.querySelector('heo-value-field')
+        : row?.querySelector('heo-search-field');
+      target?.shadowRoot?.querySelector<HTMLInputElement>('input')?.focus();
     });
   }
 
@@ -1987,11 +2001,18 @@ export class HeoStylesPanel extends HeoElement {
         >
           ${icon('plus', 12)} Another
         </button>
+        <!-- A disabled button is a dead end unless it says what is missing. -->
+        ${ready === 0
+        ? html`<span class="why">${icon('alert', 11)} Needs a property and a value</span>`
+        : nothing}
         <span class="spacer"></span>
         <button
           class="btn sm primary"
           type="button"
           ?disabled=${ready === 0}
+          title=${ready === 0
+        ? 'Fill in both a property and a value first'
+        : 'Write these declarations onto the element'}
           @click=${() => this.#commitRows(el)}
         >
           ${icon('check', 12)}
@@ -2079,6 +2100,35 @@ export class HeoStylesPanel extends HeoElement {
       el,
     );
     this.#closeAdder();
+    /*
+     * The filter goes with it, so the panel shows what just happened.
+     *
+     * Keeping the query narrowed the panel to whichever sections still matched it, which for a
+     * property in no section at all is a single row under "Set on this element" — and for a
+     * property picked from the completions rather than typed, nothing at all. The search was the
+     * way in to adding something; once it is added, leaving a filter over the result answers a
+     * question nobody is still asking.
+     */
+    this.#clearFilter();
+    this.editor.notify(
+      count === 1
+        ? `Added ${Object.keys(declarations)[0]} to ${labelFor(el)}.`
+        : `Added ${count} declarations to ${labelFor(el)}.`,
+      'success',
+    );
+  }
+
+  /**
+   * Empty the filter, through the field's own API.
+   *
+   * `reset` and not an assignment: the control deliberately ignores an external write to `value`
+   * while it has focus, so that a re-render of this panel cannot overwrite what is being typed.
+   */
+  #clearFilter(): void {
+    this.filter = '';
+    this.renderRoot
+      .querySelector<HTMLElement & { reset?: (next?: string) => void }>('.top heo-search-field')
+      ?.reset?.('');
   }
 
   #remember(id: string, open: boolean): void {

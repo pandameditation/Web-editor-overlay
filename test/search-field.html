@@ -372,6 +372,73 @@
       results.styles.undoTakesBothBack =
         target.style.opacity === '' && target.style.boxShadow === '';
 
+      /* ---------------------------------------------------------------- *
+       * A property that belongs to no section, added from the verdict.
+       *
+       * This is the reported bug, and it was not the write path: that
+       * worked. The popup opened with nothing focused, so the value being
+       * typed went to the document, the commit button stayed disabled with
+       * no reason given, and pressing it did nothing.
+       * ---------------------------------------------------------------- */
+      await typeInto(filterField, 'font-stretch', stylePanel);
+      results.styles.knowsUncataloguedProperties = Boolean(
+        stylePanel.shadowRoot.querySelector('.nomatch .verdict.yes'),
+      );
+      Array.from(stylePanel.shadowRoot.querySelectorAll('.nomatch button'))
+        .find((b) => /add font-stretch/i.test(b.textContent))
+        ?.click();
+      await stylePanel.updateComplete;
+      await wait(150);
+
+      // Where the next keystroke goes. Seeded with the name, so the value is what is missing.
+      const focused = stylePanel.shadowRoot.activeElement;
+      results.styles.focusesTheMissingHalf =
+        focused?.tagName.toLowerCase() === 'heo-value-field';
+
+      // A disabled primary action that says what it wants, rather than ignoring the click.
+      const commitBtn = () =>
+        Array.from(stylePanel.shadowRoot.querySelectorAll('.popfoot button')).find((b) =>
+          /add (\d+ )?declarations?/i.test(b.textContent),
+        );
+      results.styles.saysWhyItCannotCommit =
+        commitBtn().disabled === true &&
+        /property and a value/i.test(commitBtn().getAttribute('title') ?? '') &&
+        Boolean(stylePanel.shadowRoot.querySelector('.popfoot .why'));
+
+      const stretchInput = stylePanel.shadowRoot
+        .querySelector('.poprow heo-value-field')
+        .shadowRoot.querySelector('input');
+      stretchInput.value = '50%';
+      stretchInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      await stylePanel.updateComplete;
+      await frames();
+      commitBtn()?.click();
+      await stylePanel.updateComplete;
+      await wait(150);
+
+      results.styles.uncataloguedLanded = target.style.getPropertyValue('font-stretch') === '50%';
+      /*
+       * And it is on screen afterwards. The filter is dropped on commit, because a query left
+       * over the result narrows the panel to whatever still matches it -- for a property in no
+       * section, one row, and for a property picked from the completions rather than typed,
+       * nothing at all. That is what made a working add look like a no-op.
+       */
+      results.styles.filterClearedSoTheResultShows =
+        filterField.shadowRoot.querySelector('input').value === '';
+      results.styles.showsUnderSetOnThisElement = (() => {
+        const first = Array.from(stylePanel.shadowRoot.querySelectorAll('heo-section')).find(
+          (s) => s.heading === 'Set on this element',
+        );
+        return Boolean(
+          first &&
+          Array.from(first.querySelectorAll('.row .pn')).some(
+            (n) => n.textContent.trim() === 'font-stretch',
+          ),
+        );
+      })();
+      engine.undo();
+      await frames();
+
       results.styles.ok =
         results.styles.filterIsOnTheFirstLine &&
         results.styles.extractIsNoLongerOnTheFirstLine &&
@@ -397,7 +464,13 @@
         results.styles.bothLanded &&
         results.styles.oneUndoEntry &&
         results.styles.popupClosed &&
-        results.styles.undoTakesBothBack;
+        results.styles.undoTakesBothBack &&
+        results.styles.knowsUncataloguedProperties &&
+        results.styles.focusesTheMissingHalf &&
+        results.styles.saysWhyItCannotCommit &&
+        results.styles.uncataloguedLanded &&
+        results.styles.filterClearedSoTheResultShows &&
+        results.styles.showsUnderSetOnThisElement;
 
       /* ------------------------------------------------------------------ *
        * 4. Props: the same field, over attributes, able to add any of them.

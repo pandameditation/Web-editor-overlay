@@ -70,6 +70,15 @@ export const adderStyles = css`
   .popfoot .spacer {
     flex: 1 1 auto;
   }
+  /* Why the primary action is unavailable, said next to it rather than left to be guessed. */
+  .popfoot .why {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--heo-text-faint);
+    font-size: 10px;
+    line-height: 1.3;
+  }
   .top .spacer {
     flex: 1 1 auto;
   }

@@ -776,7 +776,12 @@ export class HeoPropsPanel extends HeoElement {
           /* already open, or popovers are unsupported: it still renders in place */
         }
       }
-      this.renderRoot.querySelector<HTMLElement>('.poprow heo-value-field input')?.focus();
+      // The half that is missing: a seeded row already knows its name, a blank one does not.
+      const row = this.renderRoot.querySelector('.poprow');
+      const target = seed
+        ? row?.querySelector('heo-value-field')
+        : row?.querySelector('heo-search-field');
+      target?.shadowRoot?.querySelector<HTMLInputElement>('input')?.focus();
     });
   }
 
@@ -886,11 +891,18 @@ export class HeoPropsPanel extends HeoElement {
         >
           ${icon('plus', 12)} Another
         </button>
+        <!-- A disabled button is a dead end unless it says what is missing. -->
+        ${ready === 0
+        ? html`<span class="why">${icon('alert', 11)} Needs an attribute name</span>`
+        : nothing}
         <span class="spacer"></span>
         <button
           class="btn sm primary"
           type="button"
           ?disabled=${ready === 0}
+          title=${ready === 0
+        ? 'Fill in an attribute name first'
+        : 'Write these attributes onto the element'}
           @click=${() => this.#commitRows(el)}
         >
           ${icon('check', 12)}
@@ -992,6 +1004,17 @@ export class HeoPropsPanel extends HeoElement {
       'success',
     );
     this.#closeAdder();
+    // The filter goes with it, for the reason the styles panel documents: a query left over the
+    // result narrows the panel to whatever still matches, which can be nothing at all.
+    this.#clearFilter();
+  }
+
+  /** Empty the filter through the field's own API, which ignores writes while it has focus. */
+  #clearFilter(): void {
+    this.filter = '';
+    this.renderRoot
+      .querySelector<HTMLElement & { reset?: (next?: string) => void }>('.id heo-search-field')
+      ?.reset?.('');
   }
 
   #remember(id: string, open: boolean): void {
