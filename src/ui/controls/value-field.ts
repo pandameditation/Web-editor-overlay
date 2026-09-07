@@ -69,6 +69,14 @@ export class HeoValueField extends LitElement {
         position: relative;
       }
 
+      .sigil {
+        display: grid;
+        place-items: center;
+        width: 26px;
+        flex: 0 0 auto;
+        color: var(--heo-text-faint);
+      }
+
       .wrap {
         display: flex;
         align-items: stretch;
@@ -86,6 +94,19 @@ export class HeoValueField extends LitElement {
       .wrap:focus-within {
         border-color: var(--heo-accent-line);
         background: var(--heo-bg);
+      }
+      :host([leading-icon]) .wrap {
+        height: 30px;
+        box-shadow: var(--heo-inset);
+      }
+      :host([leading-icon]) .wrap:focus-within {
+        box-shadow: 0 0 0 3px var(--heo-accent-soft);
+      }
+      :host([leading-icon]) input {
+        padding: 0 2px 0 0;
+      }
+      :host([leading-icon]) .trailing {
+        padding: 3px;
       }
       :host([data-token]) .wrap {
         background: var(--heo-accent-soft);
@@ -483,6 +504,8 @@ export class HeoValueField extends LitElement {
   ];
 
   @property({ type: String }) label = '';
+  /** Optional search-style leading icon for fields that name or filter an item. */
+  @property({ type: String, attribute: 'leading-icon' }) leadingIcon = '';
   @property({ type: String }) value = '';
   @property({ type: String }) placeholder = '';
   @property({ type: String }) kind: ValueKind = 'text';
@@ -925,6 +948,9 @@ export class HeoValueField extends LitElement {
 
     return html`
       <div class="wrap">
+        ${this.leadingIcon
+        ? html`<span class="sigil" aria-hidden="true">${icon(this.leadingIcon, 13)}</span>`
+        : nothing}
         ${this.#renderLead()}
         ${this.label
         ? html`<button
@@ -1179,13 +1205,13 @@ export class HeoValueField extends LitElement {
             class="cm-op"
             aria-label="Operator"
             @change=${(event: Event) =>
-        this.#setOperator(index - 1, (event.target as HTMLSelectElement).value)}
+            this.#setOperator(index - 1, (event.target as HTMLSelectElement).value)}
           >
             ${['+', '-', '*', '/'].map(
-          (op) => html`<option value=${op} ?selected=${state.operators[index - 1] === op}>
+              (op) => html`<option value=${op} ?selected=${state.operators[index - 1] === op}>
                 ${op}
               </option>`,
-        )}
+            )}
           </select>`
         : html`<span class="cm-label" title=${label?.hint ?? ''}>
             ${label?.label ?? `Value ${index + 1}`}

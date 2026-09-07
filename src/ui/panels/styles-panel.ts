@@ -1290,8 +1290,9 @@ export class HeoStylesPanel extends HeoElement {
       ${filtering
         ? nothing
         : html`<heo-value-field
-              label="class"
-              action="Add this class"
+              leading-icon="search"
+              clearable
+              action="Add class"
               action-icon="plus"
               .suggestions=${classSuggestions(this.editor, this.classDraft)}
               placeholder="find or type a class name"
@@ -1840,8 +1841,8 @@ export class HeoStylesPanel extends HeoElement {
             class=${`btn sm${real ? ' primary' : ''}`}
             type="button"
             title=${real
-          ? `Add ${seed} to this element`
-          : `Add ${seed} anyway — this browser will ignore it`}
+            ? `Add ${seed} to this element`
+            : `Add ${seed} anyway — this browser will ignore it`}
             @click=${() => this.#openAdder(seed)}
           >
             ${icon('plus', 12)} ${this.#addLabel()}

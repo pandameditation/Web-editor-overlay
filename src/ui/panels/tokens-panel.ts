@@ -14,8 +14,6 @@ import { baseStyles } from '../theme.js';
 import { ClassEditor, focusDeclaration } from './class-editor.js';
 import { RuleEditor, type RuleEditorHost } from './rule-editor.js';
 import { DesignTransfer, type DesignTransferHost } from './design-transfer.js';
-import { type HeoSelectorField } from '../controls/selector-field.js';
-import { type HeoValueField } from '../controls/value-field.js';
 import '../controls/section.js';
 import '../controls/search-field.js';
 import '../controls/segmented.js';
@@ -670,8 +668,9 @@ export class HeoTokensPanel extends HeoElement {
       -->
       <heo-value-field
         style="margin-top:8px"
-        label="class"
-        action="Create this class"
+        leading-icon="search"
+        clearable
+        action="Create class"
         action-icon="plus"
         .suggestions=${classSuggestions(this.editor, this.classDraft)}
         placeholder="name a new class"
@@ -679,7 +678,7 @@ export class HeoTokensPanel extends HeoElement {
         this.classDraft = event.detail.value;
       }}
         @value-submit=${(event: CustomEvent<{ value: string }>) =>
-        this.#createClass(event.detail.value, event.target as HeoValueField)}
+        this.#createClass(event.detail.value)}
       ></heo-value-field>
       <p class="hint" style="margin:6px 0 0">
         Enter, or the add button, creates it empty and opens it for editing.
@@ -694,7 +693,7 @@ export class HeoTokensPanel extends HeoElement {
    * useful next step is the property editor, which is why this expands it rather than
    * leaving the user to find it in the list.
    */
-  #createClass(raw: string, field?: HeoValueField): void {
+  #createClass(raw: string): void {
     const name = normalizeClassName(raw);
     if (!name) {
       if (raw.trim()) this.editor.notify(`"${raw}" is not a valid class name.`, 'error');
@@ -708,12 +707,9 @@ export class HeoTokensPanel extends HeoElement {
       this.editor.notify(`Created .${name}.`, 'success');
     }
     this.expandedClass = name;
-    this.classDraft = '';
     openGroups.add('classes');
     this.version += 1;
-    // Through the field's own API: while focused it ignores external writes to
-    // `value`, so assigning to the draft alone would leave the text on screen.
-    field?.reset('');
+    // Keep the submitted name in the field so the new card remains easy to find in the list.
   }
 
   /* ---------------------------------------------------------------------- */
@@ -807,13 +803,15 @@ export class HeoTokensPanel extends HeoElement {
       <div class="head">${icon('plus', 12)} New rule</div>
       <heo-selector-field
         placeholder="h2 > p, a:hover, .card .title"
-        action="Create this rule"
+        action="Create rule"
         action-icon="plus"
+        clearable
+        .declaredCountFor=${(selector: string) => this.#declaredRuleCount(selector)}
         @selector-input=${(event: CustomEvent<{ value: string }>) => {
         this.ruleDraft = event.detail.value;
       }}
         @selector-submit=${(event: CustomEvent<{ value: string }>) =>
-        this.#createRule(event.detail.value, event.target as HeoSelectorField)}
+        this.#createRule(event.detail.value)}
       ></heo-selector-field>
       ${seeds.length
         ? html`<div class="seed">
@@ -840,6 +838,12 @@ export class HeoTokensPanel extends HeoElement {
     </div>`;
   }
 
+  #declaredRuleCount(selector: string): number {
+    const entry = this.editor.rules.get(selector);
+    if (!entry) return 0;
+    return Object.values(entry.declarations).filter((value) => value.trim()).length;
+  }
+
   /**
    * True when what is being typed already has a rule.
    *
@@ -860,18 +864,15 @@ export class HeoTokensPanel extends HeoElement {
    * from, so the useful next step is the property editor — which is why this expands the
    * card rather than leaving the user to find it in the list.
    */
-  #createRule(rawSelector: string, field?: HeoSelectorField): void {
+  #createRule(rawSelector: string): void {
     const selector = this.editor.createDesignRule(rawSelector);
     // Null means the engine refused it and has already said why.
     if (!selector) return;
     this.expandedRule = selector;
     this.editingRuleSelector = null;
-    this.ruleDraft = '';
     openGroups.add('rules');
     this.version += 1;
-    // Through the field's own API: while focused it ignores external writes to `value`,
-    // so clearing the draft alone would leave the text on screen.
-    field?.reset('');
+    // Keep the submitted selector in the field so the new rule remains easy to find in the list.
   }
 
   #renderRule(entry: DesignRule, matches: number, el: HTMLElement | null): TemplateResult {

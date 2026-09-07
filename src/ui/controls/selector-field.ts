@@ -88,6 +88,16 @@ export class HeoSelectorField extends LitElement {
         background: var(--heo-bg);
         box-shadow: 0 0 0 3px var(--heo-accent-soft);
       }
+      :host([clearable]) .wrap {
+        min-height: 30px;
+        border-radius: var(--heo-r-sm);
+      }
+      :host([clearable]) .mini,
+      :host([clearable]) .go {
+        width: 22px;
+        height: 22px;
+        border-radius: 5px;
+      }
       :host([data-invalid]) .wrap {
         border-color: color-mix(in oklab, var(--heo-danger) 55%, transparent);
       }
@@ -361,6 +371,10 @@ export class HeoSelectorField extends LitElement {
   /** Label for the submit affordance. Also its tooltip. */
   @property({ type: String }) action = 'Use this selector';
   @property({ type: String, attribute: 'action-icon' }) actionIcon = 'check';
+  /** Show a quiet clear button for composer fields that keep their submitted draft. */
+  @property({ type: Boolean }) clearable = false;
+  /** Optional count of non-empty declarations already registered for a selector. */
+  @property({ attribute: false }) declaredCountFor?: (selector: string) => number;
   /**
    * Paint an outline over what the selector matches while this field has focus.
    *
@@ -454,6 +468,12 @@ export class HeoSelectorField extends LitElement {
 
   /* ---------------------------------------------------------------------- */
 
+  #metaFor(item: SelectorCompletion): string {
+    const reach = item.matches === 0 ? 'matches nothing' : `${item.matches}×`;
+    const declared = this.declaredCountFor?.(item.value) ?? 0;
+    return declared > 0 ? `${declared} rules · ${reach}` : reach;
+  }
+
   private get completions(): SelectorCompletion[] {
     this.#vocabulary ??= selectorVocabulary();
     return completeSelector(this.draft, this.#vocabulary);
@@ -488,6 +508,19 @@ export class HeoSelectorField extends LitElement {
           />
           <div class="trailing">
             ${trimmed && !problem ? this.#renderCount(matches) : nothing}
+            ${this.clearable && trimmed
+        ? html`<button
+              class="mini"
+              type="button"
+              tabindex="-1"
+              title="Clear selector"
+              aria-label="Clear CSS selector"
+              @pointerdown=${(event: Event) => event.preventDefault()}
+              @click=${this.#clear}
+            >
+              ${icon('close', 11)}
+            </button>`
+        : nothing}
             <button
               class="mini"
               type="button"
@@ -609,9 +642,7 @@ export class HeoSelectorField extends LitElement {
                 @click=${() => this.#choose(item)}
               >
                 <span class="name">${item.label}</span>
-                <span class="meta">
-                  ${item.matches === 0 ? 'matches nothing' : `${item.matches}×`}
-                </span>
+                <span class="meta">${this.#metaFor(item)}</span>
               </button>`;
         },
       )}
@@ -748,6 +779,14 @@ export class HeoSelectorField extends LitElement {
         composed: true,
       }),
     );
+  }
+
+  #clear(): void {
+    this.draft = '';
+    this.#close();
+    clearPeek(this);
+    this.#emitInput();
+    this.input?.focus();
   }
 
   #toggle(): void {
