@@ -1479,7 +1479,7 @@
       engine.setStyle('font-size', '30px', k1);
       await frame();
       // Successive edits to one property merge into a single undo step by design.
-      await wait(2600);
+      engine.history.sealStep();
       const fsField = keyRow('font-size').querySelector('heo-value-field');
       const fsInput = fsField.shadowRoot.querySelector('input[type=text]');
       fsInput.focus();
@@ -1508,7 +1508,7 @@
        * from the user's seat, typing in the panel changed something else on the page.
        * And the commit that followed compared equal and did nothing at all.
        */
-      await wait(2600);
+      engine.history.sealStep();
       engine.setStyle('letter-spacing', '3px', k1);
       await frame();
       const liveDepth = engine.history.size;
@@ -1558,7 +1558,7 @@
         await frame();
       };
       const deepSteps = [['font-size', '14px'], ['letter-spacing', '2px'], ['opacity', '0.5']];
-      for (const [p, v] of deepSteps) { await commitRow(p, v); await wait(2600); }
+      for (const [p, v] of deepSteps) { await commitRow(p, v); engine.history.sealStep(); }
       const allThree = styleOf();
       check('threeEditsAreThreeSteps', () => engine.history.size === 3);
       const unwound = [];
@@ -1578,7 +1578,7 @@
       k1.removeAttribute('style');
       await frame();
       await commitRow('font-size', '12px');
-      await wait(2600);
+      engine.history.sealStep();
       const pending = keyRow('letter-spacing').querySelector('heo-value-field');
       const pendingInput = pending.shadowRoot.querySelector('input[type=text]');
       pendingInput.focus();
@@ -1645,7 +1645,7 @@
       check('retypingAfterEmptyingKeepsTheRowAndCommits', () =>
         `${k1.style.opacity} rows=${setRows().join(',')}`);
       // Emptying it and then looking away is what removes it.
-      await wait(2600);
+      engine.history.sealStep();
       const leaving = setRowField('opacity').shadowRoot.querySelector('input[type=text]');
       leaving.focus();
       leaving.value = '';

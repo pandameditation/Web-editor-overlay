@@ -301,6 +301,27 @@ export class History {
     this.#emit();
   }
 
+  /**
+   * End the current merge run, so the next commit starts a new undo step.
+   *
+   * Merging is decided by the clock, which is right for the thing it exists for — thirty clicks on
+   * a stepper are one step, and the window is generous so a pause does not silently rewrite the
+   * step you were about to undo. But the clock is the *only* way a run currently ends without also
+   * throwing the stack away: `undo`, `redo`, `reset` and `clear` all reset the timer, and each of
+   * them does something else as well.
+   *
+   * So this is the missing half of that mechanism, and it is a standard one — the same operation
+   * CodeMirror and ProseMirror both expose as `closeHistory`. A caller that knows an edit is
+   * finished can say so instead of waiting to be believed.
+   *
+   * It is also what lets a test assert the boundary without sleeping through the window. Seven
+   * sleeps of two and a half seconds were eighteen seconds of one fixture, spent waiting for a
+   * timer to expire so that the next commit would count separately — which is this call.
+   */
+  sealStep(): void {
+    this.#lastCommitAt = 0;
+  }
+
   #emit(): void {
     for (const listener of [...this.#listeners]) {
       try {

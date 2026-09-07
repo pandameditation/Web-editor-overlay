@@ -1171,7 +1171,9 @@ page built from web components.
 npm run dev            # demo fixture with the Vite plugin, port 5180
 npm run typecheck      # tsc --noEmit
 npm run build          # library + plugin + type declarations
-npm run check          # build, then every test below
+npm run check          # build, then the whole browser suite — about a minute
+npm run check:fast     # typecheck, the node tests and ten cheap pages — about twenty seconds
+npm run check:timing   # time every fixture one at a time, and say what is slow
 npm run check:plugin   # verify source markers (needs `npm run dev` running)
 
 npm run test:css         # CSS text patching
@@ -1201,8 +1203,8 @@ share an origin so they can import the ES bundle and fetch their own assets. Set
 rather than assumed — a fixture doing so has to load the IIFE bundle through a classic
 `<script src>`, since a module import would be blocked along with everything else.
 
-`scripts/browser-check.mjs` drives headless Chrome over the DevTools protocol. It
-polls a page for a completion marker, reports the last step reached on timeout,
+`scripts/browser-check.mjs` drives headless Chrome over the DevTools protocol for **one**
+page. It polls for a completion marker, reports the last step reached on timeout,
 and interrupts a stuck renderer to print its call stack — which is how a
 MutationObserver microtask loop got found during development. It also takes
 screenshots:
@@ -1212,7 +1214,30 @@ node scripts/browser-check.mjs test/visual.html 25000 --shot /tmp/overlay.png
 node scripts/browser-check.mjs "file://$PWD/test/visual.html?state=tokens" 25000 --shot /tmp/tokens.png
 ```
 
-`npm run check` runs five pages:
+`scripts/check-all.mjs` runs the **suite**, and the difference is where the time went. One
+browser-per-page cost about two seconds each in startup, which was a third of the total wall
+time; the thirty-odd quick fixtures were spending roughly seventy percent of their time on it
+rather than on testing. So the suite launches one browser per flag group — two, since the
+`HEO_FILE_ACCESS=strict` pages need Chrome *without* `--allow-file-access-from-files` and a flag
+is per-process — and gives each page its own browser context. The context is what makes running
+six at a time safe: local files share an origin, the editor keeps a directory handle in
+IndexedDB, and pages sharing that store would not be independent.
+
+```sh
+node scripts/check-all.mjs              # the whole suite
+node scripts/check-all.mjs --fast       # the quick tier
+node scripts/check-all.mjs --jobs 4     # cap the pages in flight
+node scripts/check-all.mjs --serial     # one at a time
+```
+
+`scripts/fixtures.mjs` is the list, and the only place a fixture is registered. It carries each
+page's timeout, whether it needs opaque origins, its measured weight (longest starts first, so no
+long page is picked up last and becomes the run's tail) and whether it is in the quick tier. It
+also names the pages under `test/` that report results but are deliberately *not* in the suite —
+screenshot pages, mostly — because a fixture nobody registered looks exactly like one that is
+missing on purpose, and the runner refuses to start until every page is in one list or the other.
+
+`npm run check` covers, among others:
 
 | Page | Covers |
 | --- | --- |
