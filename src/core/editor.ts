@@ -22,6 +22,7 @@ import {
   VERSION,
 } from './constants.js';
 import { appliedRules, cascadedDeclarations, inlineDeclarations } from './css.js';
+import { splitCssPriority, type CssPasteDestination, type ParsedCssPaste } from './css-paste.js';
 import { planDrag, samePlacement, type DropPlacement } from './drop-target.js';
 import { captureRects, neighbourhood, playFlip, settleDrop } from './reflow.js';
 import {
@@ -247,6 +248,37 @@ export interface HtmlPaste {
 }
 
 /**
+ * CSS on its way into a chosen owner.
+ *
+ * The source stays as text until the dialog is submitted. That keeps the browser's native paste
+ * path intact and lets the user change the destination without mutating a class, rule, or block
+ * while they are still deciding what the pasted selector means.
+ */
+export interface CssPaste {
+  context: 'inline' | 'class' | 'rule' | 'tokens' | 'block';
+  element: HTMLElement | null;
+  currentClass: string | null;
+  currentSelector: string | null;
+  liveRule: CSSStyleRule | null;
+  draft: string;
+  error: string;
+  destination: 'inline' | 'class' | 'rule' | 'block';
+  className: string;
+  selector: string;
+  applyClass: boolean;
+  append: boolean;
+}
+
+export interface CssPasteOptions {
+  context: CssPaste['context'];
+  element?: HTMLElement | null;
+  className?: string | null;
+  selector?: string | null;
+  liveRule?: CSSStyleRule | null;
+  preferred?: CssPaste['destination'];
+}
+
+/**
  * A pending extraction, held in state while the user reviews it.
  *
  * Extraction used to happen silently with a generated name, which produced
@@ -462,6 +494,8 @@ export interface EditorState {
    * position be changed from inside the dialog without reopening anything.
    */
   htmlPaste: HtmlPaste | null;
+  /** A CSS buffer waiting for an explicit destination and an atomic commit. */
+  cssPaste: CssPaste | null;
   /**
    * How much of the design system a save writes.
    *
@@ -735,6 +769,7 @@ export class EditorEngine {
       quickMenuOpen: false,
       insertAnchor: null,
       htmlPaste: null,
+      cssPaste: null,
       // Everything, by default: leaving something out is the deliberate act, and a save that
       // quietly dropped part of the vocabulary would be the worse surprise.
       designSystemScope: 'all',
@@ -3526,6 +3561,255 @@ export class EditorEngine {
   cancelHtmlPaste(): void {
     if (!this.store.value.htmlPaste) return;
     this.store.patch({ htmlPaste: null });
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Pasting CSS                                                            */
+  /* ---------------------------------------------------------------------- */
+
+  /** Open the shared CSS paste decision dialog. */
+  beginCssPaste(options: CssPasteOptions): boolean {
+    if (options.context === 'block' && this.store.value.extraction?.mode !== 'block') {
+      this.notify('Open a block CSS tab before pasting block CSS.', 'info');
+      return false;
+    }
+    const element = options.element ?? this.store.value.selected;
+    const currentClass = options.className?.replace(/^\./, '') || null;
+    const currentSelector = options.selector?.trim() || null;
+    const destination = options.preferred ??
+      (options.context === 'inline'
+        ? 'inline'
+        : options.context === 'rule'
+          ? 'rule'
+          : options.context === 'block'
+            ? 'block'
+            : 'class');
+    const suggestedClass = currentClass ?? this.classes.uniqueName('pasted-style');
+    const suggestedSelector =
+      currentSelector || this.suggestedRuleSelector(element) || `.${suggestedClass}`;
+
+    this.endTextEdit(true);
+    this.store.patch({
+      cssPaste: {
+        context: options.context,
+        element,
+        currentClass,
+        currentSelector,
+        liveRule: options.liveRule ?? null,
+        draft: '',
+        error: '',
+        destination,
+        className: suggestedClass,
+        selector: suggestedSelector,
+        applyClass: options.context === 'class' && Boolean(element),
+        append: true,
+      },
+    });
+    return true;
+  }
+
+  updateCssPaste(patch: Partial<CssPaste>): void {
+    const open = this.store.value.cssPaste;
+    if (!open) return;
+    this.store.patch({ cssPaste: { ...open, ...patch } });
+  }
+
+  cancelCssPaste(): void {
+    if (!this.store.value.cssPaste) return;
+    this.store.patch({ cssPaste: null });
+  }
+
+  /**
+   * Apply recognised declarations to one explicit owner.
+   *
+   * Every destination is one history command, even when the paste contains many properties.
+   * The source text never decides its own destination, which is what keeps a class copied from
+   * somewhere else from quietly becoming an inline override on one selected element.
+   */
+  applyCssPaste(parsed: ParsedCssPaste, destination: CssPasteDestination): boolean {
+    const entries = Object.entries(parsed.declarations);
+    if (!entries.length) return false;
+
+    // A selector-only owner cannot safely represent two pasted selectors. Keeping the paste raw
+    // is better than silently applying `.card:hover` to the selected `.card` as a plain override.
+    if (parsed.mode === 'rules' && parsed.rules.length > 1) {
+      this.notify('This paste contains multiple CSS rules. Choose Block CSS to keep every selector.', 'error');
+      return false;
+    }
+
+    if (destination.kind === 'inline') {
+      for (const [property] of entries) this.#captureBaseline(destination.element, property);
+      // CSS paste is a deliberate boundary, not a keystroke or slider update. Reuse the
+      // mutation's exact style snapshot, but omit its merge keys so an adjacent style-panel edit
+      // cannot disappear into this paste's undo step.
+      const command = setStyleProperties(
+        destination.element,
+        parsed.declarations,
+        `Paste ${entries.length} CSS ${entries.length === 1 ? 'declaration' : 'declarations'}`,
+      );
+      this.history.commit({
+        label: command.label,
+        record: command.record,
+        apply: command.apply,
+        revert: command.revert,
+      });
+      this.#bumpRevision();
+      return true;
+    }
+
+    if (destination.kind === 'class') {
+      const name = normalizeClassName(destination.name);
+      if (!name) {
+        this.notify('Choose a class name beginning with a letter.', 'error');
+        return false;
+      }
+      const existing = this.classes.get(name);
+      const previous = existing
+        ? { ...existing, declarations: { ...existing.declarations } }
+        : null;
+      const next: DesignClass = {
+        ...(existing ?? { name, origin: 'user' as const }),
+        name,
+        declarations: { ...(existing?.declarations ?? {}), ...parsed.declarations },
+        origin: 'user',
+      };
+      const beforeClassAttribute = destination.element?.getAttribute('class') ?? null;
+      const records = entries.map(([property, value]) => ({
+        id: nextChangeId(),
+        kind: 'token-class' as const,
+        summary: `Paste ${property} into .${name}`,
+        target: `.${name}`,
+        before: existing?.declarations[property],
+        after: value,
+        detail: { class: name, property, value, source: 'css-paste' },
+        at: Date.now(),
+      }));
+
+      this.history.commit({
+        label: `Paste CSS into .${name}`,
+        record: records[0],
+        extraRecords: records.slice(1),
+        apply: () => {
+          this.classes.upsert(next);
+          if (destination.applyToElement && destination.element) {
+            destination.element.classList.add(name);
+          }
+        },
+        revert: () => {
+          if (previous) this.classes.upsert(previous);
+          else this.classes.remove(name);
+          if (destination.element) {
+            if (beforeClassAttribute === null) destination.element.removeAttribute('class');
+            else destination.element.setAttribute('class', beforeClassAttribute);
+          }
+        },
+      });
+      this.#bumpRevision();
+      return true;
+    }
+
+    const selector = safeSelector(destination.selector);
+    if (!selector) {
+      this.notify('Choose a CSS selector the browser accepts.', 'error');
+      return false;
+    }
+
+    const liveRule = destination.liveRule;
+    if (liveRule && safeSelector(liveRule.selectorText) === selector) {
+      this.#endRulePreview();
+      const pasted = entries.map(([property, rawValue]) => ({
+        property,
+        ...splitCssPriority(rawValue),
+      }));
+      const before = pasted.map(({ property }) => ({
+        property,
+        value: liveRule.style.getPropertyValue(property),
+        priority: liveRule.style.getPropertyPriority(property),
+      }));
+      const at = describeRule(liveRule);
+      const records = pasted.map((entry, index) => {
+        const old = before[index];
+        return {
+          id: nextChangeId(),
+          kind: 'style' as const,
+          summary: `Paste ${entry.property} into the ${selector} rule`,
+          target: selector,
+          group: `rule:${selector}`,
+          before: old.value || undefined,
+          after: entry.value || undefined,
+          detail: {
+            property: entry.property,
+            value: entry.value,
+            selector,
+            scope: 'stylesheet rule',
+            priority: entry.priority,
+            ...(at
+              ? {
+                file: at.label,
+                writeTo: at.writeTo,
+                sheet: at.sheetId,
+                rulePath: at.path.join('.'),
+                ruleContext: JSON.stringify(at.context),
+              }
+              : {}),
+          },
+          at: Date.now(),
+        };
+      });
+      this.history.commit({
+        label: `Paste CSS into ${selector}`,
+        record: records[0],
+        extraRecords: records.slice(1),
+        apply: () => {
+          for (const entry of pasted) {
+            liveRule.style.setProperty(entry.property, entry.value, entry.priority);
+            this.#resyncTokens(entry.property);
+          }
+        },
+        revert: () => {
+          for (const old of before) {
+            if (old.value) liveRule.style.setProperty(old.property, old.value, old.priority);
+            else liveRule.style.removeProperty(old.property);
+            this.#resyncTokens(old.property);
+          }
+        },
+      });
+      if (this.store.value.selected) this.#bumpRevision();
+      return true;
+    }
+
+    const existing = this.rules.get(selector);
+    const previous = existing
+      ? { ...existing, declarations: { ...existing.declarations } }
+      : null;
+    const next: DesignRule = {
+      ...(existing ?? { selector, origin: 'user' as const }),
+      selector,
+      declarations: { ...(existing?.declarations ?? {}), ...parsed.declarations },
+      origin: 'user',
+    };
+    const records = entries.map(([property, value]) => ({
+      id: nextChangeId(),
+      kind: 'token-rule' as const,
+      summary: `Paste ${property} into ${selector}`,
+      target: selector,
+      before: existing?.declarations[property],
+      after: value,
+      detail: { selector, property, value, source: 'css-paste' },
+      at: Date.now(),
+    }));
+    this.history.commit({
+      label: `Paste CSS into ${selector}`,
+      record: records[0],
+      extraRecords: records.slice(1),
+      apply: () => this.rules.upsert(next),
+      revert: () => {
+        if (previous) this.rules.upsert(previous);
+        else this.rules.remove(selector);
+      },
+    });
+    this.#bumpRevision();
+    return true;
   }
 
   /**

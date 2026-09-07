@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Choosing an owner for pasted CSS</title>
+  <style id="fixture-sheet">
+    #target {
+      color: #123456;
+      margin: 1px;
+    }
+
+    @media (min-width: 1px) {
+      #conditional {
+        padding: 2px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <article id="target">The selected element</article>
+  <span id="rule-target">The rule target</span>
+  <div id="conditional">The conditional target</div>
+
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const results = {};
+      const errors = [];
+      addEventListener('error', (event) => errors.push('error: ' + event.message));
+      addEventListener('unhandledrejection', (event) => errors.push('rejection: ' + String(event.reason)));
+
+      const progress = document.getElementById('progress');
+      const frames = () => new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const check = (name, fn) => {
+        progress.textContent = name;
+        try {
+          results[name] = fn();
+        } catch (error) {
+          results[name] = {
+            ok: false,
+            error: 'THREW: ' + (error && error.message ? error.message : String(error)),
+          };
+        }
+      };
+
+      function deepQuery(selector, root = document) {
+        const found = root.querySelector?.(selector);
+        if (found) return found;
+        for (const element of root.querySelectorAll?.('*') ?? []) {
+          if (!element.shadowRoot) continue;
+          const hit = deepQuery(selector, element.shadowRoot);
+          if (hit) return hit;
+        }
+        return null;
+      }
+
+      const dialogRoot = () => deepQuery('heo-css-paste-dialog')?.shadowRoot ?? null;
+      const sourceText = () => dialogRoot()?.querySelector('.source')?.textContent
+        ?.replace(/\s+/g, ' ')
+        .trim() ?? '';
+
+      async function openPaste(options, draft) {
+        engine.beginCssPaste(options);
+        await frames();
+        engine.updateCssPaste({ draft, error: '' });
+        await frames();
+      }
+
+      async function applyPaste() {
+        const root = dialogRoot();
+        const button = Array.from(root?.querySelectorAll('footer .btn') ?? [])
+          .find((element) => /Apply CSS|Use this CSS/.test(element.textContent ?? ''));
+        if (!button) throw new Error('the CSS paste dialog has no apply button');
+        button.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+        await frames();
+        await frames();
+      }
+
+      const api = window.HtmlEditorOverlay.mount({
+        theme: 'dark',
+        detectScriptContent: false,
+        fileName: 'css-paste.html',
+      });
+      const engine = api.engine;
+      const target = document.getElementById('target');
+      const ruleTarget = document.getElementById('rule-target');
+      api.setEditing(true);
+      api.select(target);
+      await engine.whenReady();
+      await frames();
+
+      /* ------------------------------------------------------------------ *
+       * The dialog owns parsing. The first assertion is deliberately made
+       * before applying anything, so a destination can never hide a parser
+       * regression by making the final page happen to look right.
+       * ------------------------------------------------------------------ */
+      const fullClassRule = `.module-border-wrap {
+  max-width: 250px;
+  padding: 1rem;
+  position: relative;
+  background: linear-gradient(to right, red, purple);
+  padding: 3px;
+}`;
+      await openPaste({ context: 'inline', element: target }, fullClassRule);
+      check('aCompleteClassRuleIsRecognizedBeforeItIsApplied', () => {
+        const source = sourceText();
+        const pill = dialogRoot()?.querySelector('.pill')?.textContent?.trim() ?? '';
+        const suggestion = dialogRoot()?.querySelector('.source button')?.textContent
+          ?.replace(/\s+/g, ' ')
+          .trim() ?? '';
+        return {
+          ok: /Found 1 rule with 4 declarations/.test(source) &&
+            pill === '.module-border-wrap' &&
+            /Use module-border-wrap as a destination/.test(suggestion),
+          source,
+          pill,
+          suggestion,
+        };
+      });
+      dialogRoot()?.querySelector('.source button')?.dispatchEvent(
+        new MouseEvent('click', { bubbles: true, composed: true }),
+      );
+      await frames();
+      check('theRuleSuggestionChoosesTheClassDestination', () => ({
+        ok: engine.store.value.cssPaste?.destination === 'class' &&
+          engine.store.value.cssPaste?.className === 'module-border-wrap',
+        destination: engine.store.value.cssPaste?.destination ?? null,
+        className: engine.store.value.cssPaste?.className ?? null,
+      }));
+      engine.updateCssPaste({ applyClass: true });
+      await frames();
+      await applyPaste();
+
+      check('theClassRuleCreatesAndAppliesItsReusableOwner', () => {
+        const entry = engine.classes.get('module-border-wrap');
+        return {
+          ok: Boolean(entry) &&
+            entry.declarations['max-width'] === '250px' &&
+            entry.declarations.padding === '3px' &&
+            entry.declarations.position === 'relative' &&
+            entry.declarations.background === 'linear-gradient(to right, red, purple)' &&
+            target.classList.contains('module-border-wrap'),
+          declarations: entry?.declarations ?? null,
+          appliedToElement: target.classList.contains('module-border-wrap'),
+        };
+      });
+
+      const declarationList = `padding: 2rem;
+color: rebeccapurple;`;
+      await openPaste({
+        context: 'class',
+        element: target,
+        className: 'module-border-wrap',
+      }, declarationList);
+      check('aDeclarationListIsRecognizedWithoutInventingASelector', () => {
+        const source = sourceText();
+        return {
+          ok: /Found 2 declarations/.test(source) &&
+            !dialogRoot()?.querySelector('.pill'),
+          source,
+        };
+      });
+      await applyPaste();
+
+      check('repeatedClassPastesKeepEveryPropertyRecord', () => {
+        const records = engine.records.filter((record) =>
+          record.detail?.source === 'css-paste' && record.detail?.class === 'module-border-wrap');
+        return {
+          ok: records.some((record) => record.detail?.property === 'max-width') &&
+            records.some((record) => record.detail?.property === 'padding'),
+          properties: records.map((record) => record.detail?.property),
+        };
+      });
+
+      const afterClassUpsert = engine.classes.get('module-border-wrap');
+      const expectedAfterClassUpsert = { ...afterClassUpsert.declarations };
+      engine.undo();
+      await frames();
+      check('oneUndoRemovesTheWholeClassPaste', () => {
+        const entry = engine.classes.get('module-border-wrap');
+        return {
+          ok: entry?.declarations.padding === '3px' &&
+            entry?.declarations.color === undefined &&
+            target.classList.contains('module-border-wrap'),
+          declarationsAfterUndo: entry?.declarations ?? null,
+          classStillApplied: target.classList.contains('module-border-wrap'),
+        };
+      });
+      engine.redo();
+      await frames();
+      check('oneRedoRestoresEveryDeclarationFromThatPaste', () => {
+        const entry = engine.classes.get('module-border-wrap');
+        return {
+          ok: entry?.declarations.padding === expectedAfterClassUpsert.padding &&
+            entry?.declarations.color === expectedAfterClassUpsert.color &&
+            target.classList.contains('module-border-wrap'),
+          declarationsAfterRedo: entry?.declarations ?? null,
+        };
+      });
+
+      const classless = document.getElementById('conditional');
+      await openPaste({
+        context: 'class',
+        element: classless,
+        className: 'temporary-paste',
+      }, 'color: teal;');
+      await applyPaste();
+      engine.undo();
+      await frames();
+      check('undoRestoresAnAbsentClassAttributeExactly', () => ({
+        ok: classless.getAttribute('class') === null &&
+          engine.classes.get('temporary-paste') === undefined,
+        classAttribute: classless.getAttribute('class'),
+      }));
+
+      /* ------------------------------------------------------------------ *
+       * Inline is explicit, not a side effect of pasting a class-shaped rule.
+       * ------------------------------------------------------------------ */
+      engine.setStyle('opacity', '0.5', target);
+      await openPaste({ context: 'inline', element: target },
+        'outline: 2px solid black; line-height: 1.4; opacity: 0.8;');
+      await applyPaste();
+      check('theInlineDestinationWritesOnlyTheSelectedElement', () => {
+        const styleText = target.getAttribute('style') ?? '';
+        const lineHeight = target.style.getPropertyValue('line-height');
+        return {
+          ok: /outline:\s*2px solid black;/.test(styleText) &&
+            lineHeight === '1.4' &&
+            target.style.getPropertyValue('opacity') === '0.8',
+          lineHeight,
+          opacity: target.style.getPropertyValue('opacity'),
+          inline: styleText,
+        };
+      });
+      engine.undo();
+      await frames();
+      check('oneInlineUndoLeavesThePreviousStyleEditAlone', () => ({
+        ok: target.style.getPropertyValue('opacity') === '0.5' &&
+          !target.style.getPropertyValue('outline') &&
+          !target.style.getPropertyValue('line-height'),
+        style: target.getAttribute('style'),
+      }));
+      engine.redo();
+      await frames();
+      check('oneInlineRedoRestoresTheWholePaste', () => ({
+        ok: target.style.getPropertyValue('opacity') === '0.8' &&
+          Boolean(target.style.getPropertyValue('outline')) &&
+          target.style.getPropertyValue('line-height') === '1.4',
+        style: target.getAttribute('style'),
+      }));
+
+      const multipleRules = '.first-paste-rule { color: red; } .second-paste-rule { color: blue; }';
+      await openPaste({ context: 'rule', element: target, selector: '#target' }, multipleRules);
+      check('multiplePastedSelectorsMustStayInBlockCSS', () => {
+        const warning = dialogRoot()?.querySelector('.note.warn')?.textContent
+          ?.replace(/\s+/g, ' ')
+          .trim() ?? '';
+        const apply = Array.from(dialogRoot()?.querySelectorAll('footer .btn') ?? [])
+          .find((element) => /Apply CSS/.test(element.textContent ?? ''));
+        return {
+          ok: /contains 2 selectors/.test(warning) && Boolean(apply?.hasAttribute('disabled')),
+          warning,
+          applyDisabled: apply?.hasAttribute('disabled') ?? false,
+        };
+      });
+      engine.cancelCssPaste();
+      await frames();
+
+      /* ------------------------------------------------------------------ *
+       * A selector with no existing owner becomes an editor-owned rule, then
+       * the same selector is upserted rather than duplicated.
+       * ------------------------------------------------------------------ */
+      const newSelector = '#rule-target';
+      await openPaste({ context: 'rule', element: ruleTarget, selector: newSelector },
+        'display: block; color: rgb(12, 34, 56);');
+      await applyPaste();
+      await openPaste({ context: 'rule', element: ruleTarget, selector: newSelector },
+        'margin: 3px; color: rgb(78, 90, 12);');
+      await applyPaste();
+      check('aCSSRuleIsCreatedAndThenUpsertedInItsRegistry', () => {
+        const entry = engine.rules.get(newSelector);
+        return {
+          ok: entry?.origin === 'user' &&
+            entry.declarations.display === 'block' &&
+            entry.declarations.margin === '3px' &&
+            entry.declarations.color === 'rgb(78, 90, 12)' &&
+            getComputedStyle(ruleTarget).display === 'block',
+          rule: entry ?? null,
+          computedDisplay: getComputedStyle(ruleTarget).display,
+        };
+      });
+
+      /* ------------------------------------------------------------------ *
+       * Editing a rule already in a stylesheet keeps the CSSOM location in
+       * the records, which is what writeback needs later.
+       * ------------------------------------------------------------------ */
+      const fixtureSheet = document.getElementById('fixture-sheet');
+      const liveRule = Array.from(fixtureSheet.sheet.cssRules)
+        .find((rule) => rule.selectorText === '#target');
+      await openPaste({
+        context: 'rule',
+        element: target,
+        selector: '#target',
+        liveRule,
+      }, 'color: rebeccapurple !important; letter-spacing: 0.04em;');
+      await applyPaste();
+      check('anExistingStylesheetRuleKeepsWritebackMetadata', () => {
+        const records = engine.records.filter((record) =>
+          record.detail?.scope === 'stylesheet rule' && record.detail?.selector === '#target');
+        const colorRecord = records.find((record) => record.detail?.property === 'color');
+        const exportedDoc = new DOMParser().parseFromString(api.exportHTML(), 'text/html');
+        const exportedCss = exportedDoc.getElementById('fixture-sheet')?.textContent ?? '';
+        return {
+          ok: Boolean(liveRule) &&
+            liveRule.style.getPropertyValue('color') === 'rebeccapurple' &&
+            liveRule.style.getPropertyPriority('color') === 'important' &&
+            records.length === 2 &&
+            colorRecord?.detail?.priority === 'important' &&
+            /color:\s*rebeccapurple\s*!important/.test(exportedCss) &&
+            records.every((record) =>
+              record.detail.file === 'fixture-sheet' &&
+              Boolean(record.detail.writeTo) &&
+              Boolean(record.detail.sheet) &&
+              Boolean(record.detail.rulePath) &&
+              record.detail.ruleContext !== undefined),
+          records: records.map((record) => record.detail),
+          liveColor: liveRule?.style.getPropertyValue('color') ?? null,
+          livePriority: liveRule?.style.getPropertyPriority('color') ?? null,
+          exportedColor: exportedCss.match(/color:[^;]+;?/)?.[0] ?? null,
+        };
+      });
+
+      /* ------------------------------------------------------------------ *
+       * Block CSS deliberately stays raw. Appending and replacing must not
+       * flatten selectors or hoist conditional rules into the selector-only
+       * registries above.
+       * ------------------------------------------------------------------ */
+      const originalBlockCss = `.existing-block { color: blue; }
+
+@media (min-width: 500px) {
+  .existing-block { padding: 1rem; }
+}`;
+      const appendedBlockCss = `.module-border-wrap {
+  max-width: 250px;
+  padding: 3px;
+}
+
+@supports (display: grid) {
+  .module-border-wrap { display: grid; }
+}`;
+      engine.beginBlockDraft('CSS paste block');
+      engine.updateExtraction({
+        html: '<div class="module-border-wrap">Block</div>',
+        css: originalBlockCss,
+      });
+      engine.beginCssPaste({ context: 'block' });
+      engine.updateCssPaste({ draft: appendedBlockCss, append: true });
+      await frames();
+      check('theBlockDialogExplainsThatRawCSSWillBeKept', () => ({
+        ok: /keeps selectors and conditional rules exactly as pasted/.test(
+          dialogRoot()?.querySelector('.target')?.textContent ?? '',
+        ),
+        target: dialogRoot()?.querySelector('.target')?.textContent?.replace(/\s+/g, ' ').trim() ?? null,
+      }));
+      await applyPaste();
+      check('blockCSSCanBeAppendedWithoutFlatteningConditions', () => {
+        const css = engine.store.value.extraction?.css ?? '';
+        return {
+          ok: css.startsWith(originalBlockCss) &&
+            css.includes(appendedBlockCss) &&
+            css.includes('@media (min-width: 500px)') &&
+            css.includes('@supports (display: grid)'),
+          css,
+        };
+      });
+
+      const replacementBlockCss = `.replacement {
+  color: tomato;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .replacement { transition: none; }
+}`;
+      engine.beginCssPaste({ context: 'block' });
+      engine.updateCssPaste({ draft: replacementBlockCss, append: false });
+      await frames();
+      await applyPaste();
+      check('blockCSSCanBeReplacedAsRawSource', () => {
+        const css = engine.store.value.extraction?.css ?? '';
+        return {
+          ok: css === replacementBlockCss &&
+            !css.includes('.existing-block') &&
+            css.includes('@media (prefers-reduced-motion: reduce)'),
+          css,
+        };
+      });
+
+      const committed = engine.commitExtraction();
+      const block = engine.library.list().find((entry) => entry.name === 'CSS paste block');
+      check('theCommittedBlockCarriesTheChosenRawCSS', () => ({
+        ok: committed && block?.css === replacementBlockCss &&
+          block.css.includes('@media (prefers-reduced-motion: reduce)'),
+        committed,
+        css: block?.css ?? null,
+      }));
+
+      results.browserErrors = { ok: errors.length === 0, errors };
+      const failed = Object.entries(results)
+        .filter(([, group]) => group && typeof group === 'object')
+        .filter(([, group]) => Object.values(group).some((value) => value === false))
+        .map(([name]) => name);
+      document.getElementById('out').textContent = 'RESULTS:' + JSON.stringify({
+        ok: failed.length === 0,
+        failed,
+        ...results,
+      }, null, 1) + ':END';
+    })().catch((error) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"ok":false,"__fatal":' + JSON.stringify(String((error && error.stack) || error)) + '}:END';
+    });
+  </script>
+</body>
+
+</html>

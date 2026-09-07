@@ -383,6 +383,12 @@ export const RuleEditor = {
         commit: (property, value) =>
           engine.setDesignRuleDeclaration(entry.selector, property, value),
         remove: (property) => engine.removeDesignRuleDeclaration(entry.selector, property),
+        paste: () =>
+          engine.beginCssPaste({
+            context: 'rule',
+            element: host.element,
+            selector: entry.selector,
+          }),
       },
       host,
     )}

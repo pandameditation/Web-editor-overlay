@@ -672,6 +672,15 @@ export class HeoTokensPanel extends HeoElement {
             ${icon('droplet', 12)} Extract from ${labelFor(el)}
           </button>`
         : nothing}
+      <button
+        class="btn sm"
+        type="button"
+        style="margin-bottom:8px"
+        title="Paste CSS and choose a class, rule, or inline destination"
+        @click=${() => this.editor.beginCssPaste({ context: 'class', element: el })}
+      >
+        ${icon('clipboard', 12)} Paste CSS…
+      </button>
       ${classes.length === 0
         ? html`<p class="hint" style="margin:0 0 8px">
             ${globalClasses.length || localQuery
@@ -750,6 +759,15 @@ export class HeoTokensPanel extends HeoElement {
       @section-toggle=${(event: CustomEvent<{ open: boolean }>) =>
         this.#remember('rules', event.detail.open)}
     >
+      <button
+        class="btn sm"
+        type="button"
+        style="margin-bottom:8px"
+        title="Paste CSS and choose a shared selector or another destination"
+        @click=${() => this.editor.beginCssPaste({ context: 'rule', element: el })}
+      >
+        ${icon('clipboard', 12)} Paste CSS…
+      </button>
       ${this.#renderRuleComposer(el)}
       ${rules.length === 0
         ? html`<p class="hint" style="margin:10px 0 0">

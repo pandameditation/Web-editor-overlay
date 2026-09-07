@@ -61,6 +61,7 @@
     "check:textdrag": "node scripts/browser-check.mjs test/text-drag.html 45000",
     "check:edgescroll": "node scripts/browser-check.mjs test/edge-scroll.html 150000",
     "check:paste": "node scripts/browser-check.mjs test/paste-html.html 45000",
+    "check:csspaste": "node scripts/browser-check.mjs test/css-paste.html 45000",
     "check:dsscope": "node scripts/browser-check.mjs test/design-scope.html 45000",
     "check:move": "node scripts/browser-check.mjs test/transform-move.html 90000",
     "check:pin": "node scripts/browser-check.mjs test/position-pin.html 90000",

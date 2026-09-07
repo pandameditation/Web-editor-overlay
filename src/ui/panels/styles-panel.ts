@@ -1012,11 +1012,22 @@ export class HeoStylesPanel extends HeoElement {
                   type="button"
                   style="margin-top:9px"
                   title="Move this element's inline declarations into a reusable class"
-                  @click=${() => this.editor.beginClassExtraction()}
+                  @click=${() => this.editor.beginClassExtraction(el)}
                 >
                   ${icon('blocks', 12)} Extract ${inlineCount} inline into a class
                 </button>`
             : nothing}`}
+      ${!filtering
+        ? html`<button
+            class="btn sm"
+            type="button"
+            style="margin-top:9px"
+            title="Paste CSS and choose whether it belongs inline, in a class, or in a rule"
+            @click=${() => this.editor.beginCssPaste({ context: 'inline', element: el })}
+          >
+            ${icon('clipboard', 12)} Paste CSS…
+          </button>`
+        : nothing}
     </heo-section>`;
   }
 
@@ -1058,7 +1069,22 @@ export class HeoStylesPanel extends HeoElement {
       ?open=${filtering ? true : sectionOpen('cssrules', all.length > 0)}
       @section-toggle=${(event: CustomEvent<{ open: boolean }>) =>
         this.#remember('cssrules', event.detail.open)}
-    >
+      ${!filtering
+        ? html`<button
+            class="btn sm"
+            type="button"
+            style="margin-bottom:9px"
+            title="Paste CSS and choose a shared selector or another destination"
+            @click=${() =>
+            this.editor.beginCssPaste({
+              context: 'rule',
+              element: el,
+              selector: this.editor.suggestedRuleSelector(el),
+            })}
+          >
+            ${icon('clipboard', 12)} Paste CSS…
+          </button>`
+        : nothing}
       ${all.length === 0
         ? html`<p class="hint" style="margin:0">
             No stylesheet rule beyond this element's own classes reaches it, so everything else is
@@ -1130,6 +1156,16 @@ export class HeoStylesPanel extends HeoElement {
       },
       remove: (property) => {
         if (live) this.editor.setRuleDeclaration(live, property, '');
+      },
+      paste: () => {
+        if (live) {
+          this.editor.beginCssPaste({
+            context: 'rule',
+            element: el,
+            selector: rule.selector,
+            liveRule: live,
+          });
+        }
       },
       // A state rule is not in the cascade as things stand, so it cannot be said to be
       // overridden — dimming it on that basis would be telling the user something false.
@@ -1237,6 +1273,15 @@ export class HeoStylesPanel extends HeoElement {
             @click=${() => this.editor.beginClassExtraction(el)}
           >
             ${icon('droplet', 12)} Extract class
+          </button>
+          <button
+            class="btn sm"
+            type="button"
+            style="margin-bottom:9px"
+            title="Paste CSS and choose a reusable class or another destination"
+            @click=${() => this.editor.beginCssPaste({ context: 'class', element: el })}
+          >
+            ${icon('clipboard', 12)} Paste CSS…
           </button>`}
       ${shown.length
         ? html`<div class="chips">

@@ -38,6 +38,8 @@ export interface DeclarationTarget {
   preview(property: string, value: string): void;
   commit(property: string, value: string): void;
   remove(property: string): void;
+  /** Open the shared paste dialog with this target preselected. */
+  paste?: () => void;
   /** True when something more specific wins this property on the selected element. */
   overridden?(property: string): boolean;
   /** The property's tooltip, when there is more to say than its name. */
@@ -135,6 +137,11 @@ export const ClassEditor = {
       display: grid;
       gap: 5px;
       padding: 7px 8px;
+    }
+    .cls .decl-tools {
+      display: flex;
+      justify-content: flex-end;
+      padding-bottom: 2px;
     }
     .cls .undefined-note {
       padding: 8px;
@@ -299,6 +306,12 @@ export const ClassEditor = {
           engine.previewClassDeclaration(entry.name, property, value),
         commit: (property, value) => engine.setClassDeclaration(entry.name, property, value),
         remove: (property) => engine.removeClassDeclaration(entry.name, property),
+        paste: () =>
+          engine.beginCssPaste({
+            context: 'class',
+            element,
+            className: entry.name,
+          }),
       },
       host,
     )}
@@ -387,6 +400,18 @@ export const ClassEditor = {
 
     return html`
       <div class="decls">
+        ${target.paste
+        ? html`<div class="decl-tools">
+              <button
+                class="btn sm"
+                type="button"
+                title=${`Paste CSS into ${target.label}`}
+                @click=${target.paste}
+              >
+                ${icon('clipboard', 11)} Paste CSS
+              </button>
+            </div>`
+        : nothing}
         ${properties.length === 0
         ? html`<p class="hint" style="margin:0">${target.empty}</p>`
         : nothing}

@@ -147,6 +147,27 @@ export class HeoExtractDialog extends HeoElement {
       .two.even {
         grid-template-columns: 1fr 1fr;
       }
+      .label-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+      .label-row .paste {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: var(--heo-accent);
+        font: inherit;
+        font-size: 10px;
+        cursor: pointer;
+      }
+      .label-row .paste:hover {
+        text-decoration: underline;
+      }
 
       /* ---- The two-step wizard ---- */
 
@@ -1332,7 +1353,19 @@ export class HeoExtractDialog extends HeoElement {
         : nothing}
 
       <div class="field">
-        <span class="label">${active.heading}</span>
+        <div class="label-row">
+          <span class="label">${active.heading}</span>
+          ${this.sourceTab === 'css'
+        ? html`<button
+                class="paste"
+                type="button"
+                title="Paste CSS and choose how it should be added to this block"
+                @click=${() => this.editor.beginCssPaste({ context: 'block' })}
+              >
+                ${icon('clipboard', 11)} Paste CSS…
+              </button>`
+        : nothing}
+        </div>
         <heo-code-editor
           language=${active.language}
           rows=${this.sourceTab === 'js' ? 12 : 9}

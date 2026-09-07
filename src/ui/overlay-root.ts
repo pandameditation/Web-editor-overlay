@@ -17,6 +17,7 @@ import './chrome/code-workspace.js';
 import './chrome/extract-dialog.js';
 import './chrome/confirm-dialog.js';
 import './chrome/paste-dialog.js';
+import './chrome/css-paste-dialog.js';
 import './chrome/source-dialog.js';
 import './chrome/dock.js';
 
@@ -66,6 +67,7 @@ export class HeoOverlay extends HeoElement {
         s.savePreview,
         s.extraction,
         s.htmlPaste,
+        s.cssPaste,
         s.sourceEdit,
         s.codeWorkspace,
         s.confirm,
@@ -105,6 +107,7 @@ export class HeoOverlay extends HeoElement {
       ${state.savePreview != null ? html`<heo-save-dialog></heo-save-dialog>` : nothing}
       ${state.extraction ? html`<heo-extract-dialog></heo-extract-dialog>` : nothing}
       ${state.htmlPaste ? html`<heo-paste-dialog></heo-paste-dialog>` : nothing}
+      ${state.cssPaste ? html`<heo-css-paste-dialog></heo-css-paste-dialog>` : nothing}
       ${state.sourceEdit ? html`<heo-source-dialog></heo-source-dialog>` : nothing}
       ${state.codeWorkspace ? html`<heo-code-workspace></heo-code-workspace>` : nothing}
       <!--
