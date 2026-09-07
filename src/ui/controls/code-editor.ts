@@ -224,6 +224,8 @@ export class HeoCodeEditor extends LitElement {
        * the buffer four pixels tall. Out of flow it costs nothing at any panel height, and it
        * is where a find box already lives in the editors people use.
        */
+      /* Shares the top-right corner with the grow button by design: see the note on #findable for
+         why the two can never be on screen at the same time. */
       .findbar {
         position: absolute;
         z-index: 3;
@@ -786,7 +788,29 @@ export class HeoCodeEditor extends LitElement {
   }
 
   /**
-   * Find in this buffer. Offered on the editors that fill their panel, not on every small field.
+   * Whether this editor is showing a buffer large enough, and a view final enough, to offer finding.
+   *
+   * `fill` is the size question: a small embedded field has nothing worth searching. The second half
+   * is the placement question, and it is what stops the find bar and the expand button fighting over
+   * the same corner -- they both want the top right, and the find bar was drawn over the top of the
+   * expand button, hiding the only way to reach the view where finding is actually comfortable.
+   *
+   * Expressed as "already as large as it gets", which is the concept the panels already use to decide
+   * whether to offer expanding at all: `embedded` drops the expand affordance, so `expandable` being
+   * false means this *is* the big view. The two conditions are therefore exact complements --
+   * `.grow` renders when `expandable && !expanded`, this renders when `!expandable || expanded` -- so
+   * the overlap is impossible by construction rather than avoided by a nudge to one of them.
+   *
+   * The inline dock panel loses the bar, which is the right trade: it is a few hundred pixels wide,
+   * the bar covered the code it was searching, and the expand button it was hiding is one click from
+   * a view with room for both.
+   */
+  get #findable(): boolean {
+    return this.fill && (this.expanded || !this.expandable);
+  }
+
+  /**
+   * Find in this buffer. Offered on the editors that are already at full size, not on every field.
    *
    * Here rather than in each panel, which is the point: the editor owns the buffer, the projection,
    * the scrolling and the layer the matches are drawn on. Built in the Code panel first, it worked
@@ -798,7 +822,7 @@ export class HeoCodeEditor extends LitElement {
    * find box does, and the arrows make that discoverable without knowing it.
    */
   #renderFind(): TemplateResult | typeof nothing {
-    if (!this.fill) return nothing;
+    if (!this.#findable) return nothing;
     const total = this.matchOffsets(this.find).length;
     const stepping = Boolean(this.find.trim()) && total > 0;
 
@@ -898,8 +922,15 @@ export class HeoCodeEditor extends LitElement {
      * finding must not take focus, relying on it would mean marking nothing at all. Drawing the
      * matches into the layer that is actually visible shows all of them at once and lets the
      * current one be picked out from the rest, which is what makes stepping through legible.
+     *
+     * Drawn from the same predicate as the bar that drives them, so highlights can never outlive
+     * their controls. Not reachable today -- every `fill` consumer hands expanding to the host
+     * through `expandTarget`, so none of them ever toggles `expanded` on itself, and the query
+     * cannot survive into a view without the bar. It is one condition to keep it that way for
+     * whoever writes the first editor that does expand itself: marks nothing on screen can clear
+     * would be a worse state than the collision that made the bar conditional in the first place.
      */
-    return markMatches(painted, this.find.trim(), this.findAt);
+    return this.#findable ? markMatches(painted, this.find.trim(), this.findAt) : painted;
   }
 
   /**

@@ -904,17 +904,120 @@
       engine.openCode('html');
       await frames();
       await wait(150);
+
+      /* ---------------------------------------------------------------- *
+       * The inline dock panel: the expand button, unobstructed.
+       *
+       * The find bar and the expand button both want the top-right corner
+       * of the buffer, and the bar was drawn over the button -- hiding the
+       * only way to reach the view where finding is comfortable. They are
+       * exact complements now: the bar appears where the button does not.
+       * ---------------------------------------------------------------- */
       const codePanel = deep('heo-code-panel');
-      // The bar belongs to the editor now, not to the panel: that is what gives CSS and JS the
-      // same finder instead of leaving it to whichever panel happened to be built first.
-      const editor = codePanel.shadowRoot.querySelector('heo-code-editor');
-      const codeField = editor.shadowRoot.querySelector('.findbar heo-search-field');
+      const inlineEditor = codePanel.shadowRoot.querySelector('heo-code-editor');
+      const grow = inlineEditor.shadowRoot.querySelector('.grow');
+
+      /*
+       * Anything painted *over* the expand button.
+       *
+       * Overlapping is not the test: the highlight layer and the textarea fill the whole buffer and
+       * necessarily sit under the button, which is what its z-index is for. What matters is whether
+       * something intersects it and is painted at or above it, which is exactly what the find bar
+       * did at z-index 3 against the button's 2.
+       */
+      const coveringGrow = () => {
+        const target = inlineEditor.shadowRoot.querySelector('.grow');
+        if (!target) return ['no expand button'];
+        const box = target.getBoundingClientRect();
+        const layer = (el) => {
+          const z = getComputedStyle(el).zIndex;
+          return z === 'auto' ? 0 : Number(z) || 0;
+        };
+        const mine = layer(target);
+        return Array.from(inlineEditor.shadowRoot.querySelectorAll('*'))
+          .filter((el) => el !== target && !el.contains?.(target))
+          .filter((el) => getComputedStyle(el).position === 'absolute')
+          .filter((el) => layer(el) >= mine)
+          .filter((el) => {
+            const other = el.getBoundingClientRect();
+            if (!other.width || !other.height) return false;
+            return (
+              other.left < box.right &&
+              other.right > box.left &&
+              other.top < box.bottom &&
+              other.bottom > box.top
+            );
+          })
+          .map((el) => el.className || el.tagName.toLowerCase());
+      };
+
+      results.inline = {
+        hasTheExpandButton: Boolean(grow),
+        // The bar is withheld here: a few hundred pixels wide, covering the code it searches.
+        withholdsTheFinder: !inlineEditor.shadowRoot.querySelector('.findbar'),
+        // The assertion that would have caught the bug: nothing overlaps the button.
+        nothingCoversTheExpandButton: coveringGrow().length === 0,
+        whatCoversIt: coveringGrow(),
+      };
+      /*
+       * Where the button actually goes, which is what makes withholding the bar acceptable.
+       *
+       * Clicking it is not this editor opening its own dialog: `expandTarget` hands expanding to the
+       * chrome, which opens the code workspace. So the claim being pinned is the whole trade -- the
+       * finder is one click away, on the button that used to be hidden underneath it, and the view it
+       * lands in has room for the bar and no button left to cover.
+       */
+      grow.click();
+      await frames();
+      await wait(300);
+      const landed = deep('heo-code-workspace');
+      const landedEditor = landed?.shadowRoot
+        ?.querySelector('heo-code-panel')
+        ?.shadowRoot?.querySelector('heo-code-editor');
+      results.inline.theButtonOpensTheBigView = Boolean(landed);
+      results.inline.andTheBigViewHasTheFinder = Boolean(
+        landedEditor?.shadowRoot.querySelector('.findbar heo-search-field'),
+      );
+      engine.closeCodeWorkspace();
+      await frames();
+      await wait(200);
+      // Back where we started, unchanged: still the button, still no bar over it.
+      const backInline = deep('heo-code-panel')?.shadowRoot.querySelector('heo-code-editor');
+      results.inline.returnsToTheButton = Boolean(
+        backInline?.shadowRoot.querySelector('.grow') &&
+        !backInline.shadowRoot.querySelector('.findbar'),
+      );
+
+      results.inline.ok =
+        results.inline.hasTheExpandButton &&
+        results.inline.withholdsTheFinder &&
+        results.inline.nothingCoversTheExpandButton &&
+        results.inline.theButtonOpensTheBigView &&
+        results.inline.andTheBigViewHasTheFinder &&
+        results.inline.returnsToTheButton;
+
+      /* ---------------------------------------------------------------- *
+       * The workspace: already as large as it gets, so it has the finder.
+       * ---------------------------------------------------------------- */
+      progress.textContent = 'workspace find';
+      engine.openCodeWorkspace('html');
+      await frames();
+      await wait(250);
+      const workspace = deep('heo-code-workspace');
+      const expandedPanel = workspace?.shadowRoot?.querySelector('heo-code-panel');
+      const editor = expandedPanel?.shadowRoot?.querySelector('heo-code-editor');
+      const codeField = editor?.shadowRoot.querySelector('.findbar heo-search-field');
 
       results.code = {
+        workspaceOpen: Boolean(workspace),
+        // The panel is reused rather than reimplemented, which is what makes one bar serve both.
+        reusesThePanel: Boolean(expandedPanel),
         hasTheField: Boolean(codeField),
         // No plus here: there is nothing in a buffer to create.
-        offersNoCreateAction: !codeField.shadowRoot.querySelector('.go'),
+        offersNoCreateAction: Boolean(codeField) && !codeField.shadowRoot.querySelector('.go'),
         hasPrevNext: editor.shadowRoot.querySelectorAll('.findbar button').length === 2,
+        // And no expand button to fight over the corner, because this already is the big view.
+        hasNoExpandButton: !editor.shadowRoot.querySelector('.grow'),
       };
 
       await typeInto(codeField, 'section', editor);
@@ -948,54 +1051,44 @@
         editor.matchOffsets('section').length === results.code.matchesFound;
 
       results.code.ok =
+        results.code.workspaceOpen &&
+        results.code.reusesThePanel &&
         results.code.keepsFocusWhileTyping &&
         results.code.marksEveryMatch > 1 &&
         results.code.picksOutTheCurrentOne &&
         results.code.hasTheField &&
         results.code.offersNoCreateAction &&
         results.code.hasPrevNext &&
+        results.code.hasNoExpandButton &&
         results.code.matchesFound > 1 &&
         results.code.selectedAMatch &&
         results.code.enterAdvances &&
         results.code.stillOnAMatch;
+      engine.closeCodeWorkspace();
+      await frames();
 
-      /* Every editor that fills its panel has it, which is what the Code panel alone did not give. */
+      /* Every language gets it, which is what the Code panel alone did not give. */
       progress.textContent = 'css and js';
       for (const [tab, tag] of [['css', 'heo-css-panel'], ['js', 'heo-js-panel']]) {
-        engine.setDockTab('code');
-        engine.setCodeTab(tab);
+        engine.openCodeWorkspace(tab);
         await frames();
-        await wait(200);
-        const panel = deep(tag);
+        await wait(250);
+        const space = deep('heo-code-workspace');
+        const panel = space?.shadowRoot ? deep(tag, space.shadowRoot) : null;
         const ed = panel?.shadowRoot?.querySelector('heo-code-editor');
         results[`${tab}Finder`] = {
           panelFound: Boolean(panel),
           hasTheFinder: Boolean(ed?.shadowRoot?.querySelector('.findbar heo-search-field')),
+          // Same complement here: the big view has the bar and no button to hide.
+          hasNoExpandButton: Boolean(ed) && !ed.shadowRoot.querySelector('.grow'),
         };
         results[`${tab}Finder`].ok =
-          results[`${tab}Finder`].panelFound && results[`${tab}Finder`].hasTheFinder;
+          results[`${tab}Finder`].panelFound &&
+          results[`${tab}Finder`].hasTheFinder &&
+          results[`${tab}Finder`].hasNoExpandButton;
+        engine.closeCodeWorkspace();
+        await frames();
       }
-
-      /* The expanded view renders the same panel, so it gets the finder for free. */
-      engine.openCodeWorkspace('html');
-      await frames();
-      await wait(200);
-      const workspace = deep('heo-code-workspace');
-      const expandedPanel = workspace?.shadowRoot?.querySelector('heo-code-panel');
-      results.expanded = {
-        workspaceOpen: Boolean(workspace),
-        reusesThePanel: Boolean(expandedPanel),
-        soItHasTheFinder: Boolean(
-          expandedPanel?.shadowRoot
-            ?.querySelector('heo-code-editor')
-            ?.shadowRoot?.querySelector('.findbar heo-search-field'),
-        ),
-      };
-      results.expanded.ok =
-        results.expanded.workspaceOpen &&
-        results.expanded.reusesThePanel &&
-        results.expanded.soItHasTheFinder;
-      engine.closeCodeWorkspace();
 
       const failed = Object.entries(results)
         .filter(([, value]) => value && typeof value === 'object' && value.ok === false)
