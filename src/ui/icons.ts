@@ -92,6 +92,8 @@ const PATHS: Record<string, string> = {
   callout: 'M3.4 3.4h9.2v9.2H3.4zM3.4 3.4v9.2M6.2 6.4h4M6.2 9h2.4',
   stat: 'M3.4 12.6V7M8 12.6V3.4M12.6 12.6V9.4',
   divider: 'M2.6 8h10.8M4.6 4.4h6.8M4.6 11.6h6.8',
+  /* A rule interrupted by a diamond: the plain divider's sibling, told apart at a glance. */
+  ornament: 'M2.6 8h2.6M10.8 8h2.6M8 5.6 10.4 8 8 10.4 5.6 8Z',
   panel: 'M2.6 3.4h10.8v9.2H2.6zM10 3.4v9.2',
 };
 

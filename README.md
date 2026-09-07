@@ -626,7 +626,8 @@ want but not where it is.
 
 **Library** — containers (flex row, stack, flex grid, CSS grid, masonry, centered
 page, sidebar, cluster) and components (card, button, callout, image, stat,
-heading, divider, and a working Lit counter). Blocks with props open a form first,
+heading, divider, ornamental divider, list, and a working Lit counter). Blocks
+with props open a form first,
 so what lands on the page is already configured. The author form at the bottom
 takes HTML, CSS, or a JS/Lit module plus a tag name, and every block — presets
 included — can be opened back into that form to be renamed, inspected and changed.

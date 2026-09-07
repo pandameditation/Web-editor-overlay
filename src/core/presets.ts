@@ -23,6 +23,17 @@ const S = {
   shadow: 'var(--shadow-md, 0 8px 24px rgb(16 24 40 / 8%))',
 };
 
+/**
+ * The two halves of a rule that fades where it meets an ornament.
+ *
+ * One length, mirrored, so the two segments of the ornamental divider taper towards the middle
+ * by the same amount. See that block for why the room around the glyph is masked rather than
+ * measured as a gap.
+ */
+const FADE_LENGTH = '1.15em';
+const FADE_IN = `linear-gradient(90deg,#000 0,#000 calc(100% - ${FADE_LENGTH}),transparent 100%)`;
+const FADE_OUT = `linear-gradient(90deg,transparent 0,#000 ${FADE_LENGTH},#000 100%)`;
+
 export const CONTAINER_PRESETS: LibraryBlock[] = [
   {
     id: 'flex-row',
@@ -347,6 +358,90 @@ export const COMPONENT_PRESETS: LibraryBlock[] = [
     origin: 'preset',
     props: { space: { type: 'token', label: 'Space', tokenGroup: 'space', default: S.gapLg } },
     html: `<hr style="border:0;border-top:1px solid ${S.border};margin:{{space}} 0">`,
+  },
+  {
+    id: 'ornament-divider',
+    name: 'Ornamental divider',
+    kind: 'component',
+    category: 'Content',
+    icon: 'ornament',
+    description: 'Rule with a character in the middle. Any glyph, any line style.',
+    origin: 'preset',
+    props: {
+      ornament: {
+        type: 'text',
+        label: 'Ornament',
+        default: '❧',
+        description: 'Any character or emoji: ❧ ❖ ✦ ◆ § ⁂ ★ ✽ ❦. Leave it empty for a plain rule.',
+      },
+      size: {
+        type: 'text',
+        label: 'Ornament size',
+        default: '1.5rem',
+        description: 'Sets the glyph, and the breathing room scales with it.',
+      },
+      thickness: {
+        type: 'text',
+        label: 'Line thickness',
+        default: '1px',
+        description: 'A double line needs 3px or more before its two strokes separate.',
+      },
+      lineStyle: {
+        type: 'select',
+        label: 'Line style',
+        default: 'solid',
+        options: ['solid', 'dashed', 'dotted', 'double'],
+      },
+      colour: {
+        type: 'token',
+        label: 'Colour',
+        tokenGroup: 'color',
+        default: S.muted,
+        description: 'The rule and the ornament together.',
+      },
+      space: { type: 'token', label: 'Space', tokenGroup: 'space', default: S.gapLg },
+    },
+    /*
+     * The line stops for the ornament instead of being painted over.
+     *
+     * The usual way to build this is one rule with the glyph laid on top, and an opaque
+     * rectangle behind the glyph to hide the line it crosses. That rectangle has to be filled
+     * with the page's own background colour, which is a promise no component can keep: put the
+     * divider on a gradient, a photo, a tinted card or a dark theme and the rectangle becomes a
+     * pale smear across the rule. Every version of that trick is a colour match waiting to go
+     * out of date.
+     *
+     * So the rule is two segments with the glyph between them, and nothing is ever painted over
+     * anything. There is no colour to match, which is why this one is correct on any surface
+     * rather than correct on the surface it was designed against.
+     *
+     * The breathing room around the glyph is a mask rather than a gap, and that is what makes
+     * an empty ornament work. A real gap has to be reserved whether or not there is a glyph to
+     * put in it, so clearing the character leaves a hole in the middle of the rule. A mask
+     * costs no layout: each segment simply fades out over its last stretch, so with a glyph
+     * there is generous room around it, and with the field cleared the two segments meet and
+     * read as one continuous rule.
+     *
+     * Sized in `em` against the container's own font-size, which is the ornament size. One prop
+     * therefore scales the glyph and its surroundings together, and a 3rem fleuron gets three
+     * times the room a 1rem asterisk does without a second field to keep in step.
+     *
+     * Inline styles rather than a stylesheet, like every preset here, and for a sharper reason
+     * than consistency: a block's `css` is injected into a generated `<style>` that the export
+     * deletes when the design system is being written to a stylesheet instead of the document.
+     * A pseudo-element version of this block would look right until the day someone saved it.
+     *
+     * One colour, declared once on the container and picked up by both parts through
+     * `currentColor`. The rule and the ornament are the same mark, so a single field is the whole
+     * of it -- and inheritance means the two cannot drift apart, which two substituted copies of
+     * the same value could. It also puts the value where the Styles panel already looks: select
+     * the divider, change `color`, and the rule and the glyph move together.
+     */
+    html: `<div role="separator" style="display:flex;align-items:center;gap:0;font-size:{{size}};margin:{{space}} 0;color:{{colour}}">
+  <span style="flex:1;border-top:{{thickness}} {{lineStyle}} currentColor;-webkit-mask:${FADE_IN};mask:${FADE_IN}"></span>
+  <span aria-hidden="true" style="line-height:1">{{ornament}}</span>
+  <span style="flex:1;border-top:{{thickness}} {{lineStyle}} currentColor;-webkit-mask:${FADE_OUT};mask:${FADE_OUT}"></span>
+</div>`,
   },
   {
     id: 'counter-webcomponent',

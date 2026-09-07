@@ -3452,6 +3452,23 @@ export class EditorEngine {
       const { nodes } = await this.library.instantiate(block, values);
       const replacement = nodes[0];
       if (!replacement) return;
+      /*
+       * The replacement is marked as this block before the swap, not after.
+       *
+       * `instantiate` renders the template, and the template knows nothing about the marker —
+       * it is applied when an instance is linked. So the node coming back from here is an
+       * anonymous piece of markup, and swapping it in used to leave the element still resolving
+       * through the `WeakMap` while no longer carrying the attribute. That combination is the
+       * worst of both: the props panel goes on working, so nothing looks wrong, but the element
+       * has dropped out of every answer that comes from the DOM — `blockInstances` cannot find
+       * it, the library's usage count stops seeing it, and a later template change skips it.
+       * Editing one prop quietly excluded an instance from "apply to all".
+       *
+       * Written into the markup rather than onto the node afterwards, because the markup is what
+       * the replace command records and what the export serialises. Set after the fact, the
+       * marker would be absent from both.
+       */
+      replacement.setAttribute(BLOCK_ATTR, block.id);
       const command = replaceElement(el, replacement.outerHTML);
       if (!command) return;
       this.history.commit(command.command);
