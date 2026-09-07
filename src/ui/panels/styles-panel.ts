@@ -1295,8 +1295,11 @@ export class HeoStylesPanel extends HeoElement {
               action="Add class"
               action-icon="plus"
               .suggestions=${classSuggestions(this.editor, this.classDraft)}
-              placeholder="find or type a class name"
+              placeholder="find or create a class"
               @value-input=${(event: CustomEvent<{ value: string }>) => {
+            this.classDraft = event.detail.value;
+          }}
+              @value-change=${(event: CustomEvent<{ value: string }>) => {
             this.classDraft = event.detail.value;
           }}
               @value-submit=${(event: CustomEvent<{ value: string }>) =>

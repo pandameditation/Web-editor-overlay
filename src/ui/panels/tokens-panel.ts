@@ -360,8 +360,8 @@ export class HeoTokensPanel extends HeoElement {
     );
   }
 
-  #matchClasses(classes: readonly DesignClass[]): DesignClass[] {
-    const needle = this.query.trim().toLowerCase();
+  #matchClasses(classes: readonly DesignClass[], query = this.query): DesignClass[] {
+    const needle = query.trim().toLowerCase();
     if (!needle) return [...classes];
     return classes.filter(
       (entry) =>
@@ -372,8 +372,8 @@ export class HeoTokensPanel extends HeoElement {
     );
   }
 
-  #matchRules(rules: readonly DesignRule[]): DesignRule[] {
-    const needle = this.query.trim().toLowerCase();
+  #matchRules(rules: readonly DesignRule[], query = this.query): DesignRule[] {
+    const needle = query.trim().toLowerCase();
     if (!needle) return [...rules];
     return rules.filter(
       (entry) =>
@@ -626,9 +626,11 @@ export class HeoTokensPanel extends HeoElement {
   }
 
   #renderClasses(el: HTMLElement | null): TemplateResult | typeof nothing {
-    const classes = this.#matchClasses(this.editor.classes.list());
-    // Searched and nothing matched: the section goes rather than claiming the registry is empty.
-    if (this.query.trim() && !classes.length) return nothing;
+    const globalClasses = this.#matchClasses(this.editor.classes.list());
+    const localQuery = this.classDraft.trim();
+    const classes = this.#matchClasses(globalClasses, localQuery);
+    // Keep the section alive while its own composer is being used, even when nothing matches yet.
+    if (this.query.trim() && !globalClasses.length && !localQuery) return nothing;
     const usage = this.editor.classes.usage();
 
     return html`<heo-section
@@ -639,6 +641,26 @@ export class HeoTokensPanel extends HeoElement {
       @section-toggle=${(event: CustomEvent<{ open: boolean }>) =>
         this.#remember('classes', event.detail.open)}
     >
+      <heo-value-field
+        style="margin-bottom:8px"
+        leading-icon="search"
+        clearable
+        action="Create class"
+        action-icon="plus"
+        .suggestions=${classSuggestions(this.editor, this.classDraft)}
+        placeholder="find or create a class"
+        @value-input=${(event: CustomEvent<{ value: string }>) => {
+        this.classDraft = event.detail.value;
+      }}
+        @value-change=${(event: CustomEvent<{ value: string }>) => {
+        this.classDraft = event.detail.value;
+      }}
+        @value-submit=${(event: CustomEvent<{ value: string }>) =>
+        this.#createClass(event.detail.value)}
+      ></heo-value-field>
+      <p class="hint" style="margin:0 0 8px">
+        Search existing classes or type a new name, then press Enter or +.
+      </p>
       ${el
         ? html`<button
             class="btn sm"
@@ -652,37 +674,15 @@ export class HeoTokensPanel extends HeoElement {
         : nothing}
       ${classes.length === 0
         ? html`<p class="hint" style="margin:0 0 8px">
-            No classes yet. Extract one from an element's inline styles, or name a new one below and
-            add its properties by hand.
+            ${globalClasses.length || localQuery
+            ? 'No reusable classes match the current filters.'
+            : "No classes yet. Extract one from an element's inline styles, or create one above and add its properties by hand."}
           </p>`
         : repeat(
           classes,
           (entry) => entry.name,
           (entry) => this.#renderClass(entry, usage.get(entry.name) ?? 0, el),
         )}
-      <!--
-        The same field Styles uses to add a class, and deliberately so: this panel is
-        where classes are managed, yet the only way to make one was to extract it from
-        an element that already had the styles inline. A class with no element to
-        extract from had nowhere to start.
-      -->
-      <heo-value-field
-        style="margin-top:8px"
-        leading-icon="search"
-        clearable
-        action="Create class"
-        action-icon="plus"
-        .suggestions=${classSuggestions(this.editor, this.classDraft)}
-        placeholder="name a new class"
-        @value-input=${(event: CustomEvent<{ value: string }>) => {
-        this.classDraft = event.detail.value;
-      }}
-        @value-submit=${(event: CustomEvent<{ value: string }>) =>
-        this.#createClass(event.detail.value)}
-      ></heo-value-field>
-      <p class="hint" style="margin:6px 0 0">
-        Enter, or the add button, creates it empty and opens it for editing.
-      </p>
     </heo-section>`;
   }
 
@@ -731,8 +731,11 @@ export class HeoTokensPanel extends HeoElement {
    * changing, and a rule written last session is in the file now.
    */
   #renderRules(el: HTMLElement | null): TemplateResult | typeof nothing {
-    const rules = this.#matchRules(this.editor.rules.list());
-    if (this.query.trim() && !rules.length) return nothing;
+    const globalRules = this.#matchRules(this.editor.rules.list());
+    const localQuery = this.ruleDraft.trim();
+    const rules = this.#matchRules(globalRules, localQuery);
+    // Keep the section alive while its own composer is being used, even when nothing matches yet.
+    if (this.query.trim() && !globalRules.length && !localQuery) return nothing;
     const matches = this.editor.rules.matches();
     const authored = rules.filter((entry) =>
       this.editor.rules.authored().some((own) => own.selector === entry.selector),
@@ -750,9 +753,11 @@ export class HeoTokensPanel extends HeoElement {
       ${this.#renderRuleComposer(el)}
       ${rules.length === 0
         ? html`<p class="hint" style="margin:10px 0 0">
-            A rule styles everything its selector matches, so it reaches what selecting a
-            single element cannot: every heading at once, a link on hover, a list marker.
-            Tokens and classes still apply — a rule can use both.
+            ${globalRules.length || localQuery
+            ? 'No CSS rules match the current filters.'
+            : html`A rule styles everything its selector matches, so it reaches what selecting a
+                  single element cannot: every heading at once, a link on hover, a list marker.
+                  Tokens and classes still apply — a rule can use both.`}
           </p>`
         : html`
             <!--

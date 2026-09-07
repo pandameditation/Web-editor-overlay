@@ -1166,7 +1166,7 @@
       if (!reusable.open) reusable.shadowRoot.querySelector('.head').click();
       await frame();
       const classMaker = Array.from(reusable.querySelectorAll('heo-value-field'))
-        .find((f) => f.getAttribute('placeholder') === 'name a new class');
+        .find((f) => f.getAttribute('placeholder') === 'find or create a class');
       check('tokensOffersToCreateAClass', () => Boolean(classMaker));
       const makerInput = classMaker.shadowRoot.querySelector('input[type=text]');
       typeInto2(makerInput, 'promo-shell');
@@ -1181,8 +1181,8 @@
       check('andItOpensReadyForItsFirstProperty', () =>
         Array.from(reusable.querySelectorAll('.cls'))
           .some((c) => c.textContent.includes('promo-shell') && c.querySelector('.decls')));
-      check('theCreateFieldClearsItself', () =>
-        classMaker.shadowRoot.querySelector('input[type=text]').value === '');
+      check('theCreateFieldKeepsItsSubmittedDraft', () =>
+        classMaker.shadowRoot.querySelector('input[type=text]').value === 'promo-shell');
       engine.classes.remove('promo-shell');
 
       /* ------------------------------------------------------------------ *
