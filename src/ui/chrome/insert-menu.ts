@@ -10,6 +10,7 @@ import {
   type HtmlElementSpec,
 } from '../../core/elements.js';
 import { INSERT_POSITION_LABELS, type InsertPosition } from '../../core/mutations.js';
+import { modalOpen } from '../../core/modal.js';
 import { listen, unlisten } from '../../core/shield.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import type { LibraryBlock } from '../../core/types.js';
@@ -295,6 +296,7 @@ export class HeoInsertMenu extends HeoElement {
 
   #onDocumentPointerDown = (event: PointerEvent): void => {
     if (!this.state.value.insertAnchor) return;
+    if (modalOpen()) return;
     const path = event.composedPath();
     if (path.includes(this)) return;
     if (path.some((node) => node instanceof HTMLElement && node.classList.contains('insert'))) return;

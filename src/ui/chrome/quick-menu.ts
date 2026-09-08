@@ -1,6 +1,7 @@
 import { css, html, nothing, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { isMutable, labelFor, selectorFor, visualBox } from '../../core/dom.js';
+import { modalOpen } from '../../core/modal.js';
 import { copyToClipboard } from '../../core/design-system.js';
 import { hasComponentProps } from '../../core/props.js';
 import { listen, unlisten } from '../../core/shield.js';
@@ -162,6 +163,7 @@ export class HeoQuickMenu extends HeoElement {
 
   #onDocumentPointerDown = (event: PointerEvent): void => {
     if (!this.state.value.quickMenuOpen) return;
+    if (modalOpen()) return;
     if (event.composedPath().includes(this)) return;
     // A click on the thumb toggles the menu itself; let that handler win.
     const onThumb = event

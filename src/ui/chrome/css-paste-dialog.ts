@@ -11,9 +11,11 @@ import {
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
+import { classSuggestions } from '../suggestions.js';
 import { baseStyles, surfaceStyles } from '../theme.js';
 import '../controls/code-editor.js';
 import '../controls/segmented.js';
+import '../controls/value-field.js';
 
 /**
  * A deliberate hand-off between pasted CSS and the place it should live.
@@ -33,12 +35,18 @@ export class HeoCssPasteDialog extends HeoElement {
         position: fixed;
         inset: 0;
         z-index: 31;
-        display: grid;
-        place-items: center;
-        padding: 24px;
+        display: block;
         background: oklch(12% 0.01 265 / 58%);
         backdrop-filter: blur(4px);
         pointer-events: auto;
+      }
+      .backdrop {
+        display: grid;
+        place-items: center;
+        width: 100%;
+        height: 100%;
+        box-sizing: border-box;
+        padding: 24px;
       }
       .dialog {
         display: flex;
@@ -256,7 +264,7 @@ export class HeoCssPasteDialog extends HeoElement {
         color: var(--heo-danger) !important;
       }
       @media (max-width: 560px) {
-        :host {
+        .backdrop {
           padding: 10px;
         }
         .dialog {
@@ -297,12 +305,17 @@ export class HeoCssPasteDialog extends HeoElement {
     const ready = block ? Boolean(open.draft.trim()) : count > 0 && !hasMultipleRules;
 
     return html`<div
-      class="dialog surface"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Paste CSS"
-      @pointerdown=${(event: Event) => event.stopPropagation()}
+      class="backdrop"
+      @pointerdown=${this.#stopBackdropInteraction}
+      @click=${this.#stopBackdropInteraction}
     >
+      <div
+        class="dialog surface"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Paste CSS"
+        @pointerdown=${(event: Event) => event.stopPropagation()}
+      >
       <header>
         <div class="body">
           <h2>${block ? 'Add CSS to this block' : 'Paste CSS'}</h2>
@@ -359,6 +372,7 @@ export class HeoCssPasteDialog extends HeoElement {
           </button>
         </div>
       </footer>
+      </div>
     </div>`;
   }
 
@@ -450,6 +464,8 @@ export class HeoCssPasteDialog extends HeoElement {
       { value: 'rule', label: open.currentSelector ? 'This rule' : 'CSS rule' },
     ];
     const destination = open.destination === 'inline' && !hasElement ? 'class' : open.destination;
+    const normalizedClass = normalizeClassName(open.className);
+    const existingClass = normalizedClass ? this.editor.classes.get(normalizedClass) : null;
 
     return html`<section class="destination">
       <span class="eyebrow">Where should it live?</span>
@@ -466,17 +482,22 @@ export class HeoCssPasteDialog extends HeoElement {
       ${destination === 'class'
         ? html`<div class="fields">
               <div class="field full">
-                <label for="heo-css-paste-class">Class name</label>
-                <input
-                  id="heo-css-paste-class"
-                  class="input mono"
-                  type="text"
-                  spellcheck="false"
+                <label>Class name</label>
+                <heo-value-field
                   .value=${open.className}
-                  placeholder="pasted-style"
-                  @input=${(event: Event) =>
-            this.editor.updateCssPaste({ className: (event.target as HTMLInputElement).value })}
-                />
+                  .suggestions=${classSuggestions(this.editor, open.className)}
+                  placeholder="find or create a class"
+                  @value-input=${(event: CustomEvent<{ value: string }>) =>
+            this.editor.updateCssPaste({ className: event.detail.value })}
+                  @value-change=${(event: CustomEvent<{ value: string }>) =>
+            this.editor.updateCssPaste({ className: event.detail.value })}
+                ></heo-value-field>
+              </div>
+              <div class="target field full">
+                ${icon('blocks', 12)}
+                ${existingClass
+            ? html`Upserts existing <code>.${normalizedClass}</code> (${Object.keys(existingClass.declarations).length} declarations).`
+            : html`Creates new <code>.${normalizedClass || '…'}</code>; choose an existing suggestion to merge into one instead.`}
               </div>
               ${hasElement
             ? html`<label class="check field full">
@@ -569,6 +590,12 @@ export class HeoCssPasteDialog extends HeoElement {
       open.selector.trim() &&
       safeSelector(open.liveRule.selectorText) === safeSelector(open.selector),
     );
+  }
+
+  #stopBackdropInteraction(event: Event): void {
+    if (event.target !== event.currentTarget) return;
+    event.preventDefault();
+    event.stopPropagation();
   }
 
   #apply(open: NonNullable<typeof this.state.value.cssPaste>): void {

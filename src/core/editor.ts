@@ -22,7 +22,13 @@ import {
   VERSION,
 } from './constants.js';
 import { appliedRules, cascadedDeclarations, inlineDeclarations } from './css.js';
-import { splitCssPriority, type CssPasteDestination, type ParsedCssPaste } from './css-paste.js';
+import {
+  parsePastedCSS,
+  pastedDeclarationCount,
+  splitCssPriority,
+  type CssPasteDestination,
+  type ParsedCssPaste,
+} from './css-paste.js';
 import { planDrag, samePlacement, type DropPlacement } from './drop-target.js';
 import { captureRects, neighbourhood, playFlip, settleDrop } from './reflow.js';
 import {
@@ -6758,10 +6764,34 @@ export class EditorEngine {
      * because it is outside the span that changed.
      */
     on(document, 'paste', (event) => {
-      const el = this.store.value.textEditing;
-      if (!el) return;
-      if (!event.composedPath().includes(el)) return;
-      this.#pastedInto = { el, text: el.textContent ?? '' };
+      const editing = this.store.value.textEditing;
+      if (editing) {
+        if (!event.composedPath().includes(editing)) return;
+        this.#pastedInto = { el: editing, text: editing.textContent ?? '' };
+        return;
+      }
+
+      /*
+       * A page-level paste is a useful CSS shortcut, but only when the page itself is the
+       * destination. Native fields and the overlay's own editors must keep their browser paste
+       * semantics. Parsing before opening the modal also means ordinary text pasted on the canvas
+       * is left entirely alone.
+       */
+      if (!this.editing || this.store.value.cssPaste) return;
+      if (isOverlayEvent(event) || isNativeInputEvent(event)) return;
+      const text = event.clipboardData?.getData('text/plain') ?? '';
+      const parsed = parsePastedCSS(text);
+      if (!pastedDeclarationCount(parsed)) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      const element = this.store.value.selected;
+      this.beginCssPaste({
+        context: element ? 'inline' : 'class',
+        element,
+        preferred: element ? 'inline' : 'class',
+      });
+      this.updateCssPaste({ draft: text });
     });
 
     /*
@@ -6794,6 +6824,25 @@ export class EditorEngine {
     });
 
     on(document, 'keydown', (event) => {
+      const state = this.store.value;
+      const insideNativeModal = event.composedPath().some(
+        (node) => node instanceof HTMLDialogElement && node.open,
+      );
+      if (state.cssPaste && event.key === 'Escape' && !insideNativeModal) {
+        const valueField = event.composedPath().find(
+          (node): node is HTMLElement & { listIsOpen?: boolean } =>
+            node instanceof HTMLElement && node.tagName.toLowerCase() === 'heo-value-field',
+        );
+        // Let an open class suggestion list consume its first Escape. Every other Escape
+        // belongs to the CSS-paste modal, including one whose focus has leaked to the page.
+        if (!valueField?.listIsOpen) {
+          event.preventDefault();
+          event.stopPropagation();
+          this.cancelCssPaste();
+          return;
+        }
+      }
+
       /*
        * Whether the editor consumed this keystroke, measured rather than assumed.
        *

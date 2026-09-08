@@ -37,6 +37,9 @@ export function handleKeyDown(engine: EditorEngine, event: KeyboardEvent): void 
   // `code-submit` on Cmd+Enter, and a page shortcut firing underneath it would act on a
   // selection the user cannot see.
   if (state.htmlPaste) return;
+  // CSS paste has its own modal boundary too. Escape from the page must dismiss that
+  // modal, never unwind menus, selection, or edit mode underneath it.
+  if (state.cssPaste) return;
   /*
    * And the confirmation, most of all.
    *

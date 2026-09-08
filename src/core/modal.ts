@@ -134,7 +134,10 @@ export class ModalController implements ReactiveController {
   #options: ModalOptions;
   /** Where focus was before the dialog took it, so it can be handed back. */
   #returnTo: HTMLElement | null = null;
+  /** Whether the initial focus has been placed. */
   #focused = false;
+  /** A custom control may render its internal input one frame after the dialog. */
+  #focusRetry: number | null = null;
 
   constructor(host: ReactiveControllerHost & HTMLElement, options: ModalOptions = {}) {
     this.#host = host;
@@ -145,10 +148,15 @@ export class ModalController implements ReactiveController {
   hostConnected(): void {
     this.#returnTo = deepActiveElement();
     this.#focused = false;
+    this.#focusRetry = null;
     enterModal(this.#host);
   }
 
   hostDisconnected(): void {
+    if (this.#focusRetry !== null) {
+      cancelAnimationFrame(this.#focusRetry);
+      this.#focusRetry = null;
+    }
     exitModal(this.#host);
     // Back where it came from, so dismissing a dialog opened from the toolbar
     // leaves the keyboard on the toolbar rather than at the top of the document.
@@ -160,16 +168,45 @@ export class ModalController implements ReactiveController {
 
   hostUpdated(): void {
     if (this.#focused || this.#options.native) return;
+    this.#focusInitial();
+  }
+
+  #focusInitial(): void {
     const root = this.#host.shadowRoot;
     if (!root) return;
     const wanted = this.#options.initialFocus
       ? root.querySelector<HTMLElement>(this.#options.initialFocus)
       : null;
+
+    /*
+     * A custom control is often upgraded before its internal field has rendered. Do not
+     * focus the host as a fallback: a non-focusable custom element leaves focus behind the
+     * backdrop and makes the modal's first Escape act on whatever was underneath it.
+     */
+    if (wanted && (wanted.shadowRoot || typeof (wanted as { focusEditor?: unknown }).focusEditor === 'function')) {
+      const target = wanted.shadowRoot ? firstFocusable(wanted.shadowRoot) : null;
+      if (!target) {
+        this.#scheduleFocusRetry();
+        return;
+      }
+      this.#focused = true;
+      target.focus({ preventScroll: true });
+      return;
+    }
+
     const target = wanted ?? firstFocusable(root);
     if (!target) return;
     this.#focused = true;
     target.focus({ preventScroll: true });
     if (this.#options.initialSelect && target instanceof HTMLInputElement) target.select();
+  }
+
+  #scheduleFocusRetry(): void {
+    if (this.#focusRetry !== null) return;
+    this.#focusRetry = requestAnimationFrame(() => {
+      this.#focusRetry = null;
+      if (!this.#focused) this.#focusInitial();
+    });
   }
 }
 

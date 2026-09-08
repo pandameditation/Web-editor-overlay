@@ -22,6 +22,7 @@
   <article id="target">The selected element</article>
   <span id="rule-target">The rule target</span>
   <div id="conditional">The conditional target</div>
+  <input id="native-input" value="native text">
 
   <pre id="progress">start</pre>
   <pre id="out">pending</pre>
@@ -64,6 +65,30 @@
       const sourceText = () => dialogRoot()?.querySelector('.source')?.textContent
         ?.replace(/\s+/g, ' ')
         .trim() ?? '';
+      const deepActive = () => {
+        let active = document.activeElement;
+        while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
+        return active;
+      };
+      const insideComposed = (root, node) => {
+        let current = node;
+        while (current) {
+          if (current === root) return true;
+          current = current.parentNode;
+          if (current instanceof ShadowRoot) current = current.host;
+        }
+        return false;
+      };
+      const pasteText = (target, text) => {
+        const clipboard = new DataTransfer();
+        clipboard.setData('text/plain', text);
+        return target.dispatchEvent(new ClipboardEvent('paste', {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          clipboardData: clipboard,
+        }));
+      };
 
       async function openPaste(options, draft) {
         engine.beginCssPaste(options);
@@ -409,6 +434,173 @@ color: rebeccapurple;`;
         committed,
         css: block?.css ?? null,
       }));
+
+      /* ------------------------------------------------------------------ *
+       * Native page paste is promoted only when it is CSS, while the modal owns
+       * focus, Escape, and the class-name suggestion list once it is open.
+       * ------------------------------------------------------------------ */
+      api.select(target);
+      engine.setQuickMenu(true);
+      await frames();
+      const pageCss = 'outline: 3px solid hotpink; line-height: 1.4;';
+      const pagePasteAllowed = pasteText(target, pageCss);
+      await frames();
+      check('aValidPagePasteOpensAndPrefillsThePasteCSSModal', () => {
+        const open = engine.store.value.cssPaste;
+        return {
+          ok: pagePasteAllowed === false && open?.draft === pageCss && open.destination === 'inline',
+          prevented: pagePasteAllowed === false,
+          draft: open?.draft ?? null,
+          destination: open?.destination ?? null,
+        };
+      });
+      check('thePasteCSSModalStartsWithItsCodeEditorFocused', () => {
+        const editor = dialogRoot()?.querySelector('heo-code-editor');
+        const textarea = editor?.shadowRoot?.querySelector('textarea');
+        const active = deepActive();
+        return {
+          ok: Boolean(textarea) && active === textarea,
+          active: active?.tagName ?? null,
+          editorInput: Boolean(textarea),
+        };
+      });
+
+      const modal = dialogRoot()?.querySelector('[role="dialog"]');
+      const tabOrigin = deepActive();
+      tabOrigin?.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Tab',
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+      }));
+      await frames();
+      check('tabRemainsInsideThePasteCSSModal', () => {
+        const active = deepActive();
+        return {
+          ok: Boolean(modal && active && insideComposed(modal, active)),
+          active: active?.tagName ?? null,
+        };
+      });
+
+      const backdrop = dialogRoot()?.querySelector('.backdrop');
+      backdrop?.dispatchEvent(new PointerEvent('pointerdown', {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+      }));
+      await frames();
+      check('thePasteCSSBackdropDoesNotMoveFocusOrUnwindTheMenuBehindIt', () => {
+        const active = deepActive();
+        return {
+          ok: Boolean(modal && active && insideComposed(modal, active)) &&
+            engine.store.value.cssPaste !== null &&
+            engine.store.value.quickMenuOpen === true,
+          focusStillInside: Boolean(modal && active && insideComposed(modal, active)),
+          modalState: engine.store.value.cssPaste ? 'open' : 'closed',
+          menuBehindStillOpen: engine.store.value.quickMenuOpen,
+        };
+      });
+
+      const escapeOrigin = deepActive();
+      escapeOrigin?.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+      }));
+      await frames();
+      check('escapeClosesPasteCSSWithoutUnwindingTheMenuBehindIt', () => ({
+        ok: engine.store.value.cssPaste === null &&
+          engine.store.value.quickMenuOpen === true &&
+          engine.store.value.selected === target,
+        modalState: engine.store.value.cssPaste ? 'open' : 'closed',
+        menuBehindStillOpen: engine.store.value.quickMenuOpen,
+        selected: engine.store.value.selected?.id ?? null,
+      }));
+      engine.setQuickMenu(false);
+      await frames();
+
+      const nativeInput = document.getElementById('native-input');
+      const nativePasteAllowed = pasteText(nativeInput, 'color: blue;');
+      await frames();
+      check('pastingIntoANativeInputIsNotPromotedToPasteCSS', () => ({
+        ok: nativePasteAllowed === true && engine.store.value.cssPaste === null,
+        allowed: nativePasteAllowed,
+        modalState: engine.store.value.cssPaste ? 'open' : 'closed',
+      }));
+
+      api.setEditing(false);
+      const disabledPasteAllowed = pasteText(target, 'color: blue;');
+      await frames();
+      check('pastingWithHEODisabledIsLeftToThePage', () => ({
+        ok: disabledPasteAllowed === true && engine.store.value.cssPaste === null,
+        allowed: disabledPasteAllowed,
+        modalState: engine.store.value.cssPaste ? 'open' : 'closed',
+      }));
+      api.setEditing(true);
+      api.select(target);
+      await frames();
+
+      await openPaste({ context: 'class', element: target, className: 'module' }, 'color: teal;');
+      const classField = () => dialogRoot()?.querySelector('heo-value-field');
+      const classInput = () => classField()?.shadowRoot?.querySelector('input');
+      const setClassQuery = (value) => {
+        const input = classInput();
+        if (!input) return false;
+        input.value = value;
+        input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        return true;
+      };
+      setClassQuery('module-border');
+      await frames();
+      check('theClassNameFieldUsesTheSharedClassAutocomplete', () => {
+        const field = classField();
+        const option = field?.shadowRoot?.querySelector('.option .name');
+        return {
+          ok: field?.tagName === 'HEO-VALUE-FIELD' &&
+            Boolean(field?.listIsOpen) &&
+            option?.textContent?.trim() === 'module-border-wrap',
+          fieldTag: field?.tagName ?? null,
+          listOpen: Boolean(field?.listIsOpen),
+          suggestion: option?.textContent?.trim() ?? null,
+        };
+      });
+
+      const firstAutocompleteEscape = classInput();
+      firstAutocompleteEscape?.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+      }));
+      await frames();
+      check('theFirstEscapeClosesClassSuggestionsBeforeTheModal', () => ({
+        ok: engine.store.value.cssPaste !== null && !classField()?.listIsOpen,
+        modalState: engine.store.value.cssPaste ? 'open' : 'closed',
+        listState: classField()?.listIsOpen ? 'open' : 'closed',
+      }));
+
+      setClassQuery('module-border');
+      await frames();
+      classField()?.shadowRoot?.querySelector('.option')?.dispatchEvent(
+        new MouseEvent('click', { bubbles: true, composed: true }),
+      );
+      await frames();
+      check('choosingAClassSuggestionMakesTheExistingUpsertExplicit', () => {
+        const open = engine.store.value.cssPaste;
+        const destinationText = Array.from(dialogRoot()?.querySelectorAll('.target') ?? [])
+          .map((element) => element.textContent?.replace(/\s+/g, ' ').trim() ?? '')
+          .join(' ');
+        return {
+          ok: open?.className === 'module-border-wrap' &&
+            /Upserts existing/.test(destinationText) &&
+            /module-border-wrap/.test(destinationText),
+          className: open?.className ?? null,
+          destinationText,
+        };
+      });
+      engine.cancelCssPaste();
+      await frames();
 
       results.browserErrors = { ok: errors.length === 0, errors };
       const failed = Object.entries(results)
