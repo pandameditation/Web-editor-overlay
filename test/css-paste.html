@@ -443,78 +443,250 @@ color: rebeccapurple;`;
       });
 
       /* ------------------------------------------------------------------ *
-       * Block CSS deliberately stays raw. Appending and replacing must not
-       * flatten selectors or hoist conditional rules into the selector-only
-       * registries above.
+       * Block CSS is destination-oriented. Inline styles and global classes
+       * are staged in the pending template; authored rules stay readable until
+       * a block is used, when the library prefixes the selectors it owns.
        * ------------------------------------------------------------------ */
-      const originalBlockCss = `.existing-block { color: blue; }
+      const outsideParagraph = document.createElement('p');
+      outsideParagraph.id = 'outside-block-paragraph';
+      outsideParagraph.textContent = 'Outside paragraph';
+      const outsidePouet = document.createElement('div');
+      outsidePouet.id = 'outside-block-pouet';
+      outsidePouet.className = 'pouet';
+      outsidePouet.textContent = 'Outside class';
+      document.body.append(outsideParagraph, outsidePouet);
 
-@media (min-width: 500px) {
-  .existing-block { padding: 1rem; }
-}`;
-      const appendedBlockCss = `.module-border-wrap {
-  max-width: 250px;
-  padding: 3px;
-}
+      const extractDialogRoot = () => deepQuery('heo-extract-dialog')?.shadowRoot ?? null;
+      const blockMarkup = '<div class="pouet"><p class="block-copy">Inside block</p><span>Not a paragraph</span></div>';
 
-@supports (display: grid) {
-  .module-border-wrap { display: grid; }
-}`;
-      engine.beginBlockDraft('CSS paste block');
-      engine.updateExtraction({
-        html: '<div class="module-border-wrap">Block</div>',
-        css: originalBlockCss,
-      });
-      engine.beginCssPaste({ context: 'block' });
-      engine.updateCssPaste({ draft: appendedBlockCss, append: true });
+      engine.beginBlockDraft('CSS paste inline');
+      engine.updateExtraction({ html: blockMarkup, css: '' });
       await frames();
-      check('theBlockDialogExplainsThatRawCSSWillBeKept', () => ({
-        ok: /keeps selectors and conditional rules exactly as pasted/.test(
-          dialogRoot()?.querySelector('.target')?.textContent ?? '',
-        ),
-        target: dialogRoot()?.querySelector('.target')?.textContent?.replace(/\s+/g, ' ').trim() ?? null,
-      }));
-      await applyPaste();
-      check('blockCSSCanBeAppendedWithoutFlatteningConditions', () => {
-        const css = engine.store.value.extraction?.css ?? '';
+      check('theBlockHTMLTabOffersThePasteCSSEntry', () => {
+        const root = extractDialogRoot();
+        const activeTab = root?.querySelector('[role="tab"][aria-selected="true"]')?.textContent
+          ?.replace(/\s+/g, ' ').trim() ?? '';
+        const paste = root?.querySelector('.label-row .paste');
         return {
-          ok: css.startsWith(originalBlockCss) &&
-            css.includes(appendedBlockCss) &&
-            css.includes('@media (min-width: 500px)') &&
-            css.includes('@supports (display: grid)'),
-          css,
+          ok: /HTML/.test(activeTab) && /Paste CSS/.test(paste?.textContent ?? ''),
+          activeTab,
+          pasteButton: paste?.textContent?.replace(/\s+/g, ' ').trim() ?? null,
+        };
+      });
+      extractDialogRoot()?.querySelector('.label-row .paste')?.dispatchEvent(
+        new MouseEvent('click', { bubbles: true, composed: true }),
+      );
+      await frames();
+      check('theHTMLTabPasteCSSEntryOpensTheBlockPasteModal', () => ({
+        ok: engine.store.value.cssPaste?.context === 'block',
+        context: engine.store.value.cssPaste?.context ?? null,
+      }));
+      engine.cancelCssPaste();
+      await frames();
+
+      await openPaste({ context: 'block' }, 'p { color: red !important; }');
+      engine.updateCssPaste({ destination: 'block-inline' });
+      await frames();
+      await applyPaste();
+      check('blockInlinePasteWritesOnlyMatchingMarkup', () => {
+        const pending = engine.store.value.extraction;
+        const doc = new DOMParser().parseFromString(pending?.mode === 'block' ? pending.html : '', 'text/html');
+        const root = doc.body.firstElementChild;
+        const paragraph = root?.querySelector('.block-copy');
+        const span = root?.querySelector('span');
+        return {
+          ok: pending?.mode === 'block' &&
+            paragraph?.style.getPropertyValue('color') === 'red' &&
+            paragraph?.style.getPropertyPriority('color') === 'important' &&
+            !span?.style.getPropertyValue('color') &&
+            !root?.style.getPropertyValue('color') &&
+            pending.css === '' &&
+            Object.keys(pending.globalClasses).length === 0,
+          html: pending?.mode === 'block' ? pending.html : null,
+          paragraphColor: paragraph?.getAttribute('style') ?? null,
+          spanColor: span?.getAttribute('style') ?? null,
+        };
+      });
+      engine.cancelExtraction();
+      await frames();
+
+      const existingGlobalClass = 'module-border-wrap';
+      const classBeforeBlock = {
+        ...(engine.classes.get(existingGlobalClass)?.declarations ?? {}),
+      };
+      engine.beginBlockDraft('CSS paste destinations');
+      engine.updateExtraction({ html: blockMarkup, css: '' });
+      await frames();
+
+      await openPaste({ context: 'block' }, 'background-color: teal;');
+      engine.updateCssPaste({
+        destination: 'block-class',
+        className: 'module-border',
+      });
+      await frames();
+      const blockClassField = () => dialogRoot()?.querySelector('heo-value-field');
+      const blockClassInput = () => blockClassField()?.shadowRoot?.querySelector('input');
+      const blockClassQuery = blockClassInput();
+      if (blockClassQuery) {
+        blockClassQuery.value = 'module-border';
+        blockClassQuery.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      }
+      await frames();
+      check('theBlockClassDestinationUsesTheSharedClassAutocomplete', () => {
+        const field = blockClassField();
+        const option = field?.shadowRoot?.querySelector('.option .name');
+        return {
+          ok: field?.tagName === 'HEO-VALUE-FIELD' &&
+            Boolean(field?.listIsOpen) &&
+            option?.textContent?.trim() === existingGlobalClass,
+          fieldTag: field?.tagName ?? null,
+          listOpen: Boolean(field?.listIsOpen),
+          suggestion: option?.textContent?.trim() ?? null,
+        };
+      });
+      blockClassField()?.shadowRoot?.querySelector('.option')?.dispatchEvent(
+        new MouseEvent('click', { bubbles: true, composed: true }),
+      );
+      await frames();
+      check('theBlockClassDestinationMakesExistingUpsertExplicit', () => {
+        const open = engine.store.value.cssPaste;
+        const destinationText = dialogRoot()?.querySelector('.destination .target')?.textContent
+          ?.replace(/\s+/g, ' ').trim() ?? '';
+        return {
+          ok: open?.className === existingGlobalClass && /Upserts existing/.test(destinationText),
+          className: open?.className ?? null,
+          destinationText,
+        };
+      });
+      engine.updateCssPaste({ applyClass: true });
+      await frames();
+      await applyPaste();
+      check('blockClassPasteStagesTheGlobalClassAndOptionallyAppliesItToTheRoot', () => {
+        const pending = engine.store.value.extraction;
+        const staged = pending?.mode === 'block'
+          ? pending.globalClasses[existingGlobalClass]
+          : undefined;
+        const root = pending?.mode === 'block'
+          ? new DOMParser().parseFromString(pending.html, 'text/html').body.firstElementChild
+          : null;
+        const live = engine.classes.get(existingGlobalClass)?.declarations;
+        return {
+          ok: pending?.mode === 'block' &&
+            staged?.['background-color'] === 'teal' &&
+            root?.classList.contains(existingGlobalClass) &&
+            live?.['background-color'] === classBeforeBlock['background-color'],
+          staged,
+          rootClass: root?.getAttribute('class') ?? null,
+          live,
         };
       });
 
-      const replacementBlockCss = `.replacement {
-  color: tomato;
-}
+      const scopedBlockCss = `p { color: rgb(12, 34, 56); }
 
-@media (prefers-reduced-motion: reduce) {
-  .replacement { transition: none; }
+.pouet { background-color: rgb(78, 90, 12); }
+
+@media (min-width: 1px) {
+  p { outline-width: 3px; }
 }`;
-      engine.beginCssPaste({ context: 'block' });
-      engine.updateCssPaste({ draft: replacementBlockCss, append: false });
+      await openPaste({ context: 'block' }, scopedBlockCss);
+      check('theBlockRuleDestinationExplainsWhatWillBeScoped', () => {
+        const text = dialogRoot()?.querySelector('.destination .note.warn')?.textContent
+          ?.replace(/\s+/g, ' ').trim() ?? '';
+        return {
+          ok: /scoped to this block/.test(text) && /pouet/.test(text),
+          text,
+        };
+      });
+      engine.updateCssPaste({ destination: 'block-rule' });
       await frames();
       await applyPaste();
-      check('blockCSSCanBeReplacedAsRawSource', () => {
-        const css = engine.store.value.extraction?.css ?? '';
+      check('blockRulePasteKeepsAuthoredSelectorsInThePendingSource', () => {
+        const pending = engine.store.value.extraction;
+        const css = pending?.mode === 'block' ? pending.css : '';
         return {
-          ok: css === replacementBlockCss &&
-            !css.includes('.existing-block') &&
-            css.includes('@media (prefers-reduced-motion: reduce)'),
+          ok: pending?.mode === 'block' && css === scopedBlockCss &&
+            !css.includes('[data-heo-block='),
           css,
         };
       });
 
       const committed = engine.commitExtraction();
-      const block = engine.library.list().find((entry) => entry.name === 'CSS paste block');
-      check('theCommittedBlockCarriesTheChosenRawCSS', () => ({
-        ok: committed && block?.css === replacementBlockCss &&
-          block.css.includes('@media (prefers-reduced-motion: reduce)'),
-        committed,
-        css: block?.css ?? null,
+      await frames();
+      const block = engine.library.list().find((entry) => entry.name === 'CSS paste destinations');
+      const blockId = block?.id ?? '';
+      check('blockCSSDestinationsPersistInTheDesignSystem', () => {
+        const designSystem = api.exportDesignSystem();
+        const exportedBlock = designSystem.blocks.find((entry) => entry.id === blockId);
+        const exportedClass = designSystem.classes.find((entry) => entry.name === existingGlobalClass);
+        return {
+          ok: committed && Boolean(exportedBlock) && exportedBlock?.css === scopedBlockCss &&
+            exportedBlock.html.includes(existingGlobalClass) &&
+            exportedClass?.declarations['background-color'] === 'teal',
+          committed,
+          blockCSS: exportedBlock?.css ?? null,
+          blockHTML: exportedBlock?.html ?? null,
+          classDeclarations: exportedClass?.declarations ?? null,
+        };
+      });
+
+      const insertedBlock = block
+        ? await engine.insertBlock(block, {}, { reference: outsidePouet, position: 'after' })
+        : null;
+      await frames();
+      const scopedPrefix = `[data-heo-block="${blockId}"]`;
+      check('usingTheBlockScopesElementRulesButLeavesClassRulesGlobal', () => {
+        const generated = engine.library.css;
+        const paragraph = insertedBlock?.querySelector('p');
+        return {
+          ok: Boolean(insertedBlock) &&
+            generated.includes(`${scopedPrefix} p`) &&
+            generated.includes('.pouet') &&
+            !generated.includes(`${scopedPrefix} .pouet`) &&
+            generated.includes('@media (min-width: 1px)') &&
+            getComputedStyle(paragraph).color === 'rgb(12, 34, 56)' &&
+            getComputedStyle(outsideParagraph).color !== 'rgb(12, 34, 56)' &&
+            getComputedStyle(insertedBlock).backgroundColor === 'rgb(78, 90, 12)' &&
+            getComputedStyle(outsidePouet).backgroundColor === 'rgb(78, 90, 12)' &&
+            getComputedStyle(paragraph).outlineWidth === '3px',
+          blockId,
+          generated,
+          paragraphColor: paragraph ? getComputedStyle(paragraph).color : null,
+          outsideParagraphColor: getComputedStyle(outsideParagraph).color,
+          blockBackground: insertedBlock ? getComputedStyle(insertedBlock).backgroundColor : null,
+          outsideBackground: getComputedStyle(outsidePouet).backgroundColor,
+          paragraphOutline: paragraph ? getComputedStyle(paragraph).outlineWidth : null,
+        };
+      });
+
+      engine.setSaveBlockLibrary(true);
+      const savedBlockDocument = new DOMParser().parseFromString(api.exportHTML(), 'text/html');
+      const savedBlockSeed = savedBlockDocument.querySelector('script[type="application/heo-seed"]');
+      const savedBlockInstance = savedBlockDocument.querySelector(`[data-heo-block="${blockId}"]`);
+      check('theUsedBlockLibraryIsCarriedByTheSavedHTML', () => ({
+        ok: Boolean(savedBlockSeed?.textContent?.trim()) && Boolean(savedBlockInstance),
+        seedLength: savedBlockSeed?.textContent?.trim().length ?? 0,
+        instanceBlockId: savedBlockInstance?.getAttribute('data-heo-block') ?? null,
       }));
+
+      const removedBlock = blockId ? engine.removeBlock(blockId) : undefined;
+      await frames();
+      check('removingTheBlockRemovesItsScopedCSSButPreservesGlobalClasses', () => {
+        const generated = engine.library.css;
+        const liveClass = engine.classes.get(existingGlobalClass);
+        return {
+          ok: removedBlock?.id === blockId &&
+            !generated.includes(`/* block: ${blockId} */`) &&
+            !generated.includes(scopedPrefix) &&
+            liveClass?.declarations['background-color'] === 'teal' &&
+            insertedBlock?.isConnected === true &&
+            insertedBlock?.getAttribute('data-heo-block') === blockId &&
+            engine.blockInstance(insertedBlock) === null,
+          generated,
+          classDeclarations: liveClass?.declarations ?? null,
+          instanceStillInPage: insertedBlock?.isConnected ?? false,
+          blockLookupAfterRemoval: engine.blockInstance(insertedBlock)?.block.id ?? null,
+        };
+      });
 
       /* ------------------------------------------------------------------ *
        * Native page paste is promoted only when it is CSS, while the modal owns

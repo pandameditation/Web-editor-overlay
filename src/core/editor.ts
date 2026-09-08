@@ -22,6 +22,7 @@ import {
   VERSION,
 } from './constants.js';
 import { appliedRules, cascadedDeclarations, inlineDeclarations } from './css.js';
+import { addClassToBlockRoots, applyBlockInlineRules } from './block-css.js';
 import {
   parsePastedCSS,
   pastedDeclarationCount,
@@ -268,7 +269,7 @@ export interface CssPaste {
   liveRule: CSSStyleRule | null;
   draft: string;
   error: string;
-  destination: 'inline' | 'class' | 'rule' | 'block';
+  destination: 'inline' | 'class' | 'rule' | 'block-inline' | 'block-class' | 'block-rule';
   className: string;
   selector: string;
   applyClass: boolean;
@@ -335,6 +336,8 @@ export interface BlockExtraction {
   description: string;
   html: string;
   css: string;
+  /** Global classes staged by the block CSS destination until the block is saved. */
+  globalClasses: Record<string, Record<string, string>>;
   /** ES module source for a block that registers a custom element. */
   script: string;
   /** Custom element tag that `script` defines. */
@@ -462,6 +465,7 @@ function emptyBlockDraft(): BlockExtraction {
     description: '',
     html: '',
     css: '',
+    globalClasses: {},
     script: '',
     tag: '',
     step: 'source',
@@ -2082,6 +2086,7 @@ export class EditorEngine {
         description: block.description ?? '',
         html: block.html,
         css: block.css ?? '',
+        globalClasses: {},
         script: block.element?.module ?? block.element?.script ?? '',
         tag: block.element?.tag ?? '',
       },
@@ -2233,7 +2238,7 @@ export class EditorEngine {
         ...existing,
         ...built,
         props: Object.keys(applied.props).length ? applied.props : undefined,
-      });
+      }, { globalClasses: pending.globalClasses });
       this.store.patch({ extraction: null });
 
       /*
@@ -2326,7 +2331,10 @@ export class EditorEngine {
    * name, and a throw from inside `apply` would leave the stack holding a command that did
    * nothing — so the caller checks first and this trusts what it is given.
    */
-  upsertBlock(block: LibraryBlock): LibraryBlock {
+  upsertBlock(
+    block: LibraryBlock,
+    options: { globalClasses?: Record<string, Record<string, string>> } = {},
+  ): LibraryBlock {
     const id = block.id;
     /*
      * Deep enough to put back.
@@ -2343,6 +2351,17 @@ export class EditorEngine {
         element: live.element ? { ...live.element } : undefined,
       }
       : undefined;
+    const classEntries = Object.entries(options.globalClasses ?? {}).filter(
+      ([, declarations]) => Object.keys(declarations).length > 0,
+    );
+    const previousClasses = new Map<string, DesignClass | undefined>();
+    for (const [name] of classEntries) {
+      const entry = this.classes.get(name);
+      previousClasses.set(
+        name,
+        entry ? { ...entry, declarations: { ...entry.declarations } } : undefined,
+      );
+    }
     const next: LibraryBlock = { ...block };
     let stored = next;
 
@@ -2367,15 +2386,30 @@ export class EditorEngine {
           html: next.html,
           ...(next.props ? { props: Object.keys(next.props).join(', ') } : {}),
           ...(next.element?.tag ? { tag: next.element.tag } : {}),
+          ...(classEntries.length ? { classes: classEntries.map(([name]) => name).join(', ') } : {}),
         },
         at: Date.now(),
       },
       apply: () => {
         stored = this.library.upsert(next);
+        for (const [name, declarations] of classEntries) {
+          const before = previousClasses.get(name);
+          this.classes.upsert({
+            ...(before ?? { name, origin: 'user' as const }),
+            name,
+            declarations: { ...(before?.declarations ?? {}), ...declarations },
+            origin: 'user',
+          });
+        }
       },
       revert: () => {
         if (previous) this.library.upsert(previous);
         else this.library.remove(stored.id);
+        for (const [name] of classEntries) {
+          const before = previousClasses.get(name);
+          if (before) this.classes.upsert(before);
+          else this.classes.remove(name);
+        }
       },
     });
     this.#bumpRevision();
@@ -3588,7 +3622,7 @@ export class EditorEngine {
         : options.context === 'rule'
           ? 'rule'
           : options.context === 'block'
-            ? 'block'
+            ? 'block-rule'
             : 'class');
     const suggestedClass = currentClass ?? this.classes.uniqueName('pasted-style');
     const suggestedSelector =
@@ -3815,6 +3849,60 @@ export class EditorEngine {
       },
     });
     this.#bumpRevision();
+    return true;
+  }
+
+  /** Apply selector-based inline declarations to the block template, without committing it yet. */
+  applyBlockInlineCssPaste(parsed: ParsedCssPaste): number {
+    const pending = this.store.value.extraction;
+    if (!pending || pending.mode !== 'block' || !parsed.rules.length) return 0;
+    const result = applyBlockInlineRules(pending.html, parsed.rules);
+    if (!result.matched) return 0;
+    this.updateExtraction({ html: result.html });
+    return result.matched;
+  }
+
+  /** Stage a global class definition and, optionally, add it to every block root. */
+  applyBlockClassCssPaste(
+    parsed: ParsedCssPaste,
+    name: string,
+    applyToRoot: boolean,
+  ): boolean {
+    const pending = this.store.value.extraction;
+    const normalized = normalizeClassName(name);
+    if (!pending || pending.mode !== 'block' || !normalized || !Object.keys(parsed.declarations).length) {
+      return false;
+    }
+
+    const existing = this.classes.get(normalized);
+    const staged = pending.globalClasses?.[normalized] ?? {};
+    let html = pending.html;
+    if (applyToRoot) {
+      const result = addClassToBlockRoots(html, normalized);
+      if (!result.roots) return false;
+      html = result.html;
+    }
+    this.updateExtraction({
+      html,
+      globalClasses: {
+        ...(pending.globalClasses ?? {}),
+        [normalized]: {
+          ...(existing?.declarations ?? {}),
+          ...staged,
+          ...parsed.declarations,
+        },
+      },
+    });
+    return true;
+  }
+
+  /** Keep the authored selectors in the block source; the library scopes them when injected. */
+  applyBlockScopedCssPaste(source: string, parsed: ParsedCssPaste): boolean {
+    const pending = this.store.value.extraction;
+    const incoming = String(source ?? '').trim();
+    if (!pending || pending.mode !== 'block' || !incoming || !parsed.rules.length) return false;
+    const css = pending.css.trim() ? `${pending.css.trim()}\n\n${incoming}` : incoming;
+    this.updateExtraction({ css });
     return true;
   }
 

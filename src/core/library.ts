@@ -1,5 +1,6 @@
 import { BLOCK_STYLE_ID } from './constants.js';
 import { evaluateModule } from './lit-bridge.js';
+import { scopeBlockCSS } from './block-css.js';
 import { allPresets } from './presets.js';
 import { renameTemplateProp, renderBlockTemplate, sanitizeFragment, templatePropNames } from './sanitize.js';
 import { ManagedStyleSheet } from './stylesheet.js';
@@ -76,8 +77,11 @@ export class BlockLibrary {
     if (!id) throw new Error('A block needs an id or a name.');
     const next: LibraryBlock = { ...block, id, origin: block.origin ?? 'user' };
     this.#blocks.set(id, next);
-    // The CSS may have changed, so allow it to be re-injected.
-    this.#injectedCSS.delete(id);
+    // The CSS may have changed, so allow it to be re-injected. If this block was already
+    // used on the page, rewrite its existing slot immediately rather than waiting for a
+    // later instance to make the edit visible.
+    if (this.#injectedCSS.has(id)) this.#injectedCSS.set(id, next.css ?? '');
+    this.#writeCSS();
     this.#notify();
     return next;
   }
@@ -223,9 +227,9 @@ export class BlockLibrary {
   }
 
   #writeCSS(): void {
-    const parts = [...this.#injectedCSS.entries()].map(
-      ([id, css]) => `/* block: ${id} */\n${css}`,
-    );
+    const parts = [...this.#injectedCSS.entries()]
+      .filter(([, css]) => css.trim())
+      .map(([id, css]) => `/* block: ${id} */\n${scopeBlockCSS(css, id)}`);
     this.#sheet.write(parts.join('\n\n'));
   }
 

@@ -1355,7 +1355,7 @@ export class HeoExtractDialog extends HeoElement {
       <div class="field">
         <div class="label-row">
           <span class="label">${active.heading}</span>
-          ${this.sourceTab === 'css'
+          ${this.sourceTab === 'html' || this.sourceTab === 'css'
         ? html`<button
                 class="paste"
                 type="button"
@@ -1382,6 +1382,13 @@ export class HeoExtractDialog extends HeoElement {
           @code-input=${(event: CustomEvent<{ value: string }>) =>
         this.editor.updateExtraction({ [active.field]: event.detail.value })}
         ></heo-code-editor>
+        ${this.sourceTab === 'css'
+        ? html`<p class="note">
+              ${icon('lock', 11)} Selectors in this block CSS are scoped to the block root when it is
+              used. Class-rooted selectors such as <code class="mono">.pouet</code> stay global
+              so classes remain reusable across the page.
+            </p>`
+        : nothing}
         ${this.sourceTab === 'js'
         ? html`<p class="note">
               Imports of <code class="mono">lit</code> resolve to the copy the overlay already
