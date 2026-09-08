@@ -88,19 +88,23 @@ export interface PlannedWrite {
 }
 
 /**
- * The three kinds of vocabulary a session can author, each as CSS.
+ * The vocabulary kinds a session can author, each as CSS.
  *
- * Empty strings are the normal case: most sessions touch one of the three.
+ * Empty strings are the normal case: most sessions touch one of the four.
  */
 export interface DesignSystemCSS {
   tokens: string;
   classes: string;
   rules: string;
+  /** Generated, component-scoped CSS from the block library. */
+  blockCSS?: string;
 }
 
 /** The parts, in cascade order, as one block. Empty when nothing was authored. */
 export function designSystemCSSText(css: DesignSystemCSS): string {
-  return [css.tokens, css.classes, css.rules].filter((part) => part.trim()).join('\n\n');
+  return [css.tokens, css.classes, css.rules, css.blockCSS ?? '']
+    .filter((part) => part.trim())
+    .join('\n\n');
 }
 
 /** Which kinds are present, for a reason a reader can act on. */
@@ -109,6 +113,7 @@ function designSystemKinds(css: DesignSystemCSS): string[] {
   if (css.tokens.trim()) kinds.push('tokens');
   if (css.classes.trim()) kinds.push('classes');
   if (css.rules.trim()) kinds.push('rules');
+  if (css.blockCSS?.trim()) kinds.push('scoped block CSS');
   return kinds;
 }
 
@@ -151,7 +156,7 @@ export interface WriteSubject {
   /** Suggested name for the page's own file, when its URL does not give one. */
   fileName: string;
   /**
-   * CSS the editor generated this session, in three parts.
+   * CSS the editor generated this session, in four parts.
    *
    * Kept apart from the records because it is not a change to an existing file — it is
    * new vocabulary that has to be given a home. See `designSystemTarget`.
@@ -1286,14 +1291,14 @@ function isDocumentChange(
     return designSystemInDocument;
   }
   /*
-   * A block reaches the document only if the user asked for the library to travel.
+   * A block can carry two independent payloads.
    *
-   * There is nowhere else it could go — a stylesheet cannot hold a template and props — so
-   * this is not a choice of destination like the design system's is. It is a choice of whether
-   * to write it at all, and when the answer is no the change is still real, still on the undo
-   * stack, and still in the prompt; it simply has no file to land in.
+   * Its generated CSS follows the design-system target, while its template and props follow the
+   * library checkbox. A document write is therefore needed when either the CSS belongs in the
+   * document or the seed belongs in the document; the stylesheet route handles the CSS when it
+   * has another target.
    */
-  if (record.kind === 'block') return blockLibraryInDocument;
+  if (record.kind === 'block') return designSystemInDocument || blockLibraryInDocument;
   const target = record.detail?.writeTo;
   return !target || target === DOCUMENT_TARGET;
 }
@@ -1321,7 +1326,7 @@ function designSystemRecord(css: string): ChangeRecord {
   return {
     id: 'design-system',
     kind: 'token',
-    summary: 'New tokens, reusable classes and CSS rules',
+    summary: 'New tokens, reusable classes, CSS rules and scoped block CSS',
     target: 'design system',
     after: css,
     at: Date.now(),

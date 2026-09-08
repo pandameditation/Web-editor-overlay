@@ -9,6 +9,7 @@ import {
 } from './classes.js';
 import {
   BLOCK_ATTR,
+  BLOCK_STYLE_ID,
   CLASS_STYLE_ID,
   DRAGGING_ATTR,
   DRAG_TIMING,
@@ -5463,13 +5464,14 @@ export class EditorEngine {
   }
 
   /**
-   * The design system as CSS, at the extent the user chose.
+   * The design system as CSS, at the requested extent.
    *
    * One source for both save routes and the dialog's preview, so what is described and what is
-   * written cannot disagree about how much of it there is.
+   * written cannot disagree about how much of it there is. The optional extent is used by the
+   * dialog to describe all three choices without mutating the user's selection.
    */
-  designSystemParts(): DesignSystemParts {
-    return designSystemParts(this, this.store.value.designSystemScope);
+  designSystemParts(scope: DesignSystemScope = this.store.value.designSystemScope): DesignSystemParts {
+    return designSystemParts(this, scope);
   }
 
   /**
@@ -5767,8 +5769,7 @@ export class EditorEngine {
       // stylesheets are already in a file, and writing them back would turn a diff
       // into a copy of the theme.
       //
-      //
-      // Handed over as three parts rather than one block: the plan uses them to say
+      // Handed over as four parts rather than one block: the plan uses them to say
       // which kinds a file is about to receive, and joining them is its decision because
       // the join order is the cascade order.
       designSystemCSS: this.designSystemParts(),
@@ -6308,6 +6309,7 @@ export class EditorEngine {
       [TOKEN_STYLE_ID]: parts.tokens,
       [CLASS_STYLE_ID]: parts.classes,
       [RULE_STYLE_ID]: parts.rules,
+      [BLOCK_STYLE_ID]: parts.blockCSS,
     };
   }
 

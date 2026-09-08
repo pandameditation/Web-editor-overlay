@@ -345,6 +345,24 @@
           engine.tokens.list().length === beforeImport.tokens,
       }));
 
+      /*
+       * A generated block stylesheet with no new token, class, or rule entry. The save dialog
+       * must still surface it under the existing CSS destination card.
+       */
+      const dialogBlock = engine.library.upsert({
+        id: 'dialog-scoped-block',
+        name: 'Dialog scoped block',
+        kind: 'component',
+        html: '<section class="dialog-block"><p>Dialog block</p></section>',
+        css: 'p { color: rgb(18, 52, 86); }',
+        origin: 'user',
+      });
+      await engine.insertBlock(dialogBlock, {}, {
+        reference: document.getElementById('plain'),
+        position: 'after',
+      });
+      await frames();
+
       /* ------------------------------------------------------------------ *
        * 3. The choice is offered where the save is made.
        * ------------------------------------------------------------------ */
@@ -382,10 +400,11 @@
           rows,
           // Three alternatives, one chosen, each saying how much it means.
           asExpected:
-            sections.includes('Design system') &&
+            sections.includes('Design system updates') &&
             rows.length === 3 &&
             rows.filter((r) => r.checked).length === 1 &&
-            rows.every((r) => Boolean(r.detail)),
+            rows.every((r) => Boolean(r.detail)) &&
+            rows.some((r) => /scoped block CSS/.test(r.detail)),
         };
       });
 
@@ -413,7 +432,7 @@
           images: options.images,
           fonts: options.fonts,
           // Base64 costs a third and a font family is the largest thing on most pages.
-          asExpected: options.fonts === false && options.styles === true,
+          asExpected: options.fonts === false && options.styles === false,
         };
       });
       check('andTheFontsRowShowsThatChoice', () => {

@@ -87,11 +87,13 @@ export function exportDesignSystem(
  */
 export type DesignSystemScope = 'all' | 'used' | 'none';
 
-/** The three parts, kept separate so a plan can say which kinds a file will receive. */
+/** The four CSS parts, kept separate so a plan can say which kinds a file will receive. */
 export interface DesignSystemParts {
   tokens: string;
   classes: string;
   rules: string;
+  /** Generated selectors for block instances, already scoped by the block library. */
+  blockCSS: string;
 }
 
 /** What `used` resolves to: the names that survive the pruning. */
@@ -215,12 +217,20 @@ export function designSystemParts(
   registries: DesignRegistries,
   scope: DesignSystemScope,
 ): DesignSystemParts {
-  if (scope === 'none') return { tokens: '', classes: '', rules: '' };
+  if (scope === 'none') return { tokens: '', classes: '', rules: '', blockCSS: '' };
+
+  /*
+   * The library sheet already contains only generated CSS for blocks it has injected. It is
+   * therefore the `used` extent of this fourth part without a second CSS parser or a second
+   * source of truth for which block owns a selector.
+   */
+  const blockCSS = registries.library.css;
   if (scope === 'all') {
     return {
       tokens: registries.tokens.toCSS(),
       classes: registries.classes.toCSS(),
       rules: registries.rules.toCSS(),
+      blockCSS,
     };
   }
   const used = designSystemUsage(registries);
@@ -228,6 +238,7 @@ export function designSystemParts(
     tokens: registries.tokens.cssFor(used.tokens),
     classes: registries.classes.cssFor(used.classes),
     rules: registries.rules.cssFor(used.rules),
+    blockCSS,
   };
 }
 

@@ -1097,17 +1097,14 @@ export class HeoSaveDialog extends HeoElement {
   }
 
   /**
-   * New tokens, classes and rules, as CSS. Empty when the session authored none.
+   * Generated design-system CSS, including the block library's scoped rules.
    *
-   * Same order the write plan uses, and for its reason: the join order is the cascade
-   * order, so this preview and the file have to agree about it.
+   * The save plan and this destination check must consume the same composed payload. Otherwise a
+   * page containing only block CSS looks like it has no design-system update, and the destination
+   * control describes less CSS than the file write actually receives.
    */
   #designSystemCSS(): string {
-    return designSystemCSSText({
-      tokens: this.editor.tokens.toCSS(),
-      classes: this.editor.classes.toCSS(),
-      rules: this.editor.rules.toCSS(),
-    });
+    return designSystemCSSText(this.editor.designSystemParts());
   }
 
   /**
@@ -1308,10 +1305,12 @@ export class HeoSaveDialog extends HeoElement {
    */
   #tally(): string {
     const extent = this.editor.designSystemExtent(this.state.value.designSystemScope);
+    const css = this.editor.designSystemParts();
     const parts = [
       extent.tokens && `${extent.tokens} token${extent.tokens === 1 ? '' : 's'}`,
       extent.classes && `${extent.classes} class${extent.classes === 1 ? '' : 'es'}`,
       extent.rules && `${extent.rules} rule${extent.rules === 1 ? '' : 's'}`,
+      css.blockCSS.trim() && 'scoped block CSS',
       this.editor.blockLibrarySize() &&
       `${this.editor.blockLibrarySize()} block${this.editor.blockLibrarySize() === 1 ? '' : 's'}`,
     ].filter((part): part is string => Boolean(part));
@@ -1327,26 +1326,32 @@ export class HeoSaveDialog extends HeoElement {
    */
   #renderStyles(withDestination: boolean): TemplateResult | typeof nothing {
     const all = this.editor.designSystemExtent('all');
-    // Nothing authored or imported, so there is no question to ask.
-    if (!all.tokens && !all.classes && !all.rules) return nothing;
+    const allCSS = this.editor.designSystemParts('all');
+    // Generated block CSS is part of the same CSS payload even when no registry entry exists.
+    if (!all.tokens && !all.classes && !all.rules && !allCSS.blockCSS.trim()) return nothing;
     const used = this.editor.designSystemExtent('used');
+    const usedCSS = this.editor.designSystemParts('used');
     const chosen = this.state.value.designSystemScope;
     const targets = this.editor.styleTargets();
     const target = this.editor.designSystemTarget;
     const label = targets.find((entry) => entry.value === target)?.label ?? 'this page';
 
-    const count = (extent: { tokens: number; classes: number; rules: number }): string => {
+    const count = (
+      extent: { tokens: number; classes: number; rules: number },
+      css: { blockCSS: string },
+    ): string => {
       const parts = [
         extent.tokens && `${extent.tokens} token${extent.tokens === 1 ? '' : 's'}`,
         extent.classes && `${extent.classes} class${extent.classes === 1 ? '' : 'es'}`,
         extent.rules && `${extent.rules} rule${extent.rules === 1 ? '' : 's'}`,
+        css.blockCSS.trim() && 'scoped block CSS',
       ].filter((part): part is string => Boolean(part));
       return parts.length ? parts.join(', ') : 'nothing';
     };
 
     const options = [
-      { value: 'all', label: 'All of it', detail: count(all) },
-      { value: 'used', label: 'Only what this page uses', detail: count(used) },
+      { value: 'all', label: 'All of it', detail: count(all, allCSS) },
+      { value: 'used', label: 'Only what this page uses', detail: count(used, usedCSS) },
       { value: 'none', label: 'Leave it out', detail: 'nothing' },
     ] as const;
 
@@ -1375,8 +1380,8 @@ export class HeoSaveDialog extends HeoElement {
         page leaves them in the &lt;style&gt; block they render from now.
       </span>
 
-      <div class="sub" role="radiogroup" aria-label="What to keep">
-        <span class="subhead">What to keep</span>
+      <div class="sub" role="radiogroup" aria-labelledby="heo-ds-scope">
+        <span class="subhead" id="heo-ds-scope">What to keep</span>
         ${options.map(
           (option) => html`<label class=${`choice${chosen === option.value ? ' on' : ''}`}>
             <input

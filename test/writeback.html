@@ -128,7 +128,38 @@
       engine.tokens.upsert({ name: 'brand-accent', value: '#ff0055', origin: 'user' });
 
       /*
-       * 5. An external script edit, and 6. a stylesheet on another origin.
+       * 5. A user block with component-scoped CSS. The block seed and the generated stylesheet
+       * are intentionally checked as separate payloads below: one is markup data, the other is
+       * the CSS destination selected by the design-system save flow.
+       */
+      const rawBlockCSS = 'p.writeback-block-copy { color: rgb(18, 52, 86); }';
+      const writebackBlock = engine.library.upsert({
+        id: 'writeback-block',
+        name: 'Writeback block',
+        kind: 'component',
+        html: '<article class="writeback-block"><p class="writeback-block-copy">Generated block</p></article>',
+        css: rawBlockCSS,
+        origin: 'user',
+      });
+      const insertedBlock = await engine.insertBlock(writebackBlock, {}, {
+        reference: document.getElementById('copy'),
+        position: 'after',
+      });
+      const blockId = writebackBlock.id;
+      const blockMarker = `/* block: ${blockId} */`;
+      const blockSelectorPrefix = `[data-heo-block="${blockId}"]`;
+      check('theLibraryGeneratesScopedBlockCSS', () => {
+        const generated = engine.library.css;
+        return {
+          ok: Boolean(insertedBlock) && generated.includes(blockMarker) &&
+            generated.includes(blockSelectorPrefix) && generated.includes(rawBlockCSS.replace('p.writeback-block-copy', `${blockSelectorPrefix} p.writeback-block-copy`)),
+          generated,
+          blockId,
+        };
+      });
+
+      /*
+       * 6. An external script edit, and 7. a stylesheet on another origin.
        *
        * Committed as records directly. Both normally come from a panel, and driving a
        * code editor headlessly would test the panel rather than the write plan — while
@@ -186,6 +217,72 @@
       check('attachingAProjectSucceeds', () => attached);
       check('theStateNamesTheProject', () => engine.store.value.project?.label);
 
+      const stylesheetTarget = engine.styleTargets()[1]?.value ?? engine.designSystemTarget;
+      const documentTarget = engine.styleTargets()[0].value;
+      engine.setDesignSystemTarget(stylesheetTarget);
+      const stylesheetPlan = await engine.previewWritePlan();
+      const stylesheetWrite = stylesheetPlan.writes.find((w) => w.path === 'writeback.css');
+      check('theScopedBlockCSSUsesTheDesignSystemStylesheetPayload', () => ({
+        ok: Boolean(stylesheetWrite) && stylesheetWrite.after.includes(blockMarker) &&
+          stylesheetWrite.after.includes(blockSelectorPrefix) &&
+          stylesheetWrite.after.includes('color: rgb(18, 52, 86);'),
+        target: engine.designSystemTarget,
+        css: stylesheetWrite?.after ?? null,
+      }));
+      const seed = engine.blockLibrarySeed();
+      const parts = engine.designSystemParts();
+      const exportedBlock = engine.library.export().find((entry) => entry.id === blockId);
+      check('theBlockSeedAndGeneratedCSSAreIndependentPayloads', () => ({
+        ok: Boolean(seed) && exportedBlock?.css === rawBlockCSS &&
+          parts.blockCSS.includes(blockMarker) && parts.blockCSS.includes(blockSelectorPrefix) &&
+          !parts.blockCSS.includes('<article'),
+        seedLength: seed.length,
+        rawBlockCSS: exportedBlock?.css ?? null,
+        generatedBlockCSS: parts.blockCSS,
+      }));
+
+      engine.setSaveBlockLibrary(false);
+      const withoutSeedPlan = await engine.previewWritePlan();
+      const withoutSeedCSSWrite = withoutSeedPlan.writes.find((w) => w.path === 'writeback.css');
+      const withoutSeedDocumentWrite = withoutSeedPlan.writes.find((w) => w.path === 'writeback.html');
+      const withoutSeedDocument = new DOMParser().parseFromString(
+        withoutSeedDocumentWrite?.after ?? '', 'text/html',
+      );
+      check('excludingTheBlockSeedDoesNotDropGeneratedCSS', () => ({
+        ok: Boolean(withoutSeedCSSWrite) && withoutSeedCSSWrite.after.includes(blockSelectorPrefix) &&
+          withoutSeedDocument.querySelectorAll('script[type="application/heo-seed"]').length === 0,
+        stylesheetHasScopedCSS: withoutSeedCSSWrite?.after.includes(blockSelectorPrefix) ?? false,
+        documentSeedCount: withoutSeedDocument.querySelectorAll('script[type="application/heo-seed"]').length,
+      }));
+      engine.setSaveBlockLibrary(true);
+
+      engine.setDesignSystemTarget(documentTarget);
+      const documentPlan = await engine.previewWritePlan();
+      const documentWrite = documentPlan.writes.find((w) => w.path === 'writeback.html');
+      const documentHTML = new DOMParser().parseFromString(documentWrite?.after ?? '', 'text/html');
+      check('theScopedBlockCSSUsesTheDesignSystemDocumentPayload', () => ({
+        ok: Boolean(documentWrite) && documentWrite.after.includes(blockSelectorPrefix) &&
+          documentHTML.querySelectorAll('script[type="application/heo-seed"]').length === 1,
+        target: engine.designSystemTarget,
+        seedCount: documentHTML.querySelectorAll('script[type="application/heo-seed"]').length,
+        html: documentWrite?.after ?? null,
+      }));
+
+      engine.setDesignSystemScope('none');
+      const nonePlan = await engine.previewWritePlan();
+      const noneDocumentWrite = nonePlan.writes.find((w) => w.path === 'writeback.html');
+      const noneExport = engine.exportHTML({ designSystemInDocument: true });
+      check('scopeNoneLeavesGeneratedBlockCSSOutOfDesignSystemWrites', () => ({
+        ok: engine.designSystemParts().blockCSS === '' &&
+          !noneDocumentWrite?.after.includes(blockSelectorPrefix) &&
+          !noneExport.includes(blockSelectorPrefix),
+        generatedBlockCSS: engine.designSystemParts().blockCSS,
+        documentHasScopedCSS: noneDocumentWrite?.after.includes(blockSelectorPrefix) ?? false,
+        exportHasScopedCSS: noneExport.includes(blockSelectorPrefix),
+      }));
+
+      engine.setDesignSystemScope('all');
+      engine.setDesignSystemTarget(stylesheetTarget);
       const plan = await engine.previewWritePlan();
       const paths = plan.writes.map((w) => w.path).sort();
       check('thePlanNamesEveryFileItWillTouch', () => paths);
@@ -260,6 +357,8 @@
       check('savingTwiceWritesNothingTheSecondTime', () => again.writes.map((w) => w.path));
       check('andDoesNotStackASecondDesignSystemBlock', () =>
         project.files.get('writeback.css').split('heo:design-system start').length - 1);
+      check('andDoesNotStackASecondScopedBlockStyle', () =>
+        project.files.get('writeback.css').split(blockMarker).length - 1);
       // The regression this guards: the export's inline-<style> reconciliation is built
       // from what is applied, not what is pending. Built from the pending set it would
       // be empty here, and the document write would put the stale colour back.
