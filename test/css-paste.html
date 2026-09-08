@@ -307,6 +307,50 @@ color: rebeccapurple;`;
       await applyPaste();
       await openPaste({ context: 'rule', element: ruleTarget, selector: newSelector },
         'margin: 3px; color: rgb(78, 90, 12);');
+      const selectorField = () => dialogRoot()?.querySelector('heo-selector-field');
+      const selectorInput = () => selectorField()?.shadowRoot?.querySelector('input');
+      const selectorQuery = selectorInput();
+      selectorQuery.value = '#rule';
+      selectorQuery.dispatchEvent(new Event('input', {
+        bubbles: true,
+        composed: true,
+      }));
+      await frames();
+      check('theRuleDestinationUsesTheSharedSelectorAutocomplete', () => {
+        const field = selectorField();
+        const option = Array.from(field?.shadowRoot?.querySelectorAll('.option') ?? [])
+          .find((element) => element.querySelector('.name')?.textContent?.trim() === newSelector);
+        const metadata = option?.querySelector('.meta')?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+        return {
+          ok: field?.tagName === 'HEO-SELECTOR-FIELD' &&
+            Boolean(field?.shadowRoot?.querySelector('.popup')) &&
+            option?.querySelector('.name')?.textContent?.trim() === newSelector &&
+            /2 rules · 1×/.test(metadata),
+          fieldTag: field?.tagName ?? null,
+          popupOpen: Boolean(field?.shadowRoot?.querySelector('.popup')),
+          suggestion: option?.querySelector('.name')?.textContent?.trim() ?? null,
+          metadata,
+        };
+      });
+      const existingSelectorOption = Array.from(
+        selectorField()?.shadowRoot?.querySelectorAll('.option') ?? [],
+      ).find((element) => element.querySelector('.name')?.textContent?.trim() === newSelector);
+      existingSelectorOption?.dispatchEvent(new MouseEvent('click', {
+        bubbles: true,
+        composed: true,
+      }));
+      await frames();
+      check('choosingTheRuleSuggestionMakesTheExistingUpsertExplicit', () => {
+        const open = engine.store.value.cssPaste;
+        const destinationText = dialogRoot()?.querySelector('.target')?.textContent
+          ?.replace(/\s+/g, ' ')
+          .trim() ?? '';
+        return {
+          ok: open?.selector === newSelector && /Upserts existing/.test(destinationText),
+          selector: open?.selector ?? null,
+          destinationText,
+        };
+      });
       await applyPaste();
       check('aCSSRuleIsCreatedAndThenUpsertedInItsRegistry', () => {
         const entry = engine.rules.get(newSelector);
@@ -318,6 +362,43 @@ color: rebeccapurple;`;
             getComputedStyle(ruleTarget).display === 'block',
           rule: entry ?? null,
           computedDisplay: getComputedStyle(ruleTarget).display,
+        };
+      });
+
+      /* The CSS RULES section must keep its body after the section opening tag is
+       * rendered. This expands the section and one rule so an empty-body regression
+       * cannot pass by finding only the heading. */
+      api.select(target);
+      api.openPanel('styles');
+      await frames();
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      const stylesPanel = () => document.querySelector('html-editor-overlay > heo-overlay')
+        ?.shadowRoot?.querySelector('heo-dock')
+        ?.shadowRoot?.querySelector('heo-styles-panel');
+      const cssRulesSection = () => Array.from(
+        stylesPanel()?.shadowRoot?.querySelectorAll('heo-section') ?? [],
+      ).find((section) => section.heading === 'CSS rules');
+      const section = cssRulesSection();
+      if (section && !section.open) section.shadowRoot?.querySelector('.head')?.click();
+      await frames();
+      const targetRuleHeader = Array.from(section?.querySelectorAll('.cls > header') ?? [])
+        .find((header) => header.querySelector('.n')?.textContent?.trim() === '#target');
+      if (targetRuleHeader?.getAttribute('aria-expanded') !== 'true') targetRuleHeader?.click();
+      await frames();
+      check('theStylesCSSRulesSectionRestoresItsRenderedRuleContent', () => {
+        const currentSection = cssRulesSection();
+        const selectors = Array.from(currentSection?.querySelectorAll('.cls .n') ?? [])
+          .map((element) => element.textContent?.trim());
+        const properties = Array.from(currentSection?.querySelectorAll('.cls .decl .p') ?? [])
+          .map((element) => element.textContent?.trim());
+        return {
+          ok: currentSection?.open === true &&
+            selectors.includes('#target') &&
+            properties.includes('color') &&
+            properties.includes('margin'),
+          sectionOpen: currentSection?.open ?? false,
+          selectors,
+          properties,
         };
       });
 

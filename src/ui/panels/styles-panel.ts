@@ -1069,6 +1069,7 @@ export class HeoStylesPanel extends HeoElement {
       ?open=${filtering ? true : sectionOpen('cssrules', all.length > 0)}
       @section-toggle=${(event: CustomEvent<{ open: boolean }>) =>
         this.#remember('cssrules', event.detail.open)}
+    >
       ${!filtering
         ? html`<button
             class="btn sm"

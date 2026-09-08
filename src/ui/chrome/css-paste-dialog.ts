@@ -15,6 +15,7 @@ import { classSuggestions } from '../suggestions.js';
 import { baseStyles, surfaceStyles } from '../theme.js';
 import '../controls/code-editor.js';
 import '../controls/segmented.js';
+import '../controls/selector-field.js';
 import '../controls/value-field.js';
 
 /**
@@ -466,6 +467,8 @@ export class HeoCssPasteDialog extends HeoElement {
     const destination = open.destination === 'inline' && !hasElement ? 'class' : open.destination;
     const normalizedClass = normalizeClassName(open.className);
     const existingClass = normalizedClass ? this.editor.classes.get(normalizedClass) : null;
+    const normalizedSelector = safeSelector(open.selector);
+    const existingRule = normalizedSelector ? this.editor.rules.get(normalizedSelector) : null;
 
     return html`<section class="destination">
       <span class="eyebrow">Where should it live?</span>
@@ -517,23 +520,26 @@ export class HeoCssPasteDialog extends HeoElement {
       ${destination === 'rule'
         ? html`<div class="fields">
               <div class="field full">
-                <label for="heo-css-paste-selector">Selector</label>
-                <input
-                  id="heo-css-paste-selector"
-                  class="input mono"
-                  type="text"
-                  spellcheck="false"
+                <label>Selector</label>
+                <heo-selector-field
                   .value=${open.selector}
-                  placeholder=".card, h2 > p, a:hover"
-                  @input=${(event: Event) =>
-            this.editor.updateCssPaste({ selector: (event.target as HTMLInputElement).value })}
-                />
+                  placeholder="choose or create a selector"
+                  .declaredCountFor=${(selector: string) =>
+            Object.values(this.editor.rules.get(selector)?.declarations ?? {})
+              .filter((value) => value.trim()).length}
+                  @selector-input=${(event: CustomEvent<{ value: string }>) =>
+            this.editor.updateCssPaste({ selector: event.detail.value })}
+                  @selector-submit=${(event: CustomEvent<{ value: string }>) =>
+            this.editor.updateCssPaste({ selector: event.detail.value })}
+                ></heo-selector-field>
               </div>
               <div class="target field full">
                 ${icon('code', 12)}
                 ${this.#isLiveRule(open)
             ? html`Edits the page's existing rule and records the source location for writeback.`
-            : html`Creates or upserts an editor-owned rule in the managed CSS.`}
+            : existingRule
+              ? html`Upserts existing <code>${normalizedSelector}</code> (${Object.values(existingRule.declarations).filter((value) => value.trim()).length} declarations).`
+              : html`Creates a new editor-owned rule for <code>${normalizedSelector || 'the selector you choose'}</code>.`}
               </div>
             </div>`
         : nothing}
