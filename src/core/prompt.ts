@@ -400,6 +400,9 @@ function stepsFor(record: ChangeRecord, blocks: Block[]): string[] {
       const template = detail.html
         ? block(blocks, 'html', `${detail.block ?? record.target} template`, detail.html)
         : null;
+      const styles = detail.css?.trim()
+        ? block(blocks, 'css', `${detail.block ?? record.target} styles`, detail.css)
+        : null;
       const props = detail.props ? `, taking ${detail.props}` : '';
       return [
         `${sentence(record.summary)}${props}.`,
@@ -408,6 +411,7 @@ function stepsFor(record: ChangeRecord, blocks: Block[]): string[] {
             `Its markup is ${template}. In a codebase this belongs as a component rather than as repeated markup; the ${code('{{name}}')} placeholders are its parameters.`,
           ]
           : []),
+        ...(styles ? [`Its styles are ${styles}.`] : []),
       ];
     }
 

@@ -375,6 +375,10 @@ export class HeoSelectorField extends LitElement {
   @property({ type: Boolean }) clearable = false;
   /** Optional count of non-empty declarations already registered for a selector. */
   @property({ attribute: false }) declaredCountFor?: (selector: string) => number;
+  /** Restrict matching and completion to a detached block markup root. */
+  @property({ attribute: false }) matchRoot?: ParentNode;
+  /** Supply a vocabulary explicitly when the host already built one for the match root. */
+  @property({ attribute: false }) vocabulary?: SelectorVocabulary;
   /**
    * Paint an outline over what the selector matches while this field has focus.
    *
@@ -441,7 +445,10 @@ export class HeoSelectorField extends LitElement {
      * draft rather than being handed them; the draft is private state, so `#openList` and each
      * committed value are the invalidation points instead.
      */
-    if (changed.has('value')) this.#placer.invalidate();
+    if (changed.has('value') || changed.has('matchRoot') || changed.has('vocabulary')) {
+      this.#placer.invalidate();
+      this.#vocabulary = null;
+    }
     // An external write wins unless the user is mid-edit, matching `heo-value-field`.
     // `:focus-within` is the question that can be answered from inside a shadow root;
     // `document.activeElement` reports the outermost host and is always this element.
@@ -464,6 +471,7 @@ export class HeoSelectorField extends LitElement {
       this.#position();
     }
     if (this.peek) paintPeek(this, this.matches(':focus-within') ? this.draft : '');
+    else clearPeek(this);
   }
 
   /* ---------------------------------------------------------------------- */
@@ -475,14 +483,14 @@ export class HeoSelectorField extends LitElement {
   }
 
   private get completions(): SelectorCompletion[] {
-    this.#vocabulary ??= selectorVocabulary();
-    return completeSelector(this.draft, this.#vocabulary);
+    this.#vocabulary ??= this.vocabulary ?? selectorVocabulary(this.matchRoot ?? document);
+    return completeSelector(this.draft, this.#vocabulary, { root: this.matchRoot ?? document });
   }
 
   override render(): TemplateResult {
     const problem = selectorProblem(this.draft);
     const trimmed = this.draft.trim();
-    const matches = problem || !trimmed ? 0 : countMatches(trimmed);
+    const matches = problem || !trimmed ? 0 : countMatches(trimmed, this.matchRoot ?? document);
     const submittable = Boolean(trimmed) && !problem;
 
     return html`

@@ -40,6 +40,10 @@
       <h2>A card</h2>
       <p id="copy">Its padding comes from a file.</p>
     </div>
+    <!-- This node was in the saved page before the editor mounted; its template arrives via seed. -->
+    <article class="restored-writeback" data-heo-block="restored-writeback">
+      <p class="restored-copy">Words survive restoration.</p>
+    </article>
   </main>
 
   <pre id="out">pending</pre>
@@ -105,9 +109,63 @@
         'writeback.html': html,
       });
 
-      const api = mount({});
+      const api = mount({
+        seed: JSON.stringify({
+          name: 'Restored writeback system',
+          blocks: [{
+            id: 'restored-writeback',
+            name: 'Restored writeback block',
+            kind: 'component',
+            html: '<article class="restored-writeback"><p class="restored-copy">Words survive restoration.</p></article>',
+            css: '',
+            origin: 'user',
+          }],
+        }),
+      });
       const engine = api.engine;
+      await engine.whenReady();
       check('theExternalScriptDidRun', () => document.documentElement.dataset.writebackScriptRan);
+
+      /*
+       * A page can carry a linked block before the editor mounts. Its data attribute survives in
+       * the file, but the CSS slot and the per-node acknowledgment live only in memory, so this
+       * is the path that must hydrate rather than rebuild the authored node.
+       */
+      const restoredNode = document.querySelector('[data-heo-block="restored-writeback"]');
+      const restoredTemplate = engine.library.get('restored-writeback');
+      const restoredCSS = '.restored-writeback { border: 2px solid rebeccapurple; }';
+      const restoredText = restoredNode?.textContent ?? null;
+      const restoredUpdated = restoredTemplate
+        ? engine.library.upsert({ ...restoredTemplate, css: restoredCSS })
+        : null;
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      const restoredMarker = '/* block: restored-writeback */';
+      check('aSeedRestoredBlockReceivesLaterCSSWithoutRebuilding', () => ({
+        ok: Boolean(restoredUpdated && restoredNode) &&
+          engine.library.css.includes(restoredMarker) &&
+          restoredNode?.getAttribute('data-heo-block') === 'restored-writeback' &&
+          (restoredNode ? getComputedStyle(restoredNode).borderTopWidth : null) === '2px' &&
+          (restoredNode ? engine.blockDrift(restoredNode) : false),
+        generated: engine.library.css,
+        sameNode: Boolean(restoredNode),
+        border: restoredNode ? getComputedStyle(restoredNode).borderTopWidth : null,
+        drifted: restoredNode ? engine.blockDrift(restoredNode) : false,
+      }));
+      const restoredBeforeSync = restoredNode;
+      const restoredAcknowledged = restoredNode
+        ? await engine.syncBlockInstance(restoredNode)
+        : 0;
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      check('syncingTheRestoredBlockAcknowledgesCSSOnTheSameNode', () => ({
+        ok: restoredAcknowledged === 1 &&
+          restoredNode === restoredBeforeSync &&
+          restoredNode?.textContent === restoredText &&
+          (restoredNode ? !engine.blockDrift(restoredNode) : false),
+        acknowledged: restoredAcknowledged,
+        sameNode: restoredNode === restoredBeforeSync,
+        text: restoredNode?.textContent ?? null,
+        drifted: restoredNode ? engine.blockDrift(restoredNode) : false,
+      }));
 
       /* ------------------------------------------------------------------ */
       /* Edits                                                              */
@@ -227,6 +285,12 @@
           stylesheetWrite.after.includes(blockSelectorPrefix) &&
           stylesheetWrite.after.includes('color: rgb(18, 52, 86);'),
         target: engine.designSystemTarget,
+        css: stylesheetWrite?.after ?? null,
+      }));
+      check('theSeedRestoredBlockCSSReachesTheExternalStylesheet', () => ({
+        ok: Boolean(stylesheetWrite) && stylesheetWrite.after.includes(restoredMarker) &&
+          stylesheetWrite.after.includes('.restored-writeback { border: 2px solid rebeccapurple; }'),
+        marker: restoredMarker,
         css: stylesheetWrite?.after ?? null,
       }));
       const seed = engine.blockLibrarySeed();

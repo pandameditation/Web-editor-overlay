@@ -390,6 +390,24 @@ test('a stylesheet rewrite too large to list falls back to the file', () => {
   assert.ok(text.includes('Replace the file with Code 1'), text);
 });
 
+test('a block CSS update carries its styles into the generated prompt', () => {
+  const css = '.restored-card { border: 2px solid rebeccapurple; }';
+  const text = prompt([
+    record({
+      kind: 'block',
+      target: 'Restored card',
+      group: 'block:restored-card',
+      summary: 'Acknowledge the Restored card block styles',
+      before: css,
+      after: css,
+      detail: { block: 'Restored card', css },
+    }),
+  ]);
+  assert.ok(text.includes('Its styles are Code 1.'), text);
+  assert.ok(text.includes(`**Code 1** — Restored card styles`), text);
+  assert.ok(text.includes(css), text);
+});
+
 /* -------------------------------------------------------------------------- */
 /* The design system                                                           */
 /* -------------------------------------------------------------------------- */

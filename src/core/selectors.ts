@@ -174,13 +174,15 @@ export interface SelectorTerm {
   value: string;
   /** How many elements in the page carry it. */
   count: number;
-  kind: 'tag' | 'class' | 'id';
+  kind: 'tag' | 'class' | 'id' | 'scope';
 }
 
 export interface SelectorVocabulary {
   tags: SelectorTerm[];
   classes: SelectorTerm[];
   ids: SelectorTerm[];
+  /** The encompassing element when vocabulary is built for detached block markup. */
+  scope?: SelectorTerm;
 }
 
 /**
@@ -204,7 +206,11 @@ export function selectorVocabulary(root: ParentNode = document): SelectorVocabul
     map.set(key, (map.get(key) ?? 0) + 1);
   };
 
-  for (const el of Array.from(root.querySelectorAll('*'))) {
+  const elements = root instanceof Element
+    ? [root, ...Array.from(root.querySelectorAll('*'))]
+    : Array.from(root.querySelectorAll('*'));
+
+  for (const el of elements) {
     if (!inPageContent(el)) continue;
     const tag = el.tagName.toLowerCase();
     if (!SKIPPED_TAGS.has(tag)) bump(tags, tag);
@@ -221,7 +227,21 @@ export function selectorVocabulary(root: ParentNode = document): SelectorVocabul
       .map(([value, count]) => ({ value, count, kind }))
       .sort((a, b) => b.count - a.count || a.value.localeCompare(b.value));
 
-  return { tags: rank(tags, 'tag'), classes: rank(classes, 'class'), ids: rank(ids, 'id') };
+  const scopeElements = root === document
+    ? []
+    : root instanceof Element
+      ? [root]
+      : Array.from(root.querySelectorAll('*')).filter((el) => el.parentNode === root);
+  const scope = scopeElements.length
+    ? { value: ':scope', count: scopeElements.length, kind: 'scope' as const }
+    : undefined;
+
+  return {
+    tags: rank(tags, 'tag'),
+    classes: rank(classes, 'class'),
+    ids: rank(ids, 'id'),
+    ...(scope ? { scope } : {}),
+  };
 }
 
 /**
@@ -311,12 +331,12 @@ export function completeSelector(
   const out: SelectorCompletion[] = [];
   const seen = new Set<string>();
 
-  const offer = (term: string, group: string, hint: string): void => {
+  const offer = (term: string, group: string, hint: string, label = term): void => {
     const value = normalizeSelector(`${head}${term}`);
     if (!value || seen.has(value)) return;
     if (!isValidSelector(value)) return;
     seen.add(value);
-    out.push({ value, label: term, hint, group, matches: countMatches(value, root) });
+    out.push({ value, label, hint, group, matches: countMatches(value, root) });
   };
 
   /*
@@ -341,6 +361,14 @@ export function completeSelector(
   };
 
   if (fresh) {
+    if (vocabulary.scope && (!needle || vocabulary.scope.value.toLowerCase().includes(needle))) {
+      offer(
+        vocabulary.scope.value,
+        'Block root',
+        'the encompassing block root',
+        'Block root',
+      );
+    }
     offerTerms(vocabulary.tags, head ? 'Tags inside this' : 'Tags in this page');
     offerTerms(vocabulary.classes, 'Classes in this page');
     offerTerms(vocabulary.ids, 'Ids in this page');
@@ -413,15 +441,28 @@ export function canCombine(draft: string): boolean {
 export function countMatches(selector: string, root: ParentNode = document): number {
   const text = selector.trim();
   if (!text) return 0;
+  if (text === ':scope') {
+    return scopeElements(root).filter(inPageContent).length;
+  }
   try {
-    let count = 0;
-    for (const el of Array.from(root.querySelectorAll(text))) {
-      if (inPageContent(el)) count += 1;
+    const candidates: Element[] = [];
+    if (root instanceof Element) {
+      try {
+        if (root.matches(text)) candidates.push(root);
+      } catch {
+        return 0;
+      }
     }
-    return count;
+    candidates.push(...Array.from(root.querySelectorAll(text)));
+    return candidates.filter(inPageContent).length;
   } catch {
     return 0;
   }
+}
+
+function scopeElements(root: ParentNode): Element[] {
+  if (root instanceof Element) return [root];
+  return Array.from(root.querySelectorAll('*')).filter((el) => el.parentNode === root);
 }
 
 /**

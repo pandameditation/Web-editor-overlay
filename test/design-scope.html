@@ -374,6 +374,20 @@
       const dialog = () => deepQuery('heo-save-dialog');
       const primary = () =>
         dialog()?.shadowRoot?.querySelector('footer .btn.primary');
+      check('theChangesListNamesGeneratedBlockCSSAsATokenRule', () => {
+        const rows = Array.from(dialog()?.shadowRoot?.querySelectorAll('.change') ?? []).map((row) => ({
+          kind: row.querySelector('.kind')?.textContent?.trim() ?? null,
+          summary: row.querySelector('.summary')?.textContent?.trim() ?? null,
+        }));
+        const selector = '[data-heo-block="dialog-scoped-block"]';
+        const blockCSS = rows.find((row) => row.kind === 'token-rule' && row.summary === `Add CSS rule ${selector}`);
+        return {
+          rows,
+          blockCSS,
+          // The markup remains a block change; only its generated stylesheet side effect is a rule.
+          asExpected: Boolean(blockCSS),
+        };
+      });
       // Reach the Save-as-HTML step, however this browser labels the way in.
       const htmlEntry = () =>
         Array.from(dialog()?.shadowRoot?.querySelectorAll('footer .btn') ?? []).find((el) =>

@@ -9,16 +9,22 @@ import { withParsedSheet } from './sheets.js';
  * CSS-paste inline destination cannot be used here. Matching is done against the
  * sanitised fragment and the result is written back as template HTML.
  */
+export function blockMatchRoot(source: string): DocumentFragment {
+  return sanitizeFragment(source);
+}
+
 export function applyBlockInlineRules(
   source: string,
   rules: readonly PastedCssRule[],
 ): { html: string; matched: number } {
-  const fragment = sanitizeFragment(source);
-  const elements = blockElements(fragment);
+  const fragment = blockMatchRoot(source);
+  const roots = blockRoots(fragment);
+  const elements = blockElements(fragment, roots);
   let matched = 0;
 
   for (const rule of rules) {
     const selected = elements.filter((element) => {
+      if (rule.selector.trim() === ':scope') return roots.includes(element);
       try {
         return element.matches(rule.selector);
       } catch {
@@ -138,12 +144,15 @@ function splitSelectorList(source: string): string[] {
   return parts.filter((part) => part.trim());
 }
 
-function blockElements(fragment: DocumentFragment): HTMLElement[] {
-  const roots = Array.from(fragment.children).filter(
-    (element): element is HTMLElement => element instanceof HTMLElement,
-  );
+function blockElements(fragment: DocumentFragment, roots = blockRoots(fragment)): HTMLElement[] {
   const descendants = Array.from(fragment.querySelectorAll<HTMLElement>('*'));
   return [...roots, ...descendants];
+}
+
+function blockRoots(fragment: DocumentFragment): HTMLElement[] {
+  return Array.from(fragment.children).filter(
+    (element): element is HTMLElement => element instanceof HTMLElement,
+  );
 }
 
 function serialiseFragment(fragment: DocumentFragment): string {

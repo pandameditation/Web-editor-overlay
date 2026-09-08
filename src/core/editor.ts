@@ -273,6 +273,8 @@ export interface CssPaste {
   destination: 'inline' | 'class' | 'rule' | 'block-inline' | 'block-class' | 'block-rule';
   className: string;
   selector: string;
+  /** True after the user explicitly chooses a block inline target. */
+  selectorExplicit: boolean;
   applyClass: boolean;
   append: boolean;
 }
@@ -474,6 +476,23 @@ function emptyBlockDraft(): BlockExtraction {
     applyToInstances: false,
     error: '',
   };
+}
+
+function blockStateSnapshot(block: LibraryBlock | undefined): string | undefined {
+  if (!block) return undefined;
+  return JSON.stringify({
+    id: block.id,
+    name: block.name,
+    kind: block.kind,
+    category: block.category ?? '',
+    description: block.description ?? '',
+    html: block.html,
+    css: block.css ?? '',
+    props: block.props ?? null,
+    element: block.element ?? null,
+    icon: block.icon ?? '',
+    slots: Boolean(block.slots),
+  });
 }
 
 export interface EditorState {
@@ -720,7 +739,7 @@ export class EditorEngine {
    * re-insert the very same node. A WeakMap also means a deleted element's entry
    * disappears with it.
    */
-  #instances = new WeakMap<HTMLElement, { blockId: string; values: Record<string, string> }>();
+  #instances = new WeakMap<HTMLElement, { blockId: string; values: Record<string, string>; css: string }>();
 
   /**
    * The inline value a live preview is painting over.
@@ -862,8 +881,14 @@ export class EditorEngine {
       this.tokens.onChange(() => this.#bumpRegistry()),
       this.classes.onChange(() => this.#bumpRegistry()),
       this.rules.onChange(() => this.#bumpRegistry()),
-      this.library.onChange(() => this.#bumpRegistry()),
+      this.library.onChange(() => {
+        this.#hydrateBlockInstances();
+        this.#bumpRegistry();
+      }),
     );
+    // Seeds are imported before listeners are attached, so hydrate the page once after the
+    // initial registries exist. Later imports and upserts flow through the listener above.
+    this.#hydrateBlockInstances();
 
     this.#bindPageEvents();
     this.#observePage();
@@ -2382,9 +2407,12 @@ export class EditorEngine {
         target: next.name,
         before: previous?.html,
         after: next.html,
+        markupBefore: blockStateSnapshot(previous),
+        markupAfter: blockStateSnapshot(next),
         detail: {
           block: next.name,
           html: next.html,
+          css: next.css ?? '',
           ...(next.props ? { props: Object.keys(next.props).join(', ') } : {}),
           ...(next.element?.tag ? { tag: next.element.tag } : {}),
           ...(classEntries.length ? { classes: classEntries.map(([name]) => name).join(', ') } : {}),
@@ -3075,6 +3103,7 @@ export class EditorEngine {
       return null;
     }
     try {
+      const cssBefore = this.library.css;
       const { nodes } = await this.library.instantiate(block, props);
       if (!nodes.length) {
         this.notify('That block produced no markup.', 'error');
@@ -3088,6 +3117,27 @@ export class EditorEngine {
         replacing ? `Replace with ${block.name}` : `Insert ${block.name}`,
       );
       if (!command) return null;
+
+      /*
+       * Instantiating a block can add one new managed stylesheet segment. Keep that CSS side effect
+       * in the same undo step as the insertion, but expose it with the existing token-rule
+       * vocabulary so the Save modal describes it alongside authored CSS rules.
+       */
+      const generatedBlockCSS = this.library.css.startsWith(cssBefore)
+        ? this.library.css.slice(cssBefore.length).trim()
+        : '';
+      if (generatedBlockCSS) {
+        const selector = `[data-heo-block="${block.id}"]`;
+        command.extraRecords = [{
+          id: nextChangeId(),
+          kind: 'token-rule',
+          summary: `Add CSS rule ${selector}`,
+          target: selector,
+          after: generatedBlockCSS,
+          detail: { selector, block: block.name },
+          at: Date.now(),
+        }];
+      }
       this.history.commit(command);
       if (block.element?.tag) this.#injectedElements.add(block.element.tag);
       // Remember what the block was configured with, so the props panel can offer
@@ -3173,6 +3223,33 @@ export class EditorEngine {
    * section never appeared, and there was nothing to sync it back to. An instance with no
    * values is a perfectly ordinary thing; it is `{}`, not absent.
    */
+  /**
+   * Restore the non-serialized bookkeeping for blocks that arrived with the page or a seed.
+   *
+   * The data attribute makes an instance discoverable, but the WeakMap carries the CSS version
+   * that sync uses to tell an old rendered page from an acknowledged one. Register both without
+   * rebuilding markup: the page already owns these nodes and their text.
+   */
+  #hydrateBlockInstances(): void {
+    for (const node of Array.from(document.querySelectorAll(`[${BLOCK_ATTR}]`))) {
+      if (!(node instanceof HTMLElement) || !node.isConnected || node.closest(`[${IGNORE_ATTR}]`)) {
+        continue;
+      }
+      const id = node.getAttribute(BLOCK_ATTR);
+      if (!id) continue;
+      const block = this.library.get(id);
+      if (!block) continue;
+
+      this.library.ensureCSS(block);
+      if (this.#instances.has(node)) continue;
+      this.#instances.set(node, {
+        blockId: block.id,
+        values: this.library.defaultProps(block),
+        css: block.css ?? '',
+      });
+    }
+  }
+
   #linkInstance(
     el: HTMLElement,
     block: LibraryBlock,
@@ -3183,7 +3260,7 @@ export class EditorEngine {
       values[name] = String(props[name] ?? spec.default ?? '');
     }
     el.setAttribute(BLOCK_ATTR, block.id);
-    this.#instances.set(el, { blockId: block.id, values });
+    this.#instances.set(el, { blockId: block.id, values, css: block.css ?? '' });
   }
 
   /**
@@ -3292,11 +3369,12 @@ export class EditorEngine {
    * compared; serializing an upgraded element would compare against whatever it rendered into
    * itself and report every one of them as stale.
    */
-  blockDrift(el: HTMLElement | null): boolean {
-    const instance = this.blockInstance(el);
-    if (!el || !instance) return false;
-    const { block, values } = instance;
-
+  /** Whether the live markup would change if this instance were rebuilt. */
+  #blockMarkupDrift(
+    el: HTMLElement,
+    block: LibraryBlock,
+    values: Record<string, string>,
+  ): boolean {
     const tag = block.element?.tag;
     if (tag) {
       if (el.tagName.toLowerCase() !== tag) return true;
@@ -3310,6 +3388,26 @@ export class EditorEngine {
     // the alternative is offering an update that would replace the element with nothing.
     if (!merged) return false;
     return !sameStructure(cleanMarkup(el), cleanMarkup(merged));
+  }
+
+  /** Whether this live instance has acknowledged the block's latest CSS. */
+  #blockCssDrift(el: HTMLElement, block: LibraryBlock): boolean {
+    const tracked = this.#instances.get(el);
+    return Boolean(tracked && tracked.blockId === block.id && tracked.css !== (block.css ?? ''));
+  }
+
+  /**
+   * Whether updating this instance from its block would actually change it.
+   *
+   * Markup drift still controls whether a node is rebuilt. CSS drift is tracked separately:
+   * the managed block stylesheet is global, so acknowledging a CSS-only update must not replace
+   * the live element and lose text, attributes, or authored state.
+   */
+  blockDrift(el: HTMLElement | null): boolean {
+    const instance = this.blockInstance(el);
+    if (!el || !instance) return false;
+    return this.#blockMarkupDrift(el, instance.block, instance.values) ||
+      this.#blockCssDrift(el, instance.block);
   }
 
   /**
@@ -3354,17 +3452,29 @@ export class EditorEngine {
     const candidates = (only ?? this.blockInstances(blockId)).filter(
       (el) => el.isConnected && isMutable(el) && this.blockDrift(el),
     );
+    const markupCandidates = candidates.filter((el) => {
+      const instance = this.blockInstance(el);
+      return Boolean(
+        instance && this.#blockMarkupDrift(el, instance.block, instance.values),
+      );
+    });
+    const cssOnlyCandidates = candidates.filter((el) => {
+      const instance = this.blockInstance(el);
+      return Boolean(
+        instance &&
+        !this.#blockMarkupDrift(el, instance.block, instance.values) &&
+        this.#blockCssDrift(el, instance.block),
+      );
+    });
     /*
-     * An instance inside another instance is left to its parent.
-     *
-     * Blocks nest — a card template can contain a button block — and replacing the outer one
-     * detaches the inner one mid-operation, so the inner command would be swapping nodes that
-     * are no longer in the page. The outer rebuild carries it anyway, from the template.
+     * An instance inside another instance is left to its parent for markup changes.
+     * CSS acknowledgement is different: it does not detach anything, so nested instances can
+     * all acknowledge the same managed stylesheet without being lost behind an outer rebuild.
      */
-    const targets = candidates.filter(
-      (el) => !candidates.some((other) => other !== el && other.contains(el)),
+    const markupTargets = markupCandidates.filter(
+      (el) => !markupCandidates.some((other) => other !== el && other.contains(el)),
     );
-    if (!targets.length) {
+    if (!markupTargets.length && !cssOnlyCandidates.length) {
       const one = only?.[0];
       this.notify(
         one
@@ -3375,6 +3485,11 @@ export class EditorEngine {
       return 0;
     }
 
+    const cssUpdates = candidates.flatMap((el) => {
+      const tracked = this.#instances.get(el);
+      if (!tracked || tracked.blockId !== block.id || tracked.css === (block.css ?? '')) return [];
+      return [{ element: el, before: tracked.css, after: block.css ?? '' }];
+    });
     const parts: Array<{
       command: Command;
       node: HTMLElement;
@@ -3382,7 +3497,7 @@ export class EditorEngine {
       values: Record<string, string>;
     }> = [];
 
-    for (const el of targets) {
+    for (const el of markupTargets) {
       const instance = this.blockInstance(el);
       if (!instance) continue;
       let nodes: HTMLElement[];
@@ -3429,31 +3544,51 @@ export class EditorEngine {
       if (!command) continue;
       parts.push({ command, node: root, replaced: el, values: instance.values });
     }
-    if (!parts.length) return 0;
+    if (!parts.length && !cssUpdates.length) return 0;
 
     const selected = this.store.value.selected;
     const reselect = parts.find((part) => part.replaced === selected)?.node ?? null;
+    const updated = parts.length + cssOnlyCandidates.length;
+    const cssRecord = !parts.length
+      ? {
+        id: nextChangeId(),
+        kind: 'block' as const,
+        summary: `Acknowledge the ${block.name} block styles`,
+        target: block.name,
+        before: block.css ?? '',
+        after: block.css ?? '',
+        detail: { block: block.name, css: block.css ?? '' },
+        at: Date.now(),
+      }
+      : null;
 
     this.history.commit({
-      label: parts.length === 1 ? `Update ${block.name}` : `Update ${parts.length} × ${block.name}`,
-      /*
-       * A subject only when there is one element to have one.
-       *
-       * It is what lets successive edits to the same thing collapse to their net difference,
-       * which is right for one element synced twice and wrong for a fan-out — there the
-       * reduction would report the first element and drop the rest.
-       */
-      subject: parts.length === 1 ? parts[0].command.subject : undefined,
-      record: parts[0].command.record,
-      extraRecords: parts.length > 1 ? parts.slice(1).map((part) => part.command.record) : undefined,
+      label: parts.length
+        ? parts.length === 1
+          ? `Update ${block.name}`
+          : `Update ${parts.length} × ${block.name}`
+        : `Update ${block.name} styles`,
+      subject: parts.length === 1
+        ? parts[0].command.subject
+        : !parts.length
+          ? `block-css-sync:${block.id}`
+          : undefined,
+      record: parts[0]?.command.record ?? cssRecord!,
+      extraRecords: parts.length > 1
+        ? parts.slice(1).map((part) => part.command.record)
+        : undefined,
       apply: () => {
         for (const part of parts) part.command.apply();
+        for (const update of cssUpdates) {
+          const tracked = this.#instances.get(update.element);
+          if (tracked) this.#instances.set(update.element, { ...tracked, css: update.after });
+        }
       },
       revert: () => {
         /*
          * Newest first, and each one guarded.
          *
-         * `History.undo` logs a throw and advances the stack regardless, so an element that
+         * History.undo logs a throw and advances the stack regardless, so an element that
          * cannot be put back — its parent has since been deleted, say — must not take the rest
          * of the batch down with it and leave half the page updated with no way back.
          */
@@ -3464,21 +3599,29 @@ export class EditorEngine {
             console.error('[html-editor-overlay] block sync could not be reverted', error);
           }
         }
+        for (const update of [...cssUpdates].reverse()) {
+          const tracked = this.#instances.get(update.element);
+          if (tracked) this.#instances.set(update.element, { ...tracked, css: update.before });
+        }
       },
     });
 
     for (const part of parts) {
-      this.#instances.set(part.node, { blockId: block.id, values: { ...part.values } });
+      this.#instances.set(part.node, {
+        blockId: block.id,
+        values: { ...part.values },
+        css: block.css ?? '',
+      });
     }
     if (block.element?.tag) this.#injectedElements.add(block.element.tag);
     if (reselect) this.select(reselect);
     this.#bumpRevision();
 
-    this.notify(this.#syncToast(block, parts.length), 'success', {
+    this.notify(this.#syncToast(block, updated), 'success', {
       label: 'Undo',
       run: () => this.undo(),
     });
-    return parts.length;
+    return updated;
   }
 
   /**
@@ -3519,7 +3662,11 @@ export class EditorEngine {
       // Written back through the link rather than onto a map entry that may not exist: an
       // element whose node was replaced under it resolves through the attribute, and reaching
       // for `#instances.get` there found nothing and silently dropped the edit.
-      this.#instances.set(el, { blockId: block.id, values });
+      this.#instances.set(el, {
+        blockId: block.id,
+        values,
+        css: this.#instances.get(el)?.css ?? block.css ?? '',
+      });
       this.setAttribute(name, value || null, el);
       return;
     }
@@ -3548,7 +3695,11 @@ export class EditorEngine {
       const command = replaceElement(el, replacement.outerHTML);
       if (!command) return;
       this.history.commit(command.command);
-      this.#instances.set(command.node, { blockId: block.id, values });
+      this.#instances.set(command.node, {
+        blockId: block.id,
+        values,
+        css: this.#instances.get(el)?.css ?? block.css ?? '',
+      });
       this.select(command.node);
       this.#bumpRevision();
     } catch (error) {
@@ -3627,7 +3778,8 @@ export class EditorEngine {
             : 'class');
     const suggestedClass = currentClass ?? this.classes.uniqueName('pasted-style');
     const suggestedSelector =
-      currentSelector || this.suggestedRuleSelector(element) || `.${suggestedClass}`;
+      currentSelector ||
+      (options.context === 'block' ? ':scope' : this.suggestedRuleSelector(element) || `.${suggestedClass}`);
 
     this.endTextEdit(true);
     this.store.patch({
@@ -3642,6 +3794,7 @@ export class EditorEngine {
         destination,
         className: suggestedClass,
         selector: suggestedSelector,
+        selectorExplicit: Boolean(currentSelector),
         applyClass: options.context === 'class' && Boolean(element),
         append: true,
       },
@@ -3854,10 +4007,24 @@ export class EditorEngine {
   }
 
   /** Apply selector-based inline declarations to the block template, without committing it yet. */
-  applyBlockInlineCssPaste(parsed: ParsedCssPaste): number {
+  applyBlockInlineCssPaste(parsed: ParsedCssPaste, selector = ''): number {
     const pending = this.store.value.extraction;
-    if (!pending || pending.mode !== 'block' || !parsed.rules.length) return 0;
-    const result = applyBlockInlineRules(pending.html, parsed.rules);
+    if (!pending || pending.mode !== 'block' || !pastedDeclarationCount(parsed)) return 0;
+
+    const target = safeSelector(selector) ||
+      (parsed.rules.length === 1 ? safeSelector(parsed.rules[0].selector) : '');
+    const rules = parsed.rules.length === 1
+      ? target
+        ? [{ selector: target, declarations: parsed.rules[0].declarations }]
+        : []
+      : parsed.rules.length
+        ? parsed.rules
+        : target
+          ? [{ selector: target, declarations: parsed.declarations }]
+          : [];
+    if (!rules.length) return 0;
+
+    const result = applyBlockInlineRules(pending.html, rules);
     if (!result.matched) return 0;
     this.updateExtraction({ html: result.html });
     return result.matched;

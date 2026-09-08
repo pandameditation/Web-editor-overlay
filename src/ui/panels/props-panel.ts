@@ -436,7 +436,7 @@ export class HeoPropsPanel extends HeoElement {
           type="button"
           ?disabled=${!drifted}
           title=${drifted
-        ? `Update this element's markup from ${instance.block.name} as the library now holds it, keeping the text written here.`
+        ? `Update this element from ${instance.block.name}, bringing its latest markup and styles while keeping the text written here.`
         : `Nothing to bring across: this already matches ${instance.block.name}.`}
           @click=${() => void this.editor.syncBlockInstance(el)}
         >
@@ -445,8 +445,8 @@ export class HeoPropsPanel extends HeoElement {
       </div>
       <p class="hint" style="margin:0 0 9px">
         ${drifted
-        ? html`The block has changed in the library. Updating brings its markup across and
-            keeps the text written here.`
+        ? html`The block has changed in the library. Updating brings its latest markup and styles
+            across while keeping the text written here.`
         : isElement
           ? 'Values are written as attributes, so the component re-renders itself.'
           : 'Changing a value re-renders the block from its template, replacing this element.'}

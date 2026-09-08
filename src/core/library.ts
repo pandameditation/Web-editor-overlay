@@ -147,6 +147,16 @@ export class BlockLibrary {
   }
 
   /**
+   * Ensure this block has a managed stylesheet slot without rendering an instance.
+   *
+   * Restored pages already contain the markup, so calling `instantiate` would create a duplicate
+   * tree. Hydration needs the CSS side effect alone, including an empty slot for a later upsert.
+   */
+  ensureCSS(block: LibraryBlock): void {
+    this.#applyCSS(block);
+  }
+
+  /**
    * The markup this block would produce for these values, without producing it.
    *
    * `instantiate` is what builds an instance, and it has side effects by design — it defines
@@ -221,8 +231,10 @@ export class BlockLibrary {
   }
 
   #applyCSS(block: LibraryBlock): void {
-    if (!block.css || this.#injectedCSS.has(block.id)) return;
-    this.#injectedCSS.set(block.id, block.css);
+    if (this.#injectedCSS.has(block.id)) return;
+    // Keep an empty slot too: a block first used without CSS can gain styles later,
+    // and the next upsert must then have a managed slot to rewrite.
+    this.#injectedCSS.set(block.id, block.css ?? '');
     this.#writeCSS();
   }
 

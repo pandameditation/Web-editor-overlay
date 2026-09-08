@@ -217,7 +217,109 @@
         results.removalUndone.linkBack && results.removalUndone.flagCleared;
 
       /* ------------------------------------------------------------------ *
-       * 5. A library change with nowhere to go is explained, not dropped.
+       * 5. CSS-only block edits are real library changes and can be acknowledged
+       * by existing instances without rebuilding their authored DOM.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'css-only block update';
+      const cssBlock = {
+        id: 'css-only-block',
+        name: 'CSS-only block',
+        kind: 'component',
+        html: '<section class="css-only"><p>Keep these words.</p></section>',
+        css: '',
+        origin: 'user',
+      };
+      engine.upsertBlock(cssBlock);
+      const cssInstance = await engine.insertBlock(cssBlock, {}, {
+        reference: card,
+        position: 'after',
+      });
+      await frames();
+      // Isolate the CSS edit from authoring/insertion records so the assertion measures
+      // the update's own before/after state rather than the block's initial creation.
+      engine.history.markSaved();
+      const cssTemplate = engine.library.get('css-only-block');
+      const cssWithStyle = {
+        ...cssTemplate,
+        css: '.css-only { border: 3px solid rgb(12, 34, 56); }',
+      };
+      engine.upsertBlock(cssWithStyle);
+      await frames();
+      const cssRecord = engine.records.find(
+        (record) => record.kind === 'block' && record.target === 'CSS-only block',
+      );
+      const beforeSyncNode = cssInstance;
+      const beforeSyncText = cssInstance?.textContent;
+      const beforeSyncBorder = cssInstance ? getComputedStyle(cssInstance).borderTopWidth : null;
+      results.cssOnlyUpdate = {
+        inserted: Boolean(cssInstance),
+        stylesheetUpdatedImmediately: beforeSyncBorder === '3px',
+        recordKeepsACSSOnlyBlockDiff: Boolean(cssRecord) &&
+          cssRecord?.before === cssRecord?.after &&
+          cssRecord?.detail?.css === cssWithStyle.css,
+        driftedBeforeAcknowledgement: cssInstance ? engine.blockDrift(cssInstance) : false,
+      };
+      results.cssOnlyUpdate.ok =
+        results.cssOnlyUpdate.inserted &&
+        results.cssOnlyUpdate.stylesheetUpdatedImmediately &&
+        results.cssOnlyUpdate.recordKeepsACSSOnlyBlockDiff &&
+        results.cssOnlyUpdate.driftedBeforeAcknowledgement;
+
+      const acknowledged = cssInstance ? await engine.syncBlockInstance(cssInstance) : 0;
+      await frames();
+      results.cssOnlySync = {
+        acknowledged,
+        keptTheSameNode: cssInstance === beforeSyncNode,
+        keptAuthoredText: cssInstance?.textContent === beforeSyncText,
+        driftCleared: cssInstance ? !engine.blockDrift(cssInstance) : false,
+        computedBorder: cssInstance ? getComputedStyle(cssInstance).borderTopWidth : null,
+        cssRecordStillPending: engine.records.some(
+          (record) => record.kind === 'block' && record.target === 'CSS-only block',
+        ),
+      };
+      results.cssOnlySync.ok =
+        acknowledged === 1 &&
+        results.cssOnlySync.keptTheSameNode &&
+        results.cssOnlySync.keptAuthoredText &&
+        results.cssOnlySync.driftCleared &&
+        results.cssOnlySync.computedBorder === '3px' &&
+        results.cssOnlySync.cssRecordStillPending;
+
+      engine.undo();
+      await frames();
+      const driftAfterSyncUndo = cssInstance ? engine.blockDrift(cssInstance) : false;
+      engine.undo();
+      await frames();
+      results.cssOnlyUndo = {
+        syncUndoRestoresPendingState: driftAfterSyncUndo,
+        libraryUndoRemovesTheManagedStyle: cssInstance
+          ? getComputedStyle(cssInstance).borderTopWidth === '0px'
+          : false,
+        sameNodeAfterUndo: cssInstance === beforeSyncNode,
+        textAfterUndo: cssInstance?.textContent ?? null,
+      };
+      results.cssOnlyUndo.ok =
+        results.cssOnlyUndo.syncUndoRestoresPendingState &&
+        results.cssOnlyUndo.libraryUndoRemovesTheManagedStyle &&
+        results.cssOnlyUndo.sameNodeAfterUndo &&
+        results.cssOnlyUndo.textAfterUndo === beforeSyncText;
+
+      engine.redo();
+      await frames();
+      engine.redo();
+      await frames();
+      results.cssOnlyRedo = {
+        styleReturns: cssInstance ? getComputedStyle(cssInstance).borderTopWidth === '3px' : false,
+        driftClearedAgain: cssInstance ? !engine.blockDrift(cssInstance) : false,
+        sameNodeAfterRedo: cssInstance === beforeSyncNode,
+      };
+      results.cssOnlyRedo.ok =
+        results.cssOnlyRedo.styleReturns &&
+        results.cssOnlyRedo.driftClearedAgain &&
+        results.cssOnlyRedo.sameNodeAfterRedo;
+
+      /* ------------------------------------------------------------------ *
+       * 6. A library change with nowhere to go is explained, not dropped.
        * ------------------------------------------------------------------ */
       progress.textContent = 'unwritable accounting';
       engine.setSaveBlockLibrary(false);

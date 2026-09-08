@@ -507,6 +507,117 @@ color: rebeccapurple;`;
           spanColor: span?.getAttribute('style') ?? null,
         };
       });
+
+      await openPaste({ context: 'block' }, 'padding: 6px; border: 1px solid red;');
+      engine.updateCssPaste({ destination: 'block-inline' });
+      await frames();
+      const blockInlineField = () => dialogRoot()?.querySelector('.destination heo-selector-field');
+      blockInlineField()?.shadowRoot?.querySelector('input')?.focus();
+      await frames();
+      check('selectorlessBlockInlinePasteDefaultsToTheEncompassingRoot', () => {
+        const field = blockInlineField();
+        const rootOption = Array.from(field?.shadowRoot?.querySelectorAll('.option') ?? [])
+          .find((element) => element.querySelector('.name')?.textContent?.trim() === 'Block root');
+        const footer = dialogRoot()?.querySelector('footer .fine')?.textContent
+          ?.replace(/\s+/g, ' ').trim() ?? '';
+        return {
+          ok: engine.store.value.cssPaste?.selector === ':scope' &&
+            field?.tagName === 'HEO-SELECTOR-FIELD' &&
+            field?.value === ':scope' &&
+            Boolean(rootOption) &&
+            /block root/i.test(footer) &&
+            !/CSS rule selector is needed/.test(footer),
+          selector: engine.store.value.cssPaste?.selector ?? null,
+          fieldValue: field?.value ?? null,
+          rootOption: rootOption?.textContent?.replace(/\s+/g, ' ').trim() ?? null,
+          footer,
+        };
+      });
+      await applyPaste();
+      check('selectorlessBlockInlinePasteWritesDeclarationsToTheRoot', () => {
+        const pending = engine.store.value.extraction;
+        const doc = new DOMParser().parseFromString(pending?.mode === 'block' ? pending.html : '', 'text/html');
+        const root = doc.body.firstElementChild;
+        const paragraph = root?.querySelector('.block-copy');
+        return {
+          ok: pending?.mode === 'block' &&
+            root?.style.getPropertyValue('padding') === '6px' &&
+            root?.style.getPropertyValue('border-top-width') === '1px' &&
+            !paragraph?.style.getPropertyValue('padding'),
+          rootStyle: root?.getAttribute('style') ?? null,
+          paragraphStyle: paragraph?.getAttribute('style') ?? null,
+        };
+      });
+
+      await openPaste({ context: 'block' }, '.missing-block-selector { color: blue; }');
+      engine.updateCssPaste({ destination: 'block-inline' });
+      await frames();
+      check('aNonmatchingPastedSelectorCanBeReplacedFromBlockMarkup', () => {
+        const field = blockInlineField();
+        const input = field?.shadowRoot?.querySelector('input');
+        const apply = Array.from(dialogRoot()?.querySelectorAll('footer .btn') ?? [])
+          .find((element) => /Use this CSS/.test(element.textContent ?? ''));
+        return {
+          ok: input?.value === '.missing-block-selector' &&
+            Boolean(field?.shadowRoot?.querySelector('.count.miss')) &&
+            apply?.hasAttribute('disabled') === true,
+          selector: input?.value ?? null,
+          countTone: field?.shadowRoot?.querySelector('.count')?.className ?? null,
+          applyDisabled: apply?.hasAttribute('disabled') ?? false,
+        };
+      });
+      const recoveryInput = blockInlineField()?.shadowRoot?.querySelector('input');
+      if (recoveryInput) {
+        recoveryInput.value = '.block-copy';
+        recoveryInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      }
+      await frames();
+      await applyPaste();
+      check('replacedBlockSelectorReceivesThePastedRuleDeclarations', () => {
+        const pending = engine.store.value.extraction;
+        const doc = new DOMParser().parseFromString(pending?.mode === 'block' ? pending.html : '', 'text/html');
+        const root = doc.body.firstElementChild;
+        const paragraph = root?.querySelector('.block-copy');
+        return {
+          ok: pending?.mode === 'block' &&
+            paragraph?.style.getPropertyValue('color') === 'blue' &&
+            !root?.style.getPropertyValue('color'),
+          paragraphStyle: paragraph?.getAttribute('style') ?? null,
+          rootStyle: root?.getAttribute('style') ?? null,
+        };
+      });
+
+      const multiRootMarkup = `<div class="first-root"><p class="first-copy">First words</p><span>First sibling</span></div>
+<section class="second-root"><p class="second-copy">Second words</p><span>Second sibling</span></section>`;
+      engine.beginBlockDraft('CSS paste multi-root');
+      engine.updateExtraction({ html: multiRootMarkup, css: '' });
+      await frames();
+      await openPaste(
+        { context: 'block' },
+        '.first-root p { color: red; } .second-root p { color: blue; }',
+      );
+      engine.updateCssPaste({ destination: 'block-inline' });
+      await frames();
+      await applyPaste();
+      check('blockInlineMultiRulePasteUpdatesMatchingElementsAcrossDetachedRoots', () => {
+        const pending = engine.store.value.extraction;
+        const doc = new DOMParser().parseFromString(pending?.mode === 'block' ? pending.html : '', 'text/html');
+        const first = doc.querySelector('.first-copy');
+        const second = doc.querySelector('.second-copy');
+        const siblings = Array.from(doc.querySelectorAll('.first-root span, .second-root span'));
+        return {
+          ok: pending?.mode === 'block' &&
+            first?.style.getPropertyValue('color') === 'red' &&
+            second?.style.getPropertyValue('color') === 'blue' &&
+            siblings.every((element) => !element.style.getPropertyValue('color')) &&
+            pending.css === '' &&
+            Object.keys(pending.globalClasses).length === 0,
+          firstColor: first?.style.getPropertyValue('color') ?? null,
+          secondColor: second?.style.getPropertyValue('color') ?? null,
+          siblingColors: siblings.map((element) => element.style.getPropertyValue('color')),
+          css: pending?.css ?? null,
+        };
+      });
       engine.cancelExtraction();
       await frames();
 
