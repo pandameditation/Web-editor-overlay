@@ -206,9 +206,14 @@ export function selectorVocabulary(root: ParentNode = document): SelectorVocabul
     map.set(key, (map.get(key) ?? 0) + 1);
   };
 
+  const directRoots = root === document ? [] : scopeElements(root);
+  const directRootSet = new Set(directRoots);
   const elements = root instanceof Element
     ? [root, ...Array.from(root.querySelectorAll('*'))]
-    : Array.from(root.querySelectorAll('*'));
+    : [
+      ...directRoots,
+      ...Array.from(root.querySelectorAll('*')).filter((el) => !directRootSet.has(el)),
+    ];
 
   for (const el of elements) {
     if (!inPageContent(el)) continue;
@@ -227,13 +232,8 @@ export function selectorVocabulary(root: ParentNode = document): SelectorVocabul
       .map(([value, count]) => ({ value, count, kind }))
       .sort((a, b) => b.count - a.count || a.value.localeCompare(b.value));
 
-  const scopeElements = root === document
-    ? []
-    : root instanceof Element
-      ? [root]
-      : Array.from(root.querySelectorAll('*')).filter((el) => el.parentNode === root);
-  const scope = scopeElements.length
-    ? { value: ':scope', count: scopeElements.length, kind: 'scope' as const }
+  const scope = directRoots.length
+    ? { value: ':scope', count: directRoots.length, kind: 'scope' as const }
     : undefined;
 
   return {
@@ -445,15 +445,39 @@ export function countMatches(selector: string, root: ParentNode = document): num
     return scopeElements(root).filter(inPageContent).length;
   }
   try {
+    if (text.startsWith(':scope')) {
+      const candidates: Element[] = [];
+      const seen = new Set<Element>();
+      const scopes = root instanceof Element ? [root] : scopeElements(root);
+      for (const scope of scopes) {
+        if (scope.matches(text) && !seen.has(scope)) {
+          seen.add(scope);
+          candidates.push(scope);
+        }
+        for (const element of Array.from(scope.querySelectorAll(text))) {
+          if (!seen.has(element)) {
+            seen.add(element);
+            candidates.push(element);
+          }
+        }
+      }
+      return candidates.filter(inPageContent).length;
+    }
     const candidates: Element[] = [];
     if (root instanceof Element) {
-      try {
-        if (root.matches(text)) candidates.push(root);
-      } catch {
-        return 0;
+      if (root.matches(text)) candidates.push(root);
+    } else {
+      for (const element of scopeElements(root)) {
+        if (element.matches(text)) candidates.push(element);
       }
     }
-    candidates.push(...Array.from(root.querySelectorAll(text)));
+    const seen = new Set(candidates);
+    for (const element of Array.from(root.querySelectorAll(text))) {
+      if (!seen.has(element)) {
+        seen.add(element);
+        candidates.push(element);
+      }
+    }
     return candidates.filter(inPageContent).length;
   } catch {
     return 0;

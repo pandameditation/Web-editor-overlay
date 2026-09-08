@@ -497,7 +497,7 @@ export async function buildWritePlan(
   for (const record of records) {
     // Removing the library is a document change too: the seed region and the links it justified
     // both live in the markup, so the file has to be reached even with no seed to put in it.
-    if (!isDocumentChange(record, systemInDocument, Boolean(blockSeed) || removeLibrary)) continue;
+    if (!isDocumentChange(record, systemInDocument, Boolean(blockSeed), removeLibrary)) continue;
     const rendered = record.detail?.rendered;
     if (rendered) {
       unwritable.push({ record, reason: rendered });
@@ -649,6 +649,17 @@ export async function buildWritePlan(
       continue;
     }
 
+    if (isAuthoredBlockCSSRecord(record) && blockSeed) {
+      if (!documentFiled) {
+        unwritable.push({
+          record,
+          reason:
+            'This authored block CSS is carried by the block-library seed, and this save is not writing the markup.',
+        });
+      }
+      continue;
+    }
+
     if (systemInDocument ? documentFiled : systemFiled) continue;
     unwritable.push({
       record,
@@ -689,7 +700,7 @@ export function patchDocumentSource(
   // page's own code owns.
   const documentRecords = subject.records.filter(
     (record) =>
-      isDocumentChange(record, systemInDocument, Boolean(blockSeed) || removeLibrary) &&
+      isDocumentChange(record, systemInDocument, Boolean(blockSeed), removeLibrary) &&
       !record.detail?.rendered,
   );
   if (!documentRecords.length) return { why: ['nothing in this change set belongs to the markup'] };
@@ -1270,9 +1281,10 @@ function isDocumentChange(
   record: ChangeRecord,
   designSystemInDocument: boolean,
   blockLibraryInDocument: boolean,
+  removeBlockLibrary: boolean,
 ): boolean {
   /*
-   * A token, class or rule edit belongs to the design system, not to the document.
+   * A token, class or ordinary rule edit belongs to the design system, not to the document.
    *
    * Where it lands is the one thing the design-system target decides, and it is delivered
    * by `designSystemCSS` — so counting these as document changes as well wrote the same
@@ -1280,15 +1292,19 @@ function isDocumentChange(
    * page, via the generated `<style>` block the editor renders it from. The block is how the
    * change shows on screen before it is saved; it is not a second home for it.
    *
-   * When the target *is* the document, that block is the only place it can go, and then
-   * these really are document changes.
+   * A block-library paste is the deliberate exception. Its token-rule row describes CSS that is
+   * also embedded in the block definition, and that definition reaches the file through the
+   * seed even when the design-system target is a separate stylesheet. Without this exception an
+   * unused block — one whose CSS has not been injected into the managed sheet yet — is falsely
+   * reported as unwritable.
    */
   if (
     record.kind === 'token' ||
     record.kind === 'token-class' ||
     record.kind === 'token-rule'
   ) {
-    return designSystemInDocument;
+    return designSystemInDocument ||
+      (isAuthoredBlockCSSRecord(record) && blockLibraryInDocument);
   }
   /*
    * A block can carry two independent payloads.
@@ -1298,9 +1314,16 @@ function isDocumentChange(
    * document or the seed belongs in the document; the stylesheet route handles the CSS when it
    * has another target.
    */
-  if (record.kind === 'block') return designSystemInDocument || blockLibraryInDocument;
+  if (record.kind === 'block') {
+    return designSystemInDocument || blockLibraryInDocument || removeBlockLibrary;
+  }
   const target = record.detail?.writeTo;
   return !target || target === DOCUMENT_TARGET;
+}
+
+/** A block-scoped rule authored in a library definition, rather than injected from an instance. */
+function isAuthoredBlockCSSRecord(record: ChangeRecord): boolean {
+  return record.kind === 'token-rule' && record.detail?.source === 'block-css-paste';
 }
 
 function reasonForUnreachable(url: string, host: FileHost): string {

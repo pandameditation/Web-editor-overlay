@@ -229,6 +229,7 @@ export class History {
         subject: command.subject,
         apply: command.apply,
         revert: previous.revert,
+        extraRecords: [...(previous.extraRecords ?? []), ...(command.extraRecords ?? [])],
         record: {
           ...command.record,
           id: previous.record.id,
@@ -348,31 +349,31 @@ export class History {
 function netRecords(commands: readonly Command[]): ChangeRecord[] {
   const groups = new Map<string, ChangeRecord[]>();
   const sequence: Array<{ subject: string | null; record: ChangeRecord }> = [];
+  const addGrouped = (key: string, record: ChangeRecord): void => {
+    const existing = groups.get(key);
+    if (existing) {
+      existing.push(record);
+    } else {
+      groups.set(key, [record]);
+      // Placeholder marking where this subject belongs in the timeline.
+      sequence.push({ subject: key, record });
+    }
+  };
 
   for (const command of commands) {
-    const subject = command.subject;
-    if (!subject) {
-      sequence.push({ subject: null, record: command.record });
-    } else {
-      const existing = groups.get(subject);
-      if (existing) {
-        existing.push(command.record);
-      } else {
-        groups.set(subject, [command.record]);
-        // Placeholder marking where this subject belongs in the timeline.
-        sequence.push({ subject, record: command.record });
-      }
-    }
+    if (command.subject) addGrouped(command.subject, command.record);
+    else sequence.push({ subject: null, record: command.record });
     /*
-     * A fan-out's other elements, each reported in its own right.
-     *
-     * Never folded into a subject group. They are twenty different elements, not twenty
-     * states of one, and reducing them to a first `before` and a last `after` would report
-     * one change and silently drop nineteen — which is exactly the shape of a save that
-     * claims to have written everything and did not.
+     * Only block-library CSS staging has a group that means successive states of one design-system
+     * value. Other fan-outs may carry an element group for anchoring, but their records describe
+     * distinct effects and must remain one-off entries — notably a multi-attribute batch.
      */
     for (const extra of command.extraRecords ?? []) {
-      sequence.push({ subject: null, record: extra });
+      if (extra.detail?.source === 'block-css-paste' && extra.group) {
+        addGrouped(`extra:${extra.group}`, extra);
+      } else {
+        sequence.push({ subject: null, record: extra });
+      }
     }
   }
 

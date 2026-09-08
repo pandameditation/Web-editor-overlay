@@ -278,6 +278,44 @@
       const stylesheetTarget = engine.styleTargets()[1]?.value ?? engine.designSystemTarget;
       const documentTarget = engine.styleTargets()[0].value;
       engine.setDesignSystemTarget(stylesheetTarget);
+
+      /*
+       * This block is deliberately never inserted. Its CSS lives only in the block definition,
+       * so the seed is its writable destination while the generated block stylesheet stays empty.
+       * The design-system scope is temporarily disabled to isolate that route from the blocks used
+       * elsewhere in this fixture.
+       */
+      const seedOnlyBlock = engine.upsertBlock({
+        id: 'seed-only-writeback',
+        name: 'Seed-only writeback block',
+        kind: 'component',
+        html: '<aside class="seed-only-writeback">Seed only</aside>',
+        css: '.seed-only-writeback { outline: 1px solid orange; }',
+        origin: 'user',
+      });
+      const seedOnlyRule = engine.records.find((record) =>
+        record.kind === 'token-rule' &&
+        record.detail?.source === 'block-css-paste' &&
+        record.detail?.block === seedOnlyBlock.name,
+      );
+      const scopeBeforeSeedOnlyCheck = engine.store.value.designSystemScope;
+      engine.setDesignSystemScope('none');
+      const seedOnlyPlan = await engine.previewWritePlan();
+      const seedOnlyDocumentWrite = seedOnlyPlan.writes.find((write) => write.kind === 'document');
+      check('authoredBlockCSSCarriedByTheSeedIsNotReportedAsUnwritable', () => ({
+        ok: Boolean(seedOnlyRule) &&
+          !seedOnlyPlan.unwritable.some((entry) => entry.record.id === seedOnlyRule?.id) &&
+          Boolean(seedOnlyDocumentWrite?.after.includes('application/heo-seed')) &&
+          !engine.library.css.includes(`/* block: ${seedOnlyBlock.id} */`),
+        rule: seedOnlyRule ?? null,
+        unwritable: seedOnlyPlan.unwritable
+          .filter((entry) => entry.record.id === seedOnlyRule?.id)
+          .map((entry) => entry.reason),
+        hasSeedWrite: Boolean(seedOnlyDocumentWrite?.after.includes('application/heo-seed')),
+        generatedCSSIncludesUnusedBlock: engine.library.css.includes(`/* block: ${seedOnlyBlock.id} */`),
+      }));
+      engine.setDesignSystemScope(scopeBeforeSeedOnlyCheck);
+
       const stylesheetPlan = await engine.previewWritePlan();
       const stylesheetWrite = stylesheetPlan.writes.find((w) => w.path === 'writeback.css');
       check('theScopedBlockCSSUsesTheDesignSystemStylesheetPayload', () => ({

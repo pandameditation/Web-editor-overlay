@@ -305,21 +305,20 @@ export class HeoCssPasteDialog extends HeoElement {
     const count = pastedDeclarationCount(parsed);
     const hasMultipleRules = parsed.mode === 'rules' && parsed.rules.length > 1;
     const blockRoot = block ? this.#blockMatchRoot() : null;
-    const blockInlineSelector = block ? this.#blockInlineSelector(open, parsed) : '';
-    const blockInlineMatches = blockRoot
-      ? countMatches(blockInlineSelector, blockRoot)
-      : 0;
-    const blockInlineReady = Boolean(
-      count && safeSelector(blockInlineSelector) && blockInlineMatches,
+    const blockSelector = block ? this.#blockSelector(open, parsed) : '';
+    const blockMatches = blockRoot ? countMatches(blockSelector, blockRoot) : 0;
+    const blockTargetReady = Boolean(
+      count && safeSelector(blockSelector) && blockMatches,
     );
+    const blockRuleNeedsTarget = parsed.rules.length === 0 || open.selectorExplicit;
     const ready = block
       ? open.destination === 'block-inline'
         ? parsed.rules.length > 1
           ? parsed.rules.length > 0 && count > 0
-          : blockInlineReady
+          : blockTargetReady
         : open.destination === 'block-class'
-          ? count > 0
-          : parsed.rules.length > 0
+          ? count > 0 && (!open.applyClass || blockTargetReady)
+          : count > 0 && (!blockRuleNeedsTarget || blockTargetReady)
       : count > 0 && !hasMultipleRules;
 
     return html`<div
@@ -571,8 +570,8 @@ export class HeoCssPasteDialog extends HeoElement {
     const existingClass = normalizedClass ? this.editor.classes.get(normalizedClass) : null;
     const selectors = parsed.rules.map((rule) => rule.selector).join(', ');
     const matchRoot = this.#blockMatchRoot();
-    const inlineSelector = this.#blockInlineSelector(open, parsed);
-    const inlineMatches = matchRoot ? countMatches(inlineSelector, matchRoot) : 0;
+    const blockSelector = this.#blockSelector(open, parsed);
+    const blockMatches = matchRoot ? countMatches(blockSelector, matchRoot) : 0;
     const count = pastedDeclarationCount(parsed);
     return html`<section class="destination">
       <span class="eyebrow">Where should it live?</span>
@@ -616,7 +615,7 @@ export class HeoCssPasteDialog extends HeoElement {
               <div class="field full">
                 <label>Element selector</label>
                 <heo-selector-field
-                  .value=${inlineSelector}
+                  .value=${blockSelector}
                   .matchRoot=${matchRoot}
                   .peek=${false}
                   action="Use this element"
@@ -629,10 +628,10 @@ export class HeoCssPasteDialog extends HeoElement {
               </div>
               <div class="target field full">
                 ${icon('cursor', 12)}
-                ${inlineMatches
+                ${blockMatches
               ? html`Writes ${count} ${count === 1 ? 'declaration' : 'declarations'} to
-                    <code>${inlineSelector === ':scope' ? 'the block root' : inlineSelector}</code>
-                    (${inlineMatches} matching element${inlineMatches === 1 ? '' : 's'}).`
+                    <code>${blockSelector === ':scope' ? 'the block root' : blockSelector}</code>
+                    (${blockMatches} matching element${blockMatches === 1 ? '' : 's'}).`
               : html`Choose an element selector from this block's markup to continue.`}
               </div>
             </div>`
@@ -666,19 +665,65 @@ export class HeoCssPasteDialog extends HeoElement {
                     @change=${(event: Event) =>
             this.editor.updateCssPaste({ applyClass: (event.target as HTMLInputElement).checked })}
                   />
-                  Apply this class to the block root in the HTML
+                  Apply this class to block markup
                 </span>
               </label>
+              <div class="field full">
+                <label>Element selector</label>
+                <heo-selector-field
+                  .value=${open.selector}
+                  .matchRoot=${matchRoot}
+                  .peek=${false}
+                  action="Use this element"
+                  placeholder="choose an element in this block"
+                  @selector-input=${(event: CustomEvent<{ value: string }>) =>
+            this.editor.updateCssPaste({ selector: event.detail.value, selectorExplicit: true })}
+                  @selector-submit=${(event: CustomEvent<{ value: string }>) =>
+            this.editor.updateCssPaste({ selector: event.detail.value, selectorExplicit: true })}
+                ></heo-selector-field>
+              </div>
+              <div class="target field full">
+                ${icon('cursor', 12)}
+                ${open.applyClass
+            ? blockMatches
+              ? html`Applies <code>.${normalizedClass || '…'}</code> to
+                    <code>${open.selector === ':scope' ? 'the block root' : open.selector}</code>
+                    (${blockMatches} matching element${blockMatches === 1 ? '' : 's'}).`
+              : html`Choose an element selector from this block's markup to continue.`
+            : html`The class stays in the global design system until you enable applying it to the markup.`}
+              </div>
             </div>`
         : nothing}
       ${open.destination === 'block-rule'
-        ? html`<div class="target field full">
-              ${icon('code', 12)}
-              ${parsed.rules.length
-            ? html`Stores ${parsed.rules.length} selector${parsed.rules.length === 1 ? '' : 's'} in the
-                    block CSS source. Element and structural selectors are scoped to the block;
-                    class-rooted selectors remain global.`
-            : html`Paste a complete CSS rule to add a scoped rule to this block.`}
+        ? parsed.rules.length > 1
+          ? html`<div class="target field full">
+              ${icon('code', 12)} Stores ${parsed.rules.length} selectors in the block CSS source.
+              Element and structural selectors are scoped to the block; class-rooted selectors remain global.
+            </div>`
+          : html`<div class="fields">
+              <div class="field full">
+                <label>Element selector</label>
+                <heo-selector-field
+                  .value=${blockSelector}
+                  .matchRoot=${matchRoot}
+                  .peek=${false}
+                  action="Use this element"
+                  placeholder="choose an element in this block"
+                  @selector-input=${(event: CustomEvent<{ value: string }>) =>
+              this.editor.updateCssPaste({ selector: event.detail.value, selectorExplicit: true })}
+                  @selector-submit=${(event: CustomEvent<{ value: string }>) =>
+              this.editor.updateCssPaste({ selector: event.detail.value, selectorExplicit: true })}
+                ></heo-selector-field>
+              </div>
+              <div class="target field full">
+                ${icon('code', 12)}
+                ${parsed.rules.length
+              ? html`Stores the pasted selector in the block CSS source. Element and structural selectors are scoped to the block; class-rooted selectors remain global.`
+              : blockMatches
+                ? html`Adds the declarations to <code>${blockSelector === ':scope' ? 'the block root' : blockSelector}</code>
+                    (${blockMatches} matching element${blockMatches === 1 ? '' : 's'}) as a scoped block rule.`
+                : html`Choose an element selector from this block's markup to create the scoped rule.`}
+              </div>
             </div>`
         : nothing}
     </section>`;
@@ -689,11 +734,12 @@ export class HeoCssPasteDialog extends HeoElement {
     return pending?.mode === 'block' ? blockMatchRoot(pending.html) : null;
   }
 
-  #blockInlineSelector(
+  #blockSelector(
     open: NonNullable<typeof this.state.value.cssPaste>,
     parsed: ParsedCssPaste,
   ): string {
     if (
+      open.destination !== 'block-class' &&
       parsed.rules.length === 1 &&
       !open.selectorExplicit &&
       open.selector.trim() === ':scope'
@@ -715,7 +761,7 @@ export class HeoCssPasteDialog extends HeoElement {
         if (parsed.rules.length > 1) {
           return 'The pasted declarations will be written to each matching selector in the block HTML.';
         }
-        const selector = this.#blockInlineSelector(open, parsed);
+        const selector = this.#blockSelector(open, parsed);
         const matchRoot = this.#blockMatchRoot();
         const matches = matchRoot ? countMatches(selector, matchRoot) : 0;
         if (!safeSelector(selector)) return 'Choose a valid selector from the block markup.';
@@ -723,11 +769,27 @@ export class HeoCssPasteDialog extends HeoElement {
         return `The declarations will be written to ${selector === ':scope' ? 'the block root' : selector}.`;
       }
       if (open.destination === 'block-class') {
-        return `${count} ${count === 1 ? 'declaration' : 'declarations'} will upsert into the global .${open.className || '…'} class.`;
+        const selector = open.selector;
+        const target = open.applyClass
+          ? safeSelector(selector)
+            ? ` to ${selector === ':scope' ? 'the block root' : selector}`
+            : ' to a selected element'
+          : '';
+        return `${count} ${count === 1 ? 'declaration' : 'declarations'} will upsert into the global .${open.className || '…'} class${target}.`;
       }
-      return parsed.rules.length
-        ? `${parsed.rules.length} selector${parsed.rules.length === 1 ? '' : 's'} will be scoped to this block.`
-        : 'A complete CSS rule is needed for a scoped destination.';
+      const selector = this.#blockSelector(open, parsed);
+      if (parsed.rules.length > 1) {
+        return `${parsed.rules.length} selectors will be scoped to this block.`;
+      }
+      if (!parsed.rules.length) {
+        const matchRoot = this.#blockMatchRoot();
+        const matches = matchRoot ? countMatches(selector, matchRoot) : 0;
+        if (!safeSelector(selector) || !matches) {
+          return 'Choose an element selector from this block\'s markup to create the scoped rule.';
+        }
+        return `${count} ${count === 1 ? 'declaration' : 'declarations'} will become a scoped rule for ${selector === ':scope' ? 'the block root' : selector}.`;
+      }
+      return `${parsed.rules.length} selector${parsed.rules.length === 1 ? '' : 's'} will be scoped to this block.`;
     }
     if (parsed.mode === 'rules' && parsed.rules.length > 1) {
       return 'Choose Block CSS to preserve every selector in this paste.';
@@ -770,7 +832,7 @@ export class HeoCssPasteDialog extends HeoElement {
           this.editor.updateCssPaste({ error: 'Paste at least one usable CSS declaration.' });
           return;
         }
-        const selector = this.#blockInlineSelector(open, parsed);
+        const selector = this.#blockSelector(open, parsed);
         if (parsed.rules.length <= 1) {
           const matchRoot = this.#blockMatchRoot();
           if (!safeSelector(selector)) {
@@ -807,21 +869,40 @@ export class HeoCssPasteDialog extends HeoElement {
           this.editor.updateCssPaste({ error: 'Paste at least one usable CSS declaration for the class.' });
           return;
         }
-        if (this.editor.applyBlockClassCssPaste(parsed, name, open.applyClass)) {
+        const selector = this.#blockSelector(open, parsed);
+        if (open.applyClass) {
+          const matchRoot = this.#blockMatchRoot();
+          if (!safeSelector(selector) || !matchRoot || !countMatches(selector, matchRoot)) {
+            this.editor.updateCssPaste({
+              error: 'That selector does not match the block markup. Choose an element from the selector list.',
+            });
+            return;
+          }
+        }
+        if (this.editor.applyBlockClassCssPaste(parsed, name, open.applyClass, selector)) {
           this.editor.cancelCssPaste();
           this.editor.notify(`Upserted CSS into global .${name}.`, 'success');
         }
         return;
       }
-      if (!parsed.rules.length) {
-        this.editor.updateCssPaste({
-          error: 'Paste a complete CSS rule to add a scoped rule to this block.',
-        });
-        return;
+      const selector = this.#blockSelector(open, parsed);
+      if (!parsed.rules.length || open.selectorExplicit) {
+        const matchRoot = this.#blockMatchRoot();
+        if (!safeSelector(selector) || !matchRoot || !countMatches(selector, matchRoot)) {
+          this.editor.updateCssPaste({
+            error: 'Choose a valid selector from the block markup to create the scoped rule.',
+          });
+          return;
+        }
       }
-      if (this.editor.applyBlockScopedCssPaste(open.draft, parsed)) {
+      if (this.editor.applyBlockScopedCssPaste(open.draft, parsed, selector)) {
         this.editor.cancelCssPaste();
-        this.editor.notify(`Added ${parsed.rules.length} scoped CSS rule${parsed.rules.length === 1 ? '' : 's'} to the block.`, 'success');
+        this.editor.notify(
+          parsed.rules.length
+            ? `Added ${parsed.rules.length} scoped CSS rule${parsed.rules.length === 1 ? '' : 's'} to the block.`
+            : `Added a scoped CSS rule for ${selector === ':scope' ? 'the block root' : selector} to the block.`,
+          'success',
+        );
       }
       return;
     }

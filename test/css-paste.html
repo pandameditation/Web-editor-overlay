@@ -669,28 +669,158 @@ color: rebeccapurple;`;
           destinationText,
         };
       });
+      const blockClassSelectorField = () => dialogRoot()?.querySelector('heo-selector-field');
+      const blockClassSelectorInput = () => blockClassSelectorField()?.shadowRoot?.querySelector('input');
+      const blockSelectorQuery = blockClassSelectorInput();
+      if (blockSelectorQuery) {
+        blockSelectorQuery.focus();
+        blockSelectorQuery.value = '.pou';
+        blockSelectorQuery.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      }
+      await frames();
+      check('theBlockClassDestinationUsesMarkupSelectorAutocomplete', () => {
+        const field = blockClassSelectorField();
+        const option = Array.from(field?.shadowRoot?.querySelectorAll('.option .name') ?? [])
+          .find((element) => element.textContent?.trim() === '.pouet');
+        return {
+          ok: field?.tagName === 'HEO-SELECTOR-FIELD' &&
+            Boolean(field?.shadowRoot?.querySelector('input')) &&
+            Boolean(option),
+          fieldTag: field?.tagName ?? null,
+          rootSuggestion: option?.textContent?.trim() ?? null,
+        };
+      });
+      const targetInput = blockClassSelectorInput();
+      if (targetInput) {
+        targetInput.value = ':scope > .block-copy';
+        targetInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      }
+      await frames();
       engine.updateCssPaste({ applyClass: true });
       await frames();
       await applyPaste();
-      check('blockClassPasteStagesTheGlobalClassAndOptionallyAppliesItToTheRoot', () => {
+      check('blockClassPasteStagesTheGlobalClassAndAppliesItToTheChosenElement', () => {
         const pending = engine.store.value.extraction;
         const staged = pending?.mode === 'block'
           ? pending.globalClasses[existingGlobalClass]
           : undefined;
-        const root = pending?.mode === 'block'
-          ? new DOMParser().parseFromString(pending.html, 'text/html').body.firstElementChild
+        const doc = pending?.mode === 'block'
+          ? new DOMParser().parseFromString(pending.html, 'text/html')
           : null;
+        const root = doc?.body.firstElementChild;
+        const paragraph = doc?.querySelector('.block-copy');
         const live = engine.classes.get(existingGlobalClass)?.declarations;
         return {
           ok: pending?.mode === 'block' &&
             staged?.['background-color'] === 'teal' &&
-            root?.classList.contains(existingGlobalClass) &&
+            paragraph?.classList.contains(existingGlobalClass) &&
+            !root?.classList.contains(existingGlobalClass) &&
             live?.['background-color'] === classBeforeBlock['background-color'],
           staged,
           rootClass: root?.getAttribute('class') ?? null,
+          paragraphClass: paragraph?.getAttribute('class') ?? null,
           live,
         };
       });
+
+      const optOutClass = 'block-global-only';
+      await openPaste({ context: 'block' }, 'border-color: hotpink;');
+      engine.updateCssPaste({
+        destination: 'block-class',
+        className: optOutClass,
+        applyClass: false,
+      });
+      await frames();
+      await applyPaste();
+      check('blockClassPasteCanStayGlobalWithoutChangingBlockMarkup', () => {
+        const pending = engine.store.value.extraction;
+        const staged = pending?.mode === 'block' ? pending.globalClasses[optOutClass] : undefined;
+        const doc = pending?.mode === 'block'
+          ? new DOMParser().parseFromString(pending.html, 'text/html')
+          : null;
+        return {
+          ok: pending?.mode === 'block' &&
+            staged?.['border-color'] === 'hotpink' &&
+            doc?.querySelectorAll(`.${optOutClass}`).length === 0 &&
+            engine.classes.get(optOutClass) === undefined,
+          staged,
+          markupMatches: doc?.querySelectorAll(`.${optOutClass}`).length ?? null,
+          liveClass: engine.classes.get(optOutClass) ?? null,
+        };
+      });
+
+      await openPaste({ context: 'block' }, 'outline-width: 3px;');
+      engine.updateCssPaste({ destination: 'block-rule' });
+      await frames();
+      const blockRuleField = () => dialogRoot()?.querySelector('.destination heo-selector-field');
+      const blockRuleInput = () => blockRuleField()?.shadowRoot?.querySelector('input');
+      check('selectorlessBlockRuleDefaultsToTheEncompassingRoot', () => {
+        const field = blockRuleField();
+        const footer = dialogRoot()?.querySelector('footer .fine')?.textContent
+          ?.replace(/\s+/g, ' ').trim() ?? '';
+        return {
+          ok: field?.value === ':scope' && /block root/.test(footer),
+          selector: field?.value ?? null,
+          footer,
+        };
+      });
+      const ruleTargetInput = blockRuleInput();
+      if (ruleTargetInput) {
+        ruleTargetInput.value = '.block-copy';
+        ruleTargetInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      }
+      await frames();
+      check('selectorlessBlockRuleUsesTheSharedMarkupSelectorAutocomplete', () => {
+        const field = blockRuleField();
+        const footer = dialogRoot()?.querySelector('footer .fine')?.textContent
+          ?.replace(/\s+/g, ' ').trim() ?? '';
+        const apply = Array.from(dialogRoot()?.querySelectorAll('footer .btn') ?? [])
+          .find((element) => /Use this CSS/.test(element.textContent ?? ''));
+        return {
+          ok: field?.tagName === 'HEO-SELECTOR-FIELD' &&
+            field?.value === '.block-copy' &&
+            /scoped rule/.test(footer) &&
+            !/complete CSS rule|CSS rule selector is needed/.test(footer) &&
+            apply?.hasAttribute('disabled') === false,
+          selector: field?.value ?? null,
+          footer,
+          applyEnabled: apply?.hasAttribute('disabled') === false,
+        };
+      });
+      await applyPaste();
+      check('selectorlessBlockRuleStoresADeclarationRuleInThePendingBlock', () => {
+        const pending = engine.store.value.extraction;
+        const css = pending?.mode === 'block' ? pending.css : '';
+        return {
+          ok: pending?.mode === 'block' && css === '.block-copy {\n  outline-width: 3px;\n}',
+          css,
+        };
+      });
+      engine.updateExtraction({ css: '' });
+      await frames();
+
+      await openPaste({ context: 'block' }, '.missing-scoped-selector { color: orange; }');
+      engine.updateCssPaste({ destination: 'block-rule' });
+      await frames();
+      const completeRuleField = () => dialogRoot()?.querySelector('.destination heo-selector-field');
+      const completeRuleInput = () => completeRuleField()?.shadowRoot?.querySelector('input');
+      const completeRuleTarget = completeRuleInput();
+      if (completeRuleTarget) {
+        completeRuleTarget.value = '.block-copy';
+        completeRuleTarget.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      }
+      await frames();
+      await applyPaste();
+      check('aCompleteBlockRuleCanUseAChosenMarkupSelector', () => {
+        const pending = engine.store.value.extraction;
+        const css = pending?.mode === 'block' ? pending.css : '';
+        return {
+          ok: pending?.mode === 'block' && css === '.block-copy {\n  color: orange;\n}',
+          css,
+        };
+      });
+      engine.updateExtraction({ css: '' });
+      await frames();
 
       const scopedBlockCss = `p { color: rgb(12, 34, 56); }
 
@@ -739,6 +869,60 @@ color: rebeccapurple;`;
           classDeclarations: exportedClass?.declarations ?? null,
         };
       });
+
+      /*
+       * Extra TOKEN-RULE records share the block's lifecycle. Two edits away and back must not
+       * leave stale staged rows after the block record itself has netted to its original state.
+       */
+      const baselineBlock = engine.library.get(blockId);
+      const baselineBlockCSS = baselineBlock?.css ?? '';
+      const editedBlockCSS = `${baselineBlockCSS}\n.block-copy { opacity: 0.8; }`;
+      engine.history.sealStep();
+      if (baselineBlock) engine.upsertBlock({ ...baselineBlock, css: editedBlockCSS });
+      engine.history.sealStep();
+      if (baselineBlock) engine.upsertBlock({ ...baselineBlock, css: baselineBlockCSS });
+      const netBlockRuleRecords = engine.records.filter((record) =>
+        record.kind === 'token-rule' &&
+        record.detail?.source === 'block-css-paste' &&
+        record.detail?.block === baselineBlock?.name,
+      );
+      check('repeatedBlockCSSEditsNetBackToOneAuthoredRuleRecord', () => ({
+        ok: Boolean(baselineBlock) &&
+          netBlockRuleRecords.length === 1 &&
+          netBlockRuleRecords[0].before === undefined &&
+          netBlockRuleRecords[0].after === baselineBlockCSS,
+        recordCount: netBlockRuleRecords.length,
+        records: netBlockRuleRecords,
+      }));
+
+      engine.previewSave();
+      await frames();
+      await frames();
+      const saveDialogRoot = () => deepQuery('heo-save-dialog')?.shadowRoot ?? null;
+      check('blockPasteDesignSystemChangesAppearAsTokenClassAndRuleRows', () => {
+        const rows = Array.from(saveDialogRoot()?.querySelectorAll('.change') ?? []).map((row) => ({
+          kind: row.querySelector('.kind')?.textContent?.trim() ?? null,
+          summary: row.querySelector('.summary')?.textContent?.trim() ?? null,
+          target: row.querySelector('.where')?.textContent?.trim() ?? null,
+        }));
+        const classRow = rows.find((row) =>
+          row.kind === 'token-class' && row.target === `.${existingGlobalClass}` &&
+          /background-color/.test(row.summary ?? ''));
+        const ruleRow = rows.find((row) =>
+          row.kind === 'token-rule' && /scoped CSS for CSS paste destinations/.test(row.summary ?? ''));
+        const blockRow = rows.find((row) =>
+          row.kind === 'block' && row.target === 'CSS paste destinations');
+        return {
+          ok: Boolean(classRow) && Boolean(ruleRow) && Boolean(blockRow),
+          classRow,
+          ruleRow,
+          blockRow,
+        };
+      });
+      saveDialogRoot()?.querySelector('[aria-label="Close"]')?.dispatchEvent(
+        new MouseEvent('click', { bubbles: true, composed: true }),
+      );
+      await frames();
 
       const insertedBlock = block
         ? await engine.insertBlock(block, {}, { reference: outsidePouet, position: 'after' })

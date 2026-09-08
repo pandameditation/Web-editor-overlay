@@ -44,17 +44,35 @@ export function applyBlockInlineRules(
   return { html: serialiseFragment(fragment), matched };
 }
 
+/** Add a class to every block element matching a selector. */
+export function addClassToBlockElements(
+  source: string,
+  name: string,
+  selector: string,
+): { html: string; matched: number } {
+  const fragment = sanitizeFragment(source);
+  const roots = blockRoots(fragment);
+  const elements = blockElements(fragment, roots);
+  const selected = selector.trim().startsWith(':scope')
+    ? blockScopeMatches(roots, selector)
+    : elements.filter((element) => {
+      try {
+        return element.matches(selector);
+      } catch {
+        return false;
+      }
+    });
+  for (const element of selected) element.classList.add(name);
+  return { html: serialiseFragment(fragment), matched: selected.length };
+}
+
 /** Add a global class to every root element in a block template. */
 export function addClassToBlockRoots(
   source: string,
   name: string,
 ): { html: string; roots: number } {
-  const fragment = sanitizeFragment(source);
-  const roots = Array.from(fragment.children).filter(
-    (element): element is HTMLElement => element instanceof HTMLElement,
-  );
-  for (const root of roots) root.classList.add(name);
-  return { html: serialiseFragment(fragment), roots: roots.length };
+  const result = addClassToBlockElements(source, name, ':scope');
+  return { html: result.html, roots: result.matched };
 }
 
 /**
@@ -104,6 +122,8 @@ function rewriteRule(rule: CSSRule, root: string): string {
 function scopeSelector(selector: string, root: string): string {
   const trimmed = selector.trim();
   if (!trimmed || classRooted(trimmed)) return trimmed;
+  if (trimmed === ':scope') return root;
+  if (trimmed.startsWith(':scope')) return `${root}${trimmed.slice(':scope'.length)}`;
   return `${root} ${trimmed}`;
 }
 
@@ -142,6 +162,28 @@ function splitSelectorList(source: string): string[] {
   }
   parts.push(source.slice(start));
   return parts.filter((part) => part.trim());
+}
+
+function blockScopeMatches(roots: HTMLElement[], selector: string): HTMLElement[] {
+  const selected: HTMLElement[] = [];
+  const seen = new Set<HTMLElement>();
+  for (const root of roots) {
+    try {
+      if (root.matches(selector) && !seen.has(root)) {
+        seen.add(root);
+        selected.push(root);
+      }
+      for (const element of Array.from(root.querySelectorAll<HTMLElement>(selector))) {
+        if (!seen.has(element)) {
+          seen.add(element);
+          selected.push(element);
+        }
+      }
+    } catch {
+      return [];
+    }
+  }
+  return selected;
 }
 
 function blockElements(fragment: DocumentFragment, roots = blockRoots(fragment)): HTMLElement[] {

@@ -23,7 +23,7 @@ import {
   VERSION,
 } from './constants.js';
 import { appliedRules, cascadedDeclarations, inlineDeclarations } from './css.js';
-import { addClassToBlockRoots, applyBlockInlineRules } from './block-css.js';
+import { addClassToBlockElements, applyBlockInlineRules } from './block-css.js';
 import {
   parsePastedCSS,
   pastedDeclarationCount,
@@ -2390,6 +2390,43 @@ export class EditorEngine {
     }
     const next: LibraryBlock = { ...block };
     let stored = next;
+    const classRecords = classEntries.flatMap(([name, declarations]) => {
+      const previousDeclarations = previousClasses.get(name)?.declarations ?? {};
+      return Object.entries(declarations)
+        .filter(([property, value]) => previousDeclarations[property] !== value)
+        .map(([property, value]) => ({
+          id: nextChangeId(),
+          kind: 'token-class' as const,
+          summary: `Paste ${property} into .${name}`,
+          target: `.${name}`,
+          group: `block-class:${name}:${property}`,
+          before: previousDeclarations[property],
+          after: value,
+          detail: { class: name, property, value, source: 'block-css-paste' },
+          at: Date.now(),
+        }));
+    });
+    const beforeCSS = previous?.css ?? '';
+    const afterCSS = next.css ?? '';
+    const ruleRecords = beforeCSS.trim() === afterCSS.trim()
+      ? []
+      : [{
+        id: nextChangeId(),
+        kind: 'token-rule' as const,
+        summary: `${previous?.css?.trim() ? 'Update' : 'Add'} scoped CSS for ${next.name}`,
+        target: `[data-heo-block="${next.id}"]`,
+        group: `block-rule:${next.id}`,
+        before: beforeCSS || undefined,
+        after: afterCSS || undefined,
+        detail: {
+          selector: `[data-heo-block="${next.id}"]`,
+          block: next.name,
+          source: 'block-css-paste',
+          css: afterCSS,
+        },
+        at: Date.now(),
+      }];
+    const extraRecords = [...classRecords, ...ruleRecords];
 
     this.history.commit({
       label: previous ? `Edit ${next.name}` : `Add ${next.name}`,
@@ -2419,6 +2456,7 @@ export class EditorEngine {
         },
         at: Date.now(),
       },
+      extraRecords: extraRecords.length ? extraRecords : undefined,
       apply: () => {
         stored = this.library.upsert(next);
         for (const [name, declarations] of classEntries) {
@@ -4030,11 +4068,12 @@ export class EditorEngine {
     return result.matched;
   }
 
-  /** Stage a global class definition and, optionally, add it to every block root. */
+  /** Stage a global class definition and, optionally, add it to selected block elements. */
   applyBlockClassCssPaste(
     parsed: ParsedCssPaste,
     name: string,
-    applyToRoot: boolean,
+    applyToMarkup: boolean,
+    selector = ':scope',
   ): boolean {
     const pending = this.store.value.extraction;
     const normalized = normalizeClassName(name);
@@ -4045,9 +4084,9 @@ export class EditorEngine {
     const existing = this.classes.get(normalized);
     const staged = pending.globalClasses?.[normalized] ?? {};
     let html = pending.html;
-    if (applyToRoot) {
-      const result = addClassToBlockRoots(html, normalized);
-      if (!result.roots) return false;
+    if (applyToMarkup) {
+      const result = addClassToBlockElements(html, normalized, selector);
+      if (!result.matched) return false;
       html = result.html;
     }
     this.updateExtraction({
@@ -4064,11 +4103,23 @@ export class EditorEngine {
     return true;
   }
 
-  /** Keep the authored selectors in the block source; the library scopes them when injected. */
-  applyBlockScopedCssPaste(source: string, parsed: ParsedCssPaste): boolean {
+  /** Keep authored selectors in the block source, generating one when the paste was declarations only. */
+  applyBlockScopedCssPaste(source: string, parsed: ParsedCssPaste, selector = ''): boolean {
     const pending = this.store.value.extraction;
-    const incoming = String(source ?? '').trim();
-    if (!pending || pending.mode !== 'block' || !incoming || !parsed.rules.length) return false;
+    const target = safeSelector(selector);
+    const declarations = Object.entries(parsed.rules[0]?.declarations ?? parsed.declarations)
+      .map(([property, value]) => `  ${property}: ${value};`)
+      .join('\n');
+    const replaceSingleRule = parsed.rules.length === 1 &&
+      target && target !== safeSelector(parsed.rules[0].selector);
+    const incoming = replaceSingleRule
+      ? `${target} {\n${declarations}\n}`
+      : parsed.rules.length
+        ? String(source ?? '').trim()
+        : target && declarations
+          ? `${target} {\n${declarations}\n}`
+          : '';
+    if (!pending || pending.mode !== 'block' || !incoming) return false;
     const css = pending.css.trim() ? `${pending.css.trim()}\n\n${incoming}` : incoming;
     this.updateExtraction({ css });
     return true;
