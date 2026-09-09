@@ -535,7 +535,23 @@ export class HeoCodePanel extends HeoElement {
       bodyAttrs: attributeMap(incoming.body),
       bodyHTML: incoming.body.innerHTML,
     };
-    if (JSON.stringify(before) === JSON.stringify(after)) {
+    /*
+     * The two states as strings, which serve twice.
+     *
+     * Once here, to decide whether Apply has anything to do. And once on the record, as the
+     * pair the change set compares to decide whether this is a *pending* change — which is
+     * what it was missing. `netRecords` groups records by subject and drops a group whose
+     * first state matches its last; with neither state recorded, both read as empty, every
+     * whole-document rewrite compared equal to itself and was discarded. So the edit was on
+     * the page and undoable, and the save counted nothing, wrote nothing and said nothing.
+     *
+     * Deliberately the same two strings for both jobs: if they are equal there is no command,
+     * and if there is a command they differ, so the change set cannot disagree with Apply
+     * about whether something happened.
+     */
+    const stateBefore = JSON.stringify(before);
+    const stateAfter = JSON.stringify(after);
+    if (stateBefore === stateAfter) {
       this.dirty = false;
       return;
     }
@@ -596,6 +612,11 @@ export class HeoCodePanel extends HeoElement {
         summary: 'Rewrite the HTML document',
         target: 'document',
         detail: { html: this.draft, scope: 'document' },
+        // What the change set compares. `before` and `after` are left off on purpose: the
+        // change list renders them as a diff beside the summary, and a whole document of
+        // markup there is unreadable. The summary says what happened.
+        markupBefore: stateBefore,
+        markupAfter: stateAfter,
         at: Date.now(),
       },
       apply: () => swap('before', 'after', after),

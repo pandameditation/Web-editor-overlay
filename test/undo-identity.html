@@ -387,6 +387,37 @@
           engine.history.size === depthBeforeTheDocumentApply + 1,
       };
 
+      /*
+       * And it has to be something a save will carry. The record named no state either side, so
+       * the change set — which drops any group whose first state matches its last — compared it
+       * to itself, found no difference and discarded it. The rewrite was on the page and
+       * undoable while the save counted nothing, wrote nothing and said nothing about it.
+       */
+      step('isTheDocumentRewriteSavable');
+      const rewritePlan = await engine.previewWritePlan();
+      const rewriteWrite = (rewritePlan?.writes ?? []).find((w) => w.kind === 'document');
+      const inTheChangeSet = engine.records.some(
+        (r) => r.kind === 'replace' && r.detail?.scope === 'document',
+      );
+      results.theWholeDocumentApplyIsSomethingToSave = {
+        netChanges: engine.records.length,
+        itIsInTheChangeSet: inTheChangeSet,
+        planReason: rewriteWrite?.reason ?? null,
+        // Serializing is the right delivery for a document rewrite, so the reason has to say
+        // that rather than blame a missing container, which is what it used to report.
+        planWarnings: rewriteWrite?.warnings ?? [],
+        theBytesCarryTheRewrite: (rewriteWrite?.after ?? '').includes('Case study, rewritten'),
+        thePromptMentionsIt: /Rewrite the HTML document/.test(engine.buildSavePrompt()),
+        ok:
+          inTheChangeSet &&
+          Boolean(rewriteWrite) &&
+          (rewriteWrite?.after ?? '').includes('Case study, rewritten') &&
+          (rewriteWrite?.warnings ?? []).some((w) =>
+            /the whole document was rewritten in the code panel/.test(w),
+          ) &&
+          /Rewrite the HTML document/.test(engine.buildSavePrompt()),
+      };
+
       step('undoTheDocumentApplyThenTheMove');
       api.undo();
       await frames();

@@ -1154,6 +1154,23 @@ function tryPatchDocument(
   if (!records.length) return null;
 
   /*
+   * A whole-document rewrite is delivered by serializing the page, not by patching it.
+   *
+   * Declined here rather than attempted, so the plan gives the true reason. The record names
+   * no element — it *is* the document — so the structural path below found no container for it
+   * and reported "no container was recorded for Rewrite the HTML document", which describes a
+   * missing anchor rather than the thing that actually happened. The outcome was always going
+   * to be the serialized page; only the sentence was wrong.
+   */
+  const documentRewrite = records.some(
+    (record) => record.kind === 'replace' && record.detail?.scope === 'document',
+  );
+  if (documentRewrite) {
+    why.push('the whole document was rewritten in the code panel');
+    return null;
+  }
+
+  /*
    * Content edits first, containers second, and the order is the whole trick.
    *
    * A container patch replaces everything between its tags, so it and an attribute edit on one
