@@ -1003,23 +1003,62 @@ type NodePath = readonly number[];
  */
 export type IdentityMap = ReadonlyArray<readonly [NodePath, string]>;
 
-/** Snapshot the identity of everything under `el`, for `writeChildren` to restore. */
-export function captureIdentity(el: HTMLElement): IdentityMap {
+/**
+ * Elements that count as children for the purpose of a path.
+ *
+ * One helper for both directions, which is the only way the two can be guaranteed to agree:
+ * a path is meaningless unless whoever reads it enumerates exactly what whoever wrote it did.
+ *
+ * `skip` is for a caller whose markup does not contain everything the live tree does. The
+ * whole-document apply is the one that needs it — the buffer it writes leaves out the overlay
+ * host and every `<script>`, and reattaches them afterwards, so those take no slot on either
+ * side and the indices line up.
+ */
+function keptChildren(parent: Element, skip?: (el: Element) => boolean): HTMLElement[] {
+  return Array.from(parent.children).filter(
+    (child): child is HTMLElement => child instanceof HTMLElement && !skip?.(child),
+  );
+}
+
+/** Snapshot the identity of everything under `el`, for `restoreIdentity` to hand back. */
+export function captureIdentity(el: HTMLElement, skip?: (child: Element) => boolean): IdentityMap {
   const out: Array<readonly [NodePath, string]> = [];
   const walk = (parent: Element, path: readonly number[]): void => {
-    const children = Array.from(parent.children);
+    const children = keptChildren(parent, skip);
     for (let i = 0; i < children.length; i += 1) {
-      const child = children[i];
-      if (!(child instanceof HTMLElement)) continue;
       const here = [...path, i];
       // Only what already has one: minting keys here would name elements nothing refers to.
-      const key = keys.get(child);
+      const key = keys.get(children[i]);
       if (key) out.push([here, key]);
-      walk(child, here);
+      walk(children[i], here);
     }
   };
   walk(el, []);
   return out;
+}
+
+/**
+ * Hand a snapshot's identities to whatever now sits in the same places.
+ *
+ * Separate from `writeChildren` because the whole-document apply rewrites two containers and
+ * has to capture the state it is leaving before it writes the one it is entering, in both
+ * directions. Same operation, different choreography.
+ */
+export function restoreIdentity(
+  el: HTMLElement,
+  identity: IdentityMap,
+  skip?: (child: Element) => boolean,
+): void {
+  for (const [path, key] of identity) {
+    let node: HTMLElement | undefined = el;
+    for (const index of path) {
+      node = node ? keptChildren(node, skip)[index] : undefined;
+      if (!node) break;
+    }
+    if (!node) continue;
+    keys.set(node, key);
+    keyed.set(key, new WeakRef(node));
+  }
 }
 
 /**
@@ -1033,17 +1072,7 @@ export function captureIdentity(el: HTMLElement): IdentityMap {
 export function writeChildren(el: HTMLElement, markup: string, identity?: IdentityMap): void {
   const target = live(el);
   target.innerHTML = markup;
-  if (!identity?.length) return;
-  for (const [path, key] of identity) {
-    let node: Element | undefined = target;
-    for (const index of path) {
-      node = node?.children[index];
-      if (!node) break;
-    }
-    if (!(node instanceof HTMLElement)) continue;
-    keys.set(node, key);
-    keyed.set(key, new WeakRef(node));
-  }
+  if (identity?.length) restoreIdentity(target, identity);
 }
 
 /**

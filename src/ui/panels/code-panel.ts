@@ -2,7 +2,12 @@ import { css, html, nothing, type TemplateResult } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
 import { HOST_TAG } from '../../core/constants.js';
 import { labelFor, nearestSourceRef } from '../../core/dom.js';
-import { setInnerHTML } from '../../core/mutations.js';
+import {
+  captureIdentity,
+  restoreIdentity,
+  setInnerHTML,
+  type IdentityMap,
+} from '../../core/mutations.js';
 import { copyToClipboard } from '../../core/design-system.js';
 import { formatHTML, sanitizeFragment, scrubElement } from '../../core/sanitize.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
@@ -552,6 +557,36 @@ export class HeoCodePanel extends HeoElement {
       for (const { clone, inHead } of scripts) (inHead ? doc.head : doc.body).appendChild(clone);
     };
 
+    /*
+     * The identity of every element the rest of the undo stack refers to, carried across.
+     *
+     * This is the broadest rewrite in the editor: two `innerHTML` assignments over the whole
+     * page, in both directions. Without this, every command below it on the stack was left
+     * holding a node that no longer existed — and since re-inserting a detached node is silent
+     * rather than an error, undoing one of them put a corpse back into the live tree beside its
+     * replacement. That is the same defect the inline text edit had, at the scale of a document.
+     *
+     * Captured on the way *out* rather than up front, which is what makes it correct in both
+     * directions without predicting anything. Whichever state is about to be overwritten is the
+     * one that still has its nodes, so that is the moment to write down where its identities
+     * live; whichever state is being restored has a snapshot from the last time it was left.
+     * The first `apply` therefore records the page as the user built it, and has nothing to
+     * restore, which is exactly right — the incoming tree is brand new.
+     */
+    const identities = new Map<string, { head: IdentityMap; body: IdentityMap }>();
+    const capture = (): { head: IdentityMap; body: IdentityMap } => ({
+      head: captureIdentity(doc.head, notInTheBuffer),
+      body: captureIdentity(doc.body, notInTheBuffer),
+    });
+    const swap = (leaving: string, entering: string, state: typeof before): void => {
+      identities.set(leaving, capture());
+      write(state);
+      const known = identities.get(entering);
+      if (!known) return;
+      restoreIdentity(doc.head, known.head, notInTheBuffer);
+      restoreIdentity(doc.body, known.body, notInTheBuffer);
+    };
+
     this.editor.history.commit({
       label: 'Edit the full document',
       subject: 'markup:document',
@@ -563,8 +598,8 @@ export class HeoCodePanel extends HeoElement {
         detail: { html: this.draft, scope: 'document' },
         at: Date.now(),
       },
-      apply: () => write(after),
-      revert: () => write(before),
+      apply: () => swap('before', 'after', after),
+      revert: () => swap('after', 'before', before),
     });
     this.dirty = false;
     this.#loadedFor = null;
@@ -652,6 +687,27 @@ function bodyMarkup(): string {
     }
   }
   return clone.innerHTML;
+}
+
+/**
+ * Elements the whole-document buffer does not contain, and therefore does not count.
+ *
+ * The exclusions `bodyMarkup` and `headMarkupExcludingManagedAndScripts` make, in one
+ * predicate, so that `captureIdentity` and `restoreIdentity` walk the same tree the buffer
+ * describes. A `<script>` sitting between two paragraphs would otherwise shift every element
+ * after it by one slot on the live side and not on the written side, and an identity would be
+ * handed to the wrong element — which is worse than handing it to none, because it is silent.
+ *
+ * Both containers share it rather than getting one each: the overlay host only ever appears in
+ * `<body>` and the generated stylesheets only in `<head>`, so a single test covers both without
+ * either predicate having to know which container it is being asked about.
+ */
+function notInTheBuffer(el: Element): boolean {
+  return (
+    el.tagName.toLowerCase() === HOST_TAG ||
+    el.localName === 'script' ||
+    el.hasAttribute('data-heo-generated')
+  );
 }
 
 /**

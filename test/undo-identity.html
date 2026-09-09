@@ -24,19 +24,38 @@
         npm run build:lib && npm run check:undo
   -->
   <style>
-    body { margin: 0; padding: 24px; font-family: system-ui, sans-serif; line-height: 1.7; }
-    li { padding: 6px 0; }
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: system-ui, sans-serif;
+      line-height: 1.7;
+    }
+
+    li {
+      padding: 6px 0;
+    }
   </style>
 </head>
 
 <body>
   <h1 id="title">Case study</h1>
+  <!--
+    A script sitting between two elements, which is what makes the whole-document case
+    discriminating: the buffer leaves scripts out and reattaches them at the end, so every
+    element after this one sits at a different index in the live tree than in the buffer.
+    An identity map that counted raw children would hand a key to the wrong element.
+  -->
+  <script>window.__aScriptInTheMiddle = true;</script>
   <section>
     <p id="lead">Loose <b id="mover">moved emphasis</b> prose that sits above the list.</p>
     <ul id="list">
-      <li id="one"><strong>Directional survey.</strong> Instead of relying on huge studies that can take months, I ran a <b id="inner">directional survey</b> and had numbers in a week.</li>
-      <li id="two"><strong>Alignment workshop.</strong> A remote session with Engineering and Product, mapping the failure modes onto the existing flow.</li>
-      <li id="three">Prototype rounds, each one <b id="narrow">narrowing the set</b> of questions the assistant answers on its own.</li>
+      <li id="one"><strong>Directional survey.</strong> Instead of relying on huge studies that can take months, I ran a
+        <b id="inner">directional survey</b> and had numbers in a week.
+      </li>
+      <li id="two"><strong>Alignment workshop.</strong> A remote session with Engineering and Product, mapping the
+        failure modes onto the existing flow.</li>
+      <li id="three">Prototype rounds, each one <b id="narrow">narrowing the set</b> of questions the assistant answers
+        on its own.</li>
     </ul>
   </section>
 
@@ -47,6 +66,10 @@
 
   <script>
     (async () => {
+      // A document apply reattaches a clone of every script, and a cloned script runs again.
+      // This driver must not mount a second overlay and start over halfway through its own run.
+      if (window.__undoIdentityRan) return;
+      window.__undoIdentityRan = true;
       const errors = [];
       window.addEventListener('error', (e) => errors.push('error: ' + e.message));
       window.addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
@@ -307,12 +330,101 @@
       };
 
       /* ------------------------------------------------------------------ *
-       * 5. And after all of it, the save still reaches the file as edits.
+       * 5. The broadest rewrite there is: Apply in the whole-document view,
+       *    with a move still on the stack underneath it.
+       * ------------------------------------------------------------------ */
+      step('applyTheWholeDocument');
+      const deepFind = (tag, root = document) => {
+        const found = root.querySelector ? root.querySelector(tag) : null;
+        if (found) return found;
+        for (const el of root.querySelectorAll ? root.querySelectorAll('*') : []) {
+          if (!el.shadowRoot) continue;
+          const inner = deepFind(tag, el.shadowRoot);
+          if (inner) return inner;
+        }
+        return null;
+      };
+
+      // A move to sit underneath the document rewrite, on an element the buffer will reparse.
+      const travelling = byId('added-emphasis');
+      const cameFrom = travelling?.parentElement?.id ?? null;
+      await dragInto(travelling, byId('two'));
+      const depthBeforeTheDocumentApply = engine.history.size;
+
+      /*
+       * Straight into the store, because `select()` declines `<html>` — the whole-document view
+       * is reached from the tree, not by clicking the page. What is under test is the apply, so
+       * this puts the panel on the target the user would have given it.
+       */
+      engine.store.patch({ selected: document.documentElement });
+      engine.openCode('html');
+      await frames();
+      const docPanel = deepFind('heo-code-panel');
+      let applied = false;
+      if (docPanel) {
+        await docPanel.updateComplete;
+        await frames();
+        docPanel.draft = docPanel.draft.replace('Case study', 'Case study, rewritten');
+        docPanel.dirty = true;
+        await docPanel.updateComplete;
+        const button = Array.from(docPanel.shadowRoot.querySelectorAll('button')).find(
+          (b) => b.textContent.trim().toLowerCase().startsWith('apply'),
+        );
+        if (button) { button.click(); applied = true; }
+        await frames();
+        await wait(120);
+      }
+      results.theWholeDocumentApplyLands = {
+        panelFound: Boolean(docPanel),
+        applied,
+        title: byId('title')?.textContent ?? null,
+        undoDepth: engine.history.size,
+        depthBefore: depthBeforeTheDocumentApply,
+        // Promoted from a diagnostic: the group after this one passed for the wrong reason while
+        // `select()` was quietly declining `<html>` and the panel was applying to a `<b>` instead.
+        theTargetWasTheWholeDocument: engine.store.value.selected === document.documentElement,
+        ok: engine.store.value.selected === document.documentElement && applied && byId('title')?.textContent === 'Case study, rewritten' &&
+          engine.history.size === depthBeforeTheDocumentApply + 1,
+      };
+
+      step('undoTheDocumentApplyThenTheMove');
+      api.undo();
+      await frames();
+      const afterUndoingTheDocument = {
+        title: byId('title')?.textContent ?? null,
+        travellingNodes: document.querySelectorAll('#added-emphasis').length,
+        travellingParent: byId('added-emphasis')?.parentElement?.id ?? null,
+      };
+      api.undo();
+      await frames();
+      /*
+       * The document rewrite reparsed the whole body, so the node the move was holding is gone.
+       * Its identity has to have been handed to the element that replaced it, or undoing the
+       * move puts the old one back beside its replacement — the duplicate, at page scale.
+       */
+      results.aDocumentRewriteDoesNotStrandTheStackBeneathIt = {
+        cameFrom,
+        afterUndoingTheDocument,
+        travellingNodes: document.querySelectorAll('#added-emphasis').length,
+        whereItIs: Array.from(document.querySelectorAll('#added-emphasis')).map(
+          (el) => el.parentElement?.id ?? el.parentElement?.localName ?? null,
+        ),
+        theScriptIsStillThere: window.__aScriptInTheMiddle === true,
+        ok:
+          afterUndoingTheDocument.title === 'Case study' &&
+          afterUndoingTheDocument.travellingNodes === 1 &&
+          afterUndoingTheDocument.travellingParent === 'two' &&
+          document.querySelectorAll('#added-emphasis').length === 1 &&
+          byId('added-emphasis')?.parentElement?.id === cameFrom,
+      };
+
+      /* ------------------------------------------------------------------ *
+       * 6. And after all of it, the save still reaches the file as edits.
        * ------------------------------------------------------------------ */
       step('thePlan');
       const plan = await engine.previewWritePlan();
       const write = (plan?.writes ?? []).find((w) => w.kind === 'document');
-      results.theSaveStillPatchesRatherThanRewrites = {
+      results.theSaveStillReachesTheFile = {
         reason: write?.reason ?? null,
         warnings: write?.warnings ?? [],
         unwritable: (plan?.unwritable ?? []).map((e) => e.reason.slice(0, 70)),
