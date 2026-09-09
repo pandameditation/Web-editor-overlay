@@ -1,5 +1,6 @@
 import {
   BLOCK_ATTR,
+  EDITING_ATTR,
   HOST_TAG,
   INJECTED_ATTR,
   INSERTED_ATTR,
@@ -702,8 +703,8 @@ export function exportHTML(
     el.removeAttribute('contenteditable');
   }
 
-  for (const el of Array.from(clone.querySelectorAll('[data-heo-editing]'))) {
-    el.removeAttribute('data-heo-editing');
+  for (const el of Array.from(clone.querySelectorAll(`[${EDITING_ATTR}]`))) {
+    el.removeAttribute(EDITING_ATTR);
   }
 
   /*

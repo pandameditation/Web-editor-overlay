@@ -116,12 +116,30 @@ export function anchorFor(el: HTMLElement, depth = 6): ElementAnchor {
  *
  * `<body>` is the floor: it is unique in any document, so resolution can always land there.
  * `<html>` is not included — nothing is ever a change to it.
+ *
+ * A build marker is deliberately *not* a reason to stop, and that was a real bug.
+ *
+ * An id is a name the file resolution can act on directly. A marker only looks like one: it
+ * has to be checked against the file being patched first, because on a component page it
+ * names a template instead — so the resolution reads `line`/`column`, which are filled in
+ * only after that check, and never reads `src` itself. Ending the chain on a marker
+ * therefore handed the patcher a container with no id, no position and no parent, and the
+ * one thing left to try was whether the tag happened to be unique in the file.
+ *
+ * That is how bolding a few words rewrote a whole page. The fresh `<b>` has no marker of its
+ * own, so the edit on it had to be placed by its position inside its container — and the
+ * container was an `<li>`, whose chain stopped at itself. `<li>` is not unique in any real
+ * page, so the answer was "could not find this <li> in the file" and the file was serialized.
+ *
+ * Carrying on costs a few more links on an instrumented page and gives every one of them a
+ * positional route as well as a marker, which is what the marker's own check needs as a
+ * fallback anyway.
  */
 function parentAnchor(el: HTMLElement, depth: number): ElementAnchor | undefined {
   const parent = el.parentElement;
   if (depth <= 0 || !parent || parent === document.documentElement) return undefined;
-  // An ancestor with an id or a build marker is findable on its own, so the chain ends there.
-  const named = Boolean(parent.id) || parent.hasAttribute(SOURCE_ATTR) || parent === document.body;
+  // An ancestor with an id is findable on its own, and `<body>` is unique by definition.
+  const named = Boolean(parent.id) || parent === document.body;
   return anchorFor(parent, named ? 0 : depth - 1);
 }
 
@@ -167,7 +185,19 @@ function classSignature(el: HTMLElement): string | undefined {
  * already holds the new value by the time this is committed; pass
  * `alreadyApplied` to `History.commit`.
  */
-export function setInnerHTML(el: HTMLElement, before: string, after: string): Command {
+/*
+ * `identity.before` has to come from the caller, and that is the whole reason it is a
+ * parameter. The snapshot for a markup string can only be taken while that string is what the
+ * element holds — true of `after` right now, and true of `before` only back when the edit
+ * started. `beginTextEdit` takes it there and hands it over here.
+ */
+export function setInnerHTML(
+  el: HTMLElement,
+  before: string,
+  after: string,
+  identity: { before?: IdentityMap } = {},
+): Command {
+  const afterIdentity = captureIdentity(el);
   return {
     label: 'Edit text',
     mergeKey: `text:${elementKey(el)}`,
@@ -180,10 +210,10 @@ export function setInnerHTML(el: HTMLElement, before: string, after: string): Co
       markupAfter: after,
     }),
     apply: () => {
-      el.innerHTML = after;
+      writeChildren(el, after, afterIdentity);
     },
     revert: () => {
-      el.innerHTML = before;
+      writeChildren(el, before, identity.before);
     },
   };
 }
@@ -200,10 +230,10 @@ export function setTextContent(el: HTMLElement, after: string): Command {
       after: exact(after),
     }),
     apply: () => {
-      el.textContent = after;
+      live(el).textContent = after;
     },
     revert: () => {
-      el.textContent = before;
+      live(el).textContent = before;
     },
   };
 }
@@ -559,10 +589,10 @@ export function insertNodes(
       },
     ),
     apply: () => {
-      for (const node of nodes) anchor.parent.insertBefore(node, anchor.before);
+      for (const node of nodes) placeNode(anchor.parent, live(node), anchor.before);
     },
     revert: () => {
-      for (const node of nodes) node.remove();
+      for (const node of nodes) live(node).remove();
     },
   };
 }
@@ -636,10 +666,10 @@ export function removeElement(el: HTMLElement): Command | null {
       before: exact(cleanMarkup(el)),
     }),
     apply: () => {
-      el.remove();
+      live(el).remove();
     },
     revert: () => {
-      parent.insertBefore(el, before);
+      placeNode(parent, live(el), before);
     },
   };
 }
@@ -661,10 +691,10 @@ export function duplicateElement(el: HTMLElement): { command: Command; node: HTM
       group: elementKey(clone),
     }),
     apply: () => {
-      parent.insertBefore(clone, before);
+      placeNode(parent, live(clone), before);
     },
     revert: () => {
-      clone.remove();
+      live(clone).remove();
     },
   };
   return { command, node: clone };
@@ -700,10 +730,10 @@ export function moveElement(
       },
     }),
     apply: () => {
-      targetParent.insertBefore(el, targetBefore);
+      placeNode(targetParent, live(el), targetBefore);
     },
     revert: () => {
-      originParent.insertBefore(el, originBefore);
+      placeNode(originParent, live(el), originBefore);
     },
   };
 }
@@ -748,10 +778,10 @@ export function moveCommandFromOrigin(
       },
     }),
     apply: () => {
-      targetParent.insertBefore(el, targetBefore);
+      placeNode(targetParent, live(el), targetBefore);
     },
     revert: () => {
-      origin.parent.insertBefore(el, origin.nextSibling);
+      placeNode(origin.parent, live(el), origin.nextSibling);
     },
   };
 }
@@ -790,12 +820,12 @@ export function wrapElement(
       group: elementKey(wrapper),
     }),
     apply: () => {
-      parent.insertBefore(wrapper, before);
-      mountPoint.appendChild(el);
+      placeNode(parent, live(wrapper), before);
+      live(mountPoint).appendChild(live(el));
     },
     revert: () => {
-      parent.insertBefore(el, wrapper);
-      wrapper.remove();
+      placeNode(parent, live(el), live(wrapper));
+      live(wrapper).remove();
     },
   };
   return { command, wrapper };
@@ -814,12 +844,14 @@ export function unwrapElement(el: HTMLElement): Command | null {
     subject: `node:${elementKey(el)}`,
     record: record(el, 'replace', `Unwrap ${labelFor(el)}, keeping its ${children.length} children`),
     apply: () => {
-      for (const child of children) parent.insertBefore(child, el);
-      el.remove();
+      const host = live(el);
+      for (const child of children) placeNode(parent, child, host);
+      host.remove();
     },
     revert: () => {
-      parent.insertBefore(el, before);
-      for (const child of children) el.appendChild(child);
+      const host = live(el);
+      placeNode(parent, host, before);
+      for (const child of children) host.appendChild(child);
     },
   };
 }
@@ -932,6 +964,107 @@ export function elementForKey(key: string): HTMLElement | null {
 }
 
 /**
+ * The element this one's identity now denotes.
+ *
+ * The fix for the one assumption in this file that does not hold. Commands close over live
+ * nodes, which is exactly right while nodes are only ever *moved* — `remove()` and
+ * `insertBefore` hand back the same object, which is what makes undo restore the element the
+ * user was looking at, form state and all.
+ *
+ * Writing an element's `innerHTML` is different in kind: every node under it is destroyed and
+ * a structurally identical set is parsed in their place. Any other command holding one of
+ * those nodes was left pointing at a corpse — and because re-inserting a detached node is
+ * silent rather than an error, undoing it put the corpse back into the live tree beside its
+ * replacement. Moving a `<b>` into a list item, replacing the item's text, then undoing both
+ * produced the `<b>` in two places at once.
+ *
+ * So a command resolves its target through this on the way in. The key is the identity; the
+ * node is only the current holder of it, and `writeChildren` hands the key on when it rebuilds.
+ *
+ * Falls back to the node it was given, which keeps this a no-op for everything that never had
+ * a key and for nodes that are merely detached, where the original *is* still the right answer.
+ */
+function live<T extends HTMLElement>(el: T): T {
+  const key = keys.get(el);
+  if (!key) return el;
+  return (keyed.get(key)?.deref() as T | undefined) ?? el;
+}
+
+/** Where a descendant sits, as a chain of element-child indices. */
+type NodePath = readonly number[];
+
+/**
+ * Which descendants of an element are already identified, and where they sit.
+ *
+ * Taken while a given markup string is what the element holds, so it can be handed back when
+ * that same string is written again. Element indices rather than child-node indices: the
+ * markup round-trips text nodes exactly, but indices that count them are needlessly brittle
+ * and buy nothing, since only elements carry keys.
+ */
+export type IdentityMap = ReadonlyArray<readonly [NodePath, string]>;
+
+/** Snapshot the identity of everything under `el`, for `writeChildren` to restore. */
+export function captureIdentity(el: HTMLElement): IdentityMap {
+  const out: Array<readonly [NodePath, string]> = [];
+  const walk = (parent: Element, path: readonly number[]): void => {
+    const children = Array.from(parent.children);
+    for (let i = 0; i < children.length; i += 1) {
+      const child = children[i];
+      if (!(child instanceof HTMLElement)) continue;
+      const here = [...path, i];
+      // Only what already has one: minting keys here would name elements nothing refers to.
+      const key = keys.get(child);
+      if (key) out.push([here, key]);
+      walk(child, here);
+    }
+  };
+  walk(el, []);
+  return out;
+}
+
+/**
+ * Rewrite an element's contents, carrying identity across to the new nodes.
+ *
+ * The markup is written the way it always was — the point is not to avoid reparsing but to
+ * stop reparsing from orphaning the commands that refer to what was there. Because the string
+ * being written is the same string the snapshot was taken against, the tree it produces has
+ * the same shape, so a path is an exact answer rather than a guess.
+ */
+export function writeChildren(el: HTMLElement, markup: string, identity?: IdentityMap): void {
+  const target = live(el);
+  target.innerHTML = markup;
+  if (!identity?.length) return;
+  for (const [path, key] of identity) {
+    let node: Element | undefined = target;
+    for (const index of path) {
+      node = node?.children[index];
+      if (!node) break;
+    }
+    if (!(node instanceof HTMLElement)) continue;
+    keys.set(node, key);
+    keyed.set(key, new WeakRef(node));
+  }
+}
+
+/**
+ * Put a node back where a command remembered it, tolerating an anchor that has moved on.
+ *
+ * Every structural command captures a parent and the sibling it sat before. A bare
+ * `insertBefore` with a stale sibling throws `NotFoundError`, which `History.undo` logs and
+ * then advances past anyway — leaving the command permanently out of step with the page. A
+ * stale *parent* is worse: it does not throw at all, it inserts into a detached tree and the
+ * element disappears with no error to show for it.
+ *
+ * So both are resolved through their identity first, and a sibling that is no longer where it
+ * was is treated as "at the end", which is what `replaceWithNodes` has always done.
+ */
+function placeNode(parent: Node, node: Node, before: Node | null): void {
+  const host = parent instanceof HTMLElement ? live(parent) : parent;
+  const sibling = before instanceof HTMLElement ? live(before) : before;
+  host.insertBefore(node, sibling && sibling.parentNode === host ? sibling : null);
+}
+
+/**
  * Position among element children, not child nodes.
  *
  * The prompt is read by a person or an agent looking at source, where whitespace
@@ -984,6 +1117,24 @@ function stripTags(html: string): string {
  * load restores the library but knows nothing about what in the page came from it.
  */
 export function cleanMarkup(el: HTMLElement, keep: readonly string[] = []): string {
+  return stripBookkeeping(el, keep).outerHTML;
+}
+
+/**
+ * The same, for an element's contents rather than the element itself.
+ *
+ * What a text patch writes between a tag pair. It used to write `innerHTML` raw, which put
+ * every `data-heo-src` the build had stamped on the inline tags inside an edited paragraph
+ * straight into the file — invisible in the save dialog, and in someone's codebase
+ * afterwards. The element's own attributes are not touched here because they are not part
+ * of what a text patch replaces.
+ */
+export function cleanInnerMarkup(el: HTMLElement, keep: readonly string[] = []): string {
+  return stripBookkeeping(el, keep).innerHTML;
+}
+
+/** A copy of `el` with the editor's own attributes taken off it and everything under it. */
+function stripBookkeeping(el: HTMLElement, keep: readonly string[]): HTMLElement {
   const clone = el.cloneNode(true) as HTMLElement;
   const kept = new Set(keep);
   for (const node of [clone, ...Array.from(clone.querySelectorAll('*'))]) {
@@ -994,7 +1145,7 @@ export function cleanMarkup(el: HTMLElement, keep: readonly string[] = []): stri
       }
     }
   }
-  return clone.outerHTML;
+  return clone;
 }
 
 /**

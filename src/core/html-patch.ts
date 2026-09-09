@@ -132,13 +132,41 @@ export function patchHTML(html: string, patches: readonly HtmlPatch[]): HtmlPatc
 
   if (!edits.length) return { html, applied, failed };
 
+  /*
+   * An edit swallowed whole by a text edit is redundant, not in competition.
+   *
+   * A text patch replaces everything between one element's tags, and its value is read from
+   * the live DOM — so an attribute the user changed on a child is already inside the bytes
+   * about to be written. Both edits describe the same intent and the wider one carries it.
+   *
+   * Reported as applied and dropped from the write, because that is exactly what it is:
+   * counting it as a failure took a whole save down to a rewrite over an edit that was
+   * already in hand. Bolding a few words and then styling the new `<b>` is the plain case —
+   * the text edit covers the paragraph, the style edit sits inside it.
+   *
+   * Containment, not mere overlap. Two edits that *partly* overlap disagree about the same
+   * bytes and one of them is wrong; that still has to surface below.
+   */
+  const swallowed = new Set<typeof edits[number]>();
+  for (const edit of edits) {
+    for (const other of edits) {
+      if (other === edit || other.patch.kind !== 'text') continue;
+      if (other.start <= edit.start && edit.end <= other.end) {
+        swallowed.add(edit);
+        break;
+      }
+    }
+  }
+  const placed = edits.filter((edit) => !swallowed.has(edit));
+  if (!placed.length) return { html, applied, failed };
+
   // Overlapping edits would corrupt each other, and two edits to one attribute is the
   // only way that happens — the last one recorded is the one the user last asked for.
   // Applied back to front so that earlier offsets stay valid as the text changes under them.
-  edits.sort((a, b) => b.start - a.start || b.end - a.end);
+  placed.sort((a, b) => b.start - a.start || b.end - a.end);
   let out = html;
   let previousStart = Number.POSITIVE_INFINITY;
-  for (const edit of edits) {
+  for (const edit of placed) {
     /*
      * Overlapping edits cannot both be applied, and the one that loses says so.
      *

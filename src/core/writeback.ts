@@ -13,7 +13,7 @@ import {
   type DeclarationPatch,
   type PatchFailure,
 } from './css-patch.js';
-import { cleanMarkup, elementOfRecord, anchorFor } from './mutations.js';
+import { cleanMarkup, cleanInnerMarkup, elementOfRecord, anchorFor } from './mutations.js';
 import {
   canResolve,
   elementText,
@@ -777,20 +777,23 @@ function reconcileContainers(
   records: readonly ChangeRecord[],
   generated: (el: HTMLElement) => boolean,
   why: string[],
+  /** The file being patched, so a container's build marker can be read as a position in it. */
+  documentPath: string,
   /** Bookkeeping attributes that are not bookkeeping for this write. See `cleanMarkup`. */
   keep: readonly string[] = [],
 ): { html: string } | null {
   const containers = new Map<string, ElementAnchor>();
   for (const record of records) {
     if (!STRUCTURAL.has(record.kind)) continue;
-    const parent = record.anchor?.parent;
+    const recorded = record.anchor?.parent;
     // No container recorded: not placeable. Whether it can be *found* is settled below,
     // where both the file and the live page get a say — a tag unique in both is enough,
     // which is what makes `<body>` a usable container.
-    if (!parent) {
+    if (!recorded) {
       why.push(`no container was recorded for “${record.summary}”`);
       return null;
     }
+    const parent = placeMarkers(recorded, documentPath);
     containers.set(anchorKey(parent), parent);
   }
   if (!containers.size) return null;
@@ -832,7 +835,7 @@ function reconcileContainers(
     let host = el.parentElement;
     let hostAnchor: ElementAnchor | undefined;
     while (host) {
-      const candidate = containerAnchorOf(host);
+      const candidate = placeMarkers(containerAnchorOf(host), documentPath);
       if (canResolve(html, candidate)) {
         hostAnchor = candidate;
         break;
@@ -1020,18 +1023,15 @@ function isEditorNode(el: Element): boolean {
  * wrong element, which is the one outcome worth more care than a reformatted file.
  */
 function anchorInFile(record: ChangeRecord, documentPath: string): ElementAnchor | null {
-  const anchor = record.anchor;
-  if (!anchor) return null;
+  const raw = record.anchor;
+  if (!raw) return null;
+  const anchor = placeMarkers(raw, documentPath);
   // A structural change is placed by rebuilding its container, which needs the container
   // findable rather than the element.
   if (STRUCTURAL.has(record.kind)) return anchor.parent ?? null;
   if (!PATCHABLE.has(record.kind)) return null;
 
-  const marker = anchor.src ? parseSourceMarker(anchor.src) : null;
-  const inThisFile = marker != null && samePath(marker.file, documentPath);
-  if (inThisFile && marker) {
-    return { ...anchor, line: marker.line, column: marker.column };
-  }
+  if (anchor.line != null) return anchor;
   if (anchor.id) return { tag: anchor.tag, id: anchor.id };
   // Nothing durable on the element itself. For a text edit the text being replaced can
   // stand in, provided the file contains it once — which is what makes a plain page with
@@ -1050,6 +1050,39 @@ function anchorInFile(record: ChangeRecord, documentPath: string): ElementAnchor
    */
   if (anchor.parent && (anchor.nth != null || anchor.nthTag != null)) return anchor;
   return null;
+}
+
+/** True when any of `roots` is a strict ancestor of `el`. */
+function enclosedBy(el: HTMLElement, roots: ReadonlySet<HTMLElement>): boolean {
+  if (!roots.size) return false;
+  for (let at = el.parentElement; at; at = at.parentElement) {
+    if (roots.has(at)) return true;
+  }
+  return false;
+}
+
+/**
+ * Turn every build marker in an anchor chain into a position in *this* file.
+ *
+ * The whole chain, not just the anchor itself, and that is the point of it. A marker is the
+ * strongest thing an anchor can carry, but the resolution reads `line` and `column` rather
+ * than `src` — because whether a marker means anything depends on which file is being
+ * patched, and only this side knows that. Translating the top link and leaving the rest raw
+ * meant a container that carried a perfectly good marker was looked up as though it had
+ * nothing, which is how an edit inside an `<li>` rewrote a whole page.
+ *
+ * A marker naming another file is left alone rather than dropped: on a component page it
+ * describes a position in a template, and the positional route below is the honest one.
+ */
+function placeMarkers(anchor: ElementAnchor, documentPath: string): ElementAnchor {
+  const marker = anchor.src ? parseSourceMarker(anchor.src) : null;
+  const placed =
+    marker && samePath(marker.file, documentPath)
+      ? { ...anchor, line: marker.line, column: marker.column }
+      : anchor;
+  if (!placed.parent) return placed;
+  const parent = placeMarkers(placed.parent, documentPath);
+  return parent === placed.parent ? placed : { ...placed, parent };
 }
 
 /** Two paths for the same file, allowing for one being root-relative and one not. */
@@ -1132,6 +1165,14 @@ function tryPatchDocument(
   const structural = records.filter((record) => STRUCTURAL.has(record.kind));
 
   /*
+   * The one `data-heo-*` attribute that is not bookkeeping for this write.
+   *
+   * Hoisted because both places that serialize live markup into the file have to agree
+   * about it — a text patch's value and a container rebuild's fresh child.
+   */
+  const keepAttributes = blockLibrarySeed.trim() ? [BLOCK_ATTR] : [];
+
+  /*
    * Values come from the live element, not from the record.
    *
    * A style record's `after` is one declaration's value and a class record's is one class
@@ -1141,6 +1182,26 @@ function tryPatchDocument(
    * Keyed on the anchor and the attribute so that collapsing happens by construction.
    */
   const wanted = new Map<string, HtmlPatch>();
+
+  /*
+   * Elements whose whole content is about to be written out of the live DOM.
+   *
+   * A text patch replaces everything between its tags, so it and an edit to something
+   * *inside* it both want the same bytes — and `patchHTML` refuses overlapping edits
+   * outright, which took the whole save down to a rewrite. There is nothing to arbitrate,
+   * though: the text patch's value is read from the live element, so the descendant's new
+   * attribute is already inside what gets written. The inner patch is redundant, not in
+   * competition, and this is the same reasoning that orders the container rebuild last.
+   *
+   * Bolding a few words is how this surfaced. It commits a text edit on the paragraph, and
+   * styling the new `<b>` afterwards is an attribute edit strictly inside it.
+   */
+  const rewritten = new Set<HTMLElement>();
+  for (const record of records) {
+    if (record.kind !== 'text') continue;
+    const el = elementOfRecord(record);
+    if (el) rewritten.add(el);
+  }
 
   for (const record of records) {
     if (STRUCTURAL.has(record.kind)) continue;
@@ -1163,6 +1224,8 @@ function tryPatchDocument(
      */
     const live = elementOfRecord(record);
     if (structural.length && live?.closest(`[${INSERTED_ATTR}]`)) continue;
+    // Already carried by an ancestor's text patch. See `rewritten`.
+    if (live && enclosedBy(live, rewritten)) continue;
 
     const anchor = anchorInFile(record, documentPath);
     if (!anchor) {
@@ -1173,9 +1236,16 @@ function tryPatchDocument(
     const el = elementOfRecord(record) ?? liveElementFor(record.anchor ?? anchor);
 
     if (record.kind === 'text') {
-      // No live element is fine here: the recorded `after` is the text, and for a text
-      // anchor there is nothing else to read anyway.
-      const value = el ? el.innerHTML : (record.after ?? '');
+      /*
+       * No live element is fine here: the recorded `after` is the text, and for a text
+       * anchor there is nothing else to read anyway.
+       *
+       * Cleaned rather than taken raw, for the same reason the container rebuild cleans a
+       * child it serializes. The live DOM is stamped with `data-heo-src` by the build and
+       * with the editor's own bookkeeping, and a paragraph holding marked-up inline tags —
+       * `<strong>`, a couple of `<b>` — wrote every one of those attributes into the file.
+       */
+      const value = el ? cleanInnerMarkup(el, keepAttributes) : (record.after ?? '');
       wanted.set(`${anchorKey(anchor)}|#text`, { anchor, kind: 'text', value });
       continue;
     }
@@ -1218,7 +1288,8 @@ function tryPatchDocument(
       structural,
       generated,
       why,
-      blockLibrarySeed.trim() ? [BLOCK_ATTR] : [],
+      documentPath,
+      keepAttributes,
     )
     : { html: result.html };
   if (!reconciled) return null;

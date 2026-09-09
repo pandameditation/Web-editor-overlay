@@ -1,0 +1,480 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Editor overlay — bolding a few words must not cost the whole file</title>
+  <!--
+    One reported session, start to finish: a bullet full of inline emphasis, a few more words
+    bolded, the new tag styled, things rearranged, and a save.
+
+    Every failure it covers had the same shape — the editor mistaking its own work, or the
+    build's, for something it could not account for, and answering by rewriting the file.
+
+      - A container carrying `data-heo-src` was where the anchor chain stopped, and the
+        resolution never reads that attribute, so an edit inside an `<li>` reported "could not
+        find this <li> in the file" and 182 of 185 lines were rewritten.
+      - A drag ran with provenance attribution on, so moving anything inside an element that
+        had been edited announced that "the page replaced your edit" and took the element's
+        save away.
+      - The file comparison counted only an element's own text nodes, so wrapping words in a
+        `<b>` — or taking a `<strong>` off — made an untouched bullet look generated.
+      - Unticking a change left the file plan on screen describing the change set from before.
+
+        npm run build:lib && npm run check:inline
+  -->
+  <style>
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: system-ui, sans-serif;
+    }
+  </style>
+</head>
+
+<body>
+  <h1 id="title">Case study</h1>
+  <nav>
+    <ul>
+      <li><a href="#a">Overview</a></li>
+      <li><a href="#b">Process</a></li>
+    </ul>
+  </nav>
+  <section>
+    <ul>
+      <li><strong>Directional survey.</strong> With no internal research budget, <b>I secured $100</b> of donated PickFu
+        credit and used it to reach <b>30 US travelers</b>. After reviewing the protocol with PM and UX team, we asked
+        five forced-choice statements and one open question: <b>what could an airline AI chatbot do that would make
+          someone angry enough to quit?</b> After analyzing the results, I was able to present every finding with
+        Engineering, Product Management and the wider project team <b>in the same week!</b></li>
+      <li><strong>Alignment workshop.</strong> In a remote session with Engineering and Product, we mapped the failure
+        modes onto the existing flow and agreed which ones the assistant had to refuse outright.</li>
+      <li><strong>Prototype rounds.</strong> Three rounds of clickable prototypes, each one narrowing the set of
+        questions the assistant would answer without a human in the loop.</li>
+    </ul>
+  </section>
+  <p id="tail">Written in the file, and the editor's to change.</p>
+
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+
+  <script>
+    (async () => {
+      const errors = [];
+      window.addEventListener('error', (e) => errors.push('error: ' + e.message));
+      window.addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+
+      const results = {};
+      const progress = document.getElementById('progress');
+      const step = (name) => { progress.textContent = name; };
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+      const page = decodeURIComponent(location.pathname).split('/').pop();
+      const directory = decodeURIComponent(location.pathname).replace(/[^/]*$/, '');
+      const disk = new Map();
+      const project = {
+        kind: 'directory',
+        label: 'memory',
+        resolve(url) {
+          const path = decodeURIComponent(new URL(url, location.href).pathname);
+          return path.startsWith(directory) ? path.slice(directory.length) : null;
+        },
+        read: async (path) => {
+          if (disk.has(path)) return disk.get(path);
+          try {
+            const text = await (await fetch('./' + path)).text();
+            disk.set(path, text);
+            return text;
+          } catch { return null; }
+        },
+        write: async (path, text) => { disk.set(path, text); },
+        ensureWritable: async () => true,
+        release: async () => { },
+      };
+      const source = await project.read(page);
+
+      /*
+       * Markers exactly as the Vite plugin makes them: present in the served DOM, absent from
+       * the file, and naming the real line and column of the opening tag. Stamped from here
+       * rather than written into the markup, because a marker in the file would be a marker
+       * the file resolution could find by accident.
+       */
+      const markerAt = (index) => {
+        const upto = source.slice(0, index);
+        return page + ':' + upto.split('\n').length + ':' + (index - (upto.lastIndexOf('\n') + 1) + 1);
+      };
+      /*
+       * Tags are looked for in the markup only, with comments and scripts blanked to spaces so
+       * the offsets still line up. This fixture's own head comment quotes the bug report, `<li>`
+       * and all, and matching that shifted every marker by one — which resolved a bullet's
+       * container to a list item in the `<nav>` and patched the edit into it. A marker naming
+       * the wrong place is trusted by design, so a fixture that produces one tests nothing.
+       */
+      const searchable = source.replace(
+        /<!--[\s\S]*?-->|<script\b[\s\S]*?<\/script\s*>/gi,
+        (block) => block.replace(/[^\n]/g, ' '),
+      );
+      const stampAll = (selector, needle) => {
+        let cursor = 0;
+        for (const el of document.querySelectorAll(selector)) {
+          const at = searchable.indexOf(needle, cursor);
+          if (at < 0) throw new Error('no marker source for ' + selector);
+          el.setAttribute('data-heo-src', markerAt(at));
+          cursor = at + 1;
+        }
+      };
+      stampAll('nav ul, section ul', '<' + 'ul>');
+      stampAll('li', '<' + 'li>');
+      stampAll('strong', '<' + 'strong>');
+      stampAll('b', '<' + 'b>');
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark' });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await engine.attachProject(project, { quiet: true });
+      await frames();
+
+      // Every toast the session produces, so a warning nobody should have seen is visible here.
+      const toasts = [];
+      engine.store.subscribe((s) => {
+        const said = s.toast;
+        if (said && toasts.at(-1) !== said.message) toasts.push(said.message);
+      });
+
+      const bullets = () => Array.from(document.querySelectorAll('section ul > li'));
+      const bulletFor = (words) => bullets().find((el) => el.textContent.includes(words));
+      const provenance = (el) => {
+        const found = el ? engine.provenanceOf(el) : null;
+        return found ? found.kind + '/' + found.confidence + (found.subtree ? '/subtree' : '') : null;
+      };
+      const renderedNotes = () => engine.records.filter((r) => r.detail && r.detail.rendered).length;
+      const documentWrite = (plan) => (plan?.writes ?? []).find((w) => w.kind === 'document');
+      const boxOf = (el) => el.getBoundingClientRect();
+      /** A pointer drag from the element to a point, held long enough to pass the dwell gate. */
+      const dragTo = async (el, x, y) => {
+        api.select(el);
+        engine.startDrag(el, boxOf(el).left + 4, boxOf(el).top + 4);
+        for (let i = 0; i < 8; i += 1) {
+          engine.updateDrag(x, y);
+          await wait(60);
+        }
+        engine.endDrag();
+        await frames();
+        await wait(150);
+      };
+      const markerCount = (html) =>
+        new DOMParser().parseFromString(html ?? '', 'text/html').querySelectorAll('[data-heo-src]').length;
+      const changedLines = (after) => {
+        const a = source.split('\n');
+        const b = (after ?? '').split('\n');
+        let changed = 0;
+        for (let i = 0; i < Math.max(a.length, b.length); i += 1) if (a[i] !== b[i]) changed += 1;
+        return changed;
+      };
+      /** The first line the write does not agree with the file about, trimmed for reading. */
+      const firstDifference = (after) => {
+        const a = source.split('\n');
+        const b = (after ?? '').split('\n');
+        for (let i = 0; i < Math.max(a.length, b.length); i += 1) {
+          if (a[i] === b[i]) continue;
+          return {
+            line: i + 1,
+            was: (a[i] ?? '').trim().slice(0, 90),
+            now: (b[i] ?? '').trim().slice(0, 90),
+          };
+        }
+        return null;
+      };
+
+      /* ------------------------------------------------------------------ *
+       * 1. Authored prose is the editor's, and the file comparison agrees.
+       * ------------------------------------------------------------------ */
+      step('authoredProse');
+      {
+        const marked = [
+          provenance(document.querySelector('section ul')),
+          ...bullets().map(provenance),
+          ...Array.from(document.querySelectorAll('section ul strong, section ul b')).map(provenance),
+          provenance(document.getElementById('tail')),
+        ].filter(Boolean);
+        results.theFileComparisonLeavesAuthoredProseAlone = {
+          anythingCalledGenerated: marked,
+          ok: marked.length === 0,
+        };
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 2. The user bolds a few more words in the first bullet.
+       * ------------------------------------------------------------------ */
+      step('boldSomeMoreWords');
+      const bullet = bulletFor('Directional survey');
+      engine.beginTextEdit(bullet);
+      await frames();
+      const run = Array.from(bullet.childNodes).find(
+        (node) => node.nodeType === 3 && node.nodeValue.includes('internal research budget'),
+      );
+      const at = run.nodeValue.indexOf('internal research budget');
+      const range = document.createRange();
+      range.setStart(run, at);
+      range.setEnd(run, at + 'internal research budget'.length);
+      getSelection().removeAllRanges();
+      getSelection().addRange(range);
+      engine.formatText('bold');
+      await frames();
+      engine.endTextEdit(true);
+      await frames();
+
+      const fresh = () =>
+        Array.from(bullet.querySelectorAll('b, strong')).find((el) => !el.hasAttribute('data-heo-src'));
+      results.boldingWordsMakesATagTheBuildNeverStamped = {
+        emphasisNow: bullet.querySelectorAll('b, strong').length,
+        // Nothing on it names a position in the file, which is why the edit below has to be
+        // placed by where it sits inside its container.
+        withoutAMarker: Array.from(bullet.querySelectorAll('b, strong'))
+          .filter((el) => !el.hasAttribute('data-heo-src')).length,
+        wraps: fresh()?.textContent ?? null,
+        ok: Boolean(fresh()) && fresh().textContent === 'internal research budget',
+      };
+      results.andTheBulletIsStillTheUsersToSave = {
+        theBullet: provenance(bullet),
+        theNewEmphasis: provenance(fresh()),
+        renderedNotes: renderedNotes(),
+        ok: provenance(bullet) === null && provenance(fresh()) === null && renderedNotes() === 0,
+      };
+
+      /* ------------------------------------------------------------------ *
+       * 3. And styles it, which is the edit that used to rewrite the file.
+       * ------------------------------------------------------------------ */
+      step('styleTheFreshTag');
+      api.select(fresh());
+      engine.setStyle('color', 'teal');
+      await frames();
+      {
+        const plan = await engine.previewWritePlan();
+        const write = documentWrite(plan);
+        const written = new DOMParser().parseFromString(write?.after ?? '', 'text/html');
+        const styled = Array.from(written.querySelectorAll('section ul > li b')).filter((el) =>
+          el.hasAttribute('style'),
+        );
+        /*
+         * The anchor chain is asserted directly, because it is the thing that was wrong. It used
+         * to stop at the `<li>` — "it has a marker, so it names itself" — and the file resolution
+         * never reads a marker, only a line and column, which nothing filled in for a container.
+         */
+        const chain = [];
+        for (let a = engine.records.find((r) => r.kind === 'style')?.anchor; a; a = a.parent) {
+          chain.push(a.tag);
+        }
+        results.anEditOnAFreshInlineTagIsPatchedInPlace = {
+          reason: write?.reason ?? null,
+          patched: /patched in place/.test(write?.reason ?? ''),
+          warnings: write?.warnings ?? [],
+          anchorChain: chain,
+          chainReachesTheBody: chain.at(-1) === 'body',
+          // One line of a two-hundred-line file, not the file.
+          changedLines: changedLines(write?.after),
+          styledTagText: styled[0]?.textContent ?? null,
+          nothingElseWasStyled: styled.length === 1,
+          /*
+           * Which line moved, not just how many. A marker resolved to the wrong `<li>` writes
+           * one line too, and everything above still says "patched in place" — so the line has
+           * to be named. This caught the edit landing in a list item in the `<nav>`.
+           */
+          theChangedLine: firstDifference(write?.after),
+          ok:
+            /patched in place/.test(write?.reason ?? '') &&
+            (write?.warnings ?? []).length === 0 &&
+            chain.at(-1) === 'body' &&
+            changedLines(write?.after) === 1 &&
+            firstDifference(write?.after)?.was.startsWith(
+              '<li><strong>Directional survey.</strong> With no internal research budget,',
+            ) === true &&
+            styled.length === 1 &&
+            styled[0]?.textContent === 'internal research budget',
+        };
+        /*
+         * And the build's markers stay out of it. A text patch used to write the element's
+         * `innerHTML` raw, so every `data-heo-src` on the inline tags inside an edited
+         * paragraph went into the file — invisible here, and in a codebase afterwards.
+         */
+        results.andNoBuildMarkerTravelsWithTheEditedProse = {
+          inTheLivePage: document.querySelectorAll('[data-heo-src]').length,
+          inTheWrite: markerCount(write?.after),
+          ok: document.querySelectorAll('[data-heo-src]').length > 0 && markerCount(write?.after) === 0,
+        };
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 4. Rearranging inside that bullet is the editor's own work.
+       * ------------------------------------------------------------------ */
+      step('rearrangeInsideTheBullet');
+      {
+        const before = toasts.length;
+        const emphases = Array.from(bullet.querySelectorAll('b'));
+        const mover = emphases.at(-1);
+        const landing = boxOf(emphases[0]);
+        await dragTo(mover, landing.left + 4, landing.top + 4);
+        const said = toasts.slice(before);
+        results.rearrangingInsideAnEditedElementIsNotThePageTakingItBack = {
+          moveRecorded: engine.records.some((r) => r.kind === 'move'),
+          toastsSince: said,
+          // The drag changes the watched element's text, and it ran with attribution on.
+          claimedThePageReplacedTheEdit: said.some((t) => /replaced your edit/.test(t)),
+          claimedThePageRebuiltIt: said.some((t) => /rebuilt this element/.test(t)),
+          theBullet: provenance(bullet),
+          theMovedTag: provenance(mover),
+          renderedNotes: renderedNotes(),
+          ok:
+            engine.records.some((r) => r.kind === 'move') &&
+            !said.some((t) => /replaced your edit|rebuilt this element/.test(t)) &&
+            provenance(bullet) === null &&
+            provenance(mover) === null &&
+            renderedNotes() === 0,
+        };
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 5. And so is reordering the bullets themselves.
+       * ------------------------------------------------------------------ */
+      step('reorderTheBullets');
+      {
+        const before = toasts.length;
+        const last = bullets().at(-1);
+        const top = boxOf(bullets()[0]);
+        await dragTo(last, top.left + 20, top.top + 4);
+        const marked = bullets().map(provenance).filter(Boolean);
+        results.reorderingSiblingsLeavesThemAllTheUsers = {
+          order: bullets().map((el) => el.textContent.slice(0, 12)),
+          reordered: bullets()[0].textContent.startsWith('Prototype'),
+          anythingCalledGenerated: marked,
+          toastsSince: toasts.slice(before),
+          ok: bullets()[0].textContent.startsWith('Prototype') && marked.length === 0,
+        };
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 6. Prose re-wrapped in a bullet the user never text-edited, so the
+       *    user-owned exemption is not what is being measured here.
+       * ------------------------------------------------------------------ */
+      step('reWrapProseElsewhere');
+      {
+        const other = bulletFor('Alignment workshop');
+        engine.unwrap(other.querySelector('strong'));
+        await frames();
+        // The pass a folder connected mid-session runs, with the edits in front of it.
+        const marked = await engine.establishContentBaseline();
+        await frames();
+        results.reWrappingProseKeepsAnElementMatchedToItsFile = {
+          emphasisRemoved: other.querySelectorAll('strong').length === 0,
+          markedByTheComparison: marked,
+          theBullet: provenance(other),
+          ok:
+            other.querySelectorAll('strong').length === 0 &&
+            marked === 0 &&
+            provenance(other) === null,
+        };
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 7. Which must not have cost the detection its point: words the file
+       *    does not have are still words something on the page produced.
+       * ------------------------------------------------------------------ */
+      step('aScriptWritesInline');
+      {
+        const tail = document.getElementById('tail');
+        const injected = document.createElement('span');
+        injected.textContent = ' Words no file has ever held.';
+        tail.appendChild(injected);
+        await frames();
+        const marked = await engine.establishContentBaseline();
+        const found = provenance(tail);
+        results.butWordsTheFileDoesNotHaveAreStillNoticed = {
+          markedByTheComparison: marked,
+          theParagraph: found,
+          ok: marked > 0 && found !== null && found.startsWith('file/'),
+        };
+        // Taken back out, so the plan below is about the user's edits and not this.
+        injected.remove();
+        await frames();
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 8. The whole session still reaches the file as edits to it.
+       * ------------------------------------------------------------------ */
+      step('theWholeSession');
+      const settled = await engine.previewWritePlan();
+      {
+        const write = documentWrite(settled);
+        const written = new DOMParser().parseFromString(write?.after ?? '', 'text/html');
+        results.theWholeSessionPatchesRatherThanRewrites = {
+          reason: write?.reason ?? null,
+          warnings: write?.warnings ?? [],
+          unwritable: (settled?.unwritable ?? []).map((e) => e.reason.slice(0, 70)),
+          // The reorder is in the bytes, so this is not passing by writing nothing.
+          bulletOrderInTheFile: Array.from(written.querySelectorAll('section ul > li')).map((el) =>
+            el.textContent.slice(0, 12),
+          ),
+          markersInTheWrite: markerCount(write?.after),
+          ok:
+            /patched in place/.test(write?.reason ?? '') &&
+            (write?.warnings ?? []).length === 0 &&
+            (settled?.unwritable ?? []).length === 0 &&
+            markerCount(write?.after) === 0 &&
+            (written.querySelector('section ul > li')?.textContent ?? '').startsWith('Prototype'),
+        };
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 9. And unticking a change changes what the plan on screen says.
+       * ------------------------------------------------------------------ */
+      step('untick');
+      {
+        for (const record of engine.records) engine.setChangeIncluded(record.id, false);
+        // The rebuild is debounced, and says it is working in the meantime.
+        const saidItWasWorking = engine.store.value.planning === true;
+        await wait(600);
+        const now = engine.store.value.writePlan;
+        results.untickingEveryChangeRebuildsThePlanOnScreen = {
+          saidItWasWorking,
+          theStoredPlanChanged: now !== settled,
+          documentWrites: (now?.writes ?? []).filter((w) => w.kind === 'document').length,
+          warningsStillShown: (now?.writes ?? []).flatMap((w) => w.warnings ?? []),
+          stillWorking: engine.store.value.planning,
+          ok:
+            saidItWasWorking &&
+            now !== settled &&
+            (now?.writes ?? []).filter((w) => w.kind === 'document').length === 0 &&
+            engine.store.value.planning === false,
+        };
+
+        engine.includeAllChanges();
+        await wait(600);
+        const back = engine.store.value.writePlan;
+        results.andTickingThemBackBringsTheWriteBack = {
+          documentWrites: (back?.writes ?? []).filter((w) => w.kind === 'document').length,
+          patched: /patched in place/.test(documentWrite(back)?.reason ?? ''),
+          ok:
+            (back?.writes ?? []).filter((w) => w.kind === 'document').length === 1 &&
+            /patched in place/.test(documentWrite(back)?.reason ?? ''),
+        };
+      }
+
+      const failed = Object.entries(results)
+        .filter(([, group]) => group && typeof group === 'object' && group.ok === false)
+        .map(([name]) => name);
+
+      document.getElementById('out').textContent = 'RESULTS:' + JSON.stringify(
+        { ok: failed.length === 0, failed, ...results, toasts, errors }, null, 1,
+      ) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"ok":false,"__fatal":' + JSON.stringify(String((e && e.stack) || e)) + '}:END';
+    });
+  </script>
+</body>
+
+</html>

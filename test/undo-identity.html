@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Editor overlay — undo across a rewritten subtree</title>
+  <!--
+    Commands hold live node references, which is what makes undo hand back the element the user
+    was looking at rather than a copy of it. Rewriting an element's contents breaks that
+    promise: every node under it is destroyed and a structurally identical set is parsed in
+    their place, so every other command on the stack referring to something in there was left
+    pointing at a corpse — and re-inserting a detached node is silent rather than an error.
+
+    Moving an emphasis into a list item, replacing the item's text, then undoing both put the
+    same element in two places at once. The same broken identity took the save down with it:
+    a text record whose element had been reparsed resolved to nothing, so the edit inside it
+    was no longer recognised as already carried, and the two patches were reported as
+    overlapping — "the whole file is rewritten".
+
+    And a durability watcher armed on a paragraph went on watching while the user edited a
+    `<b>` inside it, announcing that "the page replaced your edit" with the paragraph's own
+    prose on every keystroke.
+
+        npm run build:lib && npm run check:undo
+  -->
+  <style>
+    body { margin: 0; padding: 24px; font-family: system-ui, sans-serif; line-height: 1.7; }
+    li { padding: 6px 0; }
+  </style>
+</head>
+
+<body>
+  <h1 id="title">Case study</h1>
+  <section>
+    <p id="lead">Loose <b id="mover">moved emphasis</b> prose that sits above the list.</p>
+    <ul id="list">
+      <li id="one"><strong>Directional survey.</strong> Instead of relying on huge studies that can take months, I ran a <b id="inner">directional survey</b> and had numbers in a week.</li>
+      <li id="two"><strong>Alignment workshop.</strong> A remote session with Engineering and Product, mapping the failure modes onto the existing flow.</li>
+      <li id="three">Prototype rounds, each one <b id="narrow">narrowing the set</b> of questions the assistant answers on its own.</li>
+    </ul>
+  </section>
+
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+
+  <script>
+    (async () => {
+      const errors = [];
+      window.addEventListener('error', (e) => errors.push('error: ' + e.message));
+      window.addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+
+      const results = {};
+      const progress = document.getElementById('progress');
+      const step = (name) => { progress.textContent = name; };
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const byId = (id) => document.getElementById(id);
+      const boxOf = (el) => el.getBoundingClientRect();
+
+      const page = decodeURIComponent(location.pathname).split('/').pop();
+      const directory = decodeURIComponent(location.pathname).replace(/[^/]*$/, '');
+      const disk = new Map();
+      const project = {
+        kind: 'directory',
+        label: 'memory',
+        resolve(url) {
+          const path = decodeURIComponent(new URL(url, location.href).pathname);
+          return path.startsWith(directory) ? path.slice(directory.length) : null;
+        },
+        read: async (path) => {
+          if (disk.has(path)) return disk.get(path);
+          try { const t = await (await fetch('./' + path)).text(); disk.set(path, t); return t; }
+          catch { return null; }
+        },
+        write: async (path, text) => { disk.set(path, text); },
+        ensureWritable: async () => true,
+        release: async () => { },
+      };
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark' });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await engine.attachProject(project, { quiet: true });
+      await frames();
+
+      const toasts = [];
+      engine.store.subscribe((s) => {
+        const t = s.toast;
+        if (t && toasts.at(-1) !== t.message) toasts.push(t.message);
+      });
+      const saidThePageTookItBack = (from) =>
+        toasts.slice(from).filter((t) => /replaced your edit|rebuilt this element/.test(t));
+
+      /** Replace everything inside `el`, the way Cmd-A then typing does. */
+      const retypeAll = async (el, text) => {
+        engine.beginTextEdit(el);
+        await frames();
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        getSelection().removeAllRanges();
+        getSelection().addRange(range);
+        document.execCommand('insertText', false, text);
+        await frames();
+        engine.endTextEdit(true);
+        await frames();
+      };
+
+      /** Select from inside one node to inside another, then apply a format command. */
+      const formatAcross = async (host, startNode, endNode, command) => {
+        engine.beginTextEdit(host);
+        await frames();
+        const range = document.createRange();
+        range.setStart(startNode, 0);
+        range.setEnd(endNode, endNode.textContent.length);
+        getSelection().removeAllRanges();
+        getSelection().addRange(range);
+        engine.formatText(command);
+        await frames();
+        engine.endTextEdit(true);
+        await frames();
+      };
+
+      /** Drag `el` and hold over `target` long enough to re-parent into it. */
+      const dragInto = async (el, target) => {
+        api.select(el);
+        const from = boxOf(el);
+        engine.startDrag(el, from.left + 4, from.top + 4);
+        const to = boxOf(target);
+        const x = Math.round(to.left + to.width / 2);
+        const y = Math.round(to.top + to.height / 2);
+        for (let i = 0; i < 14; i += 1) {
+          engine.updateDrag(x, y);
+          await wait(60);
+        }
+        engine.endDrag();
+        await frames();
+        await wait(200);
+      };
+
+      /* ------------------------------------------------------------------ *
+       * 1. Move an emphasis into a bullet, replace every word of the
+       *    bullet, then undo both steps.
+       * ------------------------------------------------------------------ */
+      step('moveThenReplaceThenUndoBoth');
+      await dragInto(byId('mover'), byId('one'));
+      results.theEmphasisMovesIntoTheBullet = {
+        parent: byId('mover')?.parentElement?.id ?? null,
+        recorded: engine.records.map((r) => r.kind),
+        ok: byId('mover')?.parentElement?.id === 'one' &&
+          engine.records.some((r) => r.kind === 'move'),
+      };
+
+      await retypeAll(byId('one'), 'Replaced every word of this bullet.');
+      results.replacingTheTextTakesTheEmphasisWithIt = {
+        liText: byId('one').textContent,
+        emphasisLeftInTheDocument: document.querySelectorAll('b').length,
+        undoDepth: engine.history.size,
+        ok: byId('one').textContent === 'Replaced every word of this bullet.' &&
+          engine.history.size === 2,
+      };
+
+      step('undoBoth');
+      api.undo();
+      await frames();
+      const afterFirstUndo = {
+        emphasisInTheBullet: byId('one').querySelectorAll('b').length,
+        readsAsBefore: byId('one').textContent.startsWith('Directional survey. Instead of relying'),
+      };
+      api.undo();
+      await frames();
+      /*
+       * The reported bug, exactly. Undoing the text edit reparses the bullet, so the node the
+       * move command was holding no longer exists — and re-inserting a detached node is silent,
+       * so the emphasis went back above the list while its replacement stayed in the bullet.
+       */
+      results.undoingBothLeavesOneEmphasisNotTwo = {
+        afterFirstUndo,
+        moverNodes: document.querySelectorAll('#mover').length,
+        whereItIs: Array.from(document.querySelectorAll('#mover')).map(
+          (el) => el.parentElement?.id ?? el.parentElement?.localName ?? null,
+        ),
+        emphasisInTheBullet: Array.from(byId('one').querySelectorAll('b')).map((b) => b.textContent),
+        emphasisInTheLead: Array.from(byId('lead').querySelectorAll('b')).map((b) => b.textContent),
+        bulletReadsAsItDidAtTheStart:
+          byId('one').textContent.startsWith('Directional survey. Instead of relying'),
+        ok:
+          document.querySelectorAll('#mover').length === 1 &&
+          byId('mover').parentElement.id === 'lead' &&
+          byId('one').querySelectorAll('b').length === 1 &&
+          byId('one').textContent.startsWith('Directional survey. Instead of relying'),
+      };
+
+      /* ------------------------------------------------------------------ *
+       * 2. And redo has to be exact, more than once.
+       * ------------------------------------------------------------------ */
+      step('redoBoth');
+      api.redo(); await frames();
+      api.redo(); await frames();
+      const afterRedo = {
+        liText: byId('one').textContent,
+        emphasisLeftInTheDocument: document.querySelectorAll('b').length,
+      };
+      // A second round trip, because a repair that only works once is not a repair.
+      api.undo(); await frames();
+      api.undo(); await frames();
+      api.redo(); await frames();
+      api.redo(); await frames();
+      results.redoIsExactAndStaysExact = {
+        afterRedo,
+        afterASecondRoundTrip: {
+          liText: byId('one').textContent,
+          emphasisLeftInTheDocument: document.querySelectorAll('b').length,
+        },
+        ok:
+          afterRedo.liText === 'Replaced every word of this bullet.' &&
+          byId('one').textContent === 'Replaced every word of this bullet.' &&
+          afterRedo.emphasisLeftInTheDocument === document.querySelectorAll('b').length,
+      };
+      // Put the page back, so the rest of the run starts from the original markup.
+      api.undo(); await frames();
+      api.undo(); await frames();
+
+      /* ------------------------------------------------------------------ *
+       * 3. A watcher armed on a bullet, then a text edit on a `<b>` inside
+       *    it. Every keystroke changes the bullet's text, and the bullet is
+       *    not the element carrying the editing flag.
+       * ------------------------------------------------------------------ */
+      step('editInsideAWatchedElement');
+      const three = byId('three');
+      await retypeAll(three, 'Prototype rounds, each one narrowing the set of questions.');
+      await frames();
+      engine.insertMarkup('<b id="added-emphasis">answered without a human</b>', {
+        reference: three,
+        position: 'lastChild',
+      });
+      await frames();
+      const watchedFrom = toasts.length;
+      await retypeAll(byId('added-emphasis'), 'answered on its own');
+      await wait(200);
+      results.typingInsideAWatchedElementIsNotThePageTakingItBack = {
+        toastsSince: toasts.slice(watchedFrom),
+        claims: saidThePageTookItBack(watchedFrom),
+        theBullet: (() => {
+          const p = engine.provenanceOf(three);
+          return p ? p.kind + '/' + p.confidence : null;
+        })(),
+        ok: saidThePageTookItBack(watchedFrom).length === 0 && engine.provenanceOf(three) === undefined,
+      };
+
+      /* ------------------------------------------------------------------ *
+       * 4. Delete an emphasis, undo it, then format across a selection that
+       *    spans it and the prose either side — repeatedly.
+       * ------------------------------------------------------------------ */
+      step('deleteUndoFormatAcross');
+      const formatFrom = toasts.length;
+      const narrow = byId('narrow');
+      const two = byId('two');
+      engine.remove(byId('inner'));
+      await frames();
+      api.undo();
+      await frames();
+      results.theDeletedEmphasisComesBackOnce = {
+        emphasisInTheBullet: byId('one').querySelectorAll('b').length,
+        innerNodes: document.querySelectorAll('#inner').length,
+        ok: document.querySelectorAll('#inner').length === 1,
+      };
+
+      // Underline across the whole bullet, which spans the <strong>, the prose and the <b>.
+      const li = byId('one');
+      await formatAcross(li, li.firstChild.firstChild, li.lastChild, 'underline');
+      // Then delete and restore the emphasis again, and format again on top.
+      const stillThere = byId('one').querySelector('b');
+      if (stillThere) {
+        engine.remove(stillThere);
+        await frames();
+        api.undo();
+        await frames();
+      }
+      const again = byId('one').querySelector('b');
+      if (again && again.firstChild) {
+        await formatAcross(byId('one'), again.firstChild, again.firstChild, 'italic');
+      }
+      // And finally retype inside the emphasis, which is where the warning used to land.
+      const last = byId('one').querySelector('b');
+      if (last) await retypeAll(last, 'a directional survey');
+      await wait(200);
+
+      results.formattingAcrossNestedEmphasisNeverBlamesThePage = {
+        claims: saidThePageTookItBack(formatFrom),
+        toastsSince: toasts.slice(formatFrom),
+        bulletText: byId('one').textContent.slice(0, 70),
+        emphasisNodes: byId('one').querySelectorAll('b, u, i, strong').length,
+        // Nothing in there may have been written off as generated by the page.
+        anythingCalledRendered: Array.from(byId('one').querySelectorAll('*'))
+          .concat([byId('one')])
+          .map((el) => engine.provenanceOf(el))
+          .filter(Boolean)
+          .map((p) => p.kind + '/' + p.confidence),
+        ok:
+          saidThePageTookItBack(formatFrom).length === 0 &&
+          Array.from(byId('one').querySelectorAll('*'))
+            .concat([byId('one')])
+            .every((el) => engine.provenanceOf(el) === undefined),
+      };
+
+      /* ------------------------------------------------------------------ *
+       * 5. And after all of it, the save still reaches the file as edits.
+       * ------------------------------------------------------------------ */
+      step('thePlan');
+      const plan = await engine.previewWritePlan();
+      const write = (plan?.writes ?? []).find((w) => w.kind === 'document');
+      results.theSaveStillPatchesRatherThanRewrites = {
+        reason: write?.reason ?? null,
+        warnings: write?.warnings ?? [],
+        unwritable: (plan?.unwritable ?? []).map((e) => e.reason.slice(0, 70)),
+        ok:
+          /patched in place/.test(write?.reason ?? '') &&
+          (write?.warnings ?? []).length === 0 &&
+          (plan?.unwritable ?? []).length === 0,
+      };
+
+      const failed = Object.entries(results)
+        .filter(([, group]) => group && typeof group === 'object' && group.ok === false)
+        .map(([name]) => name);
+
+      document.getElementById('out').textContent = 'RESULTS:' + JSON.stringify(
+        { ok: failed.length === 0, failed, ...results, toasts, errors }, null, 1,
+      ) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"ok":false,"__fatal":' + JSON.stringify(String((e && e.stack) || e)) + '}:END';
+    });
+  </script>
+</body>
+
+</html>

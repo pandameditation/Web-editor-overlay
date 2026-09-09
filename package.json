@@ -43,6 +43,8 @@
     "check:timing": "node scripts/check-timing.mjs",
     "check:plugin": "node scripts/browser-check.mjs http://localhost:5180/probe.html 40000",
     "check:provenance": "node scripts/browser-check.mjs test/provenance.html 45000",
+    "check:inline": "node scripts/browser-check.mjs test/inline-edit-fidelity.html 45000",
+    "check:undo": "node scripts/browser-check.mjs test/undo-identity.html 60000",
     "check:late": "node scripts/browser-check.mjs test/late-mount.html 45000",
     "check:advisory": "node scripts/browser-check.mjs test/advisory.html 45000",
     "check:export": "node scripts/browser-check.mjs test/export.html 45000",

@@ -96,6 +96,16 @@ export const BLOCK_ATTR = 'data-heo-block';
 export const DRAGGING_ATTR = 'data-heo-dragging';
 
 /**
+ * Set on the element being typed into, for as long as the caret is in it.
+ *
+ * Read by the provenance signals as much as by the stylesheet, which is why it earns a name
+ * here. A live text edit is a stream of DOM changes the browser makes on the user's behalf,
+ * with no JavaScript frame to wrap — so `withoutProvenance` cannot cover it and this
+ * attribute is the only thing that says "the editor is responsible for what happens in here".
+ */
+export const EDITING_ATTR = 'data-heo-editing';
+
+/**
  * Set on `<html>` while a modal is open, so the page stops scrolling behind it.
  *
  * An attribute rather than an inline style because `exportHTML` clones `<html>`:

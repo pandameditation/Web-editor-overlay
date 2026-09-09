@@ -1,4 +1,4 @@
-import { HOST_TAG, IGNORE_ATTR, INSERTED_ATTR, SOURCE_ATTR } from './constants.js';
+import { EDITING_ATTR, HOST_TAG, IGNORE_ATTR, INSERTED_ATTR, SOURCE_ATTR } from './constants.js';
 
 /**
  * Who wrote this part of the page: the markup, or the JavaScript.
@@ -494,21 +494,41 @@ function attributable(node: Node): boolean {
     if (current instanceof Element) {
       if (current.tagName.toLowerCase() === HOST_TAG) return false;
       if (current.hasAttribute(IGNORE_ATTR)) return false;
-      /*
-       * The element being typed into, and everything under it.
-       *
-       * A live text edit is a stream of DOM changes the browser makes on the user's
-       * behalf — no JavaScript frame is involved, so `withoutProvenance` cannot cover
-       * it and only the observer sees it. Attributing those would mark an element as
-       * script-rendered *because* it was edited, which would let it be edited exactly
-       * once. This is the same protection `isSelfInflicted` gives the geometry
-       * observer, for the same reason.
-       */
-      if (current.hasAttribute('data-heo-editing')) return false;
+      // The element being typed into, and everything under it. See `underLiveTextEdit`.
+      if (current.hasAttribute(EDITING_ATTR)) return false;
     }
     current = current.parentNode;
   }
   return true;
+}
+
+/**
+ * Whether a live text edit is going on anywhere in this node's own tree.
+ *
+ * A live text edit is a stream of DOM changes the browser makes on the user's behalf — no
+ * JavaScript frame is involved, so `withoutProvenance` cannot cover it and only the
+ * observers see it. Counting those would mark an element as script-rendered *because* it was
+ * edited, which would let it be edited exactly once. This is the same protection
+ * `isSelfInflicted` gives the geometry observer, for the same reason.
+ *
+ * Both directions, and the downward one is the case that kept reappearing. A watcher armed on
+ * a paragraph by an earlier edit is still watching when the user goes on to edit an element
+ * *inside* it — a `<b>` in the middle of the sentence. Every keystroke in that `<b>` changes
+ * the paragraph's text, the paragraph is not the element carrying the editing flag, and the
+ * watcher announced that "the page replaced your edit" with the paragraph's own prose. It then
+ * recorded the paragraph as script-rendered at full confidence and took away its save.
+ *
+ * Upward covers the mirror image: the browser rewrites the tags inside an element as readily
+ * as its text, so applying bold across a run that already holds a `<b>` unwraps and rewraps
+ * it, and a watcher on that `<b>` saw its own node detached.
+ */
+function underLiveTextEdit(node: Node): boolean {
+  for (let at: Node | null = node; at; at = at.parentNode) {
+    if (at instanceof Element && at.hasAttribute(EDITING_ATTR)) return true;
+  }
+  // Downward: the element being typed into may be a descendant of the watched one.
+  if (node instanceof Element && node.querySelector(`[${EDITING_ATTR}]`)) return true;
+  return false;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -690,6 +710,19 @@ export function establishBaseline(sourceHTML: string): number {
   };
 
   const walk = (live: Element, source: Element): void => {
+    /*
+     * Whether the file already accounts for every word in here.
+     *
+     * What makes re-wrapping prose free. `directTextOf` reads through inline tags, so
+     * bolding three words leaves this element's text identical to the file's — and if the
+     * text is identical then no inline tag inside it can be carrying anything new, however
+     * the tags are arranged. Without this the fresh `<b>` had no counterpart in the file and
+     * was marked as content the page generates: the save then offered to write "the page as
+     * it stands", and the container rebuild left the user's bold text out of the file
+     * altogether, because generated content is not the file's to carry.
+     */
+    const wordsAccountedFor = directTextOf(live) === directTextOf(source);
+
     const pool = new Map<string, Element[]>();
     for (const child of comparableChildren(source)) {
       const key = signatureOf(child);
@@ -705,6 +738,8 @@ export function establishBaseline(sourceHTML: string): number {
       const byId = child.id ? parsed.getElementById(child.id) : null;
       const match = byId ?? pool.get(signatureOf(child))?.shift() ?? null;
       if (!match) {
+        // Prose the file already has, wrapped differently. See `wordsAccountedFor`.
+        if (wordsAccountedFor && isProseWrapper(child)) continue;
         mark(child, { kind: 'file', confidence: 'likely', subtree: true });
         continue;
       }
@@ -758,13 +793,78 @@ function signatureOf(el: Element): string {
   return `${el.tagName.toLowerCase()}#${el.id}.${classes}|${directTextOf(el)}`;
 }
 
-/** Text belonging to the element itself, whitespace collapsed. */
+/**
+ * Tags that wrap prose rather than contain content of their own.
+ *
+ * The distinction that lets the file comparison tell "these words changed" apart from "these
+ * words are wrapped differently now". Emphasis, a link, a line break: they belong to the
+ * sentence they sit in, so their text is read as their parent's and their presence is not
+ * treated as something new in the tree.
+ *
+ * `<img>` is deliberately absent. It carries no words, so nothing would account for it, and a
+ * picture a script drops into a paragraph is exactly the kind of thing worth noticing.
+ */
+const INLINE_TEXT_TAGS = new Set([
+  'a', 'abbr', 'b', 'bdi', 'bdo', 'big', 'br', 'cite', 'code', 'del', 'dfn', 'em', 'font', 'i',
+  'ins', 'kbd', 'mark', 'q', 'rp', 'rt', 'ruby', 's', 'samp', 'small', 'span', 'strike',
+  'strong', 'sub', 'sup', 'time', 'tt', 'u', 'var', 'wbr',
+]);
+
+/**
+ * Whether this element wraps prose, rather than merely being written with an inline tag.
+ *
+ * The tag name alone is not enough, and `<a>` is why. A link around three words in a sentence
+ * is prose; a link around a whole card — a heading, a paragraph, a couple of spans — is a box,
+ * and its words belong to it rather than to the paragraph it sits in. Reading through the
+ * second kind made an authored container that a script fills with link-wrapped cards report
+ * the cards' words as its own, and the container was then marked as something the page builds.
+ *
+ * So the test is the tag *and* what is under it: everything, all the way down, has to be a
+ * prose tag too. `<b>some words</b>` qualifies and `<a><h3>…</h3></a>` does not.
+ */
+function isProseWrapper(el: Element): boolean {
+  if (!INLINE_TEXT_TAGS.has(el.tagName.toLowerCase())) return false;
+  for (const child of Array.from(el.children)) {
+    if (!isProseWrapper(child)) return false;
+  }
+  return true;
+}
+
+/**
+ * Text belonging to the element itself, whitespace collapsed.
+ *
+ * Its own text nodes, plus the text of any prose wrapper inside it, because that is the same
+ * prose either way. Counting only direct text nodes made an element's signature change when
+ * the user bolded part of a sentence — the bolded words moved out of the element's own text
+ * and into a `<b>` — so the element stopped matching the file and was reported as content the
+ * page builds. It also meant the reverse: taking emphasis *off* a run changed the signature
+ * of a paragraph nobody had otherwise touched.
+ *
+ * A block child's text stays out. Its words are its own, and one paragraph rewritten inside a
+ * section should not make the whole section look rewritten.
+ */
 function directTextOf(el: Element): string {
+  return inlineText(el).replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * The same, uncollapsed, so the recursion can be spliced together.
+ *
+ * Collapsing at every level would trim the spaces at each tag boundary, and those are exactly
+ * the ones that move: bolding a run with its leading space inside the selection puts that
+ * space inside the new `<b>`. Trimmed away, the words either side would glue together and the
+ * comparison would report a difference the user did not make.
+ */
+function inlineText(el: Element): string {
   let text = '';
   for (const node of Array.from(el.childNodes)) {
-    if (node.nodeType === Node.TEXT_NODE) text += node.nodeValue ?? '';
+    if (node.nodeType === Node.TEXT_NODE) {
+      text += node.nodeValue ?? '';
+      continue;
+    }
+    if (node instanceof Element && isProseWrapper(node)) text += inlineText(node);
   }
-  return text.replace(/\s+/g, ' ').trim();
+  return text;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -802,6 +902,13 @@ export function watchEditDurability(
     // The editor's own writes are not the page taking the edit back — undo, redo and a
     // second edit all land here. `depth` survives into the microtask this runs in.
     if (done || depth > 0) return;
+    /*
+     * And neither is the browser's, on the user's behalf, inside a live text edit.
+     *
+     * `depth` cannot cover typing, and `beginTextEdit` only disarms the watcher belonging to
+     * the element being edited — not the ones armed on elements *inside* it by earlier edits.
+     */
+    if (underLiveTextEdit(el)) return;
     if (!el.isConnected) {
       // Replaced wholesale rather than rewritten, which is the same news.
       done = true;

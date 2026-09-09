@@ -64,6 +64,8 @@ export const FIXTURES = [
   { page: 'test/html-patch.html', budget: 45000, weight: 2300, fast: true },
   { page: 'test/ornament-divider.html', budget: 60000, weight: 2300 },
   { page: 'test/provenance.html', budget: 45000, weight: 2300 },
+  { page: 'test/inline-edit-fidelity.html', budget: 45000, weight: 5500, fast: true },
+  { page: 'test/undo-identity.html', budget: 60000, weight: 9000, fast: true },
   { page: 'test/token-target.html', budget: 45000, weight: 2200, fast: true },
   { page: 'test/text-drag.html', budget: 45000, weight: 2100 },
   { page: 'test/patch-fidelity.html', budget: 60000, weight: 2100, fast: true },

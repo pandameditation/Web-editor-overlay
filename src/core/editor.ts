@@ -13,6 +13,7 @@ import {
   CLASS_STYLE_ID,
   DRAGGING_ATTR,
   DRAG_TIMING,
+  EDITING_ATTR,
   EDIT_DISCARDED_EVENT,
   HOST_TAG,
   IGNORE_ATTR,
@@ -79,7 +80,10 @@ import {
   type BlockPropRow,
 } from './library.js';
 import {
+  captureIdentity,
   cleanMarkup,
+  writeChildren,
+  type IdentityMap,
   duplicateElement,
   insertHTML,
   insertNodes,
@@ -703,6 +707,8 @@ export class EditorEngine {
   #toastTimer = 0;
   #toastId = 0;
   #textEditSnapshot: string | null = null;
+  /** Identity of the descendants the snapshot above was taken with. See `beginTextEdit`. */
+  #textEditIdentity: IdentityMap | undefined = undefined;
   /** The edited element's text as the edit began, for `restorePlainSpaces`. */
   #textEditText: string | null = null;
   /**
@@ -728,6 +734,8 @@ export class EditorEngine {
   #bundleRun = 0;
   /** The pending rebuild after an option change, so a burst of clicks builds once. */
   #bundleTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The pending save re-plan, for the same reason. See `#replanSave`. */
+  #replanTimer: ReturnType<typeof setTimeout> | null = null;
   /** Deferred seed and design-system loads, so `whenReady` has something to await. */
   #pending = new Set<Promise<unknown>>();
 
@@ -947,6 +955,11 @@ export class EditorEngine {
     if (this.#bundleTimer !== null) {
       clearTimeout(this.#bundleTimer);
       this.#bundleTimer = null;
+    }
+    // And so would a scheduled save re-plan.
+    if (this.#replanTimer !== null) {
+      clearTimeout(this.#replanTimer);
+      this.#replanTimer = null;
     }
     for (const off of this.#listeners) off();
     this.#listeners = [];
@@ -2665,10 +2678,30 @@ export class EditorEngine {
     return links.length;
   }
 
-  /** Rebuild whichever save description is currently on screen. */
+  /**
+   * Rebuild whichever save description is currently on screen.
+   *
+   * Debounced, because every caller is a gesture that repeats: unticking six rows in the
+   * change list is one decision, not six, and each rebuild reads the project's files.
+   *
+   * `planning` goes up straight away all the same, and that half is the point. From the first
+   * click the plan on screen describes a change set that no longer exists — which is how
+   * unticking a change left its warning on the screen, saying the whole file had to be
+   * rewritten for something that was no longer being written at all. A list that says it is
+   * working is honest; a settled-looking list about the wrong changes is not.
+   */
   #replanSave(): void {
-    if (this.store.value.writePlan) void this.previewWritePlan();
-    if (this.store.value.bundlePlan) void this.previewBundle();
+    const files = this.store.value.writePlan !== null && this.#project !== null;
+    const bundle = this.store.value.bundlePlan !== null;
+    if (!files && !bundle) return;
+    if (files) this.store.patch({ planning: true });
+    if (this.#replanTimer !== null) clearTimeout(this.#replanTimer);
+    this.#replanTimer = setTimeout(() => {
+      this.#replanTimer = null;
+      if (this.#destroyed) return;
+      if (this.store.value.writePlan) void this.previewWritePlan();
+      if (this.store.value.bundlePlan) void this.previewBundle();
+    }, 160);
   }
 
   /** Show a language, wherever the Code panel currently is. */
@@ -4263,11 +4296,20 @@ export class EditorEngine {
     this.#editWatchers.get(el)?.();
     this.#editWatchers.delete(el);
     this.#textEditSnapshot = el.innerHTML;
+    /*
+     * Which of the element's descendants are already named by a command, and where.
+     *
+     * Taken now, because this is the only moment the snapshot above is what the element holds.
+     * Restoring the markup on undo reparses the subtree, and without this every command
+     * referring to something inside it was left pointing at a destroyed node — which is how
+     * undoing a text edit and then a move put the same element in two places at once.
+     */
+    this.#textEditIdentity = captureIdentity(el);
     // The same moment, as characters rather than markup. What the editing spaces are
     // measured against — see `restorePlainSpaces`.
     this.#textEditText = el.textContent ?? '';
     el.setAttribute('contenteditable', 'true');
-    el.setAttribute('data-heo-editing', '');
+    el.setAttribute(EDITING_ATTR, '');
     el.setAttribute('spellcheck', 'true');
     this.store.patch({ textEditing: el, selected: el });
 
@@ -4653,12 +4695,14 @@ export class EditorEngine {
     if (!el) return;
     const before = this.#textEditSnapshot;
     const beforeText = this.#textEditText;
+    const beforeIdentity = this.#textEditIdentity;
     this.#textEditSnapshot = null;
     this.#textEditText = null;
+    this.#textEditIdentity = undefined;
     // Belongs to the edit that is ending, and there is nothing left to tidy up in it.
     this.#pastedInto = null;
     el.removeAttribute('contenteditable');
-    el.removeAttribute('data-heo-editing');
+    el.removeAttribute(EDITING_ATTR);
     el.removeAttribute('spellcheck');
     // Belongs to the edit that is ending; keeping it would let a later command act on a range
     // into text that has since been replaced.
@@ -4669,8 +4713,10 @@ export class EditorEngine {
     if (!commit) {
       // Not attributed: this is the editor putting the element back, not the page
       // rendering it, and counting it would make a discarded edit the last one allowed.
+      // Through `writeChildren`, so a discarded edit hands identity on the same way a
+      // reverted one does: the commands referring to what was in here must survive it.
       withoutProvenance(() => {
-        el.innerHTML = before;
+        writeChildren(el, before, beforeIdentity);
       });
       return;
     }
@@ -4697,7 +4743,7 @@ export class EditorEngine {
      * Now that these edits are allowed rather than refused, this is the thing that keeps
      * the plan and the page from disagreeing about what a save will do.
      */
-    const command = setInnerHTML(el, before, after);
+    const command = setInnerHTML(el, before, after, { before: beforeIdentity });
     /*
      * A revert observed earlier does not get to outlive being contradicted.
      *
@@ -5143,17 +5189,37 @@ export class EditorEngine {
    * Measuring both parents before the insertion and replaying the difference
    * afterwards is what turns a hundred-pixel jump into a glide, and it is why the
    * neighbours appear to step aside to make room rather than teleport.
+   *
+   * Not attributed to the page, and this is the one structural mutation that had to say so
+   * for itself.
+   *
+   * Everywhere else the editor changes the DOM it goes through `History.commit`, which wraps
+   * `apply()` in `withoutProvenance`. A drag is the exception: the element is moved as the
+   * preview, so the commit arrives with `alreadyApplied` and there is no `apply()` to wrap.
+   * That left the real mutation running with attribution on, and both observers took it for
+   * the page's work — the runtime observer marked the moved element as generated, and the
+   * durability watcher on a previously edited element saw its subtree change and announced
+   * that "the page replaced your edit". Neither was true, and the second one is worse than
+   * noise: it promotes a guess to `certain` and withdraws the element's user-owned exemption,
+   * so an element the user had just written by hand stopped being saveable.
+   *
+   * Every call to this is inside a gesture the user is performing, including the ones that
+   * put the element back on cancel, so all of them belong in here.
    */
   #applyDrop(parent: Node, before: Node | null, el: HTMLElement): boolean {
     if (el.parentNode === parent && el.nextSibling === before) return false;
     const rects = captureRects(neighbourhood(el.parentNode, parent));
-    try {
-      parent.insertBefore(el, before);
-    } catch {
-      // A node that cannot accept this element; leave the placement alone and
-      // wait for the pointer to reach somewhere valid.
-      return false;
-    }
+    const placed = withoutProvenance(() => {
+      try {
+        parent.insertBefore(el, before);
+        return true;
+      } catch {
+        // A node that cannot accept this element; leave the placement alone and
+        // wait for the pointer to reach somewhere valid.
+        return false;
+      }
+    });
+    if (!placed) return false;
     this.#followReflow(playFlip(rects));
     return true;
   }
@@ -5595,6 +5661,8 @@ export class EditorEngine {
       this.store.patch({ savePreview: this.buildSavePrompt() });
     }
     this.#bumpRegistry();
+    // And neither can the list of files, which is the answer to "so what will this write?".
+    this.#replanSave();
   }
 
   /** Put every change back in the hand-off. */
@@ -5605,6 +5673,7 @@ export class EditorEngine {
       this.store.patch({ savePreview: this.buildSavePrompt() });
     }
     this.#bumpRegistry();
+    this.#replanSave();
   }
 
   /* ---------------------------------------------------------------------- */
@@ -5962,6 +6031,12 @@ export class EditorEngine {
   async previewWritePlan(): Promise<WritePlan | null> {
     const host = this.#project;
     if (!host) return null;
+    // A plan asked for directly supersedes one merely scheduled, so pressing Save or Recheck
+    // is not followed by a second pass a moment later — and cannot race one.
+    if (this.#replanTimer !== null) {
+      clearTimeout(this.#replanTimer);
+      this.#replanTimer = null;
+    }
     this.store.patch({ planning: true });
     try {
       const plan = await buildWritePlan(host, this.#writeSubject());
