@@ -122,6 +122,36 @@ export function handleKeyDown(engine: EditorEngine, event: KeyboardEvent): void 
   }
 
   if (state.textEditing) {
+    // The text toolbar owns its own shortcuts once it has focus, including the link URL field.
+    if (fromOverlay(event)) return;
+    if (mod) {
+      switch (key.toLowerCase()) {
+        case 'b':
+          event.preventDefault();
+          engine.formatText('bold');
+          return;
+        case 'i':
+          event.preventDefault();
+          engine.formatText('italic');
+          return;
+        case 'u':
+          event.preventDefault();
+          engine.formatText('underline');
+          return;
+        case 'k': {
+          event.preventDefault();
+          const toolbar = document
+            .querySelector('heo-overlay')
+            ?.shadowRoot?.querySelector('heo-text-toolbar');
+          if (toolbar instanceof HTMLElement) {
+            (toolbar as HTMLElement & { openLinkEditor?: () => void }).openLinkEditor?.();
+          }
+          return;
+        }
+        default:
+          break;
+      }
+    }
     if (key === 'Escape') {
       event.preventDefault();
       engine.endTextEdit(false);

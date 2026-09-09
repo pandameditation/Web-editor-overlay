@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Text editing keyboard shortcuts</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: system-ui, sans-serif;
+    }
+
+    p {
+      margin: 12px 0;
+    }
+
+    pre {
+      margin-top: 16px;
+    }
+  </style>
+</head>
+
+<body>
+  <p id="bold">Bold shortcut text.</p>
+  <p id="italic">Italic shortcut text.</p>
+  <p id="underline">Underline shortcut text.</p>
+  <p id="link">Link shortcut text.</p>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const errors = [];
+      window.addEventListener('error', (event) => errors.push('error: ' + event.message));
+      window.addEventListener('unhandledrejection', (event) => errors.push('rejection: ' + event.reason));
+      const results = {};
+      const check = (name, fn) => {
+        document.getElementById('progress').textContent = name;
+        try { results[name] = fn(); }
+        catch (error) { results[name] = 'THREW: ' + String(error && error.message); }
+      };
+      const frames = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const byId = (id) => document.getElementById(id);
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark' });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+
+      const selectText = async (el, start, end) => {
+        const text = el.firstChild;
+        const range = document.createRange();
+        range.setStart(text, start);
+        range.setEnd(text, end);
+        const selection = getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        await frames();
+      };
+
+      const startSelection = async (id, start, end) => {
+        const el = byId(id);
+        engine.beginTextEdit(el);
+        await frames();
+        await selectText(el, start, end);
+        return el;
+      };
+
+      const pressShortcut = (target, key, modifier) => {
+        const event = new KeyboardEvent('keydown', {
+          key,
+          bubbles: true,
+          cancelable: true,
+          ctrlKey: modifier === 'ctrl',
+          metaKey: modifier === 'meta',
+        });
+        target.dispatchEvent(event);
+        return event;
+      };
+
+      /* ------------------------------------------------------------------ *
+       * Formatting shortcuts use the same saved selection as the toolbar.
+       * ------------------------------------------------------------------ */
+      const bold = await startSelection('bold', 0, 4);
+      const boldKey = pressShortcut(bold, 'b', 'ctrl');
+      await frames();
+      check('ctrlBFormatsTheSelectedText', () => {
+        const mark = bold.querySelector('b, strong');
+        return {
+          prevented: boldKey.defaultPrevented,
+          text: mark?.textContent ?? null,
+          rendered: mark ? getComputedStyle(mark).fontWeight : null,
+        };
+      });
+      engine.endTextEdit(true);
+      await frames();
+
+      const italic = await startSelection('italic', 0, 6);
+      const italicKey = pressShortcut(italic, 'i', 'meta');
+      await frames();
+      check('cmdIFormatsTheSelectedText', () => {
+        const mark = italic.querySelector('i, em');
+        return {
+          prevented: italicKey.defaultPrevented,
+          text: mark?.textContent ?? null,
+          rendered: mark ? getComputedStyle(mark).fontStyle : null,
+        };
+      });
+      engine.endTextEdit(true);
+      await frames();
+
+      const underline = await startSelection('underline', 0, 9);
+      const underlineKey = pressShortcut(underline, 'u', 'ctrl');
+      await frames();
+      check('ctrlUFormatsTheSelectedText', () => {
+        const mark = underline.querySelector('u');
+        return {
+          prevented: underlineKey.defaultPrevented,
+          text: mark?.textContent ?? null,
+          rendered: mark ? getComputedStyle(mark).textDecorationLine : null,
+        };
+      });
+      engine.endTextEdit(true);
+      await frames();
+
+      /* ------------------------------------------------------------------ *
+       * Mod+K opens the existing toolbar link editor and keeps the selection.
+       * ------------------------------------------------------------------ */
+      const link = await startSelection('link', 0, 4);
+      const linkKey = pressShortcut(link, 'k', 'meta');
+      await frames();
+      const toolbar = document.querySelector('heo-overlay')?.shadowRoot?.querySelector('heo-text-toolbar');
+      const input = toolbar?.shadowRoot?.querySelector('input[type="url"]');
+      if (input) {
+        input.value = 'https://example.com/shortcut';
+        input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      }
+      const apply = toolbar && Array.from(toolbar.shadowRoot?.querySelectorAll('button') ?? [])
+        .find((button) => button.textContent?.includes('Apply'));
+      apply?.click();
+      await frames();
+
+      check('cmdKOpensAndAppliesTheLinkEditor', () => {
+        const anchor = link.querySelector('a[href]');
+        return {
+          prevented: linkKey.defaultPrevented,
+          editorOpened: Boolean(input),
+          text: anchor?.textContent ?? null,
+          href: anchor?.getAttribute('href') ?? null,
+        };
+      });
+      engine.endTextEdit(true);
+      await frames();
+
+      check('shortcutsAreRecordedAsMarkupEdits', () => {
+        const records = engine.records.filter((record) => record.kind === 'text');
+        return {
+          count: records.length,
+          bold: records.some((record) => record.target?.includes('bold') && record.markupAfter?.includes('<b>')),
+          italic: records.some((record) => record.target?.includes('italic') && record.markupAfter?.includes('<i>')),
+          underline: records.some((record) => record.target?.includes('underline') && record.markupAfter?.includes('<u>')),
+          link: records.some((record) => record.target?.includes('link') && record.markupAfter?.includes('example.com/shortcut')),
+        };
+      });
+
+      results.__errors = errors;
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })().catch((error) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"__errors":["' + String(error && error.message) + '"]}:END';
+    });
+  </script>
+</body>
+
+</html>

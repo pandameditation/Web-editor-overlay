@@ -118,7 +118,7 @@ export class HeoTextToolbar extends HeoElement {
     ];
     return html`
       ${buttons.map(
-        ([command, title, glyph]) => html`<button
+      ([command, title, glyph]) => html`<button
           class="btn icon ghost"
           type="button"
           title=${title}
@@ -128,7 +128,7 @@ export class HeoTextToolbar extends HeoElement {
         >
           ${icon(glyph, 13)}
         </button>`,
-      )}
+    )}
       <span class="sep"></span>
       <button
         class="btn icon ghost"
@@ -177,8 +177,8 @@ export class HeoTextToolbar extends HeoElement {
         spellcheck="false"
         aria-label="Link URL"
         @input=${(event: Event) => {
-          this.href = (event.target as HTMLInputElement).value;
-        }}
+        this.href = (event.target as HTMLInputElement).value;
+      }}
         @keydown=${this.#onLinkKey}
       />
       <label class="blank">
@@ -186,11 +186,11 @@ export class HeoTextToolbar extends HeoElement {
           type="checkbox"
           .checked=${this.newTab}
           @change=${(event: Event) => {
-            this.newTab = (event.target as HTMLInputElement).checked;
-            // Written through as it is ticked, not on Apply, so cancelling still remembers it
-            // and nothing depends on this component surviving until the link is applied.
-            this.editor.linkOpensInNewTab = this.newTab;
-          }}
+        this.newTab = (event.target as HTMLInputElement).checked;
+        // Written through as it is ticked, not on Apply, so cancelling still remembers it
+        // and nothing depends on this component surviving until the link is applied.
+        this.editor.linkOpensInNewTab = this.newTab;
+      }}
         />
         New tab
       </label>
@@ -199,12 +199,23 @@ export class HeoTextToolbar extends HeoElement {
         class="btn sm ghost"
         type="button"
         @click=${() => {
-          this.linkMode = false;
-        }}
+        this.linkMode = false;
+      }}
       >
         Cancel
       </button>
     </div>`;
+  }
+
+  /**
+   * Open the link editor for the current text selection.
+   *
+   * The page keymap uses this same path for Mod+K, so the shortcut preserves the
+   * toolbar's saved-range and existing-link behavior instead of creating a second
+   * link interaction.
+   */
+  openLinkEditor(): void {
+    this.#openLink();
   }
 
   /**
