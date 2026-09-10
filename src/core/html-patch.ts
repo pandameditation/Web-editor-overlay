@@ -35,6 +35,7 @@
 // out — but the seed tag it writes has to be the tag the engine looks for, and two copies of
 // that MIME type is how the writer and the reader end up describing different tags.
 import { SEED_SCRIPT_TYPE } from './constants.js';
+import { parseDeclarations } from './css.js';
 
 /**
  * The file, line and column out of a `data-heo-src` value.
@@ -84,6 +85,23 @@ export interface ElementAnchor {
 
 export type HtmlPatch =
   | { anchor: ElementAnchor; kind: 'attribute'; name: string; value: string | null }
+  /**
+   * Some of the declarations in a `style` attribute, leaving the rest of it as the file has it.
+   *
+   * The difference between this and an `attribute` patch is the whole point of it. Writing the
+   * attribute wholesale writes whatever else is in there at save time — a transition caught
+   * mid-flight, a `display` a script toggled, the leftovers of a drag preview — none of which
+   * the user asked for and none of which belongs in their file. A style edit is a statement
+   * about the properties it names and about nothing else, so only those are written.
+   *
+   * `null` for a value removes that declaration. Properties absent from the map are not
+   * consulted, added or removed.
+   */
+  | {
+    anchor: ElementAnchor;
+    kind: 'declarations';
+    declarations: Readonly<Record<string, string | null>>;
+  }
   | { anchor: ElementAnchor; kind: 'text'; value: string };
 
 export interface HtmlPatchFailure {
@@ -120,7 +138,9 @@ export function patchHTML(html: string, patches: readonly HtmlPatch[]): HtmlPatc
     const edit =
       patch.kind === 'attribute'
         ? attributeEdit(html, found, patch.name, patch.value)
-        : textEdit(html, found, patch.value);
+        : patch.kind === 'declarations'
+          ? declarationsEdit(html, found, patch.declarations)
+          : textEdit(html, found, patch.value);
     if (typeof edit === 'string') {
       failed.push({ patch, reason: edit });
       continue;
@@ -524,6 +544,46 @@ function attributeEdit(
   const insertAt = tag.selfClosing && html[tag.end - 1] === '/' ? tag.end - 1 : tag.end;
   const spacer = /\s/.test(html[insertAt - 1] ?? '') ? '' : ' ';
   return { start: insertAt, end: insertAt, text: `${spacer}${attribute}` };
+}
+
+/**
+ * Rewrite named declarations inside a `style` attribute, keeping the rest of the file's.
+ *
+ * Built on `attributeEdit` rather than beside it, so there is one place that knows how to put an
+ * attribute into a tag and one place that knows when the file already agrees.
+ *
+ * The file's own order is kept and a property it does not have is appended, which is the same
+ * rule the live writer follows — in CSS, order is precedence, and reordering someone's
+ * declarations changes what their page does.
+ */
+function declarationsEdit(
+  html: string,
+  tag: OpenTag,
+  declarations: Readonly<Record<string, string | null>>,
+): { start: number; end: number; text: string } | null | string {
+  const raw = html.slice(tag.start, tag.end + 1);
+  const range = attributeRange(raw, 'style');
+  const existing = range
+    ? raw
+      .slice(range.start, range.end)
+      .replace(/^style\s*=\s*/i, '')
+      .replace(/^["']|["']$/g, '')
+    : '';
+
+  const entries: Array<[string, string]> = Object.entries(parseDeclarations(existing));
+  for (const [property, value] of Object.entries(declarations)) {
+    const wanted = value === null ? '' : value.trim();
+    const at = entries.findIndex(([name]) => name.toLowerCase() === property.toLowerCase());
+    if (!wanted) {
+      if (at >= 0) entries.splice(at, 1);
+      continue;
+    }
+    if (at >= 0) entries[at] = [entries[at][0], wanted];
+    else entries.push([property, wanted]);
+  }
+
+  const text = entries.map(([name, value]) => `${name}: ${value}`).join('; ');
+  return attributeEdit(html, tag, 'style', text ? `${text};` : null);
 }
 
 /** Replace an element's content, leaving its opening and closing tags alone. */

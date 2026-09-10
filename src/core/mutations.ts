@@ -344,7 +344,13 @@ export function setStyleProperty(el: HTMLElement, property: string, value: strin
     record: record(el, 'style', `Set ${property} to ${after || '(removed)'} on ${labelFor(el)}`, {
       before: before || undefined,
       after: after || undefined,
-      detail: { property, value: after },
+      /*
+       * `styleProperties` names what this edit is *about*, which is what lets the file write
+       * touch those declarations and leave the rest of the attribute alone. Without it the save
+       * had only the finished attribute to go on, and wrote every inline property the element
+       * happened to be carrying — a transition mid-flight included.
+       */
+      detail: { property, value: after, styleProperties: property },
     }),
     apply: () => writeInline(el, { [property]: after }),
     revert: () => restoreStyleAttribute(el, beforeAttribute),
@@ -391,7 +397,11 @@ export function setStyleProperties(
         .filter(([, value]) => value)
         .map(([property, value]) => `${property}: ${value}`)
         .join('; '),
-      detail: Object.fromEntries(entries),
+      detail: {
+        ...Object.fromEntries(entries),
+        // See `setStyleProperty`. Every property this group governs, removals included.
+        styleProperties: entries.map(([property]) => property).join(','),
+      },
     }),
     apply: () => writeInline(el, declarations),
     revert: () => restoreStyleAttribute(el, beforeAttribute),

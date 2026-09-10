@@ -939,6 +939,26 @@ export class EditorEngine {
       // Tracked, because it is a fetch and because a test — or a user — asking "is this
       // text mine to edit" before it lands would get the wrong answer.
       this.track(this.establishContentBaseline());
+      /*
+       * And again once the page has finished loading, which is the pass that catches the common
+       * case.
+       *
+       * Comparing at mount only works for a script that has already run. A script that fills its
+       * container on `DOMContentLoaded` or `load` — which is most of them — runs *after* the
+       * overlay is up, so the comparison saw the file and the page agreeing and marked nothing.
+       * Every later signal for that content is weaker, and the one the export trusts is this one,
+       * so its markup went into the file as though someone had typed it.
+       *
+       * The listener is registered rather than awaited: the page is usable now, and the answer
+       * only has to be right before a save.
+       */
+      if (document.readyState !== 'complete') {
+        const onLoad = (): void => {
+          void this.establishContentBaseline();
+        };
+        addEventListener('load', onLoad, { once: true });
+        this.#listeners.push(() => removeEventListener('load', onLoad));
+      }
     }
 
     /*
@@ -4384,7 +4404,7 @@ export class EditorEngine {
    */
   async establishContentBaseline(): Promise<number> {
     if (this.options.detectScriptContent === false) return 0;
-    const source = await this.#readOwnDocument();
+    const source = await this.#ownDocumentSource();
     if (source === null || this.#destroyed) return 0;
     const marked = establishBaseline(source);
     if (marked) this.#bumpRevision();
@@ -6134,6 +6154,17 @@ export class EditorEngine {
   async previewWritePlan(): Promise<WritePlan | null> {
     const host = this.#project;
     if (!host) return null;
+    /*
+     * Asked one more time before anything is described, because this is the last moment it can
+     * change the answer. A script that renders on a timer, on an interaction, or after a fetch
+     * has run by now even if it had not at load, and what the plan says about generated content
+     * is only as good as the most recent comparison.
+     *
+     * Cheap to repeat: the source is cached and `establishBaseline` never overwrites what it has
+     * already accounted for, so a second pass only adds what the first could not have seen.
+     */
+    await this.establishContentBaseline();
+    if (this.#destroyed) return null;
     // A plan asked for directly supersedes one merely scheduled, so pressing Save or Recheck
     // is not followed by a second pass a moment later — and cannot race one.
     if (this.#replanTimer !== null) {

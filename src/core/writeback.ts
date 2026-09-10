@@ -13,7 +13,13 @@ import {
   type DeclarationPatch,
   type PatchFailure,
 } from './css-patch.js';
-import { cleanMarkup, cleanInnerMarkup, elementOfRecord, anchorFor } from './mutations.js';
+import {
+  cleanMarkup,
+  cleanInnerMarkup,
+  elementOfRecord,
+  anchorFor,
+  inlineAuthoredValue,
+} from './mutations.js';
 import {
   canResolve,
   elementText,
@@ -1316,6 +1322,37 @@ function tryPatchDocument(
       );
       return null;
     }
+
+    /*
+     * A style edit writes the declarations it is about, not the whole attribute.
+     *
+     * The finished value still comes from the live element — several edits to one property
+     * collapse into the last one the user chose, which is the reason this reads the DOM at all —
+     * but only for the properties the edit names. Everything else in that attribute stays as the
+     * file has it, because it was never the user's to change: a transition caught mid-flight, a
+     * `display` a script toggles, the residue of a drag preview. All of that used to be written
+     * into the file alongside the one declaration that was asked for.
+     *
+     * Collapsing happens by construction here too: successive edits to one element merge into a
+     * single declarations patch, and a later edit to the same property overwrites the earlier
+     * entry rather than fighting it.
+     */
+    const governed = record.kind === 'style' ? record.detail?.styleProperties : undefined;
+    if (governed) {
+      const key = `${anchorKey(anchor)}|style`;
+      const existing = wanted.get(key);
+      const declarations: Record<string, string | null> =
+        existing?.kind === 'declarations' ? { ...existing.declarations } : {};
+      for (const property of governed.split(',')) {
+        const trimmed = property.trim();
+        if (!trimmed) continue;
+        // Empty means the user cleared it, which is a removal rather than an empty value.
+        declarations[trimmed] = inlineAuthoredValue(el, trimmed) || null;
+      }
+      wanted.set(key, { anchor, kind: 'declarations', declarations });
+      continue;
+    }
+
     wanted.set(`${anchorKey(anchor)}|${name}`, {
       anchor,
       kind: 'attribute',

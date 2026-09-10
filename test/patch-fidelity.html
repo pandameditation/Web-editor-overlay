@@ -174,6 +174,45 @@
         results.inlineScript.carriesTheNewCode === true;
 
       /* ------------------------------------------------------------------ *
+       * 2b. A style edit writes the declarations it is about, and no others.
+       *
+       * Anything else living in that attribute at save time is not the user's: a transition
+       * caught mid-flight, a `display` a script toggles, the residue of a drag preview. Writing
+       * the attribute wholesale put all of it into the file beside the one declaration that was
+       * asked for.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'transientInlineStyle';
+      {
+        const target = document.getElementById('card');
+        const authored = target.getAttribute('style');
+        // What a transition or a script leaves on the element while the user edits it.
+        target.style.opacity = '0.37';
+        api.select(target);
+        engine.setStyle('outline', '3px solid teal');
+        await frames();
+        const styleWrite = writeFor(await plan(), 'document');
+        const written = new DOMParser()
+          .parseFromString(styleWrite?.after ?? '', 'text/html')
+          .getElementById('card')
+          ?.getAttribute('style') ?? '';
+        results.transientInlineStyle = {
+          authoredBefore: authored,
+          liveAttribute: target.getAttribute('style'),
+          written,
+          carriesTheEdit: /teal/.test(written),
+          carriesTheTransient: /opacity/.test(written),
+          patched: /patched in place/.test(styleWrite?.reason ?? ''),
+          ok:
+            /teal/.test(written) &&
+            !/opacity/.test(written) &&
+            /patched in place/.test(styleWrite?.reason ?? ''),
+        };
+        // Cleared, so the transient value cannot colour the later groups.
+        target.style.removeProperty('opacity');
+        await frames();
+      }
+
+      /* ------------------------------------------------------------------ *
        * 3. Rewriting an element's contents patches the markup.
        * ------------------------------------------------------------------ */
       progress.textContent = 'contents';
