@@ -141,9 +141,14 @@
       await frames();
 
       const toasts = [];
+      /** The same stream with tone and action kept, for the assertions that care about those. */
+      const notices = [];
       engine.store.subscribe((s) => {
         const t = s.toast;
-        if (t && toasts.at(-1) !== t.message) toasts.push(t.message);
+        if (t && toasts.at(-1) !== t.message) {
+          toasts.push(t.message);
+          notices.push({ message: t.message, tone: t.tone, action: t.action?.label ?? null });
+        }
       });
       const saidThePageTookItBack = (from) =>
         toasts.slice(from).filter((t) => /replaced your edit|rebuilt this element/.test(t));
@@ -381,6 +386,7 @@
       };
       const behaviourBeforeTheApply = await theMenuToggles();
       const scriptsBeforeTheApply = document.querySelectorAll('script').length;
+      const noticesBeforeTheApply = notices.length;
       const deepFind = (tag, root = document) => {
         const found = root.querySelector ? root.querySelector(tag) : null;
         if (found) return found;
@@ -482,9 +488,73 @@
           Boolean(rewriteWrite) &&
           (rewriteWrite?.after ?? '').includes('Case study, rewritten') &&
           (rewriteWrite?.warnings ?? []).some((w) =>
-            /the whole document was rewritten in the code panel/.test(w),
+            /a document-wide edit cannot be patched into the file/.test(w),
           ) &&
           /Rewrite the HTML document/.test(engine.buildSavePrompt()),
+      };
+
+      /*
+       * And the user is told, while it is still the last thing they did.
+       *
+       * Patching a document-wide edit was tried and withdrawn, so the rewrite stays — which makes
+       * announcing it the whole of the remedy. A whole-file rewrite normalises quoting and letter
+       * case on every line that had nothing to do with the edit, and nothing about the page shows
+       * that. The warning carries the Undo so declining it is one click rather than a discovery
+       * made in the save dialog later.
+       */
+      step('isTheRewriteAnnounced');
+      // The check is debounced on purpose — a slider scrub is one question, not one per frame —
+      // so the notice arrives a beat after the commit rather than with it.
+      await wait(700);
+      const rewriteWarning = notices
+        .slice(noticesBeforeTheApply)
+        .find((n) => /rewrite the whole HTML file/.test(n.message));
+      results.theForcedRewriteIsAnnouncedWhenItHappens = {
+        warned: Boolean(rewriteWarning),
+        tone: rewriteWarning?.tone ?? null,
+        offersUndo: rewriteWarning?.action ?? null,
+        namesTheReason: /a document-wide edit cannot be patched into the file/.test(
+          rewriteWarning?.message ?? '',
+        ),
+        // And the change itself carries the reason, which is what the change list reads.
+        onTheRecord: engine.records.find((r) => r.detail?.forcesRewrite)?.detail?.forcesRewrite ?? null,
+        ok:
+          Boolean(rewriteWarning) &&
+          rewriteWarning?.tone === 'warn' &&
+          rewriteWarning?.action === 'Undo' &&
+          /a document-wide edit cannot be patched into the file/.test(rewriteWarning?.message ?? '') &&
+          Boolean(engine.records.find((r) => r.detail?.forcesRewrite)),
+      };
+
+      /*
+       * And the way out the change list offers is real: unticking the change that forces the
+       * rewrite has to give a patched save back, or the caveat beside it is a lie.
+       */
+      step('untickingTheForcedChange');
+      const forcing = engine.records.find((r) => r.detail?.forcesRewrite);
+      const docWriteOf = (plan) => (plan?.writes ?? []).find((w) => w.kind === 'document');
+      const planWithIt = docWriteOf(await engine.previewWritePlan());
+      if (forcing) engine.setChangeIncluded(forcing.id, false);
+      await wait(500);
+      const planWithoutIt = docWriteOf(engine.store.value.writePlan);
+      if (forcing) engine.includeAllChanges();
+      await wait(500);
+      const forcedReason = /a document-wide edit cannot be patched into the file/;
+      results.untickingTheForcedChangeTakesItsRewriteOutOfThePlan = {
+        withIt: planWithIt?.reason ?? null,
+        withItWarnings: planWithIt?.warnings ?? [],
+        withoutIt: planWithoutIt?.reason ?? null,
+        withoutItWarnings: planWithoutIt?.warnings ?? [],
+        /*
+         * What is asserted is this change's own contribution disappearing, not the save becoming
+         * patchable outright — by this point in the run other changes are in flight, and whether
+         * *they* can be placed is not something unticking this one gets to decide. The caveat in
+         * the change list says only what this covers: untick it to save without it.
+         */
+        ok:
+          Boolean(forcing) &&
+          (planWithIt?.warnings ?? []).some((w) => forcedReason.test(w)) &&
+          !(planWithoutIt?.warnings ?? []).some((w) => forcedReason.test(w)),
       };
 
       step('undoTheDocumentApplyThenTheMove');

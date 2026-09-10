@@ -689,6 +689,47 @@ export function patchDocumentSource(
   subject: WriteSubject,
   documentPath: string,
 ): { html: string } | { why: string[] } {
+  const attempt = attemptDocumentPatch(source, subject, documentPath);
+  if (attempt.html !== null) return { html: attempt.html };
+  if (!attempt.records) return { why: ['nothing in this change set belongs to the markup'] };
+  return { why: attempt.why.length ? attempt.why : ['no change could be placed in the file'] };
+}
+
+/**
+ * Why saving would rewrite this file instead of editing it, or null when it would not.
+ *
+ * The same question the save plan answers, asked early enough to be worth answering. A user
+ * finds out that their file is about to be reformatted when they open the save dialog, which is
+ * long after the change that caused it and long after Undo was the obvious response — so the
+ * editor asks this as each change lands and says so while the change is still the thing they
+ * just did.
+ *
+ * Null for "nothing to write here" as much as for "this all fits", and the difference matters:
+ * a change set with nothing in it for the markup is not about to rewrite anything, and warning
+ * about it would be a warning nobody could act on.
+ */
+export function rewriteReason(
+  source: string,
+  subject: WriteSubject,
+  documentPath: string,
+): string | null {
+  const attempt = attemptDocumentPatch(source, subject, documentPath);
+  if (attempt.html !== null || !attempt.records) return null;
+  return attempt.why[0] ?? 'part of this change cannot be placed in the file';
+}
+
+/**
+ * One attempt at patching the document, described rather than decided.
+ *
+ * Shared so that the two callers above cannot drift: what the download offers and what the
+ * live warning claims have to be the same judgement, or the editor is telling the user one
+ * thing and doing another.
+ */
+function attemptDocumentPatch(
+  source: string,
+  subject: WriteSubject,
+  documentPath: string,
+): { html: string | null; records: number; why: string[] } {
   const systemInDocument = subject.designSystemTarget === DOCUMENT_TARGET;
   const blockSeed = subject.blockLibrarySeed?.trim() ?? '';
   const removeLibrary = subject.removeBlockLibrary === true;
@@ -703,7 +744,7 @@ export function patchDocumentSource(
       isDocumentChange(record, systemInDocument, Boolean(blockSeed), removeLibrary) &&
       !record.detail?.rendered,
   );
-  if (!documentRecords.length) return { why: ['nothing in this change set belongs to the markup'] };
+  if (!documentRecords.length) return { html: null, records: 0, why: [] };
 
   const why: string[] = [];
   const patched = tryPatchDocument(
@@ -716,7 +757,7 @@ export function patchDocumentSource(
     blockSeed,
     removeLibrary,
   );
-  return patched ?? { why: why.length ? why : ['no change could be placed in the file'] };
+  return { html: patched?.html ?? null, records: documentRecords.length, why };
 }
 
 /**
@@ -1162,11 +1203,9 @@ function tryPatchDocument(
    * missing anchor rather than the thing that actually happened. The outcome was always going
    * to be the serialized page; only the sentence was wrong.
    */
-  const documentRewrite = records.some(
-    (record) => record.kind === 'replace' && record.detail?.scope === 'document',
-  );
-  if (documentRewrite) {
-    why.push('the whole document was rewritten in the code panel');
+  const forced = records.find((record) => record.detail?.forcesRewrite);
+  if (forced?.detail?.forcesRewrite) {
+    why.push(forced.detail.forcesRewrite);
     return null;
   }
 

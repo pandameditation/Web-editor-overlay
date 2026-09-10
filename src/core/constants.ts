@@ -141,6 +141,16 @@ export const DRAG_TIMING = {
   tick: 40,
 } as const;
 
+/**
+ * How long after a change the editor works out whether it can still be written as edits.
+ *
+ * Long enough that a slider scrub, a run of keystrokes or a drag settles into one question
+ * rather than one per frame — each check reads the page's own source and walks it — and short
+ * enough that the answer still arrives while the change is the last thing the user did, which
+ * is the whole point of asking early.
+ */
+export const PLACEABILITY_DELAY_MS = 350;
+
 /** id of the `<style>` element the token editor writes into. */
 export const TOKEN_STYLE_ID = 'heo-design-tokens';
 

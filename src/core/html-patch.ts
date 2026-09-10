@@ -245,8 +245,18 @@ function resolveAnchor(html: string, anchor: ElementAnchor): OpenTag | string {
    * when there was no id and no marker to go on — `<body>` and `<br>` rather than anything
    * that was supposed to identify itself.
    */
+  /*
+   * And only when nothing about the element contradicts it.
+   *
+   * Uniqueness answers "which `<body>`", and it must not be allowed to answer "which `<p>`". An
+   * element that recorded classes is describing itself, so a lone tag in the file wearing
+   * different ones is a different element — and accepting it wrote an edit meant for a
+   * script-built `p.card` into the only `<p>` the file happened to contain, then reported the
+   * patch as a success. A wrong element written confidently is the one outcome worth more care
+   * than a reformatted file.
+   */
   const unique = uniqueTag(html, wanted);
-  if (unique) return unique;
+  if (unique && classesAgree(html, unique, anchor.classes)) return unique;
 
   /*
    * Failing all that: the nth child of a container that can be found.
@@ -320,6 +330,18 @@ export function directChildTags(html: string, container: OpenTag): OpenTag[] {
     i = close === -1 ? tag.end + 1 : close;
   }
   return out;
+}
+
+/**
+ * Whether a tag found in the file wears the classes the anchor remembers.
+ *
+ * True when the anchor recorded none, because then it is not making a claim: plenty of things
+ * worth finding — `<body>`, a `<br>`, an unadorned `<h1>` — have no classes, and demanding a
+ * match would refuse them all.
+ */
+function classesAgree(html: string, tag: OpenTag, classes: string | undefined): boolean {
+  if (!classes) return true;
+  return classSignatureOf(html.slice(tag.start, tag.end + 1)) === classes;
 }
 
 /** The `class` attribute of a raw opening tag, sorted to match how the anchor records it. */

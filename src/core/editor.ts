@@ -17,6 +17,7 @@ import {
   EDIT_DISCARDED_EVENT,
   HOST_TAG,
   IGNORE_ATTR,
+  PLACEABILITY_DELAY_MS,
   INSERTED_ATTR,
   RULE_STYLE_ID,
   SEED_SCRIPT_SELECTOR,
@@ -182,6 +183,7 @@ import {
   type WriteResult,
   type WriteSubject,
   patchDocumentSource,
+  rewriteReason,
 } from './writeback.js';
 import {
   buildBundle,
@@ -736,6 +738,22 @@ export class EditorEngine {
   #bundleTimer: ReturnType<typeof setTimeout> | null = null;
   /** The pending save re-plan, for the same reason. See `#replanSave`. */
   #replanTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The pending placeability check. See `#checkPlaceability`. */
+  #placeTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * The reason the user has already been told this change set forces a rewrite, if any.
+   *
+   * The reason rather than a flag, because "already said" has to mean "already said *this*".
+   * Once per descent into the state is not enough: a change set can be unplaceable for one
+   * reason and then acquire a second, independent one — an element the file has never seen, and
+   * then a document-wide edit — and the second is news the first does not cover. Keyed on the
+   * sentence, each distinct cause is announced once and a run of edits that keeps producing the
+   * same one stays quiet.
+   *
+   * Cleared as soon as the change set can be written as edits again — including by the undo the
+   * warning offers — so the same cause returning is announced afresh.
+   */
+  #warnedAboutRewrite: string | null = null;
   /** Deferred seed and design-system loads, so `whenReady` has something to await. */
   #pending = new Set<Promise<unknown>>();
 
@@ -878,6 +896,9 @@ export class EditorEngine {
 
     this.#listeners.push(
       this.history.onChange(() => {
+        // Whether this change set can still be written as edits to the file, said out loud the
+        // moment it stops being true rather than only in the save dialog. See `#checkPlaceability`.
+        this.#checkPlaceability();
         this.store.patch({
           canUndo: this.history.canUndo,
           canRedo: this.history.canRedo,
@@ -960,6 +981,10 @@ export class EditorEngine {
     if (this.#replanTimer !== null) {
       clearTimeout(this.#replanTimer);
       this.#replanTimer = null;
+    }
+    if (this.#placeTimer !== null) {
+      clearTimeout(this.#placeTimer);
+      this.#placeTimer = null;
     }
     for (const off of this.#listeners) off();
     this.#listeners = [];
@@ -4366,6 +4391,84 @@ export class EditorEngine {
     return marked;
   }
 
+  /* ---------------------------------------------------------------------- */
+  /* Whether this change set can still be written as edits                  */
+  /* ---------------------------------------------------------------------- */
+
+  /**
+   * Ask whether the change set can still reach the file as edits, and say so if it cannot.
+   *
+   * The news the save dialog used to break far too late. "The whole file is rewritten because
+   * …" is a caveat about a file the user has open in an editor, and by the time they read it in
+   * the Files step the change that caused it is several steps back and no longer obviously
+   * connected to it. Undo is the response almost everyone wants, and it is only within reach
+   * while the change is still the last thing they did.
+   *
+   * So this runs on every commit, undo and redo — debounced, because a slider scrub is one
+   * decision and reading the file once per frame of it would be absurd — and the moment the
+   * answer turns from yes to no it says which change did it and offers to take it back.
+   *
+   * Deliberately not restricted to any one kind of edit. A change forces a rewrite when it
+   * cannot be anchored in the file, and that is a property of the change and the file rather
+   * than of the panel it came from: a move whose container has since been reshaped does it, a
+   * paste into an element the patcher cannot address does it, and so does an Apply in the code
+   * panel. One check, asked of the same function the save itself asks.
+   */
+  #checkPlaceability(): void {
+    if (this.#placeTimer !== null) clearTimeout(this.#placeTimer);
+    this.#placeTimer = setTimeout(() => {
+      this.#placeTimer = null;
+      void this.#reportPlaceability();
+    }, PLACEABILITY_DELAY_MS);
+  }
+
+  async #reportPlaceability(): Promise<void> {
+    if (this.#destroyed) return;
+    /*
+     * An empty change set has nothing to warn about, and clearing the flag here is what makes
+     * the warning repeatable: undoing back to nothing, or saving, arms it again.
+     */
+    if (!this.handoffRecords.length) {
+      this.#warnedAboutRewrite = null;
+      return;
+    }
+    const path = documentPath();
+    if (!path) return;
+    const source = await this.#ownDocumentSource();
+    if (source === null || this.#destroyed) return;
+
+    const reason = rewriteReason(source, this.#writeSubject(), path);
+    if (!reason) {
+      // Placeable again — by an undo, or by a later edit that gave the patcher what it needed.
+      this.#warnedAboutRewrite = null;
+      return;
+    }
+    if (this.#warnedAboutRewrite === reason) return;
+    this.#warnedAboutRewrite = reason;
+    this.notify(
+      `Saving will rewrite the whole HTML file rather than edit it, because ${reason}.`,
+      'warn',
+      { label: 'Undo', run: () => this.undo() },
+    );
+  }
+
+  /**
+   * The page's own source, read once.
+   *
+   * Cached because the placeability check asks for it after every change and the answer cannot
+   * move underneath it: the file on disk only changes when this editor writes it, and
+   * `#markSaved` drops this then. `null` is cached too — a page whose own source is unreadable
+   * is not going to become readable by being asked twice a second.
+   */
+  #ownSource: string | null | undefined = undefined;
+
+  async #ownDocumentSource(): Promise<string | null> {
+    if (this.#ownSource !== undefined) return this.#ownSource;
+    const source = await this.#readOwnDocument();
+    this.#ownSource = source;
+    return source;
+  }
+
   /** The page's own HTML as served, from disk when possible. */
   async #readOwnDocument(): Promise<string | null> {
     const host = this.#project;
@@ -6157,6 +6260,9 @@ export class EditorEngine {
    */
   #markSaved(): void {
     this.history.markSaved();
+    // The file on disk is not what was read any more, so the placeability check has to re-read
+    // it: everything just written is now *in* the file, which is exactly what changes the answer.
+    this.#ownSource = undefined;
     // The ids these referred to are no longer in the pending set.
     this.#excludedChanges.clear();
     this.store.patch({ writePlan: null });

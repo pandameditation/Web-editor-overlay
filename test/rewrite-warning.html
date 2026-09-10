@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Editor overlay — warned while the change is still the last thing you did</title>
+  <!--
+    "The whole file is rewritten because …" is a caveat about a file the user has open in an
+    editor, and it used to appear only in the save dialog — several steps after the change that
+    caused it, and long after Undo was the obvious response.
+
+    So the editor asks the question as each change lands, of the same function the save itself
+    asks, and says so while taking it back is one click. This fixture is the generic half: no
+    code panel anywhere in it, just an ordinary text edit on content the file does not describe.
+
+        npm run build:lib && npm run check:warn
+  -->
+  <style>
+    body { margin: 0; padding: 24px; font-family: system-ui, sans-serif; }
+  </style>
+</head>
+
+<body>
+  <h1 id="title">Case study</h1>
+  <p id="copy">Authored copy, which the file has.</p>
+  <section id="built"></section>
+
+  <script>
+    /*
+     * Content the file does not have, so an edit to it cannot be anchored there.
+     *
+     * Assembled from parts on purpose. Written as a literal, the markup and its words would BE
+     * in the file — inside this very script — and the patcher would anchor on them there, which
+     * is how the first attempt at this fixture quietly proved nothing.
+     */
+    (function () {
+      var node = document.createElement('p');
+      node.className = ['ca', 'rd'].join('');
+      node.textContent = ['A paragraph the page', 'made', 'after load.'].join(' ');
+      document.getElementById('built').appendChild(node);
+    }());
+  </script>
+
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const errors = [];
+      window.addEventListener('error', (e) => errors.push('error: ' + e.message));
+      window.addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+
+      const results = {};
+      const progress = document.getElementById('progress');
+      const step = (name) => { progress.textContent = name; };
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      // Comfortably past the debounce, which is deliberate: the check is one question per burst
+      // of edits rather than one per keystroke.
+      const settle = () => new Promise((r) => setTimeout(r, 800));
+      const byId = (id) => document.getElementById(id);
+
+      /*
+       * Script detection off, so an edit to script-built content is not diverted as "rendered"
+       * and genuinely reaches the patcher — which is where it cannot be placed. That is the
+       * plain generic case, and it has nothing to do with any one panel.
+       */
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark', detectScriptContent: false });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+
+      const notices = [];
+      engine.store.subscribe((s) => {
+        const t = s.toast;
+        if (!t || notices.at(-1)?.message === t.message) return;
+        notices.push({ message: t.message, tone: t.tone, action: t.action?.label ?? null });
+      });
+      const warningsSince = (from) =>
+        notices.slice(from).filter((n) => /rewrite the whole HTML file/.test(n.message));
+
+      const retype = async (el, text) => {
+        engine.beginTextEdit(el);
+        await frames();
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        getSelection().removeAllRanges();
+        getSelection().addRange(range);
+        document.execCommand('insertText', false, text);
+        await frames();
+        engine.endTextEdit(true);
+        await frames();
+      };
+      const built = () => document.querySelector('#built p');
+
+      /* ------------------------------------------------------------------ *
+       * 1. A change the file can carry says nothing.
+       * ------------------------------------------------------------------ */
+      step('aPlaceableChange');
+      {
+        const from = notices.length;
+        await retype(byId('copy'), 'Edited authored copy.');
+        await settle();
+        results.aChangeTheFileCanCarryIsNotWarnedAbout = {
+          warnings: warningsSince(from),
+          recorded: engine.records.length,
+          ok: warningsSince(from).length === 0 && engine.records.length === 1,
+        };
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 2. One that it cannot is announced as it lands, with the reason and
+       *    the way out.
+       * ------------------------------------------------------------------ */
+      step('anUnplaceableChange');
+      {
+        const from = notices.length;
+        await retype(built(), 'Edited the built paragraph.');
+        await settle();
+        const warning = warningsSince(from)[0] ?? null;
+        results.anUnplaceableChangeIsAnnouncedAsItLands = {
+          warning: warning?.message ?? null,
+          tone: warning?.tone ?? null,
+          offersUndo: warning?.action ?? null,
+          // The reason comes from the patcher, not from a guess about what the user did.
+          namesTheReason: /not enough to reach/.test(warning?.message ?? ''),
+          ok:
+            Boolean(warning) &&
+            warning?.tone === 'warn' &&
+            warning?.action === 'Undo' &&
+            /not enough to reach/.test(warning?.message ?? ''),
+        };
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 3. And not again for the same reason, however many edits follow.
+       * ------------------------------------------------------------------ */
+      step('theSameReasonAgain');
+      {
+        const from = notices.length;
+        await retype(built(), 'Edited it again.');
+        await settle();
+        await retype(built(), 'And once more.');
+        await settle();
+        results.theSameReasonIsNotRepeated = {
+          warnings: warningsSince(from),
+          ok: warningsSince(from).length === 0,
+        };
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 4. Undoing back to a placeable set arms it again, so the next time
+       *    it happens is news again.
+       * ------------------------------------------------------------------ */
+      step('undoBackToPlaceable');
+      {
+        // `history.canUndo`, not `engine.canUndo` — the engine exposes it through the store, and
+        // reading a getter that does not exist made this loop skip and the group pass vacuously.
+        while (engine.history.canUndo && engine.records.length > 1) {
+          api.undo();
+          await frames();
+        }
+        // Down to the one placeable edit, so nothing is forcing a rewrite any more.
+        await settle();
+        const from = notices.length;
+        await retype(built(), 'Unplaceable once more.');
+        await settle();
+        results.itIsArmedAgainOnceThePlanIsPlaceable = {
+          recordsAtTheEnd: engine.records.length,
+          undoDepth: engine.history.size,
+          warnings: warningsSince(from),
+          ok: warningsSince(from).length === 1,
+        };
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 5. And the warning was telling the truth: the save really does say
+       *    the same thing, for the same reason.
+       * ------------------------------------------------------------------ */
+      step('theSaveAgrees');
+      {
+        const source = await (await fetch(location.href)).text();
+        const attempt = engine.exportPatchedHTML(source);
+        results.theSaveAgreesWithWhatTheWarningSaid = {
+          patched: attempt.patched,
+          why: attempt.why,
+          ok: attempt.patched === false && attempt.why.some((w) => /not enough to reach/.test(w)),
+        };
+      }
+
+      const failed = Object.entries(results)
+        .filter(([, group]) => group && typeof group === 'object' && group.ok === false)
+        .map(([name]) => name);
+
+      document.getElementById('out').textContent = 'RESULTS:' + JSON.stringify(
+        { ok: failed.length === 0, failed, ...results, notices, errors }, null, 1,
+      ) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"ok":false,"__fatal":' + JSON.stringify(String((e && e.stack) || e)) + '}:END';
+    });
+  </script>
+</body>
+
+</html>

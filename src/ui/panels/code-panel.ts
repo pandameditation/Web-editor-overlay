@@ -477,30 +477,30 @@ export class HeoCodePanel extends HeoElement {
   /**
    * Rewrite the live document from the buffer, in one undoable step.
    *
-   * `<head>` and `<body>` are reconciled toward the buffer and `<html>` and `<body>` keep their
-   * attributes in sync — but four things are never left to whatever the user's buffer happened
-   * to say, because losing any of them breaks the page or the editor rather than doing what the
-   * user meant:
+   * `<head>` and `<body>` are replaced by content, `<html>` and `<body>` keep
+   * their attributes in sync too — but four things are never left to whatever the
+   * user's buffer happened to say, because losing any of them breaks the page or
+   * the editor rather than doing what the user meant:
    *
-   * - The overlay host. It lives inside `<body>`, so a wholesale replacement would delete the
-   *   editor doing the deleting.
-   * - The token, class and block stylesheets. They are managed elsewhere and written through
-   *   their own API; this view shows their *effect*, not their markup, so they are left out of
-   *   the buffer entirely.
-   * - `data-heo-edit`. The page-level CSS that makes edit mode behave — cursors, text selection,
-   *   the drag preview — is keyed off this attribute on `<html>`.
-   * - Every existing `<script>`. This is the one that matters most: a script has already run,
-   *   and this view is a document editor, not the disclosed, run-it-again place that scripts get
-   *   — the JS panel. Sanitizing them out of *new* markup, the way every insertion elsewhere in
-   *   the editor does, is right for markup being typed fresh. Applying that same rule to the
-   *   whole document would mean pressing Apply after fixing a typo in the title also deletes
-   *   every script already running on the page, silently, with no way to notice beforehand.
+   * - The overlay host. It lives inside `<body>`, so a plain `innerHTML =` would
+   *   delete the editor doing the deleting.
+   * - The token, class and block stylesheets. They are managed elsewhere and
+   *   written through their own API; this view shows their *effect*, not their
+   *   markup, so they are left out of the buffer entirely and reattached after.
+   * - `data-heo-edit`. The page-level CSS that makes edit mode behave — cursors,
+   *   text selection, the drag preview — is keyed off this attribute on `<html>`.
+   * - Every existing `<script>`. This is the one that matters most: a script has
+   *   already run, and this view is a document editor, not the disclosed,
+   *   run-it-again place that scripts get — the JS panel. Sanitizing them out of
+   *   *new* markup, the way every insertion elsewhere in the editor does, is right
+   *   for markup being typed fresh. Applying that same rule to the whole document
+   *   would mean pressing Apply after fixing a typo in the title also deletes
+   *   every script already running on the page, silently, with no way to notice
+   *   before it happens. So existing scripts are carried over exactly as they
+   *   were, in their original position, whatever the buffer says about them.
    *
-   * All four are held in place by `notInTheBuffer` rather than removed and put back, which is
-   * what makes both directions safe *and* what keeps the page working: the nodes the edit did
-   * not reach are the same nodes afterwards, so the listeners the page's own scripts attached
-   * come through with them. Reattaching a copy instead is how every script on the page ended up
-   * duplicated once per Apply.
+   * All four are captured before the buffer is parsed and restored after, in both
+   * directions, so undo is exactly as safe as the apply.
    */
   #applyDocument(): void {
     const doc = document;
@@ -508,16 +508,13 @@ export class HeoCodePanel extends HeoElement {
     const managed = Array.from(doc.head.querySelectorAll('[data-heo-generated]'));
     const editingAttr = doc.documentElement.getAttribute('data-heo-edit');
     /*
-     * The page's scripts are not handled here at all any more, and that is the point.
+     * The page's scripts are not handled here at all, and that is deliberate.
      *
-     * They used to be cloned and reattached, because the write replaced the whole body and
-     * would otherwise have deleted them. Now the write reconciles instead, and `notInTheBuffer`
-     * holds every `<script>` exactly where it is — so there is nothing to carry over, and
-     * carrying one over anyway put a second copy of every script on the page per Apply, then a
-     * second copy of those, and so on.
-     *
-     * Which is the whole reason the reattachment existed: to survive a wholesale replacement
-     * that no longer happens. Deleting it is the fix, not guarding it.
+     * They used to be cloned and reattached, because the write replaced the whole body and would
+     * otherwise have deleted them. The write reconciles now, and `notInTheBuffer` holds every
+     * `<script>` exactly where it is — so there is nothing to carry over, and carrying one over
+     * anyway put a second copy of every script on the page per Apply, then a second copy of
+     * those. The reattachment existed to survive a wholesale replacement that no longer happens.
      */
 
     // A full document, not a fragment: DOMParser gives it a real head/body the way
@@ -582,11 +579,15 @@ export class HeoCodePanel extends HeoElement {
       applyAttributeMap(doc.body, state.bodyAttrs);
       morphChildren(doc.body, state.bodyHTML, { preserve: notInTheBuffer });
       /*
+       * Preserved nodes keep their place, so these only have to catch the case where one is
+       * somehow no longer in the document. Appending unconditionally would walk the host and
+       * every script to the end of their parent on every apply, undo and redo.
+       */
+      /*
        * A safety net and nothing more: `notInTheBuffer` keeps both of these where they are, so
        * the only way one is missing is if something outside this method took it out. Guarded on
-       * the *live* node, which is the whole trick — the guard that was here for the scripts
-       * tested a clone that had never been inserted, so it was true every time and appended a
-       * fresh copy of every script on every Apply.
+       * the *live* node — the guard that was here for the scripts tested a clone that had never
+       * been inserted, so it was true every time and appended a fresh copy on every Apply.
        */
       for (const el of managed) if (!el.isConnected) doc.head.appendChild(el);
       if (host && !host.isConnected) doc.body.appendChild(host);
@@ -630,7 +631,20 @@ export class HeoCodePanel extends HeoElement {
         kind: 'replace',
         summary: 'Rewrite the HTML document',
         target: 'document',
-        detail: { html: this.draft, scope: 'document' },
+        detail: {
+          html: this.draft,
+          scope: 'document',
+          /*
+           * Stated by the change rather than worked out from it.
+           *
+           * A document rewrite names no element — it *is* the document — so the patcher has
+           * nothing to anchor and would report a missing container, which describes the shape of
+           * the record rather than what happened. Saying it here puts the true sentence in the
+           * save plan and, through `#checkPlaceability`, in front of the user while Undo is
+           * still one click away.
+           */
+          forcesRewrite: 'a document-wide edit cannot be patched into the file',
+        },
         // What the change set compares. `before` and `after` are left off on purpose: the
         // change list renders them as a diff beside the summary, and a whole document of
         // markup there is unreadable. The summary says what happened.
@@ -714,10 +728,10 @@ function bodyMarkup(): string {
   const clone = document.body.cloneNode(true) as HTMLElement;
   for (const host of Array.from(clone.querySelectorAll(HOST_TAG))) host.remove();
   // Excluded here for the whole-document view for the same reason as the head:
-  // `#applyDocument` leaves every existing script exactly where it is rather than risking one
-  // being silently dropped by an edit that had nothing to do with it, so the buffer has no
-  // business describing them. `#apply`'s per-element path never reaches a `<script>` in the
-  // first place, so this has no effect there.
+  // `#applyDocument` carries every existing script over untouched and reattaches
+  // it separately, rather than risking one being silently dropped by an edit that
+  // had nothing to do with it. `#apply`'s per-element path never reaches a
+  // `<script>` in the first place, so this has no effect there.
   for (const script of Array.from(clone.querySelectorAll('script'))) script.remove();
   for (const node of [clone, ...Array.from(clone.querySelectorAll('*'))]) {
     for (const attribute of Array.from(node.attributes)) {
@@ -756,9 +770,11 @@ function notInTheBuffer(el: Element): boolean {
  *
  * The stylesheets hold the live output of the Tokens and Classes panels, not
  * something meant to be hand-edited here. Scripts are excluded for the reason
- * `#applyDocument` explains: they are left in place so a document apply can never delete a
- * script that was already running. Since they are never removed, leaving text copies of either
- * in this string would only produce a second, inert copy of each on every apply.
+ * `#applyDocument` explains: they are carried over and reattached separately so a
+ * document apply can never delete a script that was already running. Since that
+ * reattachment always happens afterward, leaving text copies of either in this
+ * string would only leave behind an inert duplicate every time the document is
+ * saved.
  */
 function headMarkupExcludingManagedAndScripts(): string {
   const clone = document.head.cloneNode(true) as HTMLElement;

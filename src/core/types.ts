@@ -221,6 +221,11 @@ export interface ChangeRecord {
    *   depend on the file and the CSSOM spelling a selector the same way.
    * - `ruleContext` — JSON array of enclosing at-rule preludes, outermost first.
    * - `property`, `value`, `priority`, `selector` — one declaration, for a rule edit.
+   * - `forcesRewrite` — why this change cannot be patched into the file, as a clause that reads
+   *   after "the whole file is rewritten because…". Its presence is the statement that saving
+   *   will serialize the page rather than edit it, and it is set at the moment the change is
+   *   made rather than worked out at save time: the user is owed that news while the edit is
+   *   still the thing they just did and Undo is still one click away.
    *
    * Carried on the record rather than in a side table so an `onSave` handler gets
    * the same description the built-in write path works from.
