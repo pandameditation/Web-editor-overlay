@@ -40,12 +40,36 @@
 <body>
   <h1 id="title">Case study</h1>
   <!--
-    A script sitting between two elements, which is what makes the whole-document case
-    discriminating: the buffer leaves scripts out and reattaches them at the end, so every
-    element after this one sits at a different index in the live tree than in the buffer.
-    An identity map that counted raw children would hand a key to the wrong element.
+    A script sitting between two elements, and it earns its place twice over.
+
+    It makes the whole-document case discriminating: the buffer leaves scripts out and
+    reattaches them at the end, so every element after this one sits at a different index in
+    the live tree than in the buffer, and an identity map counting raw children would hand a
+    key to the wrong element.
+
+    And it counts its own runs, which pins an invariant that is easy to break by accident.
+    `#applyDocument` reattaches a *clone* of every script rather than the node itself, and the
+    reason that is safe is a single line of the HTML spec: the cloning steps copy a script's
+    "already started" flag, so a clone of a script that has run will not run again. Recreating
+    the element instead — the obvious "simplification" — would re-run every script on the page
+    on every Apply, undo and redo.
   -->
-  <script>window.__aScriptInTheMiddle = true;</script>
+  <button id="wired" type="button">Open the menu</button>
+  <div id="panelbox" hidden>Menu contents</div>
+  <script>
+    window.__scriptRuns = (window.__scriptRuns || 0) + 1;
+    window.__sideEffects = (window.__sideEffects || 0) + 1;
+    /*
+     * The page's own behaviour, attached the way every real page attaches it: a listener on a
+     * node. Nothing in the markup records that it exists, so replacing the markup loses it and
+     * no amount of re-running or not re-running scripts brings it back.
+     */
+    (function () {
+      var button = document.getElementById('wired');
+      var box = document.getElementById('panelbox');
+      button.addEventListener('click', function () { box.hidden = !box.hidden; });
+    }());
+  </script>
   <section>
     <p id="lead">Loose <b id="mover">moved emphasis</b> prose that sits above the list.</p>
     <ul id="list">
@@ -66,10 +90,17 @@
 
   <script>
     (async () => {
-      // A document apply reattaches a clone of every script, and a cloned script runs again.
-      // This driver must not mount a second overlay and start over halfway through its own run.
-      if (window.__undoIdentityRan) return;
-      window.__undoIdentityRan = true;
+      /*
+       * Counted rather than merely guarded.
+       *
+       * A document apply reattaches every script, so if one were ever re-run this driver would
+       * start over halfway through its own run — mounting a second overlay and garbling the
+       * output. Returning early keeps that from becoming chaos; incrementing first is what turns
+       * it into a failed assertion instead, which is the difference between a test that reports
+       * a regression and one that merely survives it.
+       */
+      window.__driverRuns = (window.__driverRuns || 0) + 1;
+      if (window.__driverRuns > 1) return;
       const errors = [];
       window.addEventListener('error', (e) => errors.push('error: ' + e.message));
       window.addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
@@ -334,6 +365,22 @@
        *    with a move still on the stack underneath it.
        * ------------------------------------------------------------------ */
       step('applyTheWholeDocument');
+      const theWiredButton = byId('wired');
+      /** Click the page's own button and report whether its handler did anything. */
+      const theMenuToggles = async () => {
+        // Edit mode intercepts pointer events, so this has to be the page's own click.
+        api.setEditing(false);
+        await frames();
+        const was = byId('panelbox').hidden;
+        byId('wired').click();
+        const changed = byId('panelbox').hidden !== was;
+        byId('panelbox').hidden = was;
+        api.setEditing(true);
+        await frames();
+        return changed;
+      };
+      const behaviourBeforeTheApply = await theMenuToggles();
+      const scriptsBeforeTheApply = document.querySelectorAll('script').length;
       const deepFind = (tag, root = document) => {
         const found = root.querySelector ? root.querySelector(tag) : null;
         if (found) return found;
@@ -345,10 +392,21 @@
         return null;
       };
 
-      // A move to sit underneath the document rewrite, on an element the buffer will reparse.
-      const travelling = byId('added-emphasis');
-      const cameFrom = travelling?.parentElement?.id ?? null;
-      await dragInto(travelling, byId('two'));
+      /*
+       * A move to sit underneath the document rewrite, on an element the buffer will reparse.
+       *
+       * A keyboard move rather than a drag, deliberately. This started out as `dragInto`, which
+       * depends on a 200ms re-parent hold and on fourteen timed pointer samples landing — fine on
+       * its own and not fine with six pages competing for cores, where the gesture quietly did
+       * not complete and the group failed as though identity were broken. A reorder needs no
+       * gesture at all, and what is under test here is the undo, not the pointer.
+       */
+      const list = byId('list');
+      const orderBeforeTheMove = Array.from(list.children).map((el) => el.id).join(',');
+      const travelling = byId('three');
+      engine.move('up', travelling);
+      await frames();
+      const orderAfterTheMove = Array.from(list.children).map((el) => el.id).join(',');
       const depthBeforeTheDocumentApply = engine.history.size;
 
       /*
@@ -361,6 +419,9 @@
       await frames();
       const docPanel = deepFind('heo-code-panel');
       let applied = false;
+      // Read while the panel still has it. The apply itself may move the selection on, and what
+      // this asserts is which target Apply acted on, not what is selected afterwards.
+      const targetWasTheWholeDocument = engine.store.value.selected === document.documentElement;
       if (docPanel) {
         await docPanel.updateComplete;
         await frames();
@@ -374,6 +435,14 @@
         await frames();
         await wait(120);
       }
+      const behaviourAfterTheApply = await theMenuToggles();
+
+      const runsAfterTheApply = {
+        theScriptInTheMiddle: window.__scriptRuns,
+        thisDriver: window.__driverRuns,
+        sideEffects: window.__sideEffects,
+        scriptsInTheDocument: document.querySelectorAll('script').length,
+      };
       results.theWholeDocumentApplyLands = {
         panelFound: Boolean(docPanel),
         applied,
@@ -382,8 +451,8 @@
         depthBefore: depthBeforeTheDocumentApply,
         // Promoted from a diagnostic: the group after this one passed for the wrong reason while
         // `select()` was quietly declining `<html>` and the panel was applying to a `<b>` instead.
-        theTargetWasTheWholeDocument: engine.store.value.selected === document.documentElement,
-        ok: engine.store.value.selected === document.documentElement && applied && byId('title')?.textContent === 'Case study, rewritten' &&
+        theTargetWasTheWholeDocument: targetWasTheWholeDocument,
+        ok: targetWasTheWholeDocument && applied && byId('title')?.textContent === 'Case study, rewritten' &&
           engine.history.size === depthBeforeTheDocumentApply + 1,
       };
 
@@ -423,8 +492,7 @@
       await frames();
       const afterUndoingTheDocument = {
         title: byId('title')?.textContent ?? null,
-        travellingNodes: document.querySelectorAll('#added-emphasis').length,
-        travellingParent: byId('added-emphasis')?.parentElement?.id ?? null,
+        order: Array.from(byId('list').children).map((el) => el.id).join(','),
       };
       api.undo();
       await frames();
@@ -434,23 +502,80 @@
        * move puts the old one back beside its replacement — the duplicate, at page scale.
        */
       results.aDocumentRewriteDoesNotStrandTheStackBeneathIt = {
-        cameFrom,
+        // Named so a move that did not happen reports itself rather than looking like an
+        // identity failure, which is how this group first went wrong.
+        theMoveHappened: orderAfterTheMove !== orderBeforeTheMove,
+        orderBeforeTheMove,
+        orderAfterTheMove,
         afterUndoingTheDocument,
-        travellingNodes: document.querySelectorAll('#added-emphasis').length,
-        whereItIs: Array.from(document.querySelectorAll('#added-emphasis')).map(
-          (el) => el.parentElement?.id ?? el.parentElement?.localName ?? null,
-        ),
-        theScriptIsStillThere: window.__aScriptInTheMiddle === true,
+        orderNow: Array.from(byId('list').children).map((el) => el.id).join(','),
+        bulletsInTheList: byId('list').children.length,
+        theBulletIsTheSameNode: byId('three') === travelling,
+        theScriptIsStillThere: window.__scriptRuns === 1,
         ok:
+          orderAfterTheMove !== orderBeforeTheMove &&
           afterUndoingTheDocument.title === 'Case study' &&
-          afterUndoingTheDocument.travellingNodes === 1 &&
-          afterUndoingTheDocument.travellingParent === 'two' &&
-          document.querySelectorAll('#added-emphasis').length === 1 &&
-          byId('added-emphasis')?.parentElement?.id === cameFrom,
+          // The rewrite is undone but the move under it is not, so the order it produced stands.
+          afterUndoingTheDocument.order === orderAfterTheMove &&
+          // And undoing the move puts it back, on the node the document rewrite reparsed.
+          Array.from(byId('list').children).map((el) => el.id).join(',') === orderBeforeTheMove &&
+          byId('list').children.length === orderBeforeTheMove.split(',').length,
+      };
+
+      /*
+       * The page still works, which is the thing the user actually notices.
+       *
+       * A document Apply used to replace every element on the page, and with them every listener
+       * the page's own scripts had attached. The markup came through looking untouched and the
+       * behaviour was gone — a menu button that no longer opened its menu, through undo and redo
+       * alike, until the page was reloaded. Nothing in the markup says a listener was ever there,
+       * so the only fix is to keep the node.
+       */
+      results.aDocumentApplyKeepsThePagesBehaviour = {
+        beforeIt: behaviourBeforeTheApply,
+        afterIt: behaviourAfterTheApply,
+        andAfterUndoingIt: await theMenuToggles(),
+        theButtonIsTheSameNode: byId('wired') === theWiredButton,
+        ok:
+          behaviourBeforeTheApply === true &&
+          behaviourAfterTheApply === true &&
+          byId('wired') === theWiredButton,
+      };
+
+      /*
+       * Every script on the page ran once, and goes on having run once — through the apply and
+       * through both undos. A clone carries the "already started" flag, so the reattachment
+       * cannot re-run anything; this is what would catch that stopping being true.
+       */
+      results.aDocumentApplyNeitherReRunsNorDuplicatesThePagesScripts = {
+        scriptsBeforeTheApply,
+        runsAfterTheApply,
+        andAfterUndoing: {
+          theScriptInTheMiddle: window.__scriptRuns,
+          thisDriver: window.__driverRuns,
+          sideEffects: window.__sideEffects,
+          scriptsInTheDocument: document.querySelectorAll('script').length,
+        },
+        /*
+         * The count is measured *before* the apply as well, and that is the assertion that was
+         * missing. Two counts both taken afterwards agree with each other perfectly well while
+         * every script on the page has already been duplicated — which is what happened: the
+         * reattachment guard tested a clone that had never been inserted, so it appended a
+         * fresh copy of every script on every Apply, and of those copies on the next one.
+         */
+        ok:
+          runsAfterTheApply.theScriptInTheMiddle === 1 &&
+          runsAfterTheApply.thisDriver === 1 &&
+          runsAfterTheApply.sideEffects === 1 &&
+          window.__scriptRuns === 1 &&
+          window.__driverRuns === 1 &&
+          window.__sideEffects === 1 &&
+          runsAfterTheApply.scriptsInTheDocument === scriptsBeforeTheApply &&
+          document.querySelectorAll('script').length === scriptsBeforeTheApply,
       };
 
       /* ------------------------------------------------------------------ *
-       * 6. And after all of it, the save still reaches the file as edits.
+       * 7. And after all of it, the save still reaches the file as edits.
        * ------------------------------------------------------------------ */
       step('thePlan');
       const plan = await engine.previewWritePlan();
@@ -463,6 +588,45 @@
           /patched in place/.test(write?.reason ?? '') &&
           (write?.warnings ?? []).length === 0 &&
           (plan?.unwritable ?? []).length === 0,
+      };
+
+      /* ------------------------------------------------------------------ *
+       * 8. And a second Apply, because the duplication compounded: each one
+       *    copied whatever the last one had left behind.
+       * ------------------------------------------------------------------ */
+      step('applyTheWholeDocumentASecondTime');
+      engine.store.patch({ selected: document.documentElement });
+      engine.openCode('html');
+      await frames();
+      const secondPanel = deepFind('heo-code-panel');
+      let appliedAgain = false;
+      if (secondPanel) {
+        await secondPanel.updateComplete;
+        await frames();
+        secondPanel.draft = secondPanel.draft.replace('Case study', 'Case study, twice over');
+        secondPanel.dirty = true;
+        await secondPanel.updateComplete;
+        const button = Array.from(secondPanel.shadowRoot.querySelectorAll('button')).find(
+          (b) => b.textContent.trim().toLowerCase().startsWith('apply'),
+        );
+        if (button) { button.click(); appliedAgain = true; }
+        await frames();
+        await wait(150);
+      }
+      results.asecondApplyDoesNotCompound = {
+        appliedAgain,
+        title: byId('title')?.textContent ?? null,
+        scriptsInTheDocument: document.querySelectorAll('script').length,
+        scriptsBeforeTheApply,
+        scriptRuns: window.__scriptRuns,
+        driverRuns: window.__driverRuns,
+        theMenuStillToggles: await theMenuToggles(),
+        ok:
+          appliedAgain &&
+          byId('title')?.textContent === 'Case study, twice over' &&
+          document.querySelectorAll('script').length === scriptsBeforeTheApply &&
+          window.__scriptRuns === 1 &&
+          window.__driverRuns === 1,
       };
 
       const failed = Object.entries(results)
