@@ -2,6 +2,7 @@ import { css, html, LitElement, nothing, type PropertyValues, type TemplateResul
 import { customElement, property, query, state } from 'lit/decorators.js';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import { enterModal, exitModal } from '../../core/modal.js';
+import { listen, unlisten } from '../../core/shield.js';
 import { highlight, type CodeLanguage } from './highlight.js';
 import { icon } from '../icons.js';
 import { baseStyles } from '../theme.js';
@@ -342,7 +343,8 @@ export class HeoCodeEditor extends LitElement {
       /* Floats over the top-right corner of the code, where it overlaps only the
          indentation of the first line. Visible enough to be discovered, quiet
          enough not to compete with the code, and full strength on hover or focus. */
-      .grow {
+      .grow,
+      .findtoggle {
         position: absolute;
         top: 5px;
         right: 5px;
@@ -364,10 +366,20 @@ export class HeoCodeEditor extends LitElement {
       }
       .grow:hover,
       .grow:focus-visible,
-      .frame:hover .grow {
+      .frame:hover .grow,
+      .findtoggle:hover,
+      .findtoggle:focus-visible,
+      .shell:hover .findtoggle {
         opacity: 1;
         color: var(--heo-text);
         background: var(--heo-hover);
+      }
+      /* One level above the grow button it borrows these styles from, because it has a different
+         thing to clear: the transparent textarea covering the whole buffer, which is what the bar
+         it opens sits above too. Sharing the corner with the grow button is safe for the reason
+         given on the findable getter -- no view offers both. */
+      .findtoggle {
+        z-index: 3;
       }
 
       /* Holds the panel's layout while the editor is in the modal, so nothing
@@ -555,6 +567,15 @@ export class HeoCodeEditor extends LitElement {
   /** What is being looked for in this buffer, and which match is current. */
   @state() private find = '';
   @state() private findAt = 0;
+  /**
+   * Whether the find bar is on screen. Closed until asked for.
+   *
+   * It used to be permanent, and it is opaque and sits over the code, so the first three lines of
+   * every buffer were behind a box most of the time nobody was searching. Closed by default with two
+   * ways in — the magnifier in the corner and the shortcut every editor uses — costs one gesture to
+   * the person who wants it and gives the corner back to everyone else.
+   */
+  @state() private findOpen = false;
 
   @query('textarea') private area!: HTMLTextAreaElement;
   @query('pre') private pre!: HTMLPreElement;
@@ -591,8 +612,16 @@ export class HeoCodeEditor extends LitElement {
     if (changed.has('error')) this.toggleAttribute('data-invalid', Boolean(this.error));
   }
 
+  override connectedCallback(): void {
+    super.connectedCallback();
+    finders.add(this);
+    armFindShortcut();
+  }
+
   override disconnectedCallback(): void {
     super.disconnectedCallback();
+    finders.delete(this);
+    disarmFindShortcut();
     // A modal removed while open leaves the top layer and the page's inertness in
     // an inconsistent state, so close it on the way out. Clearing the flag as well
     // matters because Lit reuses instances: a reconnected editor would otherwise
@@ -809,6 +838,18 @@ export class HeoCodeEditor extends LitElement {
     return this.fill && (this.expanded || !this.expandable);
   }
 
+  /** Whether finding is not only offered but currently on. What the marks are drawn from. */
+  get #finding(): boolean {
+    return this.#findable && this.findOpen;
+  }
+
+  /** Whether a page-level Cmd+F should be able to reach this editor: offered, and on screen. */
+  get canFind(): boolean {
+    if (!this.#findable || !this.isConnected) return false;
+    const box = this.getBoundingClientRect();
+    return box.width > 0 && box.height > 0;
+  }
+
   /**
    * Find in this buffer. Offered on the editors that are already at full size, not on every field.
    *
@@ -823,6 +864,18 @@ export class HeoCodeEditor extends LitElement {
    */
   #renderFind(): TemplateResult | typeof nothing {
     if (!this.#findable) return nothing;
+    if (!this.findOpen) {
+      return html`<button
+        class="findtoggle"
+        type="button"
+        title=${`Find in the ${this.language.toUpperCase()} (${modKey()}+F)`}
+        aria-label=${`Find in the ${this.language.toUpperCase()}`}
+        @click=${() => this.#openFind()}
+      >
+        ${icon('search', 12)}
+      </button>`;
+    }
+
     const total = this.matchOffsets(this.find).length;
     const stepping = Boolean(this.find.trim()) && total > 0;
 
@@ -832,8 +885,14 @@ export class HeoCodeEditor extends LitElement {
         placeholder=${`Find in the ${this.language.toUpperCase()}…`}
         .value=${this.find}
         .count=${total}
+        .position=${stepping && this.findAt >= 0 ? this.findAt + 1 : 0}
         @search-input=${(event: CustomEvent<{ value: string }>) => this.#onFind(event.detail.value)}
         @search-submit=${() => this.#step(1)}
+        @search-escape=${(event: Event) => {
+        // Taken from the field, so Escape puts the bar away rather than emptying the query.
+        event.preventDefault();
+        this.#closeFind();
+      }}
       ></heo-search-field>
       <button
         class="btn icon ghost sm"
@@ -855,7 +914,51 @@ export class HeoCodeEditor extends LitElement {
       >
         ${icon('chevronDown', 12)}
       </button>
+      <button
+        class="btn icon ghost sm"
+        type="button"
+        title=${`Close find (Esc or ${modKey()}+F)`}
+        aria-label="Close find"
+        @click=${() => this.#closeFind()}
+      >
+        ${icon('close', 12)}
+      </button>
     </div>`;
+  }
+
+  /**
+   * Show the bar and put the caret in it, with whatever was last searched for selected.
+   *
+   * The query survives closing, so reopening offers it again rather than making somebody retype it,
+   * and selecting means the next keystroke replaces it — the behaviour of every find box, and the
+   * reason keeping the text costs nothing.
+   */
+  #openFind(): void {
+    this.findOpen = true;
+    void this.updateComplete.then(() => {
+      // The only field in this shadow root, so the plain tag selector is also the typed one.
+      this.renderRoot.querySelector('heo-search-field')?.focusInput({ select: true });
+      if (this.find.trim()) this.findAt = this.revealMatch(this.find, this.findAt);
+    });
+  }
+
+  /**
+   * Put the bar away and hand focus back to the buffer.
+   *
+   * Focus matters as much as the marks here: dropping it on the body would leave the shortcut with
+   * nothing to act on, so closing the bar would cost the user the way to reopen it.
+   */
+  #closeFind(): void {
+    if (!this.findOpen) return;
+    this.findOpen = false;
+    this.area?.focus();
+  }
+
+  /** What the shortcut does. Toggling, because a shortcut that only opens is a trap. */
+  toggleFind(): void {
+    if (!this.#findable) return;
+    if (this.findOpen) this.#closeFind();
+    else this.#openFind();
   }
 
   /** A new query starts from the top, and shows its first match while it is being typed. */
@@ -930,7 +1033,7 @@ export class HeoCodeEditor extends LitElement {
      * whoever writes the first editor that does expand itself: marks nothing on screen can clear
      * would be a worse state than the collision that made the bar conditional in the first place.
      */
-    return this.#findable ? markMatches(painted, this.find.trim(), this.findAt) : painted;
+    return this.#finding ? markMatches(painted, this.find.trim(), this.findAt) : painted;
   }
 
   /**
@@ -1058,7 +1161,25 @@ export class HeoCodeEditor extends LitElement {
   #onInput(event: Event): void {
     this.projection = (event.target as HTMLTextAreaElement).value;
     this.draft = expandProjection(this.projection, this.#hidden);
+    this.#restrainFind();
     this.#emit('code-input');
+  }
+
+  /**
+   * Keep the current match inside the list after the text it was counted against changed.
+   *
+   * `findAt` is in range whenever it is written, because it only ever comes back from a reveal — and
+   * then the buffer moves underneath it. Deleting the last of five matches while sitting on it left
+   * the bar reading "5 of 4" with no mark picked out, since the index had stopped naming anything.
+   *
+   * Corrected at the edit rather than in the label, so the number in the bar and the mark on the
+   * screen are still reading the same state. Costs one scan of the buffer per keystroke, and only
+   * while a query is on screen.
+   */
+  #restrainFind(): void {
+    if (!this.findOpen || !this.find.trim()) return;
+    const total = this.matchOffsets(this.find).length;
+    if (this.findAt >= total) this.findAt = total > 0 ? total - 1 : -1;
   }
 
   /* ---- Folding ---- */
@@ -1260,6 +1381,18 @@ export class HeoCodeEditor extends LitElement {
     }
     if (event.key === 'Escape') {
       event.stopPropagation();
+      /*
+       * The find bar goes before the view does.
+       *
+       * Both answer Escape with "put it away", and the innermost thing wins: closing the whole
+       * fullscreen editor because somebody wanted the search box gone would throw away the view they
+       * were working in. Same order as the field's own handling, one level out.
+       */
+      if (this.findOpen) {
+        event.preventDefault();
+        this.#closeFind();
+        return;
+      }
       if (this.expanded) {
         event.preventDefault();
         this.#collapse();
@@ -1333,6 +1466,60 @@ export class HeoCodeEditor extends LitElement {
 
 function modKey(): string {
   return navigator.platform.toLowerCase().includes('mac') ? '⌘' : 'Ctrl';
+}
+
+/* -------------------------------------------------------------------------- */
+/* The find shortcut                                                          */
+/* -------------------------------------------------------------------------- */
+
+/** Every editor alive on the page, so the shortcut can work out which one is being looked at. */
+const finders = new Set<HeoCodeEditor>();
+let armed = false;
+
+/**
+ * Cmd+F / Ctrl+F, read at the document rather than inside the editor.
+ *
+ * A listener on the control itself only fires while something inside it has focus, and that is not
+ * where focus is when it matters: the fullscreen code view is a modal dialog, so opening it puts
+ * focus on whatever comes first inside — a language tab, the close button — and the first Cmd+F went
+ * to the browser's own find bar, which searches the rendered page and not the buffer on screen. One
+ * document-level listener answers from anywhere.
+ *
+ * Only claims the key when an editor could actually use it: `canFind` wants the bar offered and the
+ * editor on screen, so with no code view open the shortcut is the browser's again, which is the right
+ * answer for someone reading the page rather than its source.
+ *
+ * Given to the editor the keystroke came from when it came from one, and to the last one connected
+ * otherwise, that being the one most recently put on screen — a dialog over a dialog is the one in
+ * front.
+ */
+function onFindShortcut(event: Event): void {
+  const key = event as KeyboardEvent;
+  if (!(key.metaKey || key.ctrlKey) || key.altKey) return;
+  if (key.key.toLowerCase() !== 'f') return;
+
+  const offered = [...finders].filter((editor) => editor.canFind);
+  if (!offered.length) return;
+  const path = event.composedPath();
+  const target = offered.find((editor) => path.includes(editor)) ?? offered[offered.length - 1];
+
+  event.preventDefault();
+  event.stopPropagation();
+  target.toggleFind();
+}
+
+function armFindShortcut(): void {
+  if (armed) return;
+  armed = true;
+  // Through `listen` and in the capture phase: the shield suppresses page keydowns, and the overlay's
+  // own keymap is on the same event.
+  listen(document, 'keydown', onFindShortcut, true);
+}
+
+function disarmFindShortcut(): void {
+  if (!armed || finders.size) return;
+  armed = false;
+  unlisten(document, 'keydown', onFindShortcut, true);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1553,54 +1740,109 @@ declare global {
   }
 }
 
+/** What `highlight` escapes, and nothing else, so the text recovered here is the buffer's own. */
+const ENTITIES: Record<string, string> = { '&amp;': '&', '&lt;': '<', '&gt;': '>' };
+
 /**
  * Wrap every occurrence of `needle` in already-highlighted HTML, leaving the markup alone.
  *
  * The highlighting has to happen first — it is context-sensitive, so splitting the source around
- * matches and tokenising the pieces would mis-colour anything straddling a boundary. That means
- * marking has to be done on the output, which is HTML, so the walk tracks whether it is inside a
- * tag and only ever touches text.
+ * matches and tokenising the pieces would mis-colour anything straddling a boundary. Marking
+ * therefore happens on the output, which is HTML and not the text the user typed against, and that
+ * gap is where searching a markup buffer for markup used to come up empty. `<li>` is three tokens
+ * once highlighted — `<span class="t-punct">&lt;</span><span class="t-tag">li</span>` and a third
+ * for the bracket — so looking for `<li>` in that string looks for a `<` in text that says `&lt;`,
+ * in a run cut into pieces by spans besides. The count in the find bar reads the buffer and was
+ * right; the highlight came from here and marked nothing, on exactly the queries an HTML editor is
+ * given most.
  *
- * Two known limits, both benign. A match split across a syntax span is not marked, because half of
- * it is on either side of a tag. And a needle containing a character the highlighter escapes — a
- * bare `<` or `&` — will not be found here even though the buffer contains it, since the text at
- * this point says `&lt;`. Both are cases where the mark is missing, never wrong or misplaced.
+ * So no search happens here. The walk recovers the plain text the layer stands for — stepping over
+ * tags, and reading `&lt;`, `&gt;` and `&amp;` back to the single character each one draws — while
+ * recording where every one of those characters begins and ends in the HTML. Offsets found in that
+ * text are the offsets `matchOffsets` reports, because it is the same text, so the number in the bar
+ * and the marks on the screen cannot disagree about how many there are or where they sit.
+ *
+ * A match straddling a span is marked in as many pieces as it has runs: the mark closes before the
+ * markup and opens again after it. That keeps the nesting valid — a `<mark>` never swallows half a
+ * `<span>` — while still painting every character the user searched for.
  */
 function markMatches(html: string, needle: string, current: number): string {
   const wanted = needle.toLowerCase();
   if (!wanted) return html;
 
-  let out = '';
+  /* The text this layer shows, and where each of its characters lives in the HTML. */
+  let text = '';
+  const from: number[] = [];
+  const to: number[] = [];
   let cursor = 0;
-  let hit = 0;
-
   while (cursor < html.length) {
-    const lt = html.indexOf('<', cursor);
-    const text = lt === -1 ? html.slice(cursor) : html.slice(cursor, lt);
-
-    let at = 0;
-    const lower = text.toLowerCase();
-    for (; ;) {
-      const found = lower.indexOf(wanted, at);
-      if (found === -1) break;
-      out += text.slice(at, found);
-      out += `<mark class="hit${hit === current ? ' on' : ''}">`;
-      out += text.slice(found, found + needle.length);
-      out += '</mark>';
-      at = found + needle.length;
-      hit += 1;
+    const ch = html[cursor];
+    if (ch === '<') {
+      const gt = html.indexOf('>', cursor);
+      cursor = gt === -1 ? html.length : gt + 1;
+      continue;
     }
-    out += text.slice(at);
-
-    if (lt === -1) break;
-    const gt = html.indexOf('>', lt);
-    if (gt === -1) {
-      out += html.slice(lt);
-      break;
+    if (ch === '&') {
+      const semi = html.indexOf(';', cursor);
+      const plain = semi === -1 ? undefined : ENTITIES[html.slice(cursor, semi + 1)];
+      if (plain !== undefined) {
+        text += plain;
+        from.push(cursor);
+        to.push(semi + 1);
+        cursor = semi + 1;
+        continue;
+      }
     }
-    out += html.slice(lt, gt + 1);
-    cursor = gt + 1;
+    text += ch;
+    from.push(cursor);
+    to.push(cursor + 1);
+    cursor += 1;
   }
 
-  return out;
+  /*
+   * Every place a mark has to open or close, collected before anything is written.
+   *
+   * Collected rather than spliced as it goes because one match can need several marks, and the
+   * positions they land on are HTML offsets while the loop that finds them counts in text offsets.
+   * Two coordinate systems in one string-building loop is how the earlier version ended up with the
+   * bug this replaces.
+   */
+  const cuts: Array<{ at: number; open: boolean; cls: string }> = [];
+  const lower = text.toLowerCase();
+  let hit = 0;
+  for (
+    let found = lower.indexOf(wanted);
+    found !== -1;
+    found = lower.indexOf(wanted, found + wanted.length)
+  ) {
+    const cls = `hit${hit === current ? ' on' : ''}`;
+    const stop = found + wanted.length;
+    let piece = found;
+    for (let i = found; i < stop; i += 1) {
+      const last = i === stop - 1;
+      // Markup sits between this character and the next, so the mark has to break around it.
+      const broken = !last && from[i + 1] !== to[i];
+      if (i === piece) cuts.push({ at: from[i], open: true, cls });
+      if (last || broken) {
+        cuts.push({ at: to[i], open: false, cls });
+        piece = i + 1;
+      }
+    }
+    hit += 1;
+  }
+  if (!cuts.length) return html;
+
+  /*
+   * Written in one pass. Closes sort before opens at the same offset, so two matches that touch
+   * read as `</mark><mark>` instead of nesting one inside the other.
+   */
+  cuts.sort((a, b) => a.at - b.at || Number(a.open) - Number(b.open));
+  let out = '';
+  let taken = 0;
+  for (const cut of cuts) {
+    out += html.slice(taken, cut.at);
+    out += cut.open ? `<mark class="${cut.cls}">` : '</mark>';
+    taken = cut.at;
+  }
+  return out + html.slice(taken);
 }

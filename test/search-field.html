@@ -42,6 +42,12 @@
       <h2>Section</h2>
       <p class="card" id="para">Words about tokens.</p>
       <a id="link" href="/somewhere">A link</a>
+      <!-- Plain list items, for the find bar: a tag is what an HTML buffer gets searched for. -->
+      <ul id="list">
+        <li>One</li>
+        <li>Two</li>
+        <li class="row">Three</li>
+      </ul>
     </section>
   </main>
 
@@ -975,9 +981,13 @@
         ?.querySelector('heo-code-panel')
         ?.shadowRoot?.querySelector('heo-code-editor');
       results.inline.theButtonOpensTheBigView = Boolean(landed);
-      results.inline.andTheBigViewHasTheFinder = Boolean(
-        landedEditor?.shadowRoot.querySelector('.findbar heo-search-field'),
+      // Offered, not imposed: the bar is opaque and sits over the code, so the big view arrives with
+      // the magnifier in the corner and nothing covering the first lines of the buffer.
+      results.inline.andTheBigViewOffersFinding = Boolean(
+        landedEditor?.shadowRoot.querySelector('.findtoggle'),
       );
+      results.inline.withNothingCoveringTheCodeYet = Boolean(landedEditor)
+        && !landedEditor.shadowRoot.querySelector('.findbar');
       engine.closeCodeWorkspace();
       await frames();
       await wait(200);
@@ -993,7 +1003,8 @@
         results.inline.withholdsTheFinder &&
         results.inline.nothingCoversTheExpandButton &&
         results.inline.theButtonOpensTheBigView &&
-        results.inline.andTheBigViewHasTheFinder &&
+        results.inline.andTheBigViewOffersFinding &&
+        results.inline.withNothingCoveringTheCodeYet &&
         results.inline.returnsToTheButton;
 
       /* ---------------------------------------------------------------- *
@@ -1006,19 +1017,60 @@
       const workspace = deep('heo-code-workspace');
       const expandedPanel = workspace?.shadowRoot?.querySelector('heo-code-panel');
       const editor = expandedPanel?.shadowRoot?.querySelector('heo-code-editor');
-      const codeField = editor?.shadowRoot.querySelector('.findbar heo-search-field');
+
+      /** Cmd+F as the browser delivers it: at the document, in whatever has focus. */
+      const shortcut = async (from = document) => {
+        from.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'f', metaKey: true, ctrlKey: true,
+          bubbles: true, composed: true, cancelable: true,
+        }));
+        await editor.updateComplete;
+        await frames();
+        await wait(60);
+      };
+      const bar = () => editor.shadowRoot.querySelector('.findbar heo-search-field');
+      /** Every piece of every mark, in painting order. Split marks make the count meaningless. */
+      const markedText = (only = '') =>
+        Array.from(editor.shadowRoot.querySelectorAll(`pre mark.hit${only}`))
+          .map((mark) => mark.textContent)
+          .join('');
 
       results.code = {
         workspaceOpen: Boolean(workspace),
         // The panel is reused rather than reimplemented, which is what makes one bar serve both.
         reusesThePanel: Boolean(expandedPanel),
-        hasTheField: Boolean(codeField),
-        // No plus here: there is nothing in a buffer to create.
-        offersNoCreateAction: Boolean(codeField) && !codeField.shadowRoot.querySelector('.go'),
-        hasPrevNext: editor.shadowRoot.querySelectorAll('.findbar button').length === 2,
+        /*
+         * Closed on arrival, with a way in.
+         *
+         * The bar was permanent, which is the complaint it is here for: it is opaque by design and
+         * floats over the top-right of the buffer, so the first lines of every document were behind a
+         * box whether or not anybody was searching.
+         */
+        startsClosed: Boolean(editor) && !editor.shadowRoot.querySelector('.findbar'),
+        andOffersTheMagnifier: Boolean(editor?.shadowRoot.querySelector('.findtoggle')),
         // And no expand button to fight over the corner, because this already is the big view.
         hasNoExpandButton: !editor.shadowRoot.querySelector('.grow'),
       };
+
+      /*
+       * The shortcut, dispatched at the document rather than at the buffer.
+       *
+       * That is the case that was broken and the reason the listener is where it is: the workspace is
+       * a modal dialog, so opening it leaves focus on the first thing inside — a language tab — and a
+       * listener living on the editor never sees the keystroke. The browser's own find bar took it
+       * instead and searched the rendered page rather than the source on screen.
+       */
+      await shortcut();
+      const codeField = bar();
+      results.code.theShortcutOpensTheBar = Boolean(codeField);
+      results.code.andPutsTheCaretInTheField =
+        codeField?.shadowRoot.activeElement === codeField?.shadowRoot.querySelector('input');
+      // No plus here: there is nothing in a buffer to create.
+      results.code.offersNoCreateAction =
+        Boolean(codeField) && !codeField.shadowRoot.querySelector('.go');
+      // Previous, next, and the way out.
+      results.code.hasPrevNextAndClose =
+        editor.shadowRoot.querySelectorAll('.findbar button').length === 3;
 
       await typeInto(codeField, 'section', editor);
       await wait(120);
@@ -1050,20 +1102,135 @@
       results.code.countMatchesWhatIsShown =
         editor.matchOffsets('section').length === results.code.matchesFound;
 
+      /* ---------------------------------------------------------------- *
+       * Where you are, not just how much there is.
+       * ---------------------------------------------------------------- */
+      const shown = () => codeField.shadowRoot.querySelector('.count')?.textContent.trim() ?? '';
+      // Enter has already stepped once by this point, so the position is the second match.
+      results.code.showsThePositionNotJustTheTotal = shown() === `2 of ${results.code.matchesFound}`;
+      await press(codeField, 'Enter');
+      await wait(60);
+      results.code.andThePositionMovesWithTheArrows =
+        shown() === `3 of ${results.code.matchesFound}`;
+
+      /* ---------------------------------------------------------------- *
+       * A tag query, which is what an HTML buffer is searched for.
+       *
+       * This found its matches and painted none of them. The count came from the buffer, where `<li>`
+       * says `<li>`; the marks came from the highlighted layer, where the same four characters are
+       * `&lt;li&gt;` split across three spans, so a substring search over that HTML could not match
+       * them. A number in the bar with nothing on the screen is what the fix is measured against.
+       * ---------------------------------------------------------------- */
+      await typeInto(codeField, '<li>', editor);
+      await wait(120);
+      results.code.findsATagQuery = editor.matchOffsets('<li>').length;
+      // Every match painted in full, in pieces where a span cut it, and nothing else caught.
+      results.code.andPaintsEveryOneOfThem =
+        markedText() === '<li>'.repeat(results.code.findsATagQuery);
+      results.code.andPicksOutTheCurrentTag = markedText('.on') === '<li>';
+      /*
+       * Three pieces per match, which is the shape of the fix rather than an incidental number.
+       * `<li>` is punctuation, tag name, punctuation — three spans — so painting it whole means the
+       * mark closing before each span and opening again after it. One piece per match would mean the
+       * marks were still coming from a substring search over the HTML.
+       */
+      results.code.inAsManyPiecesAsTheSpansNeed =
+        editor.shadowRoot.querySelectorAll('pre mark.hit').length ===
+        results.code.findsATagQuery * 3;
+      results.code.andCountsThemInTheBar = shown() === `1 of ${results.code.findsATagQuery}`;
+
+      /* ---------------------------------------------------------------- *
+       * Editing the buffer under the query, which can strand the position past the end.
+       * ---------------------------------------------------------------- */
+      await typeInto(codeField, '<li', editor);
+      await wait(80);
+      const items = editor.matchOffsets('<li').length;
+      await press(codeField, 'Enter');
+      await press(codeField, 'Enter');
+      await wait(60);
+      results.code.stepsToTheLastItem = shown() === `${items} of ${items}`;
+      // Delete the match being looked at. The index it was counted against no longer names one.
+      const buffer = editor.shadowRoot.querySelector('textarea');
+      const whole = buffer.value;
+      buffer.value = whole.replace('<li class="row">Three</li>', '');
+      buffer.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      await editor.updateComplete;
+      await frames();
+      results.code.andComesBackIntoRangeWhenOneGoes = shown() === `${items - 1} of ${items - 1}`;
+      // Still exactly one current match, painted whole. Two pieces here, since `<li` is a bracket
+      // span and a tag-name span with no third to close it.
+      results.code.withTheCurrentMarkStillOnOne = markedText('.on') === '<li';
+      // Put it back, so nothing downstream inherits a half-edited buffer.
+      buffer.value = whole;
+      buffer.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      await editor.updateComplete;
+      await frames();
+
+      await typeInto(codeField, '<li>', editor);
+      await wait(80);
+
+      /* ---------------------------------------------------------------- *
+       * Getting rid of it, by the button and by the key.
+       * ---------------------------------------------------------------- */
+      editor.shadowRoot.querySelector('.findbar button[aria-label="Close find"]').click();
+      await editor.updateComplete;
+      await frames();
+      results.code.theCloseButtonPutsItAway = !editor.shadowRoot.querySelector('.findbar');
+      // Nothing painted behind a bar that is gone: the marks are drawn from the same state.
+      results.code.andTakesTheMarksWithIt = markedText() === '';
+      results.code.andLeavesTheMagnifier = Boolean(editor.shadowRoot.querySelector('.findtoggle'));
+
+      // Reopened from the buffer, where focus was handed back, with the last query still there.
+      await shortcut(editor.shadowRoot.querySelector('textarea'));
+      results.code.theShortcutToggles = Boolean(bar());
+      results.code.andKeepsTheLastQuery = bar()?.shadowRoot.querySelector('input').value === '<li>';
+
+      /*
+       * Escape closes the bar and leaves the view alone.
+       *
+       * Two things answer Escape here and the inner one has to win: the field would have emptied the
+       * query and stayed, and the editor behind it would have closed the whole fullscreen view.
+       */
+      await press(bar(), 'Escape');
+      await wait(60);
+      results.code.escapeClosesTheBar = !editor.shadowRoot.querySelector('.findbar');
+      results.code.andNotTheWholeView = Boolean(deep('heo-code-workspace'));
+
       results.code.ok =
         results.code.workspaceOpen &&
         results.code.reusesThePanel &&
+        results.code.startsClosed &&
+        results.code.andOffersTheMagnifier &&
+        results.code.theShortcutOpensTheBar &&
+        results.code.andPutsTheCaretInTheField &&
         results.code.keepsFocusWhileTyping &&
         results.code.marksEveryMatch > 1 &&
         results.code.picksOutTheCurrentOne &&
-        results.code.hasTheField &&
         results.code.offersNoCreateAction &&
-        results.code.hasPrevNext &&
+        results.code.hasPrevNextAndClose &&
         results.code.hasNoExpandButton &&
         results.code.matchesFound > 1 &&
         results.code.selectedAMatch &&
         results.code.enterAdvances &&
-        results.code.stillOnAMatch;
+        results.code.stillOnAMatch &&
+        results.code.countMatchesWhatIsShown &&
+        results.code.showsThePositionNotJustTheTotal &&
+        results.code.andThePositionMovesWithTheArrows &&
+        results.code.findsATagQuery > 1 &&
+        results.code.andPaintsEveryOneOfThem &&
+        results.code.andPicksOutTheCurrentTag &&
+        results.code.inAsManyPiecesAsTheSpansNeed &&
+        results.code.andCountsThemInTheBar &&
+        results.code.stepsToTheLastItem &&
+        results.code.andComesBackIntoRangeWhenOneGoes &&
+        results.code.withTheCurrentMarkStillOnOne &&
+        results.code.theCloseButtonPutsItAway &&
+        results.code.andTakesTheMarksWithIt &&
+        results.code.andLeavesTheMagnifier &&
+        results.code.theShortcutToggles &&
+        results.code.andKeepsTheLastQuery &&
+        results.code.escapeClosesTheBar &&
+        results.code.andNotTheWholeView;
       engine.closeCodeWorkspace();
       await frames();
 
@@ -1078,13 +1245,20 @@
         const ed = panel?.shadowRoot?.querySelector('heo-code-editor');
         results[`${tab}Finder`] = {
           panelFound: Boolean(panel),
-          hasTheFinder: Boolean(ed?.shadowRoot?.querySelector('.findbar heo-search-field')),
-          // Same complement here: the big view has the bar and no button to hide.
+          offersFinding: Boolean(ed?.shadowRoot?.querySelector('.findtoggle')),
+          // Same complement here: the big view offers the bar and has no button to hide.
           hasNoExpandButton: Boolean(ed) && !ed.shadowRoot.querySelector('.grow'),
         };
+        // And the shortcut reaches every language, not only the one it was built against.
+        ed?.toggleFind();
+        await ed?.updateComplete;
+        results[`${tab}Finder`].theBarOpensHereToo = Boolean(
+          ed?.shadowRoot.querySelector('.findbar heo-search-field'),
+        );
         results[`${tab}Finder`].ok =
           results[`${tab}Finder`].panelFound &&
-          results[`${tab}Finder`].hasTheFinder &&
+          results[`${tab}Finder`].offersFinding &&
+          results[`${tab}Finder`].theBarOpensHereToo &&
           results[`${tab}Finder`].hasNoExpandButton;
         engine.closeCodeWorkspace();
         await frames();

@@ -45,7 +45,8 @@ export interface SearchSuggestion {
  *   towards an answer and the action button is the answer.
  *
  * Fires `search-input` on every keystroke, `search-pick` when a suggestion is taken, and
- * `search-submit` when the trailing action fires.
+ * `search-submit` when the trailing action fires. Escape fires `search-escape` first, which a host
+ * can cancel to keep the key for itself.
  */
 @customElement('heo-search-field')
 export class HeoSearchField extends LitElement {
@@ -280,6 +281,18 @@ export class HeoSearchField extends LitElement {
    * number this field invented could disagree with the list underneath it.
    */
   @property({ type: Number }) count = -1;
+  /**
+   * Which of those matches is the current one, counting from one. Zero means "none in particular".
+   *
+   * Stepping through results is not the same job as filtering a list, and it needs a different
+   * number: "189 found" answers how much there is, and says nothing about where you are in it, so
+   * pressing next eleven times looked identical to pressing it once. With a position the field reads
+   * "12 of 189" and the arrows have somewhere to move.
+   *
+   * A property rather than something this control works out, for the same reason as `count`: only
+   * the host knows which match it just revealed.
+   */
+  @property({ type: Number }) position = 0;
 
   @state() private draft = '';
   @state() private open = false;
@@ -371,7 +384,11 @@ export class HeoSearchField extends LitElement {
         />
         <div class="trailing">
           ${this.count >= 0 && trimmed
-        ? html`<span class="count">${this.count} found</span>`
+        ? html`<span class="count"
+              >${this.position > 0 && this.count > 0
+            ? `${this.position} of ${this.count}`
+            : `${this.count} found`}</span
+            >`
         : nothing}
           ${trimmed
         ? html`<button
@@ -516,6 +533,27 @@ export class HeoSearchField extends LitElement {
         this.#close();
         return;
       }
+      /*
+       * The host gets asked before the field decides.
+       *
+       * Escape means "put this away", and what is being put away depends on where the field is. In a
+       * panel it is the query, because the field is a permanent part of the panel and there is
+       * nothing else to dismiss. In the code editor's find bar the bar itself is the thing in the
+       * way — it sits over the code — and emptying the query while leaving it there answers a
+       * question nobody asked.
+       *
+       * Cancelling the event is how a host says it took the key, so this stays the default for the
+       * four panels that want it and no panel had to opt in.
+       */
+      const claimed = !this.dispatchEvent(
+        new CustomEvent('search-escape', {
+          detail: { value: this.draft },
+          bubbles: true,
+          composed: true,
+          cancelable: true,
+        }),
+      );
+      if (claimed) return;
       if (this.draft) {
         this.#clear();
         return;
