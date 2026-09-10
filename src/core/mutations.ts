@@ -3,7 +3,6 @@ import { parseDeclarations } from './css.js';
 import { directText, labelFor, nearestSourceRef, selectorFor } from './dom.js';
 import type { ElementAnchor } from './html-patch.js';
 import { nextChangeId, type Command } from './history.js';
-import { morphChildren } from './morph.js';
 import { sanitizeFragment } from './sanitize.js';
 import type { ChangeRecord } from './types.js';
 
@@ -575,8 +574,6 @@ export function insertNodes(
 
   const anchor = resolveAnchor(reference, position);
   if (!anchor) return null;
-  remember(anchor.parent);
-  remember(anchor.before);
   for (const node of nodes) node.setAttribute(INSERTED_ATTR, '');
   return {
     label,
@@ -623,7 +620,7 @@ function replaceWithNodes(
   nodes: HTMLElement[],
   label: string,
 ): Command | null {
-  const parent = remember(reference.parentNode);
+  const parent = reference.parentNode;
   if (!parent) return null;
   if (reference === document.body || reference === document.documentElement) return null;
   for (const node of nodes) node.setAttribute(INSERTED_ATTR, '');
@@ -659,9 +656,9 @@ function insertNear(parent: Node, node: Node, anchor: Node): void {
 }
 
 export function removeElement(el: HTMLElement): Command | null {
-  const parent = remember(el.parentNode);
+  const parent = el.parentNode;
   if (!parent) return null;
-  const before = remember(el.nextSibling);
+  const before = el.nextSibling;
   return {
     label: `Delete ${labelFor(el)}`,
     subject: `node:${elementKey(el)}`,
@@ -678,12 +675,12 @@ export function removeElement(el: HTMLElement): Command | null {
 }
 
 export function duplicateElement(el: HTMLElement): { command: Command; node: HTMLElement } | null {
-  const parent = remember(el.parentNode);
+  const parent = el.parentNode;
   if (!parent) return null;
   const clone = el.cloneNode(true) as HTMLElement;
   clone.removeAttribute('id');
   clone.setAttribute(INSERTED_ATTR, '');
-  const before = remember(el.nextSibling);
+  const before = el.nextSibling;
   const command: Command = {
     label: `Duplicate ${labelFor(el)}`,
     subject: `node:${elementKey(clone)}`,
@@ -710,11 +707,9 @@ export function moveElement(
   targetBefore: Node | null,
   describe = 'Move',
 ): Command | null {
-  const originParent = remember(el.parentNode);
+  const originParent = el.parentNode;
   if (!originParent) return null;
-  const originBefore = remember(el.nextSibling);
-  remember(targetParent);
-  remember(targetBefore);
+  const originBefore = el.nextSibling;
   if (originParent === targetParent && originBefore === targetBefore) return null;
 
   return {
@@ -763,11 +758,9 @@ export function moveCommandFromOrigin(
   origin: { parent: Node; nextSibling: Node | null },
   describe = 'Move',
 ): Command | null {
-  const targetParent = remember(el.parentNode);
+  const targetParent = el.parentNode;
   if (!targetParent) return null;
-  const targetBefore = remember(el.nextSibling);
-  remember(origin.parent);
-  remember(origin.nextSibling);
+  const targetBefore = el.nextSibling;
   if (origin.parent === targetParent && origin.nextSibling === targetBefore) return null;
 
   return {
@@ -803,7 +796,7 @@ export function wrapElement(
   el: HTMLElement,
   wrapperHTML: string,
 ): { command: Command; wrapper: HTMLElement } | null {
-  const parent = remember(el.parentNode);
+  const parent = el.parentNode;
   if (!parent) return null;
   const fragment = sanitizeFragment(wrapperHTML);
   const wrapper = fragment.firstElementChild;
@@ -817,7 +810,7 @@ export function wrapElement(
     mountPoint = mountPoint.firstElementChild;
   }
 
-  const before = remember(el.nextSibling);
+  const before = el.nextSibling;
   const command: Command = {
     label: `Wrap ${labelFor(el)}`,
     subject: `node:${elementKey(wrapper)}`,
@@ -840,10 +833,10 @@ export function wrapElement(
 
 /** Unwrap: replace a container with its children. */
 export function unwrapElement(el: HTMLElement): Command | null {
-  const parent = remember(el.parentNode);
+  const parent = el.parentNode;
   if (!parent) return null;
-  const children = Array.from(el.childNodes).map(remember);
-  const before = remember(el.nextSibling);
+  const children = Array.from(el.childNodes);
+  const before = el.nextSibling;
   if (!children.length) return null;
 
   return {
@@ -997,27 +990,6 @@ function live<T extends HTMLElement>(el: T): T {
   return (keyed.get(key)?.deref() as T | undefined) ?? el;
 }
 
-/**
- * Remember a node's identity, so a later subtree rewrite can hand it to its replacement.
- *
- * Called on every node a command is about to close over — not just the element it acts on, but
- * the parent it will put that element back into and the sibling it sat before. `live` resolves
- * through the key registry, and a node that never had a key has nothing to resolve *through*:
- * it stays the node it was, which after a reparse means a detached one.
- *
- * That was the bug behind a vanishing element. A parent is not usually the subject of any edit,
- * so nothing had ever asked for its key — so when the whole document was rewritten underneath a
- * move, undoing the move inserted into the old, detached container. No error, and the element
- * simply left the page. Keying it at capture time is what puts it in `captureIdentity`'s reach.
- *
- * Text nodes cannot be keyed, and do not need to be: `placeNode` treats a sibling that is no
- * longer where it was as "at the end", which is the right answer for a whitespace anchor.
- */
-function remember<T extends Node | null>(node: T): T {
-  if (node instanceof HTMLElement) elementKey(node);
-  return node;
-}
-
 /** Where a descendant sits, as a chain of element-child indices. */
 type NodePath = readonly number[];
 
@@ -1099,19 +1071,7 @@ export function restoreIdentity(
  */
 export function writeChildren(el: HTMLElement, markup: string, identity?: IdentityMap): void {
   const target = live(el);
-  /*
-   * Reconciled rather than reparsed, which is what keeps the page working.
-   *
-   * `innerHTML =` replaces every node, and a node is where the page's behaviour lives — the
-   * listeners its own scripts attached, and the state the browser keeps per element. Undoing a
-   * text edit used to leave the words right and the wiring dead, and the scripts do not put it
-   * back, because a script that has already run does not run again.
-   *
-   * The identity map is still applied afterwards, for the nodes the morph did have to replace.
-   * Reused nodes keep their keys by definition, so this is now a backstop rather than the
-   * mechanism.
-   */
-  morphChildren(target, markup);
+  target.innerHTML = markup;
   if (identity?.length) restoreIdentity(target, identity);
 }
 
