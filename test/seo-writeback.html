@@ -163,17 +163,73 @@
       await frames();
       await wait(700);
       write = await docWrite();
-      results.addingAFieldTheFileLacksSaysSoInsteadOfPretending = {
-        reason: write?.reason ?? null,
-        warnings: write?.warnings ?? [],
-        announced: notices.slice(before3).filter((n) => /rewrite the whole HTML file/.test(n)),
-        // Structural: a line appears in `<head>`. It still reaches the file, by serialising.
-        stillLandsInTheBytes: /summary_large_image/.test(write?.after ?? ''),
-        ok:
-          (write?.warnings ?? []).some((w) => /is not in the file yet/.test(w)) &&
-          notices.slice(before3).some((n) => /rewrite the whole HTML file/.test(n)) &&
-          /summary_large_image/.test(write?.after ?? ''),
-      };
+      {
+        const d = parsed(write?.after);
+        const card = d.querySelector('meta[name="twitter:card"]');
+        results.addingAFieldTheFileLacksIsPatchedIn = {
+          reason: write?.reason ?? null,
+          warnings: write?.warnings ?? [],
+          announced: notices.slice(before3).filter((n) => /rewrite the whole HTML file/.test(n)),
+          content: card?.getAttribute('content') ?? null,
+          /*
+           * Counted as "one line added", not by index. An insertion shifts every line after it,
+           * so an index-wise diff reports the whole file as changed and says nothing useful.
+           */
+          linesAdded: (write?.after ?? '').split('\n').length - source.split('\n').length,
+          insideHead: Boolean(d.head?.contains(card ?? null)),
+          // Indented like its neighbours, so the diff is an added line and nothing else.
+          addedLine: (write?.after ?? '')
+            .split('\n')
+            .find((line) => line.includes('twitter:card')) ?? null,
+          ok:
+            /patched in place/.test(write?.reason ?? '') &&
+            (write?.warnings ?? []).length === 0 &&
+            notices.slice(before3).every((n) => !/rewrite the whole HTML file/.test(n)) &&
+            card?.getAttribute('content') === 'summary_large_image' &&
+            Boolean(d.head?.contains(card)) &&
+            (write?.after ?? '').split('\n').length - source.split('\n').length === 1 &&
+            /^  <meta name="twitter:card" content="summary_large_image">$/.test(
+              (write?.after ?? '').split('\n').find((l) => l.includes('twitter:card')) ?? '',
+            ),
+        };
+      }
+
+      /* 4. And clearing a field takes its whole tag out, line and all. */
+      const before4 = notices.length;
+      const beforeClearing = (write?.after ?? '').split('\n');
+      results.__clearedDescription = await setField('Description', '');
+      await frames();
+      await wait(700);
+      write = await docWrite();
+      {
+        const d = parsed(write?.after);
+        const lines = (write?.after ?? '').split('\n');
+        results.clearingAFieldRemovesItsWholeTag = {
+          reason: write?.reason ?? null,
+          warnings: write?.warnings ?? [],
+          announced: notices.slice(before4).filter((n) => /rewrite the whole HTML file/.test(n)),
+          descriptionStillThere: Boolean(d.querySelector('meta[name="description"]')),
+          // Measured against the write just before it: by now the file has also gained a line,
+          // so comparing with the original would net to zero and say nothing.
+          linesLost: beforeClearing.length - lines.length,
+          blankLinesUnchanged:
+            lines.filter((l) => l.trim() === '').length ===
+            beforeClearing.filter((l) => l.trim() === '').length,
+          // And the tags around it are untouched.
+          viewport: d.querySelector('meta[name="viewport"]')?.getAttribute('content') ?? null,
+          title: d.title,
+          ok:
+            /patched in place/.test(write?.reason ?? '') &&
+            (write?.warnings ?? []).length === 0 &&
+            !d.querySelector('meta[name="description"]') &&
+            beforeClearing.length - lines.length === 1 &&
+            lines.filter((l) => l.trim() === '').length ===
+              beforeClearing.filter((l) => l.trim() === '').length &&
+            d.querySelector('meta[name="viewport"]')?.getAttribute('content') ===
+              'width=device-width, initial-scale=1' &&
+            d.title === 'my title',
+        };
+      }
 
       const failed = Object.entries(results)
         .filter(([, group]) => group && typeof group === 'object' && group.ok === false)

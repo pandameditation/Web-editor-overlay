@@ -112,6 +112,20 @@ export type HtmlPatch =
     kind: 'declarations';
     declarations: Readonly<Record<string, string | null>>;
   }
+  /**
+   * A whole tag in `<head>`, added, rewritten or taken away.
+   *
+   * The one place a document edit is genuinely structural and still worth patching. Adding a
+   * `<meta>` puts a line into `<head>`; clearing one takes a line out; neither is an edit to an
+   * attribute of a tag that is already there, which is why both used to fall back to rewriting
+   * the file. `<head>` is a flat, unordered list of tags, so a line can be added to it or removed
+   * from it without reproducing anyone's layout — the thing that makes structural edits in
+   * `<body>` risky does not apply.
+   *
+   * `null` markup removes the tag. Absent from the file and non-null markup adds it; present and
+   * different rewrites it; present and identical does nothing.
+   */
+  | { anchor: ElementAnchor; kind: 'headTag'; markup: string | null }
   | { anchor: ElementAnchor; kind: 'text'; value: string };
 
 export interface HtmlPatchFailure {
@@ -139,6 +153,21 @@ export function patchHTML(html: string, patches: readonly HtmlPatch[]): HtmlPatc
   let applied = 0;
 
   for (const patch of patches) {
+    /*
+     * Resolved by itself, because "not in the file" is an answer rather than a failure for this
+     * one: a tag being absent is exactly the case that means "add it".
+     */
+    if (patch.kind === 'headTag') {
+      const edit = headTagEdit(html, patch.anchor, patch.markup);
+      if (typeof edit === 'string') {
+        failed.push({ patch, reason: edit });
+        continue;
+      }
+      applied += 1;
+      if (edit) edits.push({ ...edit, patch });
+      continue;
+    }
+
     const found = resolveAnchor(html, patch.anchor);
     if (typeof found === 'string') {
       failed.push({ patch, reason: found });
@@ -354,7 +383,14 @@ export function directChildTags(html: string, container: OpenTag): OpenTag[] {
   while (i < limit) {
     const lt = html.indexOf('<', i);
     if (lt === -1 || lt >= limit) break;
-    // A close tag or a comment is not a child; step over it.
+    // A comment is stepped over to its own end, not to the next `>`: `<!-- a > b -->` has one
+    // inside it, and stopping there read the rest of the comment as markup.
+    if (html.startsWith('<!--', lt)) {
+      const end = html.indexOf('-->', lt + 4);
+      i = end === -1 ? limit : end + 3;
+      continue;
+    }
+    // A close tag or a doctype is not a child; step over it.
     if (html.startsWith('</', lt) || html.startsWith('<!', lt)) {
       const gt = html.indexOf('>', lt);
       i = gt === -1 ? limit : gt + 1;
@@ -512,6 +548,19 @@ function openTags(html: string): OpenTag[] {
   while (i < html.length) {
     const lt = html.indexOf('<', i);
     if (lt === -1) break;
+    /*
+     * A comment is not markup, and stepping over it whole is the only way to be sure.
+     *
+     * Character-by-character scanning happily read `<head>` out of the middle of a sentence
+     * someone had commented out, which made the file look like it had two of them — and
+     * `uniqueTag` answers "several" with null, so the tag could not be found at all. Anything
+     * inside a comment is prose as far as this is concerned.
+     */
+    if (html.startsWith('<!--', lt)) {
+      const end = html.indexOf('-->', lt + 4);
+      i = end === -1 ? html.length : end + 3;
+      continue;
+    }
     const tag = readOpenTag(html, lt);
     if (!tag) {
       i = lt + 1;
@@ -643,6 +692,71 @@ function declarationsEdit(
   return attributeEdit(html, tag, 'style', text ? `${text};` : null);
 }
 
+/**
+ * Add, rewrite or remove one whole tag in `<head>`.
+ *
+ * Whitespace is handled at line granularity, which is what `<head>` is written in: a tag that
+ * goes away takes its line with it rather than leaving a blank one, and a tag that arrives gets
+ * the indentation its neighbours use rather than landing hard against the margin.
+ */
+function headTagEdit(
+  html: string,
+  anchor: ElementAnchor,
+  markup: string | null,
+): { start: number; end: number; text: string } | null | string {
+  const wanted = anchor.tag.toLowerCase();
+  const found = anchor.attr
+    ? tagWithAttribute(html, wanted, anchor.attr.name, anchor.attr.value)
+    : uniqueTag(html, wanted);
+  if (typeof found === 'string') return found;
+
+  if (found) {
+    const end = elementEnd(html, found);
+    if (markup === null) {
+      // The line goes, not just the tag: back over the indentation, forward over the newline.
+      let start = found.start;
+      while (start > 0 && (html[start - 1] === ' ' || html[start - 1] === '\t')) start -= 1;
+      let after = end;
+      if (html[after] === '\r') after += 1;
+      if (html[after] === '\n') after += 1;
+      // Unless something else shares the line, in which case only the tag is ours to remove.
+      if (start > 0 && html[start - 1] !== '\n') return { start: found.start, end, text: '' };
+      return { start, end: after, text: '' };
+    }
+    if (html.slice(found.start, end) === markup) return null;
+    return { start: found.start, end, text: markup };
+  }
+
+  // Absent. Nothing to remove, and otherwise a line to add.
+  if (markup === null) return null;
+
+  const head = uniqueTag(html, 'head');
+  if (!head) return 'the file has no <head> to put this in';
+  const close = matchingClose(html, head);
+  if (close === -1) return 'could not find the closing </head> in the file';
+
+  /*
+   * Indented like the tag before it, or like the closing tag one level in. Copying a sibling is
+   * the better guess: `<head>` contents are often indented differently from the tags around
+   * them, and matching the neighbours is what makes the diff one added line.
+   */
+  const siblings = directChildTags(html, head);
+  const last = siblings.at(-1);
+  const indent = last ? lineIndentAt(html, last.start) : `${lineIndentAt(html, close)}  `;
+  const lineStart = html.lastIndexOf('\n', close) + 1;
+  return { start: lineStart, end: lineStart, text: `${indent}${markup}\n` };
+}
+
+/** Where an element ends, closing tag included, for a tag that has one. */
+function elementEnd(html: string, tag: OpenTag): number {
+  // A void element — `<meta>`, `<link>` — ends at its own `>`; there is no close to look for.
+  if (tag.selfClosing || VOID.has(tag.name)) return tag.end + 1;
+  const close = matchingClose(html, tag);
+  if (close === -1) return tag.end + 1;
+  const gt = html.indexOf('>', close);
+  return gt === -1 ? tag.end + 1 : gt + 1;
+}
+
 /** Replace an element's content, leaving its opening and closing tags alone. */
 function textEdit(
   html: string,
@@ -674,6 +788,20 @@ function matchingClose(html: string, tag: OpenTag): number {
     const nextOpen = lower.indexOf(open, i);
     const nextShut = lower.indexOf(shut, i);
     if (nextShut === -1) return -1;
+    /*
+     * A comment between here and the next candidate hides whatever it contains.
+     *
+     * Depth counting reads text, and text inside a comment is prose: a page whose `<head>`
+     * carries a commented-out explanation mentioning `<head>` counted those mentions as nested
+     * tags, so the real `</head>` never brought the depth back to zero and the element was
+     * reported as unclosed.
+     */
+    const comment = lower.indexOf('<!--', i);
+    if (comment !== -1 && comment < nextShut && (nextOpen === -1 || comment < nextOpen)) {
+      const end = lower.indexOf('-->', comment + 4);
+      i = end === -1 ? html.length : end + 3;
+      continue;
+    }
     if (nextOpen !== -1 && nextOpen < nextShut) {
       const nested = readOpenTag(html, nextOpen);
       // A prefix match such as `<sectionish` inside `<section` is not a nested tag.

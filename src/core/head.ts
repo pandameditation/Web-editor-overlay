@@ -321,13 +321,45 @@ export function setHeadField(id: HeadFieldId, value: string): Command | null {
    * say so through `forcesRewrite` instead, which is honest and, since that is now announced as
    * it happens, offers the undo at the moment it would help.
    */
-  const named = /^\s*(\w+)\s*\[\s*([\w:-]+)\s*=\s*"([^"]*)"\s*\]\s*$/.exec(selector);
-  const anchor: ElementAnchor | undefined = named
-    ? { tag: named[1], attr: { name: named[2], value: named[3] } }
-    : /^\s*\w+\s*$/.test(selector)
-      ? { tag: selector.trim() }
-      : undefined;
+  /*
+   * Read off the node rather than parsed out of the selector.
+   *
+   * `ACCESS` describes some fields with two alternatives — `meta[property="og:title"],
+   * meta[name="og:title"]`, because plenty of pages use `name` for Open Graph and the scrapers
+   * accept it — and a selector with a comma in it names no single tag. The node knows which
+   * notation it actually wears, and for a field being created the node about to be added knows
+   * what it will wear, so asking it is both simpler and exact.
+   */
+  const identityOf = (node: Element): ElementAnchor => {
+    const tag = node.tagName.toLowerCase();
+    for (const name of ['name', 'property', 'rel']) {
+      const value = node.getAttribute(name);
+      if (value) return { tag, attr: { name, value } };
+    }
+    // `<title>` and friends: one per document, so the tag names itself.
+    return { tag };
+  };
+  const sample = existing ?? create();
+  const anchor = identityOf(sample);
   const structural = !existedBefore || !after;
+
+  /*
+   * The whole tag, as the file should read it — captured now, while there is something to read.
+   *
+   * Structural head edits are patched rather than serialized, and both directions need the text
+   * up front: a removal has no node left by the time the save runs, and an addition has no node
+   * in the file to read the shape from. A clone is written to rather than the live node, so
+   * nothing here touches the page.
+   */
+  const headMarkup = structural
+    ? after
+      ? (() => {
+        const clone = sample.cloneNode(true) as Element;
+        write(clone, after);
+        return clone.outerHTML;
+      })()
+      : ''
+    : undefined;
 
   return {
     label: `Set ${field.group === 'basics' ? '' : `${field.group} `}${field.label.toLowerCase()}`,
@@ -346,19 +378,15 @@ export function setHeadField(id: HeadFieldId, value: string): Command | null {
       group: 'document-head',
       before: before || undefined,
       after: after || undefined,
-      anchor: structural ? undefined : anchor,
+      anchor,
       detail: {
         scope: 'document head',
         tag: field.tag,
         value: after,
         ...(attribute === 'textContent' ? {} : { attribute }),
-        ...(structural
-          ? {
-            forcesRewrite: after
-              ? `${field.tag} is not in the file yet, and adding a tag to <head> is not an edit to one`
-              : `removing ${field.tag} takes a whole tag out of <head> rather than changing one`,
-          }
-          : {}),
+        // Present only for the structural cases, and it is what tells the save to add or remove
+        // the whole tag rather than look for an attribute of one that may not be there.
+        ...(headMarkup === undefined ? {} : { headMarkup }),
       },
       at: Date.now(),
     },

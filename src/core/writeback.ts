@@ -1311,6 +1311,25 @@ function tryPatchDocument(
     // Already carried by an ancestor's text patch. See `rewritten`.
     if (live && enclosedBy(live, rewritten)) continue;
 
+    /*
+     * A whole tag added to or taken out of `<head>`, which is placed rather than serialized.
+     *
+     * Handled before `anchorInFile`, and it has to be: that asks how to find an element *in the
+     * file*, and for a tag being added the answer is that it is not there yet — which is the
+     * point of the edit rather than a reason to give up. The record's own anchor is exact by
+     * construction, and the markup travels on the record because by save time a removed tag has
+     * no node left to read and an added one has nothing in the file to read from.
+     */
+    const headMarkup = record.detail?.headMarkup;
+    if (headMarkup !== undefined && record.anchor) {
+      wanted.set(`head|${anchorKey(record.anchor)}`, {
+        anchor: record.anchor,
+        kind: 'headTag',
+        markup: headMarkup || null,
+      });
+      continue;
+    }
+
     const anchor = anchorInFile(record, documentPath);
     if (!anchor) {
       why.push(`“${record.summary}” could not be located in the file`);
@@ -1440,7 +1459,23 @@ function tryPatchDocument(
 }
 
 function anchorKey(anchor: ElementAnchor): string {
-  return [anchor.tag, anchor.id, anchor.src, anchor.line, anchor.column, anchor.text]
+  return [
+    anchor.tag,
+    anchor.id,
+    anchor.src,
+    anchor.line,
+    anchor.column,
+    anchor.text,
+    /*
+     * The identifying attribute belongs in the key, and leaving it out was a real collision.
+     *
+     * Every `<head>` tag anchored this way has the same tag name and nothing else positional, so
+     * `<meta name="description">` and `<meta name="twitter:card">` hashed to the same string —
+     * and the patch map is keyed on it, so the second edit quietly replaced the first. Adding a
+     * tag and removing another in one save applied only one of them.
+     */
+    anchor.attr && `${anchor.attr.name}=${anchor.attr.value}`,
+  ]
     .map((part) => part ?? '')
     .join('|');
 }
