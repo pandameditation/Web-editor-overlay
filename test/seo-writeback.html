@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <!--
+    Editing the `<head>` used to rewrite the whole file for a one-line change: the record carried
+    no anchor at all, so the patcher reported that "Set <title> to …" could not be located.
+
+    A head tag is not hard to find, it is just found differently from everything in `<body>`.
+    `<title>` names itself. Everything else is named by an attribute — `meta[name=…]`,
+    `meta[property=…]`, `link[rel=…]` — which is the only durable way to tell two `<meta>` tags
+    apart: a dev server injects tags of its own, so counting siblings is wrong more often than
+    it is right.
+
+        npm run build:lib && npm run check:seo
+  -->
+  <title>The original title</title>
+  <meta name="description" content="The original description.">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta property="og:title" content="The original social title">
+  <link rel="canonical" href="https://example.com/original">
+</head>
+
+<body>
+  <h1 id="heading">Case study</h1>
+
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const results = {};
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+      const page = decodeURIComponent(location.pathname).split('/').pop();
+      const directory = decodeURIComponent(location.pathname).replace(/[^/]*$/, '');
+      const disk = new Map();
+      const project = {
+        kind: 'directory', label: 'memory',
+        resolve(url) {
+          const p = decodeURIComponent(new URL(url, location.href).pathname);
+          return p.startsWith(directory) ? p.slice(directory.length) : null;
+        },
+        read: async (p) => {
+          if (disk.has(p)) return disk.get(p);
+          try { const t = await (await fetch('./' + p)).text(); disk.set(p, t); return t; } catch { return null; }
+        },
+        write: async (p, t) => { disk.set(p, t); },
+        ensureWritable: async () => true, release: async () => { },
+      };
+      const source = await project.read(page);
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark' });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await engine.attachProject(project, { quiet: true });
+      await frames();
+
+      const notices = [];
+      engine.store.subscribe((s) => {
+        const t = s.toast;
+        if (t && notices.at(-1) !== t.message) notices.push(t.message);
+      });
+
+      const deepFind = (tag, root = document) => {
+        const f = root.querySelector ? root.querySelector(tag) : null;
+        if (f) return f;
+        for (const el of root.querySelectorAll ? root.querySelectorAll('*') : []) {
+          if (!el.shadowRoot) continue;
+          const inner = deepFind(tag, el.shadowRoot);
+          if (inner) return inner;
+        }
+        return null;
+      };
+      api.openPanel('seo');
+      await frames();
+      await wait(120);
+      const form = deepFind('heo-seo-form');
+      results.__panelFound = Boolean(form);
+      /** Drive the real control: set the value and blur, which is what commits. */
+      const setField = async (label, value) => {
+        const control = Array.from(form.shadowRoot.querySelectorAll('input, textarea, select'))
+          .find((el) => (el.getAttribute('aria-label') || '') === label);
+        if (!control) return 'no control for ' + label;
+        control.value = value;
+        control.dispatchEvent(new Event('input', { bubbles: true }));
+        // A `<select>` commits on change and a text field on blur, so send both.
+        control.dispatchEvent(new Event('change', { bubbles: true }));
+        control.dispatchEvent(new Event('blur', { bubbles: true }));
+        await frames();
+        return true;
+      };
+
+      const docWrite = async () => {
+        const plan = await engine.previewWritePlan();
+        return (plan?.writes ?? []).find((w) => w.kind === 'document') ?? null;
+      };
+      const changedLines = (after) => {
+        const a = source.split('\n');
+        const b = (after ?? '').split('\n');
+        let n = 0;
+        for (let i = 0; i < Math.max(a.length, b.length); i += 1) if (a[i] !== b[i]) n += 1;
+        return n;
+      };
+      const parsed = (after) => new DOMParser().parseFromString(after ?? '', 'text/html');
+
+      /* 1. The reported case: the title. */
+      results.__setTitle = await setField('Title', 'my title');
+      await frames();
+      await wait(600);
+      let write = await docWrite();
+      results.theTitleIsPatchedInPlace = {
+        reason: write?.reason ?? null,
+        warnings: write?.warnings ?? [],
+        writtenTitle: parsed(write?.after).title,
+        changedLines: changedLines(write?.after),
+        ok:
+          /patched in place/.test(write?.reason ?? '') &&
+          (write?.warnings ?? []).length === 0 &&
+          parsed(write?.after).title === 'my title' &&
+          changedLines(write?.after) === 1,
+      };
+
+      /* 2. And the tags that are found by an attribute rather than by a tag name. */
+      results.__setOthers = [
+        await setField('Description', 'A new description.'),
+        await setField('Canonical URL', 'https://example.com/new'),
+      ];
+      await frames();
+      await wait(600);
+      write = await docWrite();
+      {
+        const d = parsed(write?.after);
+        results.tagsNamedByAnAttributeArePatchedToo = {
+          reason: write?.reason ?? null,
+          warnings: write?.warnings ?? [],
+          description: d.querySelector('meta[name="description"]')?.getAttribute('content') ?? null,
+          canonical: d.querySelector('link[rel="canonical"]')?.getAttribute('href') ?? null,
+          // The one nobody touched has to be exactly as it was.
+          viewport: d.querySelector('meta[name="viewport"]')?.getAttribute('content') ?? null,
+          changedLines: changedLines(write?.after),
+          ok:
+            /patched in place/.test(write?.reason ?? '') &&
+            (write?.warnings ?? []).length === 0 &&
+            d.querySelector('meta[name="description"]')?.getAttribute('content') ===
+              'A new description.' &&
+            d.querySelector('link[rel="canonical"]')?.getAttribute('href') ===
+              'https://example.com/new' &&
+            // The tag nobody touched keeps its own bytes, which is the point of patching.
+            d.querySelector('meta[name="viewport"]')?.getAttribute('content') ===
+              'width=device-width, initial-scale=1' &&
+            changedLines(write?.after) === 3,
+        };
+      }
+
+      /* 3. Adding a field the file has not got is structural, and says so. */
+      const before3 = notices.length;
+      results.__setCard = await setField('Card', 'summary_large_image');
+      await frames();
+      await wait(700);
+      write = await docWrite();
+      results.addingAFieldTheFileLacksSaysSoInsteadOfPretending = {
+        reason: write?.reason ?? null,
+        warnings: write?.warnings ?? [],
+        announced: notices.slice(before3).filter((n) => /rewrite the whole HTML file/.test(n)),
+        // Structural: a line appears in `<head>`. It still reaches the file, by serialising.
+        stillLandsInTheBytes: /summary_large_image/.test(write?.after ?? ''),
+        ok:
+          (write?.warnings ?? []).some((w) => /is not in the file yet/.test(w)) &&
+          notices.slice(before3).some((n) => /rewrite the whole HTML file/.test(n)) &&
+          /summary_large_image/.test(write?.after ?? ''),
+      };
+
+      const failed = Object.entries(results)
+        .filter(([, group]) => group && typeof group === 'object' && group.ok === false)
+        .map(([name]) => name);
+
+      document.getElementById('out').textContent = 'RESULTS:' + JSON.stringify(
+        { ok: failed.length === 0, failed, ...results, notices }, null, 1,
+      ) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"ok":false,"__fatal":' + JSON.stringify(String((e && e.stack) || e)) + '}:END';
+    });
+  </script>
+</body>
+
+</html>

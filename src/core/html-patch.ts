@@ -73,6 +73,16 @@ export interface ElementAnchor {
   column?: number;
   /** The exact text being replaced, for a text patch with nothing better to go on. */
   text?: string;
+  /**
+   * The attribute that names this element, for a tag identified by one rather than by an id.
+   *
+   * `<head>` is what this is for, and it is the only place in a document where identity works
+   * this way: `<meta name="description">`, `<meta property="og:title">`, `<link rel="canonical">`.
+   * There is no id to find them by, counting siblings is unsafe because a dev server injects
+   * tags of its own, and their text is the thing being changed — so the attribute *is* the name,
+   * exactly as the CSS selector that reads them says.
+   */
+  attr?: { name: string; value: string };
   /** The element's container, for a change about position rather than content. */
   parent?: ElementAnchor;
   /** Which one it is among the container's children of the same tag and classes. */
@@ -246,6 +256,20 @@ function resolveAnchor(html: string, anchor: ElementAnchor): OpenTag | string {
     return tag;
   }
 
+  /*
+   * An anchor that names an identifying attribute is answered by it or not at all, for the same
+   * reason an id is: falling through to a weaker match would land on a different `<meta>`, and
+   * writing someone's page description into their `og:title` is worse than declining.
+   */
+  if (anchor.attr) {
+    const tag = tagWithAttribute(html, wanted, anchor.attr.name, anchor.attr.value);
+    if (typeof tag === 'string') return tag;
+    if (!tag) {
+      return `the file has no <${wanted}> with ${anchor.attr.name}="${anchor.attr.value}"`;
+    }
+    return tag;
+  }
+
   if (anchor.text) {
     const tag = tagAroundText(html, anchor.text, wanted);
     if (typeof tag === 'string') return tag;
@@ -410,6 +434,39 @@ function tagAtPosition(html: string, line: number, column: number): OpenTag | nu
   const from = Math.max(0, at - 2);
   const lt = html.indexOf('<', from);
   return lt === -1 ? null : readOpenTag(html, lt);
+}
+
+/**
+ * The only `<name>` in the file whose `attribute` equals `value`, or a reason when it is not one.
+ *
+ * Two matches is refused rather than guessed at, the same standard the id and unique-tag routes
+ * hold to: a duplicate `<meta name="description">` is a mistake in the file, and picking one of
+ * them to edit would make the editor's behaviour depend on which.
+ */
+function tagWithAttribute(
+  html: string,
+  name: string,
+  attribute: string,
+  value: string,
+): OpenTag | null | string {
+  const matches: OpenTag[] = [];
+  for (const tag of openTags(html)) {
+    if (tag.name !== name) continue;
+    const range = attributeRange(html.slice(tag.start, tag.end + 1), attribute);
+    if (!range) continue;
+    const raw = html
+      .slice(tag.start + range.start, tag.start + range.end)
+      .replace(new RegExp(`^${escapeRegExp(attribute)}\\s*=\\s*`, 'i'), '')
+      .replace(/^["']|["']$/g, '');
+    // Both spellings, since the file may have escaped what the DOM hands back plain. These
+    // values are `name`/`property`/`rel` keys rather than prose, so this is insurance.
+    if (raw === value || raw === escapeAttribute(value)) matches.push(tag);
+  }
+  if (!matches.length) return null;
+  if (matches.length > 1) {
+    return `the file has ${matches.length} <${name}> tags with ${attribute}="${value}"`;
+  }
+  return matches[0];
 }
 
 /** The opening tag carrying `id`, or a reason when the file has more than one. */

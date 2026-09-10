@@ -1080,6 +1080,16 @@ function anchorInFile(record: ChangeRecord, documentPath: string): ElementAnchor
 
   if (anchor.line != null) return anchor;
   if (anchor.id) return { tag: anchor.tag, id: anchor.id };
+  /*
+   * An identifying attribute is as good as an id, and for `<head>` it is the only thing there is.
+   *
+   * Narrowed to the tag and that attribute for the same reason the id branch narrows: the anchor
+   * is making one specific claim — "the `<meta>` whose name is description" — and carrying a
+   * sibling index alongside it would offer the resolution a second, weaker answer to fall back
+   * on. A dev server injects tags into the served `<head>`, so that index is wrong more often
+   * than it is right.
+   */
+  if (anchor.attr) return { tag: anchor.tag, attr: anchor.attr };
   // Nothing durable on the element itself. For a text edit the text being replaced can
   // stand in, provided the file contains it once — which is what makes a plain page with
   // no ids and no build step patchable at all.
@@ -1143,6 +1153,18 @@ function liveElementFor(anchor: ElementAnchor): HTMLElement | null {
   if (anchor.id) {
     const byId = document.getElementById(anchor.id);
     if (byId) return byId;
+  }
+  /*
+   * The same route the file resolution takes, so both sides can find a head tag.
+   *
+   * Both halves have to agree or the change is placeable in the file and unreadable from the
+   * page, which is reported as "the element behind this is no longer in the page" — the exact
+   * failure a `<meta>` hit before this existed.
+   */
+  if (anchor.attr) {
+    const selector = `${anchor.tag}[${anchor.attr.name}="${CSS.escape(anchor.attr.value)}"]`;
+    const found = document.querySelector(selector);
+    if (found instanceof HTMLElement) return found;
   }
   if (anchor.src) {
     const found = document.querySelector(`[${SOURCE_ATTR}="${CSS.escape(anchor.src)}"]`);

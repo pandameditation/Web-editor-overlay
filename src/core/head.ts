@@ -1,4 +1,5 @@
 import { nextChangeId, type Command } from './history.js';
+import type { ElementAnchor } from './html-patch.js';
 
 /**
  * The document head, as the handful of fields anyone actually edits.
@@ -302,13 +303,42 @@ export function setHeadField(id: HeadFieldId, value: string): Command | null {
     if (!node.isConnected) document.head.insertBefore(node, nextSibling);
   };
 
+  /*
+   * How the save finds this tag in the file.
+   *
+   * Without it a head edit had no anchor at all, so the patcher reported that "Set <title> to
+   * …" could not be located and the whole file was rewritten for a one-line change. A head tag
+   * is not hard to find — it is just found differently from everything else in a document.
+   *
+   * `<title>` names itself: one per file, so the tag alone is enough. Everything else is named
+   * by an attribute — `meta[name=…]`, `meta[property=…]`, `link[rel=…]` — which is exactly what
+   * `ACCESS` already says, and the only durable way to tell two `<meta>` tags apart. Counting
+   * siblings would not do: a dev server injects tags of its own into the served `<head>`, so the
+   * live index and the file's index are different numbers.
+   *
+   * Creating and removing are left out, deliberately. Both are structural — a line appears in or
+   * disappears from `<head>` — and the patcher places edits to tags that are already there. They
+   * say so through `forcesRewrite` instead, which is honest and, since that is now announced as
+   * it happens, offers the undo at the moment it would help.
+   */
+  const named = /^\s*(\w+)\s*\[\s*([\w:-]+)\s*=\s*"([^"]*)"\s*\]\s*$/.exec(selector);
+  const anchor: ElementAnchor | undefined = named
+    ? { tag: named[1], attr: { name: named[2], value: named[3] } }
+    : /^\s*\w+\s*$/.test(selector)
+      ? { tag: selector.trim() }
+      : undefined;
+  const structural = !existedBefore || !after;
+
   return {
     label: `Set ${field.group === 'basics' ? '' : `${field.group} `}${field.label.toLowerCase()}`,
     // Successive edits to one field collapse into a single reported change.
     subject: `head:${id}`,
     record: {
       id: nextChangeId(),
-      kind: 'attribute',
+      // The kind the patcher needs: `<title>` is content between tags, everything else is one
+      // attribute. Both were reported as `attribute` before, which is why `<title>` had nothing
+      // to write even once it could be found.
+      kind: attribute === 'textContent' ? 'text' : 'attribute',
       summary: after
         ? `Set ${field.tag} to "${truncate(after)}"`
         : `Remove ${field.tag}`,
@@ -316,7 +346,20 @@ export function setHeadField(id: HeadFieldId, value: string): Command | null {
       group: 'document-head',
       before: before || undefined,
       after: after || undefined,
-      detail: { scope: 'document head', tag: field.tag, value: after },
+      anchor: structural ? undefined : anchor,
+      detail: {
+        scope: 'document head',
+        tag: field.tag,
+        value: after,
+        ...(attribute === 'textContent' ? {} : { attribute }),
+        ...(structural
+          ? {
+            forcesRewrite: after
+              ? `${field.tag} is not in the file yet, and adding a tag to <head> is not an edit to one`
+              : `removing ${field.tag} takes a whole tag out of <head> rather than changing one`,
+          }
+          : {}),
+      },
       at: Date.now(),
     },
     apply,
