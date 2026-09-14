@@ -504,9 +504,9 @@ export async function buildWritePlan(
     // Removing the library is a document change too: the seed region and the links it justified
     // both live in the markup, so the file has to be reached even with no seed to put in it.
     if (!isDocumentChange(record, systemInDocument, Boolean(blockSeed), removeLibrary)) continue;
-    const rendered = record.detail?.rendered;
-    if (rendered) {
-      unwritable.push({ record, reason: rendered });
+    const beyondReach = unreachableInMarkup(record, isGenerated);
+    if (beyondReach) {
+      unwritable.push({ record, reason: beyondReach });
       continue;
     }
     documentRecords.push(record);
@@ -744,11 +744,12 @@ function attemptDocumentPatch(
     regions.some((region) => region === el || region.contains(el));
 
   // The same selection the write path makes: what the markup can carry, minus what the
-  // page's own code owns.
+  // page's own code owns. Literally the same, via `unreachableInMarkup`, because the two
+  // answering this differently is how a warning ends up describing a save that never happens.
   const documentRecords = subject.records.filter(
     (record) =>
       isDocumentChange(record, systemInDocument, Boolean(blockSeed), removeLibrary) &&
-      !record.detail?.rendered,
+      !unreachableInMarkup(record, isGenerated),
   );
   if (!documentRecords.length) return { html: null, records: 0, why: [] };
 
@@ -832,16 +833,29 @@ function reconcileContainers(
   const containers = new Map<string, ElementAnchor>();
   for (const record of records) {
     if (!STRUCTURAL.has(record.kind)) continue;
-    const recorded = record.anchor?.parent;
+    /*
+     * Every container the change touched, which for a move is two of them.
+     *
+     * `anchor.parent` is the fallback rather than the source, because it can only ever name
+     * one — and a move that changes an element's parent has to rebuild the container it left
+     * as well as the one it joined, or the file keeps the element in both places.
+     */
+    const recorded = record.containers?.length
+      ? record.containers
+      : record.anchor?.parent
+        ? [record.anchor.parent]
+        : [];
     // No container recorded: not placeable. Whether it can be *found* is settled below,
     // where both the file and the live page get a say — a tag unique in both is enough,
     // which is what makes `<body>` a usable container.
-    if (!recorded) {
+    if (!recorded.length) {
       why.push(`no container was recorded for “${record.summary}”`);
       return null;
     }
-    const parent = placeMarkers(recorded, documentPath);
-    containers.set(anchorKey(parent), parent);
+    for (const entry of recorded) {
+      const parent = placeMarkers(entry, documentPath);
+      containers.set(anchorKey(parent), parent);
+    }
   }
   if (!containers.size) return null;
 
@@ -1545,6 +1559,43 @@ function isDocumentChange(
 /** A block-scoped rule authored in a library definition, rather than injected from an instance. */
 function isAuthoredBlockCSSRecord(record: ChangeRecord): boolean {
   return record.kind === 'token-rule' && record.detail?.source === 'block-css-paste';
+}
+
+/**
+ * Why the markup cannot carry this change, or null when it can.
+ *
+ * One function because two places ask it — the write plan, which owes the user a reason, and
+ * the early warning, which only needs the verdict — and them answering differently is how a
+ * warning comes to describe a save that does not happen.
+ *
+ * Two grounds. The record may have been stamped at edit time with what is known about the
+ * element's content being set by code, which is already a sentence written for the user. Or the
+ * element may belong to a region the page built: the container rebuild leaves generated children
+ * out, deliberately, because a script's output is not the file's to hold — so rearranging one is
+ * expressed by rebuilding the container exactly as the file already has it.
+ *
+ * That second case is what made this necessary. The patch came out byte-identical, so nothing
+ * was written and nothing was reported, and a save with one pending change announced that every
+ * change was already in the files. A change that cannot reach a file is something to be told
+ * about; the one thing it must not be is quietly dropped.
+ *
+ * A delete is exempt. Its element has already left the page, so there is nothing there to be
+ * generated, and the rebuild omitting it is the intended outcome rather than a refusal.
+ */
+function unreachableInMarkup(
+  record: ChangeRecord,
+  isGenerated: (el: HTMLElement) => boolean,
+): string | null {
+  const rendered = record.detail?.rendered;
+  if (rendered) return rendered;
+  if (!STRUCTURAL.has(record.kind) || record.kind === 'delete') return null;
+  const about = elementOfRecord(record);
+  if (!about || !isGenerated(about)) return null;
+  return (
+    'This element is built by the page’s own code rather than declared in the markup, so ' +
+    'there is nowhere in the file to put it. Where it goes is decided by the code that ' +
+    'builds it.'
+  );
 }
 
 function reasonForUnreachable(url: string, host: FileHost): string {

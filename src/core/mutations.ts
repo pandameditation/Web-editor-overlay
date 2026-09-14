@@ -4,6 +4,7 @@ import { directText, labelFor, nearestSourceRef, selectorFor } from './dom.js';
 import type { ElementAnchor } from './html-patch.js';
 import { nextChangeId, type Command } from './history.js';
 import { morphChildren } from './morph.js';
+import { markRelocated } from './provenance.js';
 import { sanitizeFragment } from './sanitize.js';
 import type { ChangeRecord } from './types.js';
 
@@ -735,6 +736,8 @@ export function moveElement(
       // reduces to no change at all.
       before: describePosition(originParent, originBefore, el),
       after: describePosition(targetParent, targetBefore, el),
+      // Both ends, because both files' worth of children changed. See `ChangeRecord.containers`.
+      containers: containerAnchors(originParent, targetParent),
       detail: {
         newParent:
           targetParent instanceof HTMLElement ? selectorFor(targetParent) : 'shadow root',
@@ -745,12 +748,45 @@ export function moveElement(
       },
     }),
     apply: () => {
+      // Said before the move, not after, so nothing can compare the element against the
+      // file in between and conclude the page built it. See `markRelocated`.
+      markRelocated(el);
       placeNode(targetParent, live(el), targetBefore);
     },
     revert: () => {
       placeNode(originParent, live(el), originBefore);
     },
   };
+}
+
+/**
+ * The containers a move touched, as anchors the save plan can resolve in the file.
+ *
+ * Both ends when they differ, one when they do not — reordering inside a list is a single
+ * container and saying so twice would only make the plan look for it twice.
+ *
+ * A shadow root contributes nothing: it is not in any HTML file, so there is no range in
+ * one to rebuild. The move still records the other end, which is what a move in or out of
+ * a custom element needs.
+ *
+ * `known` is the origin's anchor as it was *before* the element moved, for the caller that
+ * has one. An anchor carries the container's own position among its siblings, and a drag
+ * repositions the element as its own preview — so reading the origin container afterwards
+ * can count the moved element among those siblings and describe a position the file does
+ * not have.
+ */
+function containerAnchors(
+  originParent: Node,
+  targetParent: Node,
+  known?: ElementAnchor,
+): ElementAnchor[] {
+  const out: ElementAnchor[] = [];
+  const origin = known ?? (originParent instanceof HTMLElement ? anchorFor(originParent) : null);
+  if (origin) out.push(origin);
+  if (targetParent instanceof HTMLElement && targetParent !== originParent) {
+    out.push(anchorFor(targetParent));
+  }
+  return out;
 }
 
 /** A position as a stable string: parent selector plus index among elements. */
@@ -770,7 +806,7 @@ function describePosition(parent: Node, before: Node | null, moving?: Node): str
  */
 export function moveCommandFromOrigin(
   el: HTMLElement,
-  origin: { parent: Node; nextSibling: Node | null },
+  origin: { parent: Node; nextSibling: Node | null; parentAnchor?: ElementAnchor },
   describe = 'Move',
 ): Command | null {
   const targetParent = remember(el.parentNode);
@@ -786,6 +822,7 @@ export function moveCommandFromOrigin(
     record: record(el, 'move', `${describe} ${labelFor(el)}`, {
       before: describePosition(origin.parent, origin.nextSibling, el),
       after: describePosition(targetParent, targetBefore, el),
+      containers: containerAnchors(origin.parent, targetParent, origin.parentAnchor),
       detail: {
         newParent: targetParent instanceof HTMLElement ? selectorFor(targetParent) : 'shadow root',
         newIndex: String(indexWithin(targetParent, targetBefore, el)),
@@ -795,6 +832,7 @@ export function moveCommandFromOrigin(
       },
     }),
     apply: () => {
+      markRelocated(el);
       placeNode(targetParent, live(el), targetBefore);
     },
     revert: () => {
@@ -859,10 +897,32 @@ export function unwrapElement(el: HTMLElement): Command | null {
   return {
     label: `Unwrap ${labelFor(el)}`,
     subject: `node:${elementKey(el)}`,
-    record: record(el, 'replace', `Unwrap ${labelFor(el)}, keeping its ${children.length} children`),
+    /*
+     * The container, and what stands in its place. Both, because a record with neither is
+     * thrown away.
+     *
+     * `netRecords` drops a group whose first state matches its last, which is how a move and
+     * its undo cancel out. This record carried no state at all, so the comparison read
+     * "nothing" against "nothing", agreed they matched, and discarded it — the wrapper
+     * disappeared from the page and no change existed to carry that to a file. Read out while
+     * the children are still inside, which is the only moment `after` is available.
+     */
+    record: record(el, 'replace', `Unwrap ${labelFor(el)}, keeping its ${children.length} children`, {
+      before: exact(cleanMarkup(el)),
+      after: exact(cleanInnerMarkup(el)),
+    }),
     apply: () => {
       const host = live(el);
-      for (const child of children) placeNode(parent, child, host);
+      for (const child of children) {
+        /*
+         * Each child is about to sit a level up from where the file has it, which is the
+         * same thing a move does to one element. Without this the comparison against the
+         * file read every unwrapped child as content the page had generated, and the save
+         * then left all of them out of the container it rebuilt.
+         */
+        if (child instanceof Element) markRelocated(child);
+        placeNode(parent, child, host);
+      }
       host.remove();
     },
     revert: () => {

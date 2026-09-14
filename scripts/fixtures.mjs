@@ -71,6 +71,7 @@ export const FIXTURES = [
   { page: 'test/token-target.html', budget: 45000, weight: 2200, fast: true },
   { page: 'test/text-drag.html', budget: 45000, weight: 2100 },
   { page: 'test/patch-fidelity.html', budget: 60000, weight: 2100, fast: true },
+  { page: 'test/move-across-parents.html', budget: 90000, weight: 7000, fast: true },
   { page: 'test/design-scope.html', budget: 45000, weight: 2100, fast: true },
   { page: 'test/links.html', budget: 45000, weight: 2100 },
   { page: 'test/text-format.html', budget: 45000, weight: 2000 },

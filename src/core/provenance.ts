@@ -128,6 +128,46 @@ export function markUserOwned(el: Element): void {
 }
 
 /**
+ * Elements the editor has moved to a different place in the page.
+ *
+ * Recorded because the baseline comparison lines the page up against its file *by
+ * position*, one container at a time, and a moved element has no counterpart in the
+ * container it now sits in. Without this it was therefore reported as content the
+ * page's own code had built — and that verdict is not a warning, it is a refusal:
+ * generated markup is not the file's to carry, so the container rebuild left the
+ * element out, the rebuilt text came back byte-identical to the file, and a save that
+ * had one change to make wrote nothing and said every change was already in the files.
+ *
+ * A move is the one edit that changes where an element is without changing anything
+ * about it, so it is the one edit a positional comparison cannot see for what it is.
+ */
+const relocated = new WeakSet<Element>();
+
+/**
+ * Record that the editor, not the page, is why this element is where it is.
+ *
+ * Two effects, and the second is what keeps this from being a hole. The position stops
+ * being evidence — see `relocated` — and whatever was already known about where the
+ * element's *content* came from is pinned onto it before it travels.
+ *
+ * That second part matters because provenance is inherited from whichever ancestor was
+ * written as a whole: a card inside a container some script filled is covered by the
+ * container's record rather than by one of its own. Dragging that card into authored
+ * markup would walk it out from under the only thing that knew about it, and an element
+ * the editor had just decided it could not write would quietly become writable. Moving
+ * something does not change where it came from, so the record comes along.
+ */
+export function markRelocated(el: Element): void {
+  if (!records.has(el)) {
+    const inherited = inheritedProvenance(el);
+    // Claiming the subtree, because that is what it was covered by: the descendants
+    // travelled with it and they are no closer to the file than it is.
+    if (inherited) records.set(el, { ...inherited, subtree: true });
+  }
+  relocated.add(el);
+}
+
+/**
  * Whether writes are being attributed right now.
  *
  * The overlay changes the page constantly — inserting a block, committing a text
@@ -205,13 +245,22 @@ export function provenanceOf(node: Node): Provenance | undefined {
     if (mirrored) return { kind: 'mirrored', confidence: 'possible', attribute: mirrored };
   }
 
-  /*
-   * Inherited from whichever ancestor's content was written as a whole.
-   *
-   * Bounded to records that claim the subtree, so a write to one element cannot make
-   * the entire page uneditable, and stopped at `<body>` so the walk is short. The
-   * nearest such ancestor wins: it is the most specific statement about this node.
-   */
+  return inheritedProvenance(node);
+}
+
+/**
+ * What this node's ancestors say about it, rather than what is recorded against it.
+ *
+ * Bounded to records that claim the subtree, so a write to one element cannot make the
+ * entire page uneditable, and stopped at `<body>` so the walk is short. The nearest such
+ * ancestor wins: it is the most specific statement about this node.
+ *
+ * Its own function because `markRelocated` needs exactly this and not the rest of
+ * `provenanceOf`: a template marker or a mirrored attribute is re-derived from the
+ * element wherever it goes, while an ancestor's record is the one thing a move can
+ * leave behind.
+ */
+function inheritedProvenance(node: Node): Provenance | undefined {
   let current = node.parentElement;
   while (current && current !== document.body && current !== document.documentElement) {
     // An element the user has taken over stops the walk: whatever it sits inside, its
@@ -690,6 +739,11 @@ export function observeRuntimeContent(): () => void {
  * positional can. Where a match is found but its direct text differs, the text alone
  * is marked — the element is the author's, its words are not.
  *
+ * Signature matching is still done container by container, though, which leaves one
+ * blind spot: an element the editor has moved into a *different* container is missing
+ * from that container in the file however it is matched. `markRelocated` is what closes
+ * it — see `relocated`, and the search in `counterpartOf`.
+ *
  * Returns how many nodes it accounted for, so a caller can say whether it learned
  * anything.
  */
@@ -701,12 +755,52 @@ export function establishBaseline(sourceHTML: string): number {
     return 0;
   }
   if (!parsed?.body) return 0;
+  const sourceBody = parsed.body;
+  const sourceDocument = parsed;
 
   let marked = 0;
   const mark = (node: Node, provenance: Provenance): void => {
     if (records.has(node)) return;
     records.set(node, provenance);
     marked += 1;
+  };
+
+  /*
+   * Source elements some live element has already been matched to.
+   *
+   * Only the search below consults it, and only so that it cannot hand out an element
+   * that is already accounted for where it stands.
+   */
+  const claimed = new WeakSet<Element>();
+
+  /** Every element in the file, by signature. Built on first use; most passes never need it. */
+  let index: Map<string, Element[]> | null = null;
+
+  /**
+   * The file's version of an element that is no longer where the file put it.
+   *
+   * Only reached for an element the editor moved, and only accepted when the signature
+   * belongs to exactly one element in the whole file. Anything less is a guess: two
+   * identical-looking cards give no way to tell which one this is, and taking the first
+   * would claim the counterpart of a card still sitting where the file left it — which
+   * would then be reported as generated, turning one wrong answer into two.
+   *
+   * Refusing costs only the comparison of what is *inside* the moved element. It is
+   * still not marked, because the editor moving something is not evidence about it.
+   */
+  const counterpartOf = (el: Element): Element | null => {
+    if (!index) {
+      index = new Map();
+      for (const node of Array.from(sourceBody.querySelectorAll('*'))) {
+        const key = signatureOf(node);
+        const bucket = index.get(key);
+        if (bucket) bucket.push(node);
+        else index.set(key, [node]);
+      }
+    }
+    const bucket = index.get(signatureOf(el));
+    if (!bucket || bucket.length !== 1) return null;
+    return claimed.has(bucket[0]) ? null : bucket[0];
   };
 
   const walk = (live: Element, source: Element): void => {
@@ -735,14 +829,30 @@ export function establishBaseline(sourceHTML: string): number {
       // Neither marked nor descended into. A difference under here is the user's edit,
       // not the page's code, and the file has no opinion worth taking on it.
       if (userOwned.has(child)) continue;
-      const byId = child.id ? parsed.getElementById(child.id) : null;
-      const match = byId ?? pool.get(signatureOf(child))?.shift() ?? null;
+      const byId = child.id ? sourceDocument.getElementById(child.id) : null;
+      const here = byId ?? pool.get(signatureOf(child))?.shift() ?? null;
+      /*
+       * An element the editor moved is looked for anywhere in the file, not just here.
+       *
+       * The comparison lines the two trees up container by container, which is right for
+       * everything except the one edit that changes an element's container. A moved
+       * element is absent from this pool by construction, so the question worth asking is
+       * whether the file has it at all.
+       */
+      const match = here ?? (relocated.has(child) ? counterpartOf(child) : null);
       if (!match) {
         // Prose the file already has, wrapped differently. See `wordsAccountedFor`.
         if (wordsAccountedFor && isProseWrapper(child)) continue;
+        /*
+         * The editor put it here. That the file does not have it here says nothing about
+         * where it came from, so nothing is concluded — and anything that *was* known
+         * came with it, pinned on by `markRelocated`.
+         */
+        if (relocated.has(child)) continue;
         mark(child, { kind: 'file', confidence: 'likely', subtree: true });
         continue;
       }
+      claimed.add(match);
       // Same element, different words: whatever rewrote them will do it again.
       if (directTextOf(child) !== directTextOf(match)) {
         mark(child, { kind: 'file', confidence: 'likely' });

@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Moving an element between containers reaches the file</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: system-ui, sans-serif;
+    }
+
+    /* Boxes with real height, so the drag group has somewhere to aim at. */
+    #rows>p {
+      margin: 0;
+      padding: 18px;
+      background: #eef2ff;
+    }
+
+    #tray {
+      min-height: 90px;
+      padding: 18px;
+      background: #fef3c7;
+    }
+
+    #report {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+    }
+  </style>
+</head>
+
+<body>
+  <main id="main">
+    <!--
+      The reported shape: a container of prose followed by a sibling the user wants inside it.
+      Nothing here carries an id, which is the point — an id survives a move on its own, and
+      the bug only existed for elements matched by position.
+    -->
+    <article class="article prose">
+      <div class="body">
+        <p>Some text <b>some bold</b>, some more <b>some more bold</b>.</p>
+        <p>Again more.<b>Bobold.</b> and described it as <b>Bold</b>.</p>
+        <p class="hook">Some hook.</p>
+        <p>Final text.</p>
+      </div>
+      <figure class="fig wide">
+        <figcaption>A caption worth recognising.</figcaption>
+      </figure>
+    </article>
+
+    <!-- The unwrap case: children that go up a level are relocated too. -->
+    <section class="host">
+      <div class="wrapper">
+        <p class="inner-one">First unwrapped paragraph.</p>
+        <p class="inner-two">Second unwrapped paragraph.</p>
+      </div>
+    </section>
+
+    <!--
+      The drag case. The tray is a sibling *inside* the drag's home, because nesting into a
+      container is only offered for containers within the parent being reordered — leaving the
+      parent entirely is the other gesture, with its own dwell.
+    -->
+    <section id="rows">
+      <p id="row-one">Row one, draggable.</p>
+      <p id="row-two">Row two.</p>
+      <!--
+        Empty, and that is deliberate: a box with text of its own reads as a leaf rather than
+        a container, so the drag would never offer to go into it.
+      -->
+      <div id="tray"></div>
+    </section>
+
+    <!-- The safety case: this container is empty in the file and filled by the script below. -->
+    <section id="feed"></section>
+    <div id="landing">Landing.</div>
+  </main>
+
+  <script>
+    // Runs while the document is parsing, so the served file really does have #feed empty.
+    document.getElementById('feed').innerHTML =
+      '<p class="card">Rendered card one.</p><p class="card">Rendered card two.</p>';
+  </script>
+
+  <div id="report">
+    <pre id="progress">start</pre>
+    <pre id="out">pending</pre>
+  </div>
+
+  <script type="module">
+    (async () => {
+      const errors = [];
+      addEventListener('error', (e) => errors.push('error: ' + e.message));
+      addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + String(e.reason)));
+
+      const progress = document.getElementById('progress');
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const results = {};
+
+      const { mount } = await import('../dist/html-editor-overlay.js');
+
+      const directory = decodeURIComponent(location.pathname).replace(/[^/]*$/, '');
+      const pageHTML = await fetch(location.href).then((r) => r.text());
+      const files = new Map([['move-across-parents.html', pageHTML]]);
+      const project = {
+        kind: 'directory',
+        label: 'memory',
+        resolve(url) {
+          const parsed = new URL(url, location.href);
+          if (parsed.origin !== location.origin && parsed.protocol !== 'file:') return null;
+          const path = decodeURIComponent(parsed.pathname);
+          return path.startsWith(directory) ? path.slice(directory.length) : null;
+        },
+        read: async (path) => (files.has(path) ? files.get(path) : null),
+        write: async (path, text) => { files.set(path, text); },
+        ensureWritable: async () => true,
+        release: async () => { },
+      };
+
+      /*
+       * `detectScriptContent` stays on, and that is the whole point of this fixture.
+       *
+       * It is the served-HTML comparison that used to call a moved element generated, so a
+       * fixture with it switched off would pass while the bug stood.
+       */
+      const api = mount({ theme: 'dark', presets: false });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await engine.attachProject(project, { quiet: true });
+      await frames();
+
+      const plan = () => engine.previewWritePlan();
+      const docWrite = (p) => p?.writes.find((w) => w.kind === 'document') ?? null;
+      const parse = (html) => new DOMParser().parseFromString(html, 'text/html');
+      /*
+       * Back to the file as it is on disk, so each group measures its own gesture.
+       *
+       * `resetAll` rather than a loop of `undo`: three keystrokes collapse into one net record,
+       * so a loop that watches `records.length` stops after the first undo and leaves the page
+       * half-moved — which is how four groups in this fixture first failed on each other's
+       * leftovers rather than on anything in the product.
+       */
+      const reset = async () => {
+        engine.resetAll();
+        await frames();
+      };
+
+      /* ------------------------------------------------------------------ *
+       * 1. The report: walk a figure into the container above it.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'intoASiblingContainer';
+      {
+        const figure = document.querySelector('figure.fig.wide');
+        api.select(figure);
+        await frames();
+        // Exactly the keystrokes: ⇧→ to go in, then ⇧↓ twice to walk it down.
+        engine.move('in');
+        await frames();
+        engine.move('down');
+        await frames();
+        engine.move('down');
+        await frames();
+
+        const landedIn = figure.parentElement.className;
+        const landedAt = Array.from(figure.parentElement.children).indexOf(figure);
+        const pending = engine.records.length;
+        const built = await plan();
+        const write = docWrite(built);
+        const written = write ? parse(write.after) : null;
+
+        results.intoASiblingContainer = {
+          // Proof the gesture did what the report describes, or the rest measures nothing.
+          endedUpInsideTheDiv: landedIn === 'body' && landedAt === 2,
+          countsAsOnePendingChange: pending === 1,
+          // The reported symptom: a change on the counter and no file in the plan.
+          writesTheFile: (built?.writes.length ?? 0) === 1,
+          // And the deeper one: it must not vanish without so much as a reason.
+          nothingWasSilentlyDropped:
+            (built?.writes.length ?? 0) + (built?.unwritable.length ?? 0) >= pending,
+          // A move is an edit to two containers, so it must still be a patch, not a rewrite.
+          patchedRatherThanRewritten: /patched in place/.test(write?.reason ?? ''),
+          noCaveats: (write?.warnings ?? []).length === 0,
+          // The origin container has to lose it, which is the half that had no anchor at all.
+          theFileHasItExactlyOnce: written
+            ? written.querySelectorAll('figure.fig.wide').length === 1
+            : null,
+          andInItsNewParent: written
+            ? written.querySelector('figure.fig.wide')?.parentElement?.className ?? null
+            : null,
+          // Nothing else in that container may be disturbed by rebuilding it.
+          keptTheParagraphsItMovedPast: written
+            ? written.querySelectorAll('article .body > p').length === 4
+            : null,
+          keptTheirInlineTags: written
+            ? written.querySelectorAll('article .body > p > b').length === 4
+            : null,
+          // The other half of the report: it stopped reading as content the page renders.
+          doesNotReadAsRendered: engine.provenanceOf(figure) === undefined,
+          diagnostics: { landedIn, landedAt, reason: write?.reason ?? null },
+        };
+        const group = results.intoASiblingContainer;
+        group.ok =
+          group.endedUpInsideTheDiv === true &&
+          group.countsAsOnePendingChange === true &&
+          group.writesTheFile === true &&
+          group.nothingWasSilentlyDropped === true &&
+          group.patchedRatherThanRewritten === true &&
+          group.noCaveats === true &&
+          group.theFileHasItExactlyOnce === true &&
+          group.andInItsNewParent === 'body' &&
+          group.keptTheParagraphsItMovedPast === true &&
+          group.keptTheirInlineTags === true &&
+          group.doesNotReadAsRendered === true;
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 2. And all the way back again.
+       *
+       * In, out, then down puts it exactly where the file has it. A move records its position
+       * either side as a comparable string so that a round trip nets out to no change at all,
+       * and this is that promise held across a change of parent: the counter has to come back
+       * to zero and the plan has to find nothing to do.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'backOutAgain';
+      {
+        await reset();
+        const figure = document.querySelector('figure.fig.wide');
+        api.select(figure);
+        await frames();
+        engine.move('in');
+        await frames();
+        // Out lands it before the div it came from, so one step down restores the order.
+        engine.move('out');
+        await frames();
+        engine.move('down');
+        await frames();
+
+        const pending = engine.records.length;
+        const built = await plan();
+        const write = docWrite(built);
+        const written = write ? parse(write.after) : null;
+        results.backOutAgain = {
+          // Moves that cancel out are no pending change at all, and no file to write.
+          returnedToWhereItStarted:
+            figure.parentElement.tagName === 'ARTICLE' &&
+            figure.previousElementSibling?.className === 'body',
+          nettedOutToNothing: pending === 0,
+          soThereIsNothingToWrite: (built?.writes.length ?? 0) === 0,
+          andNothingStranded: (built?.unwritable.length ?? 0) === 0,
+          stillNotRendered: engine.provenanceOf(figure) === undefined,
+          diagnostics: {
+            pending,
+            reason: write?.reason ?? null,
+            figures: written ? written.querySelectorAll('figure.fig.wide').length : null,
+          },
+        };
+        const group = results.backOutAgain;
+        group.ok =
+          group.returnedToWhereItStarted === true &&
+          group.nettedOutToNothing === true &&
+          group.soThereIsNothingToWrite === true &&
+          group.andNothingStranded === true &&
+          group.stillNotRendered === true;
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 3. A one-way move out of a container.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'outOfItsContainer';
+      {
+        await reset();
+        const paragraph = document.querySelector('.wrapper .inner-one');
+        api.select(paragraph);
+        await frames();
+        engine.move('out');
+        await frames();
+
+        const pending = engine.records.length;
+        const built = await plan();
+        const write = docWrite(built);
+        const written = write ? parse(write.after) : null;
+        results.outOfItsContainer = {
+          leftTheWrapper: paragraph.parentElement.className === 'host',
+          countsAsOnePendingChange: pending === 1,
+          writesTheFile: (built?.writes.length ?? 0) === 1,
+          nothingWasSilentlyDropped:
+            (built?.writes.length ?? 0) + (built?.unwritable.length ?? 0) >= pending,
+          theFileHasItExactlyOnce: written
+            ? written.querySelectorAll('.inner-one').length === 1
+            : null,
+          andOutsideTheWrapper: written
+            ? written.querySelector('.inner-one')?.parentElement?.className ?? null
+            : null,
+          // Its former sibling must stay where it was, untouched by either rebuild.
+          leftItsSiblingAlone: written
+            ? written.querySelector('.wrapper > .inner-two') !== null
+            : null,
+          doesNotReadAsRendered: engine.provenanceOf(paragraph) === undefined,
+          diagnostics: { reason: write?.reason ?? null },
+        };
+        const group = results.outOfItsContainer;
+        group.ok =
+          group.leftTheWrapper === true &&
+          group.countsAsOnePendingChange === true &&
+          group.writesTheFile === true &&
+          group.nothingWasSilentlyDropped === true &&
+          group.theFileHasItExactlyOnce === true &&
+          group.andOutsideTheWrapper === 'host' &&
+          group.leftItsSiblingAlone === true &&
+          group.doesNotReadAsRendered === true;
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 4. Unwrapping a container relocates every child it was holding.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'unwrappingAContainer';
+      {
+        await reset();
+        const wrapper = document.querySelector('.wrapper');
+        api.select(wrapper);
+        await frames();
+        engine.unwrap(wrapper);
+        await frames();
+
+        const pending = engine.records.length;
+        const built = await plan();
+        const write = docWrite(built);
+        const written = write ? parse(write.after) : null;
+        results.unwrappingAContainer = {
+          wrapperIsGone: document.querySelector('.wrapper') === null,
+          bothChildrenSurvivedOnThePage: document.querySelectorAll('.host > p').length === 2,
+          writesTheFile: (built?.writes.length ?? 0) === 1,
+          nothingWasSilentlyDropped:
+            (built?.writes.length ?? 0) + (built?.unwritable.length ?? 0) >= pending,
+          // The defect this covers: relocated children read as generated and were left out.
+          theFileKeepsBothChildren: written
+            ? written.querySelectorAll('.host > p').length === 2
+            : null,
+          andDropsTheWrapper: written ? written.querySelector('.wrapper') === null : null,
+          neitherReadsAsRendered:
+            engine.provenanceOf(document.querySelector('.inner-one')) === undefined &&
+            engine.provenanceOf(document.querySelector('.inner-two')) === undefined,
+          diagnostics: {
+            reason: write?.reason ?? null,
+            inFile: written ? written.querySelectorAll('.host > p').length : null,
+          },
+        };
+        const group = results.unwrappingAContainer;
+        group.ok =
+          group.wrapperIsGone === true &&
+          group.bothChildrenSurvivedOnThePage === true &&
+          group.writesTheFile === true &&
+          group.nothingWasSilentlyDropped === true &&
+          group.theFileKeepsBothChildren === true &&
+          group.andDropsTheWrapper === true &&
+          group.neitherReadsAsRendered === true;
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 5. Dragging into another container, which commits a move already applied.
+       *
+       * A different door to the same record: the element is moved as the drag preview, so
+       * `moveCommandFromOrigin` builds the record after the fact and no command `apply` ever
+       * runs. Both had to be told about the relocation separately.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'draggedIntoAContainer';
+      {
+        await reset();
+        const row = document.getElementById('row-one');
+        const tray = document.getElementById('tray');
+        /*
+         * Both boxes on screen before anything is measured.
+         *
+         * The hit test is `elementsFromPoint`, which knows nothing about a page that has
+         * scrolled past the target: the first version of this group aimed at a tray below the
+         * fold, found nothing under the pointer and recorded no move at all.
+         */
+        tray.scrollIntoView({ block: 'center', behavior: 'instant' });
+        await frames();
+        const grip = row.getBoundingClientRect();
+        api.select(row);
+        await frames();
+        engine.startDrag(row, Math.round(grip.left + 8), Math.round(grip.top + 8));
+        // Held over the middle of the tray: going into a container costs a dwell of about
+        // 200ms, so a single sample would drop it beside the tray rather than inside it.
+        let aimedInside = false;
+        for (let i = 0; i < 12; i += 1) {
+          const target = tray.getBoundingClientRect();
+          const x = Math.round(target.left + target.width / 2);
+          const y = Math.round(target.top + target.height / 2);
+          // The pointer has to actually be in the tray, or the dwell is timing nothing.
+          aimedInside =
+            x > target.left && x < target.right && y > target.top && y < target.bottom &&
+            y > 0 && y < innerHeight;
+          engine.updateDrag(x, y);
+          await wait(60);
+        }
+        engine.endDrag();
+        await frames();
+        await wait(150);
+
+        const pending = engine.records.length;
+        const built = await plan();
+        const write = docWrite(built);
+        const written = write ? parse(write.after) : null;
+        const nested = row.parentElement?.id === 'tray';
+        results.draggedIntoAContainer = {
+          // Without this the group could pass by dwelling somewhere harmless.
+          pointerRestedInsideTheTray: aimedInside,
+          // The gesture has to have nested, or this measures an ordinary reorder.
+          endedUpInsideTheTray: nested,
+          recordedAMove: engine.records.some((record) => record.kind === 'move'),
+          writesTheFile: (built?.writes.length ?? 0) === 1,
+          nothingWasSilentlyDropped:
+            (built?.writes.length ?? 0) + (built?.unwritable.length ?? 0) >= pending,
+          theFileHasItExactlyOnce: written
+            ? written.querySelectorAll('#row-one').length === 1
+            : null,
+          andInsideTheTray: written
+            ? written.querySelector('#row-one')?.parentElement?.id ?? null
+            : null,
+          doesNotReadAsRendered: engine.provenanceOf(row) === undefined,
+          diagnostics: { parent: row.parentElement?.id ?? null, reason: write?.reason ?? null },
+        };
+        const group = results.draggedIntoAContainer;
+        group.ok =
+          group.pointerRestedInsideTheTray === true &&
+          group.endedUpInsideTheTray === true &&
+          group.recordedAMove === true &&
+          group.writesTheFile === true &&
+          group.nothingWasSilentlyDropped === true &&
+          group.theFileHasItExactlyOnce === true &&
+          group.andInsideTheTray === 'tray' &&
+          group.doesNotReadAsRendered === true;
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 6. Content the page builds keeps its verdict when it is moved.
+       *
+       * The property the fix above must not have traded away. A card the script rendered is
+       * still the script's after being dragged into authored markup — and the change now has
+       * to be *reported* as unwritable rather than quietly producing no write at all.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'generatedContentKeepsItsVerdict';
+      {
+        await reset();
+        const card = document.querySelector('#feed .card');
+        const before = engine.provenanceOf(card);
+        api.select(card);
+        await frames();
+        // Into the authored sibling below it, which is where it would escape the verdict.
+        engine.move('out');
+        await frames();
+        engine.move('down');
+        await frames();
+
+        const after = engine.provenanceOf(card);
+        const pending = engine.records.length;
+        const built = await plan();
+        const write = docWrite(built);
+        const written = write ? parse(write.after) : null;
+        results.generatedContentKeepsItsVerdict = {
+          // The premise: the file comparison has to have caught it in the first place.
+          startedOutKnownAsGenerated: before !== undefined,
+          movedOutOfItsContainer: card.parentElement?.id !== 'feed',
+          // Leaving the container that carried the verdict must not shed it.
+          stillKnownAsGenerated: after !== undefined,
+          // And the save has to say so, rather than write nothing and claim all is well.
+          reportedAsUnwritable: (built?.unwritable.length ?? 0) >= 1,
+          nothingWasSilentlyDropped:
+            (built?.writes.length ?? 0) + (built?.unwritable.length ?? 0) >= pending,
+          // The markup the script produced still must not be written into the file.
+          theFileDoesNotGainTheCard: written
+            ? written.querySelectorAll('.card').length === 0
+            : true,
+          diagnostics: {
+            before: before ? before.kind : null,
+            after: after ? after.kind : null,
+            pending,
+            reasons: (built?.unwritable ?? []).map((entry) => entry.reason),
+          },
+        };
+        const group = results.generatedContentKeepsItsVerdict;
+        group.ok =
+          group.startedOutKnownAsGenerated === true &&
+          group.movedOutOfItsContainer === true &&
+          group.stillKnownAsGenerated === true &&
+          group.reportedAsUnwritable === true &&
+          group.nothingWasSilentlyDropped === true &&
+          group.theFileDoesNotGainTheCard === true;
+      }
+
+      /*
+       * Rolled up from the groups, so a group added later cannot be left out of the verdict.
+       */
+      const failed = Object.entries(results)
+        .filter(([, group]) => group && typeof group === 'object')
+        .filter(([, group]) => Object.values(group).some((value) => value === false))
+        .map(([name]) => name);
+
+      document.getElementById('out').textContent = 'RESULTS:' + JSON.stringify(
+        { ok: failed.length === 0, failed, ...results, errors }, null, 1,
+      ) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"ok":false,"__fatal":' + JSON.stringify(String((e && e.stack) || e)) + '}:END';
+    });
+  </script>
+</body>
+
+</html>

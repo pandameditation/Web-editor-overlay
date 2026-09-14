@@ -399,10 +399,22 @@ function netRecords(commands: readonly Command[]): ChangeRecord[] {
     const from = markup ? first.markupBefore : first.before;
     const to = markup ? last.markupAfter : last.after;
     if (normalize(from) === normalize(to)) continue;
+    /*
+     * Every container the whole run touched, not just the last command's.
+     *
+     * Walking an element into a neighbouring container with three keystrokes is one net
+     * change, and `...last` keeps only the last keystroke's view of it — which is the
+     * container the element ended up in. The container it started in is named by the first
+     * command and nothing else, so the save had no reason to take the element out of it and
+     * the file came out holding it twice. Duplicates are harmless: the write plan keys
+     * containers by anchor before it resolves them.
+     */
+    const containers = group.flatMap((record) => record.containers ?? []);
     out.push({
       ...last,
       before: first.before,
       after: last.after,
+      ...(containers.length ? { containers } : {}),
       // Keep the group's identity stable so consumers can diff between reads.
       id: first.id,
     });

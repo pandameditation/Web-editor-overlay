@@ -240,6 +240,20 @@ export interface ChangeRecord {
    */
   anchor?: ElementAnchor;
   /**
+   * Every container whose children this change rearranged.
+   *
+   * A structural change is written by rebuilding a container's children against the file,
+   * and `anchor.parent` names one container — which is enough for an insert or a delete,
+   * and one short for a move between two of them. Worse, *which* one it names depends on
+   * when the record was built: a keyboard move records before the element goes, so it
+   * names the origin, and a drag records after, so it names the destination. Either way
+   * the other end went unrebuilt, and the file came out with the element still in its old
+   * place as well as its new one, or with it in neither.
+   *
+   * Absent for changes with a single container, which fall back to `anchor.parent`.
+   */
+  containers?: ElementAnchor[];
+  /**
    * Key of the element this change was made to.
    *
    * For reading the finished value back out of the page at save time: a style record holds one
@@ -381,8 +395,16 @@ export interface SavePayload {
 /** Live drag state while a reorder is in flight. */
 export interface DragState {
   element: HTMLElement;
-  /** Where the element started, so cancelling can put it back exactly. */
-  origin: { parent: Node; nextSibling: Node | null };
+  /**
+   * Where the element started, so cancelling can put it back exactly.
+   *
+   * `parentAnchor` is that container as the *file* has it, read before the first preview
+   * move. A drag repositions the real element to show true layout, so by the time the drop
+   * is committed the origin container's position among its own siblings may already count
+   * the moved element — and an anchor describing a position the file does not have is worse
+   * than none, because the save would rebuild the wrong container's children.
+   */
+  origin: { parent: Node; nextSibling: Node | null; parentAnchor?: ElementAnchor };
   pointer: { x: number; y: number };
   /** Set when the pointer has left the viewport: release cancels. */
   willCancel: boolean;

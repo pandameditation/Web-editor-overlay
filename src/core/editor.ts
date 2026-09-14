@@ -108,6 +108,7 @@ import {
   wrapElement,
   type InsertPosition,
   elementKey,
+  anchorFor,
 } from './mutations.js';
 import { buildPrompt } from './prompt.js';
 import { formatHTML, previewMarkup, sanitizeFragment } from './sanitize.js';
@@ -157,6 +158,7 @@ import {
   describeProvenance,
   establishBaseline,
   markObservedRevert,
+  markRelocated,
   markUserOwned,
   onScriptWrite,
   observeRuntimeContent,
@@ -5080,7 +5082,12 @@ export class EditorEngine {
     this.store.patch({
       drag: {
         element: el,
-        origin: { parent: el.parentNode, nextSibling: el.nextSibling },
+        origin: {
+          parent: el.parentNode,
+          nextSibling: el.nextSibling,
+          // Read now, while nothing has moved yet. See `DragState.origin`.
+          parentAnchor: el.parentElement ? anchorFor(el.parentElement) : undefined,
+        },
         pointer: { x, y },
         willCancel: false,
         hint: 'Drag to reorder',
@@ -5332,6 +5339,13 @@ export class EditorEngine {
   #applyDrop(parent: Node, before: Node | null, el: HTMLElement): boolean {
     if (el.parentNode === parent && el.nextSibling === before) return false;
     const rects = captureRects(neighbourhood(el.parentNode, parent));
+    /*
+     * The drag is the one move that never runs a command's `apply`, so it has to say this
+     * for itself — the same reason `withoutProvenance` is here rather than in `commit`.
+     * `withoutProvenance` covers the observers that watch the mutation happen; this covers
+     * the comparison against the file, which happens later and cannot be suppressed.
+     */
+    markRelocated(el);
     const placed = withoutProvenance(() => {
       try {
         parent.insertBefore(el, before);
