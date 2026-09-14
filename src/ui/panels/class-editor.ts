@@ -93,6 +93,101 @@ export function focusDeclaration(root: ParentNode, property: string): void {
   });
 }
 
+export interface PropertyAdderTarget {
+  /** Unique among the property adders rendered in one shadow root. */
+  id: string;
+  /** How to refer to the declaration owner in validation messages. */
+  label: string;
+  /** Declarations already owned by the target, used to reject duplicates. */
+  existing: Record<string, string>;
+  /** Write the seeded value through the target's normal mutation path. */
+  commit(property: string, value: string): void;
+}
+
+/**
+ * The shared property-name line used by classes, rules, and element styles.
+ *
+ * Naming a property is the same interaction everywhere: validate it, seed a useful value,
+ * commit through the host's normal mutation path, then put focus in the new value field.
+ * Keeping that sequence here prevents the three editors from disagreeing about what can be added.
+ */
+export function renderPropertyAdder(
+  target: PropertyAdderTarget,
+  host: ClassEditorHost,
+): TemplateResult {
+  const { engine } = host;
+  const listId = `heo-props-${target.id}`;
+
+  const commitProperty = (): void => {
+    const verdict = checkDeclaration({
+      property: host.newProperty,
+      existing: target.existing,
+      label: target.label,
+    });
+    if (!verdict.property) return;
+    if (verdict.refusal) {
+      engine.notify(verdict.refusal, verdict.refusal.includes('already sets') ? 'info' : 'error');
+      // Keep a refused draft in place so the name can be corrected rather than retyped.
+      return;
+    }
+    host.onNewProperty('');
+    if (verdict.advice) engine.notify(verdict.advice, 'warn');
+    target.commit(verdict.property, initialValueFor(verdict.property));
+    // The new field appears on the render scheduled by the commit.
+    host.onFocus?.(verdict.property);
+  };
+
+  return html`
+    <div class="decl property-adder">
+      <span class="p">add</span>
+      <div class="pair">
+        <input
+          class="input mono"
+          type="text"
+          list=${listId}
+          placeholder="property"
+          .value=${host.newProperty}
+          spellcheck="false"
+          aria-label="New property"
+          @input=${(event: Event) =>
+      host.onNewProperty((event.target as HTMLInputElement).value)}
+          @keydown=${(event: KeyboardEvent) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        commitProperty();
+        return;
+      }
+      // Tab means "done here", so confirm on the way out rather than discarding the draft.
+      if (event.key === 'Tab' && !event.shiftKey && host.newProperty.trim()) {
+        event.preventDefault();
+        commitProperty();
+      }
+    }}
+          @blur=${() => {
+      if (host.newProperty.trim()) commitProperty();
+    }}
+        />
+        <button
+          class="confirm"
+          type="button"
+          title="Add this property"
+          aria-label="Add this property"
+          ?disabled=${!host.newProperty.trim()}
+          @pointerdown=${(event: Event) => event.preventDefault()}
+          @click=${commitProperty}
+        >
+          ${icon('check', 12)}
+        </button>
+      </div>
+      <datalist id=${listId}>
+        ${searchProperties(host.newProperty, 20).map(
+      (meta) => html`<option value=${meta.name}></option>`,
+    )}
+      </datalist>
+    </div>
+  `;
+}
+
 export const ClassEditor = {
   styles: css`
     .cls {
@@ -360,43 +455,6 @@ export const ClassEditor = {
   renderDeclarations(target: DeclarationTarget, host: ClassEditorHost): TemplateResult {
     const { engine, element } = host;
     const properties = Object.keys(target.declarations);
-    const listId = `heo-props-${target.id}`;
-
-    /*
-     * Turn the typed property name into a declaration.
-     *
-     * Shared by the confirm button, Enter, and leaving the field, because all three
-     * mean the same thing: that is the property I want. Seeding a starting value
-     * matters — an empty declaration would neither render nor tell the user what
-     * kind of value the new field expects.
-     */
-    const commitProperty = (): void => {
-      /*
-       * Vetted through the shared check, so this agrees with the Styles panel.
-       *
-       * Both halves of it are new here. Nothing was ever checked for validity, so `flx` went into
-       * a class or a rule and into the exported file, while the Styles panel refused the same
-       * thing outright — and the duplicate check that did exist lived only here. One function now
-       * answers for all three surfaces, which is what stops them drifting apart again.
-       */
-      const verdict = checkDeclaration({
-        property: host.newProperty,
-        existing: target.declarations,
-        label: target.label,
-      });
-      if (!verdict.property) return;
-      if (verdict.refusal) {
-        engine.notify(verdict.refusal, verdict.refusal.includes('already sets') ? 'info' : 'error');
-        // The draft stays put for a refusal, so the name can be corrected rather than retyped.
-        return;
-      }
-      host.onNewProperty('');
-      if (verdict.advice) engine.notify(verdict.advice, 'warn');
-      target.commit(verdict.property, initialValueFor(verdict.property));
-      // Naming a property is never the goal; giving it a value is. Hand the caret to
-      // the field that was just created, with its own autocomplete already loaded.
-      host.onFocus?.(verdict.property);
-    };
 
     return html`
       <div class="decls">
@@ -460,54 +518,15 @@ export const ClassEditor = {
             </button>
           </div>`,
       )}
-        <div class="decl">
-          <span class="p">add</span>
-          <div class="pair">
-            <input
-              class="input mono"
-              type="text"
-              list=${listId}
-              placeholder="property"
-              .value=${host.newProperty}
-              spellcheck="false"
-              aria-label="New property"
-              @input=${(event: Event) =>
-        host.onNewProperty((event.target as HTMLInputElement).value)}
-              @keydown=${(event: KeyboardEvent) => {
-        if (event.key === 'Enter') {
-          event.preventDefault();
-          commitProperty();
-          return;
-        }
-        // Tab means "done here", so confirm on the way out rather than
-        // discarding what was typed.
-        if (event.key === 'Tab' && !event.shiftKey && host.newProperty.trim()) {
-          event.preventDefault();
-          commitProperty();
-        }
-      }}
-              @blur=${() => {
-        if (host.newProperty.trim()) commitProperty();
-      }}
-            />
-            <button
-              class="confirm"
-              type="button"
-              title="Add this property"
-              aria-label="Add this property"
-              ?disabled=${!host.newProperty.trim()}
-              @pointerdown=${(event: Event) => event.preventDefault()}
-              @click=${commitProperty}
-            >
-              ${icon('check', 12)}
-            </button>
-          </div>
-          <datalist id=${listId}>
-            ${searchProperties(host.newProperty, 20).map(
-        (meta) => html`<option value=${meta.name}></option>`,
+        ${renderPropertyAdder(
+        {
+          id: target.id,
+          label: target.label,
+          existing: target.declarations,
+          commit: target.commit,
+        },
+        host,
       )}
-          </datalist>
-        </div>
       </div>
     `;
   },

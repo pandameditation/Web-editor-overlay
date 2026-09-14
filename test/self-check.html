@@ -2342,6 +2342,81 @@
       check('explicitRemoveDropsTheProperty', () =>
         !('letter-spacing' in engine.classes.get('card').declarations));
 
+      /*
+       * Styles offers the same property-name line for the selected element.
+       * Keep an authored declaration beside the new one so undo proves the mutation
+       * removes only what was added and does not rewrite unrelated inline CSS.
+       */
+      const inlineAdderTarget = document.createElement('div');
+      inlineAdderTarget.id = 'inline-adder-target';
+      inlineAdderTarget.textContent = 'Inline adder target';
+      inlineAdderTarget.style.cssText = 'color: rgb(1, 2, 3)';
+      document.body.append(inlineAdderTarget);
+      api.openPanel('styles');
+      api.select(inlineAdderTarget);
+      await frame();
+      await wait(120);
+      const inlineSetSection = () =>
+        Array.from(dockPanel('styles').shadowRoot.querySelectorAll('heo-section'))
+          .find((s) => s.heading === 'Set on this element');
+      const inlineAdderInput = () => inlineSetSection()?.querySelector('.property-adder input');
+      const sectionBeforeAdder = inlineSetSection();
+      if (sectionBeforeAdder && !sectionBeforeAdder.open) {
+        sectionBeforeAdder.shadowRoot.querySelector('.head')?.click();
+      }
+      await frame();
+      check('setSectionOffersAnElementPropertyAdder', () => Boolean(inlineAdderInput()));
+      check('elementPropertyAdderHasAConfirmButton', () =>
+        Boolean(inlineSetSection()?.querySelector('.property-adder .confirm')));
+
+      const duplicateInlineProperty = inlineAdderInput();
+      duplicateInlineProperty.focus();
+      duplicateInlineProperty.value = 'color';
+      duplicateInlineProperty.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      press(duplicateInlineProperty, 'Enter');
+      await wait(120);
+      check('elementPropertyAdderRejectsAnExistingInlineProperty', () =>
+        inlineAdderInput()?.value === 'color' &&
+        inlineAdderTarget.style.getPropertyValue('color') === 'rgb(1, 2, 3)');
+
+      const inlinePropertyInput = inlineAdderInput();
+      inlinePropertyInput.focus();
+      inlinePropertyInput.value = 'letter-spacing';
+      inlinePropertyInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      await frame();
+      press(inlineAdderInput(), 'Enter');
+      await wait(140);
+      const inlineValueField = () =>
+        inlineSetSection()?.querySelector(
+          '.rows .row[data-property="letter-spacing"] heo-value-field',
+        );
+      check('elementPropertyAdderSeedsAStartingValue', () => inlineValueField()?.value === '0px');
+      check('elementPropertyAdderFocusesTheNewValueField', () =>
+        Boolean(inlineValueField()?.matches(':focus-within')));
+      check('elementPropertyAdderCommitsAnInlineDeclaration', () =>
+        inlineAdderTarget.style.getPropertyValue('letter-spacing') === '0px');
+      check('elementPropertyAdderKeepsExistingInlineDeclarations', () =>
+        inlineAdderTarget.style.getPropertyValue('color') === 'rgb(1, 2, 3)');
+      check('elementPropertyAdderCreatesAStyleRecord', () => {
+        const record = engine.records.find((r) => r.detail?.property === 'letter-spacing');
+        return Boolean(record && record.before == null && record.after === '0px');
+      });
+
+      api.undo();
+      await frame();
+      check('undoRemovesOnlyTheAddedInlineProperty', () =>
+        inlineAdderTarget.style.getPropertyValue('letter-spacing') === '' &&
+        inlineAdderTarget.style.getPropertyValue('color') === 'rgb(1, 2, 3)');
+      api.redo();
+      await frame();
+      check('redoRestoresTheAddedInlineProperty', () =>
+        inlineAdderTarget.style.getPropertyValue('letter-spacing') === '0px' &&
+        inlineAdderTarget.style.getPropertyValue('color') === 'rgb(1, 2, 3)');
+      engine.history.clear();
+      inlineAdderTarget.remove();
+      api.select(document.getElementById('para'));
+      await frame();
+
       /* Under Styles the class editor offers neither Apply nor Delete. */
       api.openPanel('styles');
       await frame();

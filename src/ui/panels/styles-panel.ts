@@ -36,6 +36,7 @@ import {
   ClassEditor,
   focusDeclaration,
   initialValueFor,
+  renderPropertyAdder,
   type DeclarationTarget,
 } from './class-editor.js';
 import type { HeoValueField } from '../controls/value-field.js';
@@ -570,6 +571,43 @@ export class HeoStylesPanel extends HeoElement {
         align-items: center;
         gap: 6px;
       }
+      .property-adder {
+        grid-template-columns: 96px minmax(0, 1fr) 18px;
+      }
+      .property-adder .pair {
+        display: flex;
+        gap: 4px;
+        min-width: 0;
+      }
+      .property-adder .pair .input {
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+      .property-adder .confirm {
+        display: grid;
+        place-items: center;
+        flex: 0 0 auto;
+        width: 28px;
+        border: 1px solid var(--heo-accent-line);
+        border-radius: var(--heo-r-sm);
+        background: var(--heo-accent-soft);
+        color: var(--heo-accent);
+        cursor: pointer;
+        padding: 0;
+        transition:
+          background var(--heo-fast),
+          color var(--heo-fast);
+      }
+      .property-adder .confirm:hover:not(:disabled) {
+        background: var(--heo-accent);
+        color: var(--heo-accent-ink);
+      }
+      .property-adder .confirm:disabled {
+        border-color: var(--heo-line);
+        background: transparent;
+        color: var(--heo-text-faint);
+        cursor: not-allowed;
+      }
       .decl .p {
         overflow: hidden;
         color: var(--heo-text-dim);
@@ -654,6 +692,8 @@ export class HeoStylesPanel extends HeoElement {
   /** Name typed for the copy, empty while the suggested one will do. */
   @state() private forkDraft = '';
   @state() private classProperty = '';
+  /** Draft in the element-scoped property adder, kept apart from class and rule drafts. */
+  @state() private inlineProperty = '';
   /** What the panel is being filtered by. Empty shows every section. */
   @state() private filter = '';
   /** Whether the add-a-declaration popup is up. */
@@ -1017,6 +1057,30 @@ export class HeoStylesPanel extends HeoElement {
                   ${icon('blocks', 12)} Extract ${inlineCount} inline into a class
                 </button>`
             : nothing}`}
+      ${!filtering
+        ? renderPropertyAdder(
+          {
+            id: 'inline-style',
+            label: 'This element',
+            existing: inline,
+            commit: (property, value) => this.editor.setStyle(property, value, el),
+          },
+          {
+            engine: this.editor,
+            element: el,
+            newProperty: this.inlineProperty,
+            onNewProperty: (value: string) => {
+              this.inlineProperty = value;
+            },
+            onFocus: (property: string) => {
+              const section = this.renderRoot.querySelector(
+                'heo-section[heading="Set on this element"]',
+              );
+              if (section) focusDeclaration(section, property);
+            },
+          },
+        )
+        : nothing}
       ${!filtering
         ? html`<button
             class="btn sm"
@@ -1683,6 +1747,7 @@ export class HeoStylesPanel extends HeoElement {
           this.editor.setStyle(property, event.detail.value, el)}
         ></heo-segmented>`
       : html`<heo-value-field
+          data-property=${property}
           .value=${value}
           .kind=${valueKindFor(property)}
           .property=${property}
