@@ -1,5 +1,6 @@
 import { checkDeclaration } from './declarations.js';
 import { parseDeclarations } from './css.js';
+import { safeCssValue } from './sanitize.js';
 import { withParsedSheet } from './sheets.js';
 
 /** A stylesheet rule recognised from pasted CSS. */
@@ -214,6 +215,21 @@ function checkedDeclarations(raw: Record<string, string>): {
       continue;
     }
     if (!verdict.property) continue;
+    /*
+     * A `url()` pointing somewhere that runs script is refused, not written.
+     *
+     * `checkDeclaration` vets the property name and asks the browser whether the value
+     * parses; neither question is about safety, and `background: url("javascript:…")`
+     * passes both. This is the same check `scrubElement` has always applied to a style
+     * attribute, finally applied to the values that reach a class or a rule.
+     */
+    const unsafe = safeCssValue(value);
+    if (unsafe) {
+      rejected.push(
+        `${verdict.property} was dropped: “${unsafe.unsafe}” is not a URL this can load.`,
+      );
+      continue;
+    }
     declarations[verdict.property] = value.trim();
     if (verdict.advice && !advice.includes(verdict.advice)) advice.push(verdict.advice);
   }

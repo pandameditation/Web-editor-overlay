@@ -3,16 +3,19 @@ import { customElement, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 import {
   appliedRules,
+  authoredInline,
   cascadedDeclarations,
+  declaredMap,
   declaredValues,
+  fromElementClass,
   inlineDeclarations,
   parentLayoutProperties,
   PROPERTY_GROUP_LABELS,
   searchProperties,
   sizeConstraints,
   stateRules,
-  splitTopLevel,
   type AppliedRule,
+  type DeclarationOrigin,
   type SizeConstraint,
 } from '../../core/css.js';
 import {
@@ -2306,103 +2309,6 @@ export class HeoStylesPanel extends HeoElement {
   }
 }
 
-/** An in-flight live preview, as the panel needs to see it. */
-type StylePreview = { property: string; before: string };
-
-/**
- * The element's inline declarations, as authored rather than as painted.
- *
- * A preview writes the value being typed straight onto the style attribute, so
- * reading the attribute back mid-edit describes the exploration instead of what the
- * user has: a half-deleted value, or — once the field is empty — no declaration at
- * all, which is what used to make the row vanish out from under the caret. The
- * property the preview owns is put back to the value it had when the edit started,
- * or dropped if the edit started from nothing.
- */
-function authoredInline(el: HTMLElement, preview: StylePreview | null): Record<string, string> {
-  const inline = inlineDeclarations(el);
-  if (!preview) return inline;
-  if (preview.before) {
-    // `before` is the authored text, so any `!important` is already in it.
-    inline[preview.property] = preview.before;
-  } else {
-    delete inline[preview.property];
-  }
-  return inline;
-}
-
-/**
- * What this element declares, as opposed to what it computes to.
- *
- * Inline styles first, then whichever matched rule wins. Longhands are expanded
- * from box shorthands so the box editor can show a value that was written as
- * `padding: 8px 12px`.
- */
-/** Where a row's value came from, so the row can say so. */
-export interface DeclarationOrigin {
-  kind: 'inline' | 'rule';
-  /** Selector of the winning rule; `style attribute` when inline. */
-  selector: string;
-}
-
-function declaredMap(
-  cascade: Map<string, { property: string; value: string; from: AppliedRule }>,
-  inline: Record<string, string>,
-): { values: Map<string, string>; origins: Map<string, DeclarationOrigin> } {
-  const out = new Map<string, string>();
-  const origins = new Map<string, DeclarationOrigin>();
-
-  // Every declaration that wins the cascade, from wherever it won. `cascade` is
-  // already ordered by specificity with the style attribute last, so inline values
-  // overwrite rule values here for the same reason the browser prefers them.
-  for (const [property, entry] of cascade) {
-    out.set(property, entry.value);
-    origins.set(property, {
-      kind: entry.from.origin === 'inline' ? 'inline' : 'rule',
-      selector: entry.from.selector,
-    });
-  }
-  // Parsed from cssText so a shorthand holding a var() — which does not
-  // enumerate as its longhands — is still shown as set on this element.
-  for (const [property, value] of Object.entries(inline)) {
-    out.set(property, value);
-    origins.set(property, { kind: 'inline', selector: 'style attribute' });
-  }
-
-  for (const group of ['margin', 'padding', 'border-radius'] as const) {
-    const shorthand = out.get(group);
-    if (!shorthand) continue;
-    const parts = splitTopLevel(shorthand);
-    const sides = expand(parts);
-    const names =
-      group === 'border-radius'
-        ? ['border-top-left-radius', 'border-top-right-radius', 'border-bottom-right-radius', 'border-bottom-left-radius']
-        : [`${group}-top`, `${group}-right`, `${group}-bottom`, `${group}-left`];
-    const from = origins.get(group);
-    names.forEach((name, index) => {
-      if (out.has(name)) return;
-      out.set(name, sides[index]);
-      if (from) origins.set(name, from);
-    });
-  }
-  return { values: out, origins };
-}
-
-/**
- * True when a declaration arrived from one of the element's own classes.
- *
- * Only a bare single-class selector counts, because that is exactly the shape the
- * Classes section can show and edit. A compound or descendant selector like
- * `.card .title` is not a class you can take off an element, so its declarations
- * still belong in the list of what is set here.
- */
-function fromElementClass(selector: string, el: HTMLElement): boolean {
-  return selector.split(',').some((part) => {
-    const match = /^\s*\.([A-Za-z_][\w-]*)\s*$/.exec(part);
-    return match ? el.classList.contains(match[1]) : false;
-  });
-}
-
 /** A row's tooltip: the value, and where it is coming from. */
 function describeOrigin(
   property: string,
@@ -2419,14 +2325,6 @@ function describeOrigin(
     'Changing it here writes an inline override on this element only; edit the rule ' +
     'itself under Matched CSS rules to change every element using it.'
   );
-}
-
-function expand(parts: string[]): [string, string, string, string] {
-  if (parts.length === 0) return ['', '', '', ''];
-  if (parts.length === 1) return [parts[0], parts[0], parts[0], parts[0]];
-  if (parts.length === 2) return [parts[0], parts[1], parts[0], parts[1]];
-  if (parts.length === 3) return [parts[0], parts[1], parts[2], parts[1]];
-  return [parts[0], parts[1], parts[2], parts[3]];
 }
 
 function shorten(value: string, max = 22): string {

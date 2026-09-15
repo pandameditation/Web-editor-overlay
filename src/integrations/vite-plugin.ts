@@ -108,6 +108,33 @@ export interface EditorOverlayPluginOptions {
    * longer your own machine.
    */
   allowRemote?: boolean;
+  /**
+   * Hold an AI credential on the server, so the page never sees one.
+   *
+   * The only configuration here that is a security property rather than a preference, and the
+   * reason it exists: an API key in the browser is readable by every script sharing that page's
+   * JavaScript realm, and the overlay mounts *into* pages it does not control. Nothing done in
+   * the browser fixes that — encrypting the key at rest only hides it from something that could
+   * not run code, which in a browser is nothing. Keeping the key here is the fix.
+   *
+   * The page then sends a prompt and gets a stream back. It cannot name the destination, and it
+   * cannot read the credential, because neither ever crosses the boundary.
+   *
+   * `apiKey` is read from the environment by the caller, so the key lives in `.env` and not in a
+   * config file somebody commits:
+   *
+   * ```js
+   * editorOverlay({ ai: { provider: 'anthropic', apiKey: process.env.ANTHROPIC_API_KEY } })
+   * ```
+   */
+  ai?: {
+    provider: 'openai' | 'anthropic' | 'google' | 'openai-compatible';
+    apiKey: string | undefined;
+    /** Defaults to the provider's own host. Set it for a gateway or a self-hosted server. */
+    baseURL?: string;
+    /** Models the page may ask for. Absent means any, which is the usual case for one's own key. */
+    models?: string[];
+  };
 }
 
 /**
@@ -220,7 +247,34 @@ export default function editorOverlay(options: EditorOverlayPluginOptions = {}):
       server.config.logger.info(
         `[html-editor-overlay] editing writes to ${root} (set write: false to turn this off)`,
       );
+
+      /*
+       * One route, two jobs, distinguished by `?ai=1`.
+       *
+       * Mounted together deliberately: they share the token, the origin check and the
+       * no-CORS rule, and splitting them would mean two places for those to drift apart. The
+       * page asks for the AI path by query rather than by a separate URL for the same reason —
+       * one endpoint to advertise, one grant to hold.
+       */
+      const proxy = options.ai?.apiKey ? { ...options.ai, apiKey: options.ai.apiKey } : null;
+      if (options.ai && !proxy) {
+        server.config.logger.warn(
+          '[html-editor-overlay] AI proxying is off: no apiKey was supplied. The editor will ' +
+          'offer local models and in-page keys instead.',
+        );
+      }
+      if (proxy) {
+        server.config.logger.info(
+          `[html-editor-overlay] AI requests are proxied to ${proxy.provider} — the key stays here`,
+        );
+      }
+
       server.middlewares.use(FS_ENDPOINT, (request, response) => {
+        const url = new URL(request.url ?? '/', 'http://localhost');
+        if (url.searchParams.has('ai')) {
+          void handleAiRequest(request, response, { token, proxy });
+          return;
+        }
         void handleFileRequest(request, response, { root, base, token });
       });
     },
@@ -405,6 +459,223 @@ async function handleFileRequest(
   } catch (error) {
     send(500, error instanceof Error ? error.message : 'Write failed.');
   }
+}
+
+/** Server-side AI configuration, credential included. Never serialised towards the page. */
+interface AiProxyConfig {
+  provider: 'openai' | 'anthropic' | 'google' | 'openai-compatible';
+  apiKey: string;
+  baseURL?: string;
+  models?: string[];
+}
+
+/** Each provider's own host, so the common case needs no `baseURL`. */
+const AI_HOSTS: Record<AiProxyConfig['provider'], string> = {
+  openai: 'https://api.openai.com/v1',
+  'openai-compatible': 'https://api.openai.com/v1',
+  anthropic: 'https://api.anthropic.com',
+  google: 'https://generativelanguage.googleapis.com',
+};
+
+/**
+ * Proxy one AI request, holding the credential here.
+ *
+ * The same check order as the file route, for the same reason: authenticate, confirm the request
+ * came from this server's own page, then act. What differs is what is being protected — there the
+ * concern is which files may be written, here it is that a credential must not travel outward and
+ * must not be spendable by anything other than this page.
+ *
+ * Three things the page is deliberately not allowed to decide.
+ *
+ * **Where the request goes.** The destination comes from this config, never from the body. A page
+ * that could name the host could point the server at a host of its choosing and have it
+ * authenticate to it — which is a credential leak wearing a proxy's clothes.
+ *
+ * **Which provider dialect is spoken.** Same reasoning: the server knows which credential it
+ * holds, so it knows which API that credential is for.
+ *
+ * **Which model, when `models` is set.** Optional because one's own key on one's own machine has
+ * no reason to be restricted, and useful the moment the key is shared with a team.
+ *
+ * The reply is streamed through untouched. The editor's client already knows how to read every
+ * one of these providers' event streams, so translating here would be a second implementation of
+ * something that exists — and the one place they would eventually disagree.
+ */
+async function handleAiRequest(
+  request: FsRequest,
+  response: FsResponse,
+  context: { token: string; proxy: AiProxyConfig | null },
+): Promise<void> {
+  /*
+   * Refusals go out as JSON with a `message`.
+   *
+   * The editor's client digs that field out and shows it verbatim, so a misconfiguration explains
+   * itself in the settings panel instead of arriving as a status code the user has to look up.
+   */
+  const refuse = (status: number, message: string): void => {
+    response.statusCode = status;
+    response.setHeader('content-type', 'application/json');
+    response.setHeader('cache-control', 'no-store');
+    // No CORS headers here either. Another origin may reach this; it must not read the answer.
+    response.end(JSON.stringify({ error: { message } }));
+  };
+
+  if (header(request, 'x-heo-token') !== context.token) {
+    refuse(403, 'Bad or missing editor token.');
+    return;
+  }
+  const origin = header(request, 'origin');
+  const host = header(request, 'host');
+  if (origin && host && !originMatchesHost(origin, host)) {
+    refuse(403, 'Cross-origin AI requests are not allowed.');
+    return;
+  }
+  if ((request.method ?? 'GET').toUpperCase() !== 'POST') {
+    refuse(405, 'AI requests are a POST.');
+    return;
+  }
+  const { proxy } = context;
+  if (!proxy) {
+    refuse(
+      501,
+      'This dev server is not holding an AI key. Pass ai: { provider, apiKey } to the editor ' +
+      'plugin, or use a local model instead.',
+    );
+    return;
+  }
+
+  let asked: { model?: unknown; system?: unknown; prompt?: unknown };
+  try {
+    asked = JSON.parse(await readBody(request)) as typeof asked;
+  } catch {
+    refuse(400, 'That request body was not readable.');
+    return;
+  }
+  const model = String(asked.model ?? '').trim();
+  const system = String(asked.system ?? '');
+  const prompt = String(asked.prompt ?? '');
+  if (!model || !prompt) {
+    refuse(400, 'A model and a prompt are both needed.');
+    return;
+  }
+  if (proxy.models?.length && !proxy.models.includes(model)) {
+    refuse(403, `${model} is not one of the models this server allows.`);
+    return;
+  }
+
+  const base = (proxy.baseURL ?? AI_HOSTS[proxy.provider]).replace(/\/+$/, '');
+  const upstream = new URL(aiPathFor(proxy.provider, base, model));
+  const headers: Record<string, string> = { 'content-type': 'application/json' };
+  switch (proxy.provider) {
+    case 'anthropic':
+      headers['x-api-key'] = proxy.apiKey;
+      headers['anthropic-version'] = '2023-06-01';
+      break;
+    case 'google':
+      headers['x-goog-api-key'] = proxy.apiKey;
+      break;
+    default:
+      headers.authorization = `Bearer ${proxy.apiKey}`;
+  }
+
+  let answer: Response;
+  try {
+    answer = await fetch(upstream, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(aiBodyFor(proxy.provider, model, system, prompt)),
+    });
+  } catch (error) {
+    refuse(502, `Could not reach ${upstream.host}: ${error instanceof Error ? error.message : error}`);
+    return;
+  }
+
+  if (!answer.ok || !answer.body) {
+    // Passed through as the provider's own words, which is what makes "your key is wrong" and
+    // "that model does not exist" distinguishable from each other at the far end.
+    const detail = await answer.text().catch(() => '');
+    response.statusCode = answer.status;
+    response.setHeader('content-type', 'application/json');
+    response.setHeader('cache-control', 'no-store');
+    response.end(detail || JSON.stringify({ error: { message: answer.statusText } }));
+    return;
+  }
+
+  response.statusCode = 200;
+  response.setHeader('content-type', 'text/event-stream');
+  response.setHeader('cache-control', 'no-store');
+  const reader = answer.body.getReader();
+  const decoder = new TextDecoder();
+  try {
+    for (; ;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      writeChunk(response, decoder.decode(value, { stream: true }));
+    }
+  } catch {
+    // The page closed the tab, or the provider hung up. Either way there is nobody to tell.
+  } finally {
+    reader.cancel().catch(() => { });
+    response.end();
+  }
+}
+
+/** The upstream path for one provider, mirroring the client's own `endpointFor`. */
+function aiPathFor(provider: AiProxyConfig['provider'], base: string, model: string): string {
+  switch (provider) {
+    case 'anthropic':
+      return `${base}/v1/messages`;
+    case 'google':
+      return `${base}/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`;
+    default:
+      return `${base}/chat/completions`;
+  }
+}
+
+/** The upstream body for one provider, mirroring the client's own `bodyFor`. */
+function aiBodyFor(
+  provider: AiProxyConfig['provider'],
+  model: string,
+  system: string,
+  prompt: string,
+): unknown {
+  switch (provider) {
+    case 'anthropic':
+      return {
+        model,
+        max_tokens: 4096,
+        stream: true,
+        system,
+        messages: [{ role: 'user', content: prompt }],
+      };
+    case 'google':
+      return {
+        systemInstruction: { parts: [{ text: system }] },
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      };
+    default:
+      return {
+        model,
+        stream: true,
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: prompt },
+        ],
+      };
+  }
+}
+
+/**
+ * A chunk on its way to the page.
+ *
+ * `FsResponse` is the narrow shape this plugin declares rather than Node's own, because three
+ * members were all the file route needed. Streaming needs one more, so it is reached through a
+ * widened view here rather than by loosening the interface every other handler is checked
+ * against.
+ */
+function writeChunk(response: FsResponse, text: string): void {
+  if (!text) return;
+  (response as FsResponse & { write?(chunk: string): void }).write?.(text);
 }
 
 /**

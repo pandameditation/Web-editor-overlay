@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>The AI affordance: anchored button, anchored prompt, full-screen settings</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: system-ui, sans-serif;
+    }
+
+    /* Well down the page and well in from the left, so a popover that lands at the viewport
+       origin is unmistakably wrong rather than coincidentally right. */
+    #subject {
+      margin: 220px 0 0 260px;
+      width: 340px;
+      padding: 18px;
+      background: #eef2ff;
+    }
+
+    #narrow {
+      margin: 40px 0 0 260px;
+      width: 90px;
+      padding: 6px;
+      background: #fee;
+    }
+
+    #report {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+    }
+  </style>
+</head>
+
+<body>
+  <main id="main">
+    <article id="subject" class="card">
+      <h2 id="title">A heading.</h2>
+      <p>Some words.</p>
+    </article>
+    <article id="narrow" class="card">Narrow.</article>
+  </main>
+
+  <div id="report">
+    <pre id="progress">start</pre>
+    <pre id="out">pending</pre>
+  </div>
+
+  <script type="module">
+    (async () => {
+      const errors = [];
+      addEventListener('error', (e) => errors.push('error: ' + e.message));
+      addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + String(e.reason)));
+
+      const progress = document.getElementById('progress');
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const results = {};
+
+      const { mount } = await import('../dist/html-editor-overlay.js');
+
+      /**
+       * A scripted provider, so the UI is driven end to end with no network.
+       *
+       * `MountOptions.aiTransport` is the documented seam for exactly this. It replaces where the
+       * request goes and nothing about what the reply may do — the broker still decides that —
+       * so a fixture cannot accidentally widen a permission.
+       */
+      const asked = [];
+      const api = mount({
+        theme: 'dark', presets: false, detectScriptContent: false,
+        aiTransport: (request) => {
+          asked.push({ prompt: request.prompt, context: request.context });
+          return (async function* () {
+            await wait(20);
+            yield { op: 'setStyles', declarations: { color: 'rgb(20, 80, 160)' } };
+            await wait(20);
+            yield { op: 'upsertClass', name: 'card', declarations: { 'border-radius': '12px' } };
+            await wait(20);
+            yield { op: 'summary', text: 'Recoloured it and rounded the card.' };
+          })();
+        },
+      });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+
+      /** Walk shadow roots: every part of the chrome lives inside the overlay's own tree. */
+      const deepFind = (selector, root = document) => {
+        const direct = root.querySelector?.(selector);
+        if (direct) return direct;
+        for (const host of root.querySelectorAll ? root.querySelectorAll('*') : []) {
+          if (host.shadowRoot) {
+            const found = deepFind(selector, host.shadowRoot);
+            if (found) return found;
+          }
+        }
+        return null;
+      };
+      const box = (el) => {
+        const r = el?.getBoundingClientRect();
+        return r ? { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) } : null;
+      };
+
+      const subject = document.getElementById('subject');
+      const narrow = document.getElementById('narrow');
+
+      /**
+       * Select, then wait for the layout to stop moving before measuring anything.
+       *
+       * The overlay injects stylesheets and the page is still reflowing for a few frames after
+       * mount, so the element's box changes under a fixture that reads it immediately. That is
+       * not a placement bug — the selection layer re-measures on every geometry change and
+       * catches up — but it is enough to make an assertion about "above the top edge" read a
+       * button placed against the previous position. The same settle loop `transform-move` uses.
+       */
+      const settle = async (el) => {
+        api.select(el);
+        let last = null;
+        for (let i = 0; i < 60; i += 1) {
+          await frames();
+          const r = el.getBoundingClientRect();
+          const b = deepFind('.ai')?.getBoundingClientRect();
+          const now = `${Math.round(r.top)},${Math.round(r.left)},${Math.round(b?.top ?? -1)}`;
+          if (now === last) return;
+          last = now;
+        }
+      };
+
+      /* ------------------------------------------------------------------ *
+       * 1. The button sits above the element's top-right corner.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'buttonSitsOnTheElement';
+      {
+        await settle(subject);
+        const button = deepFind('.ai');
+        const bb = box(button);
+        const eb = box(subject);
+        results.buttonSitsOnTheElement = {
+          found: Boolean(button),
+          label: button?.getAttribute('aria-label') ?? null,
+          buttonBox: bb, elementBox: eb,
+          // Above the top edge, not floating somewhere else on the page.
+          aboveTheTopEdge: bb && eb ? bb.y < eb.y && bb.y > eb.y - 40 : false,
+          // At the right-hand end of the element, which is the corner nothing else uses:
+          // the label badge takes the left.
+          atTheRightEnd: bb && eb ? bb.x > eb.x + eb.w / 2 : false,
+          insideTheElementsWidth: bb && eb ? bb.x + bb.w <= eb.x + eb.w + 4 : false,
+          // And nowhere near the viewport origin, which is what a failed placement looks like.
+          notAtTheOrigin: bb ? bb.x > 40 && bb.y > 40 : false,
+        };
+        const group = results.buttonSitsOnTheElement;
+        group.ok =
+          group.found === true &&
+          group.aboveTheTopEdge === true &&
+          group.atTheRightEnd === true &&
+          group.insideTheElementsWidth === true &&
+          group.notAtTheOrigin === true;
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 2. A narrow element moves the button inside its edge instead of past it.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'narrowElementKeepsItInside';
+      {
+        await settle(narrow);
+        const bb = box(deepFind('.ai'));
+        const eb = box(narrow);
+        results.narrowElementKeepsItInside = {
+          buttonBox: bb, elementBox: eb,
+          // The whole point: on a 90px element the badge and this would otherwise overlap.
+          withinTheElement: bb && eb ? bb.x >= eb.x && bb.x + bb.w <= eb.x + eb.w + 2 : false,
+          stillAbove: bb && eb ? bb.y < eb.y : false,
+        };
+        const group = results.narrowElementKeepsItInside;
+        group.ok = group.withinTheElement === true && group.stillAbove === true;
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 3. Clicking it opens the prompt, anchored to the element.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'clickOpensTheAnchoredPrompt';
+      {
+        await settle(subject);
+        deepFind('.ai').click();
+        await frames();
+        const pop = deepFind('heo-ai-menu')?.shadowRoot?.querySelector('.pop');
+        const pb = box(pop);
+        const eb = box(subject);
+        results.clickOpensTheAnchoredPrompt = {
+          opened: engine.store.value.aiMenuOpen,
+          popBox: pb, elementBox: eb,
+          // Anchored: horizontally overlapping the element, vertically adjacent to it.
+          nearTheElement: pb && eb
+            ? pb.x + pb.w > eb.x - 40 && pb.x < eb.x + eb.w + 40 &&
+            Math.abs(pb.y - (eb.y + eb.h)) < 320
+            : false,
+          /*
+           * On screen, entirely.
+           *
+           * The bug this group was written against: placed from a guessed height, an element low
+           * on the page flipped the popover above and put it off the top of the viewport.
+           */
+          fullyOnScreen: pb
+            ? pb.x >= 0 && pb.y >= 0 && pb.x + pb.w <= innerWidth && pb.y + pb.h <= innerHeight
+            : false,
+          notAtTheOrigin: pb ? pb.x > 40 || pb.y > 40 : false,
+        };
+        const group = results.clickOpensTheAnchoredPrompt;
+        group.ok =
+          group.opened === true &&
+          group.nearTheElement === true &&
+          group.fullyOnScreen === true &&
+          group.notAtTheOrigin === true;
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 4. With nothing configured, the way in is offered rather than an empty box.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'offersSetupBeforeAnyProvider';
+      {
+        const menu = deepFind('heo-ai-menu')?.shadowRoot;
+        const setup = Array.from(menu?.querySelectorAll('button') ?? []).find(
+          (one) => /set up a model/i.test(one.textContent ?? ''),
+        );
+        results.offersSetupBeforeAnyProvider = {
+          noProviders: engine.ai.configured === false,
+          offersSetup: Boolean(setup),
+          // And says outright that nothing has been sent, which is the question "AI" raises.
+          reassures: /nothing is sent anywhere/i.test(menu?.textContent ?? ''),
+        };
+        const group = results.offersSetupBeforeAnyProvider;
+        group.ok = Object.entries(group).every(([k, v]) => k === 'ok' || v === true);
+        setup?.click();
+        await frames();
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 5. The settings are a full-screen modal at the root, not a clipped popover.
+       *
+       * The reported bug: the dialog was rendered inside the AI popover, which is a fixed box
+       * with `overflow: hidden` — so it was positioned against the popover and clipped to 320px.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'settingsAreAFullScreenModal';
+      {
+        const settings = deepFind('heo-ai-settings');
+        const dialog = settings?.shadowRoot?.querySelector('.dialog');
+        const scrim = box(settings);
+        const db = box(dialog);
+        const menu = deepFind('heo-ai-menu');
+        results.settingsAreAFullScreenModal = {
+          opened: engine.store.value.aiSettingsOpen,
+          found: Boolean(dialog),
+          scrimBox: scrim, dialogBox: db,
+          // The scrim covers the viewport, which is only possible at the root: nested inside
+          // the popover its containing block was the popover.
+          scrimCoversTheViewport: scrim
+            ? scrim.w >= innerWidth - 2 && scrim.h >= innerHeight - 2
+            : false,
+          /*
+           * Sized against the viewport, not against a number.
+           *
+           * The first version asserted `h > 400`, which passed standalone and failed in the
+           * suite — where the viewport is 435px tall and a dialog correctly filling it is 383px.
+           * The claim being made is "it takes the room available", so that is what is measured.
+           */
+          roomToWork: db ? db.w >= Math.min(860, innerWidth - 48) - 4 : false,
+          tall: db ? db.h >= Math.min(innerHeight * 0.88, 760) - 4 : false,
+          // And far more room than the 320px popover it used to be trapped inside.
+          widerThanThePopover: db ? db.w > 320 * 1.8 : false,
+          // Centred rather than pinned to a corner, which is what the clipped version looked like.
+          horizontallyCentred: db
+            ? Math.abs(db.x + db.w / 2 - innerWidth / 2) < 24
+            : false,
+          // A sibling of the menu in the light DOM, not a descendant of it.
+          notInsideTheMenu: Boolean(settings) && Boolean(menu) && !menu.contains(settings),
+        };
+        const group = results.settingsAreAFullScreenModal;
+        group.ok =
+          group.opened === true &&
+          group.found === true &&
+          group.scrimCoversTheViewport === true &&
+          group.roomToWork === true &&
+          group.tall === true &&
+          group.widerThanThePopover === true &&
+          group.horizontallyCentred === true &&
+          group.notInsideTheMenu === true;
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 6. Adding a provider gives a form, with the credential handled honestly.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'addAProviderAndConfigureIt';
+      {
+        const shadow = () => deepFind('heo-ai-settings')?.shadowRoot;
+        const buttonSaying = (re) =>
+          Array.from(shadow()?.querySelectorAll('button') ?? []).find((one) =>
+            re.test(one.textContent ?? ''),
+          );
+        buttonSaying(/add a provider/i)?.click();
+        await frames();
+
+        const set = engine.ai.list()[0];
+        // Configured through the agent rather than by typing into every field: what this group
+        // is about is what the panel *shows* for a given configuration, not the plumbing of
+        // its inputs, which `change` events would only re-test at one remove.
+        engine.ai.upsert({
+          ...set, transport: 'in-page', provider: 'openai-compatible', model: 'test-model',
+        });
+        await frames();
+
+        const key = shadow()?.querySelector('input[type="password"]');
+        const scopeSelects = Array.from(shadow()?.querySelectorAll('.scope select') ?? []);
+        const shield = shadow()?.querySelector('.shield');
+
+        results.addAProviderAndConfigureIt = {
+          created: engine.ai.list().length === 1,
+          // A real password field in a form, so the browser's own manager can hold it — which
+          // is the recommended path precisely because the editor then persists nothing.
+          keyFieldIsAPassword: Boolean(key),
+          usesThePasswordManager: key?.getAttribute('autocomplete') === 'current-password',
+          // Three permissions, each with Always / Ask me / Never.
+          threeScopes: scopeSelects.length === 3,
+          scopeOptions: scopeSelects[0]
+            ? Array.from(scopeSelects[0].options).map((one) => one.value).join(',')
+            : null,
+          // And the badge tells the truth about an in-page key rather than showing a lock.
+          shieldText: (shield?.textContent ?? '').trim(),
+          saysItNeedsAKey: /needs a key/i.test(shield?.textContent ?? ''),
+          warnsThePageCanReadIt: /this page can read your key/i.test(shadow()?.textContent ?? ''),
+        };
+        const group = results.addAProviderAndConfigureIt;
+        group.ok =
+          group.created === true &&
+          group.keyFieldIsAPassword === true &&
+          group.usesThePasswordManager === true &&
+          group.threeScopes === true &&
+          group.scopeOptions === 'always,ask,never' &&
+          group.saysItNeedsAKey === true &&
+          group.warnsThePageCanReadIt === true;
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 7. A configured provider makes the prompt usable, and a run reports itself.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'promptRunsAndReportsBack';
+      {
+        const set = engine.ai.list()[0];
+        await engine.ai.setKey(set.id, 'sk-scripted-test');
+        engine.ai.upsert({ ...set, scope: { classes: 'always', rules: 'always', parent: 'always' } });
+        engine.setAiSettings(false);
+        await frames();
+
+        const menu = () => deepFind('heo-ai-menu')?.shadowRoot;
+        const field = menu()?.querySelector('textarea');
+        // The input exists only once a provider does — before that the popover offers setup
+        // instead, which is what `offersSetupBeforeAnyProvider` covers.
+        const promptAppeared = Boolean(field);
+        const placeholder = field?.getAttribute('placeholder') ?? null;
+        field.value = 'make it blue and round the card';
+        field.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        await frames();
+
+        const send = Array.from(menu()?.querySelectorAll('button') ?? []).find((one) =>
+          /send/i.test(one.textContent ?? ''),
+        );
+        const sendWasEnabled = Boolean(send) && !send.disabled;
+        send?.click();
+
+        // Let the scripted stream finish.
+        for (let i = 0; i < 60 && (engine.store.value.aiBusy || !engine.store.value.aiOutcome); i += 1) {
+          await wait(30);
+        }
+        await frames();
+
+        /*
+         * Whitespace-collapsed before matching.
+         *
+         * A Lit template wraps its lines, so `textContent` carries the newlines and indentation
+         * the source has even though the rendered text reads as one sentence. Matching the raw
+         * string failed on "Undo 2\n            changes", which is a fixture bug and not a
+         * product one — the button says the right thing on screen.
+         */
+        const flat = (node) => (node?.textContent ?? '').replace(/\s+/g, ' ').trim();
+        const text = flat(menu());
+        results.promptRunsAndReportsBack = {
+          promptAppeared,
+          placeholderReads: placeholder === 'Describe a change in text or style',
+          sendWasEnabled,
+          // The prompt and the element context both reached the transport.
+          transportWasCalled: asked.length === 1,
+          carriedThePrompt: /make it blue/.test(asked[0]?.prompt ?? ''),
+          carriedTheElement: /"tag": ?"article"/.test(asked[0]?.context ?? ''),
+          // The page changed.
+          styleLanded: /color/.test(subject.getAttribute('style') ?? ''),
+          classLanded: engine.classes.get('card')?.declarations['border-radius'] === '12px',
+          // The transcript shows the model's summary and the side effect as separate things.
+          showsTheSummary: /Recoloured it and rounded the card/.test(text),
+          flagsTheSharedClass: /\.card changed/.test(text),
+          // And offers the single undo, because the whole run is one step.
+          offersOneUndo: Array.from(menu()?.querySelectorAll('button') ?? []).some((one) =>
+            /undo 2 changes/i.test(flat(one)),
+          ),
+        };
+        const group = results.promptRunsAndReportsBack;
+        group.ok = Object.entries(group).every(([k, v]) => k === 'ok' || v === true);
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 8. The prompt closes on Escape and on a click away, and forgets its transcript.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'closesAndForgets';
+      {
+        const hadOutcome = Boolean(engine.store.value.aiOutcome);
+        document.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true }),
+        );
+        await frames();
+        const closedByEscape = engine.store.value.aiMenuOpen === false;
+
+        await settle(subject);
+        deepFind('.ai').click();
+        await frames();
+        const reopened = engine.store.value.aiMenuOpen;
+        // A click on the page puts it away: there is no scrim, and the page behind is live.
+        document.getElementById('main').dispatchEvent(
+          new PointerEvent('pointerdown', { bubbles: true, composed: true }),
+        );
+        await frames();
+
+        results.closesAndForgets = {
+          hadOutcome,
+          closedByEscape,
+          reopened,
+          closedByClickingAway: engine.store.value.aiMenuOpen === false,
+          // The account of a run belongs beside the element it changed, so putting the prompt
+          // away forgets it rather than showing it again next time.
+          forgotTheTranscript: engine.store.value.aiOutcome === null,
+        };
+        const group = results.closesAndForgets;
+        group.ok = Object.entries(group).every(([k, v]) => k === 'ok' || v === true);
+      }
+
+      const failed = Object.entries(results)
+        .filter(([, group]) => group && typeof group === 'object')
+        .filter(([, group]) => Object.values(group).some((value) => value === false))
+        .map(([name]) => name);
+
+      document.getElementById('out').textContent = 'RESULTS:' + JSON.stringify(
+        { ok: failed.length === 0, failed, ...results, errors }, null, 1,
+      ) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"ok":false,"__fatal":' + JSON.stringify(String((e && e.stack) || e)) + '}:END';
+    });
+  </script>
+</body>
+
+</html>

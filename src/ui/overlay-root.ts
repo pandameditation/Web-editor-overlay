@@ -8,6 +8,8 @@ import { baseStyles, themeVariables } from './theme.js';
 import './chrome/toolbar.js';
 import './chrome/selection-layer.js';
 import './chrome/quick-menu.js';
+import './chrome/ai-menu.js';
+import './chrome/ai-settings.js';
 import './chrome/insert-menu.js';
 import './chrome/text-toolbar.js';
 import './chrome/drag-chip.js';
@@ -61,6 +63,16 @@ export class HeoOverlay extends HeoElement {
         s.dockOpen,
         s.quickMenuOpen,
         s.insertAnchor,
+        /*
+         * Every field this template branches on has to be in this slice.
+         *
+         * Left out, and the symptom is the shape of the bug that was reported: the state flips,
+         * nothing re-renders, and the component only appears when some *other* field in here
+         * changes — opening a panel, say — at which point it arrives looking mispositioned
+         * because it missed the render that would have placed it.
+         */
+        s.aiMenuOpen,
+        s.aiSettingsOpen,
         s.textEditing,
         s.drag,
         s.toast,
@@ -101,6 +113,13 @@ export class HeoOverlay extends HeoElement {
       <heo-toolbar></heo-toolbar>
       ${state.editing && state.dockOpen ? html`<heo-dock></heo-dock>` : nothing}
       ${state.editing && state.quickMenuOpen ? html`<heo-quick-menu></heo-quick-menu>` : nothing}
+      ${state.editing && state.aiMenuOpen ? html`<heo-ai-menu></heo-ai-menu>` : nothing}
+      <!--
+        The provider settings, at the root rather than inside the AI popover.
+        A full-screen task needs the viewport as its containing block, and the popover is a
+        clipped fixed box — nesting it there put a modal in the corner of a 320px panel.
+      -->
+      ${state.aiSettingsOpen ? html`<heo-ai-settings></heo-ai-settings>` : nothing}
       ${state.editing && state.insertAnchor ? html`<heo-insert-menu></heo-insert-menu>` : nothing}
       ${state.editing && state.textEditing ? html`<heo-text-toolbar></heo-text-toolbar>` : nothing}
       ${state.drag ? html`<heo-drag-chip></heo-drag-chip>` : nothing}

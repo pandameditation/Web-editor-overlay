@@ -11,6 +11,7 @@ import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createServer as createHttpServer } from 'node:http';
 import { createServer } from 'vite';
 import editorOverlay from '../dist/vite-plugin.js';
 
@@ -284,6 +285,166 @@ await test('allowRemote: true is how an exposed server opts back in', async () =
 });
 
 /* -------------------------------------------------------------------------- */
+/* The AI proxy, which exists so a key never reaches the page                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A stand-in provider, so nothing here talks to a real one.
+ *
+ * It also records what it was sent, which is the only way to assert the interesting half: that
+ * the credential arrived at the *provider* and not at the page.
+ */
+const seenByProvider = [];
+const upstream = createHttpServer((request, response) => {
+  const chunks = [];
+  request.on('data', (chunk) => chunks.push(chunk));
+  request.on('end', () => {
+    seenByProvider.push({
+      url: request.url,
+      auth: request.headers.authorization ?? request.headers['x-api-key'] ?? '',
+      body: Buffer.concat(chunks).toString('utf8'),
+    });
+    response.writeHead(200, { 'content-type': 'text/event-stream' });
+    response.write('data: {"choices":[{"delta":{"content":"{\\"op\\":\\"summ"}}]}\n\n');
+    response.write('data: {"choices":[{"delta":{"content":"ary\\",\\"text\\":\\"ok\\"}"}}]}\n\n');
+    response.write('data: [DONE]\n\n');
+    response.end();
+  });
+});
+await new Promise((done) => upstream.listen(5399, '127.0.0.1', done));
+const providerURL = 'http://127.0.0.1:5399';
+
+await test('with no key configured, the proxy says so instead of failing obscurely', async () => {
+  const response = await fetch(`${endpoint}?ai=1`, {
+    method: 'POST',
+    headers: { 'x-heo-token': token, 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'gpt-4o-mini', system: 's', prompt: 'p' }),
+  });
+  assert.equal(response.status, 501);
+  const body = await response.json();
+  // The client surfaces this verbatim, so it has to be a sentence rather than a code.
+  assert.match(body.error.message, /not holding an AI key/);
+});
+
+{
+  const proxied = await start(
+    editorOverlay({ ai: { provider: 'openai', apiKey: 'sk-test-secret', baseURL: providerURL } }),
+  );
+  const proxyEndpoint = `${proxied.origin}/__heo/fs`;
+  const proxyBootstrap = await bootstrapOf(proxied.origin);
+  const proxyToken = /"sourceToken":"([^"]+)"/.exec(proxyBootstrap)?.[1];
+  const ask = (body, headers = {}) =>
+    fetch(`${proxyEndpoint}?ai=1`, {
+      method: 'POST',
+      headers: { 'x-heo-token': proxyToken, 'content-type': 'application/json', ...headers },
+      body: JSON.stringify(body),
+    });
+
+  try {
+    await test('the key never appears in anything the page can read', async () => {
+      assert.ok(!proxyBootstrap.includes('sk-test-secret'), 'the bootstrap must not carry it');
+      const probe = await fetch(proxyEndpoint, { headers: { 'x-heo-token': proxyToken } });
+      assert.ok(!(await probe.text()).includes('sk-test-secret'), 'nor may the probe');
+    });
+
+    await test('a prompt is proxied, and the key goes to the provider', async () => {
+      seenByProvider.length = 0;
+      const response = await ask({ model: 'gpt-4o-mini', system: 'sys', prompt: 'make it blue' });
+      assert.equal(response.status, 200);
+      const stream = await response.text();
+      // Streamed through untouched: the client's reader is what understands this shape.
+      assert.match(stream, /"op\\":\\"summ/);
+      assert.ok(!stream.includes('sk-test-secret'), 'the reply must not echo the key');
+      assert.equal(seenByProvider.length, 1);
+      assert.equal(seenByProvider[0].auth, 'Bearer sk-test-secret');
+      assert.match(seenByProvider[0].body, /make it blue/);
+    });
+
+    await test('the page cannot choose the destination', async () => {
+      seenByProvider.length = 0;
+      await ask({
+        model: 'gpt-4o-mini',
+        system: 's',
+        prompt: 'p',
+        // Every one of these is ignored: the server decides where its own key may be sent.
+        baseURL: 'http://127.0.0.1:5399/stolen',
+        provider: 'anthropic',
+        apiKey: 'not-mine',
+      });
+      assert.equal(seenByProvider.length, 1);
+      assert.equal(seenByProvider[0].url, '/chat/completions');
+      assert.equal(seenByProvider[0].auth, 'Bearer sk-test-secret');
+    });
+
+    await test('a request without the token is refused', async () => {
+      const response = await fetch(`${proxyEndpoint}?ai=1`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'gpt-4o-mini', prompt: 'p' }),
+      });
+      assert.equal(response.status, 403);
+    });
+
+    await test('a cross-origin request is refused even with the token', async () => {
+      const response = await ask(
+        { model: 'gpt-4o-mini', prompt: 'p' },
+        { origin: 'http://evil.example' },
+      );
+      assert.equal(response.status, 403);
+      assert.match((await response.json()).error.message, /Cross-origin/);
+    });
+
+    await test('a GET is refused: this route only answers a POST', async () => {
+      const response = await fetch(`${proxyEndpoint}?ai=1`, {
+        headers: { 'x-heo-token': proxyToken },
+      });
+      assert.equal(response.status, 405);
+    });
+
+    await test('a request with no prompt is refused before anything is spent', async () => {
+      seenByProvider.length = 0;
+      assert.equal((await ask({ model: 'gpt-4o-mini' })).status, 400);
+      assert.equal(seenByProvider.length, 0, 'nothing may reach the provider');
+    });
+  } finally {
+    await proxied.instance.close();
+  }
+}
+
+await test('an allow-list refuses a model that is not on it', async () => {
+  const limited = await start(
+    editorOverlay({
+      ai: {
+        provider: 'openai',
+        apiKey: 'sk-test-secret',
+        baseURL: providerURL,
+        models: ['gpt-4o-mini'],
+      },
+    }),
+  );
+  try {
+    const limitedToken = /"sourceToken":"([^"]+)"/.exec(await bootstrapOf(limited.origin))?.[1];
+    const ask = (model) =>
+      fetch(`${limited.origin}/__heo/fs?ai=1`, {
+        method: 'POST',
+        headers: { 'x-heo-token': limitedToken, 'content-type': 'application/json' },
+        body: JSON.stringify({ model, system: 's', prompt: 'p' }),
+      });
+    seenByProvider.length = 0;
+    const refused = await ask('gpt-4-turbo');
+    assert.equal(refused.status, 403);
+    assert.match((await refused.json()).error.message, /not one of the models/);
+    assert.equal(seenByProvider.length, 0);
+    // And the discriminating half: the allowed one still works.
+    assert.equal((await ask('gpt-4o-mini')).status, 200);
+  } finally {
+    await limited.instance.close();
+  }
+});
+
+/* -------------------------------------------------------------------------- */
+
+upstream.close();
 
 await server.close();
 

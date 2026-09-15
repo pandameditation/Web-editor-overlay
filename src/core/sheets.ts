@@ -1,5 +1,6 @@
 import type { FileHost } from './file-host.js';
 import { nextChangeId, type Command } from './history.js';
+import { safeSelector } from './selectors.js';
 import {
   isMirroredLink,
   paintStyleMirror,
@@ -408,6 +409,70 @@ let sheetSequence = 0;
 const styleTexts = new Map<string, string>();
 
 /** Keep a stylesheet's own text, for whatever needs it after this render. */
+/**
+ * The page's own rule with this selector, or null.
+ *
+ * Wanted whenever an edit could either patch an existing rule or add a new one that overrides
+ * it, and the first is nearly always the better answer: it puts a one-line diff in the
+ * stylesheet the author wrote instead of growing a pile of overrides that win by coming later.
+ *
+ * Not answerable from `appliedRules`, which is the trap this exists to avoid. That function
+ * lists the rules matching one element, so a rule scoped *inside* it — `#intro a`, say — is
+ * absent, and an edit aimed at one silently became a new registry rule instead of a patch.
+ *
+ * The last match wins, because that is the one the cascade is using. The editor's own generated
+ * sheets are skipped for the reason every scan skips them: they are this module's output, and
+ * editing them would make a rule its own source.
+ */
+export function findStyleRule(selector: string): CSSStyleRule | null {
+  const wanted = safeSelector(selector);
+  if (!wanted) return null;
+  let found: CSSStyleRule | null = null;
+
+  const walk = (container: CSSStyleSheet | CSSGroupingRule): void => {
+    let list: CSSRuleList;
+    try {
+      list = container.cssRules;
+    } catch {
+      // Cross-origin, and unreadable by design.
+      return;
+    }
+    for (const rule of Array.from(list)) {
+      if (rule instanceof CSSStyleRule) {
+        if (safeSelector(rule.selectorText) === wanted) found = rule;
+        continue;
+      }
+      if (
+        rule instanceof CSSMediaRule ||
+        rule instanceof CSSSupportsRule ||
+        (typeof CSSContainerRule !== 'undefined' && rule instanceof CSSContainerRule)
+      ) {
+        /*
+         * Deliberately not descended into.
+         *
+         * A rule inside `@media` applies under a condition, and editing it from here would
+         * change the page only at some widths while the caller believes it changed it
+         * everywhere. Leaving it to the registry — which emits an unconditional rule — is the
+         * honest outcome, and the caller can say so.
+         */
+        continue;
+      }
+    }
+  };
+
+  for (const sheet of Array.from(document.styleSheets)) {
+    const owner = sheet.ownerNode;
+    if (owner instanceof Element) {
+      if (owner.hasAttribute('data-heo-generated') || owner.hasAttribute('data-heo-internal')) {
+        continue;
+      }
+    }
+    walk(sheet);
+  }
+  for (const sheet of document.adoptedStyleSheets ?? []) walk(sheet);
+  return found;
+}
+
 export function rememberStyleText(id: string, text: string): void {
   styleTexts.set(id, text);
 }

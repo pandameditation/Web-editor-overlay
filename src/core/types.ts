@@ -1,4 +1,6 @@
 import type { ElementAnchor } from './html-patch.js';
+import type { AiTransport } from './ai/transport.js';
+import type { AiProviderSet } from './ai/types.js';
 /**
  * Shared types for the editor overlay.
  *
@@ -149,6 +151,22 @@ export interface DesignSystemDocument {
    * the editor produces sets it.
    */
   rules?: DesignRule[];
+  /**
+   * Configured AI providers, credentials excluded.
+   *
+   * They belong here for the same reason tokens do: a provider set is part of how a team works,
+   * and re-typing the model name and the scope rules on every machine is the kind of friction a
+   * seed exists to remove.
+   *
+   * What is emphatically *not* here is any key. A document is written to disk, pasted into chat
+   * and embedded in page markup, so a secret in one is a secret with no way back. Everything on
+   * the way out goes through `portableProviderSet`, which is an allow-list — so a field added to
+   * `AiProviderSet` later cannot start travelling by accident.
+   *
+   * A set arriving without a credential is configured but not usable, and the settings panel says
+   * `Needs a key` rather than failing at the moment somebody tries to use it.
+   */
+  ai?: AiProviderSet[];
 }
 
 /** Source location injected by the Vite plugin (or by hand) as `data-heo-src`. */
@@ -378,6 +396,29 @@ export interface MountOptions {
    * be "all of it" anyway.
    */
   detectScriptContent?: boolean;
+
+  /**
+   * Where AI requests go, replacing the editor's own three-tier transport.
+   *
+   * The seam for an embedder who wants the feature without any of the built-in credential
+   * handling: route through your own gateway, authenticate it however your product already
+   * does, and none of `keys.ts` is involved. It is also how the fixtures script an exact
+   * sequence of operations with no network and no timing.
+   *
+   * A transport takes a prompt and the element context and yields operations. It has no say in
+   * what those operations may do — `broker.ts` decides that, against the active provider set's
+   * scope — so a replacement transport widens no permission.
+   */
+  aiTransport?: AiTransport;
+
+  /**
+   * Provider sets to start with, for a host that configures them itself.
+   *
+   * Merged with anything a design-system seed carries. Credentials are deliberately not
+   * accepted here: a set names a provider and a model, and the key is supplied through the
+   * settings UI or held by the dev-server proxy. See `keys.ts` for why.
+   */
+  aiProviders?: AiProviderSet[];
 }
 
 export interface SavePayload {

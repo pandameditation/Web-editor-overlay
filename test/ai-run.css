@@ -1,0 +1,21 @@
+/*
+ * A real stylesheet, so the run has one of the page's own rules to patch.
+ *
+ * `#subject h2` has to be declared in a file the editor can read: the interesting case for
+ * `upsertRule` is the one where the selector already exists in the cascade, because then the
+ * edit belongs in that rule rather than in a new one that wins by coming later.
+ */
+.wrap {
+  display: flex;
+  flex-direction: column;
+}
+
+.card {
+  padding: 16px;
+  background: #eef2ff;
+}
+
+#subject h2 {
+  margin: 0;
+  color: rgb(30, 30, 30);
+}

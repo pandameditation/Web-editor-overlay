@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>An API key never travels: not in the seed, the markup, or a change record</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: system-ui, sans-serif;
+    }
+
+    #report {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+    }
+  </style>
+</head>
+
+<body>
+  <main id="main">
+    <article id="subject" class="card">
+      <h2>A heading.</h2>
+    </article>
+  </main>
+
+  <div id="report">
+    <pre id="progress">start</pre>
+    <pre id="out">pending</pre>
+  </div>
+
+  <script type="module">
+    (async () => {
+      const errors = [];
+      addEventListener('error', (e) => errors.push('error: ' + e.message));
+      addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + String(e.reason)));
+
+      const progress = document.getElementById('progress');
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const results = {};
+
+      const { mount } = await import('../dist/html-editor-overlay.js');
+      const api = mount({ theme: 'dark', presets: false, detectScriptContent: false });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+
+      const subject = document.getElementById('subject');
+
+      /**
+       * Built at runtime, and that is the whole reason this fixture is trustworthy.
+       *
+       * The first version used a literal, and two assertions failed for the wrong reason: the
+       * key appeared in `document.documentElement.outerHTML` and in `exportHTML()` because *this
+       * script* contains it, not because anything leaked. A value that exists nowhere in the
+       * page source means any occurrence found below is a real leak, which is what the
+       * assertions claim to be measuring.
+       */
+      const SECRET = `sk-heo-${crypto.randomUUID().replace(/-/g, '')}`;
+
+      /**
+       * The two sets this fixture works with.
+       *
+       * A function rather than a one-off, because importing a design system *replaces* the
+       * provider list by design — the order of that list is its priority, so merging two
+       * imports would produce an order nobody chose. The group that imports a hostile document
+       * therefore wipes these, and the groups after it have to put them back.
+       */
+      const installSets = async () => {
+        engine.ai.import([
+          {
+            id: 'primary', label: 'My OpenAI', transport: 'in-page',
+            provider: 'openai', baseURL: 'https://api.openai.com/v1', model: 'gpt-4o-mini',
+            systemPrompt: 'Prefer short copy.',
+            scope: { classes: 'ask', rules: 'always' },
+          },
+          {
+            id: 'local', label: 'Ollama', transport: 'local',
+            provider: 'openai-compatible', baseURL: 'http://127.0.0.1:11434/v1', model: 'llama3',
+            scope: { parent: 'always' },
+          },
+        ]);
+        await frames();
+      };
+      await installSets();
+
+      /* ------------------------------------------------------------------ *
+       * 1. A key is held for the session and reported without being shown.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'holdsAKeyForTheSession';
+      {
+        const stored = await engine.ai.setKey('primary', SECRET);
+        await frames();
+        const status = engine.ai.keyStatus('primary');
+        results.holdsAKeyForTheSession = {
+          persistence: stored.persistence,
+          keptForTheTab: stored.persistence === 'session',
+          present: status.present,
+          notLocked: status.locked === false,
+          // The hint is the last four characters and nothing else: enough to tell two keys
+          // apart, useless to anyone who reads it.
+          hint: status.hint,
+          hintIsShort: (status.hint ?? '').length === 4,
+          hintIsNotTheKey: !SECRET.startsWith(status.hint ?? SECRET),
+          // A set with no key is honestly reported as unusable rather than failing later.
+          otherSetNeedsNothing: engine.ai.ready(engine.ai.get('local')) === true,
+        };
+        const group = results.holdsAKeyForTheSession;
+        group.ok =
+          group.keptForTheTab === true &&
+          group.present === true &&
+          group.notLocked === true &&
+          group.hintIsShort === true &&
+          group.hintIsNotTheKey === true &&
+          group.otherSetNeedsNothing === true;
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 2. The seed carries the providers and not the key.
+       *
+       * The assertion this whole fixture exists for. A seed is pasted into messages and
+       * committed to files, so a key in one is a key with no way back.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'theSeedCarriesNoKey';
+      {
+        const seed = await api.exportSeed();
+        const json = JSON.stringify(engine.designSystem());
+        const decoded = await engine.decodeSeedText(seed);
+
+        results.theSeedCarriesNoKey = {
+          seedLength: seed.length,
+          // Both artefacts a user can hand over.
+          seedHasNoSecret: !seed.includes(SECRET),
+          jsonHasNoSecret: !json.includes(SECRET),
+          // Nor any field that could hold one, however it was spelled.
+          jsonHasNoKeyField: !/"(apiKey|api_key|key|secret|token)"\s*:/i.test(json),
+          // And it does carry the settings, or it would be safe by being empty.
+          carriesBothSets: (decoded?.ai ?? []).length === 2,
+          carriedTheModel: (decoded?.ai ?? []).some((one) => one.model === 'gpt-4o-mini'),
+          carriedTheScope: (decoded?.ai ?? []).some((one) => one.scope?.classes === 'ask'),
+          carriedTheSystemPrompt: (decoded?.ai ?? []).some(
+            (one) => one.systemPrompt === 'Prefer short copy.',
+          ),
+          setsHaveNoSecretField: (decoded?.ai ?? []).every(
+            (one) => !Object.keys(one).some((name) => /key|secret|token/i.test(name)),
+          ),
+        };
+        const group = results.theSeedCarriesNoKey;
+        group.ok =
+          group.seedHasNoSecret === true &&
+          group.jsonHasNoSecret === true &&
+          group.jsonHasNoKeyField === true &&
+          group.carriesBothSets === true &&
+          group.carriedTheModel === true &&
+          group.carriedTheScope === true &&
+          group.carriedTheSystemPrompt === true &&
+          group.setsHaveNoSecretField === true;
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 3. The counts line says how many sets travel.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'theTallyCountsTheSets';
+      {
+        const stats = await engine.seedStatsNow();
+        results.theTallyCountsTheSets = {
+          aiSets: stats?.aiSets ?? null,
+          countedBoth: stats?.aiSets === 2,
+          // The rest of the tally still works, so the addition did not displace anything.
+          hasTokens: typeof stats?.tokens === 'number',
+          hasBlocks: typeof stats?.blocks === 'number',
+        };
+        const group = results.theTallyCountsTheSets;
+        group.ok =
+          group.countedBoth === true && group.hasTokens === true && group.hasBlocks === true;
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 4. A document offering a key has it stripped on the way in.
+       *
+       * Untrusted input, so the gate has to be on the import and not only on the export.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'strippedOnTheWayIn';
+      {
+        const hostile = {
+          name: 'Hostile system',
+          version: 1,
+          tokens: [], classes: [], blocks: [],
+          ai: [{
+            id: 'sneaky', label: 'Sneaky', transport: 'in-page', provider: 'openai',
+            baseURL: 'https://evil.example/v1', model: 'gpt-4o-mini',
+            scope: { classes: 'always', rules: 'nonsense', parent: 'always' },
+            // Every one of these must be gone by the time it reaches the registry.
+            apiKey: SECRET, api_key: SECRET, secret: SECRET, headers: { authorization: SECRET },
+          }],
+        };
+        engine.importDesignSystem(hostile, { overwrite: true });
+        await frames();
+        const arrived = engine.ai.get('sneaky');
+        const reExported = JSON.stringify(engine.designSystem());
+
+        results.strippedOnTheWayIn = {
+          setArrived: Boolean(arrived),
+          fields: arrived ? Object.keys(arrived).sort().join(',') : null,
+          // Exactly the portable fields, nothing more.
+          onlyPortableFields: arrived
+            ? Object.keys(arrived).every((name) =>
+              ['id', 'label', 'transport', 'provider', 'baseURL', 'model', 'systemPrompt', 'scope']
+                .includes(name))
+            : false,
+          noSecretSurvived: !reExported.includes(SECRET),
+          // An unrecognised allowance is denied, not passed through.
+          nonsenseScopeDropped: arrived ? arrived.scope.rules === undefined : null,
+          keptTheValidScopes: arrived
+            ? arrived.scope.classes === 'always' && arrived.scope.parent === 'always'
+            : null,
+          /*
+           * Importing replaces the provider list rather than merging into it.
+           *
+           * Asserted rather than assumed, because it is a designed behaviour that is easy to
+           * mistake for a bug: the list's order *is* its priority, so a merge would decide the
+           * default provider by import order. This is also why the groups after this one
+           * reinstall the sets they need.
+           */
+          replacedRatherThanMerged: engine.ai.list().length === 1,
+          // The credential survives the set being replaced: the vault is keyed by set id, and
+          // forgetting a key is a separate act from reconfiguring providers.
+          originalKeyStillHeld: engine.ai.keyStatus('primary').present,
+        };
+        const group = results.strippedOnTheWayIn;
+        group.ok =
+          group.setArrived === true &&
+          group.onlyPortableFields === true &&
+          group.noSecretSurvived === true &&
+          group.nonsenseScopeDropped === true &&
+          group.keptTheValidScopes === true &&
+          group.replacedRatherThanMerged === true &&
+          group.originalKeyStillHeld === true;
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 5. Nothing about a key reaches the markup or the change set.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'notInTheMarkupOrTheRecords';
+      {
+        // Put back what the hostile import replaced, so `keyIsActuallyHeld` measures a key
+        // belonging to a provider that exists.
+        await installSets();
+        api.select(subject);
+        await frames();
+        // A real change, so the record path is genuinely exercised.
+        engine.setStyle('color', 'rgb(40, 40, 40)', subject);
+        await frames();
+
+        const markup = document.documentElement.outerHTML;
+        const exported = engine.exportHTML();
+        const records = JSON.stringify(engine.records);
+        const prompt = engine.buildSavePrompt();
+
+        results.notInTheMarkupOrTheRecords = {
+          // The live page, including the overlay's own DOM and its inlined options.
+          liveMarkupClean: !markup.includes(SECRET),
+          // The HTML a save writes out.
+          exportClean: !exported.includes(SECRET),
+          // The change set handed to onSave.
+          recordsClean: !records.includes(SECRET),
+          // The prompt copied to the clipboard for an agent.
+          promptClean: typeof prompt !== 'string' || !prompt.includes(SECRET),
+          // The discriminating half: the key really is in memory, so these are not passing
+          // because it was never set.
+          keyIsActuallyHeld: engine.ai.keyStatus('primary').present === true,
+          recordsExist: engine.records.length > 0,
+        };
+        const group = results.notInTheMarkupOrTheRecords;
+        group.ok = Object.entries(group).every(([key, value]) => key === 'ok' || value === true);
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 6. Saving a key beyond the tab is refused off loopback, with a reason.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'persistenceIsGatedByOrigin';
+      {
+        const loopback = engine.ai.loopbackOrigin();
+        const attempt = await engine.ai.setKey('primary', SECRET, 'origin');
+        await frames();
+        results.persistenceIsGatedByOrigin = {
+          protocol: location.protocol,
+          treatedAsLocal: loopback,
+          persistence: attempt.persistence,
+          refusal: attempt.refused ?? null,
+          /*
+           * Both outcomes are correct, and which one applies is decided by where this fixture
+           * is served from. Under the suite that is `file:`, which counts as local. Asserting
+           * one shape would make this fixture pass or fail on the harness rather than on the
+           * product, so the assertion is the *rule*: remembered when local, refused with a
+           * sentence when not.
+           */
+          followedTheRule: loopback
+            ? attempt.persistence === 'origin' && !attempt.refused
+            : attempt.persistence === 'none' && typeof attempt.refused === 'string',
+          // Whichever way it went, the key is still usable this session.
+          stillUsable: engine.ai.ready(engine.ai.get('primary')) === true,
+        };
+        const group = results.persistenceIsGatedByOrigin;
+        group.ok = group.followedTheRule === true && group.stillUsable === true;
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 7. Forgetting a key forgets it everywhere.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'clearingForgetsIt';
+      {
+        engine.ai.clearKey('primary');
+        await frames();
+        const status = engine.ai.keyStatus('primary');
+        let storageClean = true;
+        for (const store of [sessionStorage, localStorage]) {
+          for (let i = 0; i < store.length; i += 1) {
+            if ((store.getItem(store.key(i)) ?? '').includes(SECRET)) storageClean = false;
+          }
+        }
+        results.clearingForgetsIt = {
+          gone: status.present === false,
+          noPersistence: status.persistence === 'none',
+          storageClean,
+          // The set itself survives: forgetting a credential is not deleting a provider.
+          setSurvived: Boolean(engine.ai.get('primary')),
+          notReady: engine.ai.ready(engine.ai.get('primary')) === false,
+        };
+        const group = results.clearingForgetsIt;
+        group.ok = Object.entries(group).every(([key, value]) => key === 'ok' || value === true);
+      }
+
+      const failed = Object.entries(results)
+        .filter(([, group]) => group && typeof group === 'object')
+        .filter(([, group]) => Object.values(group).some((value) => value === false))
+        .map(([name]) => name);
+
+      document.getElementById('out').textContent = 'RESULTS:' + JSON.stringify(
+        { ok: failed.length === 0, failed, ...results, errors }, null, 1,
+      ) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"ok":false,"__fatal":' + JSON.stringify(String((e && e.stack) || e)) + '}:END';
+    });
+  </script>
+</body>
+
+</html>

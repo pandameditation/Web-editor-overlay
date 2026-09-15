@@ -348,6 +348,49 @@ export class HeoSelectionLayer extends HeoElement {
         opacity: 0.45;
       }
 
+      /*
+       * The AI affordance, at the opposite corner from the label.
+       *
+       * Accent-tinted rather than plain, because it is the one control here that does something
+       * the user has to opt into; the resize handles and the insert marks are the editor's
+       * ordinary vocabulary and this is a different kind of act.
+       */
+      .ai {
+        position: fixed;
+        display: grid;
+        place-items: center;
+        width: 20px;
+        height: 20px;
+        padding: 0;
+        border: 1px solid var(--heo-accent-line);
+        border-radius: 999px;
+        background: var(--heo-raised);
+        color: var(--heo-accent);
+        box-shadow: var(--heo-shadow-md);
+        cursor: pointer;
+        pointer-events: auto;
+        transition: background var(--heo-fast), color var(--heo-fast), transform var(--heo-fast);
+      }
+      .ai:hover {
+        background: var(--heo-accent);
+        color: var(--heo-accent-ink);
+        transform: scale(1.08);
+      }
+      .ai.on {
+        background: var(--heo-accent);
+        color: var(--heo-accent-ink);
+      }
+      /* A slow pulse rather than a spinner: the work is happening on the element itself, and a
+         spinner beside it would compete with the thing worth watching. */
+      .ai.busy {
+        animation: thinking 1.1s var(--heo-ease) infinite;
+      }
+      @keyframes thinking {
+        50% {
+          opacity: 0.5;
+        }
+      }
+
       /* While a gesture runs, everything that is not the gesture gets out of the way. */
       :host([data-transforming]) .h::after,
       :host([data-transforming]) .rot {
@@ -413,6 +456,10 @@ export class HeoSelectionLayer extends HeoElement {
         s.insertAnchor,
         s.quickMenuOpen,
         s.transform,
+        // The AI button reflects both: pressed while the menu is open, pulsing while a run is
+        // in flight. Without these in the slice it would keep its first appearance for ever.
+        s.aiMenuOpen,
+        s.aiBusy,
       ] as const,
     shallowArrayEquals,
   );
@@ -517,10 +564,56 @@ export class HeoSelectionLayer extends HeoElement {
           </div>`
         : nothing}
 
+      ${canMove && !state.drag && !editingText ? this.#renderAiButton(box, badgeAbove) : nothing}
       ${canMove ? this.#renderThumb(box) : nothing}
       ${canMove ? this.#renderInsert(box, horizontal, 'before') : nothing}
       ${canMove ? this.#renderInsert(box, horizontal, 'after') : nothing}
     `;
+  }
+
+  /**
+   * The way in to editing this element with words.
+   *
+   * Mirrors the label badge: top edge, just outside the element, flipping below when the element
+   * is against the top of the viewport — the same `badgeAbove` decision, passed in rather than
+   * recomputed so the two cannot disagree about which side they are on. The badge takes the left
+   * corner and this takes the right, which is the one corner nothing else uses.
+   *
+   * One case the badge does not have: on a narrow element the two would overlap, so past a
+   * threshold this moves *inside* the right edge instead of hanging off it. 132px is where the
+   * badge's own content stops fitting beside it.
+   *
+   * Drawn here rather than as its own component because it is anchored chrome, and the selection
+   * layer already re-measures on every geometry change. A second component would need its own
+   * copy of that loop to stay attached to a scrolling element.
+   */
+  #renderAiButton(
+    box: { top: number; left: number; width: number; height: number },
+    above: boolean,
+  ): TemplateResult {
+    const open = this.state.value.aiMenuOpen;
+    const busy = this.state.value.aiBusy;
+    const tight = box.width < 132;
+    const left = tight
+      ? Math.round(box.left + box.width - 24)
+      : Math.round(box.left + box.width - 22);
+    const top = Math.round(above ? box.top - 25 : box.top + box.height + 4);
+
+    return html`<button
+      class=${`ai${open ? ' on' : ''}${busy ? ' busy' : ''}`}
+      style=${`left:${Math.max(4, left)}px;top:${top}px`}
+      type="button"
+      aria-label=${busy ? 'Editing with AI' : 'Edit with AI'}
+      aria-pressed=${open ? 'true' : 'false'}
+      title=${busy ? 'Working…' : 'Describe a change in words'}
+      @pointerdown=${(event: PointerEvent) => event.stopPropagation()}
+      @click=${(event: MouseEvent) => {
+        event.stopPropagation();
+        this.editor.setAiMenu(!open);
+      }}
+    >
+      ${icon('sparkle', 12)}
+    </button>`;
   }
 
   /**

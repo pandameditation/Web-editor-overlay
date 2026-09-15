@@ -58,6 +58,98 @@ export function safeURL(value: string, allowDataImage = false): string {
 }
 
 /**
+ * A CSS declaration value with any unsafe `url()` taken out, or null when it was clean.
+ *
+ * The gap this closes was real and pre-dated the feature that found it. Everything that
+ * writes CSS here — the paste dialog, the class and rule editors, the design-system
+ * import — vets the *property* through `checkDeclaration` and leaves the value to
+ * `CSS.supports`, which has opinions about syntax and none about safety. `url()` is where
+ * that matters: `background: url("javascript:…")` is syntactically impeccable CSS, and a
+ * style *attribute* carrying it is caught by `scrubElement` while the identical
+ * declaration inside a class or a rule was not.
+ *
+ * Returns null for "nothing to do" rather than echoing the input, so a caller can tell
+ * whether it has something to report. The whole declaration is refused rather than having
+ * one `url()` surgically removed: a value is a single authored expression, and half of one
+ * is not an improvement on none.
+ */
+export function safeCssValue(value: string): { value: string; unsafe: string } | null {
+  const text = String(value ?? '');
+  for (const target of cssURLs(text)) {
+    // Data images are allowed here for the same reason they are on an `<img src>`: the
+    // page is already showing them and they reach nothing.
+    if (target && !safeURL(target, true)) return { value: '', unsafe: target };
+  }
+  // `javascript:` outside a `url()` cannot navigate anything, but it cannot mean anything
+  // either, so its only plausible purpose is to slip past a naive check.
+  return /(?:^|[\s:,(])(?:javascript|vbscript)\s*:/i.test(text)
+    ? { value: '', unsafe: text.trim() }
+    : null;
+}
+
+/**
+ * Every `url()` target in a CSS value.
+ *
+ * Scanned rather than matched with a regular expression, and that is not fastidiousness: the
+ * regex version of this shipped and was wrong. `url("javascript:steal()")` defeated it,
+ * because a character class written to stop at the closing parenthesis stops at the one
+ * *inside the quoted string* instead, the closing quote then fails to line up, and the whole
+ * value comes back clean. The unquoted spelling of the same attack was caught, so the hole
+ * was one pair of quotes wide.
+ *
+ * So this reads the way the CSS grammar does: find `url(`, then walk to the parenthesis that
+ * closes it while treating a quoted run as opaque. Nesting and escapes are honoured for the
+ * same reason — a value is authored text and `url(data:image/svg+xml,<svg ... />)` is a real
+ * thing people write.
+ */
+function cssURLs(text: string): string[] {
+  const out: string[] = [];
+  const lower = text.toLowerCase();
+  let at = 0;
+  for (; ;) {
+    const found = lower.indexOf('url(', at);
+    if (found === -1) return out;
+    // Not a `url(` if it is the tail of a longer identifier, e.g. a custom `--my-url(`.
+    if (found > 0 && /[\w-]/.test(text[found - 1])) {
+      at = found + 4;
+      continue;
+    }
+    let index = found + 4;
+    let depth = 1;
+    let quote = '';
+    let raw = '';
+    while (index < text.length) {
+      const ch = text[index];
+      if (quote) {
+        if (ch === '\\') {
+          raw += text.slice(index, index + 2);
+          index += 2;
+          continue;
+        }
+        if (ch === quote) quote = '';
+        else raw += ch;
+        index += 1;
+        continue;
+      }
+      if (ch === '"' || ch === "'") {
+        quote = ch;
+        index += 1;
+        continue;
+      }
+      if (ch === '(') depth += 1;
+      if (ch === ')') {
+        depth -= 1;
+        if (depth === 0) break;
+      }
+      raw += ch;
+      index += 1;
+    }
+    out.push(raw.trim());
+    at = index + 1;
+  }
+}
+
+/**
  * What sanitisation took out.
  *
  * Counted rather than discarded because someone pasting markup is entitled to know that

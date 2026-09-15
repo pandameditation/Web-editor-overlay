@@ -11,6 +11,8 @@ import {
   SEED_SCRIPT_TYPE,
   SOURCE_ATTR,
 } from './constants.js';
+import type { AiAgent } from './ai/agent.js';
+import { portableProviderSet, type AiProviderSet } from './ai/types.js';
 import { withoutProvenance } from './provenance.js';
 import type { ClassRegistry } from './classes.js';
 import { tokensInValue } from './css.js';
@@ -50,12 +52,25 @@ export interface DesignRegistries {
   classes: ClassRegistry;
   rules: RuleRegistry;
   library: BlockLibrary;
+  /**
+   * Configured AI providers.
+   *
+   * Optional, unlike the other four, because it is the one a caller may legitimately not have:
+   * `restoreDesignSystem` is reached from paths that predate the feature, and a snapshot taken
+   * without it should put back what it took rather than clearing what it never saw.
+   */
+  ai?: AiAgent;
 }
 
 export function exportDesignSystem(
   registries: DesignRegistries,
   name = 'Design system',
 ): DesignSystemDocument {
+  // Through the allow-list on the way out, not just on the way into a seed. A JSON export is
+  // written to disk and committed, which is no safer a place for a credential than a seed is.
+  const ai = (registries.ai?.export() ?? [])
+    .map((entry) => portableProviderSet(entry))
+    .filter((entry): entry is AiProviderSet => entry !== null);
   return {
     $schema: SCHEMA,
     name,
@@ -65,6 +80,7 @@ export function exportDesignSystem(
     classes: registries.classes.export(),
     rules: registries.rules.export(),
     blocks: registries.library.export(),
+    ...(ai.length ? { ai } : {}),
   };
 }
 
@@ -272,6 +288,7 @@ export interface ImportResult {
   classes: number;
   rules: number;
   blocks: number;
+  aiSets: number;
 }
 
 export function importDesignSystem(
@@ -280,11 +297,24 @@ export function importDesignSystem(
   options: { overwrite?: boolean } = {},
 ): ImportResult {
   const parsed = parseDesignSystem(document_);
+  /*
+   * Providers replace rather than merge, unlike the other four.
+   *
+   * The others are vocabulary: two documents' tokens can sensibly coexist, and a name collision
+   * has an obvious winner. Provider sets are an ordered list where position *means* priority, so
+   * merging two of them produces an order nobody chose — and the first entry, which is the
+   * default provider, would be decided by import order. Replacing is the only outcome that can
+   * be described in a sentence, and only when the document actually carries some: a design
+   * system with no AI section must not wipe the providers already configured.
+   */
+  const incoming = parsed.ai ?? [];
+  const aiSets = registries.ai && incoming.length ? registries.ai.import(incoming) : 0;
   return {
     tokens: registries.tokens.import(parsed.tokens, options),
     classes: registries.classes.import(parsed.classes, options),
     rules: registries.rules.import(parsed.rules ?? [], options),
     blocks: registries.library.import(parsed.blocks, options),
+    aiSets,
   };
 }
 
@@ -309,6 +339,8 @@ export interface DesignSystemSnapshot {
   classes: DesignClass[];
   rules: DesignRule[];
   blocks: LibraryBlock[];
+  /** Absent when the caller had no agent to snapshot; see `DesignRegistries.ai`. */
+  ai?: AiProviderSet[];
 }
 
 export function snapshotDesignSystem(registries: DesignRegistries): DesignSystemSnapshot {
@@ -323,6 +355,11 @@ export function snapshotDesignSystem(registries: DesignRegistries): DesignSystem
     // `list`, not `export`: the latter drops presets, and a seed that overwrote one has to be
     // able to put it back.
     blocks: registries.library.list().map((entry) => ({ ...entry })),
+    // Deep enough to put back, like the declaration maps above: `scope` is a nested object and a
+    // snapshot sharing it would drift along with the thing it exists to preserve.
+    ...(registries.ai
+      ? { ai: registries.ai.list().map((entry) => ({ ...entry, scope: { ...entry.scope } })) }
+      : {}),
   };
 }
 
@@ -372,6 +409,10 @@ export function restoreDesignSystem(
   for (const entry of snapshot.classes) registries.classes.upsert(entry);
   for (const entry of snapshot.rules) registries.rules.upsert(entry);
   registries.library.import(snapshot.blocks, { overwrite: true });
+  // Only when the snapshot carried them. `undefined` means nobody looked, which is different
+  // from an empty array — and clearing every configured provider because an older caller did
+  // not know to snapshot them would be the worst possible reading of the difference.
+  if (registries.ai && snapshot.ai) registries.ai.import(snapshot.ai);
 }
 
 /** Validate and normalise an untrusted design system document. */
@@ -419,6 +460,18 @@ export function parseDesignSystem(input: unknown): DesignSystemDocument {
     blocks: (doc.blocks ?? []).filter(
       (block) => block && typeof block.name === 'string' && typeof block.html === 'string',
     ),
+    /*
+     * Rebuilt field by field rather than filtered, which is the difference that matters here.
+     *
+     * Everything above keeps the entries it approves of, so an extra property on a token comes
+     * through untouched — harmless, because a token is inert. A provider set is not inert: an
+     * untrusted document offering `{"apiKey":"…"}` alongside a legitimate set would otherwise
+     * put a credential into the registry, and from there into the next export. So this one is
+     * reconstructed from an allow-list and anything else is discarded on the way in.
+     */
+    ai: (doc.ai ?? [])
+      .map((entry) => portableProviderSet(entry))
+      .filter((entry): entry is AiProviderSet => entry !== null),
   };
 }
 

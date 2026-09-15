@@ -1,3 +1,4 @@
+import { portableProviderSet, type AiProviderSet } from './ai/types.js';
 import { prettifyClassName } from './classes.js';
 import { parseDesignSystem } from './design-system.js';
 import { prettifyTokenName } from './tokens.js';
@@ -112,9 +113,23 @@ export function compactDesignSystem(doc: DesignSystemDocument): DesignSystemDocu
     return next;
   });
 
+  /*
+   * Provider sets travel; credentials do not.
+   *
+   * Through `portableProviderSet` rather than copied, and that is load-bearing rather than
+   * tidy. A seed is the most-shared artefact this editor produces — pasted into a message,
+   * committed to a file, embedded in page markup — so it is the worst possible place for a
+   * secret to end up. The allow-list means a field added to `AiProviderSet` in future has to
+   * be named there before it can leave the machine, which is the opposite of the usual
+   * failure where a new field ships and nobody remembers the serialiser.
+   */
+  const ai = (doc.ai ?? [])
+    .map((entry) => portableProviderSet(entry))
+    .filter((entry): entry is AiProviderSet => entry !== null);
+
   // `rules` is omitted entirely when there are none, rather than carried as `[]`. Every
   // page without a rule would otherwise pay four characters for saying so, and the
-  // parser already defaults a missing key.
+  // parser already defaults a missing key. Same for `ai`.
   return {
     name: doc.name,
     version: doc.version,
@@ -122,6 +137,7 @@ export function compactDesignSystem(doc: DesignSystemDocument): DesignSystemDocu
     classes,
     blocks,
     ...(rules.length ? { rules } : {}),
+    ...(ai.length ? { ai } : {}),
   };
 }
 
@@ -214,6 +230,8 @@ export interface SeedStats {
   classes: number;
   rules: number;
   blocks: number;
+  /** Configured providers travelling with this seed. Never their credentials. */
+  aiSets: number;
   /** Characters in the seed, which is what a paste target has to hold. */
   length: number;
   /** `1.2 kB`, for a line of copy. */
@@ -235,6 +253,7 @@ export function seedStats(doc: DesignSystemDocument, seed: string): SeedStats {
     classes: doc.classes.length,
     rules: doc.rules?.length ?? 0,
     blocks: doc.blocks.length,
+    aiSets: doc.ai?.length ?? 0,
     length: seed.length,
     size: formatBytes(seed.length),
     saved: ratio > 0.05 ? `${Math.round(ratio * 100)}% smaller than the file` : '',

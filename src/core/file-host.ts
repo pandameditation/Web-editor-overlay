@@ -58,6 +58,17 @@ export interface FileHost {
   ensureWritable(): Promise<boolean>;
   /** Forget this host, including anything persisted about it. */
   release(): Promise<void>;
+  /**
+   * Where AI requests can be proxied, for a host that offers such a route.
+   *
+   * Only the dev-server host does, and that is the whole point of it being here: a proxy is a
+   * *server* capability, and the server is the only party that can hold a credential the page
+   * cannot read. A folder handed over through the browser's picker has no server behind it, so
+   * it returns nothing and the editor falls back to a local model or an in-page key.
+   *
+   * Optional so a host — including a fixture's stub — does not have to know about AI at all.
+   */
+  aiEndpoint?(): { url: string; token: string } | null;
 }
 
 /** What the current browser and page can offer, for the UI to explain. */
@@ -442,6 +453,23 @@ class ServerHost implements FileHost {
 
   async release(): Promise<void> {
     // Nothing is held: the endpoint is the grant, and it belongs to the dev server.
+  }
+
+  /**
+   * The AI proxy route beside the file route, sharing the same session token.
+   *
+   * Derived from the file endpoint rather than configured separately: they are two paths on one
+   * server, and a second URL to keep in step is a second thing to get wrong. The token is the
+   * same grant — the server issued it to this page, and it is what stops any other page on the
+   * origin from spending the developer's credit.
+   *
+   * Advertised unconditionally. Whether a credential is actually configured is the server's
+   * business to answer, and it answers by refusing the request with a sentence the settings UI
+   * shows — which is a better failure than the page deciding in advance that the route is absent.
+   */
+  aiEndpoint(): { url: string; token: string } | null {
+    const separator = this.#endpoint.includes('?') ? '&' : '?';
+    return { url: `${this.#endpoint}${separator}ai=1`, token: this.#token };
   }
 
   #url(path: string): string {

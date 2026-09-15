@@ -154,6 +154,14 @@ import {
 import { installStyleMirror, releaseStyleMirrors } from './mirror.js';
 import { modalOpen } from './modal.js';
 import { collectScriptSources, fetchScriptSource } from './scripts.js';
+import { AiAgent } from './ai/agent.js';
+import type { PlannedOperation } from './ai/broker.js';
+import { buildAiContext, renderAiContext } from './ai/context.js';
+import { keyVault } from './ai/keys.js';
+import type { RunOutcome } from './ai/session.js';
+import { createTransport, type AiTransport } from './ai/transport.js';
+import { AI_SCOPE_CONSEQUENCE, AI_SCOPE_LABELS } from './ai/types.js';
+import { upsertClassCommand, upsertRuleCommand } from './css-commands.js';
 import {
   describeProvenance,
   establishBaseline,
@@ -206,7 +214,14 @@ import {
   type BundleSurvey,
 } from './bundle.js';
 import { RuleRegistry } from './rules.js';
-import { decodeSeed, decodeSeedSync, encodeSeed, encodeSeedSync } from './seed.js';
+import {
+  decodeSeed,
+  decodeSeedSync,
+  encodeSeed,
+  encodeSeedSync,
+  seedStats,
+  type SeedStats,
+} from './seed.js';
 import {
   claimEvent,
   listen,
@@ -404,11 +419,36 @@ export interface ConfirmRequest {
   detail?: string;
   /** Names the action rather than saying "OK", so the button is the answer to the title. */
   confirmLabel: string;
+  /**
+   * Names the refusal, for a question where "Cancel" is the wrong word.
+   *
+   * Cancelling a delete abandons an action nobody has started. Declining one change in the
+   * middle of a run of them is a decision about that change, and the run carries on — so the
+   * button says "Skip this change" rather than implying the whole thing stops.
+   */
+  dismissLabel?: string;
   /** `danger` for something that destroys, `warn` for something that overwrites. */
   tone: 'danger' | 'warn';
   /** Whether undo will get it back, which is the most useful thing the dialog can say. */
   reversible?: boolean;
   run: () => void;
+  /**
+   * What to do when the answer is no.
+   *
+   * Absent for the original callers, and correctly so: a confirmation in front of a
+   * destructive action has nothing to do on refusal. A question asked *during* something
+   * does — whatever is waiting on the answer has to be told, or it waits for ever.
+   */
+  onDismiss?: () => void;
+  /**
+   * A third answer: yes, and stop asking.
+   *
+   * Its own field rather than a flag, because the sentence has to be specific to what is
+   * being permitted — "Always allow class changes" tells the user what they are agreeing to
+   * for the rest of the session, where a bare "Don't ask again" does not. Runs alongside
+   * `run` rather than instead of it: consenting to this change is still consenting to it.
+   */
+  remember?: { label: string; run: () => void };
 }
 
 /**
@@ -523,6 +563,26 @@ export interface EditorState {
   drag: DragState | null;
   quickMenuOpen: boolean;
   insertAnchor: InsertAnchor | null;
+  /**
+   * Whether the AI menu is open on the selected element.
+   *
+   * Anchored to the selection rather than parked somewhere, so it closes when the selection
+   * changes for the same reason the quick menu does: a prompt aimed at one element and a
+   * different element highlighted is the worst kind of ambiguity in a direct-manipulation tool.
+   */
+  aiMenuOpen: boolean;
+  /** Whether the provider settings are open. Reached from the menu, and from nowhere else. */
+  aiSettingsOpen: boolean;
+  /**
+   * The last run's account of itself, kept after the run ends.
+   *
+   * The transcript is the answer to "what did it just do to my page", which is a question asked
+   * *after* the changes land — so it outlives the run that produced it and is cleared by the
+   * next prompt or by closing the menu.
+   */
+  aiOutcome: RunOutcome | null;
+  /** True while a request is in flight, so the menu can offer Stop instead of Send. */
+  aiBusy: boolean;
   /**
    * A blob of HTML being pasted in, held while the user writes it.
    *
@@ -700,6 +760,12 @@ export class EditorEngine {
    */
   readonly rules = new RuleRegistry();
   readonly library: BlockLibrary;
+  /**
+   * The AI capability: configured providers, what each may change, and the boundary.
+   *
+   * Empty until the user configures a provider, which is deliberate — see `AiAgent`.
+   */
+  readonly ai = new AiAgent();
   readonly options: MountOptions;
 
   #listeners: Array<() => void> = [];
@@ -826,6 +892,10 @@ export class EditorEngine {
       drag: null,
       quickMenuOpen: false,
       insertAnchor: null,
+      aiMenuOpen: false,
+      aiSettingsOpen: false,
+      aiOutcome: null,
+      aiBusy: false,
       htmlPaste: null,
       cssPaste: null,
       // Everything, by default: leaving something out is the deliberate act, and a save that
@@ -920,6 +990,17 @@ export class EditorEngine {
     // Seeds are imported before listeners are attached, so hydrate the page once after the
     // initial registries exist. Later imports and upserts flow through the listener above.
     this.#hydrateBlockInstances();
+
+    /*
+     * Providers and credentials, in that order.
+     *
+     * A key is stored against a set's id, so the sets have to exist before the vault is read or
+     * every key would look like one belonging to a provider that had been deleted.
+     */
+    if (this.options.aiProviders?.length) this.ai.import(this.options.aiProviders);
+    keyVault.hydrate();
+    this.#listeners.push(this.ai.onChange(() => this.#bumpRegistry()));
+    this.#listeners.push(keyVault.onChange(() => this.#bumpRegistry()));
 
     this.#bindPageEvents();
     this.#observePage();
@@ -1021,6 +1102,7 @@ export class EditorEngine {
     this.classes.destroy();
     this.rules.destroy();
     this.library.destroy();
+    this.ai.destroy();
     // Every `<link>` the editor stood in for goes back to loading its own file. A page
     // the editor has left must not be rendering from a `<style>` the editor put there.
     releaseStyleMirrors();
@@ -1222,6 +1304,9 @@ export class EditorEngine {
       selected: el,
       quickMenuOpen: false,
       insertAnchor: null,
+      // The prompt was aimed at what *was* selected, so it does not survive a new selection.
+      aiMenuOpen: false,
+      aiOutcome: null,
       revision: this.store.value.revision + 1,
     });
     if (el && options.reveal !== false) this.#revealIfNeeded(el);
@@ -2206,17 +2291,231 @@ export class EditorEngine {
     this.store.patch({ confirm: request });
   }
 
-  /** Answer yes. Clears the question first, so the action runs against a settled UI. */
-  resolveConfirm(): void {
+  /**
+   * Answer yes. Clears the question first, so the action runs against a settled UI.
+   *
+   * `remember` is the third answer — yes, and stop asking — and it runs *before* `run` so
+   * that whatever the action does next already sees the widened permission. Doing it after
+   * meant a run that asked about two classes asked twice despite the user having said not to.
+   */
+  resolveConfirm(options: { remember?: boolean } = {}): void {
     const pending = this.store.value.confirm;
     if (!pending) return;
     this.store.patch({ confirm: null });
+    if (options.remember) pending.remember?.run();
     pending.run();
   }
 
+  /**
+   * Answer no.
+   *
+   * Tells the caller, which the original callers had no need of: a confirmation in front of a
+   * destructive action has nothing to do on refusal, while a question asked in the middle of
+   * something has something waiting on the answer either way.
+   */
   cancelConfirm(): void {
-    if (!this.store.value.confirm) return;
+    const pending = this.store.value.confirm;
+    if (!pending) return;
     this.store.patch({ confirm: null });
+    pending.onDismiss?.();
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Editing with words                                                     */
+  /* ---------------------------------------------------------------------- */
+
+  /**
+   * Run one AI edit against an element, from a stream of operations.
+   *
+   * The engine's part of the feature is small on purpose: it supplies the three things only it
+   * can — the undo stack, a redraw, and a way to ask the user something — and `AiAgent` does the
+   * rest. Everything about *what* may happen lives in the broker, and everything about how a run
+   * behaves lives in the session.
+   *
+   * Takes already-parsed operations rather than a prompt, so the transport is somebody else's
+   * problem and a test can script an exact sequence. See `AiAgent.run`.
+   */
+  /**
+   * Edit the selected element from a sentence.
+   *
+   * The whole feature, from the outside. Builds the context, asks the active provider, and hands
+   * the reply to the run — which applies what the broker permits and leaves one entry on the undo
+   * stack.
+   *
+   * Refuses early and says why rather than starting a run that cannot finish. "Add a provider
+   * first" and "that provider needs a key" are both fixable in one click from here, and finding
+   * out after watching a spinner is the version of this that feels broken.
+   */
+  async promptAi(prompt: string, el = this.store.value.selected): Promise<RunOutcome | null> {
+    const asked = prompt.trim();
+    if (!asked) return null;
+    if (!isMutable(el)) {
+      this.notify('Select an element first.', 'info');
+      return null;
+    }
+    const set = this.ai.active;
+    if (!set) {
+      this.notify('Connect a model first, in the AI settings.', 'info');
+      return null;
+    }
+    if (set.transport === 'in-page' && !keyVault.ready(set)) {
+      this.notify(`${set.label} needs an API key. Add one in the AI settings.`, 'error');
+      return null;
+    }
+
+    const controller = new AbortController();
+    this.#aiAbort = controller;
+    const context = renderAiContext(
+      buildAiContext(el, this.ai.policy(set), {
+        classes: this.classes,
+        rules: this.rules,
+        // The value being dragged in a field is paint, not state, so the model is told what the
+        // element actually declares. Same subtraction the Styles panel makes.
+        preview: this.previewTarget?.el === el ? this.previewTarget : null,
+      }),
+    );
+    const transport = this.options.aiTransport ?? this.#aiTransport();
+    // Cleared before the run rather than after: the previous run's account of itself is not an
+    // account of this one, and leaving it up while the new one streams reads as its result.
+    this.store.patch({ aiBusy: true, aiOutcome: null });
+    try {
+      const outcome = await this.runAiOperations(
+        transport({ set, prompt: asked, context, signal: controller.signal }),
+        asked,
+        el,
+      );
+      this.store.patch({ aiOutcome: outcome });
+      return outcome;
+    } finally {
+      this.#aiAbort = null;
+      this.store.patch({ aiBusy: false });
+    }
+  }
+
+  /**
+   * Open or close the AI menu on the selection.
+   *
+   * Closing clears the transcript, which is the whole reason this is a method rather than a
+   * `patch` from the component: the account of the last run is only meaningful beside the
+   * element it changed, so putting the menu away is also the moment to forget it.
+   */
+  setAiMenu(open: boolean): void {
+    if (open && !this.store.value.selected) {
+      this.notify('Select an element first.', 'info');
+      return;
+    }
+    this.endTextEdit(true);
+    this.store.patch({
+      aiMenuOpen: open,
+      quickMenuOpen: false,
+      ...(open ? {} : { aiOutcome: null, aiSettingsOpen: false }),
+    });
+  }
+
+  /** Open or close the provider settings. Reached from the menu, and from nowhere else. */
+  setAiSettings(open: boolean): void {
+    this.store.patch({ aiSettingsOpen: open });
+  }
+
+  /** In-flight request, so Stop can cancel the network as well as the run. */
+  #aiAbort: AbortController | null = null;
+
+  /**
+   * Stop the run and the request behind it.
+   *
+   * Both halves matter. Stopping the run keeps what has landed and commits it; aborting the
+   * fetch is what stops the tokens being billed for a reply nobody will read.
+   */
+  stopAi(): void {
+    this.ai.abort();
+    this.#aiAbort?.abort();
+  }
+
+  /**
+   * The default transport, told where the proxy lives when a dev server is attached.
+   *
+   * Built per call rather than cached because the project can be connected and disconnected
+   * mid-session, and a transport holding a stale endpoint would send a prompt to a server that
+   * has gone away.
+   */
+  #aiTransport(): AiTransport {
+    const project = this.#project;
+    const proxy = project?.aiEndpoint?.() ?? null;
+    return createTransport(proxy);
+  }
+
+  async runAiOperations(
+    operations: AsyncIterable<unknown>,
+    prompt: string,
+    el = this.store.value.selected,
+  ): Promise<RunOutcome | null> {
+    if (!isMutable(el)) {
+      this.notify('Select an element first.', 'info');
+      return null;
+    }
+    // A caret sitting in the element while its markup is rewritten is a caret in a node that
+    // stops existing, so the edit is closed first — the same reason every dialog does it.
+    this.endTextEdit(true);
+    const outcome = await this.ai.run({
+      element: el,
+      prompt,
+      operations,
+      host: {
+        classes: this.classes,
+        rules: this.rules,
+        history: this.history,
+        changed: () => this.#bumpRevision(),
+        consent: (plan) => this.#askAiConsent(plan),
+      },
+    });
+    return outcome;
+  }
+
+  /**
+   * Ask about one change that reaches beyond the selected element.
+   *
+   * A promise around the confirmation dialog, which is what lets the run wait. Resolved exactly
+   * once from whichever of the three answers arrives — and it has to be exactly once, because a
+   * run awaiting a promise that never settles is a run that never commits, leaving changes on
+   * the page with nothing on the undo stack.
+   *
+   * The wording comes from the plan's own `sideEffect`, which the broker derived from what the
+   * change actually reaches. Writing a second description here would let the dialog and the
+   * closing summary disagree about the same change.
+   */
+  #askAiConsent(plan: PlannedOperation): Promise<boolean> {
+    const scope = plan.scope;
+    if (scope !== 'classes' && scope !== 'rules' && scope !== 'parent') return Promise.resolve(true);
+    const heading: Record<typeof scope, string> = {
+      classes: 'Change a shared class?',
+      rules: 'Change a CSS rule?',
+      parent: 'Change the container?',
+    };
+    return new Promise<boolean>((resolve) => {
+      let settled = false;
+      const answer = (value: boolean): void => {
+        if (settled) return;
+        settled = true;
+        resolve(value);
+      };
+      this.askToConfirm({
+        title: heading[scope],
+        message: plan.sideEffect ?? AI_SCOPE_CONSEQUENCE[scope],
+        detail: plan.describe,
+        confirmLabel: 'Approve',
+        dismissLabel: 'Skip this change',
+        tone: 'warn',
+        // The whole run is one undo entry, which is the most useful thing to know here: the
+        // answer is reversible either way.
+        reversible: true,
+        remember: {
+          label: `Always allow ${AI_SCOPE_LABELS[scope].toLowerCase()} for this provider`,
+          run: () => this.ai.widen(scope),
+        },
+        run: () => answer(true),
+        onDismiss: () => answer(false),
+      });
+    });
   }
 
   /** Apply the pending extraction. Returns false and sets an error if invalid. */
@@ -3970,52 +4269,21 @@ export class EditorEngine {
     }
 
     if (destination.kind === 'class') {
-      const name = normalizeClassName(destination.name);
-      if (!name) {
+      // Built by the shared factory, so a paste and an AI edit produce the same records and the
+      // same undo. See `css-commands.ts`.
+      const command = upsertClassCommand(
+        this,
+        destination.name,
+        parsed.declarations,
+        destination.element,
+        destination.applyToElement,
+        { verb: 'Paste', source: 'css-paste' },
+      );
+      if (!command) {
         this.notify('Choose a class name beginning with a letter.', 'error');
         return false;
       }
-      const existing = this.classes.get(name);
-      const previous = existing
-        ? { ...existing, declarations: { ...existing.declarations } }
-        : null;
-      const next: DesignClass = {
-        ...(existing ?? { name, origin: 'user' as const }),
-        name,
-        declarations: { ...(existing?.declarations ?? {}), ...parsed.declarations },
-        origin: 'user',
-      };
-      const beforeClassAttribute = destination.element?.getAttribute('class') ?? null;
-      const records = entries.map(([property, value]) => ({
-        id: nextChangeId(),
-        kind: 'token-class' as const,
-        summary: `Paste ${property} into .${name}`,
-        target: `.${name}`,
-        before: existing?.declarations[property],
-        after: value,
-        detail: { class: name, property, value, source: 'css-paste' },
-        at: Date.now(),
-      }));
-
-      this.history.commit({
-        label: `Paste CSS into .${name}`,
-        record: records[0],
-        extraRecords: records.slice(1),
-        apply: () => {
-          this.classes.upsert(next);
-          if (destination.applyToElement && destination.element) {
-            destination.element.classList.add(name);
-          }
-        },
-        revert: () => {
-          if (previous) this.classes.upsert(previous);
-          else this.classes.remove(name);
-          if (destination.element) {
-            if (beforeClassAttribute === null) destination.element.removeAttribute('class');
-            else destination.element.setAttribute('class', beforeClassAttribute);
-          }
-        },
-      });
+      this.history.commit(command);
       this.#bumpRevision();
       return true;
     }
@@ -4090,36 +4358,12 @@ export class EditorEngine {
       return true;
     }
 
-    const existing = this.rules.get(selector);
-    const previous = existing
-      ? { ...existing, declarations: { ...existing.declarations } }
-      : null;
-    const next: DesignRule = {
-      ...(existing ?? { selector, origin: 'user' as const }),
-      selector,
-      declarations: { ...(existing?.declarations ?? {}), ...parsed.declarations },
-      origin: 'user',
-    };
-    const records = entries.map(([property, value]) => ({
-      id: nextChangeId(),
-      kind: 'token-rule' as const,
-      summary: `Paste ${property} into ${selector}`,
-      target: selector,
-      before: existing?.declarations[property],
-      after: value,
-      detail: { selector, property, value, source: 'css-paste' },
-      at: Date.now(),
-    }));
-    this.history.commit({
-      label: `Paste CSS into ${selector}`,
-      record: records[0],
-      extraRecords: records.slice(1),
-      apply: () => this.rules.upsert(next),
-      revert: () => {
-        if (previous) this.rules.upsert(previous);
-        else this.rules.remove(selector);
-      },
+    const command = upsertRuleCommand(this, selector, parsed.declarations, {
+      verb: 'Paste',
+      source: 'css-paste',
     });
+    if (!command) return false;
+    this.history.commit(command);
     this.#bumpRevision();
     return true;
   }
@@ -6959,10 +7203,16 @@ export class EditorEngine {
   }
 
   designSystem(): DesignSystemDocument {
-    return exportDesignSystem(
-      { tokens: this.tokens, classes: this.classes, rules: this.rules, library: this.library },
-      document.title || 'Design system',
-    );
+    /*
+     * `this`, not a hand-built object of registries.
+     *
+     * It used to name the four it knew about, which is exactly the hazard `DesignRegistries`
+     * warns of in its own doc comment: adding a fifth meant editing every call site, and this
+     * was the one that got missed. AI provider sets were then absent from every export and
+     * every seed — silently, because an empty list looks like a page with no providers. The
+     * engine satisfies the whole interface, so passing it cannot go out of date.
+     */
+    return exportDesignSystem(this, document.title || 'Design system');
   }
 
   exportDesignSystemFile(): void {
@@ -6976,6 +7226,57 @@ export class EditorEngine {
   }
 
   /** This session's tokens, classes and blocks as one copy-pasteable string. */
+  /**
+   * Read a seed back into a document, without importing it.
+   *
+   * For anything that wants to describe a seed rather than apply one — the transfer panel's
+   * tally, and a test asserting what does and does not travel in it.
+   */
+  async decodeSeedText(text: string): Promise<DesignSystemDocument | null> {
+    try {
+      return await decodeSeed(text);
+    } catch {
+      return null;
+    }
+  }
+
+  /** What the current design system would weigh as a seed, and what is in it. */
+  async seedStatsNow(): Promise<SeedStats | null> {
+    try {
+      const doc = this.designSystem();
+      return seedStats(doc, await encodeSeed(doc));
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Import a parsed document directly, as one undoable change.
+   *
+   * The counterpart of `importDesignSystemText` for a caller that already has the object. Both
+   * go through the same commit so an import is one entry on the undo stack either way.
+   */
+  importDesignSystem(document_: unknown, options: { overwrite?: boolean } = {}): ImportResult {
+    const before = snapshotDesignSystem(this);
+    let result: ImportResult = { tokens: 0, classes: 0, rules: 0, blocks: 0, aiSets: 0 };
+    this.history.commit({
+      label: 'Import design system',
+      record: {
+        id: nextChangeId(),
+        kind: 'token',
+        summary: 'Import a design system',
+        target: 'design system',
+        at: Date.now(),
+      },
+      apply: () => {
+        result = importDesignSystem(document_, this, options);
+      },
+      revert: () => restoreDesignSystem(this, before),
+    });
+    this.#bumpRevision();
+    return result;
+  }
+
   designSystemSeed(): Promise<string> {
     return encodeSeed(this.designSystem());
   }
@@ -7006,7 +7307,7 @@ export class EditorEngine {
     try {
       const doc = await decodeSeed(text);
       const before = snapshotDesignSystem(this);
-      let result: ImportResult = { tokens: 0, classes: 0, rules: 0, blocks: 0 };
+      let result: ImportResult = { tokens: 0, classes: 0, rules: 0, blocks: 0, aiSets: 0 };
       const name = doc.name?.trim() || 'design system';
 
       this.history.commit({
@@ -7026,11 +7327,10 @@ export class EditorEngine {
       });
 
       this.#bumpRevision();
-      this.notify(
-        `Imported ${result.tokens} tokens, ${result.classes} classes and ${result.blocks} blocks.`,
-        'success',
-        { label: 'Undo', run: () => this.undo() },
-      );
+      this.notify(describeImport(result), 'success', {
+        label: 'Undo',
+        run: () => this.undo(),
+      });
       return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -7981,4 +8281,40 @@ function rangeFromPoint(x: number, y: number): Range | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * What an import actually brought in, as a sentence.
+ *
+ * Named counts rather than a fixed list, because a fixed list is how the old version of this
+ * came to omit rules entirely — it said "tokens, classes and blocks" from before rules existed
+ * and nobody noticed, so importing a system of forty rules reported three zeroes and no rules.
+ * Building the sentence from what arrived means a new kind of thing cannot be silently left out.
+ *
+ * Zeroes are dropped for the same reason the seed tally drops them: a list of nothings tells the
+ * user less than a shorter list of somethings.
+ */
+function describeImport(result: ImportResult): string {
+  const parts: string[] = [];
+  const add = (count: number, one: string, many: string): void => {
+    if (count) parts.push(`${count} ${count === 1 ? one : many}`);
+  };
+  add(result.tokens, 'token', 'tokens');
+  add(result.classes, 'class', 'classes');
+  add(result.rules, 'rule', 'rules');
+  add(result.blocks, 'block', 'blocks');
+  add(result.aiSets, 'AI provider', 'AI providers');
+  if (!parts.length) return 'Nothing new in that design system — everything was already here.';
+  const listed =
+    parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}`;
+  /*
+   * The credential caveat, only when a provider arrived.
+   *
+   * A seed cannot carry a key by construction, so an imported provider is configured and not
+   * yet usable. Saying so here is the difference between a user who adds a key and one who
+   * concludes the feature is broken.
+   */
+  return result.aiSets
+    ? `Imported ${listed}. Providers arrive without their API keys, so add one to use them.`
+    : `Imported ${listed}.`;
 }

@@ -338,6 +338,20 @@ export const DesignTransfer = {
             : nothing}
               <span class="sep">·</span>
               <span><b>${stats.blocks}</b> block${stats.blocks === 1 ? '' : 's'}</span>
+              <!--
+                Providers, and the reassurance beside them.
+
+                The count alone would raise the question it exists to answer — "so my key is in
+                this string?" — which is why the tooltip says outright that it is not. This is
+                the one line in the product where somebody decides whether to paste a seed into
+                a message, so it is the one place that promise has to be visible.
+              -->
+              ${stats.aiSets
+            ? html`<span class="sep">·</span>
+                    <span title="Provider settings only. API keys are never put in a seed.">
+                      <b>${stats.aiSets}</b> AI set${stats.aiSets === 1 ? '' : 's'}
+                    </span>`
+            : nothing}
               <span class="spacer"></span>
               <span class="size" title=${stats.saved || 'Length of the seed'}>${stats.size}</span>
             </p>

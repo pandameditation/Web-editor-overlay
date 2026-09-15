@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>An AI run lands live, stops on request, and is one undo</title>
+  <link rel="stylesheet" href="./ai-run.css">
+  <style>
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: system-ui, sans-serif;
+    }
+
+    #report {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+    }
+  </style>
+</head>
+
+<body>
+  <main id="main">
+    <section id="host" class="wrap">
+      <article id="subject" class="card">
+        <h2 id="title">Original heading.</h2>
+        <p id="body">Original words.</p>
+      </article>
+      <article id="sibling" class="card">A sibling.</article>
+    </section>
+  </main>
+
+  <div id="report">
+    <pre id="progress">start</pre>
+    <pre id="out">pending</pre>
+  </div>
+
+  <script type="module">
+    (async () => {
+      const errors = [];
+      addEventListener('error', (e) => errors.push('error: ' + e.message));
+      addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + String(e.reason)));
+
+      const progress = document.getElementById('progress');
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const results = {};
+
+      const { mount } = await import('../dist/html-editor-overlay.js');
+      const api = mount({ theme: 'dark', presets: false, detectScriptContent: false });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+
+      const subject = document.getElementById('subject');
+
+      /** One provider set, every scope granted outright so no dialog interrupts. */
+      const openScope = () => engine.ai.import([{
+        id: 'scripted', label: 'Scripted', transport: 'local',
+        provider: 'openai-compatible', baseURL: 'http://127.0.0.1:1/v1', model: 'test',
+        scope: { classes: 'always', rules: 'always', parent: 'always' },
+      }]);
+
+      /**
+       * A scripted stream of operations.
+       *
+       * `gap` puts a real await between them, which is what makes the run observable in
+       * flight — without it every operation lands in one microtask burst and "the user watches
+       * it happen" is untested.
+       */
+      const scripted = (ops, gap = 0, onEach) => (async function* () {
+        for (const op of ops) {
+          if (gap) await wait(gap);
+          onEach?.(op);
+          yield op;
+        }
+      })();
+
+      const reset = async () => {
+        engine.resetAll();
+        await frames();
+      };
+
+      /* ------------------------------------------------------------------ *
+       * 1. A whole run lands, and is a single entry on the undo stack.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'oneRunIsOneUndo';
+      openScope();
+      {
+        await reset();
+        const before = {
+          title: document.getElementById('title').textContent,
+          style: subject.getAttribute('style'),
+          classes: subject.getAttribute('class'),
+        };
+        const outcome = await engine.runAiOperations(scripted([
+          { op: 'setText', html: '<h2 id="title">Rewritten heading.</h2><p id="body">Rewritten words.</p>' },
+          { op: 'setStyles', declarations: { 'background-color': 'rgb(255, 240, 200)', padding: '28px' } },
+          { op: 'setClasses', add: ['featured'] },
+          { op: 'upsertClass', name: 'featured', declarations: { 'border-radius': '14px' } },
+          { op: 'upsertRule', selector: '#subject h2', declarations: { 'letter-spacing': '0.04em' } },
+          { op: 'setParentStyles', declarations: { gap: '18px' } },
+          { op: 'summary', text: 'Rewrote the copy and warmed up the card.' },
+        ]), 'warm this card up', subject);
+
+        /*
+         * Past the merge window before counting.
+         *
+         * `sealStep` should make this unnecessary, and asserting it without waiting is how a
+         * count of one passes because two entries merged rather than because one was made.
+         */
+        await wait(2600);
+        const undoDepth = () => {
+          let depth = 0;
+          while (engine.store.value.canUndo && depth < 20) { engine.undo(); depth += 1; }
+          return depth;
+        };
+
+        results.oneRunIsOneUndo = {
+          applied: outcome.applied,
+          refused: outcome.refused,
+          // The page shows every change.
+          textChanged: /Rewritten heading/.test(subject.innerHTML),
+          styleLanded: /padding/.test(subject.getAttribute('style') ?? ''),
+          classAdded: subject.classList.contains('featured'),
+          classDefined: Boolean(engine.classes.get('featured')?.declarations['border-radius']),
+          /*
+           * Read off the page, not out of the registry.
+           *
+           * `#subject h2` is declared in this fixture's own stylesheet, so the edit patches
+           * that rule rather than adding a registry one — which is the better outcome and the
+           * one `patchesThePagesOwnRule` is about. Asserting on the registry here measured the
+           * worse behaviour and failed the moment the product improved.
+           */
+          ruleApplied: getComputedStyle(document.getElementById('title')).letterSpacing !== 'normal',
+          parentStyled: /gap/.test(document.getElementById('host').getAttribute('style') ?? ''),
+          // The model's own words come back as the summary.
+          summary: outcome.summary,
+          usedTheModelsSummary: outcome.summary === 'Rewrote the copy and warmed up the card.',
+          // One record per declaration, so the save dialog can still review them one by one.
+          recordCount: engine.records.length,
+          recordsPerDeclaration: engine.records.length >= 6,
+          // And one undo takes the whole run back.
+          undoSteps: 0,
+          restored: null,
+        };
+        const group = results.oneRunIsOneUndo;
+        group.undoSteps = undoDepth();
+        await frames();
+        group.restored = {
+          title: document.getElementById('title')?.textContent ?? null,
+          style: subject.getAttribute('style'),
+          classes: subject.getAttribute('class'),
+          classGone: engine.classes.get('featured')?.declarations['border-radius'] ?? null,
+          ruleLetterSpacing: getComputedStyle(document.getElementById('title')).letterSpacing,
+          parentStyle: document.getElementById('host').getAttribute('style'),
+        };
+        group.ok =
+          group.applied === 6 &&
+          group.refused === 0 &&
+          group.textChanged === true &&
+          group.styleLanded === true &&
+          group.classAdded === true &&
+          group.classDefined === true &&
+          group.ruleApplied === true &&
+          group.parentStyled === true &&
+          group.usedTheModelsSummary === true &&
+          group.recordsPerDeclaration === true &&
+          group.undoSteps === 1 &&
+          group.restored.title === before.title &&
+          group.restored.style === before.style &&
+          group.restored.classes === before.classes &&
+          group.restored.classGone === null &&
+          // Undo has to put the page's own rule back as it was, not merely stop overriding it.
+          group.restored.ruleLetterSpacing === 'normal' &&
+          group.restored.parentStyle === null;
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 2. Changes appear as they arrive, not all at the end.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'landsAsItGoes';
+      {
+        await reset();
+        /** What the page looked like when the third operation was about to be sent. */
+        let midRun = null;
+        const seen = [];
+        const stream = scripted([
+          { op: 'setStyles', declarations: { color: 'rgb(180, 20, 20)' } },
+          { op: 'setStyles', declarations: { 'font-size': '19px' } },
+          { op: 'setStyles', declarations: { 'font-weight': '700' } },
+          { op: 'summary', text: 'Restyled.' },
+        ], 30, (op) => {
+          seen.push(op.op);
+          // Before the third lands, the first two must already be on the element.
+          if (seen.length === 3) midRun = subject.getAttribute('style');
+        });
+        const outcome = await engine.runAiOperations(stream, 'restyle', subject);
+        results.landsAsItGoes = {
+          midRun,
+          firstLandedBeforeLast: /color/.test(midRun ?? ''),
+          secondLandedBeforeLast: /font-size/.test(midRun ?? ''),
+          // And the last one was not somehow already there.
+          lastWasNotEarly: !/font-weight/.test(midRun ?? ''),
+          allThereAtTheEnd: /font-weight/.test(subject.getAttribute('style') ?? ''),
+          applied: outcome.applied,
+        };
+        const group = results.landsAsItGoes;
+        group.ok =
+          group.firstLandedBeforeLast === true &&
+          group.secondLandedBeforeLast === true &&
+          group.lastWasNotEarly === true &&
+          group.allThereAtTheEnd === true &&
+          group.applied === 3;
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 3. Stopping keeps what landed, and it is still one undo.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'abortKeepsWhatLanded';
+      {
+        await reset();
+        const stream = scripted([
+          { op: 'setStyles', declarations: { color: 'rgb(20, 120, 60)' } },
+          { op: 'setStyles', declarations: { 'font-style': 'italic' } },
+          { op: 'setStyles', declarations: { 'text-decoration': 'underline' } },
+          { op: 'setStyles', declarations: { opacity: '0.5' } },
+          { op: 'summary', text: 'Should never be reached.' },
+        ], 40, (op) => {
+          // Stop the moment the third is about to be sent.
+          if (op.declarations && 'text-decoration' in op.declarations) engine.ai.abort();
+        });
+        const outcome = await engine.runAiOperations(stream, 'restyle then stop', subject);
+        await wait(2600);
+        const style = subject.getAttribute('style') ?? '';
+        results.abortKeepsWhatLanded = {
+          reportedAborted: outcome.aborted,
+          applied: outcome.applied,
+          keptTheFirstTwo: /color/.test(style) && /font-style/.test(style),
+          droppedTheRest: !/opacity/.test(style),
+          // No summary arrived, so the run says what it can honestly say.
+          summary: outcome.summary,
+          saidItStopped: /Stopped/.test(outcome.summary),
+          undoSteps: (() => {
+            let depth = 0;
+            while (engine.store.value.canUndo && depth < 20) { engine.undo(); depth += 1; }
+            return depth;
+          })(),
+          styleAfterUndo: subject.getAttribute('style'),
+        };
+        const group = results.abortKeepsWhatLanded;
+        group.ok =
+          group.reportedAborted === true &&
+          group.applied === 2 &&
+          group.keptTheFirstTwo === true &&
+          group.droppedTheRest === true &&
+          group.saidItStopped === true &&
+          group.undoSteps === 1 &&
+          group.styleAfterUndo === null;
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 4. A run that changes nothing commits nothing.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'nothingAppliedNothingCommitted';
+      {
+        await reset();
+        const outcome = await engine.runAiOperations(scripted([
+          { op: 'upsertRule', selector: 'body', declarations: { color: 'red' } },
+          { op: 'setStyles', declarations: { 'not a property': '1' } },
+          { op: 'summary', text: 'Could not do it.' },
+        ]), 'try something out of reach', subject);
+        results.nothingAppliedNothingCommitted = {
+          applied: outcome.applied,
+          refused: outcome.refused,
+          empty: outcome.empty,
+          // Nothing on the stack, and nothing to save — which is what "empty" has to mean.
+          nothingToUndo: engine.store.value.canUndo === false,
+          noRecords: engine.records.length === 0,
+          // Every refusal carries its reason, so a run that did nothing says why.
+          everyRefusalExplained: outcome.entries
+            .filter((entry) => entry.outcome === 'refused')
+            .every((entry) => typeof entry.text === 'string' && entry.text.length > 8),
+          reasons: outcome.entries.filter((e) => e.outcome === 'refused').map((e) => e.text),
+        };
+        const group = results.nothingAppliedNothingCommitted;
+        group.ok =
+          group.applied === 0 &&
+          group.refused === 2 &&
+          group.empty === true &&
+          group.nothingToUndo === true &&
+          group.noRecords === true &&
+          group.everyRefusalExplained === true;
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 5. Side effects are reported as facts about what happened.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'reportsItsSideEffects';
+      {
+        await reset();
+        const outcome = await engine.runAiOperations(scripted([
+          // `.card` is worn by the subject and its sibling, so this is a shared edit.
+          { op: 'upsertClass', name: 'card', declarations: { padding: '30px' } },
+          { op: 'setParentStyles', declarations: { gap: '22px' } },
+          { op: 'setStyles', declarations: { color: 'rgb(10, 10, 10)' } },
+          { op: 'summary', text: 'Loosened things up.' },
+        ]), 'loosen the spacing', subject);
+        results.reportsItsSideEffects = {
+          warnings: outcome.warnings,
+          // One per reaching change, and none for the change confined to the element.
+          warnedAboutTwo: outcome.warnings.length === 2,
+          namedTheClass: outcome.warnings.some((w) => /\.card/.test(w)),
+          // The count is the point: "12 elements use it" is what makes it a decision.
+          countedTheClassUsers: outcome.warnings.some((w) => /\b2 elements\b/.test(w)),
+          namedTheParent: outcome.warnings.some((w) => /parent/.test(w)),
+          didNotWarnAboutTheElement: !outcome.warnings.some((w) => /\bcolor\b/.test(w)),
+          applied: outcome.applied,
+        };
+        const group = results.reportsItsSideEffects;
+        group.ok =
+          group.warnedAboutTwo === true &&
+          group.namedTheClass === true &&
+          group.countedTheClassUsers === true &&
+          group.namedTheParent === true &&
+          group.didNotWarnAboutTheElement === true &&
+          group.applied === 3;
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 6. An `ask` scope stops the run until it is answered.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'waitsForAnApproval';
+      {
+        await reset();
+        engine.ai.import([{
+          id: 'careful', label: 'Careful', transport: 'local',
+          provider: 'openai-compatible', baseURL: 'http://127.0.0.1:1/v1', model: 'test',
+          scope: { classes: 'ask', rules: 'always', parent: 'ask' },
+        }]);
+
+        /** Answer whichever question is up, after letting it be observed. */
+        const answerWith = async (how) => {
+          for (let i = 0; i < 80; i += 1) {
+            if (engine.store.value.confirm) {
+              const ask = engine.store.value.confirm;
+              const seen = { title: ask.title, message: ask.message, remember: ask.remember?.label ?? null };
+              if (how === 'approve') engine.resolveConfirm();
+              else if (how === 'always') engine.resolveConfirm({ remember: true });
+              else engine.cancelConfirm();
+              return seen;
+            }
+            await wait(25);
+          }
+          return null;
+        };
+
+        let firstAsk = null;
+        let secondAsk = null;
+        const run = engine.runAiOperations(scripted([
+          { op: 'upsertClass', name: 'card', declarations: { padding: '30px' } },
+          { op: 'setParentStyles', declarations: { gap: '22px' } },
+          { op: 'summary', text: 'Asked first.' },
+        ], 20), 'ask me first', subject);
+
+        firstAsk = await answerWith('approve');
+        secondAsk = await answerWith('dismiss');
+        const outcome = await run;
+
+        results.waitsForAnApproval = {
+          askedAboutTheClass: firstAsk?.title ?? null,
+          // The dialog's sentence is the broker's own side-effect text, not a second wording.
+          classMessageNamedTheClass: /\.card/.test(firstAsk?.message ?? ''),
+          offeredAStandingPermission: /Always allow/.test(firstAsk?.remember ?? ''),
+          askedAboutTheParent: secondAsk?.title ?? null,
+          applied: outcome.applied,
+          skipped: outcome.skipped,
+          // Approved landed, declined did not.
+          classLanded: engine.classes.get('card')?.declarations.padding === '30px',
+          parentUntouched: document.getElementById('host').getAttribute('style') === null,
+        };
+        const group = results.waitsForAnApproval;
+        group.ok =
+          group.askedAboutTheClass === 'Change a shared class?' &&
+          group.classMessageNamedTheClass === true &&
+          group.offeredAStandingPermission === true &&
+          group.askedAboutTheParent === 'Change the container?' &&
+          group.applied === 1 &&
+          group.skipped === 1 &&
+          group.classLanded === true &&
+          group.parentUntouched === true;
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 7. A rule the page's own stylesheet declares is patched, not overridden.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'patchesThePagesOwnRule';
+      openScope();
+      {
+        await reset();
+        const outcome = await engine.runAiOperations(scripted([
+          { op: 'upsertRule', selector: '#subject h2', declarations: { color: 'rgb(120, 0, 90)' } },
+          { op: 'summary', text: 'Recoloured the heading.' },
+        ]), 'recolour the heading', subject);
+        const record = engine.records.find((one) => one.target === '#subject h2');
+        results.patchesThePagesOwnRule = {
+          applied: outcome.applied,
+          // Recorded as a stylesheet-rule edit, which is what makes the save patch the file
+          // the author wrote rather than appending an override that wins by coming later.
+          recordedAsARuleEdit: record?.detail?.scope === 'stylesheet rule',
+          namedTheFile: record?.detail?.file ?? null,
+          /*
+           * The scanned entry for this selector is left exactly as it was read.
+           *
+           * The registry holds `#subject h2` because it scanned this fixture's stylesheet at
+           * mount, so its mere presence proves nothing. What matters is that the edit did not
+           * turn it into a `user` rule carrying the new declaration — which is what would emit
+           * a second, overriding copy alongside the one that was patched.
+           */
+          scannedEntryOrigin: engine.rules.get('#subject h2')?.origin ?? null,
+          didNotForkTheRule: engine.rules.get('#subject h2')?.declarations.color !== 'rgb(120, 0, 90)',
+          computed: getComputedStyle(document.getElementById('title')).color,
+        };
+        const group = results.patchesThePagesOwnRule;
+        group.ok =
+          group.applied === 1 &&
+          group.recordedAsARuleEdit === true &&
+          typeof group.namedTheFile === 'string' &&
+          group.scannedEntryOrigin === 'stylesheet' &&
+          group.didNotForkTheRule === true &&
+          group.computed === 'rgb(120, 0, 90)';
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 8. A broken request says so rather than looking like a model that did nothing.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'reportsAFailure';
+      {
+        await reset();
+        const breaking = (async function* () {
+          yield { op: 'setStyles', declarations: { color: 'rgb(0, 90, 160)' } };
+          await wait(10);
+          throw new Error('The provider closed the connection.');
+        })();
+        const outcome = await engine.runAiOperations(breaking, 'break halfway', subject);
+        await wait(2600);
+        results.reportsAFailure = {
+          failure: outcome.failure,
+          saidWhy: /closed the connection/.test(outcome.failure ?? ''),
+          summaryCarriesIt: /closed the connection/.test(outcome.summary),
+          // What landed before the break is still there, and still undoable.
+          keptWhatLanded: /color/.test(subject.getAttribute('style') ?? ''),
+          undoSteps: (() => {
+            let depth = 0;
+            while (engine.store.value.canUndo && depth < 20) { engine.undo(); depth += 1; }
+            return depth;
+          })(),
+        };
+        const group = results.reportsAFailure;
+        group.ok =
+          group.saidWhy === true &&
+          group.summaryCarriesIt === true &&
+          group.keptWhatLanded === true &&
+          group.undoSteps === 1;
+      }
+
+      const failed = Object.entries(results)
+        .filter(([, group]) => group && typeof group === 'object')
+        .filter(([, group]) => Object.values(group).some((value) => value === false))
+        .map(([name]) => name);
+
+      document.getElementById('out').textContent = 'RESULTS:' + JSON.stringify(
+        { ok: failed.length === 0, failed, ...results, errors }, null, 1,
+      ) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"ok":false,"__fatal":' + JSON.stringify(String((e && e.stack) || e)) + '}:END';
+    });
+  </script>
+</body>
+
+</html>

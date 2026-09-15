@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>The AI boundary holds, and only lets through what the scope allows</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: system-ui, sans-serif;
+    }
+
+    .card {
+      padding: 16px;
+      background: #eef2ff;
+    }
+
+    #report {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+    }
+  </style>
+</head>
+
+<body>
+  <main id="main">
+    <section id="host" class="wrap">
+      <article id="subject" class="card promo">
+        <h2 id="title">A heading.</h2>
+        <p>Some words, and <a id="link" href="/somewhere">a link</a>.</p>
+      </article>
+      <article id="sibling" class="card">A sibling that must stay out of reach.</article>
+    </section>
+    <aside id="elsewhere" class="card">Somewhere else entirely.</aside>
+  </main>
+
+  <div id="report">
+    <pre id="progress">start</pre>
+    <pre id="out">pending</pre>
+  </div>
+
+  <script type="module">
+    (async () => {
+      const errors = [];
+      addEventListener('error', (e) => errors.push('error: ' + e.message));
+      addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + String(e.reason)));
+
+      const progress = document.getElementById('progress');
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const results = {};
+
+      const { mount } = await import('../dist/html-editor-overlay.js');
+      const api = mount({ theme: 'dark', presets: false, detectScriptContent: false });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+
+      const subject = document.getElementById('subject');
+      api.select(subject);
+      await frames();
+
+      /*
+       * Watch the editor's own DOM for the whole run.
+       *
+       * The assertion that matters most is not that a verdict said no — a verdict is just a
+       * string — but that nothing reached the overlay while every one of these was refused.
+       */
+      const host = document.querySelector('html-editor-overlay');
+      let chromeWrites = 0;
+      const watcher = new MutationObserver((entries) => { chromeWrites += entries.length; });
+      if (host) {
+        watcher.observe(host, { subtree: true, childList: true, attributes: true, characterData: true });
+      }
+
+      /** Configure one provider set with an explicit scope policy. */
+      const withScope = (scope) => {
+        engine.ai.import([{
+          id: 'test-set',
+          label: 'Scripted',
+          transport: 'local',
+          provider: 'openai-compatible',
+          baseURL: 'http://127.0.0.1:1/v1',
+          model: 'test',
+          scope,
+        }]);
+      };
+
+      const review = (op) => engine.ai.review(op, subject);
+      /** A refusal, with its sentence, so a wrong reason is as visible as a wrong verdict. */
+      const refusal = (op) => {
+        const verdict = review(op);
+        return verdict.ok ? null : verdict.reason;
+      };
+
+      /* ------------------------------------------------------------------ *
+       * 1. With every scope granted, the six operations are accepted.
+       *
+       * The discriminating half. Without it this whole fixture could pass because the
+       * broker refuses everything, or because nothing was ever wired up.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'acceptsWhatItShould';
+      withScope({ classes: 'always', rules: 'always', parent: 'always' });
+      {
+        const accepted = {
+          setText: review({ op: 'setText', html: '<b>Bold words.</b>' }),
+          setStyles: review({ op: 'setStyles', declarations: { color: 'crimson' } }),
+          setClasses: review({ op: 'setClasses', add: ['featured'] }),
+          upsertClass: review({ op: 'upsertClass', name: 'card', declarations: { padding: '20px' } }),
+          upsertRule: review({ op: 'upsertRule', selector: '#subject h2', declarations: { 'font-size': '28px' } }),
+          setParentStyles: review({ op: 'setParentStyles', declarations: { gap: '12px' } }),
+          summary: review({ op: 'summary', text: 'Did the thing.' }),
+        };
+        const scopes = Object.fromEntries(
+          Object.entries(accepted).map(([name, verdict]) => [name, verdict.ok ? verdict.plan.scope : null]),
+        );
+        results.acceptsWhatItShould = {
+          ...Object.fromEntries(Object.entries(accepted).map(([name, v]) => [name, v.ok])),
+          scopes,
+          // Each operation must be filed under the permission it actually needs, or the
+          // whole policy is decorative.
+          scopedCorrectly:
+            scopes.setText === 'element' &&
+            scopes.setStyles === 'element' &&
+            scopes.setClasses === 'element' &&
+            scopes.upsertClass === 'classes' &&
+            scopes.upsertRule === 'rules' &&
+            scopes.setParentStyles === 'parent' &&
+            scopes.summary === 'none',
+          firstRefusal: Object.entries(accepted).find(([, v]) => !v.ok)?.[1]?.reason ?? null,
+        };
+        const group = results.acceptsWhatItShould;
+        group.ok = Object.values(accepted).every((verdict) => verdict.ok) && group.scopedCorrectly;
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 2. A selector that reaches past the selection is refused.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'refusesSelectorsThatReachOut';
+      {
+        const reasons = {
+          everything: refusal({ op: 'upsertRule', selector: '*', declarations: { color: 'red' } }),
+          body: refusal({ op: 'upsertRule', selector: 'body', declarations: { color: 'red' } }),
+          html: refusal({ op: 'upsertRule', selector: 'html', declarations: { color: 'red' } }),
+          sibling: refusal({ op: 'upsertRule', selector: '#sibling', declarations: { color: 'red' } }),
+          elsewhere: refusal({ op: 'upsertRule', selector: '#elsewhere', declarations: { color: 'red' } }),
+          // A selector for nothing would be a rule aimed at a page this is not.
+          nothing: refusal({ op: 'upsertRule', selector: '.does-not-exist', declarations: { color: 'red' } }),
+          notASelector: refusal({ op: 'upsertRule', selector: 'h2 >', declarations: { color: 'red' } }),
+        };
+        results.refusesSelectorsThatReachOut = {
+          ...Object.fromEntries(Object.entries(reasons).map(([k, v]) => [k, v !== null])),
+          reasons,
+          // A rule scoped inside the selection is the legitimate case and must still work.
+          allowsADescendantRule: review({
+            op: 'upsertRule', selector: '#subject a', declarations: { color: 'red' },
+          }).ok,
+          // The parent is reachable only because `parent` is granted above.
+          allowsTheParent: review({
+            op: 'upsertRule', selector: '#host', declarations: { display: 'grid' },
+          }).ok,
+        };
+        const group = results.refusesSelectorsThatReachOut;
+        group.ok =
+          Object.values(reasons).every((reason) => typeof reason === 'string' && reason.length > 0) &&
+          group.allowsADescendantRule === true &&
+          group.allowsTheParent === true;
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 2b. A rule aimed at one of the element's own classes is a class edit.
+       *
+       * The hole this fixture found. `upsertRule` with `.card` and `upsertClass` with
+       * `card` change the same CSS and reach the same elements, so a set that granted
+       * rules and only asked about classes could have the class question walked past by
+       * spelling the request the other way round.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'aClassRuleIsAClassEdit';
+      {
+        withScope({ classes: 'always', rules: 'always', parent: 'always' });
+        const asRule = review({ op: 'upsertRule', selector: '.card', declarations: { padding: '20px' } });
+
+        withScope({ rules: 'always' });
+        const withoutClasses = refusal({
+          op: 'upsertRule', selector: '.card', declarations: { padding: '20px' },
+        });
+
+        withScope({ classes: 'ask', rules: 'always' });
+        const whenAsked = review({ op: 'upsertRule', selector: '.card', declarations: { padding: '20px' } });
+
+        results.aClassRuleIsAClassEdit = {
+          accepted: asRule.ok,
+          // Filed under the permission the change actually needs, not the one it asked for.
+          filedUnderClasses: asRule.ok ? asRule.plan.scope === 'classes' : null,
+          // And rewritten into the operation that means that, so one code path applies it.
+          rewrittenAsAClassUpsert: asRule.ok ? asRule.plan.op.op === 'upsertClass' : null,
+          namesTheClass: asRule.ok ? asRule.plan.op.name === 'card' : null,
+          // Granting rules alone is not a way in.
+          refusedWithRulesOnly: withoutClasses !== null,
+          // And `ask` on classes still asks, however the request was spelled.
+          asksWhenClassesAsk: whenAsked.ok ? whenAsked.plan.allowance === 'ask' : null,
+          reasons: { withoutClasses },
+        };
+        const group = results.aClassRuleIsAClassEdit;
+        group.ok =
+          group.accepted === true &&
+          group.filedUnderClasses === true &&
+          group.rewrittenAsAClassUpsert === true &&
+          group.namesTheClass === true &&
+          group.refusedWithRulesOnly === true &&
+          group.asksWhenClassesAsk === true;
+        withScope({ classes: 'always', rules: 'always', parent: 'always' });
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 3. The editor's own interface is unreachable.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'cannotReachTheEditor';
+      {
+        const reasons = {
+          byTag: refusal({ op: 'upsertRule', selector: 'html-editor-overlay', declarations: { display: 'none' } }),
+          byAttribute: refusal({ op: 'upsertRule', selector: '[data-heo-ignore]', declarations: { display: 'none' } }),
+          byWildcard: refusal({ op: 'upsertRule', selector: '*', declarations: { display: 'none' } }),
+          heoClassAdd: refusal({ op: 'setClasses', add: ['heo-panel'] }),
+          heoClassUpsert: refusal({ op: 'upsertClass', name: 'heo-panel', declarations: { display: 'none' } }),
+        };
+        results.cannotReachTheEditor = {
+          ...Object.fromEntries(Object.entries(reasons).map(([k, v]) => [k, v !== null])),
+          reasons,
+          hostFound: Boolean(host),
+        };
+        const group = results.cannotReachTheEditor;
+        group.ok =
+          group.hostFound === true &&
+          Object.values(reasons).every((reason) => typeof reason === 'string' && reason.length > 0);
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 4. Script and unsafe URLs never survive.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'stripsWhatCannotBeAllowed';
+      {
+        const withScript = review({
+          op: 'setText',
+          html: '<p onclick="steal()">Hi</p><script>steal()<\/script><a href="javascript:steal()">go</a>',
+        });
+        /*
+         * Both spellings, because they took different code paths and only one was caught.
+         * The quoted form defeated the first version of the CSS URL check: the parentheses
+         * inside the quoted string ended the match early and the value came back clean.
+         */
+        const cssUrl = refusal({
+          op: 'upsertClass', name: 'promo', declarations: { background: 'url("javascript:steal()")' },
+        });
+        const cssUrlSingleQuoted = refusal({
+          op: 'upsertClass', name: 'promo', declarations: { background: "url('javascript:alert(1)')" },
+        });
+        const inlineCssUrl = refusal({
+          op: 'setStyles', declarations: { background: 'url(javascript:steal())' },
+        });
+        const cssUrlSpaced = refusal({
+          op: 'setStyles', declarations: { background: 'url(  "javascript:x()"  )' },
+        });
+        // And a legitimate one still lands, or the check is just a ban on url().
+        const realUrl = review({
+          op: 'setStyles', declarations: { background: 'url("/images/hero.png") no-repeat' },
+        });
+        const written = withScript.ok ? withScript.plan.op.html : '';
+        results.stripsWhatCannotBeAllowed = {
+          markupAccepted: withScript.ok,
+          keptTheParagraph: /Hi/.test(written),
+          droppedTheScript: !/steal\(\)<\/script>|<script/i.test(written),
+          droppedTheHandler: !/onclick/i.test(written),
+          droppedTheJavascriptHref: !/javascript:/i.test(written),
+          // Reported, not silently swallowed: the user is told their onclick is gone.
+          saidWhatItRemoved: withScript.ok ? (withScript.plan.removed ?? []).length > 0 : false,
+          refusedCssUrlInAClass: cssUrl !== null,
+          refusedCssUrlSingleQuoted: cssUrlSingleQuoted !== null,
+          refusedCssUrlInline: inlineCssUrl !== null,
+          refusedCssUrlSpaced: cssUrlSpaced !== null,
+          allowsARealUrl: realUrl.ok,
+          reasons: { cssUrl, cssUrlSingleQuoted, inlineCssUrl, cssUrlSpaced },
+          written,
+        };
+        const group = results.stripsWhatCannotBeAllowed;
+        group.ok =
+          group.markupAccepted === true &&
+          group.keptTheParagraph === true &&
+          group.droppedTheScript === true &&
+          group.droppedTheHandler === true &&
+          group.droppedTheJavascriptHref === true &&
+          group.saidWhatItRemoved === true &&
+          group.refusedCssUrlInAClass === true &&
+          group.refusedCssUrlSingleQuoted === true &&
+          group.refusedCssUrlInline === true &&
+          group.refusedCssUrlSpaced === true &&
+          group.allowsARealUrl === true;
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 5. A scope left off the set is a refusal, not a question.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'honoursTheScopePolicy';
+      withScope({});
+      {
+        const reasons = {
+          classes: refusal({ op: 'upsertClass', name: 'promo', declarations: { color: 'red' } }),
+          rules: refusal({ op: 'upsertRule', selector: '#subject h2', declarations: { color: 'red' } }),
+          parent: refusal({ op: 'setParentStyles', declarations: { gap: '4px' } }),
+        };
+        results.honoursTheScopePolicy = {
+          ...Object.fromEntries(Object.entries(reasons).map(([k, v]) => [k, v !== null])),
+          reasons,
+          // The element itself is never gated: that is the feature, not a permission.
+          stillEditsTheElement: review({ op: 'setStyles', declarations: { color: 'red' } }).ok,
+          stillRewritesTheText: review({ op: 'setText', html: 'New words.' }).ok,
+        };
+        const group = results.honoursTheScopePolicy;
+        group.ok =
+          Object.values(reasons).every((reason) => typeof reason === 'string' && reason.length > 0) &&
+          group.stillEditsTheElement === true &&
+          group.stillRewritesTheText === true;
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 6. `ask` reaches the broker as a question, not as a refusal.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'asksRatherThanRefusing';
+      withScope({ classes: 'ask', rules: 'always', parent: 'ask' });
+      {
+        const asked = review({ op: 'upsertClass', name: 'promo', declarations: { color: 'red' } });
+        const allowed = review({ op: 'upsertRule', selector: '#subject h2', declarations: { color: 'red' } });
+        const parent = review({ op: 'setParentStyles', declarations: { gap: '4px' } });
+        results.asksRatherThanRefusing = {
+          classPassesTheBoundary: asked.ok,
+          classNeedsAsking: asked.ok ? asked.plan.allowance === 'ask' : null,
+          ruleIsAllowedOutright: allowed.ok ? allowed.plan.allowance === 'always' : null,
+          parentNeedsAsking: parent.ok ? parent.plan.allowance === 'ask' : null,
+          // The widening the approval dialog performs, and its effect on the next review.
+          widenedTakesEffect: (() => {
+            engine.ai.widen('classes');
+            const again = review({ op: 'upsertClass', name: 'promo', declarations: { color: 'red' } });
+            return again.ok && again.plan.allowance === 'always';
+          })(),
+          // Widening one kind must not widen another.
+          didNotWidenTheRest: review({ op: 'setParentStyles', declarations: { gap: '4px' } }).plan?.allowance === 'ask',
+        };
+        const group = results.asksRatherThanRefusing;
+        group.ok =
+          group.classPassesTheBoundary === true &&
+          group.classNeedsAsking === true &&
+          group.ruleIsAllowedOutright === true &&
+          group.parentNeedsAsking === true &&
+          group.widenedTakesEffect === true &&
+          group.didNotWidenTheRest === true;
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 7. With no provider configured, nothing is permitted beyond the element.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'deniesByDefault';
+      engine.ai.import([]);
+      {
+        results.deniesByDefault = {
+          noProvider: engine.ai.configured === false,
+          emptyPolicy: Object.keys(engine.ai.policy()).length === 0,
+          refusesClasses: refusal({ op: 'upsertClass', name: 'promo', declarations: { color: 'red' } }) !== null,
+          refusesRules: refusal({ op: 'upsertRule', selector: '#subject h2', declarations: { color: 'red' } }) !== null,
+          refusesParent: refusal({ op: 'setParentStyles', declarations: { gap: '4px' } }) !== null,
+        };
+        const group = results.deniesByDefault;
+        group.ok = Object.entries(group).every(([key, value]) => key === 'ok' || value === true);
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 8. Nonsense is refused rather than half-understood.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'refusesNonsense';
+      withScope({ classes: 'always', rules: 'always', parent: 'always' });
+      {
+        const reasons = {
+          notAnObject: refusal('setStyles'),
+          nullish: refusal(null),
+          unknownOp: refusal({ op: 'deleteEverything' }),
+          missingOp: refusal({ declarations: { color: 'red' } }),
+          noDeclarations: refusal({ op: 'setStyles' }),
+          emptyDeclarations: refusal({ op: 'setStyles', declarations: {} }),
+          notAProperty: refusal({ op: 'setStyles', declarations: { 'not a property': '1' } }),
+          emptySummary: refusal({ op: 'summary', text: '   ' }),
+          badClassName: refusal({ op: 'setClasses', add: ['9lives'] }),
+        };
+        results.refusesNonsense = {
+          ...Object.fromEntries(Object.entries(reasons).map(([k, v]) => [k, v !== null])),
+          reasons,
+          // A good declaration alongside a bad one still lands, with the bad one reported.
+          keepsTheGoodOnes: (() => {
+            const verdict = review({
+              op: 'setStyles', declarations: { color: 'red', 'not a property': '1' },
+            });
+            return verdict.ok
+              && Object.keys(verdict.plan.op.declarations).join() === 'color'
+              && (verdict.plan.rejected ?? []).length === 1;
+          })(),
+        };
+        const group = results.refusesNonsense;
+        group.ok =
+          Object.values(reasons).every((reason) => typeof reason === 'string' && reason.length > 0) &&
+          group.keepsTheGoodOnes === true;
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 9. Reviewing changes nothing. The broker is a verdict, not an edit.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'reviewingChangesNothing';
+      await frames();
+      watcher.disconnect();
+      results.reviewingChangesNothing = {
+        chromeUntouched: chromeWrites === 0,
+        chromeWrites,
+        subjectMarkupIntact: /A heading\./.test(subject.innerHTML) && /a link/.test(subject.innerHTML),
+        subjectHasNoInlineStyle: subject.getAttribute('style') === null,
+        subjectClassesIntact: subject.getAttribute('class') === 'card promo',
+        siblingIntact: document.getElementById('sibling')?.getAttribute('style') === null,
+        // Not one of those verdicts may have reached the undo stack either.
+        noChangesRecorded: engine.records.length === 0,
+      };
+      {
+        const group = results.reviewingChangesNothing;
+        group.ok =
+          group.chromeUntouched === true &&
+          group.subjectMarkupIntact === true &&
+          group.subjectHasNoInlineStyle === true &&
+          group.subjectClassesIntact === true &&
+          group.siblingIntact === true &&
+          group.noChangesRecorded === true;
+      }
+
+      const failed = Object.entries(results)
+        .filter(([, group]) => group && typeof group === 'object')
+        .filter(([, group]) => Object.values(group).some((value) => value === false))
+        .map(([name]) => name);
+
+      document.getElementById('out').textContent = 'RESULTS:' + JSON.stringify(
+        { ok: failed.length === 0, failed, ...results, errors }, null, 1,
+      ) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"ok":false,"__fatal":' + JSON.stringify(String((e && e.stack) || e)) + '}:END';
+    });
+  </script>
+</body>
+
+</html>
