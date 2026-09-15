@@ -314,17 +314,153 @@ const upstream = createHttpServer((request, response) => {
 await new Promise((done) => upstream.listen(5399, '127.0.0.1', done));
 const providerURL = 'http://127.0.0.1:5399';
 
-await test('with no key configured, the proxy says so instead of failing obscurely', async () => {
-  const response = await fetch(`${endpoint}?ai=1`, {
-    method: 'POST',
-    headers: { 'x-heo-token': token, 'content-type': 'application/json' },
-    body: JSON.stringify({ model: 'gpt-4o-mini', system: 's', prompt: 'p' }),
-  });
-  assert.equal(response.status, 501);
-  const body = await response.json();
-  // The client surfaces this verbatim, so it has to be a sentence rather than a code.
-  assert.match(body.error.message, /not holding an AI key/);
+/*
+ * `ai: false` and not `editorOverlay()`, and the difference is the whole point of the option.
+ *
+ * The plugin reads the environment by default, so a machine with `ANTHROPIC_API_KEY` exported —
+ * a developer's laptop, very often — has a key configured whether this file wanted one or not.
+ * Asserting the no-key branch from the ambient environment made the case untestable on exactly
+ * the machines it matters on, and passed or failed according to whose shell it ran in.
+ */
+await test('with AI turned off, the proxy says so instead of failing obscurely', async () => {
+  const off = await start(editorOverlay({ ai: false }));
+  try {
+    const offToken = /"sourceToken":"([^"]+)"/.exec(await bootstrapOf(off.origin))?.[1];
+    const response = await fetch(`${off.origin}/__heo/fs?ai=1`, {
+      method: 'POST',
+      headers: { 'x-heo-token': offToken, 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-4o-mini', system: 's', prompt: 'p' }),
+    });
+    assert.equal(response.status, 501);
+    const body = await response.json();
+    // The client surfaces this verbatim, so it has to be a sentence rather than a code.
+    assert.match(body.error.message, /not holding an AI key/);
+    // And it names the shortest way out, because "not holding a key" is not an instruction.
+    assert.match(body.error.message, /\.env/);
+  } finally {
+    await off.instance.close();
+  }
 });
+
+/*
+ * ---------------------------------------------------------------------------
+ * Discovering providers from the environment
+ * ---------------------------------------------------------------------------
+ *
+ * The zero-config claim, checked rather than asserted in a README. Injected through `process.env`
+ * because that is the layer the plugin reads last and therefore the one a test can control: a
+ * `.env` file on disk would make these cases depend on the checkout they ran in.
+ */
+{
+  const injected = {
+    // A well-known provider: its host and its dialect are facts, so a key alone is enough.
+    ANTHROPIC_API_KEY: 'sk-ant-discovered',
+    // Two custom OpenAI-compatible endpoints, which is the case one variable per provider cannot
+    // express. The second has an underscore in its name, so the field suffix has to be found by
+    // stripping rather than by splitting.
+    HEO_AI_ALPHA_API_KEY: 'sk-alpha-discovered',
+    HEO_AI_ALPHA_BASE_URL: `${providerURL}/alpha`,
+    HEO_AI_ALPHA_MODELS: 'alpha-large,alpha-small',
+    HEO_AI_ALPHA_LABEL: 'Alpha gateway',
+    HEO_AI_MY_SECOND_ONE_API_KEY: 'sk-second-discovered',
+    HEO_AI_MY_SECOND_ONE_BASE_URL: `${providerURL}/second`,
+    // Named but unusable: there is no default host for an endpoint nobody named.
+    HEO_AI_NOWHERE_API_KEY: 'sk-nowhere-discovered',
+  };
+  const saved = Object.fromEntries(Object.keys(injected).map((k) => [k, process.env[k]]));
+  Object.assign(process.env, injected);
+
+  const found = await start(editorOverlay());
+  const foundEndpoint = `${found.origin}/__heo/fs`;
+  const foundBootstrap = await bootstrapOf(found.origin);
+  const foundToken = /"sourceToken":"([^"]+)"/.exec(foundBootstrap)?.[1];
+  const sets = JSON.parse(
+    /"aiProviders":(\[[\s\S]*?\}\])/.exec(foundBootstrap)?.[1] ?? 'null',
+  );
+  const askFound = (body) =>
+    fetch(`${foundEndpoint}?ai=1`, {
+      method: 'POST',
+      headers: { 'x-heo-token': foundToken, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+  try {
+    await test('a key in the environment is all the configuration there is', async () => {
+      assert.ok(Array.isArray(sets), 'the page was told about no providers at all');
+      const ids = sets.map((one) => one.id);
+      /*
+       * Filtered to what this test injected, deliberately.
+       *
+       * The machine running this may have its own `.env` and its own exported keys, and those are
+       * supposed to be discovered too — so asserting the whole list would make this case fail on
+       * a working setup. What is being checked is that these three arrived and in this order:
+       * named groups before ambient keys, because the deliberate one is the one to default to.
+       */
+      const mine = ['heo-env-alpha', 'heo-env-my-second-one', 'heo-env-anthropic'];
+      assert.deepEqual(ids.filter((id) => mine.includes(id)), mine);
+      // The unusable group is not offered, rather than offered and then failing on first use.
+      assert.ok(!ids.includes('heo-env-nowhere'));
+    });
+
+    await test('no discovered key reaches the page', async () => {
+      for (const secret of Object.values(injected)) {
+        if (!secret.startsWith('sk-')) continue;
+        assert.ok(!foundBootstrap.includes(secret), `${secret} must not be in the bootstrap`);
+      }
+      // Nor the destination: the page is not told where its own requests go.
+      assert.ok(sets.every((one) => one.baseURL === undefined), 'no baseURL may travel');
+      assert.ok(sets.every((one) => one.transport === 'proxy'));
+    });
+
+    await test('a discovered provider carries the dialect its replies are read with', () => {
+      // The bug this pins: an Anthropic key described as OpenAI-compatible sends the wrong
+      // request shape and then reads the reply with a parser that finds nothing in it, so it
+      // looks connected and streams silence.
+      assert.equal(sets.find((one) => one.id === 'heo-env-anthropic').provider, 'anthropic');
+      assert.equal(sets.find((one) => one.id === 'heo-env-alpha').provider, 'openai-compatible');
+    });
+
+    await test('an allow-list becomes the model the page starts with', () => {
+      assert.equal(sets.find((one) => one.id === 'heo-env-alpha').model, 'alpha-large');
+      // Nothing known and nothing listed is an empty field, which is a question rather than a
+      // wrong answer.
+      assert.equal(sets.find((one) => one.id === 'heo-env-my-second-one').model, '');
+    });
+
+    await test('each provider is spent against its own key and its own host', async () => {
+      seenByProvider.length = 0;
+      assert.equal((await askFound({ set: 'heo-env-alpha', model: 'alpha-large', prompt: 'p' })).status, 200);
+      assert.equal((await askFound({ set: 'heo-env-my-second-one', model: 'whatever', prompt: 'p' })).status, 200);
+      assert.equal(seenByProvider.length, 2);
+      assert.equal(seenByProvider[0].url, '/alpha/chat/completions');
+      assert.equal(seenByProvider[0].auth, 'Bearer sk-alpha-discovered');
+      assert.equal(seenByProvider[1].url, '/second/chat/completions');
+      assert.equal(seenByProvider[1].auth, 'Bearer sk-second-discovered');
+    });
+
+    await test('an id the server does not hold is refused, not silently substituted', async () => {
+      seenByProvider.length = 0;
+      const response = await askFound({ set: 'heo-env-nowhere', model: 'm', prompt: 'p' });
+      assert.equal(response.status, 404);
+      // Spending a different provider's budget than the one asked for is worse than an error.
+      assert.equal(seenByProvider.length, 0);
+    });
+
+    await test('an allow-list is enforced per provider, not globally', async () => {
+      seenByProvider.length = 0;
+      assert.equal((await askFound({ set: 'heo-env-alpha', model: 'not-listed', prompt: 'p' })).status, 403);
+      assert.equal(seenByProvider.length, 0);
+      // The provider with no list accepts anything, which is the discriminating half.
+      assert.equal((await askFound({ set: 'heo-env-my-second-one', model: 'not-listed', prompt: 'p' })).status, 200);
+    });
+  } finally {
+    await found.instance.close();
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
 
 {
   const proxied = await start(

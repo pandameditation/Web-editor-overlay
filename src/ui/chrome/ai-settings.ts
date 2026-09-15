@@ -323,10 +323,22 @@ export class HeoAiSettings extends HeoElement {
 
       .empty {
         padding: 14px 0 18px;
+        margin: 0 auto;
+        max-width: 46ch;
         color: var(--heo-text-dim);
         font-size: 11.5px;
-        line-height: 1.6;
+        line-height: 1.7;
         text-align: center;
+      }
+      /* Variable names read as names rather than as prose, so they can be copied by eye. */
+      .empty code {
+        padding: 1px 4px;
+        border-radius: 4px;
+        background: var(--heo-surface-2);
+        color: var(--heo-text);
+        font-family: var(--heo-mono);
+        font-size: 10.5px;
+        white-space: nowrap;
       }
 
       footer {
@@ -401,9 +413,16 @@ export class HeoAiSettings extends HeoElement {
               <div class="pane">${this.#renderForm(this.#current(sets), sets)}</div>
             </div>`
         : html`<div class="pane">
+              <!--
+                The empty state names the shortest route rather than only stating the situation.
+                A key in .env is one line and needs no configuration, and it is also the only
+                tier that keeps the credential out of this page — so it is the one to put first.
+              -->
               <p class="empty">
-                No model yet. Add one and any element on the page can be edited by describing
-                the change you want.
+                No model yet. Put a key in <code>.env</code> and restart the dev server — 
+                <code>ANTHROPIC_API_KEY</code>, <code>OPENAI_API_KEY</code> and
+                <code>GEMINI_API_KEY</code> are all picked up on their own, and stay on the
+                server. Or add a provider below to use a local model or your own key.
               </p>
             </div>`}
 
@@ -690,16 +709,20 @@ export class HeoAiSettings extends HeoElement {
 
   #add(): void {
     const id = `ai-${Math.random().toString(36).slice(2, 9)}`;
-    // Defaults to the safest transport available: a dev server is holding a key or it is not,
-    // and finding out is one Test away — whereas defaulting to an in-page key would make the
-    // least safe option the one that happens by not choosing.
-    const proxied = Boolean(this.editor.project);
+    /*
+     * A local model, not a proxied one.
+     *
+     * Proxied providers are not made here — the dev server discovers its own keys and hands the
+     * page a set per provider, already named and pointed at a model. So reaching for this button
+     * means the environment did not supply what you wanted, and the useful thing to offer is the
+     * other keyless option rather than a `proxy` set with an id no server has heard of.
+     */
     this.editor.ai.upsert({
       id,
-      label: proxied ? 'Dev server model' : 'New provider',
-      transport: proxied ? 'proxy' : 'local',
+      label: 'New provider',
+      transport: 'local',
       provider: 'openai-compatible',
-      baseURL: proxied ? undefined : 'http://127.0.0.1:11434/v1',
+      baseURL: 'http://127.0.0.1:11434/v1',
       model: '',
       scope: { ...DEFAULT_AI_SCOPE },
     });

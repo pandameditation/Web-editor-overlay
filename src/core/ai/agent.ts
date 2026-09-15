@@ -33,12 +33,14 @@ import {
   type AiScopePolicy,
 } from './types.js';
 
-/** What every new provider set starts with, and what the settings UI shows as the default. */
-export const DEFAULT_AI_SCOPE: AiScopePolicy = {
-  classes: 'always',
-  rules: 'always',
-  parent: 'always',
-};
+/**
+ * Re-exported from `types.js`, where the value now lives.
+ *
+ * It moved because the Vite plugin needs it to build the sets it discovers in the environment,
+ * and this module reaches the browser's storage and location through `keys.js` — so importing it
+ * from Node would drag half the editor into a dev-server bundle to read three booleans.
+ */
+export { DEFAULT_AI_SCOPE } from './types.js';
 
 export class AiAgent {
   #sets: AiProviderSet[] = [];

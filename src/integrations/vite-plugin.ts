@@ -2,8 +2,15 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
-import type { Plugin, ViteDevServer } from 'vite';
+import { loadEnv, type Plugin, type ViteDevServer } from 'vite';
 import type { DesignSystemDocument } from '../core/types.js';
+import {
+  describeDiscovery,
+  discoverAiProviders,
+  isIncomplete,
+  publicProviderSets,
+  type DiscoveredProvider,
+} from './ai-env.js';
 import { instrumentHTML, instrumentTemplates } from './instrument.js';
 
 const SOURCE_ATTR = 'data-heo-src';
@@ -109,31 +116,59 @@ export interface EditorOverlayPluginOptions {
    */
   allowRemote?: boolean;
   /**
-   * Hold an AI credential on the server, so the page never sees one.
+   * AI providers, and the credentials that reach them. **Nothing needs to be set here.**
    *
-   * The only configuration here that is a security property rather than a preference, and the
-   * reason it exists: an API key in the browser is readable by every script sharing that page's
-   * JavaScript realm, and the overlay mounts *into* pages it does not control. Nothing done in
-   * the browser fixes that — encrypting the key at rest only hides it from something that could
-   * not run code, which in a browser is nothing. Keeping the key here is the fix.
+   * By default the plugin reads the environment — `.env`, through Vite's own loader, plus
+   * anything already exported in the shell — and offers every provider it finds a key for. So
+   * this is the whole setup:
    *
-   * The page then sends a prompt and gets a stream back. It cannot name the destination, and it
-   * cannot read the credential, because neither ever crosses the boundary.
-   *
-   * `apiKey` is read from the environment by the caller, so the key lives in `.env` and not in a
-   * config file somebody commits:
+   * ```ini
+   * # .env
+   * ANTHROPIC_API_KEY=sk-ant-…
+   * ```
    *
    * ```js
-   * editorOverlay({ ai: { provider: 'anthropic', apiKey: process.env.ANTHROPIC_API_KEY } })
+   * editorOverlay()
    * ```
+   *
+   * Any number of custom OpenAI-compatible endpoints work the same way, grouped by a name of
+   * your choosing — `HEO_AI_WORK_API_KEY` with `HEO_AI_WORK_BASE_URL`. See `ai-env.ts` for the
+   * full set of recognised variables.
+   *
+   * Whichever route the key arrives by, it stays on this side. That is the only reason this
+   * option is a security property rather than a preference: an API key in the browser is
+   * readable by every script sharing that page's JavaScript realm, and the overlay mounts *into*
+   * pages it does not control. Nothing done in the browser fixes that — encrypting the key at
+   * rest only hides it from something that could not run code, which in a browser is nothing.
+   * The page sends a prompt and gets a stream back; it cannot name the destination and it cannot
+   * read the credential, because neither ever crosses the boundary.
+   *
+   * Pass `false` to read nothing from the environment, or configure providers explicitly when
+   * they come from somewhere Vite's env loader cannot see — a secret manager, say.
    */
-  ai?: {
-    provider: 'openai' | 'anthropic' | 'google' | 'openai-compatible';
-    apiKey: string | undefined;
-    /** Defaults to the provider's own host. Set it for a gateway or a self-hosted server. */
+  ai?: false | {
+    /** Read providers from the environment. Default `true`. */
+    env?: boolean;
+    /** Providers configured by hand, offered before any the environment supplies. */
+    providers?: Array<{
+      /** Defaults to a slug of the label. Stable ids matter: the page stores settings against them. */
+      id?: string;
+      label?: string;
+      provider: 'openai' | 'anthropic' | 'google' | 'openai-compatible';
+      apiKey: string | undefined;
+      /** Defaults to the provider's own host. Set it for a gateway or a self-hosted server. */
+      baseURL?: string;
+      /** Models the page may ask for. Absent means any, which is the usual case for one's own key. */
+      models?: string[];
+      /** What the page starts with in its model field. */
+      model?: string;
+    }>;
+    /** One provider inline, which is the shorthand for a `providers` array of length one. */
+    provider?: 'openai' | 'anthropic' | 'google' | 'openai-compatible';
+    apiKey?: string | undefined;
     baseURL?: string;
-    /** Models the page may ask for. Absent means any, which is the usual case for one's own key. */
     models?: string[];
+    model?: string;
   };
 }
 
@@ -165,6 +200,13 @@ export default function editorOverlay(options: EditorOverlayPluginOptions = {}):
 
   let root = process.cwd();
   let base = '/';
+  /**
+   * Providers this server holds a key for, discovered in `configResolved`.
+   *
+   * Populated there and not later because `buildMountOptions` memoises on its first call and that
+   * call happens in `load` — a list assembled after that point would never reach the page.
+   */
+  let providers: DiscoveredProvider[] = [];
   /**
    * Regenerated every time the server starts, so a token that leaked into a log or a
    * stale tab stops working the moment the process restarts.
@@ -210,6 +252,19 @@ export default function editorOverlay(options: EditorOverlayPluginOptions = {}):
       // a same-origin ES module is somewhere another origin cannot read from, which
       // is the whole reason the token is worth anything.
       ...(writable ? { sourceEndpoint: FS_ENDPOINT, sourceToken: token } : {}),
+      /*
+       * The providers, with their credentials removed by `publicProviderSets`.
+       *
+       * Gated on `writable` because a proxied set reaches the server through the same endpoint
+       * the file route uses. With no endpoint there is nothing for these sets to talk to, and
+       * offering them would put a provider in the settings panel that fails on first use.
+       *
+       * This is what makes the feature zero-config: the page opens with the providers already
+       * listed, named and pointed at a model, so there is nothing to type in and no key to paste.
+       */
+      ...(writable && usable(providers).length
+        ? { aiProviders: publicProviderSets(usable(providers)) }
+        : {}),
       ...resolveDesignSystem(options.designSystem, root),
     });
     return mountOptions;
@@ -223,6 +278,27 @@ export default function editorOverlay(options: EditorOverlayPluginOptions = {}):
     configResolved(config) {
       root = config.root;
       base = config.base || '/';
+      /*
+       * Read here because this is the first hook that knows where the env files are, and because
+       * `buildMountOptions` caches on first use in `load` — later is too late.
+       *
+       * `''` as the prefix loads unprefixed names, which is the whole point: `ANTHROPIC_API_KEY`
+       * is the name every other tool uses, and a `VITE_`-prefixed variable would be inlined into
+       * client bundles, which for a credential is the one outcome to avoid.
+       *
+       * Two directories, because `envDir` follows the Vite root and the Vite root is often not
+       * where a person keeps their `.env`. `root: 'demo'`, `root: 'src'` and any monorepo package
+       * all put the config — and the `.env` beside it — a level up from the root Vite serves.
+       * Looking only at `envDir` there means "just add a .env file" quietly does not work, which
+       * is the whole promise this is making. The directory nearer the Vite root wins.
+       */
+      const files = [process.cwd(), config.envDir ?? config.root];
+      providers = collectProviders(options.ai, {
+        ...Object.assign({}, ...files.map((dir) => loadEnv(config.mode, dir, ''))),
+        // The shell last: an exported variable is the most immediate statement of intent, and it
+        // is also how CI and a secret manager hand one over.
+        ...process.env,
+      });
     },
 
     /**
@@ -256,23 +332,23 @@ export default function editorOverlay(options: EditorOverlayPluginOptions = {}):
        * page asks for the AI path by query rather than by a separate URL for the same reason —
        * one endpoint to advertise, one grant to hold.
        */
-      const proxy = options.ai?.apiKey ? { ...options.ai, apiKey: options.ai.apiKey } : null;
-      if (options.ai && !proxy) {
-        server.config.logger.warn(
-          '[html-editor-overlay] AI proxying is off: no apiKey was supplied. The editor will ' +
-          'offer local models and in-page keys instead.',
-        );
-      }
-      if (proxy) {
-        server.config.logger.info(
-          `[html-editor-overlay] AI requests are proxied to ${proxy.provider} — the key stays here`,
-        );
+      /*
+       * Announced rather than left to be discovered.
+       *
+       * Reading the ambient environment means a key exported months ago for another tool can turn
+       * this on without anybody asking for it, so the log names each provider and the variable it
+       * came from. That is the difference between a convenience and a surprise.
+       */
+      for (const line of describeDiscovery(providers)) {
+        const complain = line.includes('was found but');
+        const say = complain ? server.config.logger.warn : server.config.logger.info;
+        say.call(server.config.logger, `[html-editor-overlay] ${line}`);
       }
 
       server.middlewares.use(FS_ENDPOINT, (request, response) => {
         const url = new URL(request.url ?? '/', 'http://localhost');
         if (url.searchParams.has('ai')) {
-          void handleAiRequest(request, response, { token, proxy });
+          void handleAiRequest(request, response, { token, providers: usable(providers) });
           return;
         }
         void handleFileRequest(request, response, { root, base, token });
@@ -461,21 +537,76 @@ async function handleFileRequest(
   }
 }
 
-/** Server-side AI configuration, credential included. Never serialised towards the page. */
-interface AiProxyConfig {
-  provider: 'openai' | 'anthropic' | 'google' | 'openai-compatible';
-  apiKey: string;
-  baseURL?: string;
-  models?: string[];
-}
-
 /** Each provider's own host, so the common case needs no `baseURL`. */
-const AI_HOSTS: Record<AiProxyConfig['provider'], string> = {
+const AI_HOSTS: Record<DiscoveredProvider['provider'], string> = {
   openai: 'https://api.openai.com/v1',
   'openai-compatible': 'https://api.openai.com/v1',
   anthropic: 'https://api.anthropic.com',
   google: 'https://generativelanguage.googleapis.com',
 };
+
+/**
+ * The providers this server will act for: explicit configuration first, then the environment.
+ *
+ * Order is priority, and the page treats the first as its default — so something written into the
+ * config wins over something found lying around, which is the order of deliberateness.
+ */
+function collectProviders(
+  option: EditorOverlayPluginOptions['ai'],
+  env: Record<string, string | undefined>,
+): DiscoveredProvider[] {
+  if (option === false) return [];
+  const out: DiscoveredProvider[] = [];
+
+  const explicit = [
+    ...(option?.provider && option.apiKey
+      ? [{
+        provider: option.provider,
+        apiKey: option.apiKey,
+        baseURL: option.baseURL,
+        models: option.models,
+        model: option.model,
+      }]
+      : []),
+    ...(option?.providers ?? []),
+  ];
+  for (const [index, one] of explicit.entries()) {
+    if (!one.apiKey) continue;
+    const label = one.label ?? labelFor(one.provider);
+    out.push({
+      id: one.id ?? `heo-config-${index === 0 ? one.provider : `${one.provider}-${index}`}`,
+      label,
+      provider: one.provider,
+      apiKey: one.apiKey,
+      ...(one.baseURL ? { baseURL: one.baseURL } : {}),
+      ...(one.models?.length ? { models: one.models } : {}),
+      model: one.model ?? one.models?.[0] ?? '',
+      foundAt: 'the plugin config',
+    });
+  }
+
+  if (option?.env !== false) {
+    const seen = new Set(out.map((one) => one.id));
+    for (const found of discoverAiProviders(env)) {
+      if (!seen.has(found.id)) out.push(found);
+    }
+  }
+  return out;
+}
+
+function labelFor(provider: DiscoveredProvider['provider']): string {
+  switch (provider) {
+    case 'anthropic': return 'Anthropic';
+    case 'openai': return 'OpenAI';
+    case 'google': return 'Google Gemini';
+    default: return 'Custom provider';
+  }
+}
+
+/** Providers that can actually be reached — a named group with no base URL is not one. */
+function usable(providers: readonly DiscoveredProvider[]): DiscoveredProvider[] {
+  return providers.filter((one) => !isIncomplete(one));
+}
 
 /**
  * Proxy one AI request, holding the credential here.
@@ -487,15 +618,20 @@ const AI_HOSTS: Record<AiProxyConfig['provider'], string> = {
  *
  * Three things the page is deliberately not allowed to decide.
  *
- * **Where the request goes.** The destination comes from this config, never from the body. A page
- * that could name the host could point the server at a host of its choosing and have it
- * authenticate to it — which is a credential leak wearing a proxy's clothes.
+ * **Where the request goes.** The destination comes from this server's own list, never from the
+ * body. A page that could name the host could point the server at a host of its choosing and have
+ * it authenticate to it — which is a credential leak wearing a proxy's clothes.
  *
  * **Which provider dialect is spoken.** Same reasoning: the server knows which credential it
  * holds, so it knows which API that credential is for.
  *
  * **Which model, when `models` is set.** Optional because one's own key on one's own machine has
  * no reason to be restricted, and useful the moment the key is shared with a team.
+ *
+ * What the page *may* choose is which of the configured providers to use, by the `set` id it was
+ * given at mount. That is a handle into this table and not a description of anything: an id names
+ * a provider the server already holds a key for and already told the page about, so the widest
+ * possible abuse is picking a different one of the user's own models.
  *
  * The reply is streamed through untouched. The editor's client already knows how to read every
  * one of these providers' event streams, so translating here would be a second implementation of
@@ -504,7 +640,7 @@ const AI_HOSTS: Record<AiProxyConfig['provider'], string> = {
 async function handleAiRequest(
   request: FsRequest,
   response: FsResponse,
-  context: { token: string; proxy: AiProxyConfig | null },
+  context: { token: string; providers: readonly DiscoveredProvider[] },
 ): Promise<void> {
   /*
    * Refusals go out as JSON with a `message`.
@@ -534,17 +670,17 @@ async function handleAiRequest(
     refuse(405, 'AI requests are a POST.');
     return;
   }
-  const { proxy } = context;
-  if (!proxy) {
+  if (!context.providers.length) {
     refuse(
       501,
-      'This dev server is not holding an AI key. Pass ai: { provider, apiKey } to the editor ' +
-      'plugin, or use a local model instead.',
+      'This dev server is not holding an AI key. Put one in .env — ANTHROPIC_API_KEY, ' +
+      'OPENAI_API_KEY or GEMINI_API_KEY are all picked up automatically — and restart it. ' +
+      'Or use a local model instead.',
     );
     return;
   }
 
-  let asked: { model?: unknown; system?: unknown; prompt?: unknown };
+  let asked: { model?: unknown; system?: unknown; prompt?: unknown; set?: unknown };
   try {
     asked = JSON.parse(await readBody(request)) as typeof asked;
   } catch {
@@ -556,6 +692,24 @@ async function handleAiRequest(
   const prompt = String(asked.prompt ?? '');
   if (!model || !prompt) {
     refuse(400, 'A model and a prompt are both needed.');
+    return;
+  }
+
+  /*
+   * Which provider, by the id the page was handed at mount.
+   *
+   * The fallback to the first is not laxity: a page holding a set from an earlier run of a server
+   * that has since been reconfigured would otherwise be stuck, and the first provider is the one
+   * the page would have been given as its default anyway. An id that is present but unknown is a
+   * different matter and is refused, because silently spending a different provider's budget than
+   * the one asked for is worse than a clear error.
+   */
+  const wanted = String(asked.set ?? '').trim();
+  const proxy = wanted
+    ? context.providers.find((one) => one.id === wanted)
+    : context.providers[0];
+  if (!proxy) {
+    refuse(404, 'That provider is not configured on this dev server any more. Reload the page.');
     return;
   }
   if (proxy.models?.length && !proxy.models.includes(model)) {
@@ -621,7 +775,7 @@ async function handleAiRequest(
 }
 
 /** The upstream path for one provider, mirroring the client's own `endpointFor`. */
-function aiPathFor(provider: AiProxyConfig['provider'], base: string, model: string): string {
+function aiPathFor(provider: DiscoveredProvider['provider'], base: string, model: string): string {
   switch (provider) {
     case 'anthropic':
       return `${base}/v1/messages`;
@@ -634,7 +788,7 @@ function aiPathFor(provider: AiProxyConfig['provider'], base: string, model: str
 
 /** The upstream body for one provider, mirroring the client's own `bodyFor`. */
 function aiBodyFor(
-  provider: AiProxyConfig['provider'],
+  provider: DiscoveredProvider['provider'],
   model: string,
   system: string,
   prompt: string,

@@ -32,6 +32,8 @@ root, no build step required on the consuming side.
   - [Vite plugin](#3-vite-plugin)
 - [The workflow](#the-workflow)
 - [Writing to files](#writing-to-files)
+- [AI edits](#ai-edits)
+  - [Where the API key goes](#where-the-api-key-goes)
 - [Keyboard shortcuts](#keyboard-shortcuts)
 - [Panels](#panels)
 - [`mount()` options](#mount-options)
@@ -543,6 +545,161 @@ guards it:
 
 ---
 
+## AI edits
+
+Put a key in `.env`, select an element, press the **AI** button beside it, and describe
+the change. There is no configuration step — [the plugin finds the key
+itself](#where-the-api-key-goes).
+
+The model does not touch the page. It returns a list of typed operations — set this text,
+set these styles, upsert this class — and each one is checked against the live page
+before anything is applied: that it is shaped correctly, that the provider is allowed
+to make that kind of change, and that its selector reaches the element you selected
+and nothing above it. What survives is applied as it streams in, so you watch it
+happen, and the whole run collapses into **one undo**.
+
+Three things it will not do, by construction. It cannot replace the selected node,
+because undo, provenance, anchors and saving all key on that node's identity. It
+cannot rewrite the parent's contents, because that deletes the element and its
+siblings. And it cannot reach the editor's own chrome — a selector matching an overlay
+node is refused, which `test/ai-scope.html` asserts rather than assumes.
+
+Three kinds of change are treated as needing your say-so, because they reach past the
+element you selected: editing a **class** other elements share, editing a **CSS rule**
+in a stylesheet, and styling the **parent**. Each is `always` or `ask` per provider,
+and an `ask` prompt offers "always allow this for this provider" so you grant it once.
+
+### Where the API key goes
+
+**In `.env`. There is nothing to configure.**
+
+```ini
+# .env
+ANTHROPIC_API_KEY=sk-ant-…
+```
+
+```ts
+// vite.config.ts — unchanged
+plugins: [editorOverlay()]
+```
+
+Restart the dev server and the provider is in the editor, named, with a model already
+filled in. The plugin reads the environment itself: `.env` through Vite's own loader,
+plus anything already exported in your shell. The key stays on the server, so the page
+is told which providers exist and never where they are or what the credential is.
+
+The startup log says what it found and where, because reading the ambient environment
+means a key exported months ago for something else can turn this on:
+
+```
+[html-editor-overlay] AI is on, and the key stays here. Provider: Anthropic (ANTHROPIC_API_KEY)
+```
+
+#### Providers that need only a key
+
+The host and the API dialect are facts about the provider, so the variable name is all
+it takes — and these are the names every other SDK already uses, so one you have works
+as it is. Set as many as you like; they all appear in the list and the first is the
+default.
+
+```ini
+ANTHROPIC_API_KEY=      OPENAI_API_KEY=         GEMINI_API_KEY=
+GROQ_API_KEY=           MISTRAL_API_KEY=        DEEPSEEK_API_KEY=
+XAI_API_KEY=            OPENROUTER_API_KEY=     TOGETHER_API_KEY=
+CEREBRAS_API_KEY=       FIREWORKS_API_KEY=      PERPLEXITY_API_KEY=
+```
+
+#### Any number of OpenAI-compatible endpoints
+
+For gateways, self-hosted servers, or a work key beside a personal one. Pick any
+`NAME` — the group is what ties the variables together, so there is no limit on how
+many you add:
+
+```ini
+HEO_AI_WORK_API_KEY=sk-…
+HEO_AI_WORK_BASE_URL=https://gateway.internal/v1
+HEO_AI_WORK_LABEL=Work gateway               # optional
+HEO_AI_WORK_MODELS=llama-3.3-70b,qwen-2.5    # optional, enforced server-side
+
+HEO_AI_OLLAMA_API_KEY=not-needed-but-required
+HEO_AI_OLLAMA_BASE_URL=http://127.0.0.1:11434/v1
+```
+
+| Suffix | |
+| --- | --- |
+| `_API_KEY` | Required. |
+| `_BASE_URL` | Required. There is no default host for an endpoint nobody named, and guessing one would send a private gateway's key to `api.openai.com`. |
+| `_MODEL` | What the model field starts with. |
+| `_MODELS` | Comma-separated allow-list, enforced on the server. The first becomes the default model. |
+| `_LABEL` | The name shown in the editor. Defaults to the group name. |
+| `_PROVIDER` | `openai`, `anthropic`, `google` or `openai-compatible`. Defaults to the last. |
+
+The same suffixes override a provider from the list above, using its own name —
+`HEO_AI_ANTHROPIC_MODEL=claude-opus-4-5`. One convention, not two.
+
+Named groups come before ambient keys in the list, so the deliberate one is the
+default. A group with a key but no base URL is named in the log and left out of the
+editor rather than offered and then failing on first use.
+
+#### When the environment is not where the key lives
+
+For a secret manager or anything Vite's env loader cannot see, configure providers
+explicitly. `ai: false` turns environment reading off entirely.
+
+```ts
+editorOverlay({
+  ai: {
+    env: false,
+    providers: [
+      { label: 'Anthropic', provider: 'anthropic', apiKey: await fromVault('anthropic') },
+    ],
+  },
+})
+```
+
+Whichever route it arrives by, press **Test** in the settings panel to confirm it. That
+sends a real request and succeeds only on a reply the editor could use, because a
+reachable host with a model name that does not exist is the most common
+misconfiguration by a distance and a ping would call it healthy.
+
+### Why the key is on the server
+
+An API key in the browser is readable by every script sharing that page's JavaScript
+realm, and this overlay mounts *into* pages it does not control. Nothing done in the
+browser fixes that. Encrypting the key at rest only hides it from something that could
+not run code, which in a browser is nothing — and a lock icon over a key that is still
+readable is worse than no icon, because it invites pasting a production key.
+
+So there are three ways to connect a model, and only the first is secure:
+
+| Tier | How | What it costs you |
+| --- | --- | --- |
+| **Dev server** | The plugin's `ai` option, key in `.env` | Needs the Vite plugin. The page cannot read the key or name the destination. |
+| **Local model** | Ollama or similar on `127.0.0.1` | No key exists, so there is nothing to leak. Needs a model running locally. |
+| **In-page key** | Typed into the settings panel | **The page can read it.** Use a scoped, revocable, spend-capped key. |
+
+The in-page tier holds the key in `sessionStorage`, which survives a dev-server reload
+and dies with the tab, and the field is a password input with
+`autocomplete="current-password"` so your browser's password manager is the intended
+place for it. Persisting to `localStorage` is offered only on a loopback origin, and
+refused elsewhere with a sentence explaining why rather than silently downgraded.
+
+A key is never written into a design-system document or seed. Provider settings travel
+— transport, model, system prompt, scope — through an allow-list applied on export
+*and* on import, so a field added later cannot start travelling by accident. An
+imported provider arrives reading **Needs a key**, and the seed's counts line says how
+many came with it:
+
+```
+25 tokens · 55 classes · 83 rules · 0 blocks · 2 AI sets
+```
+
+`test/ai-keys.html` asserts the key is absent from the seed, the exported JSON, the
+live markup and the change records, using a key generated at runtime so any occurrence
+of it is a real leak.
+
+---
+
 ## Keyboard shortcuts
 
 `Mod` is ⌘ on macOS, Ctrl elsewhere. The canonical list lives in
@@ -787,6 +944,10 @@ editorOverlay({
   write: true,           // let the editor write this project's files
   allowRemote: false,    // …even when the dev server is not on localhost
 
+  // AI needs nothing here. Providers come from .env — see AI edits.
+  // ai: false,                          // …unless you want none read from the environment
+  // ai: { env: false, providers: [ … ] } // …or they come from a secret manager
+
   // Forwarded to mount()
   startInEditMode: false,
   theme: 'dark',
@@ -819,6 +980,17 @@ from one on localhost — the token still guards it, but a mistake stops being c
 to your own machine. Bind to a non-loopback address without this and writing turns
 itself off with a warning. The full set of guards is in
 [Writing to files](#writing-to-files).
+
+`ai` exists to be left out. Providers come from the environment by default, so a key in
+`.env` is the entire setup and there is nothing to keep in sync between a config file and
+a credential store. It is also the only option here that is a security property rather
+than a preference: the page sends a prompt and gets a stream back, and it cannot name the
+destination, choose the dialect or read the credential, because none of those crosses the
+boundary. What the page may choose is which of the configured providers to spend, by an id
+the server issued — a handle into a server-side table, not a description of anything.
+Requests are refused with the same token and same-origin checks as file writes, and a
+`models` list is enforced per provider. See [AI edits](#ai-edits) for the variable names
+and for why in-browser keys are offered but not recommended.
 
 A `designSystem` path is read from disk when the config resolves and inlined into
 the bootstrap module, so the browser makes no request and no page is ever mounted
@@ -1183,6 +1355,13 @@ npm run test:endpoint    # the dev-server file endpoint, against a real Vite ser
 npm run check:opaque     # a page opened from disk, with real opaque origins
 npm run prompt           # print a sample prompt instead of asserting on it
 ```
+
+`npm run dev` serves `demo/` through the real plugin, so it is the fastest way to try
+anything by hand. For AI edits, `cp .env.example .env`, put a key in and restart — the
+demo config says nothing about AI, because the plugin reads `.env` itself. See
+[Where the API key goes](#where-the-api-key-goes). Without a key the editor runs
+normally and the settings panel names the variables to set, which is the branch worth
+leaving working: most of the editor has nothing to do with a model.
 
 The `test:*` suites run outside the browser because none of their subjects needs one,
 which is also what keeps "this module has no DOM dependencies" honest rather than

@@ -9,6 +9,10 @@ const src = fileURLToPath(new URL('./src/index.ts', import.meta.url));
  *
  * The alias points the plugin's `html-editor-overlay` import at the source tree
  * so the demo exercises the real plugin path without needing a build first.
+ *
+ * Note there is nothing here about AI. The plugin reads `.env` itself and offers whatever
+ * providers it finds a key for — see `src/integrations/ai-env.ts`. A config that had to
+ * assemble that list would be a config every project using this plugin had to copy.
  */
 export default defineConfig({
   root: 'demo',

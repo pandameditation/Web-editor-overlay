@@ -94,6 +94,19 @@ export interface AiProviderSet {
   scope: AiScopePolicy;
 }
 
+/**
+ * What every new provider set starts with, and what the settings UI shows as the default.
+ *
+ * Here rather than beside `AiAgent` because the Vite plugin builds sets too, for the providers it
+ * finds in the environment, and this module is a leaf with no imports — which is what makes it
+ * safe to read from Node without pulling the browser half of the editor along with it.
+ */
+export const DEFAULT_AI_SCOPE: AiScopePolicy = {
+  classes: 'always',
+  rules: 'always',
+  parent: 'always',
+};
+
 /** True when this set can be used without asking the user for anything first. */
 export function needsKey(set: AiProviderSet): boolean {
   return set.transport === 'in-page';

@@ -159,13 +159,17 @@ function bodyFor(
   /*
    * The proxy is told what to do, not how.
    *
-   * It gets the model, the prompts and nothing else — no base URL and no provider dialect —
-   * because the server is the party that knows which credential it holds and therefore which
-   * provider it can talk to. A page that could name the destination could name a destination of
-   * its choosing and have the server authenticate to it.
+   * It gets the model, the prompts and the id of the set to spend — no base URL and no provider
+   * dialect — because the server is the party that knows which credential it holds and therefore
+   * which provider it can talk to. A page that could name the destination could name a
+   * destination of its choosing and have the server authenticate to it.
+   *
+   * `set` is a handle, not a description. It names one of the providers the server configured and
+   * told this page about at mount, so the server still decides the host, the dialect and the
+   * credential; all the page picks is which of the user's own models to use.
    */
   if (set.transport === 'proxy') {
-    return { model: set.model, system, prompt: user, token: proxy?.token };
+    return { set: set.id, model: set.model, system, prompt: user, token: proxy?.token };
   }
 
   switch (set.provider) {

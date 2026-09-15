@@ -3,3 +3,8 @@ dist/
 dist-demo/
 *.local
 .DS_Store
+
+# Credentials for the demo dev server. `.env.example` is the committed template.
+.env
+.env.*
+!.env.example
