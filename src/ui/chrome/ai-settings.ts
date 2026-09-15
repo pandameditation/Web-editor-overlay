@@ -6,6 +6,9 @@ import {
   AI_SCOPE_CLASSES,
   AI_SCOPE_CONSEQUENCE,
   AI_SCOPE_LABELS,
+  AI_SELF_SCOPE,
+  baseURLFor,
+  DEFAULT_BASE_URL,
   describeTransport,
   type AiProviderKind,
   type AiProviderSet,
@@ -294,12 +297,30 @@ export class HeoAiSettings extends HeoElement {
         gap: 7px;
       }
 
-      /* Scope rows: the permission, its consequence, and the choice, in that reading order. */
+      /* The permissions get a heading, because they are the only settings here about reach. */
+      .scope-title {
+        margin: 14px 0 3px;
+        font-size: 11.5px;
+        font-weight: 600;
+      }
+      .scope-lede {
+        margin: 0 0 2px;
+        color: var(--heo-text-dim);
+        font-size: 10.5px;
+        line-height: 1.5;
+      }
+
+      /*
+       * Scope rows: the permission, its consequence, and the choice, in that reading order.
+       *
+       * Top-aligned rather than centred now the explanation is two clauses long — a select
+       * floating against the vertical middle of four lines of text belongs to none of them.
+       */
       .scope {
         display: flex;
-        align-items: center;
-        gap: 8px;
-        padding: 6px 0;
+        align-items: flex-start;
+        gap: 10px;
+        padding: 8px 0;
         border-top: 1px solid var(--heo-line);
       }
       .scope .text {
@@ -308,17 +329,35 @@ export class HeoAiSettings extends HeoElement {
       }
       .scope .text b {
         display: block;
+        margin-bottom: 1px;
         font-size: 11px;
         font-weight: 600;
       }
       .scope .text span {
         color: var(--heo-text-faint);
         font-size: 10px;
-        line-height: 1.45;
+        line-height: 1.5;
       }
       .scope select {
         width: auto;
         flex: 0 0 auto;
+      }
+      /*
+       * The selected element's row is stated, not offered.
+       *
+       * Kept legible rather than dimmed to the usual disabled opacity: this is the row that says
+       * what the AI is allowed to do at all, and a greyed-out "Always" reads as unavailable
+       * rather than as settled.
+       */
+      .scope.fixed .text b {
+        color: var(--heo-accent);
+      }
+      .scope.fixed select:disabled {
+        opacity: 1;
+        border-color: var(--heo-accent-line);
+        background: var(--heo-accent-soft);
+        color: var(--heo-text);
+        cursor: default;
       }
 
       .acts {
@@ -571,11 +610,23 @@ export class HeoAiSettings extends HeoElement {
     const verdict = this.verdict[set.id];
     const needsKey = !this.editor.ai.ready(set);
     const shield = needsKey ? 'needs' : set.transport === 'in-page' ? 'exposed' : 'safe';
+    /**
+     * Write one field, over whatever the set holds *now*.
+     *
+     * Re-read rather than spread from the `set` this render closed over. The captured copy is a
+     * snapshot, and a change arriving between the render and the input's own change event — a
+     * sibling field committing, a key being stored, anything the agent emits — would be undone by
+     * the next thing the user typed, because the stale copy carries the old value of every field
+     * it is not setting.
+     */
     const patch = (next: Partial<AiProviderSet>): void => {
-      this.editor.ai.upsert({ ...set, ...next });
+      const live = this.editor.ai.get(set.id) ?? set;
+      this.editor.ai.upsert({ ...live, ...next });
       // A changed destination invalidates whatever the last test proved.
       this.verdict = { ...this.verdict, [set.id]: undefined as never };
     };
+    /** The set as it stands, for a handler that needs to read a field before writing another. */
+    const live = (): AiProviderSet => this.editor.ai.get(set.id) ?? set;
 
     return html`<div class="body-rows">
       <div class="head">
@@ -634,8 +685,24 @@ export class HeoAiSettings extends HeoElement {
           <span>Where the key lives</span>
           <select
             class="input"
-            @change=${(event: Event) =>
-        patch({ transport: (event.target as HTMLSelectElement).value as AiTransportKind })}
+            @change=${(event: Event) => {
+        const transport = (event.target as HTMLSelectElement).value as AiTransportKind;
+        /*
+         * Leaving proxy means the page now has to know where to send the request.
+         *
+         * A proxied set carries no base URL by design — the server decides and the page is not
+         * told — so switching one to a tier that sends its own requests left the field empty,
+         * and an empty base produced the relative path `/chat/completions`. That is a request
+         * to the page's own origin, which fails in a way that reads like a broken editor
+         * rather than a missing setting.
+         */
+        const now = live();
+        patch(
+          transport === 'proxy'
+            ? { transport }
+            : { transport, baseURL: baseURLFor(now.provider, now.baseURL) },
+        );
+      }}
           >
             <option value="proxy" ?selected=${set.transport === 'proxy'}>
               Dev server (safest)
@@ -652,8 +719,17 @@ export class HeoAiSettings extends HeoElement {
           <span>API shape</span>
           <select
             class="input"
-            @change=${(event: Event) =>
-        patch({ provider: (event.target as HTMLSelectElement).value as AiProviderKind })}
+            @change=${(event: Event) => {
+        const provider = (event.target as HTMLSelectElement).value as AiProviderKind;
+        // The dialect implies the host, so choosing one fills the other in — unless the user
+        // typed a host of their own, which `baseURLFor` leaves alone.
+        const now = live();
+        patch(
+          now.transport === 'proxy'
+            ? { provider }
+            : { provider, baseURL: baseURLFor(provider, now.baseURL) },
+        );
+      }}
           >
             <option value="openai-compatible" ?selected=${set.provider === 'openai-compatible'}>
               OpenAI-compatible
@@ -672,7 +748,7 @@ export class HeoAiSettings extends HeoElement {
             <input
               class="input"
               .value=${set.baseURL ?? ''}
-              placeholder="http://127.0.0.1:11434/v1"
+              placeholder=${DEFAULT_BASE_URL[set.provider] || 'http://127.0.0.1:11434/v1'}
               @change=${(event: Event) =>
             patch({ baseURL: (event.target as HTMLInputElement).value })}
             />
@@ -701,6 +777,19 @@ export class HeoAiSettings extends HeoElement {
         ></textarea>
       </label>
 
+      <!--
+        The permissions, under a heading that says what they are.
+
+        Ungrouped, these read as three more settings between a textarea and a Test button. They
+        are the only settings on this screen that decide how far a change can travel, so they get
+        a title and the selected element is listed with them — see AI_SELF_SCOPE.
+      -->
+      <h3 class="scope-title">Scope of AI changes</h3>
+      <p class="scope-lede">
+        What this provider may edit when you ask it for something. Everything beyond the selected
+        element reaches other parts of the page.
+      </p>
+      ${this.#renderSelfScope()}
       ${AI_SCOPE_CLASSES.map((scope) => this.#renderScope(set, scope))}
 
       <div class="acts">
@@ -789,6 +878,31 @@ export class HeoAiSettings extends HeoElement {
       </div>
       ${refusal ? html`<span class="verdict">${refusal}</span>` : nothing}
     </label>`;
+  }
+
+  /**
+   * The selected element, listed with the permissions but not one of them.
+   *
+   * A disabled select rather than a chip or a tick, so the four rows read as one list with one
+   * kind of answer in it. It is disabled rather than absent because "Always" is the fact worth
+   * stating: a reader deciding whether to allow class edits is comparing them against something,
+   * and that something should be on screen.
+   */
+  #renderSelfScope(): TemplateResult {
+    return html`<div class="scope fixed">
+      <span class="text">
+        <b>${AI_SELF_SCOPE.label}</b>
+        <span>${AI_SELF_SCOPE.consequence}</span>
+      </span>
+      <select
+        class="input"
+        disabled
+        aria-label=${`${AI_SELF_SCOPE.label} — always allowed and not changeable`}
+        title="The element you selected is always editable. That is what the AI is for."
+      >
+        <option selected>Always</option>
+      </select>
+    </div>`;
   }
 
   #renderScope(set: AiProviderSet, scope: AiScopeClass): TemplateResult {

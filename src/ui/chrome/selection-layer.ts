@@ -81,6 +81,64 @@ export class HeoSelectionLayer extends HeoElement {
         box-shadow: none;
       }
 
+      /*
+       * The AI is working on this element.
+       *
+       * A travelling sheen plus a breathing halo, rather than a spinner parked beside it. Two
+       * reasons: the thing being waited on is the element, so the signal belongs on its edge; and
+       * the reply streams in as a series of edits, so an indeterminate motion is honest where a
+       * progress bar would have to invent a denominator.
+       *
+       * The halo animates box-shadow and the sheen animates background-position; neither touches
+       * layout, so a page mid-run is not being reflowed sixty times a second by its own progress
+       * indicator. Reduced-motion users get the halo's final state and no travel — see the media
+       * query at the end of this block.
+       */
+      :host([data-ai-busy]) .select {
+        border-color: transparent;
+        background-image: linear-gradient(
+          115deg,
+          transparent 20%,
+          var(--heo-accent-soft) 45%,
+          var(--heo-accent) 50%,
+          var(--heo-accent-soft) 55%,
+          transparent 80%
+        );
+        background-size: 300% 300%;
+        /* Painted on the border box only, so the element itself stays legible underneath. */
+        background-origin: border-box;
+        background-clip: border-box;
+        animation:
+          heo-ai-sheen 1.5s linear infinite,
+          heo-ai-halo 1.9s var(--heo-ease) infinite;
+      }
+      @keyframes heo-ai-sheen {
+        to {
+          background-position: 300% 0;
+        }
+      }
+      @keyframes heo-ai-halo {
+        0%,
+        100% {
+          box-shadow: 0 0 0 3px var(--heo-accent-soft);
+        }
+        50% {
+          box-shadow:
+            0 0 0 5px color-mix(in oklab, var(--heo-accent) 26%, transparent),
+            0 0 14px 2px color-mix(in oklab, var(--heo-accent) 34%, transparent);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        :host([data-ai-busy]) .select {
+          animation: none;
+          border-color: var(--heo-accent);
+          background-image: none;
+          box-shadow:
+            0 0 0 4px color-mix(in oklab, var(--heo-accent) 24%, transparent),
+            0 0 12px 2px color-mix(in oklab, var(--heo-accent) 30%, transparent);
+        }
+      }
+
       .badge {
         position: fixed;
         display: flex;
@@ -470,6 +528,15 @@ export class HeoSelectionLayer extends HeoElement {
     this.toggleAttribute('data-dragging', Boolean(state.drag));
     this.toggleAttribute('data-waiting', Boolean(state.drag?.waiting));
     this.toggleAttribute('data-transforming', Boolean(state.transform));
+    /*
+     * A request in flight, said on the element rather than only in the popover.
+     *
+     * The work happens to the selection, and until now the only sign of it was a 20px button
+     * fading in and out at the corner — which is on screen but not where anybody is looking. The
+     * outline is already the thing that says "this one", so it is the thing to make say "this
+     * one, right now".
+     */
+    this.toggleAttribute('data-ai-busy', Boolean(state.aiBusy));
 
     const selected = state.selected;
     const hovered =

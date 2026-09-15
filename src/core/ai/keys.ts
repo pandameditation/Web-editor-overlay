@@ -362,8 +362,11 @@ function fromBase64(text: string): Bytes {
  * `localStorage` throws outright in a sandboxed iframe and when a browser is set to block
  * storage, and this editor is dropped into pages it does not control. A feature degrading to
  * "type the key each time" is fine; the overlay failing to mount is not.
+ *
+ * Exported so the provider list uses the same guard as the credentials. Two notions of "storage
+ * that might not be there" in one subsystem is how one of them ends up missing the try/catch.
  */
-function safeStorage(kind: 'session' | 'local'): Storage | null {
+export function safeStorage(kind: 'session' | 'local'): Storage | null {
   try {
     return kind === 'session' ? sessionStorage : localStorage;
   } catch {

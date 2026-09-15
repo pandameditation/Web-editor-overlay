@@ -160,7 +160,12 @@ import { buildAiContext, renderAiContext } from './ai/context.js';
 import { keyVault } from './ai/keys.js';
 import type { RunOutcome } from './ai/session.js';
 import { createTransport, type AiTransport } from './ai/transport.js';
-import { AI_SCOPE_CONSEQUENCE, AI_SCOPE_LABELS } from './ai/types.js';
+import {
+  AI_SCOPE_CONSEQUENCE,
+  AI_SCOPE_LABELS,
+  DEFAULT_AI_CONTEXT_SCOPE,
+  type AiContextScope,
+} from './ai/types.js';
 import { upsertClassCommand, upsertRuleCommand } from './css-commands.js';
 import {
   describeProvenance,
@@ -254,6 +259,23 @@ export interface ToastMessage {
   tone: 'info' | 'success' | 'warn' | 'error';
   /** Optional action rendered as a button on the toast. */
   action?: { label: string; run: () => void };
+  /**
+   * A heading above the message, which also makes the toast roomy rather than a pill.
+   *
+   * One field doing both because the two go together: a toast needs a heading exactly when its
+   * message is a sentence somebody has to read, and a sentence somebody has to read does not
+   * belong in a 999px pill with everything on one line. Absent, and the toast is the pill it
+   * always was.
+   */
+  title?: string;
+  /**
+   * Which glyph to draw, when the tone's own is not the right one.
+   *
+   * The tone picks a glyph for the usual case — a tick for success, an alert for a warning — and
+   * that is right for "Saved" and wrong for a report from the AI, where the useful mark is the one
+   * that says who is talking.
+   */
+  icon?: string;
 }
 
 export interface InsertAnchor {
@@ -584,6 +606,17 @@ export interface EditorState {
   /** True while a request is in flight, so the menu can offer Stop instead of Send. */
   aiBusy: boolean;
   /**
+   * How much of the element's surroundings the next request describes.
+   *
+   * In the store rather than in the popover's own state because it survives the popover: it is a
+   * preference about requests, and a user who turned the parent on to fix one alignment will want
+   * it on for the next one. Not on the provider set, though — it says nothing about trust and has
+   * no business travelling in a design-system seed.
+   *
+   * Starts minimal. See `AiContextScope`.
+   */
+  aiContextScope: AiContextScope;
+  /**
    * A blob of HTML being pasted in, held while the user writes it.
    *
    * Deliberately not part of `insertAnchor`. The insert menu exists only while that is set,
@@ -896,6 +929,7 @@ export class EditorEngine {
       aiSettingsOpen: false,
       aiOutcome: null,
       aiBusy: false,
+      aiContextScope: { ...DEFAULT_AI_CONTEXT_SCOPE },
       htmlPaste: null,
       cssPaste: null,
       // Everything, by default: leaving something out is the deliberate act, and a save that
@@ -992,12 +1026,19 @@ export class EditorEngine {
     this.#hydrateBlockInstances();
 
     /*
-     * Providers and credentials, in that order.
+     * Providers, then credentials, and providers from three places that must not erase each other.
      *
      * A key is stored against a set's id, so the sets have to exist before the vault is read or
      * every key would look like one belonging to a provider that had been deleted.
+     *
+     * The seed has already run above, and may have brought a provider list with it. Then the ones
+     * this tab configured by hand come back from storage, then the ones the dev server holds a key
+     * for. All three merge: `offer` and `restore` add, where `import` — which the seed path uses —
+     * replaces. That distinction is the fix for a provider added in the settings panel vanishing
+     * on reload, and for a dev server with one discovered key wiping a hand-made list.
      */
-    if (this.options.aiProviders?.length) this.ai.import(this.options.aiProviders);
+    this.ai.restore();
+    if (this.options.aiProviders?.length) this.ai.offer(this.options.aiProviders);
     keyVault.hydrate();
     this.#listeners.push(this.ai.onChange(() => this.#bumpRegistry()));
     this.#listeners.push(keyVault.onChange(() => this.#bumpRegistry()));
@@ -2366,13 +2407,19 @@ export class EditorEngine {
     const controller = new AbortController();
     this.#aiAbort = controller;
     const context = renderAiContext(
-      buildAiContext(el, this.ai.policy(set), {
-        classes: this.classes,
-        rules: this.rules,
-        // The value being dragged in a field is paint, not state, so the model is told what the
-        // element actually declares. Same subtraction the Styles panel makes.
-        preview: this.previewTarget?.el === el ? this.previewTarget : null,
-      }),
+      buildAiContext(
+        el,
+        this.ai.policy(set),
+        {
+          classes: this.classes,
+          rules: this.rules,
+          // The value being dragged in a field is paint, not state, so the model is told what the
+          // element actually declares. Same subtraction the Styles panel makes.
+          preview: this.previewTarget?.el === el ? this.previewTarget : null,
+        },
+        // What the user asked to include. Minimal unless they widened it — see `AiContextScope`.
+        this.store.value.aiContextScope,
+      ),
     );
     const transport = this.options.aiTransport ?? this.#aiTransport();
     // Cleared before the run rather than after: the previous run's account of itself is not an
@@ -2385,11 +2432,52 @@ export class EditorEngine {
         el,
       );
       this.store.patch({ aiOutcome: outcome });
+      if (outcome) this.#announceAiOutcome(outcome);
       return outcome;
     } finally {
       this.#aiAbort = null;
       this.store.patch({ aiBusy: false });
     }
+  }
+
+  /**
+   * Say what the run did, somewhere it can actually be seen.
+   *
+   * The transcript in the popover is the full account and stays the full account. The problem it
+   * has is placement: it renders inside the popover's scroll area, below the prompt box and the
+   * chips, so on anything but a short reply the model's closing sentence — the one line that says
+   * what it thinks it did — sits below the fold of a 460px panel and is missed entirely.
+   *
+   * So the summary is also announced. The heading counts what landed, because that is the fact the
+   * summary tends not to state; and Undo rides along, because the whole run is one step and the
+   * moment somebody wants that step back is the moment they read what it was.
+   */
+  #announceAiOutcome(outcome: RunOutcome): void {
+    const applied = outcome.applied;
+    const failed = Boolean(outcome.failure);
+    this.announce({
+      // The glyph says who is talking, which the tone's own tick would not.
+      icon: 'sparkle',
+      tone: failed ? 'error' : applied ? 'success' : 'info',
+      title: failed
+        ? 'The AI could not finish'
+        : outcome.aborted
+          ? applied
+            ? `Stopped after ${applied} change${applied === 1 ? '' : 's'}`
+            : 'Stopped before anything changed'
+          : applied
+            ? `${applied} change${applied === 1 ? '' : 's'} applied`
+            : 'Nothing was changed',
+      message: outcome.summary,
+      ...(applied
+        ? {
+          action: {
+            label: `Undo ${applied === 1 ? 'it' : 'all'}`,
+            run: () => this.undo(),
+          },
+        }
+        : {}),
+    });
   }
 
   /**
@@ -2415,6 +2503,19 @@ export class EditorEngine {
   /** Open or close the provider settings. Reached from the menu, and from nowhere else. */
   setAiSettings(open: boolean): void {
     this.store.patch({ aiSettingsOpen: open });
+  }
+
+  /**
+   * Widen or narrow what the next request describes.
+   *
+   * Deliberately not merged with `ai.widen`, which grants a *permission*. This changes what the
+   * model is shown; that changes what it may change. Wiring one control to both would mean asking
+   * for the parent's layout in order to reason about spacing also granted the right to restyle it.
+   */
+  setAiContextScope(scope: keyof AiContextScope, on: boolean): void {
+    const current = this.store.value.aiContextScope;
+    if (current[scope] === on) return;
+    this.store.patch({ aiContextScope: { ...current, [scope]: on } });
   }
 
   /** In-flight request, so Stop can cancel the network as well as the run. */
@@ -7350,6 +7451,33 @@ export class EditorEngine {
     this.#toastTimer = window.setTimeout(
       () => this.store.patch({ toast: null }),
       action ? 6000 : 3200,
+    );
+  }
+
+  /**
+   * A toast with a heading, a glyph of its own, and longer to read it.
+   *
+   * The positional `notify` covers the ninety per cent case in one line and should stay that
+   * shape. This is for the report that is a sentence rather than a status: it takes the fields by
+   * name, and the dwell scales with how much there is to read rather than with whether a button
+   * happens to be attached.
+   */
+  announce(toast: Omit<ToastMessage, 'id'>, dwell?: number): void {
+    this.#toastId += 1;
+    this.store.patch({ toast: { ...toast, id: this.#toastId } });
+    if (this.#toastTimer) clearTimeout(this.#toastTimer);
+    /*
+     * Roughly reading speed, floored and capped.
+     *
+     * A three-word summary does not need eight seconds and a two-line one does not fit in three.
+     * ~55ms a character is a slow-reading estimate; the floor keeps a terse reply on screen long
+     * enough to notice, and the cap stops a rambling one outstaying its welcome. An attached
+     * action adds time, because deciding whether to press Undo is its own beat.
+     */
+    const read = 1800 + toast.message.length * 55 + (toast.action ? 1800 : 0);
+    this.#toastTimer = window.setTimeout(
+      () => this.store.patch({ toast: null }),
+      dwell ?? Math.min(11_000, Math.max(4000, read)),
     );
   }
 

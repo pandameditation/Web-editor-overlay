@@ -2,7 +2,7 @@ import { css, html, nothing, type TemplateResult } from 'lit';
 import { customElement, query, state } from 'lit/decorators.js';
 import { labelFor, visualBox } from '../../core/dom.js';
 import type { RunOutcome } from '../../core/ai/session.js';
-import { describeTransport } from '../../core/ai/types.js';
+import { AI_CONTEXT_LABELS, AI_QUICK_ACTIONS, describeTransport } from '../../core/ai/types.js';
 import { listen, unlisten } from '../../core/shield.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import { HeoElement } from '../context.js';
@@ -142,27 +142,102 @@ export class HeoAiMenu extends HeoElement {
         font-size: 10.5px;
       }
 
-      .scopes {
+      /*
+       * The one-press requests.
+       *
+       * Squarer and slightly larger than the scope chips below, because they do something rather
+       * than describe something — two rows of identical pills either side of the box would read
+       * as one control with eight settings.
+       */
+      .quick {
         display: flex;
         flex-wrap: wrap;
         gap: 4px;
       }
-      /* What this provider may reach, as facts rather than controls: changing them is a
-         settings decision, and putting toggles here would invite doing it mid-thought. */
+      .chip {
+        padding: 3px 8px;
+        border: 1px solid var(--heo-line);
+        border-radius: var(--heo-r-sm);
+        background: var(--heo-raised);
+        box-shadow: var(--heo-inset);
+        color: var(--heo-text-dim);
+        font: inherit;
+        font-size: 10.5px;
+        white-space: nowrap;
+        cursor: pointer;
+        transition:
+          background var(--heo-fast),
+          color var(--heo-fast),
+          border-color var(--heo-fast);
+      }
+      .chip:hover:not(:disabled) {
+        border-color: var(--heo-accent-line);
+        background: var(--heo-hover);
+        color: var(--heo-text);
+      }
+      .chip:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+
+      .scopes {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        align-items: center;
+      }
+      /*
+       * What the request describes, as switches over the bundle.
+       *
+       * A button rather than a checkbox and a label, because at this size a native control plus
+       * its text is three times the ink for the same one-bit answer — and these have to sit four
+       * to a 320px row without becoming a second paragraph.
+       */
       .scope {
-        padding: 1px 6px;
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        padding: 2px 7px 2px 5px;
         border: 1px solid var(--heo-line);
         border-radius: 999px;
+        background: transparent;
         color: var(--heo-text-faint);
+        font: inherit;
         font-size: 9.5px;
         white-space: nowrap;
+        cursor: pointer;
+        transition:
+          background var(--heo-fast),
+          border-color var(--heo-fast),
+          color var(--heo-fast);
+      }
+      .scope:hover:not(:disabled):not(.fixed) {
+        border-color: var(--heo-line-strong);
+        color: var(--heo-text);
+      }
+      .scope:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
       }
       .scope.on {
         border-color: var(--heo-accent-line);
+        background: var(--heo-accent-soft);
         color: var(--heo-accent);
       }
-      .scope.ask {
+      /* The element is always sent, so its chip is a statement and does not invite a press. */
+      .scope.fixed {
+        cursor: default;
+      }
+      /*
+       * Sent, but this provider may not change it.
+       *
+       * Worth its own treatment rather than only a tooltip: it is the one combination where the
+       * model will confidently describe an edit that is then refused, and the warn colour is the
+       * same one the transcript uses for a side effect.
+       */
+      .scope.mismatch {
         border-color: var(--heo-warn);
+        background: color-mix(in oklab, var(--heo-warn) 10%, transparent);
         color: var(--heo-warn);
       }
 
@@ -254,6 +329,9 @@ export class HeoAiMenu extends HeoElement {
         s.aiSettingsOpen,
         s.aiOutcome,
         s.aiBusy,
+        // A fresh object per change, so reference comparison in the slice is enough. Omitting it
+        // is the bug that made the menu render stale — see the note on the overlay root's slice.
+        s.aiContextScope,
         s.geometry,
         s.registry,
       ] as const,
@@ -338,9 +416,19 @@ export class HeoAiMenu extends HeoElement {
     else this.editor.setAiMenu(false);
   };
 
-  #send(): void {
-    const asked = this.draft.trim();
-    if (!asked || this.state.value.aiBusy) return;
+  /**
+   * Send a request.
+   *
+   * With no argument it sends what is in the box. A quick action passes its own sentence and it
+   * becomes the draft first, deliberately: the box then shows what was actually asked, so the
+   * result can be read against the request and the sentence can be edited and sent again. A
+   * quick action that sent something invisible would make its own outcome unaccountable.
+   */
+  #send(prompt?: string): void {
+    if (this.state.value.aiBusy) return;
+    if (prompt !== undefined) this.draft = prompt;
+    const asked = (prompt ?? this.draft).trim();
+    if (!asked) return;
     // Kept, not cleared: a request that comes back with nothing useful is one the user wants to
     // rephrase rather than retype.
     void this.editor.promptAi(asked);
@@ -429,6 +517,27 @@ export class HeoAiMenu extends HeoElement {
         this.#send();
       }}
       >
+        <!--
+          Above the box, not below it.
+
+          These are an alternative to typing, so they belong where the eye arrives before the
+          empty field rather than after it — below the textarea they read as things to do with
+          what you have already written.
+        -->
+        <div class="quick" role="group" aria-label="Common requests">
+          ${AI_QUICK_ACTIONS.map(
+        (action) => html`<button
+              class="chip"
+              type="button"
+              ?disabled=${busy || missing}
+              title=${action.prompt}
+              @click=${() => this.#send(action.prompt)}
+            >
+              ${action.label}
+            </button>`,
+      )}
+        </div>
+
         <textarea
           .value=${this.draft}
           placeholder="Describe a change in text or style"
@@ -513,40 +622,61 @@ export class HeoAiMenu extends HeoElement {
   }
 
   /**
-   * What this provider may reach, stated before a request rather than after.
+   * What the request describes, chosen at the moment of asking.
    *
-   * The permission is the most surprising thing about the feature — a request that edits a
-   * shared class changes twelve other elements — so it is visible at the moment of asking. Shown
-   * as facts and not switches on purpose: widening what a model may do is a settings decision,
-   * and a toggle here would invite making it in the middle of a thought about copy.
+   * These used to be read-only badges reporting the provider's *permissions*. They are now
+   * switches over what the model is *shown*, which is a different question and the one that
+   * belongs on this surface: permission is a standing decision about a provider and lives in the
+   * settings, while "does this task need the cascade" changes with every sentence typed above.
+   *
+   * Minimal by default. Rewording a heading does not need twenty-four matched rules, and sending
+   * them anyway costs tokens and hands a third party more of the page than the job required.
+   *
+   * The permission is still shown, as the chip's own subtitle when a scope is switched on and the
+   * provider may not write it — that combination is worth knowing before pressing Send, and it is
+   * the only place the two axes are visible together.
    */
   #renderScopes(): TemplateResult | typeof nothing {
     const set = this.editor.ai.active;
     if (!set) return nothing;
     const policy = this.editor.ai.policy(set);
-    const rows: TemplateResult[] = [];
-    for (const [scope, label] of [
-      ['classes', 'classes'],
-      ['rules', 'CSS rules'],
-      ['parent', 'parent'],
-    ] as const) {
-      const allowance = policy[scope];
-      rows.push(
-        html`<span
-          class=${`scope${allowance === 'always' ? ' on' : allowance === 'ask' ? ' ask' : ''}`}
-          title=${allowance === 'always'
-            ? `${label} may be changed without asking`
-            : allowance === 'ask'
-              ? `You will be asked before ${label} are changed`
-              : `${label} cannot be changed by this provider`}
+    const include = this.state.value.aiContextScope;
+    const busy = this.state.value.aiBusy;
+
+    return html`<div class="scopes" role="group" aria-label="What the request describes">
+      ${AI_CONTEXT_LABELS.map((entry) => {
+      if (entry.key === 'element') {
+        return html`<span class="scope on fixed" title=${entry.hint}>
+            ${icon('check', 9)} ${entry.label}
+          </span>`;
+      }
+      const key = entry.key;
+      const on = include[key];
+      const allowance = policy[key];
+      /*
+       * The two axes, in one tooltip, in the order they are decided.
+       *
+       * "Sent, but this provider may not change it" is a real and confusing state — the model
+       * will describe an edit it is then refused — so it is said here rather than discovered in
+       * the transcript afterwards.
+       */
+      const reach = !allowance
+        ? ` ${set.label} may not change ${entry.label.toLowerCase()}.`
+        : allowance === 'ask'
+          ? ` You will be asked before ${entry.label.toLowerCase()} are changed.`
+          : '';
+      return html`<button
+          class=${`scope${on ? ' on' : ''}${on && !allowance ? ' mismatch' : ''}`}
+          type="button"
+          role="switch"
+          aria-checked=${on ? 'true' : 'false'}
+          ?disabled=${busy}
+          title=${`${entry.hint}${reach}`}
+          @click=${() => this.editor.setAiContextScope(key, !on)}
         >
-          ${allowance === 'ask' ? `${label}: ask` : allowance ? label : `no ${label}`}
-        </span>`,
-      );
-    }
-    return html`<div class="scopes">
-      <span class="scope on">this element</span>
-      ${rows}
+          ${on ? icon('check', 9) : icon('plus', 9)} ${entry.label}
+        </button>`;
+    })}
     </div>`;
   }
 

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { loadEnv, type Plugin, type ViteDevServer } from 'vite';
 import type { DesignSystemDocument } from '../core/types.js';
@@ -343,6 +343,25 @@ export default function editorOverlay(options: EditorOverlayPluginOptions = {}):
         const complain = line.includes('was found but');
         const say = complain ? server.config.logger.warn : server.config.logger.info;
         say.call(server.config.logger, `[html-editor-overlay] ${line}`);
+      }
+      /*
+       * A broken CA path, said now rather than on the first request.
+       *
+       * `NODE_EXTRA_CA_CERTS` must name a PEM file. Set to the directory holding one — an easy
+       * mistake, and one nothing else complains about — Node silently loads no extra certificates
+       * and every outbound HTTPS request from this server fails verification. The symptom arrives
+       * much later and looks like a broken API key, so it is worth one line at startup.
+       */
+      if (usable(providers).length) {
+        const extra = process.env.NODE_EXTRA_CA_CERTS;
+        if (extra && !isReadableFile(extra)) {
+          server.config.logger.warn(
+            `[html-editor-overlay] NODE_EXTRA_CA_CERTS is set to ${extra}, which is not a readable ` +
+            'file. Node will load no extra certificates, so proxied AI requests will fail TLS ' +
+            'verification even though your browser succeeds. It must name the certificate file ' +
+            'itself, not the folder containing it.',
+          );
+        }
       }
 
       server.middlewares.use(FS_ENDPOINT, (request, response) => {
@@ -740,7 +759,7 @@ async function handleAiRequest(
       body: JSON.stringify(aiBodyFor(proxy.provider, model, system, prompt)),
     });
   } catch (error) {
-    refuse(502, `Could not reach ${upstream.host}: ${error instanceof Error ? error.message : error}`);
+    refuse(502, describeFetchFailure(error, upstream.host));
     return;
   }
 
@@ -771,6 +790,79 @@ async function handleAiRequest(
   } finally {
     reader.cancel().catch(() => { });
     response.end();
+  }
+}
+
+/**
+ * Why a request from Node failed, in words that name the fix.
+ *
+ * Node's `fetch` throws `TypeError: fetch failed` for every network-layer problem and puts the
+ * actual reason in `error.cause`. Reporting only `error.message` therefore produced
+ * "Could not reach api.openai.com: fetch failed" for DNS failures, refused connections, timeouts
+ * and certificate problems alike — the same sentence for four unrelated causes, none of which it
+ * described. It cost a debugging session, which is what this function is for.
+ *
+ * The certificate case gets the longest answer because it is the one with a genuinely confusing
+ * symptom: the same key and URL work from the editor's "In this page" tier and fail here. That is
+ * not a contradiction, it is the difference between the two runtimes. A browser validates against
+ * the operating system's trust store, so a corporate TLS proxy or a local interception CA that has
+ * been installed there is trusted automatically. Node does not consult the OS store at all — it
+ * carries its own list, and the only way to add to it is `NODE_EXTRA_CA_CERTS`, which must name a
+ * PEM *file*. Pointed at the directory containing one, Node loads nothing and every HTTPS request
+ * it makes fails verification.
+ */
+function describeFetchFailure(error: unknown, host: string): string {
+  const cause = (error as { cause?: { code?: string; message?: string } } | undefined)?.cause;
+  const code = cause?.code ?? '';
+  const detail = cause?.message || (error instanceof Error ? error.message : String(error));
+  const lead = `Could not reach ${host}: ${detail}`;
+
+  const CERTIFICATE = new Set([
+    'SELF_SIGNED_CERT_IN_CHAIN',
+    'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+    'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+    'DEPTH_ZERO_SELF_SIGNED_CERT',
+    'CERT_UNTRUSTED',
+    'ERR_TLS_CERT_ALTNAME_INVALID',
+  ]);
+  if (CERTIFICATE.has(code)) {
+    const extra = process.env.NODE_EXTRA_CA_CERTS;
+    const pointsAtAFile = Boolean(extra) && isReadableFile(extra as string);
+    return (
+      `${lead}. This is a certificate problem on this machine, not a problem with your key — ` +
+      'something is intercepting TLS, and the dev server does not trust it. Your browser does, ' +
+      'because it uses the operating system trust store and Node does not, which is why the ' +
+      'in-page tier works and this does not. Point NODE_EXTRA_CA_CERTS at the PEM file holding ' +
+      'your proxy\'s root certificate and restart the dev server' +
+      (extra
+        ? pointsAtAFile
+          ? `. It is currently set to ${extra}, which is readable, so that file may not contain the right certificate.`
+          : `. It is currently set to ${extra}, which is not a readable file — it must name the certificate file itself, not the folder containing it.`
+        : '. It is not currently set.')
+    );
+  }
+  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') {
+    return `${lead}. The name did not resolve, so check the base URL and this machine's DNS.`;
+  }
+  if (code === 'ECONNREFUSED') {
+    return `${lead}. Nothing is listening there — for a local model, check it is running.`;
+  }
+  if (code === 'UND_ERR_CONNECT_TIMEOUT' || code === 'ETIMEDOUT' || code === 'ECONNRESET') {
+    return (
+      `${lead}. If this machine reaches the internet through a proxy, note that Node ignores ` +
+      'HTTP_PROXY and HTTPS_PROXY unless it is configured to use them, so the dev server may have ' +
+      'no route even though your browser does.'
+    );
+  }
+  return code ? `${lead} (${code}).` : `${lead}.`;
+}
+
+/** True when a path names a file this process can actually read. */
+function isReadableFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
   }
 }
 

@@ -74,6 +74,51 @@ export class HeoToast extends HeoElement {
           transform: translateY(8px);
         }
       }
+      /*
+       * The roomy form: a glyph that reads as a portrait, and copy that may wrap.
+       *
+       * Square corners rather than the pill, because a pill with two lines in it looks like a
+       * pill that has gone wrong. Top-aligned so the glyph sits level with the heading rather
+       * than floating against the vertical middle of a wrapped sentence.
+       */
+      .toast.roomy {
+        align-items: flex-start;
+        gap: 11px;
+        max-width: min(420px, calc(100vw - 32px));
+        padding: 12px 12px 13px 13px;
+        border-radius: var(--heo-r-lg);
+      }
+      .toast.roomy .glyph {
+        flex: 0 0 auto;
+        width: 32px;
+        height: 32px;
+        border-radius: 9px;
+        background: var(--heo-accent-soft);
+        color: var(--heo-accent);
+      }
+      .toast.roomy .body {
+        display: flex;
+        flex: 1 1 auto;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+      }
+      .toast.roomy .title {
+        font-size: 12px;
+        font-weight: 600;
+        line-height: 1.35;
+      }
+      .toast.roomy .msg {
+        color: var(--heo-text-dim);
+        font-size: 11.5px;
+        line-height: 1.5;
+      }
+      /* The dismiss belongs level with the heading, not with the middle of the paragraph. */
+      .toast.roomy .close,
+      .toast.roomy .btn {
+        margin-top: 1px;
+      }
+
       .glyph {
         display: grid;
         place-items: center;
@@ -142,17 +187,36 @@ export class HeoToast extends HeoElement {
     if (!toast) return nothing;
 
     const glyph =
-      toast.tone === 'success'
+      toast.icon ??
+      (toast.tone === 'success'
         ? 'check'
         : toast.tone === 'error'
           ? 'close'
           : toast.tone === 'warn'
             ? 'alert'
-            : 'sparkle';
+            : 'sparkle');
+    /*
+     * A heading turns the pill into a card.
+     *
+     * Not two components, because everything else about them is identical — the top layer, the
+     * dismiss, the action, the tone colours, the single-slot replacement. What differs is that a
+     * sentence needs to wrap and a status does not, and that is a class rather than a fork.
+     */
+    const roomy = Boolean(toast.title);
 
-    return html`<div class="toast surface" popover="manual" role="status" aria-live="polite">
-      <span class=${`glyph ${toast.tone}`}>${icon(glyph, 13)}</span>
-      <span class="msg">${toast.message}</span>
+    return html`<div
+      class=${`toast surface${roomy ? ' roomy' : ''}`}
+      popover="manual"
+      role="status"
+      aria-live="polite"
+    >
+      <span class=${`glyph ${toast.tone}`}>${icon(glyph, roomy ? 20 : 13)}</span>
+      ${roomy
+        ? html`<span class="body">
+            <b class="title">${toast.title}</b>
+            <span class="msg">${toast.message}</span>
+          </span>`
+        : html`<span class="msg">${toast.message}</span>`}
       ${toast.action
         ? html`<button
             class="btn sm"

@@ -42,7 +42,12 @@ import { labelFor, selectableParent, selectorFor } from '../dom.js';
 import { cleanInnerMarkup, cleanMarkup } from '../mutations.js';
 import type { ClassRegistry } from '../classes.js';
 import type { RuleRegistry } from '../rules.js';
-import type { AiScopeClass, AiScopePolicy } from './types.js';
+import {
+  DEFAULT_AI_CONTEXT_SCOPE,
+  type AiContextScope,
+  type AiScopeClass,
+  type AiScopePolicy,
+} from './types.js';
 
 /** How much of the element's own markup travels. Past this the model gets a summary. */
 const MARKUP_BUDGET = 4000;
@@ -138,6 +143,14 @@ export interface AiContext {
   parent: ContextParent | null;
   /** The scope classes this set may write, for the model to read as well as the broker. */
   allowed: AiScopeClass[];
+  /**
+   * What was left out of this bundle at the user's request.
+   *
+   * Named rather than silently absent, because "no matched rules" and "you were not shown the
+   * matched rules" lead to different replies — the first invites inventing a selector, the second
+   * invites saying that the answer needs them.
+   */
+  withheld: (keyof AiContextScope)[];
 }
 
 export interface ContextSources {
@@ -158,9 +171,20 @@ export function buildAiContext(
   el: HTMLElement,
   policy: AiScopePolicy,
   sources: ContextSources,
+  include: AiContextScope = DEFAULT_AI_CONTEXT_SCOPE,
 ): AiContext {
   const allowed = (Object.keys(policy) as AiScopeClass[]).filter((key) => policy[key]);
   const may = (scope: AiScopeClass): boolean => Boolean(policy[scope]);
+  /*
+   * Two questions, asked separately, and the order matters.
+   *
+   * `include` decides whether something is described at all; `may` decides whether the model is
+   * told it can be changed. They are not the same question and collapsing them would be wrong in
+   * both directions: a class the model may edit is useless to it undescribed, and a class it is
+   * shown for reference is not thereby editable. So a section is present when `include` says so,
+   * and carries `editable` from `may` — and the broker enforces `may` regardless of either.
+   */
+  const shown = (scope: keyof AiContextScope): boolean => include[scope];
 
   const rules = appliedRules(el);
   const inline = authoredInline(el, sources.preview ?? null);
@@ -189,20 +213,48 @@ export function buildAiContext(
     selector: selectorFor(el),
     tag: el.tagName.toLowerCase(),
     id: el.id || undefined,
-    classes: describeClasses(el, sources.classes, may('classes')),
+    /*
+     * A class list, but only the names, when classes are not being sent.
+     *
+     * Not an empty array: the names are on the element's own markup, which is always in the
+     * bundle, so hiding them would be a fiction the model can see through — and it would invite
+     * a request to "add a class" that duplicates one already there. What is withheld is what
+     * each class *declares*, which is the bulk of it and the part about other elements.
+     */
+    classes: shown('classes')
+      ? describeClasses(el, sources.classes, may('classes'))
+      : bareClasses(el, may('classes')),
     attributes: authoredAttributes(el),
     innerHTML: markupTruncated ? `${markup.slice(0, MARKUP_BUDGET)}\n<!-- … truncated -->` : markup,
     text: (el.textContent ?? '').trim(),
     markupTruncated,
     declared,
-    ...describeRules(el, rules, sources.rules, may('rules')),
-    stateRules: stateRules(el)
-      .slice(-RULE_BUDGET)
-      .reverse()
-      .map((rule) => describeRule(rule, sources.rules, may('rules'))),
-    parent: describeParent(el, may('parent')),
+    ...(shown('rules')
+      ? describeRules(el, rules, sources.rules, may('rules'))
+      : { rules: [], rulesOmitted: 0 }),
+    stateRules: shown('rules')
+      ? stateRules(el)
+        .slice(-RULE_BUDGET)
+        .reverse()
+        .map((rule) => describeRule(rule, sources.rules, may('rules')))
+      : [],
+    parent: shown('parent') ? describeParent(el, may('parent')) : null,
     allowed,
+    withheld: (['classes', 'rules', 'parent'] as const).filter((scope) => !shown(scope)),
   };
+}
+
+/**
+ * Class names with nothing attached, for a request that is not about styling.
+ *
+ * `declarations` is left undefined rather than empty, which is the same shape a class carries
+ * when the registry has never seen it — so a model reading this cannot tell "not sent" from
+ * "nothing recorded", and correctly treats neither as "declares nothing".
+ */
+function bareClasses(el: HTMLElement, editable: boolean): ContextClass[] {
+  return Array.from(el.classList)
+    .filter((name) => !name.startsWith('heo-'))
+    .map((name) => ({ name, usedBy: 1, editable }));
 }
 
 /**
@@ -379,6 +431,21 @@ export function renderAiContext(context: AiContext): string {
   }
   if (context.markupTruncated) {
     notes.push('The element markup was truncated, so do not reproduce it wholesale.');
+  }
+  /*
+   * What was withheld, said before what is present is trusted.
+   *
+   * Without this a bundle carrying `"rules": []` reads as "nothing styles this element", and the
+   * reply confidently proposes a selector that already exists. The note is what turns an absence
+   * into a known unknown, and it tells the model what to do about it — ask, rather than guess.
+   */
+  if (context.withheld.length) {
+    notes.push(
+      `Not included in this request: ${context.withheld.join(', ')}. Their absence is a choice, ` +
+      'not evidence that there are none — do not assume the element has no classes, no matching ' +
+      'rules or no parent. If the change genuinely needs one of them, say so in your summary ' +
+      'instead of guessing at it.',
+    );
   }
   const payload = { ...context, notes: notes.length ? notes : undefined };
   return JSON.stringify(payload, null, 1);

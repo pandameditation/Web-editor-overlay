@@ -467,6 +467,79 @@
           group.undoSteps === 1;
       }
 
+      /* ------------------------------------------------------------------ *
+       * A provider with no base URL is refused, not sent to this page.
+       *
+       * This fixture mounts without a transport stub, so a request here goes through the real
+       * `createTransport` — which is the only place this guard can be exercised.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'aProviderWithNoHostIsRefused';
+      {
+        /*
+         * The failure this prevents.
+         *
+         * `endpointFor` appends a path to whatever base it holds, so an empty base produced
+         * `/chat/completions` — a relative URL, resolved against the page. The request went to the
+         * user's own site carrying their API key in an Authorization header, came back as HTML, and
+         * reported "the provider answered, but not with anything this editor could read". Wrong
+         * destination, key in the wrong server's logs, and a message blaming the model for a blank
+         * settings field.
+         *
+         * Reachable without doing anything odd: a proxied set carries no base URL by design, and
+         * switching one to a tier that sends its own requests leaves it empty whenever the dialect
+         * has no default host — which openai-compatible deliberately does not have.
+         */
+        engine.ai.upsert({
+          id: 'no-host',
+          label: 'Hostless probe',
+          transport: 'in-page',
+          provider: 'openai-compatible',
+          model: 'm',
+          scope: { classes: 'always', rules: 'always', parent: 'always' },
+        });
+        engine.ai.activate('no-host');
+        await engine.ai.setKey('no-host', 'sk-fixture-only-never-sent');
+
+        const before = engine.records.length;
+        const requests = [];
+        const realFetch = window.fetch;
+        // Any request at all is the failure, so the only reliable assertion is that none happened.
+        window.fetch = (...args) => {
+          requests.push(String(args[0]));
+          return realFetch.apply(window, args);
+        };
+        let outcome = null;
+        try {
+          outcome = await engine.promptAi('this must not leave the page', subject);
+        } finally {
+          window.fetch = realFetch;
+        }
+
+        results.aProviderWithNoHostIsRefused = {
+          requestsMade: requests,
+          nothingWasRequested: requests.length === 0,
+          failure: outcome?.failure ?? null,
+          // Named, and it names the field to fix rather than blaming the model.
+          saysThereIsNoHost: /no base URL/i.test(outcome?.failure ?? ''),
+          namesTheProvider: /Hostless probe/.test(outcome?.failure ?? ''),
+          suggestsTheFix: /127\.0\.0\.1:11434/.test(outcome?.failure ?? ''),
+          // And nothing was changed on the way to failing.
+          changedNothing: engine.records.length === before,
+          appliedNothing: outcome?.applied === 0,
+        };
+        const group = results.aProviderWithNoHostIsRefused;
+        group.ok =
+          group.nothingWasRequested === true &&
+          group.saysThereIsNoHost === true &&
+          group.namesTheProvider === true &&
+          group.suggestsTheFix === true &&
+          group.changedNothing === true &&
+          group.appliedNothing === true;
+
+        engine.ai.clearKey('no-host');
+        engine.ai.remove('no-host');
+      }
+
       const failed = Object.entries(results)
         .filter(([, group]) => group && typeof group === 'object')
         .filter(([, group]) => Object.values(group).some((value) => value === false))

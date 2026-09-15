@@ -68,6 +68,26 @@ async function* streamOperations(
   if (set.transport === 'in-page' && !keyVault.ready(set)) {
     throw new Error('This provider needs an API key. Add one in the AI settings.');
   }
+  /*
+   * No base URL, no request.
+   *
+   * `endpointFor` builds a path onto whatever base it is given, so an empty one produces
+   * `/chat/completions` — a *relative* URL, which the browser resolves against the page. The
+   * request then goes to the user's own site, returns its HTML, and fails as "the provider
+   * answered, but not with anything this editor could read". That is a sentence about the model
+   * for a mistake in a settings field, so it is refused here instead, by name.
+   *
+   * Reachable in ordinary use: a proxied set carries no base URL by design, and switching one to
+   * a tier that sends its own requests leaves the field empty whenever the dialect has no default
+   * host of its own — which `openai-compatible` deliberately does not, since it means "some server
+   * speaking OpenAI's dialect" and guessing would point a gateway's key at OpenAI.
+   */
+  if (set.transport !== 'proxy' && !(set.baseURL ?? '').trim()) {
+    throw new Error(
+      `${set.label} has no base URL, so there is nowhere to send the request. Add one in the AI ` +
+      'settings — for a local model it is usually http://127.0.0.1:11434/v1.',
+    );
+  }
 
   const response = await fetch(endpointFor(set, proxy), {
     method: 'POST',

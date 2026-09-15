@@ -21,17 +21,44 @@ import {
   isLoopbackOrigin,
   keyVault,
   persistenceRefusal,
+  safeStorage,
   type KeyPersistence,
   type KeyStatus,
 } from './keys.js';
 import { AiRun, type RunOutcome, type SessionHost } from './session.js';
 import {
   AI_SCOPE_CLASSES,
+  portableProviderSet,
   type AiAllowance,
   type AiProviderSet,
   type AiScopeClass,
   type AiScopePolicy,
 } from './types.js';
+
+/**
+ * Where the provider list is kept between reloads.
+ *
+ * `sessionStorage`, matching the default for a key: a provider the user typed in should still be
+ * there after a reload of the dev server, and gone when the tab is. Reloading and finding an
+ * empty list is the bug this fixes; a list that outlives the browser session is a different
+ * decision, and the design system is the place to make it — `exportDesignSystem` already carries
+ * providers, and that artefact is explicitly one the user chose to keep.
+ */
+const SETS_KEY = 'heo.ai.sets';
+
+/**
+ * Ids the environment owns, which are deliberately *not* persisted.
+ *
+ * A `heo-env-` set exists because the dev server found a key in `.env` this boot, and it is
+ * re-offered on the next one from the same place. Writing it to storage would mean a provider
+ * surviving the removal of its own key — the list would show a model that cannot answer, and the
+ * only way to get rid of it would be to find the storage entry.
+ */
+const ENVIRONMENT_PREFIXES = ['heo-env-', 'heo-config-'];
+
+function fromEnvironment(id: string): boolean {
+  return ENVIRONMENT_PREFIXES.some((prefix) => id.startsWith(prefix));
+}
 
 /**
  * Re-exported from `types.js`, where the value now lives.
@@ -102,6 +129,7 @@ export class AiAgent {
   activate(id: string): void {
     if (!this.get(id)) return;
     this.#activeId = id;
+    this.#persist();
     this.#emit();
   }
 
@@ -114,6 +142,7 @@ export class AiAgent {
     const at = this.#sets.findIndex((one) => one.id === next.id);
     if (at === -1) this.#sets.push(next);
     else this.#sets[at] = next;
+    this.#persist();
     this.#emit();
     return next;
   }
@@ -124,6 +153,7 @@ export class AiAgent {
     if (this.#sets.length === before) return;
     if (this.#activeId === id) this.#activeId = null;
     this.#widened.delete(id);
+    this.#persist();
     this.#emit();
   }
 
@@ -135,11 +165,16 @@ export class AiAgent {
     if (bounded === from) return;
     const [moved] = this.#sets.splice(from, 1);
     this.#sets.splice(bounded, 0, moved);
+    this.#persist();
     this.#emit();
   }
 
   /**
    * Replace every set at once, for a seed or a design-system import.
+   *
+   * Replacing rather than merging is right for this caller and only this one: a design system's
+   * provider list *is* the list, and its order is its priority — merging would decide the default
+   * provider by import order. `offer` is the merging form, for the environment.
    *
    * Sets arriving this way carry no credential — the seed never held one — so an imported
    * `in-page` set is configured but unusable until a key is supplied, and the settings UI
@@ -149,13 +184,102 @@ export class AiAgent {
     this.#sets = sets.map((entry) => ({ ...entry, scope: { ...entry.scope } }));
     this.#activeId = null;
     this.#widened.clear();
+    this.#persist();
     this.#emit();
     return this.#sets.length;
+  }
+
+  /**
+   * Add sets the environment supplied, keeping whatever is already configured.
+   *
+   * This is the difference between "here is a design system" and "here is what this machine has
+   * a key for", and conflating them cost the user's own providers. `options.aiProviders` used to
+   * call `import`, so a dev server offering one discovered provider wiped every set restored from
+   * storage or from the page's own seed — and because the seed's async path resolves *after*
+   * mount, the two could also wipe each other depending on which finished first.
+   *
+   * Offered sets go first, because they are the ones that work without being asked for anything:
+   * a proxied provider needs no key, so it is the better default than a local endpoint that may
+   * not be running.
+   */
+  offer(sets: readonly AiProviderSet[]): number {
+    const offered = sets.map((entry) => ({ ...entry, scope: { ...entry.scope } }));
+    const ids = new Set(offered.map((entry) => entry.id));
+    this.#sets = [...offered, ...this.#sets.filter((entry) => !ids.has(entry.id))];
+    this.#persist();
+    this.#emit();
+    return offered.length;
   }
 
   /** Every set, for the design-system document. Secrets are not here to be excluded. */
   export(): AiProviderSet[] {
     return this.list();
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Surviving a reload                                                     */
+  /* ---------------------------------------------------------------------- */
+
+  /**
+   * Read back the providers this tab configured by hand.
+   *
+   * Through `portableProviderSet`, the same allow-list the seed uses. Storage is not a trusted
+   * input — another script on the origin can write to it — so a blob claiming to carry an
+   * `apiKey`, or a `transport` this version does not know, is rebuilt into something safe rather
+   * than believed. A set too broken to rebuild is dropped.
+   */
+  restore(): number {
+    const raw = safeStorage('session')?.getItem(SETS_KEY);
+    if (!raw) return 0;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return 0;
+    }
+    const payload = parsed as { sets?: unknown; activeId?: unknown };
+    const list = Array.isArray(payload?.sets) ? payload.sets : [];
+    const restored = list
+      .map((entry) => portableProviderSet(entry))
+      .filter((entry): entry is AiProviderSet => Boolean(entry))
+      // Belt and braces: the writer already excludes these, so one here means storage was edited.
+      .filter((entry) => !fromEnvironment(entry.id));
+    if (!restored.length) return 0;
+
+    const known = new Set(this.#sets.map((entry) => entry.id));
+    this.#sets = [...this.#sets, ...restored.filter((entry) => !known.has(entry.id))];
+    if (typeof payload.activeId === 'string' && this.get(payload.activeId)) {
+      this.#activeId = payload.activeId;
+    }
+    this.#emit();
+    return restored.length;
+  }
+
+  /**
+   * Write the hand-made providers back, on every change to the list.
+   *
+   * Called from the mutators rather than from `#emit`, because `#emit` also fires when a run
+   * starts and stops and rewriting storage on each streamed operation would be absurd.
+   */
+  #persist(): void {
+    const store = safeStorage('session');
+    if (!store) return;
+    const mine = this.#sets
+      .filter((entry) => !fromEnvironment(entry.id))
+      .map((entry) => portableProviderSet(entry))
+      .filter((entry): entry is AiProviderSet => Boolean(entry));
+    try {
+      if (!mine.length) {
+        store.removeItem(SETS_KEY);
+        return;
+      }
+      store.setItem(SETS_KEY, JSON.stringify({
+        sets: mine,
+        ...(this.#activeId && !fromEnvironment(this.#activeId) ? { activeId: this.#activeId } : {}),
+      }));
+    } catch {
+      // A full or blocked store costs the convenience, not the session.
+    }
   }
 
   /* ---------------------------------------------------------------------- */

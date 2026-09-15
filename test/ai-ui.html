@@ -71,11 +71,28 @@
        * so a fixture cannot accidentally widen a permission.
        */
       const asked = [];
+      /**
+       * A latch the transport waits on before it answers, when one is set.
+       *
+       * The busy state only exists between Send and the last operation, and a scripted transport
+       * resolves that window in a few milliseconds — too fast to sample reliably. Holding the
+       * reply open makes "while it is working" an observable state rather than a race.
+       */
+      let gate = null;
+      const openGate = () => { const g = gate; gate = null; g?.release(); };
+      const holdTheReply = () => {
+        let release;
+        const waited = new Promise((r) => { release = r; });
+        gate = { waited, release };
+        return waited;
+      };
       const api = mount({
         theme: 'dark', presets: false, detectScriptContent: false,
         aiTransport: (request) => {
           asked.push({ prompt: request.prompt, context: request.context });
+          const held = gate?.waited ?? null;
           return (async function* () {
+            if (held) await held;
             await wait(20);
             yield { op: 'setStyles', declarations: { color: 'rgb(20, 80, 160)' } };
             await wait(20);
@@ -324,11 +341,22 @@
           // is the recommended path precisely because the editor then persists nothing.
           keyFieldIsAPassword: Boolean(key),
           usesThePasswordManager: key?.getAttribute('autocomplete') === 'current-password',
-          // Three permissions, each with Always / Ask me / Never.
-          threeScopes: scopeSelects.length === 3,
-          scopeOptions: scopeSelects[0]
-            ? Array.from(scopeSelects[0].options).map((one) => one.value).join(',')
+          /*
+           * Four scope rows: the selected element, then three permissions.
+           *
+           * The element's row is a statement — one disabled option reading Always — so the
+           * changeable ones are the rest, and those are the ones that carry the three choices.
+           * This counted three rows before the element joined the list.
+           */
+          fourScopeRows: scopeSelects.length === 4,
+          fixedRowIsFirstAndSettled:
+            scopeSelects[0]?.disabled === true && scopeSelects[0]?.options.length === 1,
+          scopeOptions: scopeSelects[1]
+            ? Array.from(scopeSelects[1].options).map((one) => one.value).join(',')
             : null,
+          everyPermissionOffersAllThree: scopeSelects.slice(1).every(
+            (one) => Array.from(one.options).map((o) => o.value).join(',') === 'always,ask,never',
+          ),
           // And the badge tells the truth about an in-page key rather than showing a lock.
           shieldText: (shield?.textContent ?? '').trim(),
           saysItNeedsAKey: /needs a key/i.test(shield?.textContent ?? ''),
@@ -339,8 +367,10 @@
           group.created === true &&
           group.keyFieldIsAPassword === true &&
           group.usesThePasswordManager === true &&
-          group.threeScopes === true &&
+          group.fourScopeRows === true &&
+          group.fixedRowIsFirstAndSettled === true &&
           group.scopeOptions === 'always,ask,never' &&
+          group.everyPermissionOffersAllThree === true &&
           group.saysItNeedsAKey === true &&
           group.warnsThePageCanReadIt === true;
       }
@@ -658,6 +688,425 @@
         engine.ai.remove('fixture-two');
         engine.setAiSettings(false);
         await frames();
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 13. A provider added by hand survives a reload; a discovered one does not.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'providersSurviveAReload';
+      {
+        const mine = {
+          id: 'mine-persist', label: 'Hand made', transport: 'local',
+          provider: 'openai-compatible', baseURL: 'http://127.0.0.1:9/v1', model: 'kept',
+          scope: { classes: 'always', rules: 'always', parent: 'always' },
+        };
+        /*
+         * An environment id, which must NOT be written.
+         *
+         * A `heo-env-` set exists because the dev server found a key this boot and re-offers it on
+         * the next one. Persisting it would mean a provider outliving the removal of its own key,
+         * with no way to get rid of it but to find the storage entry.
+         */
+        const offered = { ...mine, id: 'heo-env-offered', label: 'From the environment' };
+        engine.ai.upsert(mine);
+        engine.ai.offer([offered]);
+        engine.ai.activate('mine-persist');
+        await frames();
+
+        const raw = sessionStorage.getItem('heo.ai.sets');
+        const stored = raw ? JSON.parse(raw) : null;
+        const storedIds = (stored?.sets ?? []).map((one) => one.id);
+
+        // A reload is the list starting empty and `restore()` being the only thing that fills it.
+        engine.ai.import([]);
+        const emptied = engine.ai.list().length;
+        // `import([])` also clears storage, so put the entry back the way a fresh tab would find it.
+        sessionStorage.setItem('heo.ai.sets', raw ?? '');
+        const restoredCount = engine.ai.restore();
+        const back = engine.ai.get('mine-persist');
+
+        results.providersSurviveAReload = {
+          storedIds,
+          // Counted against what was stored rather than against a literal: earlier groups in this
+          // file add providers of their own, and they are hand-made too, so they belong here.
+          restoredEverythingStored: restoredCount === storedIds.length,
+          keepsTheHandMadeOne: storedIds.includes('mine-persist'),
+          doesNotKeepTheDiscoveredOne: !storedIds.includes('heo-env-offered'),
+          // Nothing secret in the blob, checked rather than assumed.
+          storesNoKeyField: raw ? !/apiKey|"key"/i.test(raw) : false,
+          rememberedWhichWasActive: stored?.activeId === 'mine-persist',
+          emptiedFirst: emptied === 0,
+          restoredCount,
+          cameBack: back?.label === 'Hand made',
+          cameBackWhole: back?.baseURL === 'http://127.0.0.1:9/v1' && back?.model === 'kept',
+        };
+        const group = results.providersSurviveAReload;
+        group.ok =
+          group.keepsTheHandMadeOne === true &&
+          group.doesNotKeepTheDiscoveredOne === true &&
+          group.storesNoKeyField === true &&
+          group.rememberedWhichWasActive === true &&
+          group.emptiedFirst === true &&
+          group.restoredEverythingStored === true &&
+          group.cameBack === true &&
+          group.cameBackWhole === true;
+
+        engine.ai.remove('mine-persist');
+        engine.ai.remove('heo-env-offered');
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 14. Choosing a dialect fills in its host; a typed one is left alone.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'theDialectFillsInItsHost';
+      {
+        const id = 'base-url-probe';
+        /*
+         * The only provider in the list, deliberately.
+         *
+         * The form shows `openId` or else the first set, and earlier groups left both pointing
+         * elsewhere — so driving the selects changed a different provider's dialect and every
+         * assertion here passed or failed for the wrong reason. Clearing the list first makes the
+         * probe the thing on screen without depending on what ran before.
+         */
+        for (const one of engine.ai.list()) engine.ai.remove(one.id);
+        const base = {
+          id, label: 'Base URL probe', transport: 'proxy', provider: 'openai-compatible',
+          model: 'm', scope: { classes: 'always', rules: 'always', parent: 'always' },
+        };
+        engine.ai.upsert(base);
+        engine.setAiSettings(true);
+        await frames();
+        const root = () => deepFind('heo-ai-settings')?.shadowRoot;
+        const pick = (label, value) => {
+          const fields = Array.from(root()?.querySelectorAll('.field') ?? []);
+          const field = fields.find((one) => one.querySelector('span')?.textContent?.trim() === label);
+          const select = field?.querySelector('select');
+          if (!select) return false;
+          select.value = value;
+          select.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        };
+
+        // A proxied set carries no base URL by design: the server decides and the page is not told.
+        const proxiedHasNone = engine.ai.get(id)?.baseURL === undefined;
+
+        /*
+         * Leaving proxy is the case that was broken.
+         *
+         * With no base URL, `endpointFor` produced the relative path `/chat/completions`, so the
+         * request went to the page's own origin and failed in a way that read as a broken editor.
+         */
+        /*
+         * Leaving proxy while the dialect is openai-compatible.
+         *
+         * Still empty afterwards, and that is correct rather than a gap: "OpenAI-compatible" means
+         * some server speaking that dialect, and there is no such thing as its default host —
+         * guessing api.openai.com would point a private gateway's key at OpenAI. What must not
+         * happen is the request going out anyway, which is checked below.
+         */
+        pick('Where the key lives', 'in-page');
+        await frames();
+        const afterLeavingProxy = engine.ai.get(id)?.baseURL ?? '';
+
+        pick('API shape', 'openai');
+        await frames();
+        const afterOpenai = engine.ai.get(id)?.baseURL;
+
+        pick('API shape', 'anthropic');
+        await frames();
+        const afterAnthropic = engine.ai.get(id)?.baseURL;
+
+        // A host the user typed is theirs, and a later dialect change must not take it.
+        engine.ai.upsert({ ...engine.ai.get(id), baseURL: 'https://my-gateway.internal/v1' });
+        await frames();
+        pick('API shape', 'google');
+        await frames();
+        const afterTyped = engine.ai.get(id)?.baseURL;
+
+        results.theDialectFillsInItsHost = {
+          proxiedHasNone,
+          afterLeavingProxy,
+          // Honest emptiness: this dialect has no default host to fill in.
+          compatibleDialectStaysEmpty: afterLeavingProxy === '',
+          afterOpenai,
+          // With /v1, because endpointFor appends /chat/completions to it.
+          openaiCarriesV1: afterOpenai === 'https://api.openai.com/v1',
+          afterAnthropic,
+          // Without /v1, because endpointFor appends /v1/messages.
+          anthropicOmitsV1: afterAnthropic === 'https://api.anthropic.com',
+          afterTyped,
+          leavesATypedHostAlone: afterTyped === 'https://my-gateway.internal/v1',
+        };
+        const group = results.theDialectFillsInItsHost;
+        group.ok =
+          group.proxiedHasNone === true &&
+          group.compatibleDialectStaysEmpty === true &&
+          group.openaiCarriesV1 === true &&
+          group.anthropicOmitsV1 === true &&
+          group.leavesATypedHostAlone === true;
+
+        engine.ai.remove(id);
+        await frames();
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 15. The settings name the scope section and list the element in it.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'theScopeSectionIsNamedAndComplete';
+      {
+        engine.ai.upsert({
+          id: 'scope-probe', label: 'Scope probe', transport: 'local',
+          provider: 'openai-compatible', baseURL: 'http://127.0.0.1:9/v1', model: 'm',
+          scope: { classes: 'always', rules: 'ask', parent: 'always' },
+        });
+        await frames();
+        const root = deepFind('heo-ai-settings')?.shadowRoot;
+        const flat = (node) => (node?.textContent ?? '').replace(/\s+/g, ' ').trim();
+        const rows = Array.from(root?.querySelectorAll('.scope') ?? []);
+        const first = rows[0];
+        const firstSelect = first?.querySelector('select');
+
+        results.theScopeSectionIsNamedAndComplete = {
+          heading: flat(root?.querySelector('.scope-title')),
+          isNamed: flat(root?.querySelector('.scope-title')) === 'Scope of AI changes',
+          // Four rows: the element, then the three permissions.
+          rowCount: rows.length,
+          labels: rows.map((one) => flat(one.querySelector('.text b'))),
+          // The element is first, and stated rather than offered.
+          elementIsFirst: flat(first?.querySelector('.text b')) === 'The selected element',
+          elementIsFixed: first?.classList.contains('fixed') === true,
+          elementReadsAlways: flat(firstSelect) === 'Always',
+          elementCannotChange: firstSelect?.disabled === true,
+          elementHasNoOtherChoice: (firstSelect?.options?.length ?? 0) === 1,
+          // And it stays legible rather than being dimmed to the usual disabled opacity.
+          elementIsNotGreyedOut: firstSelect
+            ? getComputedStyle(firstSelect).opacity === '1'
+            : false,
+          // Each permission explains what the thing is, not only how far it reaches.
+          everyPermissionExplainsItself: rows.slice(1).every(
+            (one) => flat(one.querySelector('.text span')).length > 80,
+          ),
+        };
+        const group = results.theScopeSectionIsNamedAndComplete;
+        group.ok =
+          group.isNamed === true &&
+          group.rowCount === 4 &&
+          group.elementIsFirst === true &&
+          group.elementIsFixed === true &&
+          group.elementReadsAlways === true &&
+          group.elementCannotChange === true &&
+          group.elementHasNoOtherChoice === true &&
+          group.elementIsNotGreyedOut === true &&
+          group.everyPermissionExplainsItself === true;
+
+        engine.setAiSettings(false);
+        await frames();
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 16. The context chips are switches, minimal by default, and they filter the bundle.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'contextChipsChooseWhatIsSent';
+      {
+        await settle(subject);
+        deepFind('.ai').click();
+        await frames();
+        const menu = () => deepFind('heo-ai-menu')?.shadowRoot;
+        const chips = () => Array.from(menu()?.querySelectorAll('.scope') ?? []);
+        const flat = (node) => (node?.textContent ?? '').replace(/\s+/g, ' ').trim();
+
+        const labels = chips().map((one) => flat(one));
+        const onAtStart = chips().filter((one) =>
+          one.classList.contains('on')).map((one) => flat(one));
+        const switches = chips().filter((one) => one.getAttribute('role') === 'switch');
+        /*
+         * Read now, not at assertion time.
+         *
+         * `switches` holds live elements, so asking them about aria-checked after the chip has
+         * been pressed reports the state afterwards — which is how this asserted "they all start
+         * off" against a list where one had just been switched on.
+         */
+        const uncheckedAtStart = switches.every(
+          (one) => one.getAttribute('aria-checked') === 'false',
+        );
+
+        asked.length = 0;
+        await engine.promptAi('probe with the default scope');
+        const lean = JSON.parse(asked[0]?.context ?? '{}');
+
+        // Turn the parent on through the chip, the way a user would.
+        const parentChip = switches.find((one) => /parent/i.test(flat(one)));
+        parentChip?.click();
+        await frames();
+        asked.length = 0;
+        await engine.promptAi('probe with the parent included');
+        const wide = JSON.parse(asked[0]?.context ?? '{}');
+
+        results.contextChipsChooseWhatIsSent = {
+          labels,
+          // Four things offered, and only the element on to begin with.
+          fourChips: chips().length === 4,
+          onlyTheElementAtStart: onAtStart.length === 1 && /this element/i.test(onAtStart[0]),
+          // The other three are real switches, not badges.
+          threeAreSwitches: switches.length === 3,
+          startUnchecked: uncheckedAtStart,
+          // The element chip is a statement: no switch role, so nothing invites pressing it.
+          elementIsNotASwitch: chips().some(
+            (one) => one.classList.contains('fixed') && one.getAttribute('role') !== 'switch',
+          ),
+          // The default request withholds the surroundings, and says so.
+          leanWithheld: lean.withheld,
+          leanSendsNoParent: lean.parent === null,
+          leanSendsNoRules: Array.isArray(lean.rules) && lean.rules.length === 0,
+          // Class names still travel; what they declare does not.
+          leanKeepsClassNames: (lean.classes ?? []).length > 0,
+          leanWithholdsDeclarations: (lean.classes ?? []).every(
+            (one) => one.declarations === undefined,
+          ),
+          leanSaysWhatIsMissing: /Not included in this request/.test(asked[0]?.context ?? ''),
+          // Pressing the chip changes what actually goes out, which is the whole point.
+          chipFlipped: parentChip?.getAttribute('aria-checked') === 'true',
+          wideWithheld: wide.withheld,
+          wideSendsTheParent: Boolean(wide.parent),
+          parentWasTheOnlyChange: Array.isArray(wide.withheld) &&
+            !wide.withheld.includes('parent') && wide.withheld.includes('rules'),
+        };
+        const group = results.contextChipsChooseWhatIsSent;
+        group.ok =
+          group.fourChips === true &&
+          group.onlyTheElementAtStart === true &&
+          group.threeAreSwitches === true &&
+          group.startUnchecked === true &&
+          group.elementIsNotASwitch === true &&
+          group.leanSendsNoParent === true &&
+          group.leanSendsNoRules === true &&
+          group.leanKeepsClassNames === true &&
+          group.leanWithholdsDeclarations === true &&
+          group.leanSaysWhatIsMissing === true &&
+          group.chipFlipped === true &&
+          group.wideSendsTheParent === true &&
+          group.parentWasTheOnlyChange === true;
+
+        // Back to minimal for whatever runs next.
+        parentChip?.click();
+        await frames();
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 17. A quick action sends its own sentence, and shows what it sent.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'quickActionsSendTheirOwnPrompt';
+      {
+        const menu = () => deepFind('heo-ai-menu')?.shadowRoot;
+        const flat = (node) => (node?.textContent ?? '').replace(/\s+/g, ' ').trim();
+        const quick = menu()?.querySelector('.quick');
+        const buttons = Array.from(quick?.querySelectorAll('button') ?? []);
+        const box = menu()?.querySelector('textarea');
+        // Above the box, because they are an alternative to typing rather than something to do
+        // with what has already been typed.
+        const aboveTheBox = quick && box
+          ? quick.getBoundingClientRect().top < box.getBoundingClientRect().top
+          : false;
+
+        asked.length = 0;
+        const shorter = buttons.find((one) => /make shorter/i.test(flat(one)));
+        shorter?.click();
+        await frames();
+        await wait(150);
+
+        results.quickActionsSendTheirOwnPrompt = {
+          labels: buttons.map((one) => flat(one)),
+          offersTheNamedTwo: buttons.some((one) => /make shorter/i.test(flat(one))) &&
+            buttons.some((one) => /improve writing/i.test(flat(one))),
+          aboveTheBox,
+          sentSomething: asked.length === 1,
+          // A whole instruction, not the label: "Make shorter" alone invites cutting information.
+          sentASentenceNotTheLabel: (asked[0]?.prompt ?? '').length > 40,
+          sentTheRightOne: /shorter/i.test(asked[0]?.prompt ?? ''),
+          saysWhatMustSurvive: /cut words, not information/i.test(asked[0]?.prompt ?? ''),
+          // And the box now holds it, so the result can be read against the request and re-sent.
+          boxShowsWhatWasAsked: (menu()?.querySelector('textarea')?.value ?? '').length > 40,
+        };
+        const group = results.quickActionsSendTheirOwnPrompt;
+        group.ok =
+          group.offersTheNamedTwo === true &&
+          group.aboveTheBox === true &&
+          group.sentSomething === true &&
+          group.sentASentenceNotTheLabel === true &&
+          group.sentTheRightOne === true &&
+          group.saysWhatMustSurvive === true &&
+          group.boxShowsWhatWasAsked === true;
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 18. While it works the element says so; when it finishes a toast carries the summary.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'theRunIsVisibleWhileAndAfter';
+      {
+        const layer = () => deepFind('heo-selection-layer');
+        const busyBefore = layer()?.hasAttribute('data-ai-busy');
+
+        // Hold the reply open so "while it is working" is a state that can be sampled.
+        holdTheReply();
+        const run = engine.promptAi('take your time');
+        await frames();
+        await frames();
+        const busyDuring = layer()?.hasAttribute('data-ai-busy');
+        const outlineDuring = layer()?.shadowRoot?.querySelector('.select');
+        const animatedDuring = outlineDuring
+          ? getComputedStyle(outlineDuring).animationName
+          : null;
+        openGate();
+        const outcome = await run;
+        await frames();
+
+        const busyAfter = layer()?.hasAttribute('data-ai-busy');
+        const toast = engine.store.value.toast;
+        const toastEl = deepFind('heo-toast')?.shadowRoot?.querySelector('.toast');
+        const flat = (node) => (node?.textContent ?? '').replace(/\s+/g, ' ').trim();
+
+        results.theRunIsVisibleWhileAndAfter = {
+          busyBefore: busyBefore === false,
+          // The outline itself, not just the little sparkle button at the corner.
+          busyDuring: busyDuring === true,
+          animatedDuring,
+          theOutlineAnimates: /heo-ai-sheen|heo-ai-halo/.test(animatedDuring ?? ''),
+          busyClearedAfter: busyAfter === false,
+          // The summary reaches a toast, because in the popover it sits below the fold.
+          toastRaised: Boolean(toast),
+          toastTitle: toast?.title ?? null,
+          toastCountsWhatLanded: /\d+ change|Nothing was changed/.test(toast?.title ?? ''),
+          toastCarriesTheSummary: toast?.message === outcome?.summary,
+          // The AI's own mark rather than the tone's tick.
+          toastUsesTheAiGlyph: toast?.icon === 'sparkle',
+          // Roomy, so a sentence is not crammed into a pill.
+          toastIsRoomy: toastEl?.classList.contains('roomy') === true,
+          toastShowsBothLines: Boolean(flat(toastEl?.querySelector('.title'))) &&
+            Boolean(flat(toastEl?.querySelector('.msg'))),
+          // The glyph is the big one on the left.
+          glyphIsLarge: (() => {
+            const g = toastEl?.querySelector('.glyph');
+            const r = g?.getBoundingClientRect();
+            return r ? Math.round(r.width) >= 28 : false;
+          })(),
+          // Undo rides along, because the whole run is one step.
+          offersUndo: /undo/i.test(toast?.action?.label ?? ''),
+        };
+        const group = results.theRunIsVisibleWhileAndAfter;
+        group.ok =
+          group.busyBefore === true &&
+          group.busyDuring === true &&
+          group.theOutlineAnimates === true &&
+          group.busyClearedAfter === true &&
+          group.toastRaised === true &&
+          group.toastCountsWhatLanded === true &&
+          group.toastCarriesTheSummary === true &&
+          group.toastUsesTheAiGlyph === true &&
+          group.toastIsRoomy === true &&
+          group.toastShowsBothLines === true &&
+          group.glyphIsLarge === true &&
+          group.offersUndo === true;
       }
 
       const failed = Object.entries(results)

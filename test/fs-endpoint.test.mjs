@@ -311,8 +311,15 @@ const upstream = createHttpServer((request, response) => {
     response.end();
   });
 });
-await new Promise((done) => upstream.listen(5399, '127.0.0.1', done));
-const providerURL = 'http://127.0.0.1:5399';
+/*
+ * Well clear of the dev-server range.
+ *
+ * `start()` hands out 5391 upward, one per server, and this used to sit at 5399 — so adding the
+ * ninth server made it collide with the stub provider and fail as "Port 5399 is already in use".
+ */
+const UPSTREAM_PORT = 5499;
+await new Promise((done) => upstream.listen(UPSTREAM_PORT, '127.0.0.1', done));
+const providerURL = `http://127.0.0.1:${UPSTREAM_PORT}`;
 
 /*
  * `ai: false` and not `editorOverlay()`, and the difference is the whole point of the option.
@@ -503,7 +510,7 @@ await test('with AI turned off, the proxy says so instead of failing obscurely',
         system: 's',
         prompt: 'p',
         // Every one of these is ignored: the server decides where its own key may be sent.
-        baseURL: 'http://127.0.0.1:5399/stolen',
+        baseURL: `${providerURL}/stolen`,
         provider: 'anthropic',
         apiKey: 'not-mine',
       });
@@ -575,6 +582,46 @@ await test('an allow-list refuses a model that is not on it', async () => {
     assert.equal((await ask('gpt-4o-mini')).status, 200);
   } finally {
     await limited.instance.close();
+  }
+});
+
+/*
+ * A network failure explains itself, rather than saying "fetch failed" four different ways.
+ *
+ * Node's fetch throws `TypeError: fetch failed` for DNS failures, refused connections, timeouts
+ * and certificate problems alike, with the real reason on `error.cause`. Reporting only the
+ * message gave the same useless sentence for all four — and the certificate case is the one that
+ * matters most, because its symptom is "the same key works in the browser but not here", which
+ * reads as a bug in the editor rather than as a machine's TLS interception.
+ */
+await test('an unreachable host is explained by name, not as "fetch failed"', async () => {
+  const broken = await start(
+    editorOverlay({
+      ai: {
+        provider: 'openai',
+        apiKey: 'sk-test-secret',
+        // A name that cannot resolve, which is the one network failure a test can rely on.
+        baseURL: 'https://no-such-host-heo-endpoint-test.invalid/v1',
+      },
+    }),
+  );
+  try {
+    const brokenToken = /"sourceToken":"([^"]+)"/.exec(await bootstrapOf(broken.origin))?.[1];
+    const response = await fetch(`${broken.origin}/__heo/fs?ai=1`, {
+      method: 'POST',
+      headers: { 'x-heo-token': brokenToken, 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-4o-mini', system: 's', prompt: 'p' }),
+    });
+    assert.equal(response.status, 502);
+    const { message } = (await response.json()).error;
+    assert.match(message, /no-such-host-heo-endpoint-test\.invalid/, 'names the host');
+    // The cause, not the wrapper. This is the assertion that would have saved the debugging.
+    assert.match(message, /ENOTFOUND|did not resolve/, 'carries the underlying reason');
+    assert.doesNotMatch(message, /^Could not reach [^:]+: fetch failed\.?$/, 'not the bare wrapper');
+    // And it says what to look at.
+    assert.match(message, /DNS|base URL/i, 'suggests where to look');
+  } finally {
+    await broken.instance.close();
   }
 });
 
