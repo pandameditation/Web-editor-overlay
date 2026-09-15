@@ -446,6 +446,220 @@
         group.ok = Object.entries(group).every(([k, v]) => k === 'ok' || v === true);
       }
 
+      /* ------------------------------------------------------------------ *
+       * 9. The settings modal sits in the dialog band, under the confirmation.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'settingsSitUnderTheConfirmation';
+      {
+        engine.setAiSettings(true);
+        await frames();
+        const settings = deepFind('heo-ai-settings');
+        const zOf = (el) => (el ? Number.parseInt(getComputedStyle(el).zIndex, 10) : NaN);
+        const settingsZ = zOf(settings);
+
+        // A confirmation raised from inside the settings, which is the reported case.
+        engine.askToConfirm({
+          title: 'Stacking probe', message: 'Does this land on top?',
+          confirmLabel: 'Yes', reversible: true, run: () => { },
+        });
+        await frames();
+        const confirm = deepFind('heo-confirm-dialog');
+        const confirmZ = zOf(confirm);
+        /*
+         * Paint order, not just the numbers.
+         *
+         * A dialog can be numbered above another and still be covered if the two sit in
+         * different stacking contexts, so this asks what the pointer would actually hit at the
+         * top of the confirmation. Through the overlay's own shadow root rather than the
+         * document's: `document.elementFromPoint` stops at the outermost host and answers
+         * `heo-overlay` for everything inside it, which is true and useless.
+         */
+        const dialogBox = confirm?.shadowRoot?.querySelector('.dialog')?.getBoundingClientRect();
+        const overlayRoot = document.querySelector('heo-overlay')?.shadowRoot;
+        const hit = dialogBox && overlayRoot
+          ? overlayRoot.elementFromPoint(dialogBox.left + dialogBox.width / 2, dialogBox.top + 20)
+          : null;
+
+        results.settingsSitUnderTheConfirmation = {
+          settingsZ, confirmZ,
+          bothPresent: Boolean(settings && confirm),
+          // The whole bug: 42 outranked the 40 reserved for the always-on-top surfaces.
+          confirmationOutranksSettings: confirmZ > settingsZ,
+          // And it stays inside the content-dialog band rather than above it.
+          settingsAreInTheDialogBand: settingsZ >= 28 && settingsZ <= 39,
+          // What the pointer actually reaches at the top of the confirmation.
+          topmostAtTheConfirmation: hit?.tagName?.toLowerCase() ?? null,
+          confirmationIsHittable: hit?.tagName?.toLowerCase() === 'heo-confirm-dialog',
+        };
+        const group = results.settingsSitUnderTheConfirmation;
+        group.ok =
+          group.bothPresent === true &&
+          group.confirmationOutranksSettings === true &&
+          group.settingsAreInTheDialogBand === true &&
+          group.confirmationIsHittable === true;
+        engine.cancelConfirm();
+        await frames();
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 10. Page shortcuts do not reach past the open settings.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'settingsHoldTheKeyboard';
+      {
+        const before = {
+          children: subject.parentElement.children.length,
+          save: engine.store.value.savePreview,
+        };
+        const press = (key) => document.dispatchEvent(new KeyboardEvent('keydown', {
+          key, metaKey: true, ctrlKey: true, bubbles: true, composed: true,
+        }));
+        // Each of these was decided above the "did this come from the overlay" guard, so each
+        // one reached the page while the dialog was open.
+        press('d'); await frames();
+        press('s'); await frames();
+
+        results.settingsHoldTheKeyboard = {
+          stillOpen: engine.store.value.aiSettingsOpen === true,
+          modDDidNotDuplicate: subject.parentElement.children.length === before.children,
+          modSDidNotOpenSave: engine.store.value.savePreview === before.save,
+        };
+        const group = results.settingsHoldTheKeyboard;
+        group.ok = Object.entries(group).every(([k, v]) => k === 'ok' || v === true);
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 11. Promote and Delete are labelled, beside the provider, Delete last.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'providerActionsAreLabelledAndPlaced';
+      {
+        // Two providers, so Promote exists at all: the first in the list is already the default.
+        engine.ai.upsert({
+          id: 'fixture-one', label: 'First provider', transport: 'local',
+          provider: 'openai-compatible', baseURL: 'http://127.0.0.1:1/v1', model: 'm-one',
+          scope: { classes: 'always', rules: 'always', parent: 'always' },
+        });
+        engine.ai.upsert({
+          id: 'fixture-two', label: 'Second provider', transport: 'local',
+          provider: 'openai-compatible', baseURL: 'http://127.0.0.1:2/v1', model: 'm-two',
+          scope: { classes: 'always', rules: 'always', parent: 'always' },
+        });
+        await frames();
+        const root = deepFind('heo-ai-settings')?.shadowRoot;
+        // Pick the second, which is the one that can be promoted.
+        const tabs = Array.from(root?.querySelectorAll('.tab') ?? []);
+        tabs.at(-1)?.click();
+        await frames();
+
+        const flat = (node) => (node?.textContent ?? '').replace(/\s+/g, ' ').trim();
+        const acts = root?.querySelector('.owner-acts');
+        const buttons = Array.from(acts?.querySelectorAll('button') ?? []);
+        const promote = buttons.find((one) => /promote/i.test(flat(one)));
+        const del = buttons.find((one) => /delete/i.test(flat(one)));
+        const why = root?.querySelector('.why p');
+        const whyBox = why?.getBoundingClientRect();
+        const actsBox = acts?.getBoundingClientRect();
+        // The old placement, for contrast: these used to live at the foot of the form.
+        const testButton = Array.from(root?.querySelectorAll('.acts button') ?? [])
+          .find((one) => /test/i.test(flat(one)));
+        const testBox = testButton?.getBoundingClientRect();
+
+        results.providerActionsAreLabelledAndPlaced = {
+          tabCount: tabs.length,
+          promoteLabel: flat(promote) || null,
+          deleteLabel: flat(del) || null,
+          // Words, not bare icons.
+          bothAreLabelled: /promote/i.test(flat(promote)) && /delete/i.test(flat(del)),
+          // Delete carries the shared danger variant rather than a ghost icon button.
+          deleteIsDanger: del?.classList.contains('danger') === true &&
+            del?.classList.contains('sm') === true,
+          deleteIsNotAnIconButton: del?.classList.contains('icon') === false,
+          // Red, as the variant promises. Compared against the sentence beside it, so this is
+          // about the colour differing rather than about one particular value.
+          deleteIsRedderThanTheProse: del && why
+            ? getComputedStyle(del).color !== getComputedStyle(why).color
+            : false,
+          // Beside the security sentence: same line, to its right.
+          onTheSameLineAsTheSentence: whyBox && actsBox
+            ? Math.abs(whyBox.top - actsBox.top) < 24
+            : false,
+          toTheRightOfTheSentence: whyBox && actsBox ? actsBox.left > whyBox.left : false,
+          // Delete is the last thing in the row, so the destructive one is not reached first.
+          deleteIsLastInTheRow: buttons.at(-1) === del,
+          // And well above the Test button, which is where they used to be.
+          aboveWhereTheyUsedToBe: actsBox && testBox ? actsBox.top < testBox.top : false,
+        };
+        const group = results.providerActionsAreLabelledAndPlaced;
+        group.ok =
+          group.bothAreLabelled === true &&
+          group.deleteIsDanger === true &&
+          group.deleteIsNotAnIconButton === true &&
+          group.deleteIsRedderThanTheProse === true &&
+          group.onTheSameLineAsTheSentence === true &&
+          group.toTheRightOfTheSentence === true &&
+          group.deleteIsLastInTheRow === true &&
+          group.aboveWhereTheyUsedToBe === true;
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 12. Narrow viewport: one control per line, and the tabs run horizontally.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'settingsRespondToANarrowViewport';
+      {
+        const root = deepFind('heo-ai-settings')?.shadowRoot;
+        const pairBefore = getComputedStyle(root.querySelector('.pair')).gridTemplateColumns;
+        const tabsBefore = Array.from(root.querySelectorAll('.tab')).map((t) => t.getBoundingClientRect());
+        const stackedBefore = tabsBefore.length > 1 && tabsBefore[1].top > tabsBefore[0].top + 4;
+
+        /*
+         * The viewport is narrowed by driving the media query rather than by resizing the window,
+         * which a headless page cannot do reliably. `matchMedia` cannot be forced either, so the
+         * dialog is measured at its real width and the breakpoint's own rules are read from the
+         * stylesheet — the two together say the rule exists and applies to the right selectors.
+         */
+        const sheet = Array.from(root.adoptedStyleSheets ?? [])
+          .flatMap((s) => Array.from(s.cssRules ?? []))
+          .find((r) => r.media?.mediaText?.includes('560px'));
+        const inside = Array.from(sheet?.cssRules ?? []).map((r) => r.selectorText);
+        const declFor = (selector) => Array.from(sheet?.cssRules ?? [])
+          .find((r) => r.selectorText === selector)?.style;
+
+        results.settingsRespondToANarrowViewport = {
+          // Wide: two columns and a vertical list, which is the layout the breakpoint changes.
+          pairIsTwoColumnsWhenWide: pairBefore.split(' ').length === 2,
+          tabsStackVerticallyWhenWide: stackedBefore,
+          // The breakpoint exists, at the same width the other responsive dialog uses.
+          breakpointExists: Boolean(sheet),
+          breakpointWidth: sheet?.media?.mediaText ?? null,
+          // One control per line.
+          pairCollapses: (declFor('.pair')?.gridTemplateColumns ?? '').includes('1fr') &&
+            !(declFor('.pair')?.gridTemplateColumns ?? '').includes('1fr 1fr'),
+          // Tabs run along the top instead of down the side.
+          listTurnsHorizontal: declFor('.list')?.flexDirection === 'row',
+          listLosesItsSideBorder: declFor('.list')?.borderRight === '0px' ||
+            (declFor('.list')?.borderRightWidth ?? '') === '0px',
+          tabsStopFilling: (declFor('.tab')?.width ?? '') === 'auto',
+          // The split collapses so the form gets the whole width.
+          splitCollapses: inside.includes('.split, .split.solo') ||
+            inside.some((s) => (s ?? '').includes('.split')),
+          selectors: inside,
+        };
+        const group = results.settingsRespondToANarrowViewport;
+        group.ok =
+          group.pairIsTwoColumnsWhenWide === true &&
+          group.tabsStackVerticallyWhenWide === true &&
+          group.breakpointExists === true &&
+          group.pairCollapses === true &&
+          group.listTurnsHorizontal === true &&
+          group.listLosesItsSideBorder === true &&
+          group.tabsStopFilling === true &&
+          group.splitCollapses === true;
+
+        engine.ai.remove('fixture-one');
+        engine.ai.remove('fixture-two');
+        engine.setAiSettings(false);
+        await frames();
+      }
+
       const failed = Object.entries(results)
         .filter(([, group]) => group && typeof group === 'object')
         .filter(([, group]) => Object.values(group).some((value) => value === false))

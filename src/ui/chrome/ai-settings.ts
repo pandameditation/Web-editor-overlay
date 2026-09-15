@@ -37,16 +37,27 @@ export class HeoAiSettings extends HeoElement {
     baseStyles,
     surfaceStyles,
     css`
+      /*
+       * 32: the top of the content-dialog band, not above it.
+       *
+       * This was 42, which is the highest number in the overlay and was the reason a
+       * confirmation raised from here — "Remove this provider?" — painted *behind* the dialog
+       * that asked it. 40 is reserved for the two surfaces that have to sit over everything,
+       * the confirmation and the toast, precisely because they are raised *from* the dialogs
+       * below. A settings modal is one of those dialogs, so it belongs in their band beside
+       * the save (30) and CSS-paste (31) surfaces.
+       */
       :host {
         position: fixed;
         inset: 0;
-        z-index: 42;
+        z-index: 32;
         display: grid;
         place-items: center;
         padding: 24px;
         background: oklch(12% 0.01 265 / 55%);
         backdrop-filter: blur(3px);
         pointer-events: auto;
+        animation: fade var(--heo-fast) var(--heo-ease);
       }
       /*
        * Full screen, near enough, and that is a considered size rather than a generous one.
@@ -127,8 +138,8 @@ export class HeoAiSettings extends HeoElement {
         overflow-y: auto;
       }
 
-      /* One row in the left-hand list: a button, because picking one is the only thing it does. */
-      .row {
+      /* One tab in the provider list: a button, because picking one is the only thing it does. */
+      .tab {
         display: flex;
         align-items: center;
         gap: 6px;
@@ -142,16 +153,16 @@ export class HeoAiSettings extends HeoElement {
         text-align: left;
         cursor: pointer;
       }
-      .row:hover {
+      .tab:hover {
         background: var(--heo-sunken);
         color: var(--heo-text);
       }
-      .row[aria-current='true'] {
+      .tab[aria-current='true'] {
         border-color: var(--heo-accent-line);
         background: var(--heo-sunken);
         color: var(--heo-text);
       }
-      .row .name {
+      .tab .name {
         flex: 1 1 auto;
         min-width: 0;
         overflow: hidden;
@@ -160,17 +171,17 @@ export class HeoAiSettings extends HeoElement {
         font-size: 11.5px;
         font-weight: 600;
       }
-      .row .dot {
+      .tab .dot {
         flex: 0 0 auto;
         width: 6px;
         height: 6px;
         border-radius: 999px;
         background: var(--heo-accent);
       }
-      .row .dot.needs {
+      .tab .dot.needs {
         background: var(--heo-danger);
       }
-      .row .dot.exposed {
+      .tab .dot.exposed {
         background: var(--heo-warn);
       }
 
@@ -230,44 +241,52 @@ export class HeoAiSettings extends HeoElement {
       .body-rows {
         padding: 0 10px 10px;
       }
+      /* The security sentence on the left, the actions on the provider itself on the right. */
       .why {
-        margin: 0 0 9px;
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        margin: 0 0 10px;
+      }
+      .why p {
+        flex: 1 1 auto;
+        min-width: 0;
+        margin: 0;
         color: var(--heo-text-dim);
         font-size: 10.5px;
         line-height: 1.55;
       }
-      label.field {
-        display: block;
-        margin-bottom: 7px;
+      .owner-acts {
+        display: flex;
+        flex: 0 0 auto;
+        gap: 6px;
       }
-      label.field > span {
-        display: block;
-        margin-bottom: 3px;
+
+      /*
+       * .field is the shared grid from theme.ts; only the spacing between fields is local.
+       *
+       * The label used to be positioned by hand here, which meant this dialog's fields drifted
+       * from every other panel's the moment one of them changed.
+       */
+      .field {
+        margin-bottom: 8px;
+      }
+      .field > span {
         color: var(--heo-text-dim);
         font-size: 10px;
       }
-      input,
-      select,
-      textarea {
-        width: 100%;
-        padding: 5px 7px;
-        border: 1px solid var(--heo-line);
-        border-radius: var(--heo-r-sm);
-        background: var(--heo-base);
-        color: var(--heo-text);
-        font: inherit;
-        font-size: 11px;
-      }
-      textarea {
+      /*
+       * Controls carry .input, so there is no bare element rule for input here.
+       *
+       * There was, and it caught every checkbox in the dialog — which is why the "remember this
+       * key" box needed an inline width:auto to escape it. Naming the class instead means the
+       * fields get the shared hover, focus, placeholder and drawn select chevron for free, and
+       * a checkbox is simply not one of them.
+       */
+      textarea.input {
         min-height: 46px;
-        resize: vertical;
-        line-height: 1.5;
-      }
-      input:focus-visible,
-      select:focus-visible,
-      textarea:focus-visible {
-        border-color: var(--heo-accent-line);
-        outline: none;
+        font-family: inherit;
+        font-size: 11px;
       }
       .pair {
         display: grid;
@@ -349,6 +368,82 @@ export class HeoAiSettings extends HeoElement {
       }
       footer .spacer {
         flex: 1 1 auto;
+      }
+
+      /*
+       * Narrow screens, at the same 560px the CSS-paste dialog uses.
+       *
+       * Two things break rather than merely tighten. The 232px provider list left about 90px for
+       * a form, and .pair put two selects side by side in it — so the sensible move is not to
+       * shrink either but to change what they are: the list becomes a strip of tabs along the
+       * top, which is the same "pick one, then edit it" relationship read vertically instead of
+       * horizontally, and every field gets its own line.
+       */
+      @media (max-width: 560px) {
+        :host {
+          padding: 8px;
+        }
+        .dialog {
+          height: auto;
+          max-height: calc(100vh - 16px);
+        }
+        .split,
+        .split.solo {
+          grid-template-columns: minmax(0, 1fr);
+          grid-template-rows: auto minmax(0, 1fr);
+        }
+        /* A horizontal strip, scrollable, so ten providers do not push the form off screen. */
+        .list {
+          flex-direction: row;
+          gap: 6px;
+          padding: 2px 12px 10px;
+          border-right: 0;
+          border-bottom: 1px solid var(--heo-line);
+          overflow-x: auto;
+          overflow-y: hidden;
+          scrollbar-width: thin;
+        }
+        .tab {
+          width: auto;
+          flex: 0 0 auto;
+        }
+        /* The default marker is the one thing worth dropping: the leftmost tab is the default. */
+        .tab .first {
+          display: none;
+        }
+        .pane,
+        .body-rows {
+          padding-left: 12px;
+          padding-right: 12px;
+        }
+        header,
+        footer {
+          padding-left: 12px;
+          padding-right: 12px;
+        }
+        /* One control per line, which is the whole point of the breakpoint. */
+        .pair {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        /*
+         * The permission rows turn into label-above-control.
+         *
+         * Side by side, the consequence sentence — the part that has to be read rather than
+         * skimmed — was wrapping to four lines beside a select.
+         */
+        .scope {
+          flex-wrap: wrap;
+        }
+        .scope select.input {
+          width: 100%;
+        }
+        /* Actions below the sentence they belong to rather than squeezed against it. */
+        .why {
+          flex-wrap: wrap;
+        }
+        .owner-acts {
+          flex: 1 1 100%;
+        }
       }
     `,
   ];
@@ -454,7 +549,7 @@ export class HeoAiSettings extends HeoElement {
     const needsKey = !this.editor.ai.ready(set);
     const tone = needsKey ? 'needs' : set.transport === 'in-page' ? 'exposed' : 'safe';
     return html`<button
-      class="row"
+      class="tab"
       type="button"
       role="tab"
       aria-current=${chosen ? 'true' : 'false'}
@@ -492,12 +587,43 @@ export class HeoAiSettings extends HeoElement {
         </span>
       </div>
 
-      <!-- The security statement, before the fields that decide it. -->
-      <p class="why">${badge.detail}</p>
+      <!--
+        The security statement, and beside it the two actions on the provider as a whole.
+
+        Up here rather than at the foot of the form, which is where they were: below a
+        credential field, three permission rows and a free-text box, "Delete" was a bare icon
+        several scroll-lengths away from the name of the thing it deleted. These act on the
+        provider, so they belong level with the line that identifies it — and Delete is last,
+        because the destructive one should not be the one the hand reaches first.
+      -->
+      <div class="why">
+        <p>${badge.detail}</p>
+        <div class="owner-acts">
+          ${index > 0
+        ? html`<button
+                class="btn sm"
+                type="button"
+                title="Move to the top of the list, making it the default"
+                @click=${() => this.editor.ai.reorder(set.id, 0)}
+              >
+                ${icon('arrowUp', 12)} Promote
+              </button>`
+        : nothing}
+          <button
+            class="btn sm danger"
+            type="button"
+            title=${`Remove ${set.label} and forget its key`}
+            @click=${() => this.#remove(set)}
+          >
+            ${icon('trash', 12)} Delete
+          </button>
+        </div>
+      </div>
 
       <label class="field">
         <span>Name</span>
         <input
+          class="input"
           .value=${set.label}
           @change=${(event: Event) => patch({ label: (event.target as HTMLInputElement).value })}
         />
@@ -507,6 +633,7 @@ export class HeoAiSettings extends HeoElement {
         <label class="field">
           <span>Where the key lives</span>
           <select
+            class="input"
             @change=${(event: Event) =>
         patch({ transport: (event.target as HTMLSelectElement).value as AiTransportKind })}
           >
@@ -524,6 +651,7 @@ export class HeoAiSettings extends HeoElement {
         <label class="field">
           <span>API shape</span>
           <select
+            class="input"
             @change=${(event: Event) =>
         patch({ provider: (event.target as HTMLSelectElement).value as AiProviderKind })}
           >
@@ -542,6 +670,7 @@ export class HeoAiSettings extends HeoElement {
         : html`<label class="field">
             <span>Base URL</span>
             <input
+              class="input"
               .value=${set.baseURL ?? ''}
               placeholder="http://127.0.0.1:11434/v1"
               @change=${(event: Event) =>
@@ -552,6 +681,7 @@ export class HeoAiSettings extends HeoElement {
       <label class="field">
         <span>Model</span>
         <input
+          class="input"
           .value=${set.model}
           placeholder="gpt-4o-mini"
           @change=${(event: Event) => patch({ model: (event.target as HTMLInputElement).value })}
@@ -563,6 +693,7 @@ export class HeoAiSettings extends HeoElement {
       <label class="field">
         <span>Extra instructions (optional)</span>
         <textarea
+          class="input"
           .value=${set.systemPrompt ?? ''}
           placeholder="Prefer short copy. Never use exclamation marks."
           @change=${(event: Event) =>
@@ -586,26 +717,6 @@ export class HeoAiSettings extends HeoElement {
               ${icon(verdict.ok ? 'check' : 'alert', 11)} ${verdict.text}
             </span>`
         : nothing}
-        <span class="spacer"></span>
-        ${index > 0
-        ? html`<button
-              class="btn icon ghost"
-              type="button"
-              aria-label="Make this the default"
-              title="Move to the top, making it the default"
-              @click=${() => this.editor.ai.reorder(set.id, 0)}
-            >
-              ${icon('arrowUp', 12)}
-            </button>`
-        : nothing}
-        <button
-          class="btn icon ghost"
-          type="button"
-          aria-label=${`Remove ${set.label}`}
-          @click=${() => this.#remove(set)}
-        >
-          ${icon('trash', 12)}
-        </button>
       </div>
     </div>`;
   }
@@ -631,6 +742,7 @@ export class HeoAiSettings extends HeoElement {
     return html`<label class="field">
       <span>API key${hint ? ` — currently ends ${hint}` : ''}</span>
       <input
+        class="input"
         type="password"
         autocomplete="current-password"
         name=${`heo-ai-key-${set.id}`}
@@ -652,7 +764,6 @@ export class HeoAiSettings extends HeoElement {
         <label class="verdict" title=${refusal ?? 'Keep it on this machine until you remove it'}>
           <input
             type="checkbox"
-            style="width:auto"
             ?checked=${remember}
             ?disabled=${Boolean(refusal)}
             @change=${(event: Event) => {
@@ -667,13 +778,12 @@ export class HeoAiSettings extends HeoElement {
         <span class="spacer"></span>
         ${hint
         ? html`<button
-              class="btn icon ghost"
+              class="btn sm danger"
               type="button"
-              aria-label="Forget this key"
-              title="Forget this key everywhere"
+              title="Forget this key everywhere it is stored"
               @click=${() => this.editor.ai.clearKey(set.id)}
             >
-              ${icon('unlink', 12)}
+              ${icon('unlink', 12)} Forget key
             </button>`
         : nothing}
       </div>
@@ -689,6 +799,7 @@ export class HeoAiSettings extends HeoElement {
         <span>${AI_SCOPE_CONSEQUENCE[scope]}</span>
       </span>
       <select
+        class="input"
         aria-label=${AI_SCOPE_LABELS[scope]}
         @change=${(event: Event) => {
         const value = (event.target as HTMLSelectElement).value;

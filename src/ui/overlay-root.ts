@@ -114,12 +114,6 @@ export class HeoOverlay extends HeoElement {
       ${state.editing && state.dockOpen ? html`<heo-dock></heo-dock>` : nothing}
       ${state.editing && state.quickMenuOpen ? html`<heo-quick-menu></heo-quick-menu>` : nothing}
       ${state.editing && state.aiMenuOpen ? html`<heo-ai-menu></heo-ai-menu>` : nothing}
-      <!--
-        The provider settings, at the root rather than inside the AI popover.
-        A full-screen task needs the viewport as its containing block, and the popover is a
-        clipped fixed box — nesting it there put a modal in the corner of a 320px panel.
-      -->
-      ${state.aiSettingsOpen ? html`<heo-ai-settings></heo-ai-settings>` : nothing}
       ${state.editing && state.insertAnchor ? html`<heo-insert-menu></heo-insert-menu>` : nothing}
       ${state.editing && state.textEditing ? html`<heo-text-toolbar></heo-text-toolbar>` : nothing}
       ${state.drag ? html`<heo-drag-chip></heo-drag-chip>` : nothing}
@@ -128,6 +122,16 @@ export class HeoOverlay extends HeoElement {
       ${state.htmlPaste ? html`<heo-paste-dialog></heo-paste-dialog>` : nothing}
       ${state.cssPaste ? html`<heo-css-paste-dialog></heo-css-paste-dialog>` : nothing}
       ${state.sourceEdit ? html`<heo-source-dialog></heo-source-dialog>` : nothing}
+      <!--
+        The provider settings, here rather than inside the AI popover: a full-screen task needs
+        the viewport as its containing block, and the popover is a clipped fixed box — nesting it
+        there put a modal in the corner of a 320px panel.
+
+        And here rather than up beside the popover it is opened from, because this is a dialog and
+        this is where the dialogs are. It sat at the top of the list with a z-index above the
+        confirmation, so its own "Remove this provider?" appeared underneath it.
+      -->
+      ${state.aiSettingsOpen ? html`<heo-ai-settings></heo-ai-settings>` : nothing}
       ${state.codeWorkspace ? html`<heo-code-workspace></heo-code-workspace>` : nothing}
       <!--
         Above every other dialog, because it is asked *from* them: the library panel sits

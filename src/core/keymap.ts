@@ -41,6 +41,17 @@ export function handleKeyDown(engine: EditorEngine, event: KeyboardEvent): void 
   // modal, never unwind menus, selection, or edit mode underneath it.
   if (state.cssPaste) return;
   /*
+   * And the AI provider settings, which was missing this line.
+   *
+   * The `fromOverlay` and `isEditableTarget` guards further down cover the keys below them, but
+   * three shortcuts are decided *above* them and so reached past this dialog: `Mod+S` opened the
+   * save dialog behind it, `Mod+D` duplicated the selected element whenever focus sat on one of
+   * its buttons, and `Mod+Z` undid a change to the page while the caret was in a text field —
+   * the field's own undo checks look for a code buffer or an uncommitted value control, and a
+   * plain input in a dialog is neither.
+   */
+  if (state.aiSettingsOpen) return;
+  /*
    * And the confirmation, most of all.
    *
    * It is the one dialog whose entire purpose is that nothing happens until it is answered, so
