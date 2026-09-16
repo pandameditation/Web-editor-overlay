@@ -81,6 +81,7 @@
     "check:aiscope": "node scripts/browser-check.mjs test/ai-scope.html 60000",
     "check:airun": "node scripts/browser-check.mjs test/ai-run.html 90000",
     "check:aikeys": "node scripts/browser-check.mjs test/ai-keys.html 60000",
+    "check:seedparts": "node scripts/browser-check.mjs test/seed-parts.html 60000",
     "check:aiui": "node scripts/browser-check.mjs test/ai-ui.html 60000",
     "check:dimensional": "node scripts/browser-check.mjs test/dimensional.html 60000",
     "check:searchfield": "node scripts/browser-check.mjs test/search-field.html 60000",

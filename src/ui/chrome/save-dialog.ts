@@ -2083,8 +2083,8 @@ export class HeoSaveDialog extends HeoElement {
         <div class="body">
           <h2>Take this design system with you</h2>
           <p>
-            Everything this session defined — tokens, reusable classes and blocks — ready to paste
-            into the next page, or to bring one in from another.
+            What this session defined — tokens, reusable classes, rules and blocks — ready to paste
+            into the next page, or to bring one in from another. Choose what goes with it below.
           </p>
         </div>
         <button

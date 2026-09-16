@@ -1,8 +1,14 @@
 import { css, html, nothing, type CSSResult, type TemplateResult } from 'lit';
-import { copyToClipboard, pickTextFile } from '../../core/design-system.js';
+import {
+  copyToClipboard,
+  pickTextFile,
+  WHOLE_DESIGN_SYSTEM,
+  type DesignSystemSelection,
+} from '../../core/design-system.js';
 import type { EditorEngine } from '../../core/editor.js';
 import {
   compactDesignSystem,
+  encodeSeed,
   recommendedTarget,
   seedSnippets,
   seedStats,
@@ -52,30 +58,67 @@ export interface DesignTransferHost {
  */
 let cachedKey = '';
 let cachedSeed = '';
+/**
+ * The document the cached seed actually encodes.
+ *
+ * Kept beside the seed rather than recomputed, so the tally's size and the snippet always describe
+ * the same payload. They did not before: the document was read fresh on every render while the seed
+ * could be a frame behind, which showed a newly added token's count next to the previous seed's
+ * length. Harmless while the only cause was a keystroke, and wrong in a way worth fixing now that
+ * unticking a box changes the document deliberately.
+ */
+let cachedDoc: DesignSystemDocument | null = null;
 let pendingKey = '';
 let pendingNotify: Array<() => void> = [];
 
-/** Drop the cached seed, for unmount. */
+/**
+ * What the seed is allowed to carry, for the whole overlay rather than per surface.
+ *
+ * Module state for the same reason the seed cache is: there is one design system in this page, and
+ * "does the block library travel" cannot have a different answer in the Tokens panel than it does
+ * in the save dialog — the two would encode different seeds and the cache would thrash between
+ * them. It also keeps `DesignTransferHost` as it was, rather than growing six setters that both
+ * hosts would have to implement identically.
+ *
+ * It lasts for the life of the page, including the credential opt-in — `releaseSeedCache` would
+ * reset it but nothing calls that today, so this is stated rather than implied. What makes the
+ * credential case safe is not a reset: the warning is rendered for as long as the box is ticked,
+ * directly above the buttons that copy and download, so the risk cannot be on without being on
+ * screen at the moment it matters. A reset would be a second, weaker guarantee that invited the
+ * warning to become dismissable.
+ */
+let selection: DesignSystemSelection = { ...WHOLE_DESIGN_SYSTEM };
+
+/** Drop the cached seed and the selection. Currently uncalled; see `selection`. */
 export function releaseSeedCache(): void {
   cachedKey = '';
   cachedSeed = '';
+  cachedDoc = null;
   pendingKey = '';
   pendingNotify = [];
+  // Back to carrying everything and no credentials, so a caller that does wire this up gets the
+  // credential opt-in off rather than inheriting whoever last needed it.
+  selection = { ...WHOLE_DESIGN_SYSTEM };
 }
 
 /**
- * The system as it stands, plus the seed for it.
+ * The seed for the current selection, and the document it encodes.
  *
- * The seed lags by a frame after an edit, because compression is async. The stale
- * one keeps being shown rather than blanking the panel on every committed change —
- * a flash of "building…" per keystroke would be worse than a seed that is one frame
- * behind, and the replacement lands on the next microtask.
+ * The pair lags by a frame after a change, because compression is async. The stale one keeps being
+ * shown rather than blanking the panel on every committed edit — a flash of "building…" per
+ * keystroke would be worse than a seed that is one frame behind, and the replacement lands on the
+ * next microtask.
+ *
+ * What is returned is always a *coherent* pair, though, which is the part that matters once a
+ * checkbox can change the payload: the size, the snippet and the counts derived from here all
+ * describe one document. The counts beside the checkboxes come from elsewhere — see `render` — so
+ * the labels never lag even when this does.
  */
 function seedFor(
   engine: EditorEngine,
   notify: () => void,
 ): { doc: DesignSystemDocument; seed: string } {
-  const doc = engine.designSystem();
+  const doc = engine.designSystem(selection);
   const key = JSON.stringify(compactDesignSystem(doc));
 
   if (key !== cachedKey) {
@@ -84,13 +127,22 @@ function seedFor(
     } else {
       pendingKey = key;
       pendingNotify = [notify];
-      void engine
-        .designSystemSeed()
+      /*
+       * The document already in hand, not a second read through the engine.
+       *
+       * It was `engine.designSystemSeed()`, which builds its own document — and once a selection
+       * existed, one taking no argument built the *whole* system while the counts and the cache key
+       * came from the filtered one. The size never moved and the snippet carried content the boxes
+       * said was left out. Encoding this document makes the pair true by construction rather than
+       * by two call sites agreeing.
+       */
+      void encodeSeed(doc)
         .then((seed) => {
           // A later edit already superseded this one; its own pass will land.
           if (pendingKey !== key) return;
           cachedKey = key;
           cachedSeed = seed;
+          cachedDoc = doc;
           pendingKey = '';
           const waiting = pendingNotify;
           pendingNotify = [];
@@ -104,7 +156,10 @@ function seedFor(
     }
   }
 
-  return { doc, seed: cachedSeed };
+  // The cached pair, which is the one that go together. Only before the first seed has ever
+  // landed is there nothing to show, and then the caller renders "Building the seed…".
+  if (cachedDoc && cachedSeed) return { doc: cachedDoc, seed: cachedSeed };
+  return { doc, seed: '' };
 }
 
 export const DesignTransfer = {
@@ -131,7 +186,7 @@ export const DesignTransfer = {
       flex-wrap: wrap;
       align-items: baseline;
       gap: 4px 8px;
-      margin: 0 0 9px;
+      margin: 0 0 5px;
       color: var(--heo-text-dim);
       font-size: 10.5px;
     }
@@ -152,6 +207,105 @@ export const DesignTransfer = {
       color: var(--heo-accent);
       font-family: var(--heo-mono);
       font-size: 10px;
+    }
+    .tally .label {
+      color: var(--heo-text-faint);
+      font-size: 9.5px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    /* ---- What travels, as boxes rather than a sentence ---- */
+
+    /* This was one line of counts, which read as a fact about the system when it was really a
+       description of the payload — and a payload nobody could change. The counts are still the
+       argument, so they stay on the rows: an option reading "leave out the blocks" says nothing
+       useful next to one reading "leave out 17 blocks". */
+    .parts {
+      display: grid;
+      gap: 1px;
+      margin: 0 0 10px;
+    }
+    .part {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 3px 5px;
+      border-radius: 5px;
+      color: var(--heo-text-dim);
+      font-size: 10.5px;
+      cursor: pointer;
+    }
+    .part:hover {
+      background: var(--heo-sunken);
+    }
+    .part input {
+      width: 13px;
+      height: 13px;
+      margin: 0;
+      flex: 0 0 auto;
+      accent-color: var(--heo-accent);
+      cursor: inherit;
+    }
+    .part b {
+      color: var(--heo-text);
+      font-weight: 600;
+    }
+    /* Nothing of this kind to send, so there is nothing to decide. Dimmed rather than dropped,
+       because "no rules yet" and "rules left behind" are opposite facts and a missing row would
+       read as either — the same argument the save dialog's file list makes for itself. */
+    .part.empty {
+      opacity: 0.5;
+      cursor: default;
+    }
+    .part.empty:hover {
+      background: none;
+    }
+    /* Indented under the row above with an elbow, because it depends on it: a credential can only
+       travel alongside the provider it belongs to. Reads like the save dialog's dependent choices,
+       but deliberately NOT called sub: that dialog loads this stylesheet into its own shadow root
+       and defines a sub of its own as a flex column, which stacked this row's box above its text.
+       A class name shared across two stylesheets in one root is a collision waiting to happen. */
+    .part.dependent {
+      position: relative;
+      margin-left: 18px;
+    }
+    .part.dependent::before {
+      content: '';
+      position: absolute;
+      left: -12px;
+      top: -3px;
+      bottom: 50%;
+      width: 10px;
+      border-left: 1px solid var(--heo-line);
+      border-bottom: 1px solid var(--heo-line);
+      border-bottom-left-radius: 5px;
+      pointer-events: none;
+    }
+    .part.risky {
+      color: var(--heo-warn);
+    }
+    .part.risky b {
+      color: var(--heo-warn);
+    }
+    /* Present whenever the box is ticked, not dismissable. This is the one control here whose
+       consequence outlives the dialog, and the moment it matters is the moment somebody reaches
+       for Copy seed — so the caution has to still be on screen then. */
+    .keywarn {
+      display: flex;
+      align-items: flex-start;
+      gap: 5px;
+      margin: 2px 0 9px 18px;
+      padding: 7px 9px;
+      border: 1px solid var(--heo-warn);
+      border-radius: var(--heo-r-sm);
+      color: var(--heo-warn);
+      font-size: 10.5px;
+      line-height: 1.45;
+    }
+    .keywarn svg {
+      flex: 0 0 auto;
+      margin-top: 1px;
     }
 
     /* Which integration the snippet is written for. A row of small tabs rather
@@ -305,11 +459,34 @@ export const DesignTransfer = {
     const { doc, seed } = seedFor(engine, host.onSeed);
     // Same order the write plan joins these in, because the join order is the cascade
     // order — a preview that reordered them would not be the CSS the save produces.
+    //
+    // Deliberately not filtered by the selection above: this is the CSS a save writes into a
+    // stylesheet, which is a different payload with a different destination and its own control
+    // in the save dialog. Pruning it here would make one set of boxes appear to govern two things.
     const generatedCSS = designSystemCSSText({
       tokens: engine.tokens.toCSS(),
       classes: engine.classes.toCSS(),
       rules: engine.rules.toCSS(),
     });
+
+    /*
+     * Everything there is, regardless of what is ticked — the numbers on the boxes.
+     *
+     * A second read rather than counting the filtered document, because an option has to say what
+     * it would bring back. Unticking blocks and watching the number fall to zero would leave
+     * nothing on screen to explain what ticking it again gets you.
+     */
+    const available = engine.designSystem();
+    /*
+     * Sets whose key this page could actually hand over.
+     *
+     * Both halves are needed. A proxied set has no credential here to send, and a set whose stored
+     * key is passphrase-wrapped and still locked has none in memory either — so offering the
+     * option would be offering to export nothing.
+     */
+    const keyable = (engine.ai.list() ?? []).filter(
+      (set) => set.transport === 'in-page' && engine.ai.ready(set),
+    );
 
     const stats = seed ? seedStats(doc, seed) : null;
     const snippets = seed ? seedSnippets(seed) : [];
@@ -317,46 +494,108 @@ export const DesignTransfer = {
     const target = host.target ?? best;
     const active = snippets.find((one) => one.id === target) ?? snippets[0];
 
+    /*
+     * Record a choice and let the host redraw, which is what recomputes the size.
+     *
+     * Turning the providers off takes the credentials with them rather than leaving the flag set:
+     * a remembered true would re-arm the moment somebody ticked providers back on, which is the
+     * last thing this particular option should do quietly.
+     */
+    const choose = (next: Partial<DesignSystemSelection>): void => {
+      selection = { ...selection, ...next };
+      if (next.ai === false) selection.aiKeys = false;
+      host.onSeed();
+    };
+
+    const part = (
+      field: 'tokens' | 'classes' | 'rules' | 'blocks' | 'ai',
+      count: number,
+      one: string,
+      many: string,
+    ): TemplateResult => html`<label
+      class=${`part${count === 0 ? ' empty' : ''}`}
+      title=${count === 0
+      ? `No ${many} to send.`
+      : selection[field]
+        ? `Leave the ${many} out of the seed`
+        : `Put the ${many} back in the seed`}
+    >
+      <input
+        type="checkbox"
+        .checked=${selection[field]}
+        ?disabled=${count === 0}
+        @change=${(event: Event) => choose({ [field]: (event.target as HTMLInputElement).checked })}
+      />
+      <span><b>${count}</b> ${count === 1 ? one : many}</span>
+    </label>`;
+
     return html`<div class="transfer">
       <p class="hint" style="margin:0 0 9px">
-        A seed carries this whole system — tokens, classes, rules and blocks — as one string. Paste
-        it into
-        any page and that page rebuilds the same vocabulary, with nothing to host and nothing to
-        fetch.
+        A seed carries this design system as one string. Paste it into any page and that page
+        rebuilds the same vocabulary, with nothing to host and nothing to fetch. Untick anything
+        below that should stay behind.
       </p>
 
+      <!--
+        What travels, and what it weighs, on one line.
+
+        The size sits up here rather than beside the button that copies it because it is the
+        consequence of the boxes below: tick one and this number moves. Kept as the tally class it
+        replaced, since it is still the same summary — now with the parts it summarises underneath.
+      -->
+      <p class="tally">
+        <span class="label" id="heo-seed-parts">What travels</span>
+        <span class="spacer"></span>
+        ${stats
+        ? html`<span class="size" title=${stats.saved || 'Length of the seed'}>${stats.size}</span>`
+        : html`<span class="size" title="Working out the size">…</span>`}
+      </p>
+
+      <div class="parts" role="group" aria-labelledby="heo-seed-parts">
+        ${part('tokens', available.tokens.length, 'token', 'tokens')}
+        ${part('classes', available.classes.length, 'class', 'classes')}
+        ${part('rules', available.rules?.length ?? 0, 'rule', 'rules')}
+        ${part('blocks', available.blocks.length, 'block', 'blocks')}
+        <!--
+          Providers, and the question the count used to pre-empt.
+
+          This row used to carry a tooltip promising that API keys are never put in a seed. That
+          promise is no longer unconditional, so it is not made here — the row below says what is
+          true instead, which is that a key travels only if you say so.
+        -->
+        ${part('ai', available.ai?.length ?? 0, 'AI provider', 'AI providers')}
+        ${selection.ai && keyable.length
+        ? html`<label
+              class="part dependent risky"
+              title="Write these API keys into the seed"
+              aria-describedby="heo-seed-keywarn"
+            >
+              <input
+                type="checkbox"
+                .checked=${selection.aiKeys}
+                @change=${(event: Event) =>
+            choose({ aiKeys: (event.target as HTMLInputElement).checked })}
+              />
+              <span><b>${keyable.length}</b> ${keyable.length === 1 ? 'in-page API key' : 'in-page API keys'}</span>
+            </label>`
+        : nothing}
+      </div>
+
+      ${selection.ai && selection.aiKeys && keyable.length
+        ? html`<p class="keywarn" id="heo-seed-keywarn" role="note">
+            ${icon('alert', 12)}
+            <span>
+              This seed now contains
+              ${keyable.length === 1 ? 'a working API key' : 'working API keys'} in readable form.
+              Anyone who gets the string can spend against your account. Do not commit it and do
+              not paste it into a chat — hand it over the way you would hand over the key itself,
+              and rotate it if it goes anywhere else.
+            </span>
+          </p>`
+        : nothing}
+
       ${stats
-        ? html`<p class="tally">
-              <span><b>${stats.tokens}</b> token${stats.tokens === 1 ? '' : 's'}</span>
-              <span class="sep">·</span>
-              <span><b>${stats.classes}</b> class${stats.classes === 1 ? '' : 'es'}</span>
-              <!-- Only when there are any: a tally is a summary, and a zero in it is a
-                   column of nothing rather than a fact worth the width. -->
-              ${stats.rules
-            ? html`<span class="sep">·</span>
-                    <span><b>${stats.rules}</b> rule${stats.rules === 1 ? '' : 's'}</span>`
-            : nothing}
-              <span class="sep">·</span>
-              <span><b>${stats.blocks}</b> block${stats.blocks === 1 ? '' : 's'}</span>
-              <!--
-                Providers, and the reassurance beside them.
-
-                The count alone would raise the question it exists to answer — "so my key is in
-                this string?" — which is why the tooltip says outright that it is not. This is
-                the one line in the product where somebody decides whether to paste a seed into
-                a message, so it is the one place that promise has to be visible.
-              -->
-              ${stats.aiSets
-            ? html`<span class="sep">·</span>
-                    <span title="Provider settings only. API keys are never put in a seed.">
-                      <b>${stats.aiSets}</b> AI set${stats.aiSets === 1 ? '' : 's'}
-                    </span>`
-            : nothing}
-              <span class="spacer"></span>
-              <span class="size" title=${stats.saved || 'Length of the seed'}>${stats.size}</span>
-            </p>
-
-            <div class="targets" role="group" aria-label="Where the seed is going">
+        ? html`<div class="targets" role="group" aria-label="Where the seed is going">
               ${snippets.map(
               (one) => html`<button
                   type="button"
@@ -404,7 +643,7 @@ export const DesignTransfer = {
                 class="btn"
                 type="button"
                 title="Download the system as a JSON file for the repository"
-                @click=${() => engine.exportDesignSystemFile()}
+                @click=${() => engine.exportDesignSystemFile(selection)}
               >
                 ${icon('download', 12)} JSON file
               </button>

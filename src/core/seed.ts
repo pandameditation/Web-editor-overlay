@@ -1,4 +1,9 @@
-import { portableProviderSet, type AiProviderSet } from './ai/types.js';
+import {
+  portableProviderKey,
+  portableProviderSet,
+  type AiProviderKey,
+  type AiProviderSet,
+} from './ai/types.js';
 import { prettifyClassName } from './classes.js';
 import { parseDesignSystem } from './design-system.js';
 import { prettifyTokenName } from './tokens.js';
@@ -114,7 +119,7 @@ export function compactDesignSystem(doc: DesignSystemDocument): DesignSystemDocu
   });
 
   /*
-   * Provider sets travel; credentials do not.
+   * Provider sets travel; credentials do not, unless they were asked for separately.
    *
    * Through `portableProviderSet` rather than copied, and that is load-bearing rather than
    * tidy. A seed is the most-shared artefact this editor produces — pasted into a message,
@@ -127,9 +132,22 @@ export function compactDesignSystem(doc: DesignSystemDocument): DesignSystemDocu
     .map((entry) => portableProviderSet(entry))
     .filter((entry): entry is AiProviderSet => entry !== null);
 
+  /*
+   * Credentials pass through untouched, because by the time one is here it was asked for.
+   *
+   * The paragraph above is about a secret arriving somewhere nobody intended. This is the opposite
+   * case: `exportDesignSystem` only puts keys in a document when a user ticked the box that says
+   * what that costs, and stripping them here would silently produce a seed that does not do what
+   * they were told it would. Rebuilt field by field all the same, so a document from elsewhere
+   * cannot use this collection to carry anything but an id and a key.
+   */
+  const aiKeys = (doc.aiKeys ?? [])
+    .map((entry) => portableProviderKey(entry))
+    .filter((entry): entry is AiProviderKey => entry !== null);
+
   // `rules` is omitted entirely when there are none, rather than carried as `[]`. Every
   // page without a rule would otherwise pay four characters for saying so, and the
-  // parser already defaults a missing key. Same for `ai`.
+  // parser already defaults a missing key. Same for `ai` and `aiKeys`.
   return {
     name: doc.name,
     version: doc.version,
@@ -138,6 +156,7 @@ export function compactDesignSystem(doc: DesignSystemDocument): DesignSystemDocu
     blocks,
     ...(rules.length ? { rules } : {}),
     ...(ai.length ? { ai } : {}),
+    ...(aiKeys.length ? { aiKeys } : {}),
   };
 }
 
@@ -230,8 +249,15 @@ export interface SeedStats {
   classes: number;
   rules: number;
   blocks: number;
-  /** Configured providers travelling with this seed. Never their credentials. */
+  /** Configured providers travelling with this seed. */
   aiSets: number;
+  /**
+   * Credentials travelling with them, which is zero unless somebody asked for otherwise.
+   *
+   * Counted so the surface handing the seed over can say so instead of implying it. A tally that
+   * could only ever report the safe case would be reassurance rather than information.
+   */
+  aiKeys: number;
   /** Characters in the seed, which is what a paste target has to hold. */
   length: number;
   /** `1.2 kB`, for a line of copy. */
@@ -254,6 +280,7 @@ export function seedStats(doc: DesignSystemDocument, seed: string): SeedStats {
     rules: doc.rules?.length ?? 0,
     blocks: doc.blocks.length,
     aiSets: doc.ai?.length ?? 0,
+    aiKeys: doc.aiKeys?.length ?? 0,
     length: seed.length,
     size: formatBytes(seed.length),
     saved: ratio > 0.05 ? `${Math.round(ratio * 100)}% smaller than the file` : '',

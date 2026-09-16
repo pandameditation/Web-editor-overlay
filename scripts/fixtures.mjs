@@ -77,6 +77,7 @@ export const FIXTURES = [
   { page: 'test/ai-scope.html', budget: 60000, weight: 2000, fast: true },
   { page: 'test/ai-run.html', budget: 90000, weight: 12000, fast: true },
   { page: 'test/ai-keys.html', budget: 60000, weight: 2000, fast: true },
+  { page: 'test/seed-parts.html', budget: 60000, weight: 2500, fast: true },
   { page: 'test/ai-ui.html', budget: 60000, weight: 4000, fast: true },
   { page: 'test/design-scope.html', budget: 45000, weight: 2100, fast: true },
   { page: 'test/links.html', budget: 45000, weight: 2100 },

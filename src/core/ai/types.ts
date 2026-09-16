@@ -226,6 +226,42 @@ export function needsKey(set: AiProviderSet): boolean {
 }
 
 /**
+ * A credential travelling with the set it belongs to, because somebody asked for that.
+ *
+ * A separate type beside `AiProviderSet` rather than a field on it, and the separation is the
+ * safety property rather than a modelling preference. `portableProviderSet` rebuilds a set from
+ * `PORTABLE_FIELDS` on the way out *and* on the way in, so adding `apiKey` to that list would
+ * have made every seed and every JSON export ever produced start carrying keys — the exact
+ * opposite of an opt-in. Keeping the credential in a sibling collection leaves the allow-list
+ * intact and leaves "a provider set never holds a secret" true as written.
+ *
+ * Only `in-page` sets can appear here. A `proxy` key is not in the page to be read and a `local`
+ * model has none, so for the other two transports there is nothing this could carry.
+ */
+export interface AiProviderKey {
+  /** The `AiProviderSet.id` this belongs to. */
+  id: string;
+  key: string;
+}
+
+/**
+ * One credential pair, or null when it is not one.
+ *
+ * The counterpart of `portableProviderSet` for the sibling collection, and it exists for the same
+ * reason: an imported document is untrusted, so the shape is rebuilt rather than trusted. Both
+ * fields have to be non-empty strings — an entry naming no set, or naming one with an empty key,
+ * would install nothing and is better dropped than half-applied.
+ */
+export function portableProviderKey(input: unknown): AiProviderKey | null {
+  if (!input || typeof input !== 'object') return null;
+  const raw = input as Record<string, unknown>;
+  const id = typeof raw.id === 'string' ? raw.id.trim() : '';
+  const key = typeof raw.key === 'string' ? raw.key.trim() : '';
+  if (!id || !key) return null;
+  return { id, key };
+}
+
+/**
  * Fields a set is allowed to carry, enumerated rather than assumed.
  *
  * An allow-list and not a deny-list, and that is the whole point of it. A set travels in the

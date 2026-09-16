@@ -29,6 +29,7 @@ import { AiRun, type RunOutcome, type SessionHost } from './session.js';
 import {
   portableProviderSet,
   type AiContextScope,
+  type AiProviderKey,
   type AiProviderSet,
 } from './types.js';
 
@@ -476,13 +477,21 @@ export class AiAgent {
   /* ---------------------------------------------------------------------- */
 
   /*
-   * The vault is proxied rather than exposed, and every method here is deliberately one that
-   * cannot hand a key back.
+   * The vault is proxied rather than exposed, and all but one method here is deliberately one
+   * that cannot hand a key back.
    *
    * `engine.ai` is reachable from the page, from a fixture and from any script sharing the realm.
    * Putting the vault on it would put a reader for the secret on it — and a `getKey` would be one
    * careless log line away from the thing this whole subsystem is built to avoid. So: write it,
-   * ask whether it is there, ask what it ends with, forget it. Never read it.
+   * ask whether it is there, ask what it ends with, forget it.
+   *
+   * The exception is `revealKeysForExport`, which exists because a user can ask for their key to
+   * travel in a design system and there is no way to honour that without reading it. It is named
+   * so that nobody calls it while believing they are doing something routine, and it is the only
+   * name to grep for to find every place a credential leaves as a string. Worth being plain about
+   * the consequence: on a page the user does not control, a hostile script could call it. That was
+   * already true of `authorize`, which any script can drive by sending a request, so this widens
+   * how a key is taken rather than whether it can be — the honest defence is still `proxy`.
    */
 
   /** Store a key for a set. Returns where it actually ended up. */
@@ -508,6 +517,33 @@ export class AiAgent {
   /** Forget a key everywhere, keeping the provider it belonged to. */
   clearKey(id: string): void {
     keyVault.clear(id);
+  }
+
+  /**
+   * The credentials for these sets, as strings, for a design system the user asked to carry them.
+   *
+   * Filtered to `in-page` sets before the vault is asked, so the answer cannot include a
+   * credential for a transport that has none to give. See `KeyVault.revealForExport`.
+   */
+  revealKeysForExport(ids: readonly string[]): AiProviderKey[] {
+    const inPage = ids.filter((id) => this.get(id)?.transport === 'in-page');
+    return keyVault.revealForExport(inPage);
+  }
+
+  /**
+   * Install credentials that arrived with an imported design system.
+   *
+   * Only for sets this now holds, which is what keeps a document from smuggling a key in against
+   * a provider id it never declared: the sets are imported first, so anything unmatched here
+   * belongs to nothing and is dropped. Returns how many landed, for the line that reports it.
+   */
+  adoptKeys(keys: readonly AiProviderKey[]): number {
+    let landed = 0;
+    for (const entry of keys) {
+      if (this.get(entry.id)?.transport !== 'in-page') continue;
+      if (keyVault.adopt(entry.id, entry.key)) landed += 1;
+    }
+    return landed;
   }
 
   /** True when a request for this set could be made right now. */

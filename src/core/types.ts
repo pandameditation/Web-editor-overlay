@@ -1,6 +1,6 @@
 import type { ElementAnchor } from './html-patch.js';
 import type { AiTransport } from './ai/transport.js';
-import type { AiProviderSet } from './ai/types.js';
+import type { AiProviderKey, AiProviderSet } from './ai/types.js';
 /**
  * Shared types for the editor overlay.
  *
@@ -170,6 +170,23 @@ export interface DesignSystemDocument {
    * `Needs a key` rather than failing at the moment somebody tries to use it.
    */
   ai?: AiProviderSet[];
+  /**
+   * In-page API keys, and only when somebody explicitly asked for them.
+   *
+   * Absent from everything the editor produces by default, which is the difference between this
+   * and every other field here. Nothing infers it, nothing defaults it on, and the one surface
+   * that can set it says in the same breath what it costs.
+   *
+   * Beside `ai` rather than inside it on purpose — see `AiProviderKey`. A set is rebuilt from an
+   * allow-list on the way out and on the way in, so a credential could not have been smuggled
+   * onto one even deliberately; putting it here keeps that gate intact and keeps the claim above
+   * true, which matters because that claim is what a reader relies on when deciding whether a
+   * seed is safe to paste into a message.
+   *
+   * A document carrying one of these is as sensitive as the key itself. It should not be
+   * committed, and the surface that offers it says so.
+   */
+  aiKeys?: AiProviderKey[];
 }
 
 /** Source location injected by the Vite plugin (or by hand) as `data-heo-src`. */

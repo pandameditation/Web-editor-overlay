@@ -1199,8 +1199,25 @@
       if (share && !share.open) share.shadowRoot.querySelector('button').click();
       await wait(200);
       await frame();
-      check('itCountsWhatIsInTheSeedAndItsSize', () =>
-        share.querySelector('.tally')?.textContent.replace(/\s+/g, ' ').trim());
+      check('itCountsWhatIsInTheSeedAndItsSize', () => ({
+        // The header carries the size; the counts moved onto the rows that can switch them off.
+        header: share.querySelector('.tally')?.textContent.replace(/\s+/g, ' ').trim(),
+        parts: Array.from(share.querySelectorAll('.part'))
+          .map((p) => p.textContent.replace(/\s+/g, ' ').trim()),
+      }));
+      check('andEachPartCanBeLeftBehind', () => {
+        const rows = Array.from(share.querySelectorAll('.part'));
+        return {
+          // Every row is a label wrapping its own control, which is what makes the count clickable.
+          everyRowIsALabelledBox: rows.length > 0 &&
+            rows.every((r) => r.tagName === 'LABEL' && Boolean(r.querySelector('input'))),
+          // On by default, so arriving here and pressing on carries what it always did. A kind with
+          // nothing in it is exempt: its box is disabled, and there is nothing to decide.
+          onByDefault: rows
+            .filter((r) => !r.querySelector('input').disabled)
+            .every((r) => r.querySelector('input').checked),
+        };
+      });
       check('itOffersEveryIntegration', () =>
         Array.from(share.querySelectorAll('.targets button'))
           .map((b) => b.textContent.trim()).join(','));
@@ -2665,6 +2682,7 @@
         const root = saveDialog().shadowRoot;
         return [
           root.querySelector('.transfer .tally') ? 'tally' : '',
+          root.querySelector('.transfer .parts') ? 'parts' : '',
           root.querySelector('.transfer .targets') ? 'targets' : '',
           root.querySelector('.transfer .snippet pre') ? 'snippet' : '',
           root.querySelector('.transfer textarea.paste') ? 'paste' : '',

@@ -91,9 +91,13 @@ export function persistenceRefusal(): string | null {
  *
  * A module-level instance rather than something on the engine, because there is exactly one
  * browser tab and the answer to "what is the key for provider X" cannot depend on which editor
- * instance is asking. Nothing here is reachable from a `ChangeRecord`, a
- * `DesignSystemDocument`, a seed or an export — the only way out is `authorize`, which writes a
- * header and returns nothing.
+ * instance is asking.
+ *
+ * Two ways out, and the difference between them is the whole point. `authorize` writes a header
+ * and returns nothing, so no caller can keep what it used — that is the path every request takes.
+ * `revealForExport` hands back the string, and exists only because a user asked in as many words
+ * for their key to be written into a design system they are carrying to another machine. Nothing
+ * calls it on its own initiative, and no `ChangeRecord`, save prompt or default export reaches it.
  */
 class KeyVault {
   /**
@@ -244,6 +248,49 @@ class KeyVault {
         headers.set('authorization', `Bearer ${key}`);
         return true;
     }
+  }
+
+  /**
+   * Hand back the credentials for these sets, so they can be written into a design system.
+   *
+   * The one reader in this module, and it is named to be unmistakable. A `getKey(id)` was
+   * rejected precisely because it reads as routine — it would have been one careless refactor
+   * from a log line. `revealForExport` cannot be typed by somebody who thinks they are doing
+   * something ordinary, and grepping for it finds every place a key leaves this module as a
+   * string, which today is exactly one.
+   *
+   * Ids are asked for rather than the whole map being returned, so a caller has to have decided
+   * which sets it means. Locked entries yield nothing: the passphrase is not known, so there is
+   * no plaintext to give, and an unlock prompt does not belong behind an export.
+   */
+  revealForExport(ids: readonly string[]): Array<{ id: string; key: string }> {
+    const out: Array<{ id: string; key: string }> = [];
+    for (const id of ids) {
+      const key = this.#keys.get(id);
+      if (key) out.push({ id, key });
+    }
+    return out;
+  }
+
+  /**
+   * Take a credential that arrived in an imported design system.
+   *
+   * Memory only, unlike a key the user typed, which defaults to the tab's `sessionStorage`. A key
+   * that came in on a pasted string is not a key somebody chose to keep here, and writing it to
+   * storage on whatever origin this page happens to be would be a decision made on their behalf.
+   * It works for this page load; keeping it is a separate, deliberate act in the AI settings.
+   *
+   * Synchronous, unlike `set`, which is async only for the passphrase wrap it does not need here.
+   * The import path runs inside a history commit and cannot await.
+   */
+  adopt(id: string, key: string): boolean {
+    const value = key.trim();
+    if (!value) return false;
+    this.#keys.set(id, value);
+    this.#locked.delete(id);
+    this.#persistence.set(id, 'none');
+    this.#emit();
+    return true;
   }
 
   onChange(listener: () => void): () => void {

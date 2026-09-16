@@ -65,8 +65,10 @@ import {
   pickTextFile,
   restoreDesignSystem,
   snapshotDesignSystem,
+  WHOLE_DESIGN_SYSTEM,
   type DesignSystemParts,
   type DesignSystemScope,
+  type DesignSystemSelection,
   type ImportResult,
 } from './design-system.js';
 import { containTab } from './focus.js';
@@ -7419,7 +7421,14 @@ export class EditorEngine {
     };
   }
 
-  designSystem(): DesignSystemDocument {
+  /**
+   * The design system as a portable document.
+   *
+   * `selection` defaults to the whole thing and no credentials, so every caller that does not
+   * care reads exactly as it always did. Only the transfer surface passes one, because it is the
+   * only place a user gets to say what travels.
+   */
+  designSystem(selection: DesignSystemSelection = WHOLE_DESIGN_SYSTEM): DesignSystemDocument {
     /*
      * `this`, not a hand-built object of registries.
      *
@@ -7429,17 +7438,27 @@ export class EditorEngine {
      * every seed — silently, because an empty list looks like a page with no providers. The
      * engine satisfies the whole interface, so passing it cannot go out of date.
      */
-    return exportDesignSystem(this, document.title || 'Design system');
+    return exportDesignSystem(this, document.title || 'Design system', selection);
   }
 
-  exportDesignSystemFile(): void {
-    const doc = this.designSystem();
+  exportDesignSystemFile(selection?: DesignSystemSelection): void {
+    const doc = this.designSystem(selection);
     downloadText(
       `${slug(doc.name)}-design-system.json`,
       JSON.stringify(doc, null, 2),
       'application/json',
     );
-    this.notify('Design system exported.', 'success');
+    /*
+     * Said out loud when the file holds a credential, because a download is the artefact most
+     * likely to be committed by reflex. The user ticked a box a moment ago; this is the reminder
+     * at the point the thing actually exists on disk.
+     */
+    this.notify(
+      doc.aiKeys?.length
+        ? `Design system exported, including ${doc.aiKeys.length} API key${doc.aiKeys.length === 1 ? '' : 's'}. Do not commit this file.`
+        : 'Design system exported.',
+      doc.aiKeys?.length ? 'info' : 'success',
+    );
   }
 
   /** This session's tokens, classes and blocks as one copy-pasteable string. */
@@ -7458,9 +7477,9 @@ export class EditorEngine {
   }
 
   /** What the current design system would weigh as a seed, and what is in it. */
-  async seedStatsNow(): Promise<SeedStats | null> {
+  async seedStatsNow(selection?: DesignSystemSelection): Promise<SeedStats | null> {
     try {
-      const doc = this.designSystem();
+      const doc = this.designSystem(selection);
       return seedStats(doc, await encodeSeed(doc));
     } catch {
       return null;
@@ -7475,7 +7494,7 @@ export class EditorEngine {
    */
   importDesignSystem(document_: unknown, options: { overwrite?: boolean } = {}): ImportResult {
     const before = snapshotDesignSystem(this);
-    let result: ImportResult = { tokens: 0, classes: 0, rules: 0, blocks: 0, aiSets: 0 };
+    let result: ImportResult = { tokens: 0, classes: 0, rules: 0, blocks: 0, aiSets: 0, aiKeys: 0 };
     this.history.commit({
       label: 'Import design system',
       record: {
@@ -7494,8 +7513,8 @@ export class EditorEngine {
     return result;
   }
 
-  designSystemSeed(): Promise<string> {
-    return encodeSeed(this.designSystem());
+  designSystemSeed(selection?: DesignSystemSelection): Promise<string> {
+    return encodeSeed(this.designSystem(selection));
   }
 
   /**
@@ -7524,7 +7543,7 @@ export class EditorEngine {
     try {
       const doc = await decodeSeed(text);
       const before = snapshotDesignSystem(this);
-      let result: ImportResult = { tokens: 0, classes: 0, rules: 0, blocks: 0, aiSets: 0 };
+      let result: ImportResult = { tokens: 0, classes: 0, rules: 0, blocks: 0, aiSets: 0, aiKeys: 0 };
       const name = doc.name?.trim() || 'design system';
 
       this.history.commit({
@@ -8548,16 +8567,22 @@ function describeImport(result: ImportResult): string {
   add(result.rules, 'rule', 'rules');
   add(result.blocks, 'block', 'blocks');
   add(result.aiSets, 'AI provider', 'AI providers');
+  add(result.aiKeys, 'API key', 'API keys');
   if (!parts.length) return 'Nothing new in that design system — everything was already here.';
   const listed =
     parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}`;
   /*
-   * The credential caveat, only when a provider arrived.
+   * The credential caveat, only when a provider arrived without one.
    *
-   * A seed cannot carry a key by construction, so an imported provider is configured and not
-   * yet usable. Saying so here is the difference between a user who adds a key and one who
-   * concludes the feature is broken.
+   * A seed carries a key only when whoever exported it deliberately said so, which is rare, so
+   * the usual case is a provider that is configured and not yet usable. Saying which of the two
+   * happened is the difference between a user who adds a key and one who concludes the feature is
+   * broken — and, in the other direction, a user who does not realise a credential just arrived on
+   * this machine.
    */
+  if (result.aiKeys) {
+    return `Imported ${listed}. The key is held for this page only — save it in the AI settings to keep it.`;
+  }
   return result.aiSets
     ? `Imported ${listed}. Providers arrive without their API keys, so add one to use them.`
     : `Imported ${listed}.`;

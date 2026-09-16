@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Choosing what a seed carries, and what that does to its size</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: system-ui, sans-serif;
+    }
+
+    #report {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+    }
+  </style>
+</head>
+
+<body>
+  <main id="main">
+    <article id="subject" class="card">
+      <h2>A heading.</h2>
+    </article>
+  </main>
+
+  <div id="report">
+    <pre id="progress">start</pre>
+    <pre id="out">pending</pre>
+  </div>
+
+  <script type="module">
+    (async () => {
+      const errors = [];
+      addEventListener('error', (e) => errors.push('error: ' + e.message));
+      addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + String(e.reason)));
+
+      const progress = document.getElementById('progress');
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const results = {};
+
+      const { mount } = await import('../dist/html-editor-overlay.js');
+      const api = mount({ theme: 'dark', presets: false, detectScriptContent: false });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+
+      /*
+       * Built at runtime, so any occurrence of it below is a real leak.
+       *
+       * The same reasoning as `test/ai-keys.html`: a literal would appear in this script, and an
+       * assertion that the seed does not contain it would fail for a reason that has nothing to do
+       * with the product.
+       */
+      const SECRET = `sk-heo-${crypto.randomUUID().replace(/-/g, '')}`;
+
+      /*
+       * Enough of each kind that leaving one out moves the size by more than rounding.
+       *
+       * `formatBytes` reports whole bytes under 1 kB, so a handful of tokens would be measurable
+       * either way — but a seed is deflated, and a payload with only one class in it compresses so
+       * well that removing the class barely changes the string. Twelve and eight make the
+       * difference unambiguous.
+       */
+      for (let i = 0; i < 12; i += 1) {
+        engine.tokens.upsert({ name: `probe-${i}`, value: `#${i}${i}00${i}${i}`, group: 'color' });
+      }
+      for (let i = 0; i < 8; i += 1) {
+        engine.classes.upsert({
+          name: `probe-c-${i}`,
+          declarations: { color: 'red', padding: '8px' },
+        });
+      }
+      engine.rules.upsert({ selector: '.probe-r', declarations: { margin: '4px' } });
+      engine.ai.import([
+        {
+          id: 'primary', label: 'My OpenAI', transport: 'in-page',
+          provider: 'openai', baseURL: 'https://api.openai.com/v1', model: 'gpt-4o-mini',
+        },
+        // Proxied, so its credential is not in this page and must never be offered for export.
+        { id: 'prox', label: 'Proxied', transport: 'proxy', provider: 'openai', model: 'gpt-4o' },
+      ]);
+      await engine.ai.setKey('primary', SECRET);
+      await frames();
+
+      /* ------------------------------------------------------------------ *
+       * Open the save dialog's design-system step, which is where the choice lives.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'openTheTransferStep';
+      const overlayRoot = () => document.querySelector('heo-overlay');
+      // A real change first: the review step is reached with a change set, and the footer that
+      // holds the way through to this step is drawn from it.
+      api.select(document.getElementById('subject'));
+      await frames();
+      engine.setStyle('color', 'rgb(40, 40, 40)', document.getElementById('subject'));
+      await frames();
+      engine.previewSave();
+      await wait(300);
+      const saveDialog = () => overlayRoot().shadowRoot.querySelector('heo-save-dialog');
+      Array.from(saveDialog()?.shadowRoot.querySelectorAll('footer .btn') ?? [])
+        .find((b) => b.textContent.includes('Design system'))
+        ?.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+      await wait(400);
+      // Named rather than assumed: everything below reads the DOM this step renders, so a step
+      // that failed to open has to say so instead of throwing on a missing checkbox.
+      results.theTransferStepOpened = {
+        dialogExists: Boolean(saveDialog()),
+        transferRendered: Boolean(saveDialog()?.shadowRoot.querySelector('.transfer')),
+        partsRendered: saveDialog()?.shadowRoot.querySelectorAll('.transfer .part').length ?? 0,
+      };
+      results.theTransferStepOpened.ok =
+        results.theTransferStepOpened.dialogExists === true &&
+        results.theTransferStepOpened.transferRendered === true &&
+        results.theTransferStepOpened.partsRendered >= 5;
+
+      const root = () => saveDialog().shadowRoot;
+      const flat = (el) => (el?.textContent ?? '').replace(/\s+/g, ' ').trim();
+      /*
+       * Re-queried on every use, never held.
+       *
+       * The panel re-renders on each toggle, so a reference captured before a click points at a
+       * detached node afterwards \u2014 which reads as "the click did nothing" and sends you looking
+       * for a bug in the product.
+       */
+      const parts = () => Array.from(root().querySelectorAll('.transfer .part'));
+      const row = (re) => parts().find((p) => re.test(flat(p)));
+      const box = (re) => row(re)?.querySelector('input');
+      const sizeText = () => flat(root().querySelector('.transfer .tally .size'));
+      const snippet = () => root().querySelector('.transfer .snippet pre')?.textContent ?? '';
+      const seedInSnippet = () => snippet().match(/heo1[zp]\.[A-Za-z0-9_-]+/)?.[0] ?? null;
+
+      /* ------------------------------------------------------------------ *
+       * 1. Every kind is a box, on by default, with its count on the label.
+       *
+       * This replaced a single line of counts. The counts had to survive the change: an option
+       * reading "leave out the blocks" is a different proposition from one reading "leave out 17
+       * blocks", and the number is the whole argument for reading the row at all.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'everyKindIsAChoiceWithItsCount';
+      {
+        const rows = parts().map(flat);
+        results.everyKindIsAChoiceWithItsCount = {
+          rows,
+          namesEveryKind:
+            rows.some((t) => /\btokens?\b/.test(t)) &&
+            rows.some((t) => /\bclass(es)?\b/.test(t)) &&
+            rows.some((t) => /\brules?\b/.test(t)) &&
+            rows.some((t) => /\bblocks?\b/.test(t)) &&
+            rows.some((t) => /AI provider/.test(t)),
+          // Against the registries rather than against a literal: this fixture makes a style
+          // change to reach the save dialog at all, and that creates rules, so a hardcoded number
+          // here would be asserting how the fixture navigates rather than what the row says.
+          counted: {
+            tokens: engine.tokens.export().length,
+            classes: engine.classes.export().length,
+            rules: engine.rules.export().length,
+          },
+          carriesTheCounts:
+            flat(row(/token/)).startsWith(`${engine.tokens.export().length} `) &&
+            flat(row(/class/)).startsWith(`${engine.classes.export().length} `) &&
+            flat(row(/\brule/)).startsWith(`${engine.rules.export().length} `),
+          // Everything travels unless somebody says otherwise \u2014 the behaviour before the boxes
+          // existed, so opening this step and pressing on changes nothing.
+          contentKindsStartTicked:
+            box(/token/)?.checked === true && box(/class/)?.checked === true &&
+            box(/\brule/)?.checked === true && box(/AI provider/)?.checked === true,
+          // The structural half of "clicking the text ticks the box": the control is inside its
+          // own label, which is what makes the words a hit target without a click handler.
+          controlsLiveInsideTheirLabels: parts().every(
+            (p) => p.tagName === 'LABEL' && Boolean(p.querySelector('input')),
+          ),
+          // And the group is named, so the boxes are not six unexplained checkboxes to a reader.
+          theGroupIsLabelled: Boolean(
+            root().querySelector('.transfer .parts[role="group"][aria-labelledby]'),
+          ),
+        };
+        const group = results.everyKindIsAChoiceWithItsCount;
+        group.ok = Object.entries(group).every(
+          ([key, value]) => ['ok', 'rows', 'counted'].includes(key) || value === true,
+        );
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 2. A kind with nothing in it is shown, dimmed, and not actionable.
+       *
+       * Dropped rather than dimmed was the alternative, and it is worse: "no blocks yet" and
+       * "blocks left behind" are opposite facts, and a missing row reads as either.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'anEmptyKindIsShownButSettled';
+      {
+        results.anEmptyKindIsShownButSettled = {
+          text: flat(row(/block/)),
+          // Discriminating: this fixture defines no blocks, so the row really is the empty case.
+          reallyEmpty: flat(row(/block/)).startsWith('0 '),
+          stillListed: Boolean(row(/block/)),
+          notActionable: box(/block/)?.disabled === true,
+          dimmed: row(/block/)?.classList.contains('empty'),
+          // A kind that does have content is not disabled, so the state means something.
+          aFullKindIsActionable: box(/token/)?.disabled === false,
+        };
+        const group = results.anEmptyKindIsShownButSettled;
+        group.ok = Object.entries(group).every(
+          ([key, value]) => key === 'ok' || key === 'text' || value === true,
+        );
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 3. Clicking the words toggles the box.
+       *
+       * The accessibility ask, and worth measuring rather than assuming: this works because the
+       * input is nested in its label, so there is no handler to forget.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'clickingTheWordsTogglesTheBox';
+      {
+        const before = box(/\brule/)?.checked;
+        row(/\brule/)?.querySelector('span')?.click();
+        await wait(150);
+        const afterText = box(/\brule/)?.checked === true;
+        // And on the label's own padding, not only on the text node.
+        row(/\brule/)?.click();
+        await wait(150);
+        const afterLabel = box(/\brule/)?.checked === true;
+
+        results.clickingTheWordsTogglesTheBox = {
+          /*
+           * Recorded as a string rather than as booleans.
+           *
+           * The suite's roll-up flags any group holding a bare `false`, so a diagnostic whose whole
+           * job is to report a state that is *meant* to be false has to say so in some other type.
+           * Otherwise this group is reported as failing while every assertion in it passes.
+           */
+          transitions: `${before} -> ${afterText} -> ${afterLabel}`,
+          theTextFlippedIt: afterText === !before,
+          theLabelFlippedItBack: afterLabel === before,
+        };
+        const group = results.clickingTheWordsTogglesTheBox;
+        group.ok = group.theTextFlippedIt === true && group.theLabelFlippedItBack === true;
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 4. Unticking a kind recalculates the size, and it comes back.
+       *
+       * The size is measured from the encoded string rather than estimated, so this is also the
+       * assertion that the seed itself changed. It caught a real defect: the encode was kicked off
+       * through a call that took no selection, so the counts came from the filtered document while
+       * the seed \u2014 and therefore the size and the snippet \u2014 was always the whole system.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'untickingAKindRecalculatesTheSize';
+      {
+        const sizeBefore = sizeText();
+        const seedBefore = seedInSnippet();
+        box(/class/)?.click();
+
+        // Counted rather than waited out, so a size that only updates on some later unrelated
+        // render cannot pass. One frame is what this measured.
+        let framesTaken = null;
+        for (let i = 0; i < 60; i += 1) {
+          await new Promise((r) => requestAnimationFrame(r));
+          if (sizeText() !== sizeBefore) { framesTaken = i + 1; break; }
+        }
+        const sizeAfter = sizeText();
+        // Read now, not in the object literal below: that is built after the box has been ticked
+        // back on, at which point the snippet has returned to what it was and the comparison is
+        // vacuous. It read as a product failure for exactly that reason.
+        const seedAfter = seedInSnippet();
+        const decoded = await engine.decodeSeedText(seedAfter ?? '');
+
+        box(/class/)?.click();
+        await wait(250);
+
+        results.untickingAKindRecalculatesTheSize = {
+          sizeBefore,
+          sizeAfter,
+          framesTaken,
+          itChanged: sizeAfter !== sizeBefore,
+          itGotSmaller: parseFloat(sizeAfter) < parseFloat(sizeBefore),
+          promptly: typeof framesTaken === 'number' && framesTaken <= 5,
+          // The snippet is the thing that gets copied, so it has to move too, or the tally would
+          // be describing a payload nobody can actually take.
+          theSnippetChanged: Boolean(seedAfter) && seedAfter !== seedBefore,
+          // And the content really left, rather than the string merely differing.
+          noClassesInThatSeed: (decoded?.classes ?? []).length === 0,
+          tokensStayedBehind: (decoded?.tokens ?? []).length === 12,
+          // Ticking it back restores exactly what was there, so the choice is not one-way.
+          sizeCameBack: sizeText() === sizeBefore,
+        };
+        const group = results.untickingAKindRecalculatesTheSize;
+        group.ok = Object.entries(group).every(
+          ([key, value]) =>
+            ['ok', 'sizeBefore', 'sizeAfter', 'framesTaken'].includes(key) || value === true,
+        );
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 5. The credential option: present, off, dependent, and warned about.
+       *
+       * Off by default is the part that must never regress. Everything else here travels because
+       * it is vocabulary; this one travels because somebody accepted a consequence.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'theKeyOptionIsOffAndDependent';
+      {
+        results.theKeyOptionIsOffAndDependent = {
+          text: flat(row(/API key/)),
+          // Offered at all, because this page holds a readable in-page key.
+          offered: Boolean(row(/API key/)),
+          // Counting only the set that has one to give. The proxied set is deliberately excluded:
+          // its key is on the dev server and this page has nothing to export.
+          countsOnlyTheInPageKey: flat(row(/API key/)) === '1 in-page API key',
+          offByDefault: box(/API key/).checked === false,
+          // Drawn as a dependent of the providers row rather than a sixth peer.
+          nestedUnderTheProviders: row(/API key/)?.classList.contains('dependent'),
+          /*
+           * And still laid out as one line, box beside text.
+           *
+           * Measured rather than eyeballed, because this row was broken and a screenshot was what
+           * caught it: the save dialog loads this stylesheet into its own shadow root and defines a
+           * `sub` class of its own as a flex column, so a row named `part sub` had its checkbox
+           * stacked above its label. Nothing about the DOM or the assertions above changes when
+           * that happens, which is exactly why it needs its own measurement.
+           */
+          laidOutOnOneLine: (() => {
+            const label = row(/API key/);
+            const input = box(/API key/);
+            const text = label?.querySelector('span');
+            if (!label || !input || !text) return false;
+            const a = input.getBoundingClientRect();
+            const b = text.getBoundingClientRect();
+            // Side by side: the text starts after the box ends, and their centres line up.
+            return b.left >= a.right && Math.abs((a.top + a.bottom) / 2 - (b.top + b.bottom) / 2) < 6;
+          })(),
+          // Indented past the rows it depends on, which is what the elbow is drawn against.
+          indentedPastItsParent: (() => {
+            const key = row(/API key/)?.getBoundingClientRect();
+            const providers = row(/AI provider/)?.getBoundingClientRect();
+            return Boolean(key && providers) && key.left > providers.left + 8;
+          })(),
+          // No warning while nothing is at stake.
+          noWarningYet: !root().querySelector('.transfer .keywarn'),
+          // The risk is announced to a screen reader, not only coloured amber.
+          pointsAtItsWarning: row(/API key/)?.getAttribute('aria-describedby') === 'heo-seed-keywarn',
+        };
+        const group = results.theKeyOptionIsOffAndDependent;
+        group.ok = Object.entries(group).every(
+          ([key, value]) => key === 'ok' || key === 'text' || value === true,
+        );
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 6. The default seed still carries no key.
+       *
+       * The property `test/ai-keys.html` exists for, restated here against the surface that can
+       * now break it. Read before the box is ever ticked.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'theUntickedSeedCarriesNoKey';
+      {
+        const seed = seedInSnippet();
+        const decoded = await engine.decodeSeedText(seed ?? '');
+        results.theUntickedSeedCarriesNoKey = {
+          seedFound: Boolean(seed),
+          noSecretInTheString: !snippet().includes(SECRET),
+          noKeysField: (decoded?.aiKeys ?? []).length === 0,
+          nothingInTheDecodedJson: !JSON.stringify(decoded ?? {}).includes(SECRET),
+          // Discriminating: the providers really are in there, so this is not passing by being
+          // empty, and the key really is held, so there was something to leak.
+          butTheProvidersAreThere: (decoded?.ai ?? []).length === 2,
+          andTheKeyIsHeld: engine.ai.keyStatus('primary').present === true,
+        };
+        const group = results.theUntickedSeedCarriesNoKey;
+        group.ok = Object.entries(group).every(([key, value]) => key === 'ok' || value === true);
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 7. Ticking it warns, and actually puts the key in the seed.
+       *
+       * Both halves matter. A warning with no key behind it is theatre; a key with no warning is
+       * the failure this option is designed around.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'tickingItWarnsAndCarriesTheKey';
+      {
+        const sizeBefore = sizeText();
+        box(/API key/)?.click();
+        await wait(350);
+        const warning = root().querySelector('.transfer .keywarn');
+        const decoded = await engine.decodeSeedText(seedInSnippet() ?? '');
+
+        results.tickingItWarnsAndCarriesTheKey = {
+          ticked: box(/API key/).checked === true,
+          warningAppeared: Boolean(warning),
+          warningText: flat(warning),
+          // Says what the risk is in terms of consequence, not just "be careful".
+          warningNamesTheConsequence: /spend against your account/i.test(flat(warning)),
+          warningSaysNotToCommitIt: /do not commit/i.test(flat(warning)),
+          // The id the row points at, so the description is actually associated.
+          warningIsTheDescribedElement: warning?.id === 'heo-seed-keywarn',
+          // The key is genuinely in the payload \u2014 the assertion the whole option turns on.
+          theSeedCarriesTheKey: (decoded?.aiKeys ?? []).some((one) => one.key === SECRET),
+          carriesItForTheRightSet: (decoded?.aiKeys ?? []).every((one) => one.id === 'primary'),
+          // Only the one that had a key to give. A proxied set must not appear here.
+          justTheOneKey: (decoded?.aiKeys ?? []).length === 1,
+          // And the seed got bigger, so the size still tracks reality.
+          sizeBefore,
+          sizeAfter: sizeText(),
+          itCostBytes: parseFloat(sizeText()) > parseFloat(sizeBefore),
+        };
+        const group = results.tickingItWarnsAndCarriesTheKey;
+        group.ok = Object.entries(group).every(
+          ([key, value]) =>
+            ['ok', 'warningText', 'sizeBefore', 'sizeAfter'].includes(key) || value === true,
+        );
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 8. That seed puts the key back on the other side.
+       *
+       * Otherwise the option is a liability with no benefit: a credential in a shared string that
+       * nothing reads. Driven through the public import path, and the vault is asked afterwards
+       * because it will not hand a key back to a test any more than to anything else.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'importingThatSeedRestoresTheKey';
+      {
+        const seed = seedInSnippet();
+        // Forget it here first, so `present` afterwards can only be the imported one.
+        engine.ai.clearKey('primary');
+        await frames();
+        const goneFirst = engine.ai.keyStatus('primary').present === false;
+
+        await engine.importDesignSystemText(seed, true);
+        await frames();
+        const status = engine.ai.keyStatus('primary');
+
+        results.importingThatSeedRestoresTheKey = {
+          clearedFirst: goneFirst,
+          arrived: status.present === true,
+          // Usable, which is the point \u2014 an imported provider is normally configured but not ready.
+          readyToUse: engine.ai.ready(engine.ai.get('primary')) === true,
+          // The last four characters agree, so it is that key and not some other.
+          matchesTheOriginal: status.hint === SECRET.slice(-4),
+          /*
+           * Held in memory only, not written to storage.
+           *
+           * A key that arrived on a pasted string is not one somebody chose to keep on this
+           * origin, so persisting it would be a decision made on their behalf. Keeping it is a
+           * separate act in the AI settings.
+           */
+          notPersisted: status.persistence === 'none',
+          nothingInStorage: !Object.keys(localStorage)
+            .concat(Object.keys(sessionStorage))
+            .some((name) => name.startsWith('heo.ai.session.') || name.startsWith('heo.ai.origin.')),
+        };
+        const group = results.importingThatSeedRestoresTheKey;
+        group.ok = Object.entries(group).every(([key, value]) => key === 'ok' || value === true);
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 9. Turning the providers off takes the credential with them.
+       *
+       * A key without the provider it belongs to installs against nothing, so the dependency is
+       * structural rather than a UI convention. And ticking providers back on must not re-arm the
+       * credential: a remembered opt-in is exactly the kind of quiet re-enabling this option
+       * should never do.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'untickingProvidersDropsTheKey';
+      {
+        // Re-open the step: the import above replaced the provider list, and this group is about
+        // the rows rather than about what survived that.
+        await engine.ai.setKey('primary', SECRET);
+        await wait(300);
+
+        const wasTicked = box(/API key/)?.checked === true;
+        box(/AI provider/)?.click();
+        await wait(300);
+        const withoutProviders = {
+          keyRowGone: !row(/API key/),
+          warningGone: !root().querySelector('.transfer .keywarn'),
+          seedHasNoSecret: !snippet().includes(SECRET),
+          decoded: await engine.decodeSeedText(seedInSnippet() ?? ''),
+        };
+        box(/AI provider/)?.click();
+        await wait(300);
+
+        results.untickingProvidersDropsTheKey = {
+          startedTicked: wasTicked,
+          keyRowGone: withoutProviders.keyRowGone,
+          warningGone: withoutProviders.warningGone,
+          noProvidersInThatSeed: (withoutProviders.decoded?.ai ?? []).length === 0,
+          noKeysInThatSeed: (withoutProviders.decoded?.aiKeys ?? []).length === 0,
+          // Back on: the row returns, and the credential does not.
+          rowCameBack: Boolean(row(/API key/)),
+          butTheKeyStayedOff: box(/API key/)?.checked === false,
+          andNoWarningReturned: !root().querySelector('.transfer .keywarn'),
+          seedHasNoKeyAgain:
+            ((await engine.decodeSeedText(seedInSnippet() ?? ''))?.aiKeys ?? []).length === 0,
+        };
+        const group = results.untickingProvidersDropsTheKey;
+        group.ok = Object.entries(group).every(([key, value]) => key === 'ok' || value === true);
+      }
+
+      const failed = Object.entries(results)
+        .filter(([, group]) => group && typeof group === 'object')
+        .filter(([, group]) => Object.values(group).some((value) => value === false))
+        .map(([name]) => name);
+
+      document.getElementById('out').textContent = 'RESULTS:' + JSON.stringify(
+        { ok: failed.length === 0, failed, ...results, errors }, null, 1,
+      ) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"ok":false,"__fatal":' + JSON.stringify(String((e && e.stack) || e)) + '}:END';
+    });
+  </script>
+</body>
+
+</html>

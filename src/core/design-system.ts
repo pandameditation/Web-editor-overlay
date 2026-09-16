@@ -12,7 +12,12 @@ import {
   SOURCE_ATTR,
 } from './constants.js';
 import type { AiAgent } from './ai/agent.js';
-import { portableProviderSet, type AiProviderSet } from './ai/types.js';
+import {
+  portableProviderKey,
+  portableProviderSet,
+  type AiProviderKey,
+  type AiProviderSet,
+} from './ai/types.js';
 import { withoutProvenance } from './provenance.js';
 import type { ClassRegistry } from './classes.js';
 import { tokensInValue } from './css.js';
@@ -62,25 +67,88 @@ export interface DesignRegistries {
   ai?: AiAgent;
 }
 
+/**
+ * Which kinds of thing a design system is allowed to carry.
+ *
+ * A different axis from `DesignSystemScope`, and worth keeping them apart. Scope prunes *within* a
+ * kind — only the tokens the page actually references — and decides what a save writes into a
+ * stylesheet. This decides whether a kind travels at all, and applies to the document and the seed
+ * built from it. "All the tokens, none of the blocks" is a sentence only this one can express.
+ *
+ * Everything is on by default except `aiKeys`, which is off and has to stay off: a default that
+ * carried credentials would make every existing caller start leaking them.
+ */
+export interface DesignSystemSelection {
+  tokens: boolean;
+  classes: boolean;
+  rules: boolean;
+  blocks: boolean;
+  /** Provider settings. Credentials are `aiKeys`, separately and additionally. */
+  ai: boolean;
+  /**
+   * In-page API keys for the sets that travel.
+   *
+   * Depends on `ai` rather than standing alone, and structurally so — a key without the provider
+   * it belongs to would install against nothing. Never true unless a user set it.
+   */
+  aiKeys: boolean;
+}
+
+/** Everything the session owns, and no credentials. The default for every existing caller. */
+export const WHOLE_DESIGN_SYSTEM: DesignSystemSelection = {
+  tokens: true,
+  classes: true,
+  rules: true,
+  blocks: true,
+  ai: true,
+  aiKeys: false,
+};
+
 export function exportDesignSystem(
   registries: DesignRegistries,
   name = 'Design system',
+  selection: DesignSystemSelection = WHOLE_DESIGN_SYSTEM,
 ): DesignSystemDocument {
   // Through the allow-list on the way out, not just on the way into a seed. A JSON export is
   // written to disk and committed, which is no safer a place for a credential than a seed is.
-  const ai = (registries.ai?.export() ?? [])
-    .map((entry) => portableProviderSet(entry))
-    .filter((entry): entry is AiProviderSet => entry !== null);
+  const ai = selection.ai
+    ? (registries.ai?.export() ?? [])
+      .map((entry) => portableProviderSet(entry))
+      .filter((entry): entry is AiProviderSet => entry !== null)
+    : [];
+  /*
+   * Credentials, only when both boxes are ticked.
+   *
+   * `selection.ai &&` is not redundant with the caller's own check. It is the line that makes
+   * "keys travel with the settings" a property of the code rather than of whatever the UI happens
+   * to enforce, so a future caller passing `{ ai: false, aiKeys: true }` gets nothing instead of
+   * a document holding a secret for a provider it does not describe.
+   *
+   * Asked for by id, from the sets that survived, so a key can only be here for a set that is.
+   */
+  const aiKeys =
+    selection.ai && selection.aiKeys
+      ? (registries.ai?.revealKeysForExport(ai.map((entry) => entry.id)) ?? [])
+      : [];
+  /*
+   * An unselected kind becomes an empty array rather than a missing key.
+   *
+   * `tokens`, `classes` and `blocks` are required on the type and `parseDesignSystem` defaults a
+   * missing one to `[]` anyway, so there is nothing to gain by omitting them and a type to fight.
+   * `rules` and `ai` are omitted when empty by `compactDesignSystem`, which is where the bytes
+   * are actually saved.
+   */
   return {
     $schema: SCHEMA,
     name,
     version: 1,
     createdAt: new Date().toISOString(),
-    tokens: registries.tokens.export(),
-    classes: registries.classes.export(),
-    rules: registries.rules.export(),
-    blocks: registries.library.export(),
+    tokens: selection.tokens ? registries.tokens.export() : [],
+    classes: selection.classes ? registries.classes.export() : [],
+    rules: selection.rules ? registries.rules.export() : [],
+    blocks: selection.blocks ? registries.library.export() : [],
     ...(ai.length ? { ai } : {}),
+    ...(aiKeys.length ? { aiKeys } : {}),
   };
 }
 
@@ -289,6 +357,8 @@ export interface ImportResult {
   rules: number;
   blocks: number;
   aiSets: number;
+  /** Credentials that arrived with the providers. Almost always zero; see `aiKeys`. */
+  aiKeys: number;
 }
 
 export function importDesignSystem(
@@ -309,12 +379,22 @@ export function importDesignSystem(
    */
   const incoming = parsed.ai ?? [];
   const aiSets = registries.ai && incoming.length ? registries.ai.import(incoming) : 0;
+  /*
+   * Keys after sets, because `adoptKeys` only installs against a set it can find.
+   *
+   * Not part of the undo snapshot, and that is deliberate rather than an omission. Undo restores a
+   * vocabulary; a credential is not vocabulary, and "undo" putting a secret back — or taking away
+   * a key the user had typed here before the import — would both be surprising. Forgetting one is
+   * its own action in the AI settings.
+   */
+  const aiKeys = registries.ai ? registries.ai.adoptKeys(parsed.aiKeys ?? []) : 0;
   return {
     tokens: registries.tokens.import(parsed.tokens, options),
     classes: registries.classes.import(parsed.classes, options),
     rules: registries.rules.import(parsed.rules ?? [], options),
     blocks: registries.library.import(parsed.blocks, options),
     aiSets,
+    aiKeys,
   };
 }
 
@@ -429,6 +509,38 @@ export function parseDesignSystem(input: unknown): DesignSystemDocument {
       throw new TypeError(`"${key}" must be an array.`);
     }
   }
+  /*
+   * Rebuilt field by field rather than filtered, which is the difference that matters here.
+   *
+   * Everything below keeps the entries it approves of, so an extra property on a token comes
+   * through untouched — harmless, because a token is inert. A provider set is not inert: an
+   * untrusted document offering `{"apiKey":"…"}` alongside a legitimate set would otherwise
+   * put a credential into the registry, and from there into the next export. So this one is
+   * reconstructed from an allow-list and anything else is discarded on the way in.
+   *
+   * Settled before the document is assembled because the credentials below are checked against
+   * it: which sets a document may carry a key for is decided by that same document.
+   */
+  const ai = (doc.ai ?? [])
+    .map((entry) => portableProviderSet(entry))
+    .filter((entry): entry is AiProviderSet => entry !== null);
+  /*
+   * Credentials, kept only for `in-page` sets this same document describes.
+   *
+   * The transport check is the interesting half. A document offering a key for a `proxy` set is
+   * describing something that cannot exist — a proxied provider's credential lives on the dev
+   * server and the page never holds one — so accepting it would put a secret in memory that no
+   * request would ever send, which is cost with no benefit. Read off `ai` rather than off the
+   * registry: what may arrive is a property of the incoming document, not of what this page
+   * already happens to have configured.
+   */
+  const inPage = new Set(
+    ai.filter((entry) => entry.transport === 'in-page').map((entry) => entry.id),
+  );
+  const aiKeys = (doc.aiKeys ?? [])
+    .map((entry) => portableProviderKey(entry))
+    .filter((entry): entry is AiProviderKey => entry !== null && inPage.has(entry.id));
+
   return {
     $schema: SCHEMA,
     name: typeof doc.name === 'string' && doc.name.trim() ? doc.name.trim() : 'Imported system',
@@ -460,18 +572,8 @@ export function parseDesignSystem(input: unknown): DesignSystemDocument {
     blocks: (doc.blocks ?? []).filter(
       (block) => block && typeof block.name === 'string' && typeof block.html === 'string',
     ),
-    /*
-     * Rebuilt field by field rather than filtered, which is the difference that matters here.
-     *
-     * Everything above keeps the entries it approves of, so an extra property on a token comes
-     * through untouched — harmless, because a token is inert. A provider set is not inert: an
-     * untrusted document offering `{"apiKey":"…"}` alongside a legitimate set would otherwise
-     * put a credential into the registry, and from there into the next export. So this one is
-     * reconstructed from an allow-list and anything else is discarded on the way in.
-     */
-    ai: (doc.ai ?? [])
-      .map((entry) => portableProviderSet(entry))
-      .filter((entry): entry is AiProviderSet => entry !== null),
+    ai,
+    aiKeys,
   };
 }
 

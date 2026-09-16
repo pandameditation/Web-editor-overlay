@@ -172,10 +172,63 @@
           // The rest of the tally still works, so the addition did not displace anything.
           hasTokens: typeof stats?.tokens === 'number',
           hasBlocks: typeof stats?.blocks === 'number',
+          /*
+           * And it counts credentials, which by default is none.
+           *
+           * Reported rather than assumed absent: the tally is what a user reads before deciding
+           * whether a seed is safe to paste somewhere, so "no keys in here" has to be something the
+           * surface can actually say rather than something it can only imply by silence.
+           */
+          aiKeys: stats?.aiKeys ?? null,
+          countedNoKeys: stats?.aiKeys === 0,
         };
         const group = results.theTallyCountsTheSets;
         group.ok =
-          group.countedBoth === true && group.hasTokens === true && group.hasBlocks === true;
+          group.countedBoth === true && group.hasTokens === true && group.hasBlocks === true &&
+          group.countedNoKeys === true;
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 3c. A key travels only when it is asked for, by name, at the API.
+       *
+       * `test/seed-parts.html` drives the checkboxes; this asserts the layer underneath them,
+       * because that is where a refactor could open the gate without any UI changing. The
+       * structural half is the interesting one: a selection asking for credentials but not for the
+       * providers they belong to must yield nothing, so the dependency is a property of the code
+       * rather than of whatever the surface happens to enforce.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'keysTravelOnlyWhenAskedFor';
+      {
+        const all = { tokens: true, classes: true, rules: true, blocks: true, ai: true };
+        const byDefault = engine.designSystem();
+        const askedFor = engine.designSystem({ ...all, aiKeys: true });
+        const askedForWithoutProviders = engine.designSystem({ ...all, ai: false, aiKeys: true });
+        const seed = await engine.designSystemSeed({ ...all, aiKeys: true });
+        const decoded = await engine.decodeSeedText(seed);
+
+        results.keysTravelOnlyWhenAskedFor = {
+          // The default is what every existing caller gets, and it must not have moved.
+          defaultCarriesNone: (byDefault.aiKeys ?? []).length === 0,
+          // Asked for, and it is there — otherwise the assertions above pass by the feature
+          // simply not working.
+          askedForCarriesIt: (askedFor.aiKeys ?? []).some((one) => one.key === SECRET),
+          // Only the in-page set. The proxied one has no credential in this page to give, so
+          // offering it would mean inventing one.
+          onlyTheInPageSet:
+            (askedFor.aiKeys ?? []).length === 1 && askedFor.aiKeys?.[0]?.id === 'primary',
+          // Credentials cannot outrun the providers they belong to.
+          providersOffMeansNoKeys: (askedForWithoutProviders.aiKeys ?? []).length === 0,
+          andNoProvidersEither: (askedForWithoutProviders.ai ?? []).length === 0,
+          // Through the seed codec too, since that is the artefact that actually gets handed over.
+          theSeedRoundTripsIt: (decoded?.aiKeys ?? []).some((one) => one.key === SECRET),
+          // A set is still rebuilt from the allow-list, so the credential rides beside it and
+          // never on it. This is what keeps every other export in the product unchanged.
+          setsStillCarryNothing: (decoded?.ai ?? []).every(
+            (one) => !Object.keys(one).some((name) => /key|secret|token/i.test(name)),
+          ),
+        };
+        const group = results.keysTravelOnlyWhenAskedFor;
+        group.ok = Object.entries(group).every(([key, value]) => key === 'ok' || value === true);
       }
 
       /* ------------------------------------------------------------------ *
