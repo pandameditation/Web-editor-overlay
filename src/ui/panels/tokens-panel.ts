@@ -696,11 +696,20 @@ export class HeoTokensPanel extends HeoElement {
   }
 
   /**
-   * Create an empty class and open it, ready for its first property.
+   * Create an empty class and open it in a dialog, ready for its first property.
    *
    * Empty on purpose: there is no element to take declarations from here, so the
-   * useful next step is the property editor, which is why this expands it rather than
-   * leaving the user to find it in the list.
+   * useful next step is the property editor.
+   *
+   * That step used to be an expanded card in the list below, and the list is the wrong
+   * place for it. Two filters narrow that list — the panel's search field and this
+   * composer's own draft, which is deliberately left in the box — so submitting a name
+   * while either is set created the class, announced it, and showed nothing. Unfiltered
+   * it was merely buried at whatever depth the registry's order put it. So the thing that
+   * was just asked for is put in front of the user; see `StyleEdit`.
+   *
+   * The card is still expanded underneath, which costs nothing and means closing the
+   * dialog leaves the list showing what was worked on rather than a collapsed row.
    */
   #createClass(raw: string): void {
     const name = normalizeClassName(raw);
@@ -719,6 +728,7 @@ export class HeoTokensPanel extends HeoElement {
     openGroups.add('classes');
     this.version += 1;
     // Keep the submitted name in the field so the new card remains easy to find in the list.
+    this.editor.openStyleEditor('class', name, !existing);
   }
 
   /* ---------------------------------------------------------------------- */
@@ -881,13 +891,20 @@ export class HeoTokensPanel extends HeoElement {
   }
 
   /**
-   * Create a rule and open it, ready for its first property.
+   * Create a rule and open it in a dialog, ready for its first property.
    *
-   * Empty on purpose, the same as `#createClass`: there is nothing to take declarations
-   * from, so the useful next step is the property editor — which is why this expands the
-   * card rather than leaving the user to find it in the list.
+   * Empty on purpose, the same as `#createClass`, and opened in a dialog for the same
+   * reason — more sharply here, because a selector is a much better filter match than a
+   * class name is. "p already has a rule — opening it" opened a card below every other
+   * rule whose selector or declarations contain a `p`, which on a real page is most of
+   * them, and the panel's search field could remove it from the list altogether.
+   *
+   * Whether it was created is read from the registry's size rather than asked for, since
+   * `createDesignRule` returns the canonical selector either way and normalising the raw
+   * text a second time here is how the two would come to disagree.
    */
   #createRule(rawSelector: string): void {
+    const before = this.editor.rules.size;
     const selector = this.editor.createDesignRule(rawSelector);
     // Null means the engine refused it and has already said why.
     if (!selector) return;
@@ -896,6 +913,7 @@ export class HeoTokensPanel extends HeoElement {
     openGroups.add('rules');
     this.version += 1;
     // Keep the submitted selector in the field so the new rule remains easy to find in the list.
+    this.editor.openStyleEditor('rule', selector, this.editor.rules.size > before);
   }
 
   #renderRule(entry: DesignRule, matches: number, el: HTMLElement | null): TemplateResult {

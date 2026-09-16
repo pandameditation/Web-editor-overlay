@@ -61,6 +61,7 @@ export const FIXTURES = [
   { page: 'test/shield.html', budget: 45000, weight: 2900 },
   { page: 'test/bundle.html', budget: 45000, strict: true, weight: 2800 },
   { page: 'test/css-rules.html', budget: 45000, weight: 2400, fast: true },
+  { page: 'test/style-dialog.html', budget: 45000, weight: 2400, fast: true },
   { page: 'test/html-patch.html', budget: 45000, weight: 2300, fast: true },
   { page: 'test/duplicate-identity.html', budget: 60000, weight: 2300, fast: true },
   { page: 'test/unwrap-text.html', budget: 60000, weight: 2200, fast: true },

@@ -1178,11 +1178,31 @@
       await wait(220);
       await frame();
       check('theNewClassExists', () => Boolean(engine.classes.get('promo-shell')));
-      check('andItOpensReadyForItsFirstProperty', () =>
+      /*
+       * Opened in its own dialog, not only expanded in the list.
+       *
+       * The list cannot be relied on to show it: the panel's search field and the composer's
+       * own draft both narrow that list, and the draft is deliberately left in the box — so
+       * the card the composer used to expand is routinely filtered out of existence. See
+       * test/style-dialog.html, which pins that case directly.
+       */
+      check('andItOpensReadyForItsFirstProperty', () => {
+        const dialog = overlayRoot().shadowRoot.querySelector('heo-style-dialog');
+        return Boolean(
+          dialog?.shadowRoot.querySelector('#heo-style-dialog-title')
+            ?.textContent.includes('promo-shell') &&
+          dialog.shadowRoot.querySelector('.property-adder .input'),
+        );
+      });
+      // Still expanded underneath, so closing the dialog leaves the list showing what was
+      // worked on rather than a collapsed row.
+      check('andTheListCardIsExpandedBehindIt', () =>
         Array.from(reusable.querySelectorAll('.cls'))
           .some((c) => c.textContent.includes('promo-shell') && c.querySelector('.decls')));
       check('theCreateFieldKeepsItsSubmittedDraft', () =>
         classMaker.shadowRoot.querySelector('input[type=text]').value === 'promo-shell');
+      engine.closeStyleEditor();
+      await frame();
       engine.classes.remove('promo-shell');
 
       /* ------------------------------------------------------------------ *

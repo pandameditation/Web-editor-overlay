@@ -1441,6 +1441,27 @@ export class HeoValueField extends LitElement {
     }, 120);
   }
 
+  /**
+   * Commit what is in the box now, instead of 120ms after focus leaves it.
+   *
+   * For a host that is about to take the field away. The delay above exists so that
+   * clicking the unit chip does not race a commit, and `disconnectedCallback` cancels the
+   * timer so a detached field cannot fire one — which together mean a value typed and then
+   * confirmed with the surrounding surface's own button went into the draft and was thrown
+   * away with it. Collapsing a class card mid-edit has always lost the value that way; a
+   * dialog whose primary button is Done does it every time, so hosts flush first.
+   *
+   * The two early exits mirror `#onFocusOut` deliberately: a composer owns its own lifetime
+   * and has Apply and Cancel, and a submit field's action is an explicit trigger that must
+   * not be pulled by the surface closing.
+   */
+  commitNow(): void {
+    clearTimeout(this.#blurTimer);
+    if (this.composer) return;
+    if (this.action) return;
+    if (this.draft !== this.value) this.#commit();
+  }
+
   #onKeyDown(event: KeyboardEvent): void {
     const items = this.filtered;
 

@@ -465,6 +465,37 @@ export interface ConfirmRequest {
 }
 
 /**
+ * One class or CSS rule, opened in a dialog of its own.
+ *
+ * The design system panel used to answer "create this" by expanding a card in the list
+ * below the composer, which fails in precisely the case the composer is most used in.
+ * The panel has a search field over all three registries, and each section's own
+ * composer draft doubles as a second filter — so submitting `new` while the panel is
+ * filtered to `art` created the class, said so, and showed an empty list. Unfiltered it
+ * is not much better: the card lands wherever the registry's order puts it, and for a
+ * selector as common as `p` that is behind every other rule whose text mentions one.
+ *
+ * So what was just asked for is put in front of the user rather than somewhere in a list
+ * they now have to go and find it in. Held on the store like every other dialog, which
+ * is also the only place it can live: the dock clips its descendants and carries a
+ * backdrop filter, making it the containing block for anything fixed inside it, so a
+ * dialog rendered by a panel would be trapped in a 320px column.
+ */
+export interface StyleEdit {
+  kind: 'class' | 'rule';
+  /** The class name without its dot, or the rule's canonical selector. */
+  name: string;
+  /**
+   * Whether the act that opened this made it, as against opening one already there.
+   *
+   * Worth saying in the dialog because the two are the same gesture with different
+   * consequences, and the toast that used to carry the distinction is now redundant
+   * with the dialog that appears beside it.
+   */
+  created: boolean;
+}
+
+/**
  * A handle drag in progress, as the chrome needs to see it.
  *
  * Deliberately not a share of `drag`. That slice means "a reorder is happening", and a great deal
@@ -648,6 +679,8 @@ export interface EditorState {
    */
   removeBlockLibrary: boolean;
   extraction: Extraction | null;
+  /** A single class or rule opened for editing on its own, when one is. */
+  styleEdit: StyleEdit | null;
   /** A destructive action waiting to be confirmed. */
   confirm: ConfirmRequest | null;
   /** A resize, move or rotate being dragged out on the page. */
@@ -941,6 +974,7 @@ export class EditorEngine {
       saveBlockLibrary: true,
       removeBlockLibrary: false,
       extraction: null,
+      styleEdit: null,
       confirm: null,
       transform: null,
       codeTab: 'html',
@@ -2460,6 +2494,47 @@ export class EditorEngine {
 
   cancelExtraction(): void {
     this.store.patch({ extraction: null });
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* One class or rule, on its own                                          */
+  /* ---------------------------------------------------------------------- */
+
+  /**
+   * Open one class or rule in its own dialog.
+   *
+   * Refuses a name the registry does not hold rather than opening an editor for nothing.
+   * The callers create first and open second, so an empty dialog here would mean the
+   * create had silently failed — and a dialog is a poor place to find that out.
+   */
+  openStyleEditor(kind: StyleEdit['kind'], name: string, created = false): void {
+    const key = String(name ?? '').trim();
+    if (!key) return;
+    const exists = kind === 'class' ? this.classes.get(key) : this.rules.get(key);
+    if (!exists) return;
+    this.endTextEdit(true);
+    this.store.patch({ styleEdit: { kind, name: key, created } });
+  }
+
+  /** Point an open dialog at a different name, for a rule that has just been retargeted. */
+  retargetStyleEditor(name: string): void {
+    const open = this.store.value.styleEdit;
+    if (!open) return;
+    this.store.patch({ styleEdit: { ...open, name } });
+  }
+
+  closeStyleEditor(): void {
+    if (!this.store.value.styleEdit) return;
+    /*
+     * Any in-flight preview is given up on the way out.
+     *
+     * A value field previews as it is typed and commits on focus-out, and taking the
+     * dialog away with the caret still in one removes the field without either
+     * happening — leaving the preview painted into the registry with nothing left that
+     * knows how to take it back.
+     */
+    this.cancelPreview();
+    this.store.patch({ styleEdit: null });
   }
 
   /* ---------------------------------------------------------------------- */

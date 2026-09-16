@@ -210,6 +210,15 @@ export const RuleEditor = {
       matches: number;
       onToggle: () => void;
       host: RuleEditorHost;
+      /**
+       * Hide the collapsible header when the host already names the rule.
+       *
+       * The same escape hatch `ClassEditor.render` has, for the same reason: a surface
+       * showing one rule and nothing else — the dialog the composers open — has already
+       * put the selector and its match count in its own title, and a chevron that
+       * collapses the only thing on screen is a control with nowhere to go.
+       */
+      bare?: boolean;
     },
   ): TemplateResult {
     const { expanded, matches, onToggle, host } = options;
@@ -224,32 +233,34 @@ export const RuleEditor = {
     const scanned = entry.origin === 'stylesheet';
 
     return html`<div class="rule" ?data-open=${expanded}>
-      <header
-        role="button"
-        tabindex="0"
-        aria-expanded=${expanded}
-        @click=${onToggle}
-        @keydown=${(event: KeyboardEvent) => {
-        if (event.key !== 'Enter' && event.key !== ' ') return;
-        event.preventDefault();
-        onToggle();
-      }}
-      >
-        ${icon(expanded ? 'chevronDown' : 'chevronRight', 11)}
-        ${scanned
+      ${options.bare
         ? nothing
-        : html`<span class="dot" title="Written in this session, so a save carries it"></span>`}
-        <span class="sel" title=${entry.selector}>${entry.selector}</span>
-        ${expanded ? nothing : html`<span class="props">${summarizeRule(entry)}</span>`}
-        <span
-          class=${`hits ${matches > 0 ? 'live' : 'idle'}`}
-          title=${matches > 0
-        ? `Styling ${matches} element${matches === 1 ? '' : 's'} on this page`
-        : 'Nothing on this page matches this selector'}
-        >
-          ${matches > 0 ? `${matches}×` : '0×'}
-        </span>
-      </header>
+        : html`<header
+            role="button"
+            tabindex="0"
+            aria-expanded=${expanded}
+            @click=${onToggle}
+            @keydown=${(event: KeyboardEvent) => {
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+            event.preventDefault();
+            onToggle();
+          }}
+          >
+            ${icon(expanded ? 'chevronDown' : 'chevronRight', 11)}
+            ${scanned
+            ? nothing
+            : html`<span class="dot" title="Written in this session, so a save carries it"></span>`}
+            <span class="sel" title=${entry.selector}>${entry.selector}</span>
+            ${expanded ? nothing : html`<span class="props">${summarizeRule(entry)}</span>`}
+            <span
+              class=${`hits ${matches > 0 ? 'live' : 'idle'}`}
+              title=${matches > 0
+            ? `Styling ${matches} element${matches === 1 ? '' : 's'} on this page`
+            : 'Nothing on this page matches this selector'}
+            >
+              ${matches > 0 ? `${matches}×` : '0×'}
+            </span>
+          </header>`}
 
       ${expanded
         ? html`

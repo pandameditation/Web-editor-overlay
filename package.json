@@ -56,6 +56,7 @@
     "check:dupidentity": "node scripts/browser-check.mjs test/duplicate-identity.html 60000",
     "check:unwraptext": "node scripts/browser-check.mjs test/unwrap-text.html 60000",
     "check:cssrules": "node scripts/browser-check.mjs test/css-rules.html 45000",
+    "check:styledialog": "node scripts/browser-check.mjs test/style-dialog.html 45000",
     "check:shield": "node scripts/browser-check.mjs test/shield.html 45000",
     "check:sweepout": "node scripts/browser-check.mjs test/text-sweep-out.html 45000",
     "check:token": "node scripts/browser-check.mjs test/token-target.html 45000",

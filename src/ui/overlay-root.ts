@@ -20,6 +20,7 @@ import './chrome/extract-dialog.js';
 import './chrome/confirm-dialog.js';
 import './chrome/paste-dialog.js';
 import './chrome/css-paste-dialog.js';
+import './chrome/style-dialog.js';
 import './chrome/source-dialog.js';
 import './chrome/dock.js';
 
@@ -80,6 +81,7 @@ export class HeoOverlay extends HeoElement {
         s.extraction,
         s.htmlPaste,
         s.cssPaste,
+        s.styleEdit,
         s.sourceEdit,
         s.codeWorkspace,
         s.confirm,
@@ -121,6 +123,12 @@ export class HeoOverlay extends HeoElement {
       ${state.extraction ? html`<heo-extract-dialog></heo-extract-dialog>` : nothing}
       ${state.htmlPaste ? html`<heo-paste-dialog></heo-paste-dialog>` : nothing}
       ${state.cssPaste ? html`<heo-css-paste-dialog></heo-css-paste-dialog>` : nothing}
+      <!--
+        Before the CSS paste dialog in z-order, and it has to be: the declaration list inside
+        this one offers "Paste CSS", so that dialog opens from within this one and must land
+        on top of it rather than behind it.
+      -->
+      ${state.styleEdit ? html`<heo-style-dialog></heo-style-dialog>` : nothing}
       ${state.sourceEdit ? html`<heo-source-dialog></heo-source-dialog>` : nothing}
       <!--
         The provider settings, here rather than inside the AI popover: a full-screen task needs
