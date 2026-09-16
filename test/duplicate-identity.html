@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang='en'>
+
+<head>
+  <meta charset="utf-8">
+  <title>A copy is its own element, in the file as well as on the page</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: system-ui, sans-serif;
+    }
+  </style>
+</head>
+
+<body>
+  <!--
+    A duplicate has no identity of its own to look up in the file, and every route the write
+    path had for finding a child answered with the element it was copied from instead.
+
+    The reported failure: duplicate a figure, move the copy, change the image's source and
+    size, save. The save dialog listed all of it correctly. The file got a second, byte-for-byte
+    copy of the original as the file already had it, and every edit to the copy was gone.
+
+    Two things had to be true at once for that. The container rebuild looked the copy up in the
+    file — `uniqueTag` when the file holds one tag of that name, `tagAroundText` when it holds
+    the text once — and copied the original's bytes. And the pass that places attribute and
+    style patches skips anything inside a freshly added subtree, on the understanding that the
+    rebuild is carrying it.
+
+    The markup below is shaped so both lookup routes are actually reachable: exactly one
+    <figure> in the file, and a paragraph whose words appear in it exactly once. An assertion
+    in each group checks that precondition, because a test that passes because the wrong route
+    was never available proves nothing.
+
+    Written the way a person writes HTML — single quotes, an unquoted attribute — so that the
+    file being patched rather than rewritten stays checkable throughout.
+  -->
+  <main id="page">
+    <p class="lead" data-note='kept'>A paragraph whose words appear in this file exactly once.</p>
+    <figure class="fig wide">
+      <img class="case-study-image" src="assets/one.png" alt="Rebooking prototype" width="648" height="684"
+        loading="lazy" decoding="async">
+      <figcaption>The only caption this file has</figcaption>
+    </figure>
+    <section id="destination">
+      <p class="filler">Somewhere else on the page</p>
+    </section>
+    <!--
+      The id is what makes the original nameable in the write: a copy does not keep one, so
+      `#quote` in the output is the original and the nameless one beside it is the copy.
+    -->
+    <aside class="pull" id="quote">A pull quote, duplicated for the untick case.</aside>
+  </main>
+
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const errors = [];
+      window.addEventListener('error', (e) => errors.push('error: ' + e.message));
+      window.addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+
+      const results = {};
+      const progress = document.getElementById('progress');
+      const step = (name) => { progress.textContent = name; };
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+      // As the Vite plugin does: markers exist in the served DOM and never in the file.
+      // The image carries one too, so "not on the copy" covers the subtree and not just its root.
+      const ORIGINAL_FIGURE_MARKER = 'duplicate-identity.html:37:5';
+      const ORIGINAL_IMAGE_MARKER = 'duplicate-identity.html:38:7';
+      document.querySelector('figure.fig').setAttribute('data-heo-src', ORIGINAL_FIGURE_MARKER);
+      document.querySelector('figure.fig img').setAttribute('data-heo-src', ORIGINAL_IMAGE_MARKER);
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark' });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+
+      const page = decodeURIComponent(location.pathname).split('/').pop();
+      const directory = decodeURIComponent(location.pathname).replace(/[^/]*$/, '');
+      const disk = new Map();
+      const project = {
+        kind: 'directory',
+        label: 'memory',
+        resolve(url) {
+          const path = decodeURIComponent(new URL(url, location.href).pathname);
+          return path.startsWith(directory) ? path.slice(directory.length) : null;
+        },
+        read: async (path) => {
+          if (disk.has(path)) return disk.get(path);
+          try {
+            const text = await (await fetch('./' + path)).text();
+            disk.set(path, text);
+            return text;
+          } catch { return null; }
+        },
+        write: async (path, text) => { disk.set(path, text); },
+        ensureWritable: async () => true,
+        release: async () => { },
+      };
+      await engine.attachProject(project, { quiet: true });
+      await frames();
+      const source = await project.read(page);
+      /*
+       * Parsed, not pattern-matched. The comment above this fixture's markup discusses
+       * `<figure>` in prose, and a regex over the text counted those alongside the real
+       * ones — reporting two tags in a file that declares one, and failing the precondition
+       * it exists to establish. A parse skips comments, which is also what the file scanner
+       * this is making a claim about does.
+       */
+      const sourceDoc = new DOMParser().parseFromString(source ?? '', 'text/html');
+
+      /** The document write from a fresh plan, and the markup it would put on disk. */
+      const planned = async () => {
+        const plan = await engine.previewWritePlan();
+        const write = (plan?.writes ?? []).find((w) => w.kind === 'document');
+        return {
+          plan,
+          write,
+          reason: write?.reason ?? '',
+          warnings: write?.warnings ?? [],
+          after: write?.after ?? '',
+          doc: new DOMParser().parseFromString(write?.after ?? '', 'text/html'),
+        };
+      };
+
+      const structuralKinds = new Set(['insert', 'delete', 'move', 'wrap', 'duplicate', 'replace']);
+
+      /* ------------------------------------------------------------------ *
+       * An edit to a copy that is not itself going into the file.
+       *
+       * Unticking "Duplicate" leaves the edits made to the copy with nothing in the
+       * file to be about — and their anchors resolve to the element they were copied
+       * from. The copy's new value was written over the original's, silently, in a
+       * plan that reported it patched in place with nothing stranded.
+       *
+       * First, and on an element of its own, because it needs a session with no other
+       * structural change in it. Run after the groups below, the copy sat inside a
+       * container those changes were already rebuilding, so the edit was carried for a
+       * reason that has nothing to do with what this is checking — and the assertion
+       * passed against the unfixed code.
+       * ------------------------------------------------------------------ */
+      step('anEditToACopyThatIsNotBeingWritten');
+      const quote = document.querySelector('aside.pull');
+      engine.duplicate(quote);
+      await frames();
+      const quoteCopy = document.querySelectorAll('aside.pull')[1];
+      engine.setAttribute('data-copy', 'yes', quoteCopy);
+      await frames();
+      api.select(quoteCopy);
+      engine.setStyle('opacity', '0.5');
+      await frames();
+
+      const quoteDuplicate = engine.records.find((r) => r.kind === 'duplicate');
+      engine.setChangeIncluded(quoteDuplicate.id, false);
+      await frames();
+
+      const handedOff = engine.handoffRecords;
+      const stranded = await planned();
+      const strandedOriginal = stranded.doc.getElementById('quote');
+
+      results.anEditToACopyThatIsNotBeingWritten = {
+        // Discriminating: with no structural change left, nothing is going to rebuild a
+        // container, so the edits to the copy have to be handled on their own terms.
+        noStructuralChangeIsHandedOff:
+          handedOff.filter((r) => structuralKinds.has(r.kind)).length === 0,
+        butTheEditsToTheCopyStillAre:
+          handedOff.filter((r) => r.kind === 'attribute' || r.kind === 'style').length === 2,
+        // And the file has one of these, so an anchor that gives up on the copy and
+        // settles for "the only <aside>" has something to land on.
+        theFileHoldsExactlyOneOfThem: sourceDoc.querySelectorAll('aside.pull').length === 1,
+
+        // The one that matters: the original is not quietly edited in the copy's place.
+        theOriginalIsStillInTheFileToCheck: Boolean(strandedOriginal),
+        theOriginalIsNotGivenTheCopysAttribute:
+          strandedOriginal?.hasAttribute('data-copy') === false,
+        norTheCopysStyle: strandedOriginal?.hasAttribute('style') === false,
+        /*
+         * Declining is stated rather than silent, which is the difference between a
+         * limitation and a bug.
+         *
+         * What it declines *into* is the whole-file serialization this path has always
+         * fallen back on, and that writes the live page — so the copy still reaches the
+         * file even though its duplicate was unticked. Unticking has never bound the
+         * serialized path; it decides what the patch set and the prompt carry. Left as
+         * it is rather than pinned either way, because the defect being closed here is
+         * the original being edited in the copy's place.
+         */
+        andThePlanSaysWhyItCouldNotPatch:
+          stranded.warnings.some((w) => /not itself going into the file/.test(w)),
+      };
+
+      // Put it back, so the groups below run in an ordinary session.
+      engine.includeAllChanges();
+      await frames();
+
+      /* ------------------------------------------------------------------ *
+       * The reported case: duplicate, move the copy, then edit it.
+       * ------------------------------------------------------------------ */
+      step('theReportedCase');
+      const original = document.querySelector('figure.fig');
+      api.select(original);
+      engine.duplicate(original);
+      await frames();
+
+      const copy = document.querySelectorAll('figure.fig')[1];
+      // Into the section below it, so the copy and the original end up in different
+      // containers — which is what the user did, and it means two rebuilds rather than one.
+      engine.move('in', copy);
+      await frames();
+
+      const copiedImage = copy.querySelector('img');
+      engine.setAttribute('src', 'assets/two.png', copiedImage);
+      await frames();
+      api.select(copiedImage);
+      engine.setStyle('width', '100%');
+      engine.setStyle('height', '100%');
+      await frames();
+
+      const reported = await planned();
+      const writtenCopy = reported.doc.querySelector('#destination figure.fig');
+      const writtenOriginal = reported.doc.querySelector('#page > figure.fig');
+
+      results.theReportedCase = {
+        /*
+         * The precondition that makes the rest of this group mean something.
+         *
+         * One <figure> in the file is what let `uniqueTag` answer "which figure" with the
+         * original. With two in the file the lookup declines on its own and the copy is
+         * serialized from the live page for the right reason rather than by luck.
+         */
+        theFileHoldsExactlyOneFigureSoItsTagIsUnique:
+          sourceDoc.querySelectorAll('figure').length === 1,
+        // And the copy really did move out of the container it was created in.
+        theCopyLivesInTheDestinationOnThePage:
+          document.querySelector('#destination figure.fig') === copy,
+
+        theCopyReachesTheFile: Boolean(writtenCopy),
+        theCopyCarriesTheNewImageSource:
+          writtenCopy?.querySelector('img')?.getAttribute('src') === 'assets/two.png',
+        theCopyCarriesTheNewInlineSize: /width:\s*100%/.test(
+          writtenCopy?.querySelector('img')?.getAttribute('style') ?? '',
+        ) && /height:\s*100%/.test(
+          writtenCopy?.querySelector('img')?.getAttribute('style') ?? '',
+        ),
+        // The other half of the same bug: the original must not have been edited instead.
+        theOriginalKeepsItsOwnImageSource:
+          writtenOriginal?.querySelector('img')?.getAttribute('src') === 'assets/one.png',
+        andTheOriginalIsNotStyled:
+          !writtenOriginal?.querySelector('img')?.hasAttribute('style'),
+        // Both are there: neither replaced the other.
+        theFileHoldsBothOfThem: reported.doc.querySelectorAll('figure.fig').length === 2,
+
+        // None of this cost the file its formatting: it is still a patch, not a rewrite.
+        theFileWasPatchedRatherThanRewritten: /patched in place/.test(reported.reason),
+        soTheAuthorsUnquotedAttributeSurvives: /data-note='kept'/.test(reported.after),
+        // And no editor bookkeeping travelled into the file with the serialized copy.
+        andNoEditorAttributeReachedTheFile:
+          reported.doc.querySelectorAll('[data-heo-src], [data-heo-inserted]').length === 0,
+      };
+
+      /* ------------------------------------------------------------------ *
+       * The other lookup route: a copy whose text the file holds exactly
+       * once, which `tagAroundText` matched to the original directly.
+       * ------------------------------------------------------------------ */
+      step('aCopyWhoseTextTheFileHoldsOnce');
+      const paragraph = document.querySelector('p.lead');
+      const paragraphText = paragraph.textContent.trim();
+      engine.duplicate(paragraph);
+      await frames();
+      const paragraphCopy = document.querySelectorAll('p.lead')[1];
+      engine.setAttribute('data-copy', 'yes', paragraphCopy);
+      await frames();
+
+      const byText = await planned();
+      const writtenParagraphs = Array.from(byText.doc.querySelectorAll('p.lead'));
+
+      results.aCopyWhoseTextTheFileHoldsOnce = {
+        // The precondition: unique text is what made the text route answer at all.
+        itsWordsAppearOnceInTheFile:
+          source.split(paragraphText).length - 1 === 1,
+
+        bothParagraphsReachTheFile: writtenParagraphs.length === 2,
+        exactlyOneOfThemCarriesTheNewAttribute:
+          writtenParagraphs.filter((p) => p.hasAttribute('data-copy')).length === 1,
+        // And it is the copy, which follows the original.
+        andItIsTheSecondOneRatherThanTheFirst:
+          writtenParagraphs[1]?.hasAttribute('data-copy') === true &&
+          writtenParagraphs[0]?.hasAttribute('data-copy') === false,
+        theOriginalKeepsItsAuthoredAttribute:
+          /data-note='kept'/.test(byText.after),
+      };
+
+      /* ------------------------------------------------------------------ *
+       * A copy does not inherit the original's identity.
+       *
+       * `cloneNode` brings every attribute, and `data-heo-src` names a line in a
+       * file — the original's line. Two live elements claiming one position is a
+       * contradiction the save path acts on from both ends.
+       * ------------------------------------------------------------------ */
+      step('theCopyDoesNotInheritTheOriginalsIdentity');
+      const markerCount = (value) =>
+        document.querySelectorAll(`[data-heo-src="${value}"]`).length;
+      const copysRecord = engine.records.find(
+        (r) => r.kind === 'attribute' && r.detail?.attribute === 'src',
+      );
+
+      results.theCopyDoesNotInheritTheOriginalsIdentity = {
+        // Discriminating: the markers have to be on the page at all for their absence
+        // from the copy to be a fact about the copy.
+        theOriginalStillWearsItsBuildMarker:
+          original.getAttribute('data-heo-src') === ORIGINAL_FIGURE_MARKER,
+        andSoDoesItsImage:
+          original.querySelector('img').getAttribute('data-heo-src') === ORIGINAL_IMAGE_MARKER,
+
+        onlyOneElementClaimsTheFiguresLine: markerCount(ORIGINAL_FIGURE_MARKER) === 1,
+        onlyOneElementClaimsTheImagesLine: markerCount(ORIGINAL_IMAGE_MARKER) === 1,
+        theCopyWearsNoMarkerAnywhereInIt:
+          !copy.hasAttribute('data-heo-src') &&
+          copy.querySelectorAll('[data-heo-src]').length === 0,
+        // Nor does it keep the original's id, which was already true and belongs with it.
+        theCopyDoesNotKeepAnId: copy.id === '',
+        // The user-visible consequence: an edit to the copy no longer reports the
+        // original's line as the place to look for it.
+        andAnEditToTheCopyDoesNotCiteTheOriginalsLine:
+          copysRecord?.source?.line !== 38,
+      };
+
+      /* ------------------------------------------------------------------ */
+      const failed = Object.entries(results)
+        .filter(([, group]) => group && typeof group === 'object' && !Array.isArray(group))
+        .filter(([, group]) => Object.values(group).some((value) => value === false))
+        .map(([name]) => name);
+
+      results.failed = failed;
+      results.ok = failed.length === 0 && errors.length === 0;
+      results.__errors = errors;
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"ok":false,"__errors":["' + String(e && e.message) + '"]}:END';
+    });
+  </script>
+</body>
+
+</html>

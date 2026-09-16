@@ -32,8 +32,10 @@ import type { DesignRule } from './types.js';
  * rules that could only show the ones created in this session would be blind to the file
  * it is meant to be managing, and a rule written last session would vanish on reload.
  * Scanned rules carry `origin: 'stylesheet'` and are excluded from `toCSS`, so nothing is
- * written back until it is changed; editing one flips it to `'user'`, after which it is
- * emitted as an override that wins by coming later.
+ * written back that the file already says. Editing one changes the declaration in the rule it was
+ * read from — see `originRule` — so it stays the file's and stays out of `toCSS`. It used to flip
+ * to `'user'` and be emitted as an override that won by coming later, which left the file
+ * declaring the same selector twice with the original holding the old value.
  *
  * **The registry does not claim what another one owns.** A bare `.card` rule is a
  * reusable class and belongs to `ClassRegistry`; a `:root` block of custom properties

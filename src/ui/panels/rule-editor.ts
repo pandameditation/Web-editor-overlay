@@ -298,19 +298,23 @@ export const RuleEditor = {
   /**
    * Where a scanned rule came from, and what changing it will do.
    *
-   * The question this answers is "why can I not delete this one", asked before it is
-   * asked. It also states the override up front: an edit here does not rewrite the rule in
-   * the file, it adds a rule that wins — which is the same arrangement tokens and classes
-   * have, and the thing a reader of the resulting diff needs to already know.
+   * The question this answers is "why can I not delete this one", asked before it is asked, and
+   * where an edit is going to land — which is the thing a reader of the resulting diff needs to
+   * already know.
+   *
+   * This used to describe an override: an edit was emitted as a second copy of the rule and
+   * appended to the target stylesheet, so the file kept what it said and won by coming later. It
+   * does not work that way now. A declaration is changed where it is declared, which is why the
+   * sentence names the file as the thing about to be edited rather than the thing being left alone.
    */
   renderSource(entry: DesignRule, host: RuleEditorHost): TemplateResult {
     const source = host.engine.rules.sourceOf(entry.selector);
     return html`<p class="from">
       ${icon('file', 12)}
       <span>
-        Declared in ${source ? html`<code>${source}</code>` : 'the page’s own CSS'}. Editing it
-        here adds an override that wins, rather than rewriting that rule — so the file keeps
-        what it says and the save carries the difference.
+        Declared in ${source ? html`<code>${source}</code>` : 'the page’s own CSS'}. Editing a
+        value here changes that declaration in place, so a save edits this rule rather than adding
+        a second copy of it. The selector itself belongs to the file.
       </span>
     </p>`;
   },

@@ -693,6 +693,24 @@ export function duplicateElement(el: HTMLElement): { command: Command; node: HTM
   if (!parent) return null;
   const clone = el.cloneNode(true) as HTMLElement;
   clone.removeAttribute('id');
+  /*
+   * The build marker does not come with the copy, and nor does its subtree's.
+   *
+   * `cloneNode` brings every attribute, and `data-heo-src` is not an attribute a copy can
+   * honestly wear: it names a line in a file, and that line is the original's. Two elements
+   * claiming one position is a contradiction both halves of the save path act on. `liveElementFor`
+   * resolves a marker with `querySelector`, which answers with whichever of the two comes first
+   * in the document — so once the copy had been dragged above the original, an edit recorded
+   * against the original was read back off the copy. The file half is no better: `placeMarkers`
+   * turns the marker into a line and column, so the copy's own anchor pointed at the original's
+   * opening tag.
+   *
+   * The id is removed just above for the same reason. A copy inherits appearance, not identity.
+   */
+  clone.removeAttribute(SOURCE_ATTR);
+  for (const node of Array.from(clone.querySelectorAll(`[${SOURCE_ATTR}]`))) {
+    node.removeAttribute(SOURCE_ATTR);
+  }
   clone.setAttribute(INSERTED_ATTR, '');
   const before = remember(el.nextSibling);
   const command: Command = {

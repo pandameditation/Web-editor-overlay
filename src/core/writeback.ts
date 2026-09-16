@@ -849,18 +849,8 @@ function reconcileContainers(
   const containers = new Map<string, ElementAnchor>();
   for (const record of records) {
     if (!STRUCTURAL.has(record.kind)) continue;
-    /*
-     * Every container the change touched, which for a move is two of them.
-     *
-     * `anchor.parent` is the fallback rather than the source, because it can only ever name
-     * one — and a move that changes an element's parent has to rebuild the container it left
-     * as well as the one it joined, or the file keeps the element in both places.
-     */
-    const recorded = record.containers?.length
-      ? record.containers
-      : record.anchor?.parent
-        ? [record.anchor.parent]
-        : [];
+    // Every container the change touched, which for a move is two of them.
+    const recorded = recordedContainers(record);
     // No container recorded: not placeable. Whether it can be *found* is settled below,
     // where both the file and the live page get a say — a tag unique in both is enough,
     // which is what makes `<body>` a usable container.
@@ -971,8 +961,29 @@ function reconcileContainers(
       if (isEditorNode(child)) continue;
       // Content the page renders is not the file's to carry, here as everywhere else.
       if (generated(child)) continue;
-      // A branch holding a container the file has not got has to come from the live page.
-      const original = fromLive.has(child) ? null : elementText(current, anchorOf(child));
+      /*
+       * A child the file has never seen is serialized from the live page rather than looked up.
+       *
+       * Two ways to be new, and both have to be caught here. `fromLive` holds a branch that
+       * contains a container the file has not got. `INSERTED_ATTR` marks the root of a subtree
+       * the editor itself created — a duplicate, inserted markup, a wrapper — and there is no
+       * honest answer to where that is in the file, because it is not in the file.
+       *
+       * Asking anyway is what wrote a duplicate out as its original. `anchorOf` describes a
+       * child by its id, its text and its tag; a copy has no id of its own and shares the
+       * other two with the element it was copied from, so `resolveAnchor` answered with the
+       * original's opening tag — through `tagAroundText` when the text occurs once in the
+       * file, through `uniqueTag` when the tag does — and `elementText` handed back the
+       * original's bytes. The copy then reached the file as a second, verbatim copy of the
+       * original *as the file had it*, so everything the user did to it afterwards was
+       * missing: the pass that places attribute and style patches skips anything inside a
+       * fresh subtree precisely because this rebuild is supposed to be carrying it.
+       *
+       * Nothing is lost by serializing instead. A subtree the file has never seen has no
+       * authored formatting in it to preserve.
+       */
+      const fresh = fromLive.has(child) || child.hasAttribute(INSERTED_ATTR);
+      const original = fresh ? null : elementText(current, anchorOf(child));
       /*
        * `cleanMarkup` rather than `outerHTML`, and this is the one place in the patch path
        * where it matters.
@@ -1016,6 +1027,22 @@ function reconcileContainers(
 }
 
 /**
+ * The containers a structural change rearranged, as anchors.
+ *
+ * One function because two passes need the same answer and them disagreeing is a bug rather
+ * than a discrepancy: the rebuild uses it to decide what to reconcile, and the patch pass uses
+ * it to decide whether a newly added element will be carried by one of those reconciliations.
+ *
+ * `anchor.parent` is the fallback rather than the source, because it can only ever name one —
+ * and a move that changes an element's parent has to rebuild the container it left as well as
+ * the one it joined, or the file keeps the element in both places.
+ */
+function recordedContainers(record: ChangeRecord): readonly ElementAnchor[] {
+  if (record.containers?.length) return record.containers;
+  return record.anchor?.parent ? [record.anchor.parent] : [];
+}
+
+/**
  * How to look this child up in the file.
  *
  * Every child gets one, not just the ones with ids. A child that merely sat there while its
@@ -1040,6 +1067,11 @@ function anchorOf(el: HTMLElement): ElementAnchor {
    * So a child is matched here only by something that is *about* it — its id, its build
    * marker, or text the file holds exactly once. Anything else is serialized from the live
    * page instead, which is correct if wordier.
+   *
+   * Being *about* the element is still not the same as being unique to it, which is why the
+   * caller refuses to use this for anything the editor created. A duplicate has the same
+   * text and the same tag as the element it came from, so identity alone cannot tell the two
+   * apart and this would answer with the original. See the `fresh` check in the rebuild.
    */
   return {
     tag: el.tagName.toLowerCase(),
@@ -1279,6 +1311,22 @@ function tryPatchDocument(
   const structural = records.filter((record) => STRUCTURAL.has(record.kind));
 
   /*
+   * The containers this write is going to rebuild, as live elements.
+   *
+   * Worked out here so the pass below can ask whether an element the editor added will be
+   * carried by one of them, rather than assume it. Resolved from the same recorded anchors
+   * `reconcileContainers` works from, so the two passes cannot disagree about what is being
+   * rebuilt — which is the only thing that makes skipping a fresh element's patches safe.
+   */
+  const rebuilding: HTMLElement[] = [];
+  for (const record of structural) {
+    for (const entry of recordedContainers(record)) {
+      const container = liveElementFor(entry);
+      if (container) rebuilding.push(container);
+    }
+  }
+
+  /*
    * The one `data-heo-*` attribute that is not bookkeeping for this write.
    *
    * Hoisted because both places that serialize live markup into the file have to agree
@@ -1332,12 +1380,30 @@ function tryPatchDocument(
     /*
      * An edit to something the user just added needs no patch of its own.
      *
-     * The element is not in the file yet, so there is nothing to patch — its container's
-     * rebuild serializes it from the live page, edits and all. Trying to place it anyway
-     * failed to resolve and took the whole save down to a rewrite.
+     * The element is not in the file yet, so there is nothing to patch — the rebuild of the
+     * container it was added to serializes it from the live page, edits and all. Trying to
+     * place it anyway failed to resolve and took the whole save down to a rewrite.
+     *
+     * But only when a rebuild is actually going to carry it, and that has to be checked
+     * rather than assumed. The test used to be that the change set held *some* structural
+     * record, which is not the same question: unticking "Duplicate figure" while keeping the
+     * edits made to the copy left no structural record at all, so the edits were placed by
+     * their own anchors — and a copy's anchor resolves to the element it was copied from.
+     * The `src` the user set on their new image was written over the original's, silently,
+     * in a plan that reported one change patched in place and nothing stranded.
+     *
+     * Declining is the honest answer instead. The file is serialized as it always was when a
+     * change cannot be placed, and the plan says why.
      */
     const live = elementOfRecord(record);
-    if (structural.length && live?.closest(`[${INSERTED_ATTR}]`)) continue;
+    const added = live?.closest(`[${INSERTED_ATTR}]`);
+    if (added) {
+      if (rebuilding.some((container) => container.contains(added))) continue;
+      why.push(
+        `“${record.summary}” was made to an element that is not itself going into the file`,
+      );
+      return null;
+    }
     // Already carried by an ancestor's text patch. See `rewritten`.
     if (live && enclosedBy(live, rewritten)) continue;
 

@@ -3,13 +3,23 @@
  *
  * Each block below is bait for the same mistake: emitting the whole selector again at the end of
  * the file instead of changing the declaration that is already here. The notation is chosen so a
- * re-serialization would be obvious — short hex, unitless zero, trailing comments.
+ * re-serialization would be obvious — short hex, unitless zero, comments tied to declarations.
  */
 
+:root {
+  /* Declared once, so deleting it takes the token out of the page entirely. */
+  --reuse-ink: #172033;
+  /* Declared again inside the media query below, which is what makes deletion interesting. */
+  --reuse-gap: 8px;
+}
+
 .panel {
-  padding: 16px;          /* a trailing comment, tied to this declaration */
-  background: #fff;       /* short hex, which the CSSOM would rewrite as rgb() */
-  margin: 0;              /* unitless zero, which the CSSOM would rewrite as 0px */
+  padding: 16px;
+  /* a trailing comment, tied to this declaration */
+  background: #fff;
+  /* short hex, which the CSSOM would rewrite as rgb() */
+  margin: 0;
+  /* unitless zero, which the CSSOM would rewrite as 0px */
 }
 
 .panel h2 {
@@ -30,11 +40,21 @@
 }
 
 @media (min-width: 40em) {
+
   /*
    * The twin. It shares a selector with the block at the top of the file but not a property, so
    * anything written in here instead of up there would apply at one width and nowhere else.
    */
   .panel {
     border-radius: 20px;
+  }
+
+  /*
+   * The second declaration of --reuse-gap, and the later one, so it is the one in effect. Deleting
+   * the token has to take this one and leave the base value alone — the token is still declared in
+   * the file, so it must not vanish from the panel.
+   */
+  :root {
+    --reuse-gap: 12px;
   }
 }

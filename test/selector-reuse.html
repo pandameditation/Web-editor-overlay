@@ -113,13 +113,18 @@
         theStylesheetIsTheDesignSystemTarget: Boolean(target),
         panelIsAScannedClass: engine.classes.get('panel')?.origin === 'stylesheet',
         panelHeadingIsAScannedRule: engine.rules.get('.panel h2')?.origin === 'stylesheet',
+        // Both tokens were read out of the file, and both have a declaration to delete.
+        inkIsAScannedToken: engine.tokens.get('reuse-ink')?.origin === 'stylesheet',
+        gapIsAScannedToken: engine.tokens.get('reuse-gap')?.origin === 'stylesheet',
         asExpected:
           blocks(original, '.panel') === 2 &&
           blocks(original, '.panel h2') === 1 &&
           blocks(original, '.badge') === 2 &&
           Boolean(target) &&
           engine.classes.get('panel')?.origin === 'stylesheet' &&
-          engine.rules.get('.panel h2')?.origin === 'stylesheet',
+          engine.rules.get('.panel h2')?.origin === 'stylesheet' &&
+          engine.tokens.get('reuse-ink')?.origin === 'stylesheet' &&
+          engine.tokens.get('reuse-gap')?.origin === 'stylesheet',
       };
 
       /* ------------------------------------------------------------------ *
@@ -135,7 +140,7 @@
         andDoesNotRestateTheSelector: blocks(css, '.panel') === 2,
         andWritesNoManagedBlock: !css.includes('heo:design-system'),
         // The declarations either side of the edited one, byte for byte, comment and all.
-        keepsTheTrailingComment: css.includes('/* a trailing comment, tied to this declaration */'),
+        keepsItsComments: css.includes('/* a trailing comment, tied to this declaration */'),
         keepsShortHex: css.includes('background: #fff;'),
         keepsUnitlessZero: css.includes('margin: 0;'),
         // The media twin shares the selector but not the property. Writing into it instead would
@@ -252,6 +257,88 @@
       };
 
       /* ------------------------------------------------------------------ *
+       * Deleting a token the file declares takes the declaration out of it.
+       *
+       * Dropping it from the registry only removed the editor's own copy, and there was never a
+       * copy of a scanned token to remove — so the save had nothing of its own to write and
+       * reported the deletion as impossible: "Nothing of the editor's design system is left to
+       * write, and <file> has no block of it to clear." The token then came back on reload.
+       * ------------------------------------------------------------------ */
+      step('deleteAScannedToken');
+      /** The trash button for one token row in the Tokens panel. */
+      const deleteToken = async (name) => {
+        engine.setDockTab('tokens');
+        await frames();
+        const walk = (root) => {
+          const found = root.querySelector('heo-tokens-panel');
+          if (found) return found;
+          for (const el of root.querySelectorAll('*')) {
+            if (!el.shadowRoot) continue;
+            const inner = walk(el.shadowRoot);
+            if (inner) return inner;
+          }
+          return null;
+        };
+        const panel = walk(document);
+        // By aria-label/title rather than by position: the rows re-sort as tokens come and go.
+        const button = Array.from(panel?.shadowRoot?.querySelectorAll('button') ?? []).find((b) =>
+          new RegExp(`Delete --${name}\\b|^Used \\d+ times`).test(b.getAttribute('title') ?? ''),
+        );
+        const row = Array.from(panel?.shadowRoot?.querySelectorAll('heo-value-field') ?? []).find(
+          (f) => f.getAttribute('label') === name,
+        );
+        // Prefer the button that sits in this token's own row.
+        const own = row?.parentElement?.querySelector('button[title^="Delete --"], button[title^="Used"]');
+        (own ?? button)?.click();
+        await frames();
+      };
+
+      await deleteToken('reuse-ink');
+      const inkPlan = await engine.previewWritePlan();
+      const inkWrite = (inkPlan?.writes ?? []).find((w) => SHEET.test(w.path));
+      css = inkWrite?.after ?? '';
+
+      results.deletingATokenTheFileDeclares = {
+        takesTheDeclarationOutOfTheFile: !css.includes('--reuse-ink'),
+        andLeavesTheOtherTokenAlone: css.includes('--reuse-gap'),
+        andTheRowIsGoneFromThePanel: !engine.tokens.get('reuse-ink'),
+        /*
+         * Whether the stylesheet write actually carries *this* change.
+         *
+         * Asked of the write's records rather than of whether a write exists at all: earlier edits
+         * in this session already produced one, so "a write happened" would have been true even
+         * while the deletion reached no file — which is exactly the state being fixed.
+         *
+         * This is also the strong form of "it is not reported as unwritable", which is the symptom
+         * that was reported. Asserting the absence of that report directly is worth nothing here:
+         * the other pending patches make the plan consider the design system filed either way, so
+         * it passed even with the bug present.
+         */
+        itsRecordIsCarriedByTheStylesheetWrite: (inkWrite?.records ?? []).some((r) =>
+          /reuse-ink/.test(r.summary),
+        ),
+      };
+
+      /* ------------------------------------------------------------------ *
+       * A token the file declares twice loses only the declaration in effect.
+       *
+       * The registry is rebuilt by rescanning, which can only notice what it finds — so a token
+       * that still has a declaration must not be pruned along with the one that went.
+       * ------------------------------------------------------------------ */
+      step('deleteATokenDeclaredTwice');
+      await deleteToken('reuse-gap');
+      css = await sheetAfter();
+
+      results.deletingATokenDeclaredTwice = {
+        // The later declaration, inside the media query, is the one that was in effect.
+        removesTheDeclarationThatWasInEffect: !css.includes('--reuse-gap: 12px'),
+        andLeavesTheBaseValue: css.includes('--reuse-gap: 8px'),
+        // Still declared in the file, so it is still a token of this page.
+        soTheTokenStaysInThePanel: Boolean(engine.tokens.get('reuse-gap')),
+        andIsStillTheFiles: engine.tokens.get('reuse-gap')?.origin === 'stylesheet',
+      };
+
+      /* ------------------------------------------------------------------ *
        * Vocabulary the file does *not* declare still gets a block of its own.
        *
        * The other half of the behaviour. A rule the editor invented has no declaration anywhere to
@@ -296,13 +383,16 @@
        * And undo puts the declaration back where it was.
        * ------------------------------------------------------------------ */
       step('undoEverything');
-      for (let i = 0; i < 12 && engine.history.canUndo; i += 1) engine.undo();
+      for (let i = 0; i < 40 && engine.history.canUndo; i += 1) engine.undo();
       await frames();
       const undone = await sheetAfter();
 
       results.undoingEverything = {
         putsTheOriginalValueBack: engine.classes.get('panel')?.declarations.padding === '16px',
         andTheRuleValueToo: engine.rules.get('.panel h2')?.declarations['letter-spacing'] === '0.01em',
+        // A deleted token comes back, which is the registry noticing the declaration reappear.
+        andTheDeletedTokensAreBack:
+          Boolean(engine.tokens.get('reuse-ink')) && Boolean(engine.tokens.get('reuse-gap')),
         // Back to the file as it was seeded, so a save now has nothing of ours to write into it.
         andLeavesNoManagedBlock: !undone.includes('heo:design-system'),
         andStillWritesTheSelectorOnce:

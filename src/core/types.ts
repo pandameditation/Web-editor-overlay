@@ -81,9 +81,12 @@ export interface DesignRule {
    *
    * `'stylesheet'` means it was read out of the page's own CSS rather than written here,
    * and it is the origin that decides whether the rule is emitted: a scanned rule is
-   * already in a file, so re-emitting it would turn a diff into a copy of the theme. The
-   * moment one is edited it becomes `'user'` and is emitted as an override — the same
-   * arrangement tokens and reusable classes have, for the same reason.
+   * already in a file, so re-emitting it would turn a diff into a copy of the theme.
+   *
+   * Editing one does not change that. The declaration is patched in the rule it was read
+   * from, so the rule stays `'stylesheet'` and stays out of what gets emitted — see
+   * `RuleRegistry.originRule`. It used to flip to `'user'` and be emitted as an override
+   * that won by coming later, which left the file declaring the same selector twice.
    */
   origin?: 'stylesheet' | 'user' | 'imported';
 }

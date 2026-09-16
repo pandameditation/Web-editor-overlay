@@ -780,8 +780,8 @@ export class HeoTokensPanel extends HeoElement {
         : html`
             <!--
               What the list is made of, before it is scrolled. The two halves behave
-              differently — a page rule is edited as an override and cannot be deleted from
-              here — so saying which is which up front is worth one line.
+              differently — a page rule is edited in the file it came from and cannot be
+              deleted from here — so saying which is which up front is worth one line.
             -->
             <p class="hint" style="margin:10px 0 8px">
               ${fromPage
@@ -789,8 +789,8 @@ export class HeoTokensPanel extends HeoElement {
               ? html`, ${authored} written here (marked
                       <span class="legend-dot"></span>)`
               : ''}.
-                  Editing a page rule adds an override; only the ones written here are
-                  deleted from here.`
+                  Editing a page rule changes it in the file it came from; only the ones
+                  written here are deleted from here.`
             : html`${authored} written in this session.`}
               ${this.editor.rules.truncated
             ? html`<br />This page has more rules than are listed — the scan stops once
@@ -1133,6 +1133,25 @@ export class HeoTokensPanel extends HeoElement {
   }
 
   #removeToken(token: DesignToken): void {
+    /*
+     * A token the project declares is deleted where it is declared.
+     *
+     * Dropping it from this registry only removes the editor's own copy, and for a token read out
+     * of a stylesheet there was never a copy to remove — the declaration is in the file, and the
+     * file goes on declaring it. So the save had nothing of its own to write and reported the
+     * deletion as impossible: "Nothing of the editor's design system is left to write, and
+     * styles.css has no block of it to clear." The token came back on the next reload.
+     *
+     * Removing the declaration from the rule that holds it *is* the deletion, and it is the same
+     * path `#setToken` takes to change one — so editing a token and deleting it reach a file the
+     * same way rather than by two mechanisms that agree until they do not.
+     */
+    const rule = this.editor.tokens.originRule(token.name);
+    if (rule) {
+      this.editor.setRuleDeclaration(rule, `--${token.name}`, '');
+      return;
+    }
+
     this.editor.history.commit({
       label: `Delete --${token.name}`,
       record: {

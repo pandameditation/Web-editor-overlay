@@ -2342,7 +2342,25 @@ export class EditorEngine {
    * selector — would be a third copy of a rule those two already share.
    */
   #resyncRegistries(rule: CSSStyleRule, property: string): void {
-    if (property.startsWith('--')) this.tokens.scanDocument();
+    if (property.startsWith('--')) {
+      this.tokens.scanDocument();
+      /*
+       * A token whose last declaration has just gone is no longer a token of this page.
+       *
+       * The rescan above only adopts what it finds; it has no way to notice a disappearance. So
+       * deleting the declaration left the row in the panel showing a value nothing declares any
+       * more, and the next rescan kept putting it back.
+       *
+       * Asked after the rescan, because that is what rebuilds the answer: a token declared in two
+       * rules still has one, and removing one of them must not drop it. And asked only of the
+       * page's own tokens — one the editor authored lives in the registry and has no declaration
+       * to lose.
+       */
+      const name = property.slice(2);
+      if (this.tokens.get(name)?.origin === 'stylesheet' && !this.tokens.originRule(name)) {
+        this.tokens.remove(name);
+      }
+    }
     const value = rule.style.getPropertyValue(property);
     for (const part of rule.selectorText.split(',')) {
       const name = simpleClassName(part);

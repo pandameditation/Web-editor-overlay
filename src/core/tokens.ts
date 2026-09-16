@@ -132,6 +132,11 @@ export class TokenRegistry {
    * bottom of whichever file the design system is pointed at — so the file ended up with the
    * token twice and the original declaration untouched and now wrong.
    *
+   * Deletion needs it just as much, and for a sharper reason: dropping a scanned token from this
+   * registry removes a copy that was never written, so the save had nothing of its own to file and
+   * reported the deletion as impossible while the file went on declaring it. Removing the
+   * declaration from this rule is the deletion.
+   *
    * Null for a token the editor itself created, which has no declaration anywhere yet and
    * genuinely does belong in the managed block.
    */
