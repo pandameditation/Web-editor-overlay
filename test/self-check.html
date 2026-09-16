@@ -2398,7 +2398,17 @@
       check('elementPropertyAdderKeepsExistingInlineDeclarations', () =>
         inlineAdderTarget.style.getPropertyValue('color') === 'rgb(1, 2, 3)');
       check('elementPropertyAdderCreatesAStyleRecord', () => {
-        const record = engine.records.find((r) => r.detail?.property === 'letter-spacing');
+        /*
+         * Scoped to this element's own record.
+         *
+         * A bare `find` over every record also matched the `.card` class edit further up this
+         * fixture, which names `letter-spacing` too — so the assertion was reading a different
+         * change and passing on its shape. It is the record for the element that is in question
+         * here, and there is exactly one.
+         */
+        const record = engine.records.find(
+          (r) => r.detail?.property === 'letter-spacing' && r.target === '#inline-adder-target',
+        );
         return Boolean(record && record.before == null && record.after === '0px');
       });
 

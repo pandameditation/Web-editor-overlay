@@ -88,6 +88,7 @@ export const FIXTURES = [
   { page: 'test/save-status.html', budget: 60000, weight: 1900, fast: true },
   { page: 'test/download.html', budget: 45000, weight: 1900 },
   { page: 'test/writeback.html', budget: 60000, weight: 1900, fast: true },
+  { page: 'test/selector-reuse.html', budget: 60000, weight: 1900, fast: true },
   { page: 'test/seed-block.html', budget: 45000, weight: 1900 },
   { page: 'test/export.html', budget: 45000, weight: 1800, fast: true },
 ];

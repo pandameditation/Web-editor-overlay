@@ -19,6 +19,10 @@ export class ClassRegistry {
   #sheet = new ManagedStyleSheet(CLASS_STYLE_ID);
   #listeners = new Set<() => void>();
   #usageCache: Map<string, number> | null = null;
+  /** Which live rule each scanned declaration was read from, keyed `name|property`. */
+  #origins = new Map<string, CSSStyleRule>();
+  /** The unconditional rule each scanned class was last declared in. See `originRule`. */
+  #homes = new Map<string, CSSStyleRule>();
 
   /**
    * Collect single-class rules from the page.
@@ -27,13 +31,17 @@ export class ClassRegistry {
    * reusable class you can drop onto an element, so offering it would mislead.
    */
   scanDocument(): void {
+    // Rebuilt from what the page says now, so a rule in a sheet that has since been removed
+    // cannot go on being offered as somewhere to write.
+    this.#origins.clear();
+    this.#homes.clear();
     for (const sheet of Array.from(document.styleSheets)) {
       if (sheet.ownerNode instanceof Element && sheet.ownerNode.hasAttribute('data-heo-generated')) {
         continue;
       }
-      this.#collect(sheet);
+      this.#collect(sheet, true);
     }
-    for (const sheet of document.adoptedStyleSheets ?? []) this.#collect(sheet);
+    for (const sheet of document.adoptedStyleSheets ?? []) this.#collect(sheet, true);
     this.#invalidate();
   }
 
@@ -45,7 +53,13 @@ export class ClassRegistry {
    * disk by a connected project — parses like any other CSS.
    */
   scanCSS(css: string): void {
-    withParsedSheet(css, (sheet) => this.#collect(sheet));
+    /*
+     * Not `live`: these rules belong to a throwaway sheet.
+     *
+     * Recording one as somewhere to write an edit would name a rule that no longer exists by the
+     * time anyone used it, and mutating it would change nothing a reader could see.
+     */
+    withParsedSheet(css, (sheet) => this.#collect(sheet, false));
     this.#invalidate();
   }
 
@@ -54,8 +68,11 @@ export class ClassRegistry {
    *
    * Recursive so a class declared inside `@media` counts, and tolerant of a
    * container it cannot read so one cross-origin sheet does not stop the scan.
+   *
+   * `live` says the rules being walked are the page's own, and therefore that they can be
+   * edited later. See `originRule`.
    */
-  #collect(container: CSSStyleSheet | CSSGroupingRule): void {
+  #collect(container: CSSStyleSheet | CSSGroupingRule, live: boolean): void {
     let list: CSSRuleList;
     try {
       list = container.cssRules;
@@ -69,6 +86,7 @@ export class ClassRegistry {
           if (!name) continue;
           const declarations = readDeclarations(rule.style);
           if (!Object.keys(declarations).length) continue;
+          if (live) this.#noteOrigin(name, rule, declarations);
           const existing = this.#classes.get(name);
           if (existing && existing.origin !== 'stylesheet') continue;
           this.#classes.set(name, {
@@ -85,9 +103,88 @@ export class ClassRegistry {
         rule instanceof CSSSupportsRule ||
         (typeof CSSContainerRule !== 'undefined' && rule instanceof CSSContainerRule)
       ) {
-        this.#collect(rule);
+        this.#collect(rule, live);
       }
     }
+  }
+
+  /**
+   * Remember where each of a scanned class's declarations was written.
+   *
+   * Deliberately recorded *before* the caller's `origin` check, not after. `scanDocument` clears
+   * these maps and rebuilds them, and a rescan skips a class the user has already touched — so
+   * recording afterwards would drop the very location the next edit to that class needs, and only
+   * the second edit of a session would append a duplicate. That is a far worse bug than the one
+   * being fixed, because it looks intermittent.
+   *
+   * The last declaration wins, which is also what the browser decided. A class declared twice — a
+   * base rule and a media-query override — is walked twice, and the value kept is the later one,
+   * so the rule remembered has to be that same one or an edit would patch the declaration that is
+   * not in effect.
+   */
+  #noteOrigin(name: string, rule: CSSStyleRule, declarations: Record<string, string>): void {
+    for (const property of Object.keys(declarations)) {
+      this.#origins.set(`${name}|${property}`, rule);
+    }
+    /*
+     * Where a property the class does *not* declare yet should go, which is a different question.
+     *
+     * Only an unconditional rule can answer it. Adding a declaration to the `@media` block that
+     * happens to mention this class would apply it at one viewport width and nowhere else, which
+     * is not what adding a declaration to a class means. A class that only ever appears inside a
+     * condition has no answer here, and falls through to the managed block — which writes an
+     * unconditional rule, and is honest about being a new one.
+     */
+    if (!rule.parentRule) this.#homes.set(name, rule);
+  }
+
+  /**
+   * The live rule an edit to this declaration belongs in, when the page already declares it.
+   *
+   * What makes editing a class the project already has a one-line diff. Without it the only way
+   * to change `.card`'s padding was to declare `.card` again in the editor's managed block, which
+   * lands at the bottom of whichever file the design system points at — so the file ended up
+   * declaring `.card` twice, the original left behind holding the old value, and a reader had to
+   * know cascade order to work out which one was in effect.
+   *
+   * The declaration's own rule first, then the class's unconditional rule for a property being
+   * added rather than changed. Null for a class the editor invented, which has no declaration
+   * anywhere yet and genuinely does belong in the managed block.
+   *
+   * Also null once the editor owns the class, because then its declarations are the managed
+   * block's to emit and patching a file rule from them would write the same CSS in two places.
+   */
+  originRule(name: string, property: string): CSSStyleRule | null {
+    const key = name.replace(/^\./, '');
+    if (this.#classes.get(key)?.origin !== 'stylesheet') return null;
+    return this.#origins.get(`${key}|${property}`) ?? this.#homes.get(key) ?? null;
+  }
+
+  /**
+   * Record what the page now says about a declaration this registry does not own.
+   *
+   * The other half of routing an edit through `originRule`: the value was changed in the rule that
+   * declares it, and a CSSOM mutation is invisible from here, so the copy held in this map is
+   * stale and the class editor would go on showing the old value.
+   *
+   * `setDeclaration` cannot do this job. It flips `origin` to `'user'`, which is precisely what
+   * makes `toCSS` emit the class — and emitting a class that was just patched in place is the
+   * duplicate this path exists to avoid.
+   *
+   * An empty value drops the property, because the declaration is no longer in the file either.
+   */
+  noteStylesheetValue(name: string, property: string, value: string): void {
+    const key = name.replace(/^\./, '');
+    const entry = this.#classes.get(key);
+    if (!entry || entry.origin !== 'stylesheet') return;
+    const declarations = { ...entry.declarations };
+    const next = value.trim();
+    if (next) declarations[property] = next;
+    else delete declarations[property];
+    this.#classes.set(key, { ...entry, declarations });
+    // `#invalidate` rather than `#flush`: the managed sheet is built from `toCSS`, which leaves
+    // scanned classes out, so rewriting it would emit the same bytes it already holds.
+    this.#invalidate();
   }
 
   list(): DesignClass[] {
@@ -182,8 +279,22 @@ export class ClassRegistry {
   setDeclaration(name: string, property: string, value: string): DesignClass | undefined {
     const entry = this.#classes.get(name.replace(/^\./, ''));
     if (!entry) return undefined;
-    const declarations = { ...entry.declarations, [property]: value.trim() };
-    return this.upsert({ ...entry, declarations, origin: 'user' });
+    const next = value.trim();
+    const declarations = { ...entry.declarations, [property]: next };
+    return this.upsert({
+      ...entry,
+      declarations,
+      /*
+       * A cleared value does not claim the class.
+       *
+       * `toCSS` skips empties, so an emptied declaration emits nothing and there is no override to
+       * own yet. Flipping `origin` on the way through would hand the editor a class it has nothing
+       * to say about — and for a class read out of a stylesheet that is expensive: the save would
+       * emit the whole thing again into the managed block, so the file would gain a second `.card`
+       * because someone pressed backspace.
+       */
+      origin: next ? 'user' : entry.origin,
+    });
   }
 
   /** Drop a declaration entirely, name and all. */
@@ -256,6 +367,10 @@ export class ClassRegistry {
     this.#sheet.destroy();
     this.#listeners.clear();
     this.#classes.clear();
+    // These hold live `CSSStyleRule` objects, and through them their sheets. Dropping them is
+    // what stops an unmounted editor keeping the page's stylesheets alive.
+    this.#origins.clear();
+    this.#homes.clear();
   }
 
   #flush(): void {

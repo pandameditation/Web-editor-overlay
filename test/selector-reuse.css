@@ -1,0 +1,40 @@
+/*
+ * A stylesheet that already declares every selector the editor will be asked to change.
+ *
+ * Each block below is bait for the same mistake: emitting the whole selector again at the end of
+ * the file instead of changing the declaration that is already here. The notation is chosen so a
+ * re-serialization would be obvious — short hex, unitless zero, trailing comments.
+ */
+
+.panel {
+  padding: 16px;          /* a trailing comment, tied to this declaration */
+  background: #fff;       /* short hex, which the CSSOM would rewrite as rgb() */
+  margin: 0;              /* unitless zero, which the CSSOM would rewrite as 0px */
+}
+
+.panel h2 {
+  color: #172033;
+  letter-spacing: 0.01em;
+}
+
+/*
+ * Declared twice, deliberately, and at the top level both times so no viewport width is involved.
+ * The later one is what the page renders, so it is the one an edit has to change.
+ */
+.badge {
+  color: #6b5b52;
+}
+
+.badge {
+  color: #846b62;
+}
+
+@media (min-width: 40em) {
+  /*
+   * The twin. It shares a selector with the block at the top of the file but not a property, so
+   * anything written in here instead of up there would apply at one width and nowhere else.
+   */
+  .panel {
+    border-radius: 20px;
+  }
+}

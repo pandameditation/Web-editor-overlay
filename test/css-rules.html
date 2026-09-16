@@ -101,6 +101,18 @@
     };
     const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
 
+    /**
+     * The CSS in a serialized page's `<style>` blocks, and nothing else.
+     *
+     * Asking whether a rule reached the HTML has to be asked of the stylesheets in it. This page's
+     * own harness names selectors in `querySelectorAll` calls, so searching the whole file finds the
+     * script and answers a different question.
+     */
+    const styleBlocksOf = (html) =>
+      Array.from(
+        new DOMParser().parseFromString(html ?? '', 'text/html').querySelectorAll('style'),
+      ).map((el) => el.textContent ?? '');
+
     /** Every shadow root, so the panel and its controls can be reached. */
     function deepQuery(selector, root = document) {
       const found = root.querySelector?.(selector);
@@ -222,18 +234,31 @@
         authored: rules.authored().length,
       }));
 
-      check('editingOneMakesItAnOverride', () => {
+      /*
+       * Editing a scanned rule changes the declaration the page already has.
+       *
+       * It used to become an override instead: the rule was copied into the editor's own generated
+       * sheet, and on save that sheet's contents were appended to the target stylesheet — which left
+       * the file declaring `h1` twice, the original holding the old value. So the edit now goes to
+       * the rule it was read from, which is why nothing appears in the generated sheet and why the
+       * rule stays the file's. `test/selector-reuse.html` is where the file-level result is checked.
+       */
+      check('editingOneChangesTheRuleItWasReadFrom', () => {
         engine.setDesignRuleDeclaration('h1', 'letter-spacing', '0.04em');
         const entry = rules.get('h1');
         return {
+          // Still the page's, because the page's own declaration is what was changed.
           origin: entry?.origin ?? null,
-          // The scanned declaration came along, so the override is complete rather than
-          // a fragment that half-applies.
+          stillTheFiles: entry?.origin === 'stylesheet',
           declarations: entry?.declarations ?? null,
-          inGeneratedCSS: (document.getElementById('heo-design-rules')?.textContent ?? '').includes(
-            'h1',
-          ),
+          // Nothing to override, so the generated sheet has nothing to say.
+          notInGeneratedCSS: !(
+            document.getElementById('heo-design-rules')?.textContent ?? ''
+          ).includes('h1'),
+          // The panel's copy tracks the rule it just changed rather than going stale.
+          panelShowsTheNewValue: entry?.declarations['letter-spacing'] === '0.04em',
           onScreen: styleOf('h1', 'letter-spacing'),
+          appliedOnScreen: styleOf('h1', 'letter-spacing') !== '-0.32px',
           nowAuthored: rules.authored().length,
         };
       });
@@ -241,10 +266,11 @@
       check('andRescanningDoesNotUndoThatEdit', () => {
         rules.scanDocument();
         return {
-          stillUser: rules.get('h1')?.origin ?? null,
-          stillEdited: rules.get('h1')?.declarations['letter-spacing'] ?? null,
+          origin: rules.get('h1')?.origin ?? null,
+          stillEdited: rules.get('h1')?.declarations['letter-spacing'] === '0.04em',
           // And nothing was duplicated by the second pass.
           count: selectors().filter((selector) => selector === 'h1').length,
+          countIsOne: selectors().filter((selector) => selector === 'h1').length === 1,
         };
       });
 
@@ -621,9 +647,14 @@
          * A document write can still happen — this session also edited text and structure —
          * so the question is not whether the HTML is written but whether the rule CSS is in
          * it as well.
+         *
+         * Asked of the `<style>` blocks rather than of the file, because this page's own test
+         * script contains the string `.prose p` in a `querySelectorAll` call. A plain substring
+         * search over the serialized HTML therefore matched the harness rather than any CSS, and
+         * reported the rule as duplicated the moment anything at all wrote the document.
          */
         ruleNotAlsoInTheHtml: !(toSheet?.writes ?? []).some(
-          (w) => w.kind === 'document' && (w.after ?? '').includes('.prose p'),
+          (w) => w.kind === 'document' && styleBlocksOf(w.after).some((css) => css.includes('.prose p')),
         ),
       };
 
@@ -631,8 +662,10 @@
       engine.setDesignSystemTarget('document');
       const toPage = await engine.previewWritePlan();
       results.andKeepingItInThePagePutsItInTheHtml = {
+        // Also asked of the `<style>` blocks, for the reason given above: the harness mentions this
+        // selector in its own source, so a whole-file search would pass without any CSS being there.
         ruleInTheHtml: (toPage?.writes ?? []).some(
-          (w) => w.kind === 'document' && (w.after ?? '').includes('.prose p'),
+          (w) => w.kind === 'document' && styleBlocksOf(w.after).some((css) => css.includes('.prose p')),
         ),
         stylesheetNotWritten: !(toPage?.writes ?? []).some((w) => /css-rules\.css$/.test(w.path)),
       };

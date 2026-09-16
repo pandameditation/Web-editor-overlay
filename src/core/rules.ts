@@ -55,6 +55,10 @@ export class RuleRegistry {
   #sources = new Map<string, string>();
   /** True once a scan stopped at the cap, so the panel can say the list is partial. */
   #truncated = false;
+  /** Which live rule each scanned declaration was read from, keyed `selector|property`. */
+  #origins = new Map<string, CSSStyleRule>();
+  /** The unconditional rule each scanned selector was last declared in. See `originRule`. */
+  #homes = new Map<string, CSSStyleRule>();
 
   /* ------------------------------------------------------------------------ */
   /* Reading the page                                                          */
@@ -69,16 +73,20 @@ export class RuleRegistry {
    * folder makes another stylesheet readable.
    */
   scanDocument(): void {
+    // Rebuilt from what the page says now, so a rule in a sheet that has since been removed
+    // cannot go on being offered as somewhere to write.
+    this.#origins.clear();
+    this.#homes.clear();
     for (const sheet of Array.from(document.styleSheets)) {
       // The editor's own output. Scanning it would re-ingest what this registry just
       // emitted, and a rule would become its own source.
       if (sheet.ownerNode instanceof Element && sheet.ownerNode.hasAttribute('data-heo-generated')) {
         continue;
       }
-      this.#collect(sheet, sheetLabel(sheet));
+      this.#collect(sheet, sheetLabel(sheet), true);
     }
     for (const sheet of document.adoptedStyleSheets ?? []) {
-      this.#collect(sheet, 'adopted stylesheet');
+      this.#collect(sheet, 'adopted stylesheet', true);
     }
     this.#invalidate();
   }
@@ -91,7 +99,13 @@ export class RuleRegistry {
    * disk by a connected project — parses like any other CSS.
    */
   scanCSS(css: string, label = 'a project stylesheet'): void {
-    withParsedSheet(css, (sheet) => this.#collect(sheet, label));
+    /*
+     * Not `live`: these rules belong to a throwaway sheet.
+     *
+     * Recording one as somewhere to write an edit would name a rule that no longer exists by the
+     * time anyone used it, and mutating it would change nothing a reader could see.
+     */
+    withParsedSheet(css, (sheet) => this.#collect(sheet, label, false));
     this.#invalidate();
   }
 
@@ -107,8 +121,11 @@ export class RuleRegistry {
    *
    * Tolerant of a sheet it cannot read, so one cross-origin `<link>` does not stop the
    * scan at the sheet it happens to appear before.
+   *
+   * `live` says the rules being walked are the page's own, and therefore that they can be edited
+   * later. See `originRule`.
    */
-  #collect(container: CSSStyleSheet, label: string): void {
+  #collect(container: CSSStyleSheet, label: string, live: boolean): void {
     let list: CSSRuleList;
     try {
       list = container.cssRules;
@@ -142,6 +159,8 @@ export class RuleRegistry {
       // sections above already list every one of them.
       if (properties.every((property) => property.startsWith('--'))) continue;
 
+      if (live) this.#noteOrigin(selector, rule, properties);
+
       const existing = this.#rules.get(selector);
       // Once the user has touched it, it is theirs. A rescan must not put the file's
       // values back over an edit that has not been saved yet.
@@ -156,6 +175,80 @@ export class RuleRegistry {
       });
       this.#sources.set(selector, this.#sources.get(selector) ?? label);
     }
+  }
+
+  /**
+   * Remember where each of a scanned rule's declarations was written.
+   *
+   * Deliberately recorded *before* the caller's `origin` check, not after. `scanDocument` clears
+   * these maps and rebuilds them, and a rescan skips a rule the user has already touched — so
+   * recording afterwards would drop the very location the next edit to that rule needs, and only
+   * the second edit of a session would append a duplicate. That is a far worse bug than the one
+   * being fixed, because it looks intermittent.
+   *
+   * The last declaration wins, which is also what the browser decided. One selector can be
+   * written more than once in a sheet and the later declarations are the ones in effect, so the
+   * rule remembered has to be that same one or an edit would patch a declaration nothing is using.
+   */
+  #noteOrigin(selector: string, rule: CSSStyleRule, properties: readonly string[]): void {
+    for (const property of properties) this.#origins.set(`${selector}|${property}`, rule);
+    /*
+     * Where a property the rule does *not* declare yet should go, which is a different question.
+     *
+     * Only an unconditional rule can answer it, and every rule this registry scans is one —
+     * `#collect` does not descend into at-rules. The guard is here so that stays true by
+     * construction rather than by memory if it ever does.
+     */
+    if (!rule.parentRule) this.#homes.set(selector, rule);
+  }
+
+  /**
+   * The live rule an edit to this declaration belongs in, when the page already declares it.
+   *
+   * What makes editing a rule the project already has a one-line diff. Without it the only way to
+   * change `h2`'s letter-spacing was to declare `h2` again in the editor's managed block, which
+   * lands at the bottom of whichever file the design system points at — so the file ended up
+   * declaring `h2` twice, the original left behind holding the old value, and a reader had to know
+   * cascade order to work out which one was in effect.
+   *
+   * The declaration's own rule first, then the selector's unconditional rule for a property being
+   * added rather than changed. Null for a rule the editor invented, which has no declaration
+   * anywhere yet and genuinely does belong in the managed block.
+   *
+   * Also null once the editor owns the rule, because then its declarations are the managed block's
+   * to emit and patching a file rule from them would write the same CSS in two places.
+   */
+  originRule(selector: string, property: string): CSSStyleRule | null {
+    const key = safeSelector(selector) || String(selector ?? '').trim();
+    if (this.#rules.get(key)?.origin !== 'stylesheet') return null;
+    return this.#origins.get(`${key}|${property}`) ?? this.#homes.get(key) ?? null;
+  }
+
+  /**
+   * Record what the page now says about a declaration this registry does not own.
+   *
+   * The other half of routing an edit through `originRule`: the value was changed in the rule that
+   * declares it, and a CSSOM mutation is invisible from here, so the copy held in this map is
+   * stale and the rule editor would go on showing the old value.
+   *
+   * `setDeclaration` cannot do this job. It flips `origin` to `'user'`, which is precisely what
+   * makes `toCSS` emit the rule — and emitting a rule that was just patched in place is the
+   * duplicate this path exists to avoid.
+   *
+   * An empty value drops the property, because the declaration is no longer in the file either.
+   */
+  noteStylesheetValue(selector: string, property: string, value: string): void {
+    const key = safeSelector(selector) || String(selector ?? '').trim();
+    const entry = this.#rules.get(key);
+    if (!entry || entry.origin !== 'stylesheet') return;
+    const declarations = { ...entry.declarations };
+    const next = value.trim();
+    if (next) declarations[property] = next;
+    else delete declarations[property];
+    this.#rules.set(key, { ...entry, declarations });
+    // `#invalidate` rather than `#flush`: the managed sheet is built from `toCSS`, which leaves
+    // scanned rules out, so rewriting it would emit the same bytes it already holds.
+    this.#invalidate();
   }
 
   /** Which stylesheet a scanned rule came from, for the panel to show. */
@@ -247,14 +340,23 @@ export class RuleRegistry {
   setDeclaration(selector: string, property: string, value: string): DesignRule | undefined {
     const entry = this.get(selector);
     if (!entry) return undefined;
+    const next = value.trim();
     return this.upsert({
       ...entry,
-      declarations: { ...entry.declarations, [property]: value.trim() },
-      // A rule read out of the page becomes this session's the moment it is edited, and
-      // that word is what makes the edit real: `toCSS` leaves `'stylesheet'` rules out, so
-      // without the flip the map would hold the new value, the row would show the new
-      // value, and the page would go on rendering the old one.
-      origin: 'user',
+      declarations: { ...entry.declarations, [property]: next },
+      /*
+       * A rule read out of the page becomes this session's the moment it is edited, and that word
+       * is what makes the edit real: `toCSS` leaves `'stylesheet'` rules out, so without the flip
+       * the map would hold the new value, the row would show the new value, and the page would go
+       * on rendering the old one.
+       *
+       * Except when the value was cleared, which claims nothing. `toCSS` skips empties, so there is
+       * no override to own — and for a rule read out of a stylesheet the flip would be expensive:
+       * the save would emit the whole rule again into the managed block, so the file would gain a
+       * second `h2` because someone pressed backspace. Clearing is how a value gets retyped, and it
+       * has to stay non-destructive.
+       */
+      origin: next ? 'user' : entry.origin,
     });
   }
 
@@ -402,6 +504,10 @@ export class RuleRegistry {
     this.#sheet.destroy();
     this.#listeners.clear();
     this.#rules.clear();
+    // These hold live `CSSStyleRule` objects, and through them their sheets. Dropping them is
+    // what stops an unmounted editor keeping the page's stylesheets alive.
+    this.#origins.clear();
+    this.#homes.clear();
   }
 
   #flush(): void {

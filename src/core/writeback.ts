@@ -456,19 +456,35 @@ export async function buildWritePlan(
       const after = upsertSection(base, systemCSS);
       if (after !== before) {
         systemFiled = true;
-        if (existing) {
-          existing.after = after;
-          existing.reason = `${existing.reason}, plus ${systemKinds}`;
-        } else {
-          writes.push({
-            path,
-            kind: 'stylesheet',
-            reason: `new ${systemKinds}`,
-            before,
-            after,
-            records: [],
-            unplaced: [],
-          });
+        /*
+         * Whether the *section* step changed anything, which is not the same question as whether
+         * the file differs from disk.
+         *
+         * `base` is what this file was already going to say — the patched text, when step 1 has
+         * queued a write for it. Asking only `after !== before` conflated the two: a declaration
+         * patched into a stylesheet that also happens to be the design system's target made this
+         * step restate a write it had not touched, stamping it with a reason that ended in
+         * "plus " and nothing at all. It also pushed a write of an empty string for a file that
+         * does not exist and had no design system to put in it.
+         */
+        if (after !== base) {
+          // Empty kinds and a changed section means the block came *out*: the session's vocabulary
+          // was undone, and `upsertSection` closed the gap it left behind.
+          if (existing) {
+            existing.after = after;
+            existing.reason = `${existing.reason}, plus ${systemKinds || 'its design system block removed'
+              }`;
+          } else {
+            writes.push({
+              path,
+              kind: 'stylesheet',
+              reason: systemKinds ? `new ${systemKinds}` : 'the design system block removed',
+              before,
+              after,
+              records: [],
+              unplaced: [],
+            });
+          }
         }
       }
     }

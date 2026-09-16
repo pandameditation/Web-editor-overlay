@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Editor overlay — a selector the file already has is patched, not duplicated</title>
+  <!--
+    Editing vocabulary the project already declares has to change the declaration, not restate it.
+
+    The design system's tokens, classes and rules are rendered into a generated `<style>` block so
+    a value changes on screen as it is typed, and on save that block is written into whichever
+    stylesheet the design system points at — appended at the end, between marker comments. For
+    vocabulary the editor invented that is the only place it could go. For a class or rule the file
+    already declares it is the wrong place: the file ends up saying `.panel` twice, the original
+    left behind holding the old value, and which one wins is then a question about cascade order.
+
+    So an edit to a scanned class or rule is routed to the live rule it was read from, and reaches
+    the file as a declaration patch — the same path a token edit and a cascade-inspector edit
+    already take.
+
+        npm run build:lib && npm run check:selectorreuse
+  -->
+  <link rel="stylesheet" href="./selector-reuse.css">
+</head>
+
+<body>
+  <main>
+    <div class="panel">
+      <h2>A panel</h2>
+      <p class="badge">A badge, whose colour the file declares twice.</p>
+    </div>
+    <p id="hero">Something for a brand-new rule to match.</p>
+  </main>
+
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+
+  <script>
+    (async () => {
+      const errors = [];
+      window.addEventListener('error', (e) => errors.push('error: ' + e.message));
+      window.addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+
+      const results = {};
+      const progress = document.getElementById('progress');
+      const step = (name) => { progress.textContent = name; };
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark' });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+
+      /* ------------------------------------------------------------------ *
+       * A project that lives in a Map, seeded from the real file so `before`
+       * is genuinely what is on disk.
+       * ------------------------------------------------------------------ */
+      step('attachProject');
+      const directory = decodeURIComponent(location.pathname).replace(/[^/]*$/, '');
+      const disk = new Map();
+      const project = {
+        kind: 'directory',
+        label: 'memory',
+        resolve(url) {
+          const parsed = new URL(url, location.href);
+          if (parsed.origin !== location.origin && parsed.protocol !== 'file:') return null;
+          const path = decodeURIComponent(parsed.pathname);
+          return path.startsWith(directory) ? path.slice(directory.length) : null;
+        },
+        read: async (path) => {
+          if (disk.has(path)) return disk.get(path);
+          try {
+            const text = await (await fetch('./' + path)).text();
+            disk.set(path, text);
+            return text;
+          } catch { return null; }
+        },
+        write: async (path, text) => { disk.set(path, text); },
+        ensureWritable: async () => true,
+        release: async () => { },
+      };
+      await engine.attachProject(project, { quiet: true });
+      await frames();
+
+      const SHEET = /selector-reuse\.css$/;
+      const target = engine.styleTargets().map((t) => t.value).find((t) => SHEET.test(t));
+      engine.setDesignSystemTarget(target);
+      await frames();
+
+      /** The stylesheet as this save would write it, or '' when the save does not touch it. */
+      const sheetAfter = async () => {
+        const plan = await engine.previewWritePlan();
+        return (plan?.writes ?? []).find((w) => SHEET.test(w.path))?.after ?? '';
+      };
+      /** How many blocks in the text open with exactly this selector. */
+      const blocks = (css, selector) =>
+        (css.match(new RegExp('(^|[\\s}])' + selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*\\{', 'g')) ?? []).length;
+
+      const original = await project.read('selector-reuse.css');
+
+      /*
+       * The file starts out as the test assumes, which is what makes the counts below mean
+       * anything: `.panel` twice is the top-level block plus its media twin, and a duplicate
+       * append would make it three rather than two.
+       */
+      results.theFileStartsAsAssumed = {
+        panelBlocks: blocks(original, '.panel'),
+        panelHeadingBlocks: blocks(original, '.panel h2'),
+        badgeBlocks: blocks(original, '.badge'),
+        theStylesheetIsTheDesignSystemTarget: Boolean(target),
+        panelIsAScannedClass: engine.classes.get('panel')?.origin === 'stylesheet',
+        panelHeadingIsAScannedRule: engine.rules.get('.panel h2')?.origin === 'stylesheet',
+        asExpected:
+          blocks(original, '.panel') === 2 &&
+          blocks(original, '.panel h2') === 1 &&
+          blocks(original, '.badge') === 2 &&
+          Boolean(target) &&
+          engine.classes.get('panel')?.origin === 'stylesheet' &&
+          engine.rules.get('.panel h2')?.origin === 'stylesheet',
+      };
+
+      /* ------------------------------------------------------------------ *
+       * A class the file declares is changed where it is declared.
+       * ------------------------------------------------------------------ */
+      step('editAScannedClass');
+      engine.setClassDeclaration('panel', 'padding', '32px');
+      await frames();
+      let css = await sheetAfter();
+
+      results.editingAScannedClass = {
+        changesTheDeclarationInPlace: css.includes('padding: 32px;'),
+        andDoesNotRestateTheSelector: blocks(css, '.panel') === 2,
+        andWritesNoManagedBlock: !css.includes('heo:design-system'),
+        // The declarations either side of the edited one, byte for byte, comment and all.
+        keepsTheTrailingComment: css.includes('/* a trailing comment, tied to this declaration */'),
+        keepsShortHex: css.includes('background: #fff;'),
+        keepsUnitlessZero: css.includes('margin: 0;'),
+        // The media twin shares the selector but not the property. Writing into it instead would
+        // apply the change above 40em only.
+        leavesTheMediaTwinAlone: css.includes('border-radius: 20px;'),
+        // The registry is the panel's source of truth, and a CSSOM edit is invisible to it.
+        theClassEditorShowsTheNewValue: engine.classes.get('panel')?.declarations.padding === '32px',
+        // Still the file's, so the next edit is routed the same way rather than appended.
+        andTheClassIsStillTheFiles: engine.classes.get('panel')?.origin === 'stylesheet',
+        appliesOnScreen: getComputedStyle(document.querySelector('.panel')).paddingTop === '32px',
+      };
+
+      /* ------------------------------------------------------------------ *
+       * And so is a rule, which is the other registry and the other panel.
+       * ------------------------------------------------------------------ */
+      step('editAScannedRule');
+      engine.setDesignRuleDeclaration('.panel h2', 'letter-spacing', '0.2em');
+      await frames();
+      css = await sheetAfter();
+
+      results.editingAScannedRule = {
+        changesTheDeclarationInPlace: css.includes('letter-spacing: 0.2em;'),
+        andDoesNotRestateTheSelector: blocks(css, '.panel h2') === 1,
+        andWritesNoManagedBlock: !css.includes('heo:design-system'),
+        keepsTheOtherDeclaration: css.includes('color: #172033;'),
+        theRuleEditorShowsTheNewValue:
+          engine.rules.get('.panel h2')?.declarations['letter-spacing'] === '0.2em',
+        andTheRuleIsStillTheFiles: engine.rules.get('.panel h2')?.origin === 'stylesheet',
+        appliesOnScreen:
+          getComputedStyle(document.querySelector('.panel h2')).letterSpacing !== '0.01em',
+      };
+
+      /* ------------------------------------------------------------------ *
+       * A property the file's block does not have yet goes inside that block.
+       * ------------------------------------------------------------------ */
+      step('addAPropertyToAScannedRule');
+      engine.setDesignRuleDeclaration('.panel h2', 'text-transform', 'uppercase');
+      await frames();
+      css = await sheetAfter();
+
+      const headingBlock = /\.panel h2 \{([^}]*)\}/.exec(css)?.[1] ?? '';
+      results.addingAPropertyToAScannedRule = {
+        // Inside the existing block, which is the whole point: appending it would have produced a
+        // second `.panel h2` and a cascade that depends on file order.
+        landsInsideTheExistingBlock: headingBlock.includes('text-transform: uppercase'),
+        soTheSelectorIsStillWrittenOnce: blocks(css, '.panel h2') === 1,
+        andWritesNoManagedBlock: !css.includes('heo:design-system'),
+      };
+
+      /* ------------------------------------------------------------------ *
+       * Removing a declaration takes it out of the file.
+       *
+       * The managed block can only add CSS, so this could not work at all before: the row left
+       * the panel and the file's own declaration went on applying.
+       * ------------------------------------------------------------------ */
+      step('removeAScannedDeclaration');
+      engine.removeDesignRuleDeclaration('.panel h2', 'color');
+      await frames();
+      css = await sheetAfter();
+
+      results.removingAScannedDeclaration = {
+        takesItOutOfTheFile: !css.includes('color: #172033'),
+        andLeavesTheRestOfTheBlock: css.includes('letter-spacing: 0.2em;'),
+        andDoesNotRestateTheSelector: blocks(css, '.panel h2') === 1,
+      };
+
+      /* ------------------------------------------------------------------ *
+       * Clearing a value is not the same act as removing the declaration.
+       *
+       * Backspace must not be destructive: emptying the field is how a value gets retyped, so the
+       * row has to stay and the file's own declaration has to survive until an explicit remove.
+       * Routing an empty value to the patcher would have deleted the line from the file instead.
+       * ------------------------------------------------------------------ */
+      step('clearAScannedValue');
+      engine.setClassDeclaration('panel', 'padding', '');
+      await frames();
+      css = await sheetAfter();
+
+      results.clearingAScannedValue = {
+        keepsTheRowSoItCanBeRetyped: 'padding' in (engine.classes.get('panel')?.declarations ?? {}),
+        asAnEmptyValue: engine.classes.get('panel')?.declarations.padding === '',
+        // The value patched in earlier is still there, rather than having been deleted by the clear.
+        andDoesNotDeleteTheLineFromTheFile: css.includes('padding: 32px;'),
+        andWritesNoManagedBlock: !css.includes('heo:design-system'),
+        // Still the file's, so retyping is routed back to the same declaration.
+        andTheClassIsStillTheFiles: engine.classes.get('panel')?.origin === 'stylesheet',
+      };
+
+      step('retypeAfterClearing');
+      engine.setClassDeclaration('panel', 'padding', '48px');
+      await frames();
+      css = await sheetAfter();
+
+      results.retypingAfterClearing = {
+        patchesTheSameDeclarationAgain: css.includes('padding: 48px;'),
+        andStillDoesNotRestateTheSelector: blocks(css, '.panel') === 2,
+        andWritesNoManagedBlock: !css.includes('heo:design-system'),
+      };
+
+      /* ------------------------------------------------------------------ *
+       * A selector the file declares twice: the later block is the live one.
+       * ------------------------------------------------------------------ */
+      step('editADuplicatedSelector');
+      engine.setClassDeclaration('badge', 'color', '#0f766e');
+      await frames();
+      css = await sheetAfter();
+
+      results.editingASelectorTheFileDeclaresTwice = {
+        // The one the page actually renders, which is the later of the two.
+        patchesTheBlockThatIsInEffect: css.includes('color: #0f766e;'),
+        andLeavesTheEarlierOneAlone: css.includes('color: #6b5b52;'),
+        andTheOverriddenValueIsGone: !css.includes('color: #846b62'),
+        soTheSelectorIsStillWrittenTwice: blocks(css, '.badge') === 2,
+      };
+
+      /* ------------------------------------------------------------------ *
+       * Vocabulary the file does *not* declare still gets a block of its own.
+       *
+       * The other half of the behaviour. A rule the editor invented has no declaration anywhere to
+       * patch, so the managed section is the right and only home for it.
+       * ------------------------------------------------------------------ */
+      step('inventANewRule');
+      engine.createDesignRule('#hero');
+      engine.setDesignRuleDeclaration('#hero', 'color', 'rgb(1, 2, 3)');
+      await frames();
+      css = await sheetAfter();
+
+      results.aRuleTheFileDoesNotHave = {
+        stillGetsAManagedBlock: css.includes('heo:design-system'),
+        withTheNewRuleInIt: /#hero\s*\{[^}]*color: rgb\(1, 2, 3\)/.test(css),
+        // And the patched declarations are still patched, in the same write.
+        alongsideThePatchedDeclarations: css.includes('padding: 48px;'),
+        andTheScannedSelectorsAreStillWrittenOnce:
+          blocks(css, '.panel h2') === 1 && blocks(css, '.panel') === 2,
+      };
+
+      /* ------------------------------------------------------------------ *
+       * Saving is idempotent: the second save has nothing to do.
+       * ------------------------------------------------------------------ */
+      step('saveTwice');
+      const first = await engine.writeToProject();
+      const second = await engine.previewWritePlan();
+      const onDisk = disk.get('selector-reuse.css') ?? '';
+
+      results.savingTwice = {
+        theFirstSaveWroteTheStylesheet: (first?.written ?? []).includes('selector-reuse.css'),
+        nothingFailed: (first?.failed ?? []).length === 0,
+        andNothingWasLeftUnplaced: (first?.unplaced ?? []).length === 0,
+        theSecondSaveHasNothingToWrite: (second?.writes ?? []).length === 0,
+        // Measured on disk rather than on the plan, so this is the file a reader would open.
+        theFileOnDiskIsPatchedNotAppended:
+          blocks(onDisk, '.panel') === 2 && blocks(onDisk, '.panel h2') === 1,
+        andItStillCarriesItsOwnComments:
+          onDisk.includes('/* a trailing comment, tied to this declaration */'),
+      };
+
+      /* ------------------------------------------------------------------ *
+       * And undo puts the declaration back where it was.
+       * ------------------------------------------------------------------ */
+      step('undoEverything');
+      for (let i = 0; i < 12 && engine.history.canUndo; i += 1) engine.undo();
+      await frames();
+      const undone = await sheetAfter();
+
+      results.undoingEverything = {
+        putsTheOriginalValueBack: engine.classes.get('panel')?.declarations.padding === '16px',
+        andTheRuleValueToo: engine.rules.get('.panel h2')?.declarations['letter-spacing'] === '0.01em',
+        // Back to the file as it was seeded, so a save now has nothing of ours to write into it.
+        andLeavesNoManagedBlock: !undone.includes('heo:design-system'),
+        andStillWritesTheSelectorOnce:
+          undone === '' || (blocks(undone, '.panel') === 2 && blocks(undone, '.panel h2') === 1),
+      };
+
+      results.browserErrors = { ok: errors.length === 0, errors };
+
+      /*
+       * Rolled up from the groups, so a group added later cannot be left out of the verdict.
+       */
+      const failed = Object.entries(results)
+        .filter(([, group]) => group && typeof group === 'object')
+        .filter(([, group]) => Object.values(group).some((value) => value === false))
+        .map(([name]) => name);
+      document.getElementById('out').textContent = 'RESULTS:' + JSON.stringify(
+        { ok: failed.length === 0, failed, ...results }, null, 1,
+      ) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"ok":false,"__fatal":' + JSON.stringify(String((e && e.stack) || e)) + '}:END';
+    });
+  </script>
+</body>
+
+</html>

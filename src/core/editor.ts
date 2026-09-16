@@ -3,6 +3,7 @@ import {
   normalizeClassName,
   planClassMerge,
   prettifyClassName,
+  simpleClassName,
   suggestClassName,
   type ClassCollision,
   type ClassMergePlan,
@@ -1627,6 +1628,19 @@ export class EditorEngine {
   previewClassDeclaration(name: string, property: string, value: string): void {
     const entry = this.classes.get(name);
     if (!entry) return;
+    /*
+     * Previewed through the same rule the commit will patch.
+     *
+     * Otherwise the two would disagree: the preview would write into the registry, flipping the
+     * class to one the editor owns, and the commit would then find nothing to patch and append a
+     * duplicate — so whether a drag or a typed value produced the edit would decide where it
+     * landed in the file.
+     */
+    const origin = this.classes.originRule(entry.name, property);
+    if (origin) {
+      this.previewRuleDeclaration(origin, property, value);
+      return;
+    }
     this.#classPreview ??= { name, declarations: { ...entry.declarations } };
     this.classes.setDeclaration(name, property, value);
   }
@@ -1741,6 +1755,40 @@ export class EditorEngine {
   setClassDeclaration(name: string, property: string, value: string): void {
     const live = this.classes.get(name);
     if (!live) return;
+    /*
+     * A class the project already declares is edited where it is declared.
+     *
+     * The alternative — and what this used to do unconditionally — is to treat every edit as a new
+     * declaration the editor owns, emit the whole class into the managed block, and let the save
+     * append that block to the end of the target stylesheet. For a class the editor invented that
+     * is right. For one the file already has it is not: the file ends up declaring `.card` twice,
+     * the original left behind with the old value, and the reader has to know about cascade order
+     * to work out which one is in effect. It also rewrites declarations nobody touched, because the
+     * emitted block carries the whole class rather than the one property that changed.
+     *
+     * `setRuleDeclaration` is the path that already does this correctly for every other declaration
+     * in the page — it captures the rule's position at edit time, patches that one line on save,
+     * and has its own undo handling. It is also what a token edit already goes through, so the
+     * three kinds of vocabulary reach a stylesheet by one mechanism rather than by two that agree
+     * until they do not.
+     */
+    const origin = this.classes.originRule(live.name, property);
+    /*
+     * Only when there is a value to write. Clearing the field is how a value gets retyped, and
+     * `removeClassDeclaration` is the way to actually get rid of one — so an emptied value must not
+     * reach into the file and delete the line, which would make backspace destructive. It falls
+     * through to the registry instead, which keeps the row and leaves the declaration alone.
+     */
+    if (origin && value.trim()) {
+      // The preview went through the same rule, so `setRuleDeclaration` unwinds it. This slot only
+      // holds a preview of a class the editor owns, and cannot be describing this edit.
+      this.setRuleDeclaration(origin, property, value);
+      return;
+    }
+    // A preview may have gone through the origin rule on the way here. Unwind it before the registry
+    // path takes over, or the previewed value would stay painted on the page with nothing left to
+    // restore it.
+    if (origin) this.#endRulePreview();
     // A live preview has already written into the registry, so the pre-edit state
     // has to come from the snapshot taken when the preview began — otherwise undo
     // would return to the last frame of the exploration rather than to the start.
@@ -1774,6 +1822,20 @@ export class EditorEngine {
   removeClassDeclaration(name: string, property: string): void {
     const entry = this.classes.get(name);
     if (!entry) return;
+    /*
+     * Removing a declaration the file declares has to reach the file, and only this path can.
+     *
+     * The managed block can add CSS; it cannot take a line out of someone else's rule. So dropping
+     * a property used to do nothing at all to a class read out of a stylesheet: the row left the
+     * panel, the block simply stopped mentioning the property, and the file's own declaration went
+     * on applying. An empty value is how `setRuleDeclaration` spells removal, and it removes the
+     * declaration from the rule that holds it.
+     */
+    const origin = this.classes.originRule(entry.name, property);
+    if (origin) {
+      this.setRuleDeclaration(origin, property, '');
+      return;
+    }
     this.#classPreview = null;
     const snapshot: DesignClass = { ...entry, declarations: { ...entry.declarations } };
     this.history.commit({
@@ -1898,6 +1960,19 @@ export class EditorEngine {
   previewDesignRuleDeclaration(selector: string, property: string, value: string): void {
     const entry = this.rules.get(selector);
     if (!entry) return;
+    /*
+     * Previewed through the same rule the commit will patch.
+     *
+     * Otherwise the two would disagree: the preview would write into the registry, flipping the rule
+     * to one the editor owns, and the commit would then find nothing to patch and append a
+     * duplicate — so whether a drag or a typed value produced the edit would decide where it landed
+     * in the file.
+     */
+    const origin = this.rules.originRule(entry.selector, property);
+    if (origin) {
+      this.previewRuleDeclaration(origin, property, value);
+      return;
+    }
     this.#designRulePreview ??= {
       selector: entry.selector,
       declarations: { ...entry.declarations },
@@ -1910,6 +1985,40 @@ export class EditorEngine {
     const live = this.rules.get(selector);
     if (!live) return;
     const key = live.selector;
+    /*
+     * A rule the project already declares is edited where it is declared.
+     *
+     * The alternative — and what this used to do unconditionally — is to treat every edit as a new
+     * declaration the editor owns, emit the whole rule into the managed block, and let the save
+     * append that block to the end of the target stylesheet. For a rule the editor invented that is
+     * right. For one the file already has it is not: the file ends up declaring `h2` twice, the
+     * original left behind with the old value, and the reader has to know about cascade order to
+     * work out which one is in effect. It also rewrites declarations nobody touched, because the
+     * emitted block carries the whole rule rather than the one property that changed.
+     *
+     * `setRuleDeclaration` is the path that already does this correctly for every other declaration
+     * in the page — it captures the rule's position at edit time, patches that one line on save, and
+     * has its own undo handling. It is also what a token edit already goes through, so the three
+     * kinds of vocabulary reach a stylesheet by one mechanism rather than by two that agree until
+     * they do not.
+     */
+    const origin = this.rules.originRule(key, property);
+    /*
+     * Only when there is a value to write. Clearing the field is how a value gets retyped, and
+     * `removeDesignRuleDeclaration` is the way to actually get rid of one — so an emptied value must
+     * not reach into the file and delete the line, which would make backspace destructive. It falls
+     * through to the registry instead, which keeps the row and leaves the declaration alone.
+     */
+    if (origin && value.trim()) {
+      // The preview went through the same rule, so `setRuleDeclaration` unwinds it. This slot only
+      // holds a preview of a rule the editor owns, and cannot be describing this edit.
+      this.setRuleDeclaration(origin, property, value);
+      return;
+    }
+    // A preview may have gone through the origin rule on the way here. Unwind it before the registry
+    // path takes over, or the previewed value would stay painted on the page with nothing left to
+    // restore it.
+    if (origin) this.#endRulePreview();
     // A live preview has already written into the registry, so the pre-edit state has to
     // come from the snapshot taken when the preview began — otherwise undo would return
     // to the last frame of the exploration rather than to the start.
@@ -1945,6 +2054,20 @@ export class EditorEngine {
     const entry = this.rules.get(selector);
     if (!entry) return;
     const key = entry.selector;
+    /*
+     * Removing a declaration the file declares has to reach the file, and only this path can.
+     *
+     * The managed block can add CSS; it cannot take a line out of someone else's rule. So dropping a
+     * property used to do nothing at all to a rule read out of a stylesheet: the row left the panel,
+     * the block simply stopped mentioning the property, and the file's own declaration went on
+     * applying. An empty value is how `setRuleDeclaration` spells removal, and it removes the
+     * declaration from the rule that holds it.
+     */
+    const origin = this.rules.originRule(key, property);
+    if (origin) {
+      this.setRuleDeclaration(origin, property, '');
+      return;
+    }
     this.#designRulePreview = null;
     const snapshot: DesignRule = { ...entry, declarations: { ...entry.declarations } };
     this.history.commit({
@@ -2189,30 +2312,43 @@ export class EditorEngine {
       apply: () => {
         if (after) rule.style.setProperty(property, after);
         else rule.style.removeProperty(property);
-        this.#resyncTokens(property);
+        this.#resyncRegistries(rule, property);
       },
       revert: () => {
         if (before) rule.style.setProperty(property, before, beforePriority);
         else rule.style.removeProperty(property);
-        this.#resyncTokens(property);
+        this.#resyncRegistries(rule, property);
       },
     });
     if (target) this.#bumpRevision();
   }
 
   /**
-   * Re-read the tokens after a custom property is written straight into a rule.
+   * Re-read the registries after a declaration is written straight into a rule.
    *
-   * A token edited in its own stylesheet is applied by mutating the CSSOM, which the registry has
-   * no way to observe — so without this the page rendered the new value while the Tokens panel
-   * went on showing the old one, and undo left them disagreeing the other way round. Rescanning is
-   * cheap and it is the same read that established the value in the first place, so the two
-   * cannot drift.
+   * A declaration edited in its own stylesheet is applied by mutating the CSSOM, which no registry
+   * can observe — so without this the page rendered the new value while the panel went on showing
+   * the old one, and undo left them disagreeing the other way round.
    *
-   * Only for custom properties: every other declaration is nothing to do with the token registry.
+   * Three registries can be displaying the declaration that just changed, and they are told in two
+   * different ways on purpose. Tokens are rescanned because a custom property can be declared in
+   * several places and which one wins is a question only a rescan answers; it is the same read that
+   * established the value in the first place, so the two cannot drift. Classes and rules are handed
+   * the new value directly, because the rule that changed is the one they read it from — and a full
+   * rescan of every sheet on every keystroke is work a page linking a utility framework would feel.
+   *
+   * Both registries are told regardless of which one owns the selector. Each ignores a selector it
+   * does not hold as the file's, and the alternative — working out here which registry claims a
+   * selector — would be a third copy of a rule those two already share.
    */
-  #resyncTokens(property: string): void {
+  #resyncRegistries(rule: CSSStyleRule, property: string): void {
     if (property.startsWith('--')) this.tokens.scanDocument();
+    const value = rule.style.getPropertyValue(property);
+    for (const part of rule.selectorText.split(',')) {
+      const name = simpleClassName(part);
+      if (name) this.classes.noteStylesheetValue(name, property, value);
+    }
+    this.rules.noteStylesheetValue(rule.selectorText, property, value);
   }
 
   /* ---------------------------------------------------------------------- */
@@ -4401,14 +4537,14 @@ export class EditorEngine {
         apply: () => {
           for (const entry of pasted) {
             liveRule.style.setProperty(entry.property, entry.value, entry.priority);
-            this.#resyncTokens(entry.property);
+            this.#resyncRegistries(liveRule, entry.property);
           }
         },
         revert: () => {
           for (const old of before) {
             if (old.value) liveRule.style.setProperty(old.property, old.value, old.priority);
             else liveRule.style.removeProperty(old.property);
-            this.#resyncTokens(old.property);
+            this.#resyncRegistries(liveRule, old.property);
           }
         },
       });

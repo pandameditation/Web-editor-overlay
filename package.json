@@ -74,6 +74,7 @@
     "check:seedblock": "node scripts/browser-check.mjs test/seed-block.html 45000",
     "check:savestatus": "node scripts/browser-check.mjs test/save-status.html 60000",
     "check:patchfidelity": "node scripts/browser-check.mjs test/patch-fidelity.html 60000",
+    "check:selectorreuse": "node scripts/browser-check.mjs test/selector-reuse.html 60000",
     "check:moveparents": "node scripts/browser-check.mjs test/move-across-parents.html 90000",
     "check:aiscope": "node scripts/browser-check.mjs test/ai-scope.html 60000",
     "check:airun": "node scripts/browser-check.mjs test/ai-run.html 90000",
