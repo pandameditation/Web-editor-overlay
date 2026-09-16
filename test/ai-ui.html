@@ -723,7 +723,7 @@
         engine.ai.activate('mine-persist');
         await frames();
 
-        const raw = sessionStorage.getItem('heo.ai.sets');
+        const raw = localStorage.getItem('heo.ai.sets');
         const stored = raw ? JSON.parse(raw) : null;
         const storedIds = (stored?.sets ?? []).map((one) => one.id);
 
@@ -731,7 +731,7 @@
         engine.ai.import([]);
         const emptied = engine.ai.list().length;
         // `import([])` also clears storage, so put the entry back the way a fresh tab would find it.
-        sessionStorage.setItem('heo.ai.sets', raw ?? '');
+        localStorage.setItem('heo.ai.sets', raw ?? '');
         const restoredCount = engine.ai.restore();
         const back = engine.ai.get('mine-persist');
 

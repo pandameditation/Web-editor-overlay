@@ -32,26 +32,81 @@ import {
   type AiProviderSet,
 } from './types.js';
 
-/**
- * Where the provider list is kept between reloads.
- *
- * `sessionStorage`, matching the default for a key: a provider the user typed in should still be
- * there after a reload of the dev server, and gone when the tab is. Reloading and finding an
- * empty list is the bug this fixes; a list that outlives the browser session is a different
- * decision, and the design system is the place to make it — `exportDesignSystem` already carries
- * providers, and that artefact is explicitly one the user chose to keep.
- */
+/** Where the provider list is kept. See `settingsStore`. */
 const SETS_KEY = 'heo.ai.sets';
 
 /**
- * Where the request scope is kept between reloads.
+ * Where the request scope is kept.
  *
  * A sibling of the provider list rather than part of it, because it belongs to neither a provider
- * nor a page: it is how *this person* wants requests scoped, and switching provider or reloading
- * the dev server should not silently widen or narrow it. `sessionStorage` for the same reason the
- * providers use it — it should outlive a reload and die with the tab.
+ * nor a page: it is how *this person* wants requests scoped, and switching provider should not
+ * silently widen or narrow it.
  */
 const SCOPE_KEY = 'heo.ai.scope';
+
+/**
+ * Where AI settings live: `localStorage`, per origin, alongside a remembered key.
+ *
+ * This was `sessionStorage` and the asymmetry was a bug worth stating. A key saved with "remember
+ * on this machine" goes to `localStorage`, so it crosses tabs; the provider that owns it went to
+ * `sessionStorage`, so it did not. Opening the same URL in a second tab therefore produced the
+ * worst of both: the credential was there, its provider was not, and the user retyped a model name
+ * to reunite them. Settings and the key it belongs to now live in the same place.
+ *
+ * Safe to widen precisely because of what a set is. `portableProviderSet` rebuilds every stored
+ * entry field by field from `PORTABLE_FIELDS`, and there is no credential among them — a model
+ * name, a transport, a dialect, a base URL. The key is the thing that needed the narrower home and
+ * still has one: `keys.ts` keeps `localStorage` for the tier the user opts into, gated to loopback,
+ * and `sessionStorage` for the tier that should die with the tab.
+ *
+ * `sessionStorage` remains the fallback so a tab that cannot reach `localStorage` — a sandboxed
+ * iframe, a browser set to block storage — degrades to remembering settings for that tab rather
+ * than to remembering nothing.
+ */
+function settingsStore(): Storage | null {
+  return safeStorage('local') ?? safeStorage('session');
+}
+
+/**
+ * Drop a settings entry from both stores.
+ *
+ * Both, because one may hold a copy an earlier version wrote and `readSetting` may not have run yet
+ * this session. Clearing only the current home would leave the other to be adopted on the next
+ * load, which reads as settings coming back from the dead.
+ */
+function forgetSetting(key: string): void {
+  try {
+    safeStorage('local')?.removeItem(key);
+    safeStorage('session')?.removeItem(key);
+  } catch {
+    // Nothing to do: the entry is unreachable either way.
+  }
+}
+
+/**
+ * Read a settings entry, adopting one left behind in `sessionStorage` by an earlier version.
+ *
+ * Migration rather than a clean break, because the alternative is a user who had providers
+ * configured opening the page after an update and finding an empty list — which is the same
+ * complaint this whole area has been fixing, arriving from a different direction.
+ */
+function readSetting(key: string): string | null {
+  const local = safeStorage('local');
+  const fromLocal = local?.getItem(key) ?? null;
+  if (fromLocal !== null) return fromLocal;
+
+  const session = safeStorage('session');
+  const fromSession = session?.getItem(key) ?? null;
+  if (fromSession === null) return null;
+  // Moved rather than copied, so the two cannot disagree afterwards.
+  try {
+    local?.setItem(key, fromSession);
+    if (local) session?.removeItem(key);
+  } catch {
+    // Reading still works; the entry simply stays where it was.
+  }
+  return fromSession;
+}
 
 /**
  * Ids the environment owns.
@@ -261,7 +316,7 @@ export class AiAgent {
    * than believed. A set too broken to rebuild is dropped.
    */
   restore(): number {
-    const raw = safeStorage('session')?.getItem(SETS_KEY);
+    const raw = readSetting(SETS_KEY);
     if (!raw) return 0;
     let parsed: unknown;
     try {
@@ -325,7 +380,7 @@ export class AiAgent {
    * changed.
    */
   restoreScope(): AiContextScope | null {
-    const raw = safeStorage('session')?.getItem(SCOPE_KEY);
+    const raw = readSetting(SCOPE_KEY);
     if (!raw) return null;
     try {
       const parsed = JSON.parse(raw) as Partial<Record<keyof AiContextScope, unknown>>;
@@ -344,7 +399,7 @@ export class AiAgent {
 
   /** Remember the request scope for this tab. */
   rememberScope(scope: AiContextScope): void {
-    const store = safeStorage('session');
+    const store = settingsStore();
     if (!store) return;
     try {
       store.setItem(SCOPE_KEY, JSON.stringify({
@@ -364,7 +419,7 @@ export class AiAgent {
    * starts and stops and rewriting storage on each streamed operation would be absurd.
    */
   #persist(): void {
-    const store = safeStorage('session');
+    const store = settingsStore();
     if (!store) return;
     const mine = this.#sets
       .filter((entry) => !fromEnvironment(entry.id))
@@ -392,7 +447,7 @@ export class AiAgent {
 
     try {
       if (!mine.length && !Object.keys(overrides).length && !this.#activeId) {
-        store.removeItem(SETS_KEY);
+        forgetSetting(SETS_KEY);
         return;
       }
       store.setItem(SETS_KEY, JSON.stringify({

@@ -248,6 +248,89 @@
       }
 
       /* ------------------------------------------------------------------ *
+       * 3b. Settings and a remembered key live in the same place, so a second tab has both.
+       *
+       * The asymmetry this fixes: a key saved with "remember on this machine" goes to
+       * localStorage and crosses tabs, while the provider list went to sessionStorage and did not.
+       * Opening the same URL in a second tab produced the worst of both — the credential was
+       * there, the provider that owns it was not, and the user retyped a model name to reunite
+       * them.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'settingsAndKeyShareOneHome';
+      {
+        const SETS = 'heo.ai.sets';
+        const SCOPE = 'heo.ai.scope';
+        localStorage.removeItem(SETS);
+        localStorage.removeItem(SCOPE);
+        sessionStorage.removeItem(SETS);
+        sessionStorage.removeItem(SCOPE);
+        engine.ai.import([]);
+
+        engine.ai.upsert({
+          id: 'cross-tab', label: 'Cross tab', transport: 'in-page',
+          provider: 'openai', baseURL: 'https://api.openai.com/v1', model: 'gpt-4.1-mini',
+          systemPrompt: 'Prefer short copy.',
+        });
+        engine.ai.activate('cross-tab');
+        engine.setAiContextScope('classes', true);
+        const keySaved = await engine.ai.setKey('cross-tab', SECRET, 'origin');
+        await frames();
+
+        /*
+         * What a second tab would find: the same origin storage, none of this tab's memory.
+         *
+         * sessionStorage is deliberately left out of the read — that is the whole point. A second
+         * tab gets its own, so anything that landed only there is invisible to it.
+         */
+        const acrossTabs = {
+          sets: localStorage.getItem(SETS),
+          scope: localStorage.getItem(SCOPE),
+          key: Object.keys(localStorage).some((name) => name.startsWith('heo.ai.origin.')),
+        };
+        const rebuilt = JSON.parse(acrossTabs.sets ?? 'null');
+
+        results.settingsAndKeyShareOneHome = {
+          keySavedTo: keySaved.persistence,
+          // Both halves reachable from a new tab, which was the complaint.
+          settingsCrossTabs: Boolean(acrossTabs.sets),
+          scopeCrossesTabs: Boolean(acrossTabs.scope),
+          keyCrossesTabs: acrossTabs.key === true,
+          // Nothing left behind in the per-tab store to disagree with them later.
+          nothingStrandedInSession:
+            sessionStorage.getItem(SETS) === null && sessionStorage.getItem(SCOPE) === null,
+          // The settings carry what was typed.
+          carriedTheProvider: (rebuilt?.sets ?? []).some(
+            (one) => one.id === 'cross-tab' && one.model === 'gpt-4.1-mini' &&
+              one.transport === 'in-page' && one.systemPrompt === 'Prefer short copy.',
+          ),
+          carriedTheDefault: rebuilt?.activeId === 'cross-tab',
+          carriedTheScope: JSON.parse(acrossTabs.scope ?? 'null')?.classes === true,
+          /*
+           * And still no credential among them.
+           *
+           * The reason widening the home is safe at all: a set is rebuilt from PORTABLE_FIELDS, and
+           * no key is one. The key has its own entry, under its own prefix, on the tier the user
+           * opted into.
+           */
+          noSecretInTheSettings: !(acrossTabs.sets ?? '').includes(SECRET),
+        };
+        const group = results.settingsAndKeyShareOneHome;
+        // Off loopback the origin tier is refused by design, so only assert what can apply.
+        group.ok = keySaved.persistence === 'origin'
+          ? Object.entries(group).every(([key, value]) => key === 'ok' || key === 'keySavedTo' || value === true)
+          : group.settingsCrossTabs === true && group.noSecretInTheSettings === true;
+
+        engine.ai.clearKey('cross-tab');
+        // Back to minimal in memory as well as in storage: the scope is sticky by design, and the
+        // group after this one asserts what a fresh choice writes.
+        engine.setAiContextScope('classes', false);
+        localStorage.removeItem(SETS);
+        localStorage.removeItem(SCOPE);
+        engine.ai.import([]);
+        await installSets();
+      }
+
+      /* ------------------------------------------------------------------ *
        * 4a. Edits to a discovered provider survive a reload.
        *
        * The reported case, in order: a provider the dev server discovered is switched to an
@@ -258,7 +341,7 @@
       progress.textContent = 'editsToADiscoveredProviderSurvive';
       {
         const KEY = 'heo.ai.sets';
-        sessionStorage.removeItem(KEY);
+        localStorage.removeItem(KEY);
         engine.ai.import([]);
 
         // What the dev server hands over: proxied, its own model, no base URL.
@@ -278,7 +361,7 @@
         engine.ai.activate('heo-env-openai');
         await frames();
 
-        const written = JSON.parse(sessionStorage.getItem(KEY) ?? 'null');
+        const written = JSON.parse(localStorage.getItem(KEY) ?? 'null');
 
         /*
          * A reload, simulated as one: empty memory, storage untouched.
@@ -292,7 +375,7 @@
          */
         const reload = (offering) => {
           engine.ai.import([]);
-          sessionStorage.setItem(KEY, JSON.stringify(written));
+          localStorage.setItem(KEY, JSON.stringify(written));
           engine.ai.restore();
           const held = engine.ai.get('heo-env-openai');
           engine.ai.offer(offering);
@@ -338,7 +421,7 @@
           ([key, value]) => key === 'ok' || key === 'storedOverride' || value === true,
         );
 
-        sessionStorage.removeItem(KEY);
+        localStorage.removeItem(KEY);
         engine.ai.import([]);
         await installSets();
       }
@@ -354,18 +437,18 @@
       progress.textContent = 'theRequestScopeSurvivesAReload';
       {
         const KEY = 'heo.ai.scope';
-        sessionStorage.removeItem(KEY);
+        localStorage.removeItem(KEY);
         const beforeAnyChoice = engine.ai.restoreScope();
 
         engine.setAiContextScope('rules', true);
         await frames();
-        const stored = JSON.parse(sessionStorage.getItem(KEY) ?? 'null');
+        const stored = JSON.parse(localStorage.getItem(KEY) ?? 'null');
         const restored = engine.ai.restoreScope();
 
         // Anything on this origin can write here, so a truthy string must not read as granted.
-        sessionStorage.setItem(KEY, JSON.stringify({ classes: 'yes', rules: 1, parent: {} }));
+        localStorage.setItem(KEY, JSON.stringify({ classes: 'yes', rules: 1, parent: {} }));
         const hostile = engine.ai.restoreScope();
-        sessionStorage.setItem(KEY, 'not json at all');
+        localStorage.setItem(KEY, 'not json at all');
         const garbage = engine.ai.restoreScope();
 
         results.theRequestScopeSurvivesAReload = {
@@ -389,7 +472,7 @@
           group.truthyStringsDoNotGrant === true &&
           group.garbageIsIgnored === true;
 
-        sessionStorage.removeItem(KEY);
+        localStorage.removeItem(KEY);
       }
 
       /* ------------------------------------------------------------------ *
