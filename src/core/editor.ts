@@ -3661,7 +3661,12 @@ export class EditorEngine {
     if (!isMutable(el)) return;
     const command = unwrapElement(el);
     if (!command) {
-      this.notify('This element has no children to keep.', 'error');
+      /*
+       * Empty, not childless. Text counts as something to keep, so the only element this
+       * refuses now is one with nothing inside it at all — and for that the honest suggestion
+       * is deleting it, because unwrapping and deleting are the same operation on an empty tag.
+       */
+      this.notify('This element is empty, so unwrapping it would just delete it.', 'info');
       return;
     }
     const parent = selectableParent(el);

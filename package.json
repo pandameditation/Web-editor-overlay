@@ -54,6 +54,7 @@
     "check:plan": "node scripts/browser-check.mjs test/plan-honesty.html 45000",
     "check:htmlpatch": "node scripts/browser-check.mjs test/html-patch.html 45000",
     "check:dupidentity": "node scripts/browser-check.mjs test/duplicate-identity.html 60000",
+    "check:unwraptext": "node scripts/browser-check.mjs test/unwrap-text.html 60000",
     "check:cssrules": "node scripts/browser-check.mjs test/css-rules.html 45000",
     "check:shield": "node scripts/browser-check.mjs test/shield.html 45000",
     "check:sweepout": "node scripts/browser-check.mjs test/text-sweep-out.html 45000",

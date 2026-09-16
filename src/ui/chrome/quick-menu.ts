@@ -290,7 +290,21 @@ export class HeoQuickMenu extends HeoElement {
         id: 'unwrap',
         label: 'Unwrap, keep children',
         glyph: 'unwrap',
-        disabled: !mutable || el.children.length === 0,
+        /*
+         * Anything inside counts, and text is inside.
+         *
+         * `el.children` is element children only, so every element holding nothing but words —
+         * a `<b>`, a `<span>`, a `<strong>`, a `<p>` — looked empty and the item sat greyed
+         * out. Those are the common case rather than an edge one: turning
+         * `<p><b>bold</b> text</p>` into `<p>bold text</p>` is what unwrapping an inline tag
+         * is for, and it was the one shape the action refused.
+         *
+         * `childNodes` rather than a rule invented here, because that is precisely what
+         * `unwrapElement` declines on. The two have to ask the same question: a stricter gate
+         * hides a command that would have worked, and a looser one offers a click that answers
+         * with an error toast.
+         */
+        disabled: !mutable || el.childNodes.length === 0,
         run: () => {
           this.editor.unwrap(el);
           this.editor.setQuickMenu(false);

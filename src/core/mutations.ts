@@ -904,7 +904,25 @@ export function wrapElement(
   return { command, wrapper };
 }
 
-/** Unwrap: replace a container with its children. */
+/**
+ * What an unwrap keeps, said in words rather than counted.
+ *
+ * Interpolating a `childNodes` count produced "keeping its 1 children" for a `<b>` holding one
+ * text node, which is wrong about the grammar and about the thing. An element holding only words
+ * has no children in the sense a reader means, and this sentence is the one the save prompt hands
+ * to an agent as the description of the edit — so it has to say text when it means text.
+ */
+function keptByUnwrap(el: HTMLElement): string {
+  const elements = el.children.length;
+  const hasText = Array.from(el.childNodes).some(
+    (node) => node.nodeType === Node.TEXT_NODE && (node.nodeValue ?? '').trim() !== '',
+  );
+  if (!elements) return hasText ? 'its text' : 'what it holds';
+  if (hasText) return 'its contents';
+  return elements === 1 ? 'its only child' : `its ${elements} children`;
+}
+
+/** Unwrap: replace a container with everything inside it, text included. */
 export function unwrapElement(el: HTMLElement): Command | null {
   const parent = remember(el.parentNode);
   if (!parent) return null;
@@ -925,7 +943,7 @@ export function unwrapElement(el: HTMLElement): Command | null {
      * disappeared from the page and no change existed to carry that to a file. Read out while
      * the children are still inside, which is the only moment `after` is available.
      */
-    record: record(el, 'replace', `Unwrap ${labelFor(el)}, keeping its ${children.length} children`, {
+    record: record(el, 'replace', `Unwrap ${labelFor(el)}, keeping ${keptByUnwrap(el)}`, {
       before: exact(cleanMarkup(el)),
       after: exact(cleanInnerMarkup(el)),
     }),

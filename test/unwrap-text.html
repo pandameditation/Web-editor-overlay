@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang='en'>
+
+<head>
+  <meta charset="utf-8">
+  <title>Unwrapping an element that holds only text</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: system-ui, sans-serif;
+    }
+  </style>
+</head>
+
+<body>
+  <!--
+    "Unwrap, keep children" was greyed out for every element holding nothing but words.
+
+    The gate asked `el.children`, which is element children only, so a `<b>`, a `<span>`, a
+    `<strong>` or a `<p>` wrapping a run of text all reported nothing to keep. That is the
+    common case rather than an edge one: turning `<p><b>bold</b> text</p>` into
+    `<p>bold text</p>` is what unwrapping an inline tag is for, and it was the one shape the
+    action refused.
+
+    The mutation underneath was already right — it walks `childNodes` — so this is mostly about
+    the two halves asking the same question. The assertions therefore drive the real menu button
+    rather than calling the engine, because calling the engine was never what was broken.
+
+    Written with an unquoted attribute so that the file being patched rather than rewritten
+    stays checkable.
+  -->
+  <main id="page">
+    <p id="para" class=lead>A <b id="bold">bold</b> word and <span id="plain">a span</span> here.</p>
+    <p id="only"><strong id="strong">The whole paragraph is strong.</strong></p>
+    <p id="wrapping-p-holder-text">Text before <span id="span-only">a span on its own</span></p>
+    <!-- A block-level one, because the gate was about content and never about the tag. -->
+    <div id="p-holder">
+      <p id="lone-p">A paragraph of nothing but words.</p>
+    </div>
+    <div id="empty-holder"><span id="empty"></span></div>
+    <div id="mixed-holder">
+      <div id="mixed">text and <em id="em">an element</em> after</div>
+    </div>
+  </main>
+
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const errors = [];
+      window.addEventListener('error', (e) => errors.push('error: ' + e.message));
+      window.addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+
+      const results = {};
+      const progress = document.getElementById('progress');
+      const step = (name) => { progress.textContent = name; };
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const byId = (id) => document.getElementById(id);
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark' });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+
+      /*
+       * The menu button itself, found the way a user reaches it.
+       *
+       * Re-queried every time rather than held: the menu re-renders on selection and on every
+       * state change, so a reference taken before a click is stale by the time it is used.
+       */
+      const overlayRoot = () => document.querySelector('html-editor-overlay > heo-overlay');
+      const unwrapButton = () => {
+        const menu = overlayRoot()?.shadowRoot?.querySelector('heo-quick-menu');
+        const buttons = Array.from(menu?.shadowRoot?.querySelectorAll('button.item') ?? []);
+        return buttons.find(
+          (b) => (b.querySelector('.text')?.textContent ?? '').trim() === 'Unwrap, keep children',
+        );
+      };
+      /** Open the quick menu on an element and report what the unwrap item looks like. */
+      const openMenuOn = async (el) => {
+        api.select(el);
+        engine.setQuickMenu(true);
+        await frames();
+        const button = unwrapButton();
+        return button ? (button.disabled ? 'disabled' : 'enabled') : 'missing';
+      };
+
+      const page = decodeURIComponent(location.pathname).split('/').pop();
+      const directory = decodeURIComponent(location.pathname).replace(/[^/]*$/, '');
+      const disk = new Map();
+      const project = {
+        kind: 'directory',
+        label: 'memory',
+        resolve(url) {
+          const path = decodeURIComponent(new URL(url, location.href).pathname);
+          return path.startsWith(directory) ? path.slice(directory.length) : null;
+        },
+        read: async (path) => {
+          if (disk.has(path)) return disk.get(path);
+          try {
+            const text = await (await fetch('./' + path)).text();
+            disk.set(path, text);
+            return text;
+          } catch { return null; }
+        },
+        write: async (path, text) => { disk.set(path, text); },
+        ensureWritable: async () => true,
+        release: async () => { },
+      };
+      await engine.attachProject(project, { quiet: true });
+      await frames();
+
+      const planned = async () => {
+        const plan = await engine.previewWritePlan();
+        const write = (plan?.writes ?? []).find((w) => w.kind === 'document');
+        return {
+          reason: write?.reason ?? '',
+          warnings: write?.warnings ?? [],
+          after: write?.after ?? '',
+          doc: new DOMParser().parseFromString(write?.after ?? '', 'text/html'),
+        };
+      };
+
+      /* ------------------------------------------------------------------ *
+       * What the menu offers, per shape.
+       * ------------------------------------------------------------------ */
+      step('theMenuOffersItForTextOnlyElements');
+      const shapes = {};
+      for (const id of ['bold', 'span-only', 'strong', 'lone-p', 'mixed', 'empty']) {
+        shapes[id] = await openMenuOn(byId(id));
+        engine.setQuickMenu(false);
+        await frames();
+      }
+
+      results.theMenuOffersItForTextOnlyElements = {
+        /*
+         * Discriminating: these are exactly the shape the old gate excluded — no element
+         * children, but something inside. Without this the group would pass just as well
+         * against a menu that enables the item unconditionally.
+         */
+        theseHoldTextAndNoElements:
+          ['bold', 'span-only', 'strong', 'lone-p'].every(
+            (id) => byId(id).children.length === 0 && byId(id).childNodes.length > 0,
+          ),
+
+        forABoldHoldingOnlyWords: shapes.bold === 'enabled',
+        forASpanHoldingOnlyWords: shapes['span-only'] === 'enabled',
+        forAStrongHoldingOnlyWords: shapes.strong === 'enabled',
+        // And for a block-level one: what decides this is the content, not the tag.
+        forAParagraphHoldingOnlyWords: shapes['lone-p'] === 'enabled',
+        // Unchanged for the case that already worked.
+        andStillForAContainerOfElements: shapes.mixed === 'enabled',
+        /*
+         * But not for one with nothing inside at all. Unwrapping and deleting are the same
+         * operation on an empty tag, and the menu has a Delete of its own.
+         */
+        butNotForAnElementWithNothingInIt: shapes.empty === 'disabled',
+        andThatOneReallyIsEmpty: byId('empty').childNodes.length === 0,
+      };
+
+      /* ------------------------------------------------------------------ *
+       * Clicking it does the reported thing.
+       * ------------------------------------------------------------------ */
+      step('clickingItLiftsTheTextIntoTheParent');
+      const beforeClick = byId('para').innerHTML;
+      const opened = await openMenuOn(byId('bold'));
+      unwrapButton().click();
+      await frames();
+
+      results.clickingItLiftsTheTextIntoTheParent = {
+        // Discriminating: the click has to have gone through an enabled button.
+        theItemWasClickable: opened === 'enabled',
+        theTagIsGoneFromThePage: byId('bold') === null,
+        // The stated outcome: `<p>A <b>bold</b> word…` becomes `<p>A bold word…`.
+        theParentNowReadsAsOneRun:
+          byId('para').innerHTML === 'A bold word and <span id="plain">a span</span> here.',
+        andTheWordingIsUnchanged: byId('para').textContent === 'A bold word and a span here.',
+        soTheMarkupReallyDidChange: beforeClick !== byId('para').innerHTML,
+        // Selection cannot be left pointing at a node that is no longer in the page.
+        theParentIsSelected: engine.store.value.selected === byId('para'),
+        // And the change describes itself as keeping text, not as "keeping its 1 children".
+        theRecordSaysWhatItKept:
+          engine.records.at(-1)?.summary === 'Unwrap b#bold, keeping its text',
+      };
+
+      /* ------------------------------------------------------------------ *
+       * Undo and redo, because the command holds a text node by reference.
+       * ------------------------------------------------------------------ */
+      step('undoPutsTheTagBack');
+      engine.undo();
+      await frames();
+      const afterUndo = { html: byId('para').innerHTML, boldBack: Boolean(byId('bold')) };
+      engine.redo();
+      await frames();
+
+      results.undoPutsTheTagBack = {
+        theTagIsBackAfterUndo: afterUndo.boldBack === true,
+        withTheMarkupItHadBefore: afterUndo.html === beforeClick,
+        andRedoTakesItAwayAgain: byId('bold') === null,
+        leavingTheOneRunOfText:
+          byId('para').innerHTML === 'A bold word and <span id="plain">a span</span> here.',
+      };
+
+      /* ------------------------------------------------------------------ *
+       * And the file gets it, as an edit rather than a rewrite.
+       * ------------------------------------------------------------------ */
+      step('theFileGetsTheUnwrappedText');
+      // A second one, where the text is the element's only child, so the parent goes from
+      // holding one tag to holding nothing but words.
+      api.select(byId('strong'));
+      engine.setQuickMenu(true);
+      await frames();
+      unwrapButton().click();
+      await frames();
+
+      // And a third: a block-level element whose only content is words, lifted into its
+      // container. Covered end to end as well as in the menu, because "any element that only
+      // contains text" is the claim and a `<p>` is the one that is not inline.
+      api.select(byId('lone-p'));
+      engine.setQuickMenu(true);
+      await frames();
+      unwrapButton().click();
+      await frames();
+
+      const out = await planned();
+
+      results.theFileGetsTheUnwrappedText = {
+        theInlineCaseIsInTheFile:
+          out.doc.getElementById('para')?.innerHTML ===
+          'A bold word and <span id="plain">a span</span> here.',
+        theOnlyChildCaseIsInTheFile:
+          out.doc.getElementById('only')?.innerHTML === 'The whole paragraph is strong.',
+        theBlockLevelCaseIsInTheFile:
+          (out.doc.getElementById('p-holder')?.innerHTML ?? '').trim() ===
+          'A paragraph of nothing but words.',
+        // And it really left the page too, not just the file.
+        theParagraphIsGoneFromThePage: byId('lone-p') === null,
+        // None of the three tags survives in the markup.
+        noneOfTheTagsAreLeftInTheFile:
+          out.doc.getElementById('bold') === null &&
+          out.doc.getElementById('strong') === null &&
+          out.doc.getElementById('lone-p') === null,
+
+        // As an edit to those two lines, not a reserialization of the page.
+        theFileWasPatchedRatherThanRewritten: /patched in place/.test(out.reason),
+        withNothingToWarnAbout: out.warnings.length === 0,
+        soTheAuthorsUnquotedAttributeSurvives: /class=lead/.test(out.after),
+        andNoEditorAttributeReachedTheFile:
+          out.doc.querySelectorAll('[data-heo-src], [data-heo-inserted]').length === 0,
+      };
+
+      /* ------------------------------------------------------------------ */
+      const failed = Object.entries(results)
+        .filter(([, group]) => group && typeof group === 'object' && !Array.isArray(group))
+        .filter(([, group]) => Object.values(group).some((value) => value === false))
+        .map(([name]) => name);
+
+      results.failed = failed;
+      results.ok = failed.length === 0 && errors.length === 0;
+      results.__errors = errors;
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"ok":false,"__errors":["' + String(e && e.message) + '"]}:END';
+    });
+  </script>
+</body>
+
+</html>
