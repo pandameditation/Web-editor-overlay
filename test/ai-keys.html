@@ -248,6 +248,102 @@
       }
 
       /* ------------------------------------------------------------------ *
+       * 4a. Edits to a discovered provider survive a reload.
+       *
+       * The reported case, in order: a provider the dev server discovered is switched to an
+       * in-page key, given a model name, made the default — and after a reload it was back to
+       * "Dev server" with the environment's model. The rule that stopped a removed key coming back
+       * to life was also throwing away every edit made to one.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'editsToADiscoveredProviderSurvive';
+      {
+        const KEY = 'heo.ai.sets';
+        sessionStorage.removeItem(KEY);
+        engine.ai.import([]);
+
+        // What the dev server hands over: proxied, its own model, no base URL.
+        const discovered = {
+          id: 'heo-env-openai', label: 'OpenAI', transport: 'proxy',
+          provider: 'openai', model: 'gpt-4o-mini',
+        };
+        engine.ai.offer([discovered]);
+
+        // What the user then does to it.
+        engine.ai.upsert({
+          ...engine.ai.get('heo-env-openai'),
+          transport: 'in-page',
+          baseURL: 'https://api.openai.com/v1',
+          model: 'gpt-4.1-mini',
+        });
+        engine.ai.activate('heo-env-openai');
+        await frames();
+
+        const written = JSON.parse(sessionStorage.getItem(KEY) ?? 'null');
+
+        /*
+         * A reload, simulated as one: empty memory, storage untouched.
+         *
+         * `import([])` alone is not a reload — it is a design-system import replacing the list, and
+         * it rewrites storage on the way through, which wipes the very entry under test. So the
+         * written blob is put back before `restore` reads it, which is the state a new tab starts
+         * in. Then `restore` runs before `offer`, as it does at mount: the discovered set does not
+         * exist at that moment, which is exactly why the override has to be held rather than
+         * applied, and doing it in this order is the point rather than an incidental detail.
+         */
+        const reload = (offering) => {
+          engine.ai.import([]);
+          sessionStorage.setItem(KEY, JSON.stringify(written));
+          engine.ai.restore();
+          const held = engine.ai.get('heo-env-openai');
+          engine.ai.offer(offering);
+          return { held, after: engine.ai.get('heo-env-openai') };
+        };
+
+        const reloaded = reload([discovered]);
+        const beforeOffer = reloaded.held;
+        const after = reloaded.after;
+
+        // And a provider whose key has gone from .env must not come back.
+        const whenNoLongerOffered = reload([]).after;
+
+        // A field the user never touched still tracks the environment.
+        const renamed = reload([{ ...discovered, label: 'OpenAI (renamed upstream)' }]).after;
+
+        results.editsToADiscoveredProviderSurvive = {
+          // The whole set is not stored — that is what would resurrect it.
+          storedNoDiscoveredSet: (written?.sets ?? []).every((one) => one.id !== 'heo-env-openai'),
+          // Only the changed fields are.
+          storedOverride: written?.overrides?.['heo-env-openai'] ?? null,
+          overrideCarriesTheEdits:
+            written?.overrides?.['heo-env-openai']?.transport === 'in-page' &&
+            written?.overrides?.['heo-env-openai']?.model === 'gpt-4.1-mini',
+          overrideOmitsUntouchedFields:
+            written?.overrides?.['heo-env-openai']?.provider === undefined,
+          // Held, not applied, until the environment offers the set again.
+          absentBeforeTheOffer: beforeOffer === undefined,
+          // The three reported symptoms.
+          transportSurvived: after?.transport === 'in-page',
+          modelSurvived: after?.model === 'gpt-4.1-mini',
+          baseURLSurvived: after?.baseURL === 'https://api.openai.com/v1',
+          // And which one was the default.
+          activeSurvived: engine.ai.active?.id === 'heo-env-openai',
+          // The property the old rule existed to protect, still true.
+          notResurrected: whenNoLongerOffered === undefined,
+          // A field nobody edited follows .env rather than the stored copy.
+          untouchedFieldTracksTheEnvironment: renamed?.label === 'OpenAI (renamed upstream)',
+          editedFieldStillWins: renamed?.model === 'gpt-4.1-mini',
+        };
+        const group = results.editsToADiscoveredProviderSurvive;
+        group.ok = Object.entries(group).every(
+          ([key, value]) => key === 'ok' || key === 'storedOverride' || value === true,
+        );
+
+        sessionStorage.removeItem(KEY);
+        engine.ai.import([]);
+        await installSets();
+      }
+
+      /* ------------------------------------------------------------------ *
        * 4b. The request scope survives a reload, and storage cannot widen it.
        *
        * It is a preference about requests rather than a provider setting, so it is kept beside the

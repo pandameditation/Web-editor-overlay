@@ -54,12 +54,17 @@ const SETS_KEY = 'heo.ai.sets';
 const SCOPE_KEY = 'heo.ai.scope';
 
 /**
- * Ids the environment owns, which are deliberately *not* persisted.
+ * Ids the environment owns.
  *
  * A `heo-env-` set exists because the dev server found a key in `.env` this boot, and it is
- * re-offered on the next one from the same place. Writing it to storage would mean a provider
- * surviving the removal of its own key — the list would show a model that cannot answer, and the
- * only way to get rid of it would be to find the storage entry.
+ * re-offered on the next one from the same place. So the set itself is not written to storage:
+ * that would mean a provider surviving the removal of its own key, showing a model that cannot
+ * answer, removable only by finding the storage entry.
+ *
+ * What *is* written is any field the user changed on one — see `#overrides`. Not doing that was a
+ * bug worth stating: someone switched a discovered provider to an in-page key, typed a model name,
+ * reloaded, and got the pristine dev-server version back, because the rule that protected against
+ * resurrection was also discarding every edit.
  */
 const ENVIRONMENT_PREFIXES = ['heo-env-', 'heo-config-'];
 
@@ -67,10 +72,36 @@ function fromEnvironment(id: string): boolean {
   return ENVIRONMENT_PREFIXES.some((prefix) => id.startsWith(prefix));
 }
 
+/** The fields a user can change on a provider, so an override carries only those. */
+const EDITABLE_FIELDS = ['label', 'transport', 'provider', 'baseURL', 'model', 'systemPrompt'] as const;
+
+type ProviderOverride = Partial<Pick<AiProviderSet, (typeof EDITABLE_FIELDS)[number]>>;
+
 export class AiAgent {
   #sets: AiProviderSet[] = [];
   #activeId: string | null = null;
   #listeners = new Set<() => void>();
+
+  /**
+   * What the environment last offered, per id, so an edit can be told from a default.
+   *
+   * Kept in memory only. It is the baseline `#persist` diffs against: without it the choice is
+   * between storing the whole discovered set — which resurrects providers whose key is gone — and
+   * storing nothing, which was the bug.
+   */
+  #offered = new Map<string, AiProviderSet>();
+
+  /**
+   * Edits to environment-supplied providers, waiting for the environment to offer them again.
+   *
+   * Held rather than applied because `restore()` runs before `offer()`: the set an override belongs
+   * to does not exist yet at the moment the override is read. An override for a provider that is
+   * never offered again simply never applies, which is what keeps a removed key from coming back.
+   */
+  #overrides = new Map<string, ProviderOverride>();
+
+  /** An active id read from storage whose set had not arrived yet. Resolved by `offer`. */
+  #pendingActiveId: string | null = null;
 
   /* ---------------------------------------------------------------------- */
   /* Provider sets                                                          */
@@ -187,9 +218,26 @@ export class AiAgent {
    * not be running.
    */
   offer(sets: readonly AiProviderSet[]): number {
-    const offered = sets.map((entry) => ({ ...entry }));
+    /*
+     * Offered as the environment describes them, then the user's own edits put back on top.
+     *
+     * Both halves matter. Taking the environment's version means a model name changed in `.env`
+     * shows through, and a provider whose key was removed does not appear at all. Reapplying the
+     * override means the transport somebody switched to, and the model they typed, survive the
+     * reload that follows.
+     */
+    const offered = sets.map((entry) => {
+      this.#offered.set(entry.id, { ...entry });
+      const override = this.#overrides.get(entry.id);
+      return override ? { ...entry, ...override } : { ...entry };
+    });
     const ids = new Set(offered.map((entry) => entry.id));
     this.#sets = [...offered, ...this.#sets.filter((entry) => !ids.has(entry.id))];
+    // An id restored from storage may only now have something to point at.
+    if (this.#pendingActiveId && ids.has(this.#pendingActiveId)) {
+      this.#activeId = this.#pendingActiveId;
+      this.#pendingActiveId = null;
+    }
     this.#persist();
     this.#emit();
     return offered.length;
@@ -221,19 +269,49 @@ export class AiAgent {
     } catch {
       return 0;
     }
-    const payload = parsed as { sets?: unknown; activeId?: unknown };
+    const payload = parsed as { sets?: unknown; activeId?: unknown; overrides?: unknown };
     const list = Array.isArray(payload?.sets) ? payload.sets : [];
     const restored = list
       .map((entry) => portableProviderSet(entry))
       .filter((entry): entry is AiProviderSet => Boolean(entry))
       // Belt and braces: the writer already excludes these, so one here means storage was edited.
       .filter((entry) => !fromEnvironment(entry.id));
-    if (!restored.length) return 0;
+
+    /*
+     * Edits to discovered providers, held until the environment offers them again.
+     *
+     * Read here and applied in `offer` because that is the order these run in at mount. Rebuilt
+     * field by field through `portableProviderSet`, the same gate the sets go through, so a blob
+     * that arrived carrying an `apiKey` or an unknown transport cannot smuggle one in through the
+     * override path.
+     */
+    this.#overrides = new Map();
+    const overrides = payload.overrides;
+    if (overrides && typeof overrides === 'object' && !Array.isArray(overrides)) {
+      for (const [id, value] of Object.entries(overrides as Record<string, unknown>)) {
+        if (!fromEnvironment(id) || !value || typeof value !== 'object') continue;
+        // Given an id and a model so the shared rebuilder accepts it; both are then discarded.
+        const safe = portableProviderSet({ ...(value as object), id, model: 'x' });
+        if (!safe) continue;
+        const kept: ProviderOverride = {};
+        for (const field of EDITABLE_FIELDS) {
+          if (field in (value as object) && safe[field] !== undefined) {
+            kept[field] = safe[field] as never;
+          }
+        }
+        // `model` is the one field the rebuilder insists on, so take it from the raw entry.
+        const model = (value as { model?: unknown }).model;
+        if (typeof model === 'string') kept.model = model.trim();
+        if (Object.keys(kept).length) this.#overrides.set(id, kept);
+      }
+    }
 
     const known = new Set(this.#sets.map((entry) => entry.id));
     this.#sets = [...this.#sets, ...restored.filter((entry) => !known.has(entry.id))];
-    if (typeof payload.activeId === 'string' && this.get(payload.activeId)) {
-      this.#activeId = payload.activeId;
+    if (typeof payload.activeId === 'string') {
+      // Applied now when the set is already here, held for `offer` when it is a discovered one.
+      if (this.get(payload.activeId)) this.#activeId = payload.activeId;
+      else this.#pendingActiveId = payload.activeId;
     }
     this.#emit();
     return restored.length;
@@ -292,14 +370,37 @@ export class AiAgent {
       .filter((entry) => !fromEnvironment(entry.id))
       .map((entry) => portableProviderSet(entry))
       .filter((entry): entry is AiProviderSet => Boolean(entry));
+
+    /*
+     * For a discovered provider, the difference from what was offered — and only that.
+     *
+     * Storing the whole set would resurrect a provider whose key has been removed from `.env`;
+     * storing nothing loses the user's edits, which is the bug this fixes. The diff keeps both
+     * properties: a field the user never touched still tracks the environment, so a model changed
+     * in `.env` shows through, while one they did touch survives the reload.
+     */
+    const overrides: Record<string, ProviderOverride> = {};
+    for (const entry of this.#sets) {
+      if (!fromEnvironment(entry.id)) continue;
+      const base = this.#offered.get(entry.id) ?? this.#overrides.get(entry.id);
+      const diff: ProviderOverride = {};
+      for (const field of EDITABLE_FIELDS) {
+        if (entry[field] !== base?.[field]) diff[field] = entry[field] as never;
+      }
+      if (Object.keys(diff).length) overrides[entry.id] = diff;
+    }
+
     try {
-      if (!mine.length) {
+      if (!mine.length && !Object.keys(overrides).length && !this.#activeId) {
         store.removeItem(SETS_KEY);
         return;
       }
       store.setItem(SETS_KEY, JSON.stringify({
         sets: mine,
-        ...(this.#activeId && !fromEnvironment(this.#activeId) ? { activeId: this.#activeId } : {}),
+        ...(Object.keys(overrides).length ? { overrides } : {}),
+        // Kept whichever kind of provider it names: choosing the dev server's model as the default
+        // is a choice, and forgetting it on reload is the same complaint as forgetting the rest.
+        ...(this.#activeId ? { activeId: this.#activeId } : {}),
       }));
     } catch {
       // A full or blocked store costs the convenience, not the session.

@@ -878,6 +878,89 @@
       }
 
       /* ------------------------------------------------------------------ *
+       * 15. The key field reflects where the key actually is.
+       *
+       * Reported: after a reload the heading read "remembered" — correctly, from the vault — while
+       * the checkbox beside it sat unchecked, because the checkbox was drawn from component state
+       * that starts empty. The panel contradicted itself about the same fact.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'theKeyFieldShowsWhereTheKeyIs';
+      {
+        engine.ai.upsert({
+          id: 'key-state-probe',
+          label: 'Key state probe',
+          transport: 'in-page',
+          provider: 'openai',
+          baseURL: 'https://api.openai.com/v1',
+          model: 'm',
+        });
+        engine.setAiSettings(true);
+        await frames();
+        const root = () => deepFind('heo-ai-settings')?.shadowRoot;
+        const tabs = () => Array.from(root()?.querySelectorAll('.tab') ?? []);
+        const flat = (node) => (node?.textContent ?? '').replace(/\s+/g, ' ').trim();
+        const openProbe = async () => {
+          const tab = tabs().find((one) => /Key state probe/.test(flat(one)));
+          tab?.click();
+          await frames();
+        };
+        await openProbe();
+        const box = () => root()?.querySelector('input[type="checkbox"]');
+
+        // Nothing stored yet: session is the default, so the box is clear.
+        const beforeAnyKey = box()?.checked;
+
+        /*
+         * Saved to the origin, then re-rendered from scratch.
+         *
+         * The settings panel is created and destroyed rather than hidden, so closing and reopening
+         * is the same fresh render a reload produces — which is where the draft state was empty and
+         * the box read false for a key that was in fact remembered.
+         */
+        const saved = await engine.ai.setKey('key-state-probe', 'sk-fixture-probe', 'origin');
+        engine.setAiSettings(false);
+        await frames();
+        engine.setAiSettings(true);
+        await frames();
+        await openProbe();
+
+        const status = engine.ai.keyStatus('key-state-probe');
+        const heading = flat(root()?.querySelector('.shield'));
+        const afterFreshRender = box()?.checked;
+
+        results.theKeyFieldShowsWhereTheKeyIs = {
+          savedTo: saved.persistence,
+          refused: saved.refused ?? null,
+          clearBeforeAnyKey: beforeAnyKey === false,
+          // The vault's own answer, which the heading was already telling the truth about.
+          vaultSaysOrigin: status.persistence === 'origin',
+          heading,
+          headingSaysRemembered: /remembered/i.test(heading),
+          // And now the box agrees with it on a render that has never been touched.
+          boxAgreesWithTheVault: afterFreshRender === true,
+        };
+        const group = results.theKeyFieldShowsWhereTheKeyIs;
+        /*
+         * Only meaningful where the origin may keep a key at all.
+         *
+         * `setKey('origin')` is refused off loopback, on purpose and with a sentence. The suite
+         * serves fixtures from file:, which counts as loopback, so this normally runs — but it must
+         * not fail somewhere it cannot apply.
+         */
+        group.ok = saved.persistence === 'origin'
+          ? group.clearBeforeAnyKey === true &&
+          group.vaultSaysOrigin === true &&
+          group.headingSaysRemembered === true &&
+          group.boxAgreesWithTheVault === true
+          : group.clearBeforeAnyKey === true;
+
+        engine.ai.clearKey('key-state-probe');
+        engine.ai.remove('key-state-probe');
+        engine.setAiSettings(false);
+        await frames();
+      }
+
+      /* ------------------------------------------------------------------ *
        * 16. The context chips are switches, minimal by default, and they filter the bundle.
        * ------------------------------------------------------------------ */
       progress.textContent = 'contextChipsChooseWhatIsSent';

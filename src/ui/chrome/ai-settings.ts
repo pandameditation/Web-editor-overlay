@@ -420,7 +420,14 @@ export class HeoAiSettings extends HeoElement {
   @state() private openId: string | null = null;
   /** Key drafts, per set. Never read back out of the vault — see `keys.ts`. */
   @state() private keyDraft: Record<string, string> = {};
-  @state() private remember: Record<string, boolean> = {};
+  /**
+   * Whether to keep a key past the tab, per set, once the user has said.
+   *
+   * Undefined means "not chosen here", and the control then shows where the key already lives —
+   * see `#renderKeyField`. A plain boolean default would have this component asserting a fact it
+   * does not own.
+   */
+  @state() private remember: Record<string, boolean | undefined> = {};
   @state() private testing: string | null = null;
   @state() private verdict: Record<string, { ok: boolean; text: string }> = {};
 
@@ -741,7 +748,16 @@ export class HeoAiSettings extends HeoElement {
     refusal: string | null,
   ): TemplateResult {
     const draft = this.keyDraft[set.id] ?? '';
-    const remember = Boolean(this.remember[set.id]);
+    /*
+     * The box shows where the key actually is, not where a draft says to put it.
+     *
+     * `this.remember` is component state that starts empty, so on a fresh render — after a reload,
+     * say — it read false for a key that was in fact saved on this machine. The heading beside it
+     * said "remembered", from the vault, so the panel contradicted itself. The vault is the fact;
+     * the draft only speaks once the user has touched the control.
+     */
+    const stored = this.editor.ai.keyStatus(set.id);
+    const remember = this.remember[set.id] ?? stored.persistence === 'origin';
     return html`<label class="field">
       <span>API key${hint ? ` — currently ends ${hint}` : ''}</span>
       <input
@@ -836,11 +852,10 @@ export class HeoAiSettings extends HeoElement {
   async #saveKey(set: AiProviderSet): Promise<void> {
     const draft = (this.keyDraft[set.id] ?? '').trim();
     if (!draft) return;
-    const result = await this.editor.ai.setKey(
-      set.id,
-      draft,
-      this.remember[set.id] ? 'origin' : 'session',
-    );
+    // The same resolution the checkbox draws itself from: the draft if there is one, else where
+    // the key already lives. Reading only the draft made saving a second key quietly downgrade it.
+    const keep = this.remember[set.id] ?? this.editor.ai.keyStatus(set.id).persistence === 'origin';
+    const result = await this.editor.ai.setKey(set.id, draft, keep ? 'origin' : 'session');
     // Dropped from component state the moment the vault has it, so the only copy is the one in
     // the vault's closure rather than one in a Lit property anybody can read off the element.
     this.keyDraft = { ...this.keyDraft, [set.id]: '' };
