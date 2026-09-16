@@ -107,18 +107,6 @@ export class HeoConfirmDialog extends HeoElement {
         font-size: 10.5px;
       }
 
-      /* The standing permission. Quieter than either footer button, because it is the
-         widest answer and should not be the easiest one to press. */
-      .always {
-        width: 100%;
-        justify-content: center;
-        margin: 2px 0 2px;
-        color: var(--heo-text-dim);
-      }
-      .always:hover {
-        color: var(--heo-text);
-      }
-
       footer {
         display: flex;
         justify-content: flex-end;
@@ -179,26 +167,6 @@ export class HeoConfirmDialog extends HeoElement {
         </p>
       </div>
 
-      <!--
-        The standing permission, above the buttons rather than beside them.
-
-        It is a different kind of answer from the other two: they settle this change, and this
-        settles every change like it for the rest of the session. Putting it in the footer as a
-        third button would make three peers out of two decisions, and the wider one is the
-        easiest to press by accident.
-      -->
-      ${ask.remember
-        ? html`<div class="content">
-            <button
-              class="btn sm always"
-              type="button"
-              title="Approve this, and stop asking for this kind of change"
-              @click=${() => this.editor.resolveConfirm({ remember: true })}
-            >
-              ${icon('check', 11)} ${ask.remember.label}
-            </button>
-          </div>`
-        : nothing}
 
       <footer>
         <button

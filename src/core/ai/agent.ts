@@ -27,12 +27,9 @@ import {
 } from './keys.js';
 import { AiRun, type RunOutcome, type SessionHost } from './session.js';
 import {
-  AI_SCOPE_CLASSES,
   portableProviderSet,
-  type AiAllowance,
+  type AiContextScope,
   type AiProviderSet,
-  type AiScopeClass,
-  type AiScopePolicy,
 } from './types.js';
 
 /**
@@ -45,6 +42,16 @@ import {
  * providers, and that artefact is explicitly one the user chose to keep.
  */
 const SETS_KEY = 'heo.ai.sets';
+
+/**
+ * Where the request scope is kept between reloads.
+ *
+ * A sibling of the provider list rather than part of it, because it belongs to neither a provider
+ * nor a page: it is how *this person* wants requests scoped, and switching provider or reloading
+ * the dev server should not silently widen or narrow it. `sessionStorage` for the same reason the
+ * providers use it — it should outlive a reload and die with the tab.
+ */
+const SCOPE_KEY = 'heo.ai.scope';
 
 /**
  * Ids the environment owns, which are deliberately *not* persisted.
@@ -60,30 +67,10 @@ function fromEnvironment(id: string): boolean {
   return ENVIRONMENT_PREFIXES.some((prefix) => id.startsWith(prefix));
 }
 
-/**
- * Re-exported from `types.js`, where the value now lives.
- *
- * It moved because the Vite plugin needs it to build the sets it discovers in the environment,
- * and this module reaches the browser's storage and location through `keys.js` — so importing it
- * from Node would drag half the editor into a dev-server bundle to read three booleans.
- */
-export { DEFAULT_AI_SCOPE } from './types.js';
-
 export class AiAgent {
   #sets: AiProviderSet[] = [];
   #activeId: string | null = null;
   #listeners = new Set<() => void>();
-
-  /**
-   * Permissions widened for this session only.
-   *
-   * "Always allow class changes" from an approval dialog lands here rather than on the set,
-   * and that is the difference between answering a question and rewriting a setting. The set
-   * is written into the design-system seed and travels; a decision made in the middle of one
-   * run should not follow the seed onto somebody else's machine. The settings UI is where a
-   * lasting change belongs, and it says as much.
-   */
-  #widened = new Map<string, Set<AiScopeClass>>();
 
   /* ---------------------------------------------------------------------- */
   /* Provider sets                                                          */
@@ -137,7 +124,6 @@ export class AiAgent {
     const next: AiProviderSet = {
       ...entry,
       label: entry.label.trim() || 'Untitled provider',
-      scope: { ...entry.scope },
     };
     const at = this.#sets.findIndex((one) => one.id === next.id);
     if (at === -1) this.#sets.push(next);
@@ -152,7 +138,6 @@ export class AiAgent {
     this.#sets = this.#sets.filter((entry) => entry.id !== id);
     if (this.#sets.length === before) return;
     if (this.#activeId === id) this.#activeId = null;
-    this.#widened.delete(id);
     this.#persist();
     this.#emit();
   }
@@ -181,9 +166,8 @@ export class AiAgent {
    * says `Needs a key` rather than failing at the moment of use.
    */
   import(sets: readonly AiProviderSet[]): number {
-    this.#sets = sets.map((entry) => ({ ...entry, scope: { ...entry.scope } }));
+    this.#sets = sets.map((entry) => ({ ...entry }));
     this.#activeId = null;
-    this.#widened.clear();
     this.#persist();
     this.#emit();
     return this.#sets.length;
@@ -203,7 +187,7 @@ export class AiAgent {
    * not be running.
    */
   offer(sets: readonly AiProviderSet[]): number {
-    const offered = sets.map((entry) => ({ ...entry, scope: { ...entry.scope } }));
+    const offered = sets.map((entry) => ({ ...entry }));
     const ids = new Set(offered.map((entry) => entry.id));
     this.#sets = [...offered, ...this.#sets.filter((entry) => !ids.has(entry.id))];
     this.#persist();
@@ -256,6 +240,46 @@ export class AiAgent {
   }
 
   /**
+   * The request scope this tab last used, or null when it has never set one.
+   *
+   * Null rather than the default, so the caller can tell "never chosen" from "deliberately
+   * minimal" — they happen to look the same today and would stop doing so the moment the default
+   * changed.
+   */
+  restoreScope(): AiContextScope | null {
+    const raw = safeStorage('session')?.getItem(SCOPE_KEY);
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw) as Partial<Record<keyof AiContextScope, unknown>>;
+      if (!parsed || typeof parsed !== 'object') return null;
+      // Rebuilt field by field: storage is writable by anything else on this origin, and a scope
+      // arriving with a truthy string in it would widen what a request may change.
+      return {
+        classes: parsed.classes === true,
+        rules: parsed.rules === true,
+        parent: parsed.parent === true,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  /** Remember the request scope for this tab. */
+  rememberScope(scope: AiContextScope): void {
+    const store = safeStorage('session');
+    if (!store) return;
+    try {
+      store.setItem(SCOPE_KEY, JSON.stringify({
+        classes: scope.classes === true,
+        rules: scope.rules === true,
+        parent: scope.parent === true,
+      }));
+    } catch {
+      // A full or blocked store costs the convenience, not the session.
+    }
+  }
+
+  /**
    * Write the hand-made providers back, on every change to the list.
    *
    * Called from the mutators rather than from `#emit`, because `#emit` also fires when a run
@@ -282,47 +306,14 @@ export class AiAgent {
     }
   }
 
-  /* ---------------------------------------------------------------------- */
-  /* Permission                                                             */
-  /* ---------------------------------------------------------------------- */
-
-  /**
-   * What the active set may change right now, session widening included.
+  /*
+   * No permission methods here any more.
    *
-   * The one function that answers the permission question, so that the broker, the context
-   * bundle and the settings UI cannot disagree about it. No set means an empty policy, which
-   * denies everything — the safe direction for the case where there is nothing to ask.
+   * A provider used to carry its own scope, so this class answered "what may it change" and had a
+   * per-session widening map to hold "yes, and stop asking". Both are gone: permission belongs to
+   * the request, is chosen in the popover, and is passed in — see `AiContextScope`. What is left is
+   * the provider list, the credential proxy and the boundary.
    */
-  policy(set: AiProviderSet | null = this.active): AiScopePolicy {
-    if (!set) return {};
-    const widened = this.#widened.get(set.id);
-    const out: AiScopePolicy = {};
-    for (const scope of AI_SCOPE_CLASSES) {
-      const configured = set.scope[scope];
-      if (!configured) continue;
-      out[scope] = widened?.has(scope) ? 'always' : configured;
-    }
-    return out;
-  }
-
-  /** Whether this kind of change still needs a question. */
-  allowance(scope: AiScopeClass, set: AiProviderSet | null = this.active): AiAllowance | null {
-    return this.policy(set)[scope] ?? null;
-  }
-
-  /** Stop asking about this kind of change for the rest of the session. */
-  widen(scope: AiScopeClass, set: AiProviderSet | null = this.active): void {
-    if (!set) return;
-    const current = this.#widened.get(set.id) ?? new Set<AiScopeClass>();
-    current.add(scope);
-    this.#widened.set(set.id, current);
-    this.#emit();
-  }
-
-  /** True when a scope has been widened for this session but not in the set itself. */
-  widenedThisSession(scope: AiScopeClass, set: AiProviderSet | null = this.active): boolean {
-    return Boolean(set && this.#widened.get(set.id)?.has(scope));
-  }
 
   /* ---------------------------------------------------------------------- */
   /* Credentials, at arm's length                                           */
@@ -390,9 +381,21 @@ export class AiAgent {
    * boundary can be driven directly and proven to hold without a provider, a network, or a
    * single mutation to undo afterwards.
    */
-  review(raw: unknown, element: HTMLElement, set: AiProviderSet | null = this.active): BrokerVerdict {
+  review(
+    raw: unknown,
+    element: HTMLElement,
+    /**
+     * What this request may see and change.
+     *
+     * Required rather than defaulted, because there is no sensible default left. The provider does
+     * not carry a scope any more and guessing one here would either deny everything — making the
+     * boundary untestable — or grant everything, which is the opposite mistake. The caller that
+     * decided what to describe is the caller that knows.
+     */
+    scope: AiContextScope,
+  ): BrokerVerdict {
     const target: BrokerTarget = { element, parent: selectableParent(element) };
-    return reviewOperation(raw, target, this.policy(set));
+    return reviewOperation(raw, target, scope);
   }
 
   /* ---------------------------------------------------------------------- */
@@ -430,15 +433,16 @@ export class AiAgent {
     operations: AsyncIterable<unknown>;
     host: SessionHost;
     set?: AiProviderSet | null;
+    /** What this run may see and change — the popover's switches, as chosen for this request. */
+    scope: AiContextScope;
   }): Promise<RunOutcome> {
-    const set = options.set ?? this.active;
     const run = new AiRun(options.element, options.prompt, options.host);
     this.#run = run;
     this.#emit();
     try {
       for await (const raw of options.operations) {
         if (run.aborted) break;
-        await run.offer(this.review(raw, options.element, set));
+        await run.offer(this.review(raw, options.element, options.scope));
       }
     } catch (error) {
       /*
@@ -467,7 +471,6 @@ export class AiAgent {
   destroy(): void {
     this.#listeners.clear();
     this.#sets = [];
-    this.#widened.clear();
   }
 
   #emit(): void {

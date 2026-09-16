@@ -127,6 +127,15 @@
       const subject = document.getElementById('subject');
       const narrow = document.getElementById('narrow');
 
+      /*
+       * The pristine default, read before any group has had a chance to widen it.
+       *
+       * The context scope is sticky within a session on purpose — someone who turned the parent on
+       * to fix one alignment wants it on for the next — so only the very first read is evidence
+       * about the default. Later groups set what they need explicitly.
+       */
+      const defaultContextScope = { ...engine.store.value.aiContextScope };
+
       /**
        * Select, then wait for the layout to stop moving before measuring anything.
        *
@@ -332,6 +341,7 @@
         await frames();
 
         const key = shadow()?.querySelector('input[type="password"]');
+        // The settings modal has no scope controls at all now — that moved to the popover chips.
         const scopeSelects = Array.from(shadow()?.querySelectorAll('.scope select') ?? []);
         const shield = shadow()?.querySelector('.shield');
 
@@ -342,21 +352,15 @@
           keyFieldIsAPassword: Boolean(key),
           usesThePasswordManager: key?.getAttribute('autocomplete') === 'current-password',
           /*
-           * Four scope rows: the selected element, then three permissions.
+           * No scope controls here, which is the assertion rather than an omission.
            *
-           * The element's row is a statement — one disabled option reading Always — so the
-           * changeable ones are the rest, and those are the ones that carry the three choices.
-           * This counted three rows before the element joined the list.
+           * This screen used to carry four rows deciding what the AI could change, per provider —
+           * so the answer travelled in the design-system seed and needed an "ask me" state to be
+           * bearable. Both are gone. Scope is chosen per request on the chips beside the prompt,
+           * and `contextChipsChooseWhatIsSent` is where it is asserted.
            */
-          fourScopeRows: scopeSelects.length === 4,
-          fixedRowIsFirstAndSettled:
-            scopeSelects[0]?.disabled === true && scopeSelects[0]?.options.length === 1,
-          scopeOptions: scopeSelects[1]
-            ? Array.from(scopeSelects[1].options).map((one) => one.value).join(',')
-            : null,
-          everyPermissionOffersAllThree: scopeSelects.slice(1).every(
-            (one) => Array.from(one.options).map((o) => o.value).join(',') === 'always,ask,never',
-          ),
+          noScopeRows: scopeSelects.length === 0,
+          saysNothingAboutPermission: !/Scope of AI changes/.test(shadow()?.textContent ?? ''),
           // And the badge tells the truth about an in-page key rather than showing a lock.
           shieldText: (shield?.textContent ?? '').trim(),
           saysItNeedsAKey: /needs a key/i.test(shield?.textContent ?? ''),
@@ -367,10 +371,8 @@
           group.created === true &&
           group.keyFieldIsAPassword === true &&
           group.usesThePasswordManager === true &&
-          group.fourScopeRows === true &&
-          group.fixedRowIsFirstAndSettled === true &&
-          group.scopeOptions === 'always,ask,never' &&
-          group.everyPermissionOffersAllThree === true &&
+          group.noScopeRows === true &&
+          group.saysNothingAboutPermission === true &&
           group.saysItNeedsAKey === true &&
           group.warnsThePageCanReadIt === true;
       }
@@ -382,11 +384,22 @@
       {
         const set = engine.ai.list()[0];
         await engine.ai.setKey(set.id, 'sk-scripted-test');
-        engine.ai.upsert({ ...set, scope: { classes: 'always', rules: 'always', parent: 'always' } });
+        engine.ai.upsert({ ...set });
         engine.setAiSettings(false);
         await frames();
 
         const menu = () => deepFind('heo-ai-menu')?.shadowRoot;
+        /*
+         * Classes switched on, because this group's scripted reply edits one.
+         *
+         * A request starts describing the element and nothing around it, and what is not described
+         * cannot be changed — so at the default scope the upsertClass below is refused, correctly.
+         * That refusal is pinned in `test/ai-run.html`; what this group is about is a run that
+         * applies, reports itself and folds into one undo, so it asks for the scope it needs.
+         */
+        engine.setAiContextScope('classes', true);
+        await frames();
+
         const field = menu()?.querySelector('textarea');
         // The input exists only once a provider does — before that the popover offers setup
         // instead, which is what `offersSetupBeforeAnyProvider` covers.
@@ -566,12 +579,10 @@
         engine.ai.upsert({
           id: 'fixture-one', label: 'First provider', transport: 'local',
           provider: 'openai-compatible', baseURL: 'http://127.0.0.1:1/v1', model: 'm-one',
-          scope: { classes: 'always', rules: 'always', parent: 'always' },
         });
         engine.ai.upsert({
           id: 'fixture-two', label: 'Second provider', transport: 'local',
           provider: 'openai-compatible', baseURL: 'http://127.0.0.1:2/v1', model: 'm-two',
-          scope: { classes: 'always', rules: 'always', parent: 'always' },
         });
         await frames();
         const root = deepFind('heo-ai-settings')?.shadowRoot;
@@ -698,7 +709,6 @@
         const mine = {
           id: 'mine-persist', label: 'Hand made', transport: 'local',
           provider: 'openai-compatible', baseURL: 'http://127.0.0.1:9/v1', model: 'kept',
-          scope: { classes: 'always', rules: 'always', parent: 'always' },
         };
         /*
          * An environment id, which must NOT be written.
@@ -772,7 +782,7 @@
         for (const one of engine.ai.list()) engine.ai.remove(one.id);
         const base = {
           id, label: 'Base URL probe', transport: 'proxy', provider: 'openai-compatible',
-          model: 'm', scope: { classes: 'always', rules: 'always', parent: 'always' },
+          model: 'm',
         };
         engine.ai.upsert(base);
         engine.setAiSettings(true);
@@ -847,59 +857,22 @@
           group.leavesATypedHostAlone === true;
 
         engine.ai.remove(id);
-        await frames();
-      }
-
-      /* ------------------------------------------------------------------ *
-       * 15. The settings name the scope section and list the element in it.
-       * ------------------------------------------------------------------ */
-      progress.textContent = 'theScopeSectionIsNamedAndComplete';
-      {
+        /*
+         * A working provider put back before leaving.
+         *
+         * This group emptied the list so the form would show its own probe, and the popover shows
+         * the setup state rather than the prompt when nothing is configured — so every group after
+         * this one would find no chips, no box and no quick actions.
+         */
         engine.ai.upsert({
-          id: 'scope-probe', label: 'Scope probe', transport: 'local',
-          provider: 'openai-compatible', baseURL: 'http://127.0.0.1:9/v1', model: 'm',
-          scope: { classes: 'always', rules: 'ask', parent: 'always' },
+          id: 'restored-after-probe',
+          label: 'Scripted',
+          transport: 'local',
+          provider: 'openai-compatible',
+          baseURL: 'http://127.0.0.1:9/v1',
+          model: 'm',
         });
-        await frames();
-        const root = deepFind('heo-ai-settings')?.shadowRoot;
-        const flat = (node) => (node?.textContent ?? '').replace(/\s+/g, ' ').trim();
-        const rows = Array.from(root?.querySelectorAll('.scope') ?? []);
-        const first = rows[0];
-        const firstSelect = first?.querySelector('select');
-
-        results.theScopeSectionIsNamedAndComplete = {
-          heading: flat(root?.querySelector('.scope-title')),
-          isNamed: flat(root?.querySelector('.scope-title')) === 'Scope of AI changes',
-          // Four rows: the element, then the three permissions.
-          rowCount: rows.length,
-          labels: rows.map((one) => flat(one.querySelector('.text b'))),
-          // The element is first, and stated rather than offered.
-          elementIsFirst: flat(first?.querySelector('.text b')) === 'The selected element',
-          elementIsFixed: first?.classList.contains('fixed') === true,
-          elementReadsAlways: flat(firstSelect) === 'Always',
-          elementCannotChange: firstSelect?.disabled === true,
-          elementHasNoOtherChoice: (firstSelect?.options?.length ?? 0) === 1,
-          // And it stays legible rather than being dimmed to the usual disabled opacity.
-          elementIsNotGreyedOut: firstSelect
-            ? getComputedStyle(firstSelect).opacity === '1'
-            : false,
-          // Each permission explains what the thing is, not only how far it reaches.
-          everyPermissionExplainsItself: rows.slice(1).every(
-            (one) => flat(one.querySelector('.text span')).length > 80,
-          ),
-        };
-        const group = results.theScopeSectionIsNamedAndComplete;
-        group.ok =
-          group.isNamed === true &&
-          group.rowCount === 4 &&
-          group.elementIsFirst === true &&
-          group.elementIsFixed === true &&
-          group.elementReadsAlways === true &&
-          group.elementCannotChange === true &&
-          group.elementHasNoOtherChoice === true &&
-          group.elementIsNotGreyedOut === true &&
-          group.everyPermissionExplainsItself === true;
-
+        // Closed here rather than by the next group: this is the group that opened it.
         engine.setAiSettings(false);
         await frames();
       }
@@ -915,6 +888,18 @@
         const menu = () => deepFind('heo-ai-menu')?.shadowRoot;
         const chips = () => Array.from(menu()?.querySelectorAll('.scope') ?? []);
         const flat = (node) => (node?.textContent ?? '').replace(/\s+/g, ' ').trim();
+
+        /*
+         * Back to minimal, because an earlier group widened it and the setting is sticky.
+         *
+         * What the default *is* was captured at mount as `defaultContextScope`; what this group
+         * checks is the behaviour at minimal scope, so it establishes minimal rather than assuming
+         * whatever the last group left behind.
+         */
+        engine.setAiContextScope('classes', false);
+        engine.setAiContextScope('rules', false);
+        engine.setAiContextScope('parent', false);
+        await frames();
 
         const labels = chips().map((one) => flat(one));
         const onAtStart = chips().filter((one) =>
@@ -947,6 +932,12 @@
           labels,
           // Four things offered, and only the element on to begin with.
           fourChips: chips().length === 4,
+          // The documented default, from the read taken before any group ran.
+          defaultContextScope,
+          defaultIsTheElementAlone:
+            defaultContextScope.classes === false &&
+            defaultContextScope.rules === false &&
+            defaultContextScope.parent === false,
           onlyTheElementAtStart: onAtStart.length === 1 && /this element/i.test(onAtStart[0]),
           // The other three are real switches, not badges.
           threeAreSwitches: switches.length === 3,
@@ -964,7 +955,7 @@
           leanWithholdsDeclarations: (lean.classes ?? []).every(
             (one) => one.declarations === undefined,
           ),
-          leanSaysWhatIsMissing: /Not included in this request/.test(asked[0]?.context ?? ''),
+          leanSaysWhatIsMissing: /Out of scope for this request/.test(asked[0]?.context ?? ''),
           // Pressing the chip changes what actually goes out, which is the whole point.
           chipFlipped: parentChip?.getAttribute('aria-checked') === 'true',
           wideWithheld: wide.withheld,
@@ -975,6 +966,7 @@
         const group = results.contextChipsChooseWhatIsSent;
         group.ok =
           group.fourChips === true &&
+          group.defaultIsTheElementAlone === true &&
           group.onlyTheElementAtStart === true &&
           group.threeAreSwitches === true &&
           group.startUnchecked === true &&

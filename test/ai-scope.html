@@ -76,20 +76,19 @@
         watcher.observe(host, { subtree: true, childList: true, attributes: true, characterData: true });
       }
 
-      /** Configure one provider set with an explicit scope policy. */
-      const withScope = (scope) => {
-        engine.ai.import([{
-          id: 'test-set',
-          label: 'Scripted',
-          transport: 'local',
-          provider: 'openai-compatible',
-          baseURL: 'http://127.0.0.1:1/v1',
-          model: 'test',
-          scope,
-        }]);
+      /*
+       * The scope for the next batch of reviews.
+       *
+       * A variable rather than a provider setting: scope belongs to the request now, and the
+       * broker is handed it directly. Absent keys are false, so `withScope({})` denies everything
+       * beyond the element and `withScope({rules: true})` grants exactly one thing.
+       */
+      let scope = { classes: false, rules: false, parent: false };
+      const withScope = (next) => {
+        scope = { classes: false, rules: false, parent: false, ...next };
       };
 
-      const review = (op) => engine.ai.review(op, subject);
+      const review = (op) => engine.ai.review(op, subject, scope);
       /** A refusal, with its sentence, so a wrong reason is as visible as a wrong verdict. */
       const refusal = (op) => {
         const verdict = review(op);
@@ -103,7 +102,7 @@
        * broker refuses everything, or because nothing was ever wired up.
        * ------------------------------------------------------------------ */
       progress.textContent = 'acceptsWhatItShould';
-      withScope({ classes: 'always', rules: 'always', parent: 'always' });
+      withScope({ classes: true, rules: true, parent: true });
       {
         const accepted = {
           setText: review({ op: 'setText', html: '<b>Bold words.</b>' }),
@@ -180,16 +179,14 @@
        * ------------------------------------------------------------------ */
       progress.textContent = 'aClassRuleIsAClassEdit';
       {
-        withScope({ classes: 'always', rules: 'always', parent: 'always' });
+        withScope({ classes: true, rules: true, parent: true });
         const asRule = review({ op: 'upsertRule', selector: '.card', declarations: { padding: '20px' } });
 
-        withScope({ rules: 'always' });
+        withScope({ rules: true });
         const withoutClasses = refusal({
           op: 'upsertRule', selector: '.card', declarations: { padding: '20px' },
         });
 
-        withScope({ classes: 'ask', rules: 'always' });
-        const whenAsked = review({ op: 'upsertRule', selector: '.card', declarations: { padding: '20px' } });
 
         results.aClassRuleIsAClassEdit = {
           accepted: asRule.ok,
@@ -200,8 +197,9 @@
           namesTheClass: asRule.ok ? asRule.plan.op.name === 'card' : null,
           // Granting rules alone is not a way in.
           refusedWithRulesOnly: withoutClasses !== null,
-          // And `ask` on classes still asks, however the request was spelled.
-          asksWhenClassesAsk: whenAsked.ok ? whenAsked.plan.allowance === 'ask' : null,
+          // And the refusal names Classes, which is the switch that would allow it — not Rules,
+          // which is the one the request was spelled in terms of.
+          refusalNamesClasses: /Classes is switched off/.test(withoutClasses ?? ''),
           reasons: { withoutClasses },
         };
         const group = results.aClassRuleIsAClassEdit;
@@ -211,8 +209,8 @@
           group.rewrittenAsAClassUpsert === true &&
           group.namesTheClass === true &&
           group.refusedWithRulesOnly === true &&
-          group.asksWhenClassesAsk === true;
-        withScope({ classes: 'always', rules: 'always', parent: 'always' });
+          group.refusalNamesClasses === true;
+        withScope({ classes: true, rules: true, parent: true });
       }
 
       /* ------------------------------------------------------------------ *
@@ -301,7 +299,7 @@
       }
 
       /* ------------------------------------------------------------------ *
-       * 5. A scope left off the set is a refusal, not a question.
+       * 5. A scope switched off is a refusal, and the element is never gated.
        * ------------------------------------------------------------------ */
       progress.textContent = 'honoursTheScopePolicy';
       withScope({});
@@ -326,60 +324,89 @@
       }
 
       /* ------------------------------------------------------------------ *
-       * 6. `ask` reaches the broker as a question, not as a refusal.
+       * 6. Each switch gates exactly its own scope, and nothing asks.
+       *
+       * There used to be a third state here: a scope could be set to `ask`, which passed the
+       * boundary and made the session raise a dialog. It is gone. Scope is chosen for the request
+       * a moment before it is sent and costs one click to change, so interrupting to ask about it
+       * was worse than not asking — and the boundary is now a plain yes or no.
        * ------------------------------------------------------------------ */
-      progress.textContent = 'asksRatherThanRefusing';
-      withScope({ classes: 'ask', rules: 'always', parent: 'ask' });
+      progress.textContent = 'eachSwitchGatesItsOwnScope';
       {
-        const asked = review({ op: 'upsertClass', name: 'promo', declarations: { color: 'red' } });
-        const allowed = review({ op: 'upsertRule', selector: '#subject h2', declarations: { color: 'red' } });
-        const parent = review({ op: 'setParentStyles', declarations: { gap: '4px' } });
-        results.asksRatherThanRefusing = {
-          classPassesTheBoundary: asked.ok,
-          classNeedsAsking: asked.ok ? asked.plan.allowance === 'ask' : null,
-          ruleIsAllowedOutright: allowed.ok ? allowed.plan.allowance === 'always' : null,
-          parentNeedsAsking: parent.ok ? parent.plan.allowance === 'ask' : null,
-          // The widening the approval dialog performs, and its effect on the next review.
-          widenedTakesEffect: (() => {
-            engine.ai.widen('classes');
-            const again = review({ op: 'upsertClass', name: 'promo', declarations: { color: 'red' } });
-            return again.ok && again.plan.allowance === 'always';
-          })(),
-          // Widening one kind must not widen another.
-          didNotWidenTheRest: review({ op: 'setParentStyles', declarations: { gap: '4px' } }).plan?.allowance === 'ask',
+        const only = (key) => {
+          withScope({ [key]: true });
+          return {
+            classes: review({ op: 'upsertClass', name: 'promo', declarations: { color: 'red' } }),
+            rules: review({ op: 'upsertRule', selector: '#subject h2', declarations: { color: 'red' } }),
+            parent: review({ op: 'setParentStyles', declarations: { gap: '4px' } }),
+          };
         };
-        const group = results.asksRatherThanRefusing;
-        group.ok =
-          group.classPassesTheBoundary === true &&
-          group.classNeedsAsking === true &&
-          group.ruleIsAllowedOutright === true &&
-          group.parentNeedsAsking === true &&
-          group.widenedTakesEffect === true &&
-          group.didNotWidenTheRest === true;
-      }
+        const withClasses = only('classes');
+        const withRules = only('rules');
+        const withParent = only('parent');
 
+        // Whether every verdict is `ok` exactly when its own switch is the one that is on.
+        const gatesCleanly = (verdicts, key) =>
+          Object.entries(verdicts).every(([name, verdict]) => verdict.ok === (name === key));
+
+        withScope({ classes: true });
+        const granted = review({ op: 'upsertClass', name: 'promo', declarations: { color: 'red' } });
+        withScope({});
+        const denied = review({ op: 'upsertClass', name: 'promo', declarations: { color: 'red' } });
+
+        results.eachSwitchGatesItsOwnScope = {
+          classesOnlyAllowsClasses: gatesCleanly(withClasses, 'classes'),
+          rulesOnlyAllowsRules: gatesCleanly(withRules, 'rules'),
+          parentOnlyAllowsParent: gatesCleanly(withParent, 'parent'),
+          // Two states, not three: a plan carries no allowance to ask about any more.
+          noAllowanceOnAPlan: granted.ok && !('allowance' in granted.plan),
+          onMeansAllowed: granted.ok === true,
+          offMeansRefused: denied.ok === false,
+          // The refusal names the switch to flip and where it is, not a settings screen.
+          refusalNamesTheChip: /switched off for this request/i.test(denied.reason ?? ''),
+          refusalPointsAtThePrompt: /beside the prompt/i.test(denied.reason ?? ''),
+          refusalOffersTheElement: /element itself, which is always allowed/i.test(denied.reason ?? ''),
+          reason: denied.reason ?? null,
+        };
+        const group = results.eachSwitchGatesItsOwnScope;
+        group.ok = Object.entries(group).every(
+          ([key, value]) => key === 'ok' || key === 'reason' || value === true,
+        );
+      }
       /* ------------------------------------------------------------------ *
-       * 7. With no provider configured, nothing is permitted beyond the element.
+       * 7. The default scope permits the element and nothing else.
+       *
+       * `DEFAULT_AI_CONTEXT_SCOPE` is what a fresh session starts with, and this asserts it denies
+       * by construction rather than by a setting somebody remembered to make.
        * ------------------------------------------------------------------ */
       progress.textContent = 'deniesByDefault';
       engine.ai.import([]);
       {
+        // Whatever a fresh store holds, not a literal — the point is the shipped default.
+        scope = { ...engine.store.value.aiContextScope };
         results.deniesByDefault = {
+          defaultScope: scope,
+          defaultIsMinimal: scope.classes === false && scope.rules === false && scope.parent === false,
+          // A provider is still needed to send anything, and still carries no permission.
           noProvider: engine.ai.configured === false,
-          emptyPolicy: Object.keys(engine.ai.policy()).length === 0,
           refusesClasses: refusal({ op: 'upsertClass', name: 'promo', declarations: { color: 'red' } }) !== null,
           refusesRules: refusal({ op: 'upsertRule', selector: '#subject h2', declarations: { color: 'red' } }) !== null,
           refusesParent: refusal({ op: 'setParentStyles', declarations: { gap: '4px' } }) !== null,
+          // And the element is still fully editable with nothing granted at all.
+          stillEditsTheElement: review({ op: 'setStyles', declarations: { color: 'red' } }).ok,
+          stillRewritesTheText: review({ op: 'setText', html: 'New <b>words</b>.' }).ok,
         };
         const group = results.deniesByDefault;
-        group.ok = Object.entries(group).every(([key, value]) => key === 'ok' || value === true);
+        group.ok = Object.entries(group).every(
+          ([key, value]) => key === 'ok' || key === 'defaultScope' || value === true,
+        );
       }
 
       /* ------------------------------------------------------------------ *
        * 8. Nonsense is refused rather than half-understood.
        * ------------------------------------------------------------------ */
       progress.textContent = 'refusesNonsense';
-      withScope({ classes: 'always', rules: 'always', parent: 'always' });
+      withScope({ classes: true, rules: true, parent: true });
       {
         const reasons = {
           notAnObject: refusal('setStyles'),

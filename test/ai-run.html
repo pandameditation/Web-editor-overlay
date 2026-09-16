@@ -57,12 +57,23 @@
 
       const subject = document.getElementById('subject');
 
-      /** One provider set, every scope granted outright so no dialog interrupts. */
+      /** One provider set. Providers carry no permission; scope is the popover's business. */
       const openScope = () => engine.ai.import([{
         id: 'scripted', label: 'Scripted', transport: 'local',
         provider: 'openai-compatible', baseURL: 'http://127.0.0.1:1/v1', model: 'test',
-        scope: { classes: 'always', rules: 'always', parent: 'always' },
       }]);
+      /*
+       * Every scope switched on for the fixture as a whole.
+       *
+       * A run defaults to whatever the popover currently says, and that starts minimal — which is
+       * right, and would make most of the groups below refuse the very operations they exist to
+       * apply. They are about streaming, undo, records and side effects rather than about the
+       * boundary; the groups that *are* about the boundary set their own scope explicitly.
+       */
+      const openRequestScope = () => {
+        for (const key of ['classes', 'rules', 'parent']) engine.setAiContextScope(key, true);
+      };
+      openRequestScope();
 
       /**
        * A scripted stream of operations.
@@ -331,70 +342,6 @@
       }
 
       /* ------------------------------------------------------------------ *
-       * 6. An `ask` scope stops the run until it is answered.
-       * ------------------------------------------------------------------ */
-      progress.textContent = 'waitsForAnApproval';
-      {
-        await reset();
-        engine.ai.import([{
-          id: 'careful', label: 'Careful', transport: 'local',
-          provider: 'openai-compatible', baseURL: 'http://127.0.0.1:1/v1', model: 'test',
-          scope: { classes: 'ask', rules: 'always', parent: 'ask' },
-        }]);
-
-        /** Answer whichever question is up, after letting it be observed. */
-        const answerWith = async (how) => {
-          for (let i = 0; i < 80; i += 1) {
-            if (engine.store.value.confirm) {
-              const ask = engine.store.value.confirm;
-              const seen = { title: ask.title, message: ask.message, remember: ask.remember?.label ?? null };
-              if (how === 'approve') engine.resolveConfirm();
-              else if (how === 'always') engine.resolveConfirm({ remember: true });
-              else engine.cancelConfirm();
-              return seen;
-            }
-            await wait(25);
-          }
-          return null;
-        };
-
-        let firstAsk = null;
-        let secondAsk = null;
-        const run = engine.runAiOperations(scripted([
-          { op: 'upsertClass', name: 'card', declarations: { padding: '30px' } },
-          { op: 'setParentStyles', declarations: { gap: '22px' } },
-          { op: 'summary', text: 'Asked first.' },
-        ], 20), 'ask me first', subject);
-
-        firstAsk = await answerWith('approve');
-        secondAsk = await answerWith('dismiss');
-        const outcome = await run;
-
-        results.waitsForAnApproval = {
-          askedAboutTheClass: firstAsk?.title ?? null,
-          // The dialog's sentence is the broker's own side-effect text, not a second wording.
-          classMessageNamedTheClass: /\.card/.test(firstAsk?.message ?? ''),
-          offeredAStandingPermission: /Always allow/.test(firstAsk?.remember ?? ''),
-          askedAboutTheParent: secondAsk?.title ?? null,
-          applied: outcome.applied,
-          skipped: outcome.skipped,
-          // Approved landed, declined did not.
-          classLanded: engine.classes.get('card')?.declarations.padding === '30px',
-          parentUntouched: document.getElementById('host').getAttribute('style') === null,
-        };
-        const group = results.waitsForAnApproval;
-        group.ok =
-          group.askedAboutTheClass === 'Change a shared class?' &&
-          group.classMessageNamedTheClass === true &&
-          group.offeredAStandingPermission === true &&
-          group.askedAboutTheParent === 'Change the container?' &&
-          group.applied === 1 &&
-          group.skipped === 1 &&
-          group.classLanded === true &&
-          group.parentUntouched === true;
-      }
-
-      /* ------------------------------------------------------------------ *
        * 7. A rule the page's own stylesheet declares is patched, not overridden.
        * ------------------------------------------------------------------ */
       progress.textContent = 'patchesThePagesOwnRule';
@@ -468,6 +415,245 @@
       }
 
       /* ------------------------------------------------------------------ *
+       * A nested node can be styled with no permission at all.
+       *
+       * The complaint this pins: with only Classes enabled, a request to restyle the bold text
+       * inside the element came back "Nothing was changed — changing the nested <b> elements or
+       * adding a rule is not permitted". That was wrong, and it was the prompt's fault rather than
+       * the broker's. Everything inside the element is the element's own markup, setText is
+       * element-scoped and therefore always allowed, and the sanitiser keeps style and class
+       * attributes on descendants. So the route existed and the model was never told about it.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'nestedNodesAreReachableWithoutPermission';
+      {
+        engine.ai.upsert({
+          id: 'nested-probe',
+          label: 'Nested probe',
+          transport: 'local',
+          provider: 'openai-compatible',
+          baseURL: 'http://127.0.0.1:9/v1',
+          model: 'm',
+        });
+        engine.ai.activate('nested-probe');
+
+        const host = document.createElement('p');
+        host.id = 'nested-host';
+        host.innerHTML = 'Some <b>bold</b> text.';
+        subject.append(host);
+        api.select(host);
+
+        const rulesBefore = engine.rules.list().length;
+        // Nothing in scope beyond the element itself.
+        const bare = { classes: false, rules: false, parent: false };
+
+        const styled = await engine.runAiOperations(
+          (async function* () {
+            yield {
+              op: 'setText',
+              html: 'Some <b style="color: rgb(204, 0, 0)">bold</b> text.',
+            };
+            yield { op: 'summary', text: 'Made the bold text red.' };
+          })(),
+          'make the bold text red',
+          host,
+          bare,
+        );
+        /*
+         * Snapshotted here, not read at assertion time.
+         *
+         * `setInnerHTML` reuses the nodes it can — that is what keeps undo and element identity
+         * working — so the second run below rewrites the very same <b>, swapping its style
+         * attribute for a class. A variable pointing at it therefore describes the *last* run
+         * whenever it is read. Everything asserted about this run is captured now.
+         */
+        const firstRun = (() => {
+          const bold = host.querySelector('b');
+          return {
+            style: bold?.getAttribute('style') ?? '',
+            colour: bold ? getComputedStyle(bold).color : null,
+            markup: host.innerHTML,
+          };
+        })();
+
+        // And the class route, which needs only the permission the user actually granted.
+        const withClasses = await engine.runAiOperations(
+          (async function* () {
+            yield { op: 'upsertClass', name: 'ai-strong', declarations: { 'font-style': 'italic' } };
+            yield { op: 'setText', html: 'Some <b class="ai-strong">bold</b> text.' };
+            yield { op: 'summary', text: 'Gave the bold text a reusable class.' };
+          })(),
+          'style the bold text with a class',
+          host,
+          { classes: true, rules: false, parent: false },
+        );
+        const secondRun = (() => {
+          const bold = host.querySelector('b');
+          return {
+            wearsTheClass: bold?.classList.contains('ai-strong') === true,
+            fontStyle: bold ? getComputedStyle(bold).fontStyle : null,
+          };
+        })();
+
+        results.nestedNodesAreReachableWithoutPermission = {
+          // With nothing granted at all, the inline route still lands.
+          styledApplied: styled.applied,
+          styledEntries: styled.entries.map((one) => one.outcome),
+          markupAfterTheInlineRoute: firstRun.markup,
+          keptTheInlineStyleOnTheChild: firstRun.style.includes('color'),
+          boldColour: firstRun.colour,
+          childIsActuallyRed: firstRun.colour === 'rgb(204, 0, 0)',
+          // The sanitiser did not strip it, which is what makes the advice honest.
+          nothingWasStripped: !styled.entries.some((one) => /removed|stripped/i.test(
+            (one.notes ?? []).join(' '),
+          )),
+          // No rule was needed, so none was written.
+          noRuleWasNeeded: engine.rules.list().length === rulesBefore,
+
+          // The class route: define it once, wear it on the child.
+          classApplied: withClasses.applied,
+          classWasDefined: engine.classes.get('ai-strong')?.declarations['font-style'] === 'italic',
+          childWearsTheClass: secondRun.wearsTheClass,
+          childIsActuallyItalic: secondRun.fontStyle === 'italic',
+        };
+        const group = results.nestedNodesAreReachableWithoutPermission;
+        group.ok =
+          group.styledApplied === 1 &&
+          group.keptTheInlineStyleOnTheChild === true &&
+          group.childIsActuallyRed === true &&
+          group.noRuleWasNeeded === true &&
+          group.classApplied === 2 &&
+          group.classWasDefined === true &&
+          group.childWearsTheClass === true &&
+          group.childIsActuallyItalic === true;
+
+        host.remove();
+        engine.ai.remove('nested-probe');
+        api.select(subject);
+      }
+
+      /* ------------------------------------------------------------------ *
+       * A withheld scope is a refused scope.
+       *
+       * The bug a user found: the popover chips narrowed what the model was *shown* and left it
+       * fully entitled to write what it had not been shown. Unticking "CSS rules" therefore removed
+       * the rules from the prompt and the model, told rules existed and that it might change them,
+       * invented a selector — which landed in the rule registry and showed up in the Tokens panel.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'aWithheldScopeCannotBeChanged';
+      {
+        engine.ai.upsert({
+          id: 'scope-intersect',
+          label: 'Intersect probe',
+          transport: 'local',
+          provider: 'openai-compatible',
+          baseURL: 'http://127.0.0.1:9/v1',
+          model: 'm',
+          // The provider permits everything, which is the default and the point: the narrowing
+          // has to come from the request, not from the settings.,
+        });
+        engine.ai.activate('scope-intersect');
+        api.select(subject);
+
+        const rulesBefore = engine.rules.list().length;
+        const classesBefore = engine.classes.list().length;
+        const ops = () => (async function* () {
+          yield { op: 'upsertRule', selector: '#subject', declarations: { 'letter-spacing': '3px' } };
+          yield { op: 'upsertClass', name: 'ai-invented', declarations: { padding: '9px' } };
+          yield { op: 'setStyles', declarations: { opacity: '0.7' } };
+          yield { op: 'summary', text: 'Tried a rule, a class and an inline style.' };
+        })();
+
+        /*
+          * Minimal scope, set the way the chips set it and read back from the store.
+          *
+          * `runAiOperations` defaults to whatever the popover currently says, so this drives the
+          * real path rather than passing a scope in beside it.
+          */
+        engine.setAiContextScope('classes', false);
+        engine.setAiContextScope('rules', false);
+        engine.setAiContextScope('parent', false);
+        const leanScope = { ...engine.store.value.aiContextScope };
+        const lean = await engine.runAiOperations(
+          ops(),
+          'probe with rules and classes withheld',
+          subject,
+        );
+        const leanText = JSON.stringify(lean.entries);
+        /*
+         * Read now, between the two runs.
+         *
+         * These are facts about the registries after the narrow run, and the wide run below
+         * deliberately writes both — so asking at assertion time reported the state afterwards and
+         * called the fix broken. Same shape of mistake as reading an aria-checked after clicking it.
+         */
+        const afterLean = {
+          rules: engine.rules.list().length,
+          classes: engine.classes.list().length,
+          invented: engine.classes.get('ai-invented') !== undefined,
+        };
+
+        // Now with both switched on, which is the discriminating half.
+        engine.setAiContextScope('classes', true);
+        engine.setAiContextScope('rules', true);
+        const wideScope = { ...engine.store.value.aiContextScope };
+        const wide = await engine.runAiOperations(
+          ops(),
+          'probe with rules and classes included',
+          subject,
+        );
+
+        results.aWithheldScopeCannotBeChanged = {
+          // The request is the only thing that decides; a provider carries no permission at all.
+          providerCarriesNoScope: 'scope' in (engine.ai.get('scope-intersect') ?? {}) === false,
+          leanScope,
+          leanScopeIsMinimal:
+            leanScope.classes === false && leanScope.rules === false && leanScope.parent === false,
+          wideScope,
+          wideScopeOpenedBoth: wideScope.classes === true && wideScope.rules === true,
+          leanEntries: lean.entries.map((one) => one.outcome),
+          // Refused, not silently dropped and not applied.
+          refusedTheRule: lean.entries.some(
+            (one) => one.outcome === 'refused' && /CSS rules/i.test(one.text),
+          ),
+          refusedTheClass: lean.entries.some(
+            (one) => one.outcome === 'refused' && /Reusable classes/i.test(one.text),
+          ),
+          // The element's own inline style is untouched by any of this.
+          appliedTheInlineStyle: /opacity/.test(subject.getAttribute('style') ?? ''),
+          leanApplied: lean.applied,
+          // Nothing reached either registry, which is what the user actually saw go wrong.
+          noRuleWasWritten: afterLean.rules === rulesBefore,
+          noClassWasWritten: afterLean.classes === classesBefore,
+          didNotInventTheClass: afterLean.invented === false,
+          leanSaysWhy: /switched off for this request/i.test(leanText),
+
+          // With the scopes included, the same operations go through.
+          wideApplied: wide.applied,
+          wideWroteTheRule: engine.rules.list().length > rulesBefore,
+          wideWroteTheClass: engine.classes.get('ai-invented') !== undefined,
+        };
+        const group = results.aWithheldScopeCannotBeChanged;
+        group.ok =
+          group.providerCarriesNoScope === true &&
+          group.leanScopeIsMinimal === true &&
+          group.wideScopeOpenedBoth === true &&
+          group.refusedTheRule === true &&
+          group.refusedTheClass === true &&
+          group.appliedTheInlineStyle === true &&
+          group.leanApplied === 1 &&
+          group.noRuleWasWritten === true &&
+          group.noClassWasWritten === true &&
+          group.didNotInventTheClass === true &&
+          group.leanSaysWhy === true &&
+          group.wideApplied === 3 &&
+          group.wideWroteTheRule === true &&
+          group.wideWroteTheClass === true;
+
+        openRequestScope();
+        engine.ai.remove('scope-intersect');
+      }
+
+      /* ------------------------------------------------------------------ *
        * A provider with no base URL is refused, not sent to this page.
        *
        * This fixture mounts without a transport stub, so a request here goes through the real
@@ -495,7 +681,6 @@
           transport: 'in-page',
           provider: 'openai-compatible',
           model: 'm',
-          scope: { classes: 'always', rules: 'always', parent: 'always' },
         });
         engine.ai.activate('no-host');
         await engine.ai.setKey('no-host', 'sk-fixture-only-never-sent');

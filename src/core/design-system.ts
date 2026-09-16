@@ -358,7 +358,7 @@ export function snapshotDesignSystem(registries: DesignRegistries): DesignSystem
     // Deep enough to put back, like the declaration maps above: `scope` is a nested object and a
     // snapshot sharing it would drift along with the thing it exists to preserve.
     ...(registries.ai
-      ? { ai: registries.ai.list().map((entry) => ({ ...entry, scope: { ...entry.scope } })) }
+      ? { ai: registries.ai.list().map((entry) => ({ ...entry })) }
       : {}),
   };
 }

@@ -76,12 +76,10 @@
             id: 'primary', label: 'My OpenAI', transport: 'in-page',
             provider: 'openai', baseURL: 'https://api.openai.com/v1', model: 'gpt-4o-mini',
             systemPrompt: 'Prefer short copy.',
-            scope: { classes: 'ask', rules: 'always' },
           },
           {
             id: 'local', label: 'Ollama', transport: 'local',
             provider: 'openai-compatible', baseURL: 'http://127.0.0.1:11434/v1', model: 'llama3',
-            scope: { parent: 'always' },
           },
         ]);
         await frames();
@@ -141,7 +139,8 @@
           // And it does carry the settings, or it would be safe by being empty.
           carriesBothSets: (decoded?.ai ?? []).length === 2,
           carriedTheModel: (decoded?.ai ?? []).some((one) => one.model === 'gpt-4o-mini'),
-          carriedTheScope: (decoded?.ai ?? []).some((one) => one.scope?.classes === 'ask'),
+          // Settings travel; permission does not. Scope is a per-request choice, not a set field.
+          carriedNoScope: (decoded?.ai ?? []).every((one) => one.scope === undefined),
           carriedTheSystemPrompt: (decoded?.ai ?? []).some(
             (one) => one.systemPrompt === 'Prefer short copy.',
           ),
@@ -156,7 +155,7 @@
           group.jsonHasNoKeyField === true &&
           group.carriesBothSets === true &&
           group.carriedTheModel === true &&
-          group.carriedTheScope === true &&
+          group.carriedNoScope === true &&
           group.carriedTheSystemPrompt === true &&
           group.setsHaveNoSecretField === true;
       }
@@ -193,7 +192,9 @@
           ai: [{
             id: 'sneaky', label: 'Sneaky', transport: 'in-page', provider: 'openai',
             baseURL: 'https://evil.example/v1', model: 'gpt-4o-mini',
-            scope: { classes: 'always', rules: 'nonsense', parent: 'always' },
+            // A permission, which a document has no business carrying at all now: scope is chosen
+            // per request in the popover and is not a portable field.
+            scope: { classes: 'always', rules: 'always', parent: 'always' },
             // Every one of these must be gone by the time it reaches the registry.
             apiKey: SECRET, api_key: SECRET, secret: SECRET, headers: { authorization: SECRET },
           }],
@@ -209,15 +210,19 @@
           // Exactly the portable fields, nothing more.
           onlyPortableFields: arrived
             ? Object.keys(arrived).every((name) =>
-              ['id', 'label', 'transport', 'provider', 'baseURL', 'model', 'systemPrompt', 'scope']
+              ['id', 'label', 'transport', 'provider', 'baseURL', 'model', 'systemPrompt']
                 .includes(name))
             : false,
+          /*
+           * And no scope came with it.
+           *
+           * A document used to be able to decide what the AI could change on your page, because
+           * permission was a provider field and providers travel in a seed. It is a per-request
+           * choice now, so a document offering one is offering something that no longer exists.
+           */
+          scopeDidNotTravel: arrived ? !('scope' in arrived) : false,
+          noScopeInTheExport: !/"scope"/.test(reExported),
           noSecretSurvived: !reExported.includes(SECRET),
-          // An unrecognised allowance is denied, not passed through.
-          nonsenseScopeDropped: arrived ? arrived.scope.rules === undefined : null,
-          keptTheValidScopes: arrived
-            ? arrived.scope.classes === 'always' && arrived.scope.parent === 'always'
-            : null,
           /*
            * Importing replaces the provider list rather than merging into it.
            *
@@ -236,10 +241,59 @@
           group.setArrived === true &&
           group.onlyPortableFields === true &&
           group.noSecretSurvived === true &&
-          group.nonsenseScopeDropped === true &&
-          group.keptTheValidScopes === true &&
+          group.scopeDidNotTravel === true &&
+          group.noScopeInTheExport === true &&
           group.replacedRatherThanMerged === true &&
           group.originalKeyStillHeld === true;
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 4b. The request scope survives a reload, and storage cannot widen it.
+       *
+       * It is a preference about requests rather than a provider setting, so it is kept beside the
+       * provider list in sessionStorage — outliving a dev-server reload, dying with the tab. Read
+       * back defensively because anything else on this origin can write there, and a scope arriving
+       * with a truthy string in it would silently widen what the AI may change.
+       * ------------------------------------------------------------------ */
+      progress.textContent = 'theRequestScopeSurvivesAReload';
+      {
+        const KEY = 'heo.ai.scope';
+        sessionStorage.removeItem(KEY);
+        const beforeAnyChoice = engine.ai.restoreScope();
+
+        engine.setAiContextScope('rules', true);
+        await frames();
+        const stored = JSON.parse(sessionStorage.getItem(KEY) ?? 'null');
+        const restored = engine.ai.restoreScope();
+
+        // Anything on this origin can write here, so a truthy string must not read as granted.
+        sessionStorage.setItem(KEY, JSON.stringify({ classes: 'yes', rules: 1, parent: {} }));
+        const hostile = engine.ai.restoreScope();
+        sessionStorage.setItem(KEY, 'not json at all');
+        const garbage = engine.ai.restoreScope();
+
+        results.theRequestScopeSurvivesAReload = {
+          // Null before a choice is made, so "never chosen" is distinguishable from "minimal".
+          nullBeforeAnyChoice: beforeAnyChoice === null,
+          stored,
+          wroteWhatWasChosen: stored?.rules === true && stored?.classes === false,
+          restored,
+          readsBackWhatWasWritten: restored?.rules === true && restored?.parent === false,
+          hostile,
+          // Rebuilt field by field, so only a real `true` grants anything.
+          truthyStringsDoNotGrant:
+            hostile?.classes === false && hostile?.rules === false && hostile?.parent === false,
+          garbageIsIgnored: garbage === null,
+        };
+        const group = results.theRequestScopeSurvivesAReload;
+        group.ok =
+          group.nullBeforeAnyChoice === true &&
+          group.wroteWhatWasChosen === true &&
+          group.readsBackWhatWasWritten === true &&
+          group.truthyStringsDoNotGrant === true &&
+          group.garbageIsIgnored === true;
+
+        sessionStorage.removeItem(KEY);
       }
 
       /* ------------------------------------------------------------------ *

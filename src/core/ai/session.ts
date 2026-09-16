@@ -50,18 +50,16 @@ export interface SessionHost extends CssRegistries {
   history: History;
   /** Called after every applied operation, so panels redraw as the run progresses. */
   changed: () => void;
-  /**
-   * Ask the user about one operation. Resolves true to go ahead.
-   *
-   * A function rather than a flag because the answer arrives from a modal, and the run has to
-   * wait for it. Awaited one at a time — see `#consent`.
-   */
-  consent: (plan: PlannedOperation) => Promise<boolean>;
 }
 
 /** One line of the run's own account of itself, for the transcript in the menu. */
 export interface RunEntry {
-  /** `done` for applied, `skipped` when the user declined, `refused` when the broker did. */
+  /**
+   * `done` for applied, `refused` when the broker would not allow it.
+   *
+   * `skipped` remains in the union because an aborted run still reports what it never reached; it
+   * no longer means "the user said no", since there is nothing left to say no to.
+   */
   outcome: 'done' | 'skipped' | 'refused';
   text: string;
   /** Present on `done` when the change reaches past the selected element. */
@@ -165,16 +163,16 @@ export class AiRun {
       return;
     }
 
-    // Asked before applying, and awaited: the user is answering about this change, so the page
-    // must not already show it. A run that applied first and asked second would be asking
-    // permission for something it had done.
-    if (plan.allowance === 'ask' && !(await this.#host.consent(plan))) {
-      this.#entries.push({ outcome: 'skipped', text: plan.describe });
-      return;
-    }
-    // The answer took a modal's worth of time, in which the user may have pressed Stop.
-    if (this.#aborted || this.#settled) return;
-
+    /*
+     * Nothing to ask.
+     *
+     * There used to be a consent dialog here, for a scope a provider was configured to "ask" about.
+     * The question has moved to the moment before the request instead: the popover's switches say
+     * what this request may touch, and they are one click from being changed — so interrupting to
+     * ask about a permission granted five seconds ago was worse than not asking. What reaches past
+     * the element is still reported, in the transcript and the closing toast, through
+     * `plan.sideEffect`.
+     */
     const command = this.#build(plan);
     if (!command) {
       this.#entries.push({

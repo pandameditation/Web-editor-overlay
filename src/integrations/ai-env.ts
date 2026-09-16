@@ -1,4 +1,4 @@
-import { DEFAULT_AI_SCOPE, type AiProviderKind, type AiProviderSet } from '../core/ai/types.js';
+import type { AiProviderKind, AiProviderSet } from '../core/ai/types.js';
 
 /**
  * Finding the AI providers a machine already has.
@@ -264,7 +264,6 @@ export function publicProviderSets(found: readonly DiscoveredProvider[]): AiProv
     provider: one.provider,
     // `baseURL` deliberately omitted. The page is not told where its requests go.
     model: one.model,
-    scope: { ...DEFAULT_AI_SCOPE },
   }));
 }
 

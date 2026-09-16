@@ -1,18 +1,12 @@
 import { css, html, nothing, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
-import { DEFAULT_AI_SCOPE } from '../../core/ai/agent.js';
 import { testTransport, createTransport } from '../../core/ai/transport.js';
 import {
-  AI_SCOPE_CLASSES,
-  AI_SCOPE_CONSEQUENCE,
-  AI_SCOPE_LABELS,
-  AI_SELF_SCOPE,
   baseURLFor,
   DEFAULT_BASE_URL,
   describeTransport,
   type AiProviderKind,
   type AiProviderSet,
-  type AiScopeClass,
   type AiTransportKind,
 } from '../../core/ai/types.js';
 import { ModalController } from '../../core/modal.js';
@@ -297,68 +291,6 @@ export class HeoAiSettings extends HeoElement {
         gap: 7px;
       }
 
-      /* The permissions get a heading, because they are the only settings here about reach. */
-      .scope-title {
-        margin: 14px 0 3px;
-        font-size: 11.5px;
-        font-weight: 600;
-      }
-      .scope-lede {
-        margin: 0 0 2px;
-        color: var(--heo-text-dim);
-        font-size: 10.5px;
-        line-height: 1.5;
-      }
-
-      /*
-       * Scope rows: the permission, its consequence, and the choice, in that reading order.
-       *
-       * Top-aligned rather than centred now the explanation is two clauses long — a select
-       * floating against the vertical middle of four lines of text belongs to none of them.
-       */
-      .scope {
-        display: flex;
-        align-items: flex-start;
-        gap: 10px;
-        padding: 8px 0;
-        border-top: 1px solid var(--heo-line);
-      }
-      .scope .text {
-        flex: 1 1 auto;
-        min-width: 0;
-      }
-      .scope .text b {
-        display: block;
-        margin-bottom: 1px;
-        font-size: 11px;
-        font-weight: 600;
-      }
-      .scope .text span {
-        color: var(--heo-text-faint);
-        font-size: 10px;
-        line-height: 1.5;
-      }
-      .scope select {
-        width: auto;
-        flex: 0 0 auto;
-      }
-      /*
-       * The selected element's row is stated, not offered.
-       *
-       * Kept legible rather than dimmed to the usual disabled opacity: this is the row that says
-       * what the AI is allowed to do at all, and a greyed-out "Always" reads as unavailable
-       * rather than as settled.
-       */
-      .scope.fixed .text b {
-        color: var(--heo-accent);
-      }
-      .scope.fixed select:disabled {
-        opacity: 1;
-        border-color: var(--heo-accent-line);
-        background: var(--heo-accent-soft);
-        color: var(--heo-text);
-        cursor: default;
-      }
 
       .acts {
         display: flex;
@@ -463,18 +395,6 @@ export class HeoAiSettings extends HeoElement {
         /* One control per line, which is the whole point of the breakpoint. */
         .pair {
           grid-template-columns: minmax(0, 1fr);
-        }
-        /*
-         * The permission rows turn into label-above-control.
-         *
-         * Side by side, the consequence sentence — the part that has to be read rather than
-         * skimmed — was wrapping to four lines beside a select.
-         */
-        .scope {
-          flex-wrap: wrap;
-        }
-        .scope select.input {
-          width: 100%;
         }
         /* Actions below the sentence they belong to rather than squeezed against it. */
         .why {
@@ -778,20 +698,14 @@ export class HeoAiSettings extends HeoElement {
       </label>
 
       <!--
-        The permissions, under a heading that says what they are.
+        No scope section here.
 
-        Ungrouped, these read as three more settings between a textarea and a Test button. They
-        are the only settings on this screen that decide how far a change can travel, so they get
-        a title and the selected element is listed with them — see AI_SELF_SCOPE.
+        What the AI may change is decided per request, on the chips beside the prompt, not per
+        provider. It lived here and was wrong in two ways: it travelled in the design-system seed,
+        so somebody else's document arrived deciding what the AI could do to your page; and having
+        a standing permission meant it needed an "ask me" state, which then interrupted to ask
+        about something the user had set moments earlier.
       -->
-      <h3 class="scope-title">Scope of AI changes</h3>
-      <p class="scope-lede">
-        What this provider may edit when you ask it for something. Everything beyond the selected
-        element reaches other parts of the page.
-      </p>
-      ${this.#renderSelfScope()}
-      ${AI_SCOPE_CLASSES.map((scope) => this.#renderScope(set, scope))}
-
       <div class="acts">
         <button
           class="btn sm"
@@ -880,56 +794,6 @@ export class HeoAiSettings extends HeoElement {
     </label>`;
   }
 
-  /**
-   * The selected element, listed with the permissions but not one of them.
-   *
-   * A disabled select rather than a chip or a tick, so the four rows read as one list with one
-   * kind of answer in it. It is disabled rather than absent because "Always" is the fact worth
-   * stating: a reader deciding whether to allow class edits is comparing them against something,
-   * and that something should be on screen.
-   */
-  #renderSelfScope(): TemplateResult {
-    return html`<div class="scope fixed">
-      <span class="text">
-        <b>${AI_SELF_SCOPE.label}</b>
-        <span>${AI_SELF_SCOPE.consequence}</span>
-      </span>
-      <select
-        class="input"
-        disabled
-        aria-label=${`${AI_SELF_SCOPE.label} — always allowed and not changeable`}
-        title="The element you selected is always editable. That is what the AI is for."
-      >
-        <option selected>Always</option>
-      </select>
-    </div>`;
-  }
-
-  #renderScope(set: AiProviderSet, scope: AiScopeClass): TemplateResult {
-    const current = set.scope[scope];
-    return html`<div class="scope">
-      <span class="text">
-        <b>${AI_SCOPE_LABELS[scope]}</b>
-        <span>${AI_SCOPE_CONSEQUENCE[scope]}</span>
-      </span>
-      <select
-        class="input"
-        aria-label=${AI_SCOPE_LABELS[scope]}
-        @change=${(event: Event) => {
-        const value = (event.target as HTMLSelectElement).value;
-        const next = { ...set.scope };
-        if (value === 'never') delete next[scope];
-        else next[scope] = value as 'always' | 'ask';
-        this.editor.ai.upsert({ ...set, scope: next });
-      }}
-      >
-        <option value="always" ?selected=${current === 'always'}>Always</option>
-        <option value="ask" ?selected=${current === 'ask'}>Ask me</option>
-        <option value="never" ?selected=${!current}>Never</option>
-      </select>
-    </div>`;
-  }
-
   /* ---------------------------------------------------------------------- */
 
   #add(): void {
@@ -949,7 +813,6 @@ export class HeoAiSettings extends HeoElement {
       provider: 'openai-compatible',
       baseURL: 'http://127.0.0.1:11434/v1',
       model: '',
-      scope: { ...DEFAULT_AI_SCOPE },
     });
     this.openId = id;
   }

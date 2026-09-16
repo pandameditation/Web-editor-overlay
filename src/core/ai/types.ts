@@ -1,22 +1,19 @@
 /**
  * The vocabulary the AI subsystem shares.
  *
- * One home for it because five modules have to agree: the context builder tells the model
- * what it may touch, the broker enforces it, the session asks the user about it, the key
- * vault decides where a credential may live, and the seed carries the settled result. A
- * second definition of "may this edit a class" is a second answer to that question, and the
- * one that matters is whichever the broker happens to read.
- */
-
-/**
- * Whether a kind of change needs asking about.
+ * One home for it because four modules have to agree: the context builder tells the model what
+ * it may touch, the broker enforces it, the key vault decides where a credential may live, and
+ * the seed carries the settled result. A second definition of "may this edit a class" is a
+ * second answer to that question, and the one that matters is whichever the broker happens to
+ * read.
  *
- * Deliberately two values and not three. "Never" looks like it belongs here and does not:
- * refusing outright is what leaving the scope off does, and a third state that means the
- * same as the second-with-a-refusal is a state nobody can describe. A set that should not
- * touch classes has `classes` absent from its policy.
+ * There used to be two answers. Permission was a property of the *provider*, configured in the
+ * settings and able to say "ask me", while a separate per-request control decided what the model
+ * was shown. Two axes over the same three nouns turned out to be one too many: they could
+ * disagree, the settings copy had to explain a distinction nobody had asked for, and a request
+ * narrowed on one axis was still permitted on the other. There is now one control, in the
+ * popover, and it is binary — see `AiContextScope`.
  */
-export type AiAllowance = 'always' | 'ask';
 
 /**
  * What a change reaches beyond the element the user selected.
@@ -27,46 +24,14 @@ export type AiAllowance = 'always' | 'ask';
  */
 export type AiScopeClass = 'classes' | 'rules' | 'parent';
 
-/** Every scope class, in the order the settings UI lists them. */
+/** Every scope class, in the order the popover lists them. */
 export const AI_SCOPE_CLASSES: readonly AiScopeClass[] = ['classes', 'rules', 'parent'];
 
-/**
- * How much of the page one provider set is trusted with.
- *
- * An absent key means "not at all". That is the shape rather than an explicit `'never'`
- * because it makes the default safe by construction: a policy built from partial data, a
- * seed written by an older version, or an object arriving from `JSON.parse` all deny by
- * default instead of granting by accident.
- */
-export type AiScopePolicy = Partial<Record<AiScopeClass, AiAllowance>>;
-
-/** What the user is told a scope class covers, in the settings and in an approval. */
+/** What the user is told a scope class covers, in a chip and in a refusal. */
 export const AI_SCOPE_LABELS: Record<AiScopeClass, string> = {
   classes: 'Reusable classes',
   rules: 'CSS rules',
   parent: 'The direct parent',
-};
-
-/**
- * What granting a scope class actually lets happen, for the settings rows.
- *
- * Two sentences each, and the split is deliberate: the first says what the thing *is*, because
- * "Reusable classes" and "CSS rules" are not distinguishable to everyone who will read this
- * screen, and the second says how far a change to it travels. The earlier one-liners stated only
- * the blast radius, which reads as a warning about something the reader has not been told the
- * shape of yet.
- */
-export const AI_SCOPE_CONSEQUENCE: Record<AiScopeClass, string> = {
-  classes:
-    'A class is shared styling, worn by any number of elements. Letting the AI edit one means ' +
-    'a change here can move every other element wearing it, including on pages you are not ' +
-    'looking at.',
-  rules:
-    'A rule is a selector in one of your stylesheets, like "#main h2". Letting the AI edit one ' +
-    'changes every element that selector matches, and the edit is written back to the CSS file.',
-  parent:
-    'The element directly containing the one you selected. Its layout decides where this ' +
-    'element sits, so a change here also moves the siblings beside it.',
 };
 
 /**
@@ -104,21 +69,26 @@ export const AI_QUICK_ACTIONS: readonly { label: string; prompt: string }[] = [
 ];
 
 /**
- * How much of the page's surroundings the model is *shown*.
+ * How much of the page around the element one request may see and change.
  *
- * A different axis from `AiScopePolicy`, and keeping them apart is the point. The policy answers
- * "may this be changed", is enforced in `broker.ts`, and belongs to the provider — it is a trust
- * decision that outlives any one request. This answers "should this be described", is a property
- * of a single request, and belongs to whoever is typing: rewording a heading needs none of the
- * cascade, while "make this line up with the one above" needs the parent.
+ * The whole permission model, in three booleans. On means the thing is described to the model and
+ * the model may edit it; off means neither. One decision rather than two because they are not
+ * separable in practice: a model editing something it was never shown is guessing, and a model
+ * shown something it may not touch will propose changes that are then refused. Both halves of that
+ * were shipped and both were wrong, so they are now one switch.
  *
- * Why it is worth having at all: the bundle is what gets sent. Sending a class list, twenty-four
- * matched rules and a parent description for a request to fix a typo means paying for tokens
- * nobody needed and handing a third party more of the page than the task required. Minimal by
- * default, therefore, and widened deliberately.
+ * Binary, with no "ask me". A standing per-provider permission needed a third state, because the
+ * decision outlived the request that prompted it and had to be softened. This does not: it is
+ * chosen for the request in front of you, in the popover, next to the box you are typing in — so
+ * the cost of changing your mind is one click, and a dialog interrupting to ask about something
+ * you set five seconds ago is worse than no dialog.
  *
- * The selected element is not a member. It is always included, because a request about nothing
- * is not a request.
+ * Minimal by default. Sending a class list, twenty-four matched rules and a parent description in
+ * order to fix a typo pays for tokens nobody needed and hands a third party more of the page than
+ * the task required — and grants edit rights over all of it.
+ *
+ * The selected element is not a member. It is always included and always editable, because a
+ * request about nothing is not a request. Everything inside it counts as part of it.
  */
 export interface AiContextScope {
   /** The element's own classes and their declarations. */
@@ -159,22 +129,6 @@ export const AI_CONTEXT_LABELS: { key: keyof AiContextScope | 'element'; label: 
     hint: 'The container, its layout, and what is limiting this element. Send it for alignment and spacing.',
   },
 ];
-
-/**
- * The selected element, described in the same shape as a scope class.
- *
- * Not a member of `AiScopeClass`, and that is the point rather than an omission. Editing the thing
- * you pointed at is the premise of the feature, so there is no permission to hold and nothing for
- * a policy to deny — but the settings screen listed three things the AI may reach and left the
- * most important one unsaid, which reads as though the element were somebody else's business.
- * Presentational, therefore, and fixed.
- */
-export const AI_SELF_SCOPE = {
-  label: 'The selected element',
-  consequence:
-    'Its text, its own inline styles and its markup. Always allowed, and always limited to ' +
-    'the one element you picked — this is what the AI is for.',
-} as const;
 
 /**
  * Where a provider's credential lives, which is the only thing here that is a security
@@ -256,21 +210,15 @@ export interface AiProviderSet {
   model: string;
   /** Prepended to the editor's own instructions rather than replacing them. */
   systemPrompt?: string;
-  scope: AiScopePolicy;
+  /*
+   * No `scope` here, deliberately.
+   *
+   * A provider used to carry its own permission, and it travelled in the seed — so what the AI was
+   * allowed to change on your page arrived from whoever sent you a design system. Scope is now a
+   * property of the request rather than of the provider, chosen in the popover and never
+   * serialised. See `AiContextScope`.
+   */
 }
-
-/**
- * What every new provider set starts with, and what the settings UI shows as the default.
- *
- * Here rather than beside `AiAgent` because the Vite plugin builds sets too, for the providers it
- * finds in the environment, and this module is a leaf with no imports — which is what makes it
- * safe to read from Node without pulling the browser half of the editor along with it.
- */
-export const DEFAULT_AI_SCOPE: AiScopePolicy = {
-  classes: 'always',
-  rules: 'always',
-  parent: 'always',
-};
 
 /** True when this set can be used without asking the user for anything first. */
 export function needsKey(set: AiProviderSet): boolean {
@@ -294,7 +242,6 @@ const PORTABLE_FIELDS = [
   'baseURL',
   'model',
   'systemPrompt',
-  'scope',
 ] as const satisfies readonly (keyof AiProviderSet)[];
 
 /**
@@ -329,7 +276,6 @@ export function portableProviderSet(input: unknown): AiProviderSet | null {
         ? provider
         : 'openai-compatible',
     model,
-    scope: portableScope(raw.scope),
   };
   if (typeof raw.baseURL === 'string' && raw.baseURL.trim()) out.baseURL = raw.baseURL.trim();
   if (typeof raw.systemPrompt === 'string' && raw.systemPrompt.trim()) {
@@ -338,18 +284,6 @@ export function portableProviderSet(input: unknown): AiProviderSet | null {
   // Named so the list above is not merely decorative: if a field is added to the type and not to
   // `PORTABLE_FIELDS`, this is the line that stops it travelling by accident.
   void PORTABLE_FIELDS;
-  return out;
-}
-
-/** Only the three known scope classes, only the two known allowances. Anything else denies. */
-function portableScope(input: unknown): AiScopePolicy {
-  const out: AiScopePolicy = {};
-  if (!input || typeof input !== 'object') return out;
-  const raw = input as Record<string, unknown>;
-  for (const scope of AI_SCOPE_CLASSES) {
-    const value = raw[scope];
-    if (value === 'always' || value === 'ask') out[scope] = value;
-  }
   return out;
 }
 

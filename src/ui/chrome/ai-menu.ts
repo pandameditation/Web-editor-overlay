@@ -228,18 +228,6 @@ export class HeoAiMenu extends HeoElement {
       .scope.fixed {
         cursor: default;
       }
-      /*
-       * Sent, but this provider may not change it.
-       *
-       * Worth its own treatment rather than only a tooltip: it is the one combination where the
-       * model will confidently describe an edit that is then refused, and the warn colour is the
-       * same one the transcript uses for a side effect.
-       */
-      .scope.mismatch {
-        border-color: var(--heo-warn);
-        background: color-mix(in oklab, var(--heo-warn) 10%, transparent);
-        color: var(--heo-warn);
-      }
 
       /* The empty state. Deliberately the largest thing in the popover when it applies. */
       .intro {
@@ -622,28 +610,26 @@ export class HeoAiMenu extends HeoElement {
   }
 
   /**
-   * What the request describes, chosen at the moment of asking.
+   * What this request may reach — the whole permission model, on four chips.
    *
-   * These used to be read-only badges reporting the provider's *permissions*. They are now
-   * switches over what the model is *shown*, which is a different question and the one that
-   * belongs on this surface: permission is a standing decision about a provider and lives in the
-   * settings, while "does this task need the cascade" changes with every sentence typed above.
+   * On means the model is shown it and may change it. Off means neither. One switch rather than
+   * two, and no third "ask me" state, because both of those were tried: permission used to be a
+   * standing per-provider setting that travelled in the design-system seed, with a separate
+   * per-request control over the payload. They could disagree — a user unticked CSS rules and the
+   * AI wrote one anyway — and the standing half needed an "ask" state that then interrupted to ask
+   * about something set moments earlier.
    *
-   * Minimal by default. Rewording a heading does not need twenty-four matched rules, and sending
-   * them anyway costs tokens and hands a third party more of the page than the job required.
-   *
-   * The permission is still shown, as the chip's own subtitle when a scope is switched on and the
-   * provider may not write it — that combination is worth knowing before pressing Send, and it is
-   * the only place the two axes are visible together.
+   * Here, beside the box, is where it belongs: the answer is about the sentence being typed, and
+   * changing it costs one click. Minimal by default, because rewording a heading needs none of the
+   * cascade and sending it anyway pays for tokens nobody wanted while granting edit rights over
+   * the result.
    */
   #renderScopes(): TemplateResult | typeof nothing {
-    const set = this.editor.ai.active;
-    if (!set) return nothing;
-    const policy = this.editor.ai.policy(set);
+    if (!this.editor.ai.active) return nothing;
     const include = this.state.value.aiContextScope;
     const busy = this.state.value.aiBusy;
 
-    return html`<div class="scopes" role="group" aria-label="What the request describes">
+    return html`<div class="scopes" role="group" aria-label="What this request may change">
       ${AI_CONTEXT_LABELS.map((entry) => {
       if (entry.key === 'element') {
         return html`<span class="scope on fixed" title=${entry.hint}>
@@ -652,21 +638,12 @@ export class HeoAiMenu extends HeoElement {
       }
       const key = entry.key;
       const on = include[key];
-      const allowance = policy[key];
-      /*
-       * The two axes, in one tooltip, in the order they are decided.
-       *
-       * "Sent, but this provider may not change it" is a real and confusing state — the model
-       * will describe an edit it is then refused — so it is said here rather than discovered in
-       * the transcript afterwards.
-       */
-      const reach = !allowance
-        ? ` ${set.label} may not change ${entry.label.toLowerCase()}.`
-        : allowance === 'ask'
-          ? ` You will be asked before ${entry.label.toLowerCase()} are changed.`
-          : '';
+      // One sentence, because there is one thing to say: it is either in scope or it is not.
+      const reach = on
+        ? ` On: described to the model, and it may change them.`
+        : ` Off: not described, and not changeable. Everything inside the element still is.`;
       return html`<button
-          class=${`scope${on ? ' on' : ''}${on && !allowance ? ' mismatch' : ''}`}
+          class=${`scope${on ? ' on' : ''}`}
           type="button"
           role="switch"
           aria-checked=${on ? 'true' : 'false'}

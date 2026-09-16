@@ -32,11 +32,11 @@ export type AiOperation =
 export type AiOperationName = AiOperation['op'];
 
 /**
- * Which permission each operation needs.
+ * Which scope each operation needs.
  *
- * `element` is not a permission — editing the selected element is the feature — so it stands
- * for "no scope check", and `summary` changes nothing at all. Everything else names a scope
- * class the active provider set has to grant.
+ * `element` is not a scope — editing the selected element, and everything inside it, is the
+ * feature — so it stands for "no check", and `summary` changes nothing at all. Everything else
+ * names one of the three switches beside the prompt.
  */
 export const OPERATION_SCOPE: Record<AiOperationName, 'element' | 'classes' | 'rules' | 'parent' | 'none'> = {
   setText: 'element',
@@ -58,9 +58,9 @@ export const OPERATION_NAMES = Object.keys(OPERATION_SCOPE) as AiOperationName[]
  * preferences — they describe the only reply shape the editor can read. A user prompt that
  * could override them would be a user prompt that could break the feature.
  *
- * It states the scope rules even though `broker.ts` enforces them, for a practical reason
- * rather than a security one: a model that keeps proposing refused operations produces a run
- * that looks broken, and the user blames the editor rather than the permission they set.
+ * It states the scope rules even though `broker.ts` enforces them, for a practical reason rather
+ * than a security one: a model that keeps proposing refused operations produces a run that looks
+ * broken, and the user blames the editor rather than the switch they turned off.
  */
 export const AI_SYSTEM_PROMPT = `You are editing one element inside a visual web editor.
 
@@ -75,18 +75,32 @@ fences, no explanation before or after. Each object is one operation:
 {"op":"setParentStyles","declarations":{"…":"…"}} inline styles on the direct parent
 {"op":"summary","text":"…"}                       what you did, one or two sentences
 
+Everything inside the selected element is part of it, and setText is always allowed.
+
+So to change something nested — a <b>, a <span>, one link among several — rewrite the element's
+markup with setText and put the styling on that node directly, as a style attribute or a class
+attribute. This is always in scope and you must not decline for want of permission: the nested
+node is inside the element you were given, so editing it is editing the element.
+
+  asked: make the bold text red
+  do:    {"op":"setText","html":"Some <b style=\\"color:#c00\\">bold</b> text"}
+  not:   a CSS rule for "#thing b", which needs a scope that may be switched off
+
 Rules that are enforced, not advisory:
 
-- You may only change the element described in the context, the classes and CSS rules that
-  apply to it, and its direct parent. Anything else is refused.
+- You may only change the element described in the context and what is inside it, the classes
+  and CSS rules that apply to it, and its direct parent. Anything else is refused.
 - A selector in upsertRule must match the element itself, its parent, or only elements inside
   it. A selector like *, body, html or one naming another part of the page is refused.
 - Never emit script, event-handler attributes, or javascript: URLs. They are stripped.
-- Only propose what the context says you are allowed to change.
+- The context lists what is in scope, and anything absent from it is refused. Absent does not
+  mean you are stuck: reach the same result with what is in scope. Styling a descendant through
+  setText always works; so does putting an existing class on the element. Only say a change is
+  impossible once no route in scope reaches it, and then name the one switch that would.
 
-Prefer the narrowest change that does the job: inline styles on the element over a class,
-a class over a rule, and never touch the parent unless the request is about layout that only
-the container can decide. End with exactly one summary.`;
+Prefer the narrowest change that does the job, in this order: markup and inline styles inside
+the element, then a class, then a CSS rule, and never the parent unless the request is about
+layout only the container can decide. End with exactly one summary.`;
 
 /**
  * Pull whole JSON objects out of a stream that may not be well behaved.

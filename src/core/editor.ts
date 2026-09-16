@@ -155,14 +155,11 @@ import { installStyleMirror, releaseStyleMirrors } from './mirror.js';
 import { modalOpen } from './modal.js';
 import { collectScriptSources, fetchScriptSource } from './scripts.js';
 import { AiAgent } from './ai/agent.js';
-import type { PlannedOperation } from './ai/broker.js';
 import { buildAiContext, renderAiContext } from './ai/context.js';
 import { keyVault } from './ai/keys.js';
 import type { RunOutcome } from './ai/session.js';
 import { createTransport, type AiTransport } from './ai/transport.js';
 import {
-  AI_SCOPE_CONSEQUENCE,
-  AI_SCOPE_LABELS,
   DEFAULT_AI_CONTEXT_SCOPE,
   type AiContextScope,
 } from './ai/types.js';
@@ -462,15 +459,6 @@ export interface ConfirmRequest {
    * does — whatever is waiting on the answer has to be told, or it waits for ever.
    */
   onDismiss?: () => void;
-  /**
-   * A third answer: yes, and stop asking.
-   *
-   * Its own field rather than a flag, because the sentence has to be specific to what is
-   * being permitted — "Always allow class changes" tells the user what they are agreeing to
-   * for the rest of the session, where a bare "Don't ask again" does not. Runs alongside
-   * `run` rather than instead of it: consenting to this change is still consenting to it.
-   */
-  remember?: { label: string; run: () => void };
 }
 
 /**
@@ -1040,6 +1028,9 @@ export class EditorEngine {
     this.ai.restore();
     if (this.options.aiProviders?.length) this.ai.offer(this.options.aiProviders);
     keyVault.hydrate();
+    // And how this tab last scoped a request, which is a preference rather than a provider setting.
+    const restoredScope = this.ai.restoreScope();
+    if (restoredScope) this.store.patch({ aiContextScope: restoredScope });
     this.#listeners.push(this.ai.onChange(() => this.#bumpRegistry()));
     this.#listeners.push(keyVault.onChange(() => this.#bumpRegistry()));
 
@@ -2334,16 +2325,11 @@ export class EditorEngine {
 
   /**
    * Answer yes. Clears the question first, so the action runs against a settled UI.
-   *
-   * `remember` is the third answer — yes, and stop asking — and it runs *before* `run` so
-   * that whatever the action does next already sees the widened permission. Doing it after
-   * meant a run that asked about two classes asked twice despite the user having said not to.
    */
-  resolveConfirm(options: { remember?: boolean } = {}): void {
+  resolveConfirm(): void {
     const pending = this.store.value.confirm;
     if (!pending) return;
     this.store.patch({ confirm: null });
-    if (options.remember) pending.remember?.run();
     pending.run();
   }
 
@@ -2406,10 +2392,17 @@ export class EditorEngine {
 
     const controller = new AbortController();
     this.#aiAbort = controller;
+    /*
+     * One scope, read once, used for both halves of the request.
+     *
+     * It goes to `buildAiContext`, which tells the model what it may change, and to `ai.run`, which
+     * enforces it. The same object, so the two cannot disagree — they used to be separate values and
+     * the gap between them was a bug.
+     */
+    const scope = this.store.value.aiContextScope;
     const context = renderAiContext(
       buildAiContext(
         el,
-        this.ai.policy(set),
         {
           classes: this.classes,
           rules: this.rules,
@@ -2417,8 +2410,7 @@ export class EditorEngine {
           // element actually declares. Same subtraction the Styles panel makes.
           preview: this.previewTarget?.el === el ? this.previewTarget : null,
         },
-        // What the user asked to include. Minimal unless they widened it — see `AiContextScope`.
-        this.store.value.aiContextScope,
+        scope,
       ),
     );
     const transport = this.options.aiTransport ?? this.#aiTransport();
@@ -2430,6 +2422,7 @@ export class EditorEngine {
         transport({ set, prompt: asked, context, signal: controller.signal }),
         asked,
         el,
+        scope,
       );
       this.store.patch({ aiOutcome: outcome });
       if (outcome) this.#announceAiOutcome(outcome);
@@ -2515,7 +2508,10 @@ export class EditorEngine {
   setAiContextScope(scope: keyof AiContextScope, on: boolean): void {
     const current = this.store.value.aiContextScope;
     if (current[scope] === on) return;
-    this.store.patch({ aiContextScope: { ...current, [scope]: on } });
+    const next = { ...current, [scope]: on };
+    this.store.patch({ aiContextScope: next });
+    // Kept for the tab, so a reload does not quietly reset what the next request may change.
+    this.ai.rememberScope(next);
   }
 
   /** In-flight request, so Stop can cancel the network as well as the run. */
@@ -2549,6 +2545,14 @@ export class EditorEngine {
     operations: AsyncIterable<unknown>,
     prompt: string,
     el = this.store.value.selected,
+    /**
+     * What this run may see and change.
+     *
+     * Defaults to what the popover currently says, which is what `promptAi` passes. A caller
+     * feeding operations in directly can name its own, which is how the boundary is driven in a
+     * fixture without a provider or a network.
+     */
+    scope: AiContextScope = this.store.value.aiContextScope,
   ): Promise<RunOutcome | null> {
     if (!isMutable(el)) {
       this.notify('Select an element first.', 'info');
@@ -2561,62 +2565,15 @@ export class EditorEngine {
       element: el,
       prompt,
       operations,
+      scope,
       host: {
         classes: this.classes,
         rules: this.rules,
         history: this.history,
         changed: () => this.#bumpRevision(),
-        consent: (plan) => this.#askAiConsent(plan),
       },
     });
     return outcome;
-  }
-
-  /**
-   * Ask about one change that reaches beyond the selected element.
-   *
-   * A promise around the confirmation dialog, which is what lets the run wait. Resolved exactly
-   * once from whichever of the three answers arrives — and it has to be exactly once, because a
-   * run awaiting a promise that never settles is a run that never commits, leaving changes on
-   * the page with nothing on the undo stack.
-   *
-   * The wording comes from the plan's own `sideEffect`, which the broker derived from what the
-   * change actually reaches. Writing a second description here would let the dialog and the
-   * closing summary disagree about the same change.
-   */
-  #askAiConsent(plan: PlannedOperation): Promise<boolean> {
-    const scope = plan.scope;
-    if (scope !== 'classes' && scope !== 'rules' && scope !== 'parent') return Promise.resolve(true);
-    const heading: Record<typeof scope, string> = {
-      classes: 'Change a shared class?',
-      rules: 'Change a CSS rule?',
-      parent: 'Change the container?',
-    };
-    return new Promise<boolean>((resolve) => {
-      let settled = false;
-      const answer = (value: boolean): void => {
-        if (settled) return;
-        settled = true;
-        resolve(value);
-      };
-      this.askToConfirm({
-        title: heading[scope],
-        message: plan.sideEffect ?? AI_SCOPE_CONSEQUENCE[scope],
-        detail: plan.describe,
-        confirmLabel: 'Approve',
-        dismissLabel: 'Skip this change',
-        tone: 'warn',
-        // The whole run is one undo entry, which is the most useful thing to know here: the
-        // answer is reversible either way.
-        reversible: true,
-        remember: {
-          label: `Always allow ${AI_SCOPE_LABELS[scope].toLowerCase()} for this provider`,
-          run: () => this.ai.widen(scope),
-        },
-        run: () => answer(true),
-        onDismiss: () => answer(false),
-      });
-    });
   }
 
   /** Apply the pending extraction. Returns false and sets an error if invalid. */

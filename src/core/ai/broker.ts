@@ -15,9 +15,9 @@
  * Four checks, in this order, because the order is the useful one:
  *
  * 1. **Shape.** Is this one of the six operations, with the fields it needs?
- * 2. **Permission.** Does the active set grant the scope class this operation needs? A scope
- *    absent from the policy is a refusal; a scope set to `ask` is *not* refused here — the
- *    session asks, and this reports which permission it will need.
+ * 2. **Permission.** Is the scope class this operation needs switched on for this request? Off is
+ *    a refusal, stated with the name of the switch that would allow it. There is nothing to ask:
+ *    the answer was given in the popover a moment ago and is one click from being changed.
  * 3. **Reach.** For the one operation carrying a selector, does that selector actually stay
  *    inside what the user selected, and does it keep away from the overlay?
  * 4. **Content.** Markup through the HTML sanitiser, declarations through the property
@@ -32,7 +32,22 @@ import { isOverlayNode } from '../dom.js';
 import { safeCssValue, sanitizeFragmentReporting, type SanitizeReport } from '../sanitize.js';
 import { safeSelector } from '../selectors.js';
 import { OPERATION_SCOPE, type AiOperation, type AiOperationName } from './ops.js';
-import { AI_SCOPE_LABELS, type AiAllowance, type AiScopeClass, type AiScopePolicy } from './types.js';
+import {
+  AI_CONTEXT_LABELS,
+  AI_SCOPE_LABELS,
+  type AiContextScope,
+  type AiScopeClass,
+} from './types.js';
+
+/**
+ * The chip label for each scope, so a refusal names the control the user is looking at.
+ * `AI_SCOPE_LABELS` is the long form for prose; this is what is written on the switch.
+ */
+const CHIP_LABELS: Record<AiScopeClass, string> = {
+  classes: AI_CONTEXT_LABELS.find((one) => one.key === 'classes')?.label ?? 'Classes',
+  rules: AI_CONTEXT_LABELS.find((one) => one.key === 'rules')?.label ?? 'CSS rules',
+  parent: AI_CONTEXT_LABELS.find((one) => one.key === 'parent')?.label ?? 'Parent',
+};
 
 /** The two elements an operation may name, resolved once by the caller. */
 export interface BrokerTarget {
@@ -46,8 +61,6 @@ export interface PlannedOperation {
   op: AiOperation;
   /** Which permission it needs. `none` for a summary. */
   scope: AiScopeClass | 'element' | 'none';
-  /** Whether the user still has to be asked. */
-  allowance: AiAllowance;
   /** One sentence naming what it will do, for the run log and the change record. */
   describe: string;
   /**
@@ -78,7 +91,14 @@ export type BrokerVerdict =
 export function reviewOperation(
   raw: unknown,
   target: BrokerTarget,
-  policy: AiScopePolicy,
+  /**
+   * What this request may see and change — the popover's three switches.
+   *
+   * The same object the context builder was given, so what the model was told and what it is held
+   * to are the same fact. There is no second, standing permission to reconcile it with: that
+   * existed, could disagree with this, and did.
+   */
+  scope: AiContextScope,
 ): BrokerVerdict {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return { ok: false, reason: 'That reply was not an operation the editor understands.' };
@@ -91,23 +111,24 @@ export function reviewOperation(
     };
   }
   const op = name as AiOperationName;
-  const scope = OPERATION_SCOPE[op];
+  const needs = OPERATION_SCOPE[op];
 
-  // Permission before content: being told "you may not edit classes" is more useful than
-  // being told a property name was wrong in a change that was never going to be allowed.
-  if (scope !== 'element' && scope !== 'none') {
-    const allowance = policy[scope];
-    if (!allowance) {
-      return {
-        ok: false,
-        reason:
-          `${AI_SCOPE_LABELS[scope]} are outside what this provider may change. ` +
-          'Turn it on in the AI settings if you want that.',
-      };
-    }
+  /*
+   * Permission before content: being told "you may not edit classes" is more useful than being
+   * told a property name was wrong in a change that was never going to be allowed.
+   *
+   * The refusal names the switch to flip, and says where it is. A refusal that only states the
+   * boundary sends the user to the settings, where this no longer lives.
+   */
+  if (needs !== 'element' && needs !== 'none' && !scope[needs]) {
+    return {
+      ok: false,
+      reason:
+        `${AI_SCOPE_LABELS[needs]} are switched off for this request, so that change was not ` +
+        `made. Turn on ${CHIP_LABELS[needs]} beside the prompt and ask again — or ask for the ` +
+        'same result on the element itself, which is always allowed.',
+    };
   }
-  const allowance: AiAllowance =
-    scope === 'element' || scope === 'none' ? 'always' : policy[scope] ?? 'ask';
 
   switch (op) {
     case 'summary':
@@ -115,10 +136,10 @@ export function reviewOperation(
     case 'setText':
       return reviewSetText(raw, target);
     case 'setStyles':
-      return reviewStyles(raw, target.element, 'setStyles', allowance);
+      return reviewStyles(raw, target.element, 'setStyles');
     case 'setParentStyles':
       return target.parent
-        ? reviewStyles(raw, target.parent, 'setParentStyles', allowance)
+        ? reviewStyles(raw, target.parent, 'setParentStyles')
         : {
           ok: false,
           reason: 'This element has no editable parent, so there is nothing to change there.',
@@ -126,9 +147,9 @@ export function reviewOperation(
     case 'setClasses':
       return reviewSetClasses(raw, target.element);
     case 'upsertClass':
-      return reviewUpsertClass(raw, allowance);
+      return reviewUpsertClass(raw);
     case 'upsertRule':
-      return reviewUpsertRule(raw, target, allowance, policy);
+      return reviewUpsertRule(raw, target, scope);
     default:
       return { ok: false, reason: 'That operation is not implemented.' };
   }
@@ -146,7 +167,6 @@ function reviewSummary(raw: object): BrokerVerdict {
     plan: {
       op: { op: 'summary', text },
       scope: 'none',
-      allowance: 'always',
       describe: text,
     },
   };
@@ -180,7 +200,6 @@ function reviewSetText(raw: object, target: BrokerTarget): BrokerVerdict {
     plan: {
       op: { op: 'setText', html: cleaned },
       scope: 'element',
-      allowance: 'always',
       describe: `Rewrite the contents of ${target.element.tagName.toLowerCase()}`,
       removed: describeRemoved(report),
     },
@@ -192,7 +211,6 @@ function reviewStyles(
   raw: object,
   el: HTMLElement,
   op: 'setStyles' | 'setParentStyles',
-  allowance: AiAllowance,
 ): BrokerVerdict {
   const checked = vetDeclarations((raw as { declarations?: unknown }).declarations);
   if ('reason' in checked) return { ok: false, reason: checked.reason };
@@ -205,7 +223,6 @@ function reviewStyles(
         ? { op: 'setParentStyles', declarations: checked.declarations }
         : { op: 'setStyles', declarations: checked.declarations },
       scope: parentOp ? 'parent' : 'element',
-      allowance,
       describe: `Set ${listOf(properties)} on ${el.tagName.toLowerCase()}`,
       sideEffect: parentOp
         ? `${listOf(properties)} set on the parent <${el.tagName.toLowerCase()}> — every child moves with it.`
@@ -243,14 +260,13 @@ function reviewSetClasses(raw: object, el: HTMLElement): BrokerVerdict {
     plan: {
       op: { op: 'setClasses', add: add.names, remove: remove.names },
       scope: 'element',
-      allowance: 'always',
       describe: `On ${el.tagName.toLowerCase()}, ${parts.join(' and ')}`,
     },
   };
 }
 
 /** Defining or extending a reusable class. */
-function reviewUpsertClass(raw: object, allowance: AiAllowance): BrokerVerdict {
+function reviewUpsertClass(raw: object): BrokerVerdict {
   const name = normalizeClassName(String((raw as { name?: unknown }).name ?? ''));
   if (!name) {
     return { ok: false, reason: 'That class name cannot be used — it has to start with a letter.' };
@@ -266,7 +282,6 @@ function reviewUpsertClass(raw: object, allowance: AiAllowance): BrokerVerdict {
     plan: {
       op: { op: 'upsertClass', name, declarations: checked.declarations },
       scope: 'classes',
-      allowance,
       describe: `Set ${listOf(Object.keys(checked.declarations))} on .${name}`,
       sideEffect:
         wearing > 1
@@ -293,8 +308,7 @@ function reviewUpsertClass(raw: object, allowance: AiAllowance): BrokerVerdict {
 function reviewUpsertRule(
   raw: object,
   target: BrokerTarget,
-  allowance: AiAllowance,
-  policy: AiScopePolicy,
+  scope: AiContextScope,
 ): BrokerVerdict {
   const requested = String((raw as { selector?: unknown }).selector ?? '');
   const selector = safeSelector(requested);
@@ -320,19 +334,18 @@ function reviewUpsertRule(
    * its Classes section rather than its CSS rules section, which is the same distinction.
    */
   if (fromElementClass(selector, target.element)) {
-    const asClass = policy.classes;
-    if (!asClass) {
+    if (!scope.classes) {
       return {
         ok: false,
         reason:
-          `${selector} is one of this element's classes, and ${AI_SCOPE_LABELS.classes.toLowerCase()} ` +
-          'are outside what this provider may change.',
+          `${selector} is one of this element's classes, and ${CHIP_LABELS.classes} is switched ` +
+          'off for this request, so that change was not made.',
       };
     }
-    return reviewUpsertClass(
-      { name: selector.replace(/^\./, ''), declarations: (raw as { declarations?: unknown }).declarations },
-      asClass,
-    );
+    return reviewUpsertClass({
+      name: selector.replace(/^\./, ''),
+      declarations: (raw as { declarations?: unknown }).declarations,
+    });
   }
 
   const reach = reviewReach(selector, target);
@@ -347,7 +360,6 @@ function reviewUpsertRule(
     plan: {
       op: { op: 'upsertRule', selector, declarations: checked.declarations },
       scope: 'rules',
-      allowance,
       describe: `Set ${listOf(Object.keys(checked.declarations))} on ${selector}`,
       sideEffect:
         matches > 1

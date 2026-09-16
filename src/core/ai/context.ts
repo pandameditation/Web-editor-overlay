@@ -43,10 +43,10 @@ import { cleanInnerMarkup, cleanMarkup } from '../mutations.js';
 import type { ClassRegistry } from '../classes.js';
 import type { RuleRegistry } from '../rules.js';
 import {
+  AI_SCOPE_CLASSES,
   DEFAULT_AI_CONTEXT_SCOPE,
   type AiContextScope,
   type AiScopeClass,
-  type AiScopePolicy,
 } from './types.js';
 
 /** How much of the element's own markup travels. Past this the model gets a summary. */
@@ -169,22 +169,20 @@ export interface ContextSources {
  */
 export function buildAiContext(
   el: HTMLElement,
-  policy: AiScopePolicy,
   sources: ContextSources,
   include: AiContextScope = DEFAULT_AI_CONTEXT_SCOPE,
 ): AiContext {
-  const allowed = (Object.keys(policy) as AiScopeClass[]).filter((key) => policy[key]);
-  const may = (scope: AiScopeClass): boolean => Boolean(policy[scope]);
   /*
-   * Two questions, asked separately, and the order matters.
+   * One question, asked once.
    *
-   * `include` decides whether something is described at all; `may` decides whether the model is
-   * told it can be changed. They are not the same question and collapsing them would be wrong in
-   * both directions: a class the model may edit is useless to it undescribed, and a class it is
-   * shown for reference is not thereby editable. So a section is present when `include` says so,
-   * and carries `editable` from `may` — and the broker enforces `may` regardless of either.
+   * Described and editable are the same answer now: a scope switched on is sent and may be
+   * changed, a scope switched off is neither. The broker is handed this same object, so what the
+   * model is told here and what is enforced there cannot drift — they used to be computed
+   * separately and the gap between them was a bug.
    */
-  const shown = (scope: keyof AiContextScope): boolean => include[scope];
+  const allowed = AI_SCOPE_CLASSES.filter((key) => include[key]);
+  const may = (scope: AiScopeClass): boolean => include[scope];
+  const shown = may;
 
   const rules = appliedRules(el);
   const inline = authoredInline(el, sources.preview ?? null);
@@ -439,12 +437,31 @@ export function renderAiContext(context: AiContext): string {
    * reply confidently proposes a selector that already exists. The note is what turns an absence
    * into a known unknown, and it tells the model what to do about it — ask, rather than guess.
    */
+  /*
+   * What is out of scope, and — the part that matters — what to do instead.
+   *
+   * Three sentences that each cost a complaint to learn.
+   *
+   * *Not evidence that there are none*: a bundle carrying `"rules": []` reads as "nothing styles
+   * this element", and the reply invents a selector that already exists.
+   *
+   * *Not yours to change*: saying only that they were undescribed, while the allowed list still
+   * named them, told the model rules existed and that it might edit ones it had not seen. It did.
+   *
+   * *Everything inside the element still is*: told only what was off limits, a model asked to
+   * restyle a nested `<b>` replied that it could not and changed nothing — while the route needing
+   * no scope at all, rewriting the element's own markup, sat unused. A boundary that does not also
+   * point at the way through reads as a refusal of the request rather than of one method.
+   */
   if (context.withheld.length) {
     notes.push(
-      `Not included in this request: ${context.withheld.join(', ')}. Their absence is a choice, ` +
-      'not evidence that there are none — do not assume the element has no classes, no matching ' +
-      'rules or no parent. If the change genuinely needs one of them, say so in your summary ' +
-      'instead of guessing at it.',
+      `Out of scope for this request: ${context.withheld.join(', ')}. That is a choice the user ` +
+      'made, not evidence there are none — so do not assume the element has no classes, no ' +
+      'matching rules and no parent, and do not invent any. They are not yours to change here ' +
+      'either: operations touching them will be refused. It restricts the method, not the ' +
+      'request. Everything inside the element remains yours through setText, including putting a ' +
+      'style or class attribute on a nested node, and that is always in scope. Use it. Decline ' +
+      'only when no route in scope reaches the result, and then name the one switch that would.',
     );
   }
   const payload = { ...context, notes: notes.length ? notes : undefined };
