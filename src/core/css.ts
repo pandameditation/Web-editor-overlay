@@ -761,7 +761,8 @@ export function authoredInline(
  *
  * Inline styles first, then whichever matched rule wins. Longhands are expanded from
  * box shorthands so a per-side editor can show a value that was written as
- * `padding: 8px 12px`.
+ * `padding: 8px 12px` — into `values` only. `origins` keys are the declarations that
+ * genuinely exist, which is what makes `origins.has(property)` a usable filter.
  *
  * This is the definition of "set" that the Styles panel draws its blue dot from, and it
  * lives here rather than in the panel because it is now also the definition the AI
@@ -794,6 +795,27 @@ export function declaredMap(
     origins.set(property, { kind: 'inline', selector: 'style attribute' });
   }
 
+  /*
+   * Box shorthands are expanded into `values`, and deliberately NOT into `origins`.
+   *
+   * `origins` is the answer to "which declaration is this, and where does editing it go" —
+   * so it holds only names something actually declares. A side split out of `padding: 8px`
+   * is a reading of that one declaration, not a fifth declaration, and giving it the
+   * shorthand's origin made it indistinguishable from a real `padding-bottom`. Every caller
+   * that lists declarations tests `origins.has(property)` to weed these out; while the
+   * origin was copied across, that test was a no-op and the four phantom sides were listed
+   * as though the element set them.
+   *
+   * In the Styles panel that was actively destructive rather than merely noisy. A phantom
+   * row has nothing in the style attribute, so a preview of it starts from an empty `before`
+   * — and the render that subtracts the preview from the cascade dropped the row on the
+   * first pointermove, out from under the gesture holding it. Committing then created the
+   * declaration for real, which changed where the row sorted, so the value landed on a row
+   * that had moved. Dragging `padding-bottom` on an inserted `<th>` deleted its own row.
+   *
+   * Consumers that want the per-side value still read it from `values`, which is what the
+   * box editor does.
+   */
   for (const group of ['margin', 'padding', 'border-radius'] as const) {
     const shorthand = out.get(group);
     if (!shorthand) continue;
@@ -803,11 +825,9 @@ export function declaredMap(
       group === 'border-radius'
         ? ['border-top-left-radius', 'border-top-right-radius', 'border-bottom-right-radius', 'border-bottom-left-radius']
         : [`${group}-top`, `${group}-right`, `${group}-bottom`, `${group}-left`];
-    const from = origins.get(group);
     names.forEach((name, index) => {
       if (out.has(name)) return;
       out.set(name, sides[index]);
-      if (from) origins.set(name, from);
     });
   }
   return { values: out, origins };

@@ -1006,6 +1006,8 @@ export class HeoStylesPanel extends HeoElement {
     const properties = [...declared.keys()]
       // Longhands synthesised from a box shorthand are already represented by the
       // shorthand itself; listing both would double every margin and padding.
+      // `declaredMap` keeps them out of `origins` for exactly this test — see the note
+      // there for what listing them cost.
       .filter((property) => origins.has(property))
       // Only what this element itself declares. Anything arriving from a rule belongs
       // to that rule, and now has somewhere better to be edited: a class under
@@ -1015,10 +1017,19 @@ export class HeoStylesPanel extends HeoElement {
       .filter((property) => origins.get(property)?.kind === 'inline')
       // Narrowed by the search like every other surface, on the name or the value.
       .filter((property) => this.#matches(property, declared.get(property)))
-      .sort((a, b) => {
-        const rank = (property: string): number => (inline[property] !== undefined ? 0 : 1);
-        return rank(a) - rank(b) || a.localeCompare(b);
-      });
+      /*
+       * Plain alphabetical, which is also what keeps a box's sides beside it: `padding`
+       * sorts immediately before `padding-bottom`.
+       *
+       * There used to be a rank ahead of this, putting names present in the style
+       * attribute above the rest. Everything listed here is in the style attribute — the
+       * filters above say so — so the only rows the rank could separate were the phantom
+       * sides synthesised from a shorthand, and separate them it did: `margin`, `padding`,
+       * `text-align`, and only then the four `padding-*`. Worse, the rank was not stable
+       * under editing. Committing a value promoted the row into the upper group, so a row
+       * moved as a direct result of being edited.
+       */
+      .sort((a, b) => a.localeCompare(b));
     const inlineCount = Object.keys(inline).length;
     // While filtering the section is only worth drawing when it has a row: its empty state is an
     // explanation of the cascade, which is not an answer to what was typed.

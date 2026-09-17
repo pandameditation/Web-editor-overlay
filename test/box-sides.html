@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Box sides: a shorthand's sides are a reading of it, not four more declarations</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: system-ui, sans-serif;
+    }
+
+    table {
+      border-collapse: collapse;
+      width: 100%;
+    }
+  </style>
+</head>
+
+<body>
+  <main>
+    <!-- The markup the block library inserts for a table, verbatim: a `padding` shorthand and
+         nothing per-side. This is the element the bug was reported on. -->
+    <table id="tbl">
+      <thead>
+        <tr>
+          <th id="th" style="padding:8px;border-bottom:2px solid #d8dde8;text-align:left">Column</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td id="td" style="padding:8px;border-bottom:1px solid #d8dde8">Cell</td>
+        </tr>
+      </tbody>
+    </table>
+    <p id="para" style="margin:4px;padding:6px;color:#333">Both shorthands at once.</p>
+  </main>
+
+  <div id="report">
+    <pre id="progress">start</pre>
+    <pre id="out">pending</pre>
+  </div>
+
+  <script type="module">
+    /**
+     * What this pins.
+     *
+     * `declaredMap` expands `padding: 8px` into four per-side values so the box editor can show a
+     * number on each side of the diagram. Those four are a *reading* of one declaration. When they
+     * were also given the shorthand's origin, every surface that lists declarations — the panel's
+     * "Set on this element", and the context bundle the model is handed — could not tell them from
+     * a real `padding-bottom`, and listed all five.
+     *
+     * A phantom row is not merely noise. It has nothing in the style attribute, so a preview of it
+     * starts from an empty `before`, and the render that subtracts a preview from the cascade drops
+     * the row on the first pointermove — out from under the gesture holding it. Committing then
+     * creates the declaration for real, which changed which sort group the row fell in, so the row
+     * moved as a direct result of being edited. Dragging padding-bottom on an inserted `<th>`
+     * deleted its own row.
+     */
+    (async () => {
+      const errors = [];
+      addEventListener('error', (e) => errors.push('error: ' + e.message));
+      addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + String(e.reason)));
+
+      const progress = document.getElementById('progress');
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const results = {};
+
+      const deep = (tag, root = document) => {
+        const direct = root.querySelector?.(tag);
+        if (direct) return direct;
+        for (const el of root.querySelectorAll?.('*') ?? []) {
+          if (el.shadowRoot) {
+            const found = deep(tag, el.shadowRoot);
+            if (found) return found;
+          }
+        }
+        return null;
+      };
+
+      try {
+        const { mount } = await import('../dist/html-editor-overlay.js');
+        /* A scripted transport, only so the context string the model would be sent is readable. */
+        const asked = [];
+        const api = mount({
+          theme: 'dark',
+          detectScriptContent: false,
+          aiTransport: (request) => {
+            asked.push(request.context);
+            return (async function* () {
+              yield { op: 'summary', text: 'Looked, changed nothing.' };
+            })();
+          },
+        });
+        const engine = api.engine;
+        api.setEditing(true);
+        await frames();
+
+        const th = document.getElementById('th');
+        const para = document.getElementById('para');
+
+        api.select(th);
+        engine.setDockTab('styles');
+        await frames();
+        await wait(300);
+
+        const panel = deep('heo-styles-panel');
+        /*
+         * Re-queried on every read, never held.
+         *
+         * The panel re-renders on every store change, and previewing is a store change — so a row
+         * captured once goes stale mid-gesture and every assertion after it reads a detached node.
+         * That is also exactly the thing under test here, so holding a reference would hide it.
+         */
+        const modified = () =>
+          panel.shadowRoot.querySelector('heo-section[heading="Set on this element"]');
+        const listed = () =>
+          Array.from(modified()?.querySelectorAll('.row') ?? []).map((row) => row.dataset.property);
+        const rowFor = (property) =>
+          Array.from(modified()?.querySelectorAll('.row') ?? []).find(
+            (row) => row.dataset.property === property,
+          );
+        const fieldFor = (property) => rowFor(property)?.querySelector('heo-value-field');
+        const gaugeFor = (property) => fieldFor(property)?.shadowRoot.querySelector('.gauge');
+        const inputFor = (property) =>
+          fieldFor(property)?.shadowRoot.querySelector('input[type="text"]');
+        const sideBox = (label) =>
+          deep('heo-box-editor')?.shadowRoot.querySelector(`input[aria-label="${label}"]`);
+
+        /* ------------------------------------------------------------------ *
+         * 1. A shorthand on its own is one row, not five.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'shorthandOnly';
+        {
+          const rows = listed();
+          const sides = ['padding-top', 'padding-right', 'padding-bottom', 'padding-left'];
+          results.shorthandOnly = {
+            order: rows.join(','),
+            // Exactly what the style attribute holds, in alphabetical order.
+            listsWhatTheAttributeHolds: rows.join(',') === 'border-bottom,padding,text-align',
+            noPhantomSideRows: sides.every((side) => !rows.includes(side)),
+            // The expansion itself is still there, in the one place it was ever for: the diagram
+            // reads each side, so `padding: 8px` shows 8 on all four. Dropping the expansion
+            // instead of dropping its origin would have broken this.
+            theBoxEditorStillShowsEachSide:
+              sideBox('padding top')?.value === '8px' &&
+              sideBox('padding bottom')?.value === '8px' &&
+              sideBox('padding left')?.value === '8px' &&
+              sideBox('padding right')?.value === '8px',
+            // And the badge counts the sides the shorthand covers, which is what it always meant.
+            styleAttributeUntouched:
+              th.getAttribute('style') === 'padding:8px;border-bottom:2px solid #d8dde8;text-align:left',
+          };
+        }
+
+        /* ------------------------------------------------------------------ *
+         * 2. A side that is genuinely declared IS a row, and sits beside its
+         *    shorthand — which is what plain alphabetical order gives.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'aRealSide';
+        engine.setStyle('padding-bottom', '12px', th);
+        await frames();
+        await wait(200);
+        {
+          const rows = listed();
+          results.aRealSide = {
+            order: rows.join(','),
+            isListed: rows.includes('padding-bottom'),
+            /*
+             * Directly after the shorthand. The old sort put names present in the style attribute
+             * in a group ahead of everything else, so on an element with both `margin` and
+             * `padding` the sides ended up below every unrelated property instead of beside the
+             * box they belong to.
+             */
+            sitsDirectlyAfterTheShorthand:
+              rows.indexOf('padding-bottom') === rows.indexOf('padding') + 1,
+            hasItsOwnGauge: Boolean(gaugeFor('padding-bottom')),
+          };
+        }
+
+        /* ------------------------------------------------------------------ *
+         * 3. Dragging that side's gauge. The row must survive the gesture and
+         *    must not move under it.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'draggingASide';
+        await wait(2600); // Past the 2.5s commit-merge window, so the undo count means something.
+        {
+          const before = listed();
+          const at = before.indexOf('padding-bottom');
+          const undoBefore = engine.history.size;
+          const gauge = gaugeFor('padding-bottom');
+          const box = gauge.getBoundingClientRect();
+          const x = box.left + box.width / 2;
+          const y = box.top + box.height / 2;
+          const opts = {
+            bubbles: true, composed: true, pointerId: 1, pointerType: 'mouse', isPrimary: true,
+          };
+
+          gauge.dispatchEvent(new PointerEvent('pointerdown', { ...opts, clientX: x, clientY: y }));
+          gauge.dispatchEvent(new PointerEvent('pointermove', { ...opts, clientX: x + 10, clientY: y }));
+          await frames();
+          await wait(60);
+          /*
+           * Measured mid-gesture, with the pointer still down, because a row that is re-rendered
+           * out of existence takes the drag with it.
+           *
+           * This group is a regression guard rather than the reproduction: with phantom rows gone
+           * there is no longer a row whose `before` is empty, so the vanishing is structurally
+           * impossible and these pass on the broken build too. What the broken build fails is
+           * `noPhantomSideRows` above and `matchesTheAttributeExactly` below.
+           */
+          const midRows = listed();
+          const survived = Boolean(rowFor('padding-bottom'));
+          gauge.dispatchEvent(new PointerEvent('pointermove', { ...opts, clientX: x + 20, clientY: y }));
+          await frames();
+          gauge.dispatchEvent(new PointerEvent('pointerup', { ...opts, clientX: x + 20, clientY: y }));
+          await frames();
+          await wait(200);
+          const afterRows = listed();
+
+          results.draggingASide = {
+            theRowSurvivesTheGesture: survived,
+            theRowDoesNotMoveMidGesture: midRows.indexOf('padding-bottom') === at,
+            theRowDoesNotMoveOnCommit: afterRows.indexOf('padding-bottom') === at,
+            orderIsUnchanged: afterRows.join(',') === before.join(','),
+            /*
+             * Read off the style attribute, not `el.style.paddingBottom`.
+             *
+             * The CSSOM expands `padding: 8px` into its longhands, so the property accessor
+             * answers `8px` for a side nothing declares — it cannot tell "declared" from
+             * "covered by the shorthand", which is the exact distinction under test.
+             */
+            attribute: th.getAttribute('style'),
+            // 20px of travel on a px value, from 12px.
+            theValueMoved: /padding-bottom:\s*32px/.test(th.getAttribute('style')),
+            // One gesture, one undo entry: the frames between are previews.
+            oneUndoEntry: engine.history.size === undoBefore + 1,
+            // And the shorthand it lives beside is not collateral damage.
+            theShorthandIsUntouched: /(?:^|;)\s*padding:\s*8px/.test(th.getAttribute('style')),
+            /*
+             * The invariant behind the whole section, checked after an edit rather than only on
+             * arrival: one row per declaration in the style attribute, no more. Four here, against
+             * the eight the broken build drew.
+             */
+            matchesTheAttributeExactly:
+              afterRows.length ===
+              th.getAttribute('style').split(';').filter((part) => part.trim()).length,
+          };
+        }
+
+        /* ------------------------------------------------------------------ *
+         * 4. Emptying it by hand. Backspacing to nothing is how a declaration
+         *    gets removed, so the row has to stay put while it is empty.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'emptyingASide';
+        {
+          const before = listed();
+          const at = before.indexOf('padding-bottom');
+          const input = inputFor('padding-bottom');
+          input.focus();
+          input.value = '';
+          input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+          await frames();
+          await wait(80);
+          results.emptyingASide = {
+            // The row stays while the field is empty, so the caret and the text being replaced
+            // stay with it. It is the commit that removes a declaration, not a keystroke.
+            theRowStaysWhileEmpty: Boolean(rowFor('padding-bottom')),
+            theRowDidNotMove: listed().indexOf('padding-bottom') === at,
+          };
+          input.dispatchEvent(
+            new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, composed: true }),
+          );
+          await frames();
+          await wait(250);
+          results.emptyingASide.attribute = th.getAttribute('style');
+          results.emptyingASide.committingRemovesTheDeclaration =
+            !/padding-bottom/.test(th.getAttribute('style')) && !listed().includes('padding-bottom');
+          // Removed as a declaration, not as a value: the shorthand still covers the side, so the
+          // diagram goes back to reading 8px from it.
+          results.emptyingASide.theShorthandStillCoversTheSide =
+            /(?:^|;)\s*padding:\s*8px/.test(th.getAttribute('style'));
+          await wait(50);
+          results.emptyingASide.andTheDiagramReadsItAgain = sideBox('padding bottom')?.value === '8px';
+        }
+
+        /* ------------------------------------------------------------------ *
+         * 5. Two shorthands at once, which is where the old order was worst.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'bothShorthands';
+        api.select(para);
+        await frames();
+        await wait(250);
+        {
+          const clean = listed();
+          engine.setStyle('margin-left', '10px', para);
+          engine.setStyle('padding-left', '14px', para);
+          await frames();
+          await wait(250);
+          const rows = listed();
+          const adjacent = (shorthand, side) =>
+            rows.indexOf(side) === rows.indexOf(shorthand) + 1;
+          results.bothShorthands = {
+            cleanOrder: clean.join(','),
+            order: rows.join(','),
+            // Neither shorthand brings phantom sides along.
+            onlyTheThreeDeclared: clean.join(',') === 'color,margin,padding',
+            marginSideSitsWithMargin: adjacent('margin', 'margin-left'),
+            paddingSideSitsWithPadding: adjacent('padding', 'padding-left'),
+            /*
+             * And nothing unrelated is wedged between a box and its sides. Before, `color`,
+             * `margin` and `padding` came first as a block and the eight sides followed, so
+             * `text-align` sat between `padding` and `padding-bottom` on the reported `<th>`.
+             */
+            nothingUnrelatedInBetween:
+              rows.slice(rows.indexOf('margin'), rows.indexOf('padding')).every(
+                (property) => property === 'margin' || property.startsWith('margin-'),
+              ),
+          };
+        }
+
+        /* ------------------------------------------------------------------ *
+         * 6. The context bundle says the same thing the panel does. It reads
+         *    the same `origins`, and the two must not drift.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'contextBundle';
+        {
+          engine.ai.upsert({
+            id: 'box-sides-probe',
+            label: 'Box sides probe',
+            transport: 'local',
+            provider: 'openai-compatible',
+            baseURL: 'http://127.0.0.1:9/v1',
+            model: 'm',
+          });
+          engine.ai.activate('box-sides-probe');
+          api.select(th);
+          await frames();
+          await wait(150);
+          await engine.promptAi('Look at this cell.');
+          await wait(150);
+          const context = asked.at(-1) ?? '';
+          // Parsed rather than pattern-matched: the claim is about which declarations the bundle
+          // lists, and a regex over the whole JSON would also match the markup it carries.
+          const bundle = context ? JSON.parse(context) : null;
+          const names = (bundle?.declared ?? []).map((one) => one.property);
+          results.contextBundle = {
+            wasBuilt: Boolean(bundle),
+            declared: names.join(','),
+            describesTheShorthand: names.includes('padding'),
+            // The model used to be told the element declared padding-top, -right, -bottom and
+            // -left as well — four declarations that are nowhere in the file it would edit.
+            doesNotInventTheSides: ['top', 'right', 'bottom', 'left'].every(
+              (side) => !names.includes(`padding-${side}`),
+            ),
+          };
+          engine.undo();
+          await frames();
+        }
+
+        /* ------------------------------------------------------------------ */
+        const failed = Object.entries(results)
+          .filter(([, group]) => group && typeof group === 'object')
+          .filter(([, group]) => Object.values(group).some((value) => value === false))
+          .map(([name]) => name);
+
+        document.getElementById('out').textContent =
+          'RESULTS:' + JSON.stringify({ ...results, errors, failed }, null, 2) + ':END';
+      } catch (e) {
+        document.getElementById('out').textContent =
+          'RESULTS:' +
+          JSON.stringify({ threw: String((e && e.stack) || e), errors, failed: ['threw'] }, null, 2) +
+          ':END';
+      }
+    })();
+  </script>
+</body>
+
+</html>
