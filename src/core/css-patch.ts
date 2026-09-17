@@ -164,6 +164,54 @@ export function hasSection(source: string): boolean {
 /* Diffing two stylesheets                                                     */
 /* -------------------------------------------------------------------------- */
 
+/** Enough to find one rule in a file. The subset of a patch that names a block. */
+export type RuleLocator = Pick<DeclarationPatch, 'selector' | 'path' | 'context' | 'occurrence'>;
+
+/** One declaration exactly as the file spells it. */
+export interface AuthoredDeclaration {
+  property: string;
+  /** The value text, without any `!important`, and otherwise untouched. */
+  value: string;
+  important: boolean;
+}
+
+/**
+ * The declarations of one rule, read out of the file's own text.
+ *
+ * The point of reading text rather than asking the CSSOM. A `CSSStyleDeclaration` is a flat list of
+ * longhands — a shorthand is expanded on parse and rebuilt on serialization — so asking it what a
+ * rule says loses two things the author chose. Spelling: `#222` comes back `rgb(34, 34, 34)`.
+ * And structure: a rule holding `padding: 8px` and a later `padding-left: 0` serialises as one
+ * `padding: 8px 8px 8px 0px`, with the name the author typed nowhere in it.
+ *
+ * Neither loss is repairable downstream, because the information is gone before anyone can ask for
+ * it. Reading the text keeps the declarations as written, in order, duplicates included — which is
+ * also what `patchCSS` writes back, so a panel drawn from this and a file written by that cannot
+ * disagree.
+ *
+ * Nested rules are stepped over rather than flattened, so a declaration inside `&:hover` does not
+ * turn up as one of this rule's.
+ *
+ * Null when the block cannot be found, which the caller should treat as "ask the CSSOM instead"
+ * rather than as "the rule declares nothing".
+ */
+export function readRuleDeclarations(
+  source: string,
+  locator: RuleLocator,
+): AuthoredDeclaration[] | null {
+  const blocks = scanBlocks(source, 0, source.length);
+  const rule = locate(blocks, locator);
+  if (!rule || rule.bodyStart === -1) return null;
+  return parseDeclarations(source, rule.bodyStart, rule.bodyEnd).map((entry) => ({
+    property: entry.property,
+    // Sliced from the value span, which the scanner already put on the far side of any
+    // `!important` — so the value is the value and the priority is a flag, as the patcher
+    // also treats them.
+    value: source.slice(entry.valueStart, entry.valueEnd).trim(),
+    important: entry.priorityEnd > entry.valueEnd,
+  }));
+}
+
 /** One declaration, as written. */
 export interface CssDeclaration {
   property: string;
@@ -536,7 +584,7 @@ function removeDeclaration(source: string, declaration: Declaration): string {
  * both: an index alone silently patches the wrong rule when the file has moved on,
  * and a selector alone cannot tell two identical selectors apart.
  */
-function locate(blocks: Block[], patch: DeclarationPatch): Block | null {
+function locate(blocks: Block[], patch: RuleLocator): Block | null {
   const wanted = normalizeSelector(patch.selector);
 
   if (patch.path?.length) {

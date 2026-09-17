@@ -1,4 +1,5 @@
 import type { FileHost } from './file-host.js';
+import { readRuleDeclarations, type AuthoredDeclaration } from './css-patch.js';
 import { nextChangeId, type Command } from './history.js';
 import { safeSelector } from './selectors.js';
 import {
@@ -376,6 +377,133 @@ export function describeRule(rule: CSSRule): RuleLocation | null {
     element,
     sheet,
   };
+}
+
+/**
+ * What a live rule says, read from its stylesheet's own text.
+ *
+ * The authored answer, where asking the rule gives a rewritten one. A `CSSStyleDeclaration` holds
+ * longhands and rebuilds shorthands on serialization, so it reports `#222` as `rgb(34, 34, 34)` and
+ * reports a rule declaring `padding: 8px` and then `padding-left: 0` as a single
+ * `padding: 8px 8px 8px 0px`. Both of those are the author's decisions, and both are gone by the
+ * time anything downstream could ask.
+ *
+ * Located by the same path and at-rule context `describeRule` computes for a save patch, and read
+ * with the same scanner `patchCSS` writes through — so what a panel shows here and what a save
+ * writes there come from one description of one block. A rule inside `@media` is reached exactly
+ * like any other, because both the browser and the scanner walk a sheet in the same order.
+ *
+ * Null when there is no text to read, and the caller should fall back to the CSSOM rather than
+ * conclude the rule is empty:
+ *
+ * - a constructed or adopted sheet, which has no source text at all;
+ * - a cross-origin sheet, whose rules are unreadable anyway so this will not come up;
+ * - a linked sheet whose text nothing has fetched yet.
+ */
+export function authoredDeclarationsOf(rule: CSSStyleRule): AuthoredDeclaration[] | null {
+  const at = describeRule(rule);
+  if (!at) return null;
+  const text = sourceTextOf(at.sheet);
+  if (text === null) return null;
+  return readRuleDeclarations(text, {
+    selector: rule.selectorText,
+    path: at.path,
+    context: at.context,
+  });
+}
+
+/**
+ * This session's edits to a rule, layered over what its file says.
+ *
+ * The file's text is the honest account of a rule's *notation and order*, and the only account of
+ * its unsaved edits is here. A CSSOM write is invisible in the text — that is the whole reason a
+ * save has to patch the file separately — so reading text alone showed a rule as it was on load and
+ * dropped every declaration added since. Reading the CSSOM alone loses the author's spelling and
+ * collapses shorthands. Neither is sufficient; the text is the base and this is what is on top of
+ * it.
+ *
+ * Keyed on the live rule rather than on a selector, which is what keeps it correct where the
+ * registries cannot be: a rule inside `@media`, one past a scan cap, and one of two blocks sharing
+ * a selector are all just different keys here.
+ *
+ * A whole list per rule rather than one property at a time, because the thing being preserved is
+ * order. A new declaration goes after the existing ones — the same place `patchCSS` puts it — and an
+ * edited one stays where it is, so what the panel shows and what the file will say are the same
+ * sequence.
+ */
+const ruleEdits = new WeakMap<CSSStyleRule, AuthoredDeclaration[]>();
+
+/** What a rule declares now: this session's edits if it has any, otherwise its file's text. */
+export function ruleDeclarations(rule: CSSStyleRule): AuthoredDeclaration[] | null {
+  return ruleEdits.get(rule) ?? authoredDeclarationsOf(rule);
+}
+
+/** Replace what this session believes a rule declares. Null forgets the edits entirely. */
+export function rememberRuleDeclarations(
+  rule: CSSStyleRule,
+  declarations: AuthoredDeclaration[] | null,
+): void {
+  if (declarations) ruleEdits.set(rule, declarations);
+  else ruleEdits.delete(rule);
+}
+
+/**
+ * The list with one declaration set, added or removed, keeping every other byte in place.
+ *
+ * The same three cases `writeInline` handles for the style attribute, and for the same reason:
+ * position in a declaration list is precedence, so an edit must not move a line and an addition
+ * must go at the end where the author would have typed it. An empty value removes, which is how
+ * every caller here already spells removal.
+ */
+export function withDeclaration(
+  declarations: readonly AuthoredDeclaration[],
+  property: string,
+  value: string,
+  important = false,
+): AuthoredDeclaration[] {
+  const next = declarations.map((one) => ({ ...one }));
+  const wanted = property.trim().toLowerCase();
+  const at = next.findIndex((one) => one.property.toLowerCase() === wanted);
+  const text = value.trim();
+  if (!text) {
+    if (at >= 0) next.splice(at, 1);
+    return next;
+  }
+  if (at >= 0) next[at] = { property: next[at].property, value: text, important };
+  else next.push({ property, value: text, important });
+  return next;
+}
+
+/** The value of one property in a list, last declaration winning, or null when absent. */
+export function declarationValue(
+  declarations: readonly AuthoredDeclaration[],
+  property: string,
+): string | null {
+  const wanted = property.trim().toLowerCase();
+  for (let index = declarations.length - 1; index >= 0; index -= 1) {
+    if (declarations[index].property.toLowerCase() === wanted) return declarations[index].value;
+  }
+  return null;
+}
+
+/**
+ * A sheet's text, when the page has it to hand. Never fetches.
+ *
+ * Two routes, and the first covers more than it looks like. A `<style>` element's `textContent` is
+ * the authored CSS by definition — and a connected project's `.css` file is also a `<style>`,
+ * because `mirror.ts` stands one in for the `<link>` precisely so the file's text is in the
+ * document. The second route is the session cache, for a linked sheet the CSS panel or a project
+ * read has already been through.
+ *
+ * Synchronous on purpose: this is read during render, and a render that has to await cannot show
+ * anything. A miss is a fallback, not a failure.
+ */
+function sourceTextOf(sheet: CSSStyleSheet): string | null {
+  const node = sheet.ownerNode;
+  if (node instanceof HTMLStyleElement) return node.textContent ?? '';
+  // The key `collectStyleSources` builds for a linked sheet. Spelled the same way here on
+  // purpose — the two have to agree, and there is only one other place that writes it.
+  return sheet.href ? (styleTexts.get(`link:${sheet.href}`) ?? null) : null;
 }
 
 /* -------------------------------------------------------------------------- */

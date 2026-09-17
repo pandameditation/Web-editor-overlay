@@ -11,6 +11,7 @@ import {
   diffCSS,
   normalizeSelector,
   patchCSS,
+  readRuleDeclarations,
   upsertSection,
   type DeclarationPatch,
 } from '../src/core/css-patch.ts';
@@ -495,6 +496,141 @@ test('a whole-file rewrite still comes back as a diff, however long', () => {
   const after = Array.from({ length: 30 }, (_, i) => `.r${i} { padding: ${i + 1}px; }`).join('\n');
   // Deciding that 30 changes is too many to read belongs to the prompt, not here.
   assert.equal(diffCSS(before, after).length, 30);
+});
+
+/* -------------------------------------------------------------------------- */
+/* Reading a rule back, as written                                             */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * The counterpart of patching, and the reason it exists.
+ *
+ * A `CSSStyleDeclaration` is a flat list of longhands, so asking the CSSOM what a rule says loses
+ * the author's spelling (`#222` comes back `rgb(34, 34, 34)`) and the author's structure (a
+ * `padding` plus a later `padding-left` serialise as one collapsed `padding`). A panel drawn from
+ * that disagreed with the file this patcher writes. Reading the same text with the same scanner is
+ * what makes the two agree by construction.
+ */
+const AUTHORED = `#plain { padding: 8px; padding-left: 0; color: #222; }
+#dupes { color: red; color: #0a0; -webkit-transform: scale(2); transform: scale(2); }
+#bang { margin: 4px !important; margin-top: 1px; }
+#nosemi { padding: 3px; color: #abc }
+#varish { padding: var(--space-md, 12px); padding-left: 0 }
+#nesting { color: #111; &:hover { color: #222; } padding: 1px; }
+@media (min-width: 10px) {
+  #inmedia { padding: 5px; padding-top: 1px; color: #333; }
+  @supports (display: grid) {
+    #nested { gap: 2px; color: #456; }
+  }
+}
+@layer base {
+  #inlayer { padding: 6px; color: #789; }
+}
+@container (min-width: 1px) {
+  #incontainer { color: #abc; }
+}
+`;
+
+/** The declarations as `property: value` text, for readable assertions. */
+const authored = (locator: Parameters<typeof readRuleDeclarations>[1]): string[] =>
+  (readRuleDeclarations(AUTHORED, locator) ?? []).map(
+    (one) => `${one.property}: ${one.value}${one.important ? ' !important' : ''}`,
+  );
+
+test('a shorthand and one of its sides are two declarations, in the authored order', () => {
+  assert.deepEqual(authored({ selector: '#plain' }), [
+    'padding: 8px',
+    'padding-left: 0',
+    'color: #222',
+  ]);
+});
+
+test('the authored colour notation survives', () => {
+  // The whole point: the CSSOM reports this rule's colour as `rgb(34, 34, 34)`.
+  assert.ok(authored({ selector: '#plain' }).includes('color: #222'));
+});
+
+test('two spellings of the same property both survive', () => {
+  // The oldest trick in CSS, and something a `CSSStyleDeclaration` cannot hold at all.
+  assert.deepEqual(authored({ selector: '#dupes' }), [
+    'color: red',
+    'color: #0a0',
+    '-webkit-transform: scale(2)',
+    'transform: scale(2)',
+  ]);
+});
+
+test('important is a flag, not part of the value', () => {
+  assert.deepEqual(authored({ selector: '#bang' }), [
+    'margin: 4px !important',
+    'margin-top: 1px',
+  ]);
+});
+
+test('a final declaration with no semicolon is still read', () => {
+  assert.deepEqual(authored({ selector: '#nosemi' }), ['padding: 3px', 'color: #abc']);
+});
+
+test('a var() inside a shorthand is read verbatim', () => {
+  // And is the case the CSSOM refuses to enumerate as longhands at all.
+  assert.deepEqual(authored({ selector: '#varish' }), [
+    'padding: var(--space-md, 12px)',
+    'padding-left: 0',
+  ]);
+});
+
+test('a nested rule contributes none of its declarations to its parent', () => {
+  assert.deepEqual(authored({ selector: '#nesting' }), ['color: #111', 'padding: 1px']);
+});
+
+test('a rule inside an at-rule is reachable by its context', () => {
+  assert.deepEqual(authored({ selector: '#inmedia', context: ['@media (min-width: 10px)'] }), [
+    'padding: 5px',
+    'padding-top: 1px',
+    'color: #333',
+  ]);
+  assert.deepEqual(authored({ selector: '#inlayer', context: ['@layer base'] }), [
+    'padding: 6px',
+    'color: #789',
+  ]);
+  assert.deepEqual(
+    authored({ selector: '#incontainer', context: ['@container (min-width: 1px)'] }),
+    ['color: #abc'],
+  );
+});
+
+test('two levels of at-rule are reachable', () => {
+  assert.deepEqual(
+    authored({
+      selector: '#nested',
+      context: ['@media (min-width: 10px)', '@supports (display: grid)'],
+    }),
+    ['gap: 2px', 'color: #456'],
+  );
+});
+
+test('a rule inside an at-rule is reachable by path, the way the browser numbers it', () => {
+  assert.deepEqual(authored({ selector: '#inmedia', path: [6, 0] }), [
+    'padding: 5px',
+    'padding-top: 1px',
+    'color: #333',
+  ]);
+  assert.deepEqual(authored({ selector: '#nested', path: [6, 1, 0] }), ['gap: 2px', 'color: #456']);
+});
+
+test('prelude spacing does not have to match', () => {
+  // `@media(min-width:10px)` in a file and the CSSOM's spaced-out form are one condition.
+  assert.deepEqual(authored({ selector: '#inmedia', context: ['@media(min-width:10px)'] }), [
+    'padding: 5px',
+    'padding-top: 1px',
+    'color: #333',
+  ]);
+});
+
+test('a rule the file does not have reads as null, not as empty', () => {
+  // The distinction the caller needs: null means "ask the CSSOM", empty means "declares nothing".
+  assert.equal(readRuleDeclarations(AUTHORED, { selector: '#nope' }), null);
+  assert.deepEqual(readRuleDeclarations('#empty { }', { selector: '#empty' }), []);
 });
 
 /* -------------------------------------------------------------------------- */

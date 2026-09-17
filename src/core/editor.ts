@@ -185,9 +185,13 @@ import {
 import { startEdgeScroll } from './autoscroll.js';
 import {
   collectStyleSources,
+  declarationValue,
   describeRule,
   DOCUMENT_TARGET,
+  rememberRuleDeclarations,
   rememberStyleText,
+  ruleDeclarations,
+  withDeclaration,
   resetSheetIds,
 } from './sheets.js';
 import {
@@ -2274,7 +2278,7 @@ export class EditorEngine {
     this.#rulePreview ??= {
       rule,
       property,
-      before: rule.style.getPropertyValue(property),
+      before: this.#authoredRuleValue(rule, property),
       priority: rule.style.getPropertyPriority(property),
     };
     const next = value.trim();
@@ -2297,9 +2301,14 @@ export class EditorEngine {
     // Put the previewed value back first, so the command records the rule as it was
     // before the user started exploring.
     this.#endRulePreview();
-    const before = rule.style.getPropertyValue(property);
+    const before = this.#authoredRuleValue(rule, property);
     const beforePriority = rule.style.getPropertyPriority(property);
     const after = value.trim();
+    // Snapshotted before the write and recomputed rather than re-read, because the CSSOM cannot be
+    // asked afterwards what names it was given. Null when the rule's file text is unreachable, in
+    // which case the panel is reading the CSSOM anyway and there is nothing to keep in step.
+    const beforeList = ruleDeclarations(rule);
+    const afterList = beforeList ? withDeclaration(beforeList, property, after) : null;
     const selector = rule.selectorText;
     const target = this.store.value.selected;
 
@@ -2348,15 +2357,58 @@ export class EditorEngine {
       apply: () => {
         if (after) rule.style.setProperty(property, after);
         else rule.style.removeProperty(property);
+        /*
+         * The declaration list this edit produces, kept beside the rule.
+         *
+         * The CSSOM write above is the paint and nothing more. It cannot be read back as a record
+         * of what was written — it holds longhands and rebuilds shorthands, so a `padding-left`
+         * written onto a rule declaring `padding` comes back as neither name the user has seen.
+         * This list is what the panel reads and what the save patches, in the order the file will
+         * have them.
+         */
+        if (beforeList) rememberRuleDeclarations(rule, afterList);
         this.#resyncRegistries(rule, property);
       },
       revert: () => {
         if (before) rule.style.setProperty(property, before, beforePriority);
         else rule.style.removeProperty(property);
+        // Back to the exact list, not to a per-property undo: only the whole list can restore the
+        // position of a declaration this edit appended or removed.
+        if (beforeList) rememberRuleDeclarations(rule, beforeList);
         this.#resyncRegistries(rule, property);
       },
     });
     if (target) this.#bumpRevision();
+  }
+
+  /**
+   * What a rule declares for one property, as the file spells it.
+   *
+   * Used wherever a rule's current value is captured — the value a preview restores, the `before` a
+   * change record carries, the value an undo writes back. All three used to come from
+   * `rule.style.getPropertyValue`, which answers in the CSSOM's own words: an authored `#222` comes
+   * back `rgb(34, 34, 34)`. That is only a display nuisance until the value is captured, at which
+   * point it becomes what gets written — so touching a declaration was enough to rewrite its
+   * notation in the file, and reverting an edit did not put back what was there.
+   *
+   * The text is read, not the rule, so a preview in flight cannot contaminate the answer: the CSSOM
+   * has been painted and the file has not, which is exactly the distinction `before` is asking
+   * about.
+   *
+   * The last declaration of the property wins, because that is the one in effect. Falls back to the
+   * CSSOM when there is no text to read, and to the empty string when the property is simply not
+   * declared — which is how the callers already spell "this is new".
+   */
+  #authoredRuleValue(rule: CSSStyleRule, property: string): string {
+    const declarations = ruleDeclarations(rule);
+    const authored = declarations ? declarationValue(declarations, property) : null;
+    if (authored !== null) return authored;
+    /*
+     * Not declared under this name, but the CSSOM may still answer — a `padding-left` covered by a
+     * `padding` shorthand reads back `8px` from the rule while appearing nowhere in the file. That
+     * is the right value for a preview to restore, so the fallback stands rather than empty.
+     */
+    return rule.style.getPropertyValue(property);
   }
 
   /**

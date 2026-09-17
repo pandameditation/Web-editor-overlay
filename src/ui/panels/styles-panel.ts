@@ -12,12 +12,14 @@ import {
   parentLayoutProperties,
   PROPERTY_GROUP_LABELS,
   searchProperties,
+  shadowedDeclarations,
   sizeConstraints,
   stateRules,
   type AppliedRule,
   type DeclarationOrigin,
   type SizeConstraint,
 } from '../../core/css.js';
+import { ruleDeclarations } from '../../core/sheets.js';
 import {
   checkDeclaration,
   normalizeProperty,
@@ -1210,9 +1212,33 @@ export class HeoStylesPanel extends HeoElement {
     const key = this.#ruleKey(rule);
     const expanded = this.openRules.has(key);
     const shown = rule.matchedSelector ?? rule.selector;
-    const declarations: Record<string, string> = {};
-    for (const one of rule.declarations) declarations[one.property] = one.value;
     const live = rule.rule;
+    /*
+     * The file's own text first, and the live rule only as a fallback.
+     *
+     * `rule.declarations` comes from `rule.style.cssText`, and a `CSSStyleDeclaration` rewrites
+     * what it is asked to serialise. It holds longhands and rebuilds shorthands, so it reports an
+     * authored `#222` as `rgb(34, 34, 34)` and reports a rule declaring `padding: 8px` and then
+     * `padding-left: 0` as one collapsed `padding: 8px 8px 8px 0px` — with the name the author
+     * typed nowhere in it. Rows drawn from that disagreed with the file a save writes, which is
+     * how adding a side to a rule could look like it did nothing at all.
+     *
+     * `ruleDeclarations` reads the same text `patchCSS` writes, located the same way, with this
+     * session's own edits layered on — so these rows and that file cannot drift. Null means there
+     * is no text to read at all: an adopted or constructed sheet, or a linked one nothing has
+     * fetched. Then the CSSOM is still the best answer available.
+     */
+    const authored = live ? ruleDeclarations(live) : null;
+    const source = authored ?? rule.declarations;
+    const declarations: Record<string, string> = {};
+    // Keyed by name because that is what a row is. Two declarations of the *same* property cannot
+    // both be shown this way and the later one wins, which is also what the browser does; the
+    // shorthand-and-its-side case, which is the one that was broken, is two different names and
+    // survives in the order the file has them.
+    for (const one of source) declarations[one.property] = one.value;
+    // Computed from the authored list, not from the map, because it is a question about order and
+    // the map has already lost any repeated name.
+    const shadowed = shadowedDeclarations(source);
 
     // Subtract any live preview, exactly as the element's own rows do with an inline
     // one. `rule.declarations` was read off the live rule, and a preview is painted
@@ -1261,6 +1287,9 @@ export class HeoStylesPanel extends HeoElement {
         const winner = cascade.get(property);
         return winner ? winner.from !== rule : false;
       },
+      // Order inside this one rule, which is a different question from the cascade above and the
+      // only one a list keyed by name cannot answer for itself.
+      shadowed: (property) => shadowed.has(property),
       describe: (property) => {
         if (rule.pseudo) {
           return `${property} applies to ${shown}, a state this element is not in right now`;

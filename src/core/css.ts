@@ -564,19 +564,47 @@ function walkRules(
       });
       continue;
     }
+    /*
+     * A media query is the one at-rule worth evaluating, because it can be false right now.
+     * Reporting a print-only rule as applying on screen would put a value in the panel that
+     * nothing on the page is using.
+     */
     if (rule instanceof CSSMediaRule) {
       if (!safeMatchMedia(rule.conditionText)) continue;
       walkRules(rule, source, `@media ${rule.conditionText}`, el, out, wantPseudo);
       continue;
     }
-    if (typeof CSSContainerRule !== 'undefined' && rule instanceof CSSContainerRule) {
-      walkRules(rule, source, `@container ${rule.conditionText}`, el, out, wantPseudo);
-      continue;
-    }
-    if (rule instanceof CSSSupportsRule) {
-      walkRules(rule, source, `@supports ${rule.conditionText}`, el, out, wantPseudo);
+    /*
+     * Everything else that can contain rules, by capability rather than by name.
+     *
+     * This used to be a list of three — media, container, supports — and `@layer` was not on it, so
+     * every rule inside a cascade layer was invisible to this panel: no row, no blue dot, no "from
+     * the .card rule" on a value it was actually supplying. Naming the at-rules one by one means
+     * the next one added to CSS is a silent gap of the same kind, and a rule the editor cannot see
+     * is a rule it will happily contradict with an override.
+     *
+     * `CSSGroupingRule` is the interface that says "I hold rules", so asking for it covers
+     * `@layer`, `@scope`, `@starting-style` and whatever follows them. A `CSSStyleRule` is also one
+     * in current browsers, which is why the style-rule branch above returns before reaching here —
+     * descending into it would report a nested rule as if it stood on its own.
+     */
+    if (rule instanceof CSSGroupingRule) {
+      walkRules(rule, source, preludeOf(rule) || condition, el, out, wantPseudo);
     }
   }
+}
+
+/**
+ * The at-rule's prelude, e.g. `@layer base` or `@supports (display: grid)`.
+ *
+ * Taken off `cssText` rather than from a per-type `conditionText`, because the point of asking is to
+ * describe a rule type this code does not have a branch for. `@layer` has no `conditionText` at all,
+ * and an unknown future at-rule will not either.
+ */
+function preludeOf(rule: CSSRule): string {
+  const text = rule.cssText;
+  const brace = text.indexOf('{');
+  return (brace === -1 ? text : text.slice(0, brace)).trim();
 }
 
 function safeMatchMedia(condition: string): boolean {
@@ -1166,6 +1194,25 @@ export function splitBoxValue(value: string): [string, string, string, string] {
  * renders as written. This is a property of the object model the editor edits through, which is why
  * the answer is needed here — to explain where a declaration went rather than to prevent it.
  */
+/**
+ * Every shorthand that would overwrite this property, innermost first.
+ *
+ * `border-left-width` is covered by `border-left` and also by `border`, so a rule that declares it
+ * and then declares either of those has overwritten it. One level is not enough to answer that,
+ * which is why the single-step lookup below is wrapped rather than used directly.
+ */
+export function shorthandChain(property: string): string[] {
+  const chain: string[] = [];
+  let current = shorthandFor(property);
+  // Bounded by the chain actually being a chain: `border-left-width` to `border-left` to `border`
+  // is the longest in CSS, and the guard is against a future entry accidentally pointing at itself.
+  while (current && !chain.includes(current)) {
+    chain.push(current);
+    current = shorthandFor(current);
+  }
+  return chain;
+}
+
 export function shorthandFor(property: string): string | null {
   const name = property.trim().toLowerCase();
   if (/^(?:margin|padding)-(?:top|right|bottom|left)$/.test(name)) return name.split('-')[0];
@@ -1177,6 +1224,38 @@ export function shorthandFor(property: string): string | null {
   if (/^border-(?:width|style|color)$/.test(name)) return 'border';
   if (/^outline-(?:width|style|color)$/.test(name)) return 'outline';
   return null;
+}
+
+/**
+ * Which of these declarations a later one in the same block has completely overwritten.
+ *
+ * Order inside a rule is meaning, and it is the one thing a panel that lists declarations by name
+ * cannot show. `padding-left: 0` followed by `padding: 20px` leaves the left side at 20px — the
+ * first declaration is in the file, is valid, and does nothing. Saying so beside the row it belongs
+ * to is the difference between a rule a reader can trust and one they have to simulate in their
+ * head.
+ *
+ * Only *complete* overwrites count. A shorthand followed by one of its sides is the ordinary,
+ * intended pattern — `padding: 8px` then `padding-left: 0` — and the shorthand still supplies three
+ * sides, so flagging it would cry wolf on the very thing this is meant to make usable.
+ *
+ * `!important` wins regardless of position, so an important declaration is not shadowed by a plain
+ * one that follows it.
+ */
+export function shadowedDeclarations(
+  declarations: readonly { property: string; important?: boolean }[],
+): Set<string> {
+  const shadowed = new Set<string>();
+  declarations.forEach((entry, index) => {
+    const covers = new Set([entry.property, ...shorthandChain(entry.property)]);
+    for (const later of declarations.slice(index + 1)) {
+      if (!covers.has(later.property)) continue;
+      if (entry.important && !later.important) continue;
+      shadowed.add(entry.property);
+      return;
+    }
+  });
+  return shadowed;
 }
 
 /** Recombine four sides into the shortest equivalent shorthand. */

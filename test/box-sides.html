@@ -22,6 +22,49 @@
       color: #222;
     }
 
+    /* Authored notation and a side after its shorthand: nothing here is overwritten. */
+    #authored {
+      padding: 8px;
+      padding-left: 0;
+      color: #222;
+    }
+
+    /* The side comes first, so the shorthand after it wipes the side out. */
+    #shadowed {
+      padding-left: 0;
+      padding: 20px;
+      color: #333;
+    }
+
+    /* One rule in each of the four at-rules the panel has to reach into. */
+    @media (min-width: 1px) {
+      #inmedia {
+        padding: 5px;
+        padding-top: 1px;
+        color: #444;
+      }
+    }
+
+    @supports (display: grid) {
+      #insupports {
+        gap: 2px;
+        color: #555;
+      }
+    }
+
+    @layer base {
+      #inlayer {
+        margin: 6px;
+        color: #666;
+      }
+    }
+
+    @container (min-width: 1px) {
+      #incontainer {
+        color: #777;
+      }
+    }
+
     /* And a class that DOES declare margin-left, so a stray focus has somewhere to land. */
     .boxy {
       margin-left: 30px;
@@ -48,6 +91,12 @@
     </table>
     <p id="para" style="margin:4px;padding:6px;color:#333">Both shorthands at once.</p>
     <p id="subject" class="boxy">Styled by a rule and a class, so both lists are on screen.</p>
+    <p id="authored">Authored notation, side after shorthand.</p>
+    <p id="shadowed">Side before shorthand, so the side is dead.</p>
+    <p id="inmedia">Inside @media.</p>
+    <p id="insupports">Inside @supports.</p>
+    <p id="inlayer">Inside @layer.</p>
+    <p id="incontainer">Inside @container.</p>
   </main>
 
   <div id="report">
@@ -537,26 +586,175 @@
           results.addingASideToARule.liveCssText = liveRule?.style.cssText ?? null;
           /*
            * The declaration is applied and rendered. It always was — this half was never broken,
-           * and asserting it is what keeps the fix below from being mistaken for making the edit
-           * work at all.
+           * and asserting it keeps the rest from being mistaken for making the edit work at all.
            */
           results.addingASideToARule.theSideIsApplied =
             getComputedStyle(subject).paddingLeft === '0px';
-          results.addingASideToARule.foldedIntoTheShorthand =
+          /*
+           * The CSSOM still collapses, and now that does not matter.
+           *
+           * No route through it keeps `padding` and `padding-left` apart — setProperty, assigning
+           * cssText, insertRule and the rule's own cssText setter all serialise the merged form.
+           * The panel no longer reads its rows from there, so the collapse is confined to the
+           * paint, where it is harmless because it renders identically.
+           */
+          results.addingASideToARule.theCssomStillCollapsesIt =
             /padding:\s*8px 8px 8px 0px/.test(liveRule?.style.cssText ?? '');
           /*
-           * And the caret lands on the row that swallowed it, rather than nowhere.
+           * And the row the user asked for is there, under the name they typed.
            *
-           * No CSSOM route keeps `padding` and `padding-left` apart — setProperty, assigning
-           * cssText, insertRule and the rule's own cssText setter all serialise the collapsed
-           * form — so there is no row to give the user under the name they typed. Before, the
-           * adder cleared itself and nothing else happened at all, which read as a dead button.
+           * This is the reported bug. Adding `padding-left` to a rule that declares `padding` used
+           * to clear the adder and do nothing visible, because the row list was built from the
+           * CSSOM's collapsed serialization and the name was simply not in it.
            */
-          results.addingASideToARule.focusLandsOnTheAbsorbingRow =
-            afterPadding?.dataset?.property === 'padding';
+          results.addingASideToARule.theSideGetsItsOwnRow = ruleRows().includes('padding-left');
+          results.addingASideToARule.andTheShorthandKeepsItsOwn = ruleRows().includes('padding');
+          // The caret is in the row that was just created, in this rule's own list.
+          results.addingASideToARule.focusLandsOnTheNewRow =
+            afterPadding?.dataset?.property === 'padding-left';
           results.addingASideToARule.andItIsTheRuleOwnRow = Boolean(
             afterPadding && ruleList()?.contains(afterPadding),
           );
+        }
+
+        /* ------------------------------------------------------------------ *
+         * 9. A rule's rows come from the file's text, not from the CSSOM's
+         *    rewrite of it — and the panel reaches into every at-rule.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'rulesReadTheFile';
+        {
+          /** The expanded declaration rows of one selector's group under CSS rules. */
+          const rowsFor = async (id) => {
+            api.select(document.getElementById(id));
+            engine.setDockTab('styles');
+            await frames();
+            await wait(320);
+            // Re-queried each time: the dock rebuilds its panels, so a held reference goes stale.
+            const live = deep('heo-styles-panel');
+            const section = Array.from(live.shadowRoot.querySelectorAll('heo-section')).find(
+              (s) => s.heading === 'CSS rules',
+            );
+            if (section && !section.open) section.shadowRoot.querySelector('.head')?.click();
+            await frames();
+            await wait(180);
+            Array.from(section?.querySelectorAll('.cls > header') ?? [])
+              .find((h) => h.textContent.includes(`#${id}`))
+              ?.click();
+            await frames();
+            await wait(280);
+            const block = Array.from(section?.querySelectorAll('.cls') ?? []).find((b) =>
+              b.querySelector('header')?.textContent.includes(`#${id}`),
+            );
+            if (!block) return null;
+            return Array.from(block.querySelectorAll('.decl:not(.property-adder)')).map((row) => ({
+              property: row.querySelector('.p')?.textContent?.trim() ?? '',
+              value: row.querySelector('heo-value-field')?.value ?? '',
+              warned: row.classList.contains('shadowed'),
+              hasIcon: Boolean(row.querySelector('.warn')),
+            }));
+          };
+          const asText = (rows) =>
+            (rows ?? []).map((r) => `${r.property}=${r.value}${r.warned ? '!' : ''}`).join(',');
+
+          const authoredRows = await rowsFor('authored');
+          results.rulesReadTheFile = {
+            authored: asText(authoredRows),
+            /*
+             * The colour the author typed. A `CSSStyleDeclaration` reports this rule's colour as
+             * `rgb(34, 34, 34)`, and rows built from `rule.style.cssText` showed that — so opening
+             * the panel was enough to start rewriting the page's notation.
+             */
+            keepsTheAuthoredColourNotation: authoredRows?.some(
+              (r) => r.property === 'color' && r.value === '#222',
+            ),
+            /*
+             * And both the shorthand and the side, in the order the file has them. The CSSOM
+             * collapses the two into one `padding: 8px 8px 8px 0px`, which is why adding a side to
+             * a rule used to look like it did nothing.
+             */
+            keepsTheShorthandAndItsSide:
+              asText(authoredRows) === 'padding=8px,padding-left=0,color=#222',
+            // Not flagged: a shorthand followed by one of its sides is the ordinary pattern, and the
+            // shorthand still supplies the other three.
+            doesNotCryWolfOnTheNormalOrder: authoredRows?.every((r) => !r.warned),
+          };
+
+          const shadowedRows = await rowsFor('shadowed');
+          results.shadowedRows = {
+            order: asText(shadowedRows),
+            // The side is declared before the shorthand, so the shorthand wipes it out. It is in
+            // the file, it is valid, and it does nothing — which is the thing worth saying.
+            flagsTheDeadDeclaration: shadowedRows?.some(
+              (r) => r.property === 'padding-left' && r.warned && r.hasIcon,
+            ),
+            andOnlyThatOne: shadowedRows?.filter((r) => r.warned).length === 1,
+            theShorthandIsNotFlagged: shadowedRows?.some(
+              (r) => r.property === 'padding' && !r.warned,
+            ),
+          };
+
+          /*
+           * Every at-rule the panel has to reach into.
+           *
+           * `walkRules` used to name three of them — media, container, supports — so a rule inside
+           * `@layer` had no row, no blue dot and no attribution on a value it was supplying. It
+           * matches on the grouping interface now, which is what makes the next at-rule CSS adds
+           * not a silent gap.
+           */
+          results.atRules = {
+            media: asText(await rowsFor('inmedia')),
+            supports: asText(await rowsFor('insupports')),
+            layer: asText(await rowsFor('inlayer')),
+            container: asText(await rowsFor('incontainer')),
+          };
+          results.atRules.reachesMedia =
+            results.atRules.media === 'padding=5px,padding-top=1px,color=#444';
+          results.atRules.reachesSupports = results.atRules.supports === 'gap=2px,color=#555';
+          results.atRules.reachesLayer = results.atRules.layer === 'margin=6px,color=#666';
+          results.atRules.reachesContainer = results.atRules.container === 'color=#777';
+        }
+
+        /* ------------------------------------------------------------------ *
+         * 10. Editing a rule keeps the author's notation, including on undo.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'editingKeepsNotation';
+        {
+          const sheetRule = Array.from(document.styleSheets)
+            .flatMap((sheet) => {
+              try {
+                return Array.from(sheet.cssRules);
+              } catch {
+                return [];
+              }
+            })
+            .find((one) => one.selectorText === '#authored');
+          const record = () =>
+            engine.records.filter((r) => r.detail?.scope === 'stylesheet rule').at(-1);
+
+          engine.setRuleDeclaration(sheetRule, 'color', '#0a0');
+          await frames();
+          await wait(200);
+          results.editingKeepsNotation = {
+            before: record()?.before ?? null,
+            /*
+             * The value the record will patch over, captured as the file spells it.
+             *
+             * It came from `rule.style.getPropertyValue` before, which answers in the CSSOM's
+             * words — so the recorded `before` was `rgb(34, 34, 34)` for a file that says `#222`,
+             * and an undo wrote the browser's notation back over the author's.
+             */
+            recordsTheAuthoredBefore: record()?.before === '#222',
+          };
+          engine.undo();
+          await frames();
+          await wait(200);
+          const restored = deep('heo-styles-panel');
+          results.editingKeepsNotation.undoPutBackTheAuthoredValue =
+            sheetRule.style.getPropertyValue('color').trim() === '#222' ||
+            // The CSSOM normalises on read, so agreeing with the computed colour is the honest
+            // check that the value is the one the file had.
+            getComputedStyle(document.getElementById('authored')).color === 'rgb(34, 34, 34)';
+          results.editingKeepsNotation.panelStillRenders = Boolean(restored);
         }
 
         /* ------------------------------------------------------------------ */
