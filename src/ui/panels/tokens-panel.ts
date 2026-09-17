@@ -948,7 +948,7 @@ export class HeoTokensPanel extends HeoElement {
       onRenamed: (from, to) => {
         if (this.expandedRule === from) this.expandedRule = to;
       },
-      onFocus: (property) => focusDeclaration(this.renderRoot, property),
+      onFocus: (property, scope) => focusDeclaration(this.renderRoot, property, scope),
       editingSelector: this.editingRuleSelector,
       onEditSelector: (next) => {
         this.editingRuleSelector = next;
@@ -983,7 +983,7 @@ export class HeoTokensPanel extends HeoElement {
         onRemoved: (name) => {
           if (this.expandedClass === name) this.expandedClass = null;
         },
-        onFocus: (property) => focusDeclaration(this.renderRoot, property),
+        onFocus: (property, scope) => focusDeclaration(this.renderRoot, property, scope),
       },
     });
   }

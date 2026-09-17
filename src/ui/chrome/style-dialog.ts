@@ -328,7 +328,7 @@ export class HeoStyleDialog extends HeoElement {
       },
       // Deleted from inside its own dialog, so there is nothing left for the dialog to edit.
       onRemoved: () => this.editor.closeStyleEditor(),
-      onFocus: (property) => focusDeclaration(this.renderRoot, property),
+      onFocus: (property, scope) => focusDeclaration(this.renderRoot, property, scope),
     };
   }
 
@@ -341,7 +341,7 @@ export class HeoStyleDialog extends HeoElement {
         this.newProperty = value;
       },
       onRemoved: () => this.editor.closeStyleEditor(),
-      onFocus: (property) => focusDeclaration(this.renderRoot, property),
+      onFocus: (property, scope) => focusDeclaration(this.renderRoot, property, scope),
       editingSelector: this.editingSelector,
       onEditSelector: (next) => {
         this.editingSelector = next;

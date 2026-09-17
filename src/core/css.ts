@@ -64,6 +64,22 @@ export interface PropertyMeta {
   literals?: string[];
   /** Shown as placeholder / hint text. */
   hint?: string;
+  /**
+   * A side or component of a shorthand listed just above it.
+   *
+   * Findable by name, but kept out of the unprompted list. Both halves are the point.
+   *
+   * They have to be findable: the catalogue held `margin`, `padding`, `border` and `outline` and
+   * none of their sides, so typing `margin-left` or `border-bottom` into any property adder — an
+   * element's, a class's, a rule's — offered nothing and the panel's own search said the page
+   * declared no such thing. `border-bottom` is in the markup this editor inserts for a table, so
+   * the gap was reachable in about three clicks.
+   *
+   * And they have to stay out of the default list, which is what an adder shows before anything has
+   * been typed. Thirty-five sides ahead of `width` would answer a question nobody asked with the
+   * least interesting third of CSS.
+   */
+  longhand?: true;
 }
 
 const K = {
@@ -153,6 +169,14 @@ export const CSS_PROPERTIES: PropertyMeta[] = [
   // Spacing
   { name: 'margin', group: 'spacing', control: 'box', tokens: 'space' },
   { name: 'padding', group: 'spacing', control: 'box', tokens: 'space' },
+  { name: 'margin-top', group: 'spacing', control: 'length', tokens: 'space', keywords: [...K.auto], longhand: true },
+  { name: 'margin-right', group: 'spacing', control: 'length', tokens: 'space', keywords: [...K.auto], longhand: true },
+  { name: 'margin-bottom', group: 'spacing', control: 'length', tokens: 'space', keywords: [...K.auto], longhand: true },
+  { name: 'margin-left', group: 'spacing', control: 'length', tokens: 'space', keywords: [...K.auto], longhand: true },
+  { name: 'padding-top', group: 'spacing', control: 'length', tokens: 'space', longhand: true },
+  { name: 'padding-right', group: 'spacing', control: 'length', tokens: 'space', longhand: true },
+  { name: 'padding-bottom', group: 'spacing', control: 'length', tokens: 'space', longhand: true },
+  { name: 'padding-left', group: 'spacing', control: 'length', tokens: 'space', longhand: true },
 
   // Size
   { name: 'width', group: 'size', control: 'length', tokens: 'size', keywords: [...K.sizing] },
@@ -223,6 +247,37 @@ export const CSS_PROPERTIES: PropertyMeta[] = [
     literals: ['none', '1px solid', '2px solid currentColor', '2px dashed', '2px solid transparent'],
   },
   { name: 'outline-offset', group: 'border', control: 'length' },
+  /*
+   * One side of a border is a `border` value, not a length.
+   *
+   * Worth saying explicitly rather than leaving to `metaFor`'s inference, which reads a trailing
+   * `top` or `bottom` as a length — so `border-bottom` would have been handed a length control and
+   * the spacing token scale, for a property whose value is `2px solid currentColor`.
+   */
+  { name: 'border-top', group: 'border', control: 'text', hint: '1px solid var(--border)', tokenGroups: ['border', 'color'], literals: ['none', '1px solid', '1px solid currentColor', '2px solid', '1px dashed'], longhand: true },
+  { name: 'border-right', group: 'border', control: 'text', hint: '1px solid var(--border)', tokenGroups: ['border', 'color'], literals: ['none', '1px solid', '1px solid currentColor', '2px solid', '1px dashed'], longhand: true },
+  { name: 'border-bottom', group: 'border', control: 'text', hint: '1px solid var(--border)', tokenGroups: ['border', 'color'], literals: ['none', '1px solid', '1px solid currentColor', '2px solid', '1px dashed'], longhand: true },
+  { name: 'border-left', group: 'border', control: 'text', hint: '1px solid var(--border)', tokenGroups: ['border', 'color'], literals: ['none', '1px solid', '1px solid currentColor', '2px solid', '1px dashed'], longhand: true },
+  // A width takes the border scale, not the size scale that a trailing `width` would infer.
+  { name: 'border-top-width', group: 'border', control: 'length', tokens: 'border', longhand: true },
+  { name: 'border-right-width', group: 'border', control: 'length', tokens: 'border', longhand: true },
+  { name: 'border-bottom-width', group: 'border', control: 'length', tokens: 'border', longhand: true },
+  { name: 'border-left-width', group: 'border', control: 'length', tokens: 'border', longhand: true },
+  { name: 'border-top-style', group: 'border', control: 'keyword', keywords: [...K.borderStyle], longhand: true },
+  { name: 'border-right-style', group: 'border', control: 'keyword', keywords: [...K.borderStyle], longhand: true },
+  { name: 'border-bottom-style', group: 'border', control: 'keyword', keywords: [...K.borderStyle], longhand: true },
+  { name: 'border-left-style', group: 'border', control: 'keyword', keywords: [...K.borderStyle], longhand: true },
+  { name: 'border-top-color', group: 'border', control: 'color', tokens: 'color', longhand: true },
+  { name: 'border-right-color', group: 'border', control: 'color', tokens: 'color', longhand: true },
+  { name: 'border-bottom-color', group: 'border', control: 'color', tokens: 'color', longhand: true },
+  { name: 'border-left-color', group: 'border', control: 'color', tokens: 'color', longhand: true },
+  { name: 'border-top-left-radius', group: 'border', control: 'length', tokens: 'radius', longhand: true },
+  { name: 'border-top-right-radius', group: 'border', control: 'length', tokens: 'radius', longhand: true },
+  { name: 'border-bottom-right-radius', group: 'border', control: 'length', tokens: 'radius', longhand: true },
+  { name: 'border-bottom-left-radius', group: 'border', control: 'length', tokens: 'radius', longhand: true },
+  { name: 'outline-width', group: 'border', control: 'length', tokens: 'border', longhand: true },
+  { name: 'outline-style', group: 'border', control: 'keyword', keywords: [...K.borderStyle], longhand: true },
+  { name: 'outline-color', group: 'border', control: 'color', tokens: 'color', longhand: true },
 
   // Effects
   { name: 'box-shadow', group: 'effects', control: 'shadow', tokens: 'shadow' },
@@ -327,17 +382,32 @@ function inferTokenGroup(name: string): TokenGroup | undefined {
   return undefined;
 }
 
-/** Properties whose names contain `query`, ranked prefix-first. */
+/**
+ * Properties whose names contain `query`, ranked prefix-first.
+ *
+ * The empty query is the unprompted list an adder shows before anything is typed, and it stays the
+ * curated shorthands. Once something has been typed the sides join in, ranked below a shorthand
+ * that matches the same text — so `margin` still offers `margin` first and `margin-l` reaches
+ * `margin-left`, which the catalogue could not reach at all.
+ */
 export function searchProperties(query: string, limit = 12): PropertyMeta[] {
   const needle = query.trim().toLowerCase();
-  if (!needle) return CSS_PROPERTIES.slice(0, limit);
+  if (!needle) return CSS_PROPERTIES.filter((meta) => !meta.longhand).slice(0, limit);
   const prefix: PropertyMeta[] = [];
   const contains: PropertyMeta[] = [];
+  const sides: PropertyMeta[] = [];
   for (const meta of CSS_PROPERTIES) {
-    if (meta.name.startsWith(needle)) prefix.push(meta);
-    else if (meta.name.includes(needle)) contains.push(meta);
+    if (!meta.name.includes(needle)) continue;
+    if (meta.longhand) sides.push(meta);
+    else if (meta.name.startsWith(needle)) prefix.push(meta);
+    else contains.push(meta);
   }
-  return [...prefix, ...contains].slice(0, limit);
+  // Sides keep prefix-before-substring order among themselves, for the same reason the
+  // shorthands do: `border-bottom` should beat `border-top-left-radius` for `border-b`.
+  sides.sort(
+    (a, b) => Number(b.name.startsWith(needle)) - Number(a.name.startsWith(needle)),
+  );
+  return [...prefix, ...contains, ...sides].slice(0, limit);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1079,6 +1149,34 @@ export function splitBoxValue(value: string): [string, string, string, string] {
   if (parts.length === 2) return [parts[0], parts[1], parts[0], parts[1]];
   if (parts.length === 3) return [parts[0], parts[1], parts[2], parts[1]];
   return [parts[0], parts[1], parts[2], parts[3]];
+}
+
+/**
+ * The shorthand a longhand disappears into, or null when it has none.
+ *
+ * Not a general shorthand table — only the properties whose longhands a `CSSStyleDeclaration`
+ * refuses to keep separate. Measured, rather than assumed: writing `padding-left` onto a rule that
+ * declares `padding: 8px` serialises as `padding: 8px 8px 8px 0px`, and there is no route through
+ * the CSSOM that avoids it. `setProperty`, assigning `style.cssText`, `insertRule` and the rule's
+ * own `cssText` setter all produce the collapsed form, and four sides written separately collapse
+ * as well. Only a value the shorthand cannot express — a `var()` or an `!important` on one
+ * side — stops it.
+ *
+ * A stylesheet *file* has no such trouble: `padding: 8px; padding-left: 0px` is valid CSS and
+ * renders as written. This is a property of the object model the editor edits through, which is why
+ * the answer is needed here — to explain where a declaration went rather than to prevent it.
+ */
+export function shorthandFor(property: string): string | null {
+  const name = property.trim().toLowerCase();
+  if (/^(?:margin|padding)-(?:top|right|bottom|left)$/.test(name)) return name.split('-')[0];
+  if (/^border-(?:top|bottom)-(?:left|right)-radius$/.test(name)) return 'border-radius';
+  if (/^border-(?:top|right|bottom|left)-(?:width|style|color)$/.test(name)) {
+    return `border-${name.split('-')[2]}`;
+  }
+  if (/^border-(?:top|right|bottom|left)$/.test(name)) return 'border';
+  if (/^border-(?:width|style|color)$/.test(name)) return 'border';
+  if (/^outline-(?:width|style|color)$/.test(name)) return 'outline';
+  return null;
 }
 
 /** Recombine four sides into the shortest equivalent shorthand. */

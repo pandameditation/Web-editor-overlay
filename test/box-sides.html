@@ -15,6 +15,18 @@
       border-collapse: collapse;
       width: 100%;
     }
+
+    /* A rule the panel lists under CSS rules, declaring the shorthand and no side. */
+    #subject {
+      padding: 8px;
+      color: #222;
+    }
+
+    /* And a class that DOES declare margin-left, so a stray focus has somewhere to land. */
+    .boxy {
+      margin-left: 30px;
+      color: #444;
+    }
   </style>
 </head>
 
@@ -35,6 +47,7 @@
       </tbody>
     </table>
     <p id="para" style="margin:4px;padding:6px;color:#333">Both shorthands at once.</p>
+    <p id="subject" class="boxy">Styled by a rule and a class, so both lists are on screen.</p>
   </main>
 
   <div id="report">
@@ -359,6 +372,191 @@
           };
           engine.undo();
           await frames();
+        }
+
+        /* ------------------------------------------------------------------ *
+         * 7. The sides are findable. The catalogue held the four shorthands and
+         *    none of their sides, so typing a side into any property adder —
+         *    an element's, a class's, a rule's — offered nothing at all.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'sidesAreFindable';
+        api.select(th);
+        await frames();
+        await wait(250);
+        {
+          const section = () =>
+            Array.from(panel.shadowRoot.querySelectorAll('heo-section')).find(
+              (s) => s.heading === 'Set on this element',
+            );
+          const adder = () => section()?.querySelector('.property-adder input');
+          const offeredFor = async (text) => {
+            const input = adder();
+            input.focus();
+            input.value = text;
+            input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+            await frames();
+            await wait(100);
+            return Array.from(section()?.querySelectorAll('datalist option') ?? []).map(
+              (o) => o.value,
+            );
+          };
+
+          const spacing = await offeredFor('margin-l');
+          const border = await offeredFor('border-bot');
+          const radius = await offeredFor('radius');
+          const unprompted = await offeredFor('');
+          results.sidesAreFindable = {
+            spacing: spacing.join(','),
+            border: border.join(','),
+            offersASpacingSide: spacing.includes('margin-left'),
+            // In the markup this editor inserts for a table, so it was reachable in three clicks.
+            offersABorderSide: border.includes('border-bottom'),
+            offersACorner: radius.includes('border-top-left-radius'),
+            // The shorthand still wins the name it shares: typing `margin` offers `margin` first.
+            shorthandStillRanksFirst: (await offeredFor('margin'))[0] === 'margin',
+            /*
+             * And the unprompted list — what an adder shows before anything is typed — is still
+             * the curated shorthands. Thirty-five sides ahead of `width` would answer a question
+             * nobody asked.
+             */
+            unpromptedListIsStillCurated:
+              unprompted.length > 0 && !unprompted.some((name) => /-(?:top|right|bottom|left)$/.test(name)),
+          };
+          // Leave no draft behind: a non-empty draft commits on blur.
+          const input = adder();
+          input.value = '';
+          input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+          await frames();
+        }
+
+        /* ------------------------------------------------------------------ *
+         * 8. Adding a side through a CSS rule's own adder. Two separate defects
+         *    met here: where focus went, and whether anything appeared at all.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'addingASideToARule';
+        const subject = document.getElementById('subject');
+        api.select(subject);
+        await frames();
+        await wait(300);
+        {
+          const sectionNamed = (heading) =>
+            Array.from(panel.shadowRoot.querySelectorAll('heo-section')).find(
+              (s) => s.heading === heading,
+            );
+          const openSection = async (heading) => {
+            const s = sectionNamed(heading);
+            if (s && !s.open) s.shadowRoot.querySelector('.head')?.click();
+            await frames();
+            await wait(150);
+          };
+          await openSection('Classes');
+          // Expand .boxy, which declares margin-left, so two lists on screen can answer to the
+          // same property name. That is the whole precondition for the focus bug.
+          Array.from(sectionNamed('Classes')?.querySelectorAll('button[aria-expanded]') ?? [])
+            .find((c) => c.textContent.includes('boxy'))
+            ?.click();
+          await frames();
+          await wait(250);
+
+          await openSection('CSS rules');
+          Array.from(sectionNamed('CSS rules')?.querySelectorAll('.cls > header') ?? [])
+            .find((h) => h.textContent.includes('#subject'))
+            ?.click();
+          await frames();
+          await wait(250);
+
+          const ruleList = () =>
+            Array.from(sectionNamed('CSS rules')?.querySelectorAll('.cls') ?? []).find((block) =>
+              block.querySelector('header')?.textContent.includes('#subject'),
+            );
+          const ruleRows = () =>
+            Array.from(ruleList()?.querySelectorAll('heo-value-field') ?? []).map(
+              (f) => f.dataset.property,
+            );
+          const ruleAdder = () => ruleList()?.querySelector('.property-adder input');
+          const add = async (name) => {
+            const input = ruleAdder();
+            input.focus();
+            input.value = name;
+            input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+            await frames();
+            await wait(80);
+            input.dispatchEvent(
+              new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, composed: true }),
+            );
+            await frames();
+            await wait(350);
+          };
+          /** The deepest focused node, walking down through shadow roots. */
+          const focusedField = () => {
+            let node = document.activeElement;
+            while (node?.shadowRoot?.activeElement) node = node.shadowRoot.activeElement;
+            return node?.getRootNode?.()?.host ?? null;
+          };
+
+          results.addingASideToARule = {
+            rowsBefore: ruleRows().join(','),
+            classIsExpanded: Boolean(
+              sectionNamed('Classes')?.querySelector(
+                'heo-value-field[data-property="margin-left"]',
+              ),
+            ),
+          };
+
+          /* --- margin-left: the rule has no `margin`, so the row really appears. --- */
+          await add('margin-left');
+          const afterMargin = focusedField();
+          results.addingASideToARule.rowAppears = ruleRows().includes('margin-left');
+          /*
+           * And the caret is in THIS list's field. `focusDeclaration` used to query the whole
+           * panel for the first row with that name, and Classes renders above CSS rules — so
+           * adding margin-left to a rule put the caret in the expanded class instead, which is
+           * what made the panel feel like it was editing something else.
+           */
+          results.addingASideToARule.focusIsInTheRule = Boolean(
+            afterMargin && ruleList()?.contains(afterMargin),
+          );
+          results.addingASideToARule.focusIsNotInTheClass = Boolean(
+            afterMargin && !sectionNamed('Classes')?.contains(afterMargin),
+          );
+
+          /* --- padding-left, where the rule already declares `padding`. --- */
+          await add('padding-left');
+          const afterPadding = focusedField();
+          const liveRule = Array.from(document.styleSheets)
+            .flatMap((sheet) => {
+              try {
+                return Array.from(sheet.cssRules);
+              } catch {
+                return [];
+              }
+            })
+            .find((one) => one.selectorText === '#subject');
+
+          results.addingASideToARule.rowsAfter = ruleRows().join(',');
+          results.addingASideToARule.liveCssText = liveRule?.style.cssText ?? null;
+          /*
+           * The declaration is applied and rendered. It always was — this half was never broken,
+           * and asserting it is what keeps the fix below from being mistaken for making the edit
+           * work at all.
+           */
+          results.addingASideToARule.theSideIsApplied =
+            getComputedStyle(subject).paddingLeft === '0px';
+          results.addingASideToARule.foldedIntoTheShorthand =
+            /padding:\s*8px 8px 8px 0px/.test(liveRule?.style.cssText ?? '');
+          /*
+           * And the caret lands on the row that swallowed it, rather than nowhere.
+           *
+           * No CSSOM route keeps `padding` and `padding-left` apart — setProperty, assigning
+           * cssText, insertRule and the rule's own cssText setter all serialise the collapsed
+           * form — so there is no row to give the user under the name they typed. Before, the
+           * adder cleared itself and nothing else happened at all, which read as a dead button.
+           */
+          results.addingASideToARule.focusLandsOnTheAbsorbingRow =
+            afterPadding?.dataset?.property === 'padding';
+          results.addingASideToARule.andItIsTheRuleOwnRow = Boolean(
+            afterPadding && ruleList()?.contains(afterPadding),
+          );
         }
 
         /* ------------------------------------------------------------------ */

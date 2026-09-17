@@ -200,6 +200,14 @@ const SPACING_PROPERTIES = [
   'padding-left',
 ];
 
+/**
+ * Identity of the element's own declaration list, shared by its rows and its adder.
+ *
+ * One string in one place because the two have to agree: the adder reports it when it asks for
+ * focus, and the rows container answers to it. Spelling it twice is how they would drift.
+ */
+const INLINE_ADDER_ID = 'inline-style';
+
 /** Properties rendered as a segmented control instead of a text field. */
 const SEGMENTED: Record<string, Array<{ value: string; label?: string; icon?: string; title?: string }>> = {
   'flex-direction': [
@@ -1053,7 +1061,9 @@ export class HeoStylesPanel extends HeoElement {
               On the element itself, as authored — highest priority in the cascade. What its
               classes and other rules contribute is below, editable at the source.
             </p>
-            <div class="rows">
+            <!-- Named with the same id the adder below uses, so the focus helper lands in this
+                 list rather than in a class or rule row for the same property. -->
+            <div class="rows" data-declarations=${INLINE_ADDER_ID}>
               ${repeat(
           properties,
           (property) => property,
@@ -1074,7 +1084,7 @@ export class HeoStylesPanel extends HeoElement {
       ${!filtering
         ? renderPropertyAdder(
           {
-            id: 'inline-style',
+            id: INLINE_ADDER_ID,
             label: 'This element',
             existing: inline,
             commit: (property, value) => this.editor.setStyle(property, value, el),
@@ -1086,12 +1096,10 @@ export class HeoStylesPanel extends HeoElement {
             onNewProperty: (value: string) => {
               this.inlineProperty = value;
             },
-            onFocus: (property: string) => {
-              const section = this.renderRoot.querySelector(
-                'heo-section[heading="Set on this element"]',
-              );
-              if (section) focusDeclaration(section, property);
-            },
+            // Scoped by the adder's own id like the other lists, rather than by hunting for
+            // the section: the rows container above carries the same id.
+            onFocus: (property: string, scope?: string) =>
+              focusDeclaration(this.renderRoot, property, scope),
           },
         )
         : nothing}
@@ -1273,7 +1281,8 @@ export class HeoStylesPanel extends HeoElement {
         this.openRules.set(key, value);
         this.sectionsVersion += 1;
       },
-      onFocus: (property: string) => focusDeclaration(this.renderRoot, property),
+      onFocus: (property: string, scope?: string) =>
+        focusDeclaration(this.renderRoot, property, scope),
       // Editing the declarations is the point here; a rule has no "apply to selection"
       // and deleting a shared rule from one element's panel is far too large an action.
       actions: 'none' as const,
@@ -1455,7 +1464,8 @@ export class HeoStylesPanel extends HeoElement {
       onRemoved: () => {
         this.openClass = null;
       },
-      onFocus: (property: string) => focusDeclaration(this.renderRoot, property),
+      onFocus: (property: string, scope?: string) =>
+        focusDeclaration(this.renderRoot, property, scope),
       // Reached from this element's own chips: "Apply to selection" is already true,
       // and deleting a rule every other element shares is far too large an action to
       // sit under one element's panel. The design system panel owns both.

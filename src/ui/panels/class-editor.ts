@@ -1,6 +1,6 @@
 import { css, html, nothing, type CSSResult, type TemplateResult } from 'lit';
 import { repeat } from 'lit/directives/repeat.js';
-import { propertyMeta, resolveValue, searchProperties } from '../../core/css.js';
+import { propertyMeta, resolveValue, searchProperties, shorthandFor } from '../../core/css.js';
 import { checkDeclaration } from '../../core/declarations.js';
 import type { EditorEngine } from '../../core/editor.js';
 import type { DesignClass } from '../../core/types.js';
@@ -71,20 +71,35 @@ export interface ClassEditorHost {
    *
    * The field does not exist yet at call time — it appears on the render the new
    * declaration triggers — so the host has to do the focusing after that update.
+   *
+   * `scope` is the id of the declaration list that asked, and hosts should forward it:
+   * one panel shows several lists that can each hold a row for the same property.
    */
-  onFocus?: (property: string) => void;
+  onFocus?: (property: string, scope?: string) => void;
 }
 
 /**
  * Focus the value field for `property`, once it exists.
  *
- * Exported so both hosts do this identically. Deferred to the next frame because
- * the field is created by the render that the new declaration schedules; querying
- * for it any earlier finds nothing.
+ * Exported so every host does this identically. Deferred to the next frame because the field is
+ * created by the render that the new declaration schedules; querying for it any earlier finds
+ * nothing.
+ *
+ * `scope` is the `DeclarationTarget.id` of the list that asked for the focus, and skipping it is
+ * how focus used to land in the wrong place. The Styles panel shows the element's own declarations,
+ * every class on it and every matching rule at once, and several of those can hold a row for the
+ * same property — so a bare `querySelector` over the panel returned whichever came first in DOM
+ * order. Adding `margin-left` to a CSS rule while a class declaring `margin-left` was expanded put
+ * the caret in the class's field, because Classes renders above CSS rules.
+ *
+ * When the scope names a list that is on screen, only that list is searched. Otherwise `root` is,
+ * which is what the callers that render one list at a time already narrow for themselves.
  */
-export function focusDeclaration(root: ParentNode, property: string): void {
+export function focusDeclaration(root: ParentNode, property: string, scope?: string): void {
   requestAnimationFrame(() => {
-    const field = root.querySelector(`heo-value-field[data-property="${CSS.escape(property)}"]`);
+    const within =
+      (scope && root.querySelector(`[data-declarations="${CSS.escape(scope)}"]`)) || root;
+    const field = within.querySelector(`heo-value-field[data-property="${CSS.escape(property)}"]`);
     // Preselected, because the seeded value is a stand-in the user is meant to
     // replace: typing should overwrite it, not append to it.
     (field as { focusInput?: (o: { select?: boolean }) => void } | null)?.focusInput?.({
@@ -105,6 +120,58 @@ export interface PropertyAdderTarget {
 }
 
 /**
+ * Say where a declaration went when the object model would not keep it under its own name.
+ *
+ * Adding `padding-left` to something that already declares `padding` used to look like a dead
+ * button. The declaration was written, the page re-rendered with it, and the save record carried
+ * it — but no row appeared, because a `CSSStyleDeclaration` serialises the two together as
+ * `padding: 8px 8px 8px 0px` and the panel reads its rows back out of that text. The value was
+ * there; the only thing missing was any sign of it.
+ *
+ * Detected afterwards rather than predicted, because whether a target folds depends on what backs
+ * it rather than on the property: a class or rule the editor owns keeps authored text and holds
+ * both names happily, while the same editor pointed at a rule from the page writes through the
+ * live CSSOM and cannot. Looking for the row that should have appeared answers that without
+ * asking every target to describe its own storage.
+ *
+ * Two frames, because two renders are pending: the one the commit scheduled, and the one
+ * `focusDeclaration` waits for. This runs after both and only when they left nothing behind.
+ */
+function reportShorthandFold(
+  from: Element,
+  property: string,
+  target: PropertyAdderTarget,
+  engine: EditorEngine,
+): void {
+  const shorthand = shorthandFor(property);
+  if (!shorthand) return;
+  const root = from.getRootNode() as ParentNode;
+  requestAnimationFrame(() =>
+    requestAnimationFrame(() => {
+      const within =
+        root.querySelector?.(`[data-declarations="${CSS.escape(target.id)}"]`) ?? root;
+      const field = (name: string): HTMLElement | null =>
+        within.querySelector(`heo-value-field[data-property="${CSS.escape(name)}"]`);
+      // It kept the name, so there is nothing to explain.
+      if (field(property)) return;
+      const absorbed = field(shorthand);
+      // Nothing to point at. `border-bottom` on a rule declaring `border` is the case: the
+      // browser replaces the shorthand with border-width, border-style and border-color rather
+      // than folding into it, so the list visibly changes shape and needs no caption.
+      if (!absorbed) return;
+      (absorbed as { focusInput?: (o: { select?: boolean }) => void }).focusInput?.({
+        select: true,
+      });
+      engine.notify(
+        `${target.label} already declares ${shorthand}, and CSS keeps only one of the two — ` +
+        `so ${property} went into the ${shorthand} row, which is now focused.`,
+        'info',
+      );
+    }),
+  );
+}
+
+/**
  * The shared property-name line used by classes, rules, and element styles.
  *
  * Naming a property is the same interaction everywhere: validate it, seed a useful value,
@@ -118,7 +185,7 @@ export function renderPropertyAdder(
   const { engine } = host;
   const listId = `heo-props-${target.id}`;
 
-  const commitProperty = (): void => {
+  const commitProperty = (from: Element): void => {
     const verdict = checkDeclaration({
       property: host.newProperty,
       existing: target.existing,
@@ -133,8 +200,10 @@ export function renderPropertyAdder(
     host.onNewProperty('');
     if (verdict.advice) engine.notify(verdict.advice, 'warn');
     target.commit(verdict.property, initialValueFor(verdict.property));
-    // The new field appears on the render scheduled by the commit.
-    host.onFocus?.(verdict.property);
+    // The new field appears on the render scheduled by the commit, in this list rather than in
+    // whichever other list on screen happens to declare the same property.
+    host.onFocus?.(verdict.property, target.id);
+    reportShorthandFold(from, verdict.property, target, engine);
   };
 
   return html`
@@ -154,17 +223,17 @@ export function renderPropertyAdder(
           @keydown=${(event: KeyboardEvent) => {
       if (event.key === 'Enter') {
         event.preventDefault();
-        commitProperty();
+        commitProperty(event.currentTarget as Element);
         return;
       }
       // Tab means "done here", so confirm on the way out rather than discarding the draft.
       if (event.key === 'Tab' && !event.shiftKey && host.newProperty.trim()) {
         event.preventDefault();
-        commitProperty();
+        commitProperty(event.currentTarget as Element);
       }
     }}
-          @blur=${() => {
-      if (host.newProperty.trim()) commitProperty();
+          @blur=${(event: Event) => {
+      if (host.newProperty.trim()) commitProperty(event.currentTarget as Element);
     }}
         />
         <button
@@ -174,7 +243,7 @@ export function renderPropertyAdder(
           aria-label="Add this property"
           ?disabled=${!host.newProperty.trim()}
           @pointerdown=${(event: Event) => event.preventDefault()}
-          @click=${commitProperty}
+          @click=${(event: Event) => commitProperty(event.currentTarget as Element)}
         >
           ${icon('check', 12)}
         </button>
@@ -457,7 +526,9 @@ export const ClassEditor = {
     const properties = Object.keys(target.declarations);
 
     return html`
-      <div class="decls">
+      <!-- Named so the focus helper can tell this list's rows from an identically named row in
+           another list on the same screen. -->
+      <div class="decls" data-declarations=${target.id}>
         ${target.paste
         ? html`<div class="decl-tools">
               <button
