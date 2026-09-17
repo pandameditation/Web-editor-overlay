@@ -61,7 +61,7 @@ export const HTML_ELEMENTS: HtmlElementSpec[] = [
     group: 'Text',
     common: true,
     container: true,
-    html: `<p style="margin:0;color:${INK};line-height:1.65">Write something here.</p>`,
+    html: `<p>Write something here.</p>`,
   },
   {
     tag: 'h1',
@@ -71,7 +71,7 @@ export const HTML_ELEMENTS: HtmlElementSpec[] = [
     group: 'Text',
     common: true,
     container: true,
-    html: `<h1 style="margin:0;color:${INK}">Page title</h1>`,
+    html: `<h1>Page title</h1>`,
   },
   {
     tag: 'h2',
@@ -81,7 +81,7 @@ export const HTML_ELEMENTS: HtmlElementSpec[] = [
     group: 'Text',
     common: true,
     container: true,
-    html: `<h2 style="margin:0;color:${INK}">Section heading</h2>`,
+    html: `<h2>Section heading</h2>`,
   },
   {
     tag: 'h3',
@@ -90,7 +90,7 @@ export const HTML_ELEMENTS: HtmlElementSpec[] = [
     icon: 'text',
     group: 'Text',
     container: true,
-    html: `<h3 style="margin:0;color:${INK}">Subsection heading</h3>`,
+    html: `<h3>Subsection heading</h3>`,
   },
   {
     tag: 'h4',
@@ -99,7 +99,7 @@ export const HTML_ELEMENTS: HtmlElementSpec[] = [
     icon: 'text',
     group: 'Text',
     container: true,
-    html: `<h4 style="margin:0;color:${INK}">Fourth-level heading</h4>`,
+    html: `<h4>Fourth-level heading</h4>`,
   },
   {
     tag: 'span',
@@ -108,7 +108,7 @@ export const HTML_ELEMENTS: HtmlElementSpec[] = [
     icon: 'text',
     group: 'Text',
     container: true,
-    html: `<span style="color:${INK}">Inline text</span>`,
+    html: `<span>Inline text</span>`,
   },
   {
     tag: 'strong',
@@ -175,7 +175,7 @@ export const HTML_ELEMENTS: HtmlElementSpec[] = [
     group: 'Structure',
     common: true,
     container: true,
-    html: `<div ${EMPTY}>Empty div</div>`,
+    html: `<div>Empty div</div>`,
   },
   {
     tag: 'section',
