@@ -57,6 +57,7 @@
     "check:unwraptext": "node scripts/browser-check.mjs test/unwrap-text.html 60000",
     "check:cssrules": "node scripts/browser-check.mjs test/css-rules.html 45000",
     "check:boxsides": "node scripts/browser-check.mjs test/box-sides.html 60000",
+    "check:ruleauthoring": "node scripts/browser-check.mjs test/rule-authoring.html 90000",
     "check:styledialog": "node scripts/browser-check.mjs test/style-dialog.html 45000",
     "check:shield": "node scripts/browser-check.mjs test/shield.html 45000",
     "check:sweepout": "node scripts/browser-check.mjs test/text-sweep-out.html 45000",

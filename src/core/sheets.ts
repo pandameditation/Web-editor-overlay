@@ -1,5 +1,9 @@
 import type { FileHost } from './file-host.js';
-import { readRuleDeclarations, type AuthoredDeclaration } from './css-patch.js';
+import {
+  readDeclarationBlock,
+  readRuleDeclarations,
+  type AuthoredDeclaration,
+} from './css-patch.js';
 import { nextChangeId, type Command } from './history.js';
 import { safeSelector } from './selectors.js';
 import {
@@ -433,9 +437,29 @@ export function authoredDeclarationsOf(rule: CSSStyleRule): AuthoredDeclaration[
  */
 const ruleEdits = new WeakMap<CSSStyleRule, AuthoredDeclaration[]>();
 
-/** What a rule declares now: this session's edits if it has any, otherwise its file's text. */
-export function ruleDeclarations(rule: CSSStyleRule): AuthoredDeclaration[] | null {
-  return ruleEdits.get(rule) ?? authoredDeclarationsOf(rule);
+/**
+ * What a rule declares now, always as a list.
+ *
+ * Three sources, in descending order of how much they know:
+ *
+ * 1. this session's edits, which are the only account of anything unsaved;
+ * 2. the file's own text, which is the only account of the author's notation and order;
+ * 3. the live rule, which is the only account left for a stylesheet with no readable text.
+ *
+ * The third is a seed, not a source. A `CSSStyleDeclaration` has already lost what it was going to
+ * lose by the time it is asked — a colour reads back `rgb(...)`, a shorthand and one of its sides
+ * read back merged — and nothing downstream can recover it. What matters is that the loss happens
+ * once, on the way in, instead of on every subsequent read: from here the list is owned, so adding
+ * a side to a rule keeps both declarations even when the rule came from a linked `.css` the page
+ * cannot read. Which is exactly how a class behaves, and for the same reason — the editor holds the
+ * declarations rather than asking the browser to hold them.
+ *
+ * Never null for a rule that has a style block, so callers have one shape to handle.
+ */
+export function ruleDeclarations(rule: CSSStyleRule): AuthoredDeclaration[] {
+  const edited = ruleEdits.get(rule);
+  if (edited) return edited;
+  return authoredDeclarationsOf(rule) ?? readDeclarationBlock(rule.style.cssText);
 }
 
 /** Replace what this session believes a rule declares. Null forgets the edits entirely. */
@@ -447,44 +471,7 @@ export function rememberRuleDeclarations(
   else ruleEdits.delete(rule);
 }
 
-/**
- * The list with one declaration set, added or removed, keeping every other byte in place.
- *
- * The same three cases `writeInline` handles for the style attribute, and for the same reason:
- * position in a declaration list is precedence, so an edit must not move a line and an addition
- * must go at the end where the author would have typed it. An empty value removes, which is how
- * every caller here already spells removal.
- */
-export function withDeclaration(
-  declarations: readonly AuthoredDeclaration[],
-  property: string,
-  value: string,
-  important = false,
-): AuthoredDeclaration[] {
-  const next = declarations.map((one) => ({ ...one }));
-  const wanted = property.trim().toLowerCase();
-  const at = next.findIndex((one) => one.property.toLowerCase() === wanted);
-  const text = value.trim();
-  if (!text) {
-    if (at >= 0) next.splice(at, 1);
-    return next;
-  }
-  if (at >= 0) next[at] = { property: next[at].property, value: text, important };
-  else next.push({ property, value: text, important });
-  return next;
-}
 
-/** The value of one property in a list, last declaration winning, or null when absent. */
-export function declarationValue(
-  declarations: readonly AuthoredDeclaration[],
-  property: string,
-): string | null {
-  const wanted = property.trim().toLowerCase();
-  for (let index = declarations.length - 1; index >= 0; index -= 1) {
-    if (declarations[index].property.toLowerCase() === wanted) return declarations[index].value;
-  }
-  return null;
-}
 
 /**
  * A sheet's text, when the page has it to hand. Never fetches.

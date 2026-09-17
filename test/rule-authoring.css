@@ -1,0 +1,23 @@
+/*
+ * A linked stylesheet, which is the case the editor used to describe worst.
+ *
+ * A rule in a `<style>` block has its text in the document; a rule in here does not, so the CSSOM
+ * was the only thing left to ask — and it answers in its own words. The notation below is chosen to
+ * make that visible: `#222` is not how a `CSSStyleDeclaration` reports a colour.
+ */
+#linked {
+  padding: 12px;
+  color: #222;
+}
+
+#linked-dead {
+  padding-left: 0;
+  padding: 20px;
+}
+
+@media (min-width: 1px) {
+  #linked-media {
+    margin: 4px;
+    color: #333;
+  }
+}

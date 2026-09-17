@@ -9,10 +9,13 @@
 import assert from 'node:assert/strict';
 import {
   diffCSS,
+  declarationValue,
   normalizeSelector,
   patchCSS,
+  readDeclarationBlock,
   readRuleDeclarations,
   upsertSection,
+  withDeclaration,
   type DeclarationPatch,
 } from '../src/core/css-patch.ts';
 
@@ -631,6 +634,77 @@ test('a rule the file does not have reads as null, not as empty', () => {
   // The distinction the caller needs: null means "ask the CSSOM", empty means "declares nothing".
   assert.equal(readRuleDeclarations(AUTHORED, { selector: '#nope' }), null);
   assert.deepEqual(readRuleDeclarations('#empty { }', { selector: '#empty' }), []);
+});
+
+/* -------------------------------------------------------------------------- */
+/* Editing a declaration list                                                  */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * What "set a declaration" means, in one place.
+ *
+ * A reusable class never had the shorthand problem because `ClassRegistry` holds its declarations as
+ * data and splices them by name — the CSSOM is only ever written to, never read back. A stylesheet
+ * rule was the odd one out, so it got the same footing, and this is the operation both need to agree
+ * on. Position is the whole subject: order in a declaration list is precedence.
+ */
+const list = (...pairs: string[]) =>
+  pairs.map((pair) => {
+    const [property, value] = pair.split('=');
+    return { property, value, important: false };
+  });
+const flat = (declarations: ReturnType<typeof list>) =>
+  declarations.map((one) => `${one.property}=${one.value}${one.important ? '!' : ''}`);
+
+test('adding a declaration puts it last, where the file patcher also puts it', () => {
+  // The reported bug, as data: adding a side must not touch the shorthand already there.
+  assert.deepEqual(
+    flat(withDeclaration(list('padding=12px', 'color=#222'), 'padding-left', '0')),
+    ['padding=12px', 'color=#222', 'padding-left=0'],
+  );
+});
+
+test('editing a declaration leaves it exactly where it was', () => {
+  // Moving it would change which of two competing declarations wins.
+  assert.deepEqual(
+    flat(withDeclaration(list('padding=12px', 'color=#222'), 'padding', '20px')),
+    ['padding=20px', 'color=#222'],
+  );
+});
+
+test('an empty value removes the declaration', () => {
+  assert.deepEqual(flat(withDeclaration(list('padding=12px', 'color=#222'), 'padding', '')), [
+    'color=#222',
+  ]);
+  // And removing something absent is not an error, it is a no-op.
+  assert.deepEqual(flat(withDeclaration(list('color=#222'), 'padding', '')), ['color=#222']);
+});
+
+test('a differently cased name matches but does not rewrite the existing spelling', () => {
+  assert.deepEqual(flat(withDeclaration(list('padding=12px'), 'PADDING', '4px')), ['padding=4px']);
+});
+
+test('important rides along as a flag', () => {
+  assert.deepEqual(flat(withDeclaration(list('color=#222'), 'padding', '1px', true)), [
+    'color=#222',
+    'padding=1px!',
+  ]);
+});
+
+test('the value of a property is the last declaration of it', () => {
+  // Last wins, which is what the browser does with a repeated name.
+  assert.equal(declarationValue(list('color=red', 'color=#0a0'), 'color'), '#0a0');
+  assert.equal(declarationValue(list('color=red'), 'padding'), null);
+  assert.equal(declarationValue(list('Padding=1px'), 'padding'), '1px');
+});
+
+test('a bare declaration block parses without a selector around it', () => {
+  // The seed for a rule in a stylesheet whose text cannot be read.
+  assert.deepEqual(flat(readDeclarationBlock('padding: 12px; color: rgb(34, 34, 34);')), [
+    'padding=12px',
+    'color=rgb(34, 34, 34)',
+  ]);
+  assert.deepEqual(flat(readDeclarationBlock('')), []);
 });
 
 /* -------------------------------------------------------------------------- */

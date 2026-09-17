@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>A CSS rule is edited as the file wrote it, whichever kind of sheet it lives in</title>
+  <link rel="stylesheet" href="./rule-authoring.css">
+  <style>
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: system-ui, sans-serif;
+    }
+
+    /* The same three rules as the linked sheet, in a <style> block, so the two can be compared. */
+    #inline {
+      padding: 12px;
+      color: #222;
+    }
+
+    #inline-dead {
+      padding-left: 0;
+      padding: 20px;
+    }
+
+    @media (min-width: 1px) {
+      #inline-media {
+        margin: 4px;
+        color: #333;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <main>
+    <p id="linked">From a linked .css file.</p>
+    <p id="linked-dead">Side before shorthand, in a linked file.</p>
+    <p id="linked-media">Inside @media, in a linked file.</p>
+    <p id="inline">From a style block.</p>
+    <p id="inline-dead">Side before shorthand, in a style block.</p>
+    <p id="inline-media">Inside @media, in a style block.</p>
+  </main>
+
+  <div id="report">
+    <pre id="progress">start</pre>
+    <pre id="out">pending</pre>
+  </div>
+
+  <script type="module">
+    /**
+     * What this pins.
+     *
+     * A reusable class has always kept `padding` and a later `padding-left` as two declarations,
+     * because `ClassRegistry` holds them as data and only ever generates CSS from that data. A
+     * stylesheet rule did not: it was written through `rule.style.setProperty` and read back through
+     * `rule.style.cssText`, and a `CSSStyleDeclaration` is a flat list of longhands that rebuilds
+     * shorthands when asked to serialise. So the same edit behaved differently in two panels — a
+     * side added to a rule appeared to change the shorthand's value instead of adding a line, and an
+     * authored `#222` turned into `rgb(34, 34, 34)` just by being looked at.
+     *
+     * A rule now gets the same footing a class has: a declaration list the editor owns. Both halves
+     * of that matter and both are asserted here — the notation, and the structure.
+     *
+     * Two sheets, because they had different amounts of truth available. A `<style>` has its text in
+     * the document; a linked file's text has to be fetched, and until it was, the CSSOM was all
+     * there was. Which file a project put its CSS in should not decide how well the editor can
+     * describe it, so every assertion below runs against both.
+     */
+    (async () => {
+      const errors = [];
+      addEventListener('error', (e) => errors.push('error: ' + e.message));
+      addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + String(e.reason)));
+
+      const progress = document.getElementById('progress');
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const results = {};
+      const deep = (tag, root = document) => {
+        const direct = root.querySelector?.(tag);
+        if (direct) return direct;
+        for (const el of root.querySelectorAll?.('*') ?? []) {
+          if (el.shadowRoot) {
+            const found = deep(tag, el.shadowRoot);
+            if (found) return found;
+          }
+        }
+        return null;
+      };
+
+      try {
+        const { mount } = await import('../dist/html-editor-overlay.js');
+        const api = mount({ theme: 'dark', detectScriptContent: false });
+        const engine = api.engine;
+        api.setEditing(true);
+        await frames();
+        /*
+         * The linked sheet's text is fetched on mount and not awaited, on purpose — the editor is
+         * usable without it. Waited out here so the assertions measure the settled state rather
+         * than a race.
+         */
+        await wait(700);
+
+        const liveRule = (selector) =>
+          Array.from(document.styleSheets)
+            .flatMap((sheet) => {
+              try {
+                return Array.from(sheet.cssRules);
+              } catch {
+                return [];
+              }
+            })
+            /*
+             * The rule itself *and* its children. A `CSSStyleRule` is a grouping rule in current
+             * browsers, so it has an empty `cssRules` of its own — replacing it with its children
+             * dropped every plain rule and found only the ones inside at-rules.
+             */
+            .flatMap((rule) => [rule, ...(rule.cssRules ? Array.from(rule.cssRules) : [])])
+            .find((rule) => rule.selectorText === selector);
+
+        /** One rule group's rows, as `property=value` with a marker for a shadowed one. */
+        const rowsFor = async (id) => {
+          api.select(document.getElementById(id));
+          engine.setDockTab('styles');
+          await frames();
+          await wait(320);
+          // Re-queried every time: the dock rebuilds its panels, so a held reference goes stale.
+          const panel = deep('heo-styles-panel');
+          const section = Array.from(panel.shadowRoot.querySelectorAll('heo-section')).find(
+            (s) => s.heading === 'CSS rules',
+          );
+          if (section && !section.open) section.shadowRoot.querySelector('.head')?.click();
+          await frames();
+          await wait(180);
+          const header = Array.from(section?.querySelectorAll('.cls > header') ?? []).find((h) =>
+            h.textContent.includes(`#${id}`),
+          );
+          // Only when shut. The header is a toggle, so clicking an open group closes it — which is
+          // what made a second look at the same rule read zero rows.
+          if (header && header.getAttribute('aria-expanded') !== 'true') header.click();
+          await frames();
+          await wait(280);
+          const block = Array.from(section?.querySelectorAll('.cls') ?? []).find((b) =>
+            b.querySelector('header')?.textContent.includes(`#${id}`),
+          );
+          if (!block) return null;
+          return Array.from(block.querySelectorAll('.decl:not(.property-adder)'))
+            .map((row) => {
+              const name = row.querySelector('.p')?.textContent?.trim() ?? '';
+              const value = row.querySelector('heo-value-field')?.value ?? '';
+              return `${name}=${value}${row.classList.contains('shadowed') ? '!' : ''}`;
+            })
+            .join(',');
+        };
+
+        /* ------------------------------------------------------------------ *
+         * 1. The author's notation, in both kinds of sheet.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'notation';
+        const linkedBefore = await rowsFor('linked');
+        const inlineBefore = await rowsFor('inline');
+        results.notation = {
+          linked: linkedBefore,
+          inline: inlineBefore,
+          // `#222` is the assertion. The CSSOM reports this colour as `rgb(34, 34, 34)`, so seeing
+          // the hex is proof the rows did not come from there.
+          linkedKeepsTheHex: linkedBefore === 'padding=12px,color=#222',
+          inlineKeepsTheHex: inlineBefore === 'padding=12px,color=#222',
+          // And the two agree, which is the point of asserting both.
+          bothSheetsAgree: linkedBefore === inlineBefore,
+        };
+
+        /* ------------------------------------------------------------------ *
+         * 2. Adding a side adds a line. It does not edit the shorthand.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'addingASide';
+        engine.setRuleDeclaration(liveRule('#linked'), 'padding-left', '0px');
+        engine.setRuleDeclaration(liveRule('#inline'), 'padding-left', '0px');
+        await frames();
+        await wait(300);
+        const linkedAfter = await rowsFor('linked');
+        const inlineAfter = await rowsFor('inline');
+        results.addingASide = {
+          linked: linkedAfter,
+          inline: inlineAfter,
+          /*
+           * The reported symptom, both halves of it. The shorthand keeps the value the file gave
+           * it, and the side is its own declaration after it. Before, `padding` was rewritten to
+           * `12px 12px 12px 0px` and no `padding-left` row existed — which is what a
+           * `CSSStyleDeclaration` serialises the pair as.
+           */
+          linkedAddsALine: linkedAfter === 'padding=12px,color=#222,padding-left=0px',
+          inlineAddsALine: inlineAfter === 'padding=12px,color=#222,padding-left=0px',
+          shorthandWasNotRewritten:
+            /padding=12px,/.test(linkedAfter ?? '') && /padding=12px,/.test(inlineAfter ?? ''),
+          bothSheetsAgree: linkedAfter === inlineAfter,
+          // And the page renders the pair, which is what the CSSOM is for.
+          linkedRenders: getComputedStyle(document.getElementById('linked')).paddingLeft === '0px',
+          inlineRenders: getComputedStyle(document.getElementById('inline')).paddingLeft === '0px',
+          linkedKeptTheOtherSides:
+            getComputedStyle(document.getElementById('linked')).paddingTop === '12px',
+        };
+
+        /* ------------------------------------------------------------------ *
+         * 3. Undo puts the author's value back, not the browser's spelling of it.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'undo';
+        await wait(2600); // Past the commit-merge window, so this edit is its own entry.
+        engine.setRuleDeclaration(liveRule('#linked'), 'color', '#0a0');
+        await frames();
+        await wait(250);
+        const record = engine.records.filter((r) => r.detail?.scope === 'stylesheet rule').at(-1);
+        engine.undo();
+        await frames();
+        await wait(300);
+        results.undo = {
+          before: record?.before ?? null,
+          /*
+           * The value a save would patch over, and the value an undo writes back. It came from
+           * `getPropertyValue` before, so it was the CSSOM's notation — and undoing an edit
+           * replaced the author's hex with `rgb(...)` in their own file.
+           */
+          recordsTheAuthoredBefore: record?.before === '#222',
+          restoresTheAuthoredValue: (await rowsFor('linked'))?.includes('color=#222'),
+        };
+
+        /* ------------------------------------------------------------------ *
+         * 4. A declaration a later one in the same rule overwrites is marked.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'shadowed';
+        const linkedDead = await rowsFor('linked-dead');
+        const inlineDead = await rowsFor('inline-dead');
+        results.shadowed = {
+          linked: linkedDead,
+          inline: inlineDead,
+          // The side is declared before the shorthand, so the shorthand wipes it out. It is in the
+          // file, it is valid, and it does nothing.
+          linkedFlagsTheDeadOne: linkedDead === 'padding-left=0!,padding=20px',
+          inlineFlagsTheDeadOne: inlineDead === 'padding-left=0!,padding=20px',
+          bothSheetsAgree: linkedDead === inlineDead,
+        };
+
+        /* ------------------------------------------------------------------ *
+         * 5. And all of it works inside an at-rule.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'atRule';
+        const linkedMedia = await rowsFor('linked-media');
+        const inlineMedia = await rowsFor('inline-media');
+        results.atRule = {
+          linked: linkedMedia,
+          inline: inlineMedia,
+          linkedReadsTheBlock: linkedMedia === 'margin=4px,color=#333',
+          inlineReadsTheBlock: inlineMedia === 'margin=4px,color=#333',
+          bothSheetsAgree: linkedMedia === inlineMedia,
+        };
+
+        /* ------------------------------------------------------------------ */
+        const failed = Object.entries(results)
+          .filter(([, group]) => group && typeof group === 'object')
+          .filter(([, group]) => Object.values(group).some((value) => value === false))
+          .map(([name]) => name);
+
+        document.getElementById('out').textContent =
+          'RESULTS:' + JSON.stringify({ ...results, errors, failed }, null, 2) + ':END';
+      } catch (e) {
+        document.getElementById('out').textContent =
+          'RESULTS:' +
+          JSON.stringify({ threw: String((e && e.stack) || e), errors, failed: ['threw'] }, null, 2) +
+          ':END';
+      }
+    })();
+  </script>
+</body>
+
+</html>

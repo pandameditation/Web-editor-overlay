@@ -183,15 +183,15 @@ import {
   forgetProvenance,
 } from './provenance.js';
 import { startEdgeScroll } from './autoscroll.js';
+import { declarationValue, withDeclaration } from './css-patch.js';
 import {
   collectStyleSources,
-  declarationValue,
   describeRule,
   DOCUMENT_TARGET,
+  fetchStyleSource,
   rememberRuleDeclarations,
   rememberStyleText,
   ruleDeclarations,
-  withDeclaration,
   resetSheetIds,
 } from './sheets.js';
 import {
@@ -1018,6 +1018,9 @@ export class EditorEngine {
     this.tokens.scanDocument();
     this.classes.scanDocument();
     this.rules.scanDocument();
+    // Not awaited: everything below works without it, and it only ever improves the answers. See
+    // the method for what it improves.
+    void this.#cacheStylesheetTexts();
     /*
      * The page's own seed first, then whatever this mount was configured with.
      *
@@ -2308,7 +2311,7 @@ export class EditorEngine {
     // asked afterwards what names it was given. Null when the rule's file text is unreachable, in
     // which case the panel is reading the CSSOM anyway and there is nothing to keep in step.
     const beforeList = ruleDeclarations(rule);
-    const afterList = beforeList ? withDeclaration(beforeList, property, after) : null;
+    const afterList = withDeclaration(beforeList, property, after);
     const selector = rule.selectorText;
     const target = this.store.value.selected;
 
@@ -2366,7 +2369,7 @@ export class EditorEngine {
          * This list is what the panel reads and what the save patches, in the order the file will
          * have them.
          */
-        if (beforeList) rememberRuleDeclarations(rule, afterList);
+        rememberRuleDeclarations(rule, afterList);
         this.#resyncRegistries(rule, property);
       },
       revert: () => {
@@ -2374,11 +2377,43 @@ export class EditorEngine {
         else rule.style.removeProperty(property);
         // Back to the exact list, not to a per-property undo: only the whole list can restore the
         // position of a declaration this edit appended or removed.
-        if (beforeList) rememberRuleDeclarations(rule, beforeList);
+        rememberRuleDeclarations(rule, beforeList);
         this.#resyncRegistries(rule, property);
       },
     });
     if (target) this.#bumpRevision();
+  }
+
+  /**
+   * Read each linked stylesheet's own text into the session cache, in the background.
+   *
+   * Without it, a rule in a `.css` file is the one kind the editor has to describe from the CSSOM,
+   * and the CSSOM answers in its own words: an authored `#222` becomes `rgb(34, 34, 34)`, and a
+   * `padding` with a `padding-left` after it becomes one merged declaration. A rule in a `<style>`
+   * block never had that problem, because its text is right there in the document — so which file
+   * a project happened to put its CSS in decided how faithfully the editor could show it.
+   *
+   * The text was already reachable; nothing but the CSS panel had ever gone and got it, so fidelity
+   * arrived only if the user happened to open that panel. Doing it on mount makes the two kinds of
+   * stylesheet behave the same.
+   *
+   * Fire and forget, and deliberately not awaited by `start`. Every reader falls back to the CSSOM
+   * while this is in flight and simply gets better answers once it lands, so there is nothing to
+   * sequence and no reason to delay the editor becoming usable. The sheets were fetched by the page
+   * itself moments ago, so this is a cache read in all but name.
+   */
+  async #cacheStylesheetTexts(): Promise<void> {
+    for (const source of collectStyleSources(this.project)) {
+      // A `<style>` needs no help: `readStyleSource` reads its `textContent` directly. What is
+      // wanted here is the sheets that have a file behind them.
+      if (!source.href || source.readOnly) continue;
+      try {
+        const text = await fetchStyleSource(source, this.project);
+        if (text) rememberStyleText(source.id, text);
+      } catch {
+        // A sheet that cannot be read stays described by the CSSOM, which is the status quo.
+      }
+    }
   }
 
   /**
@@ -2400,8 +2435,7 @@ export class EditorEngine {
    * declared — which is how the callers already spell "this is new".
    */
   #authoredRuleValue(rule: CSSStyleRule, property: string): string {
-    const declarations = ruleDeclarations(rule);
-    const authored = declarations ? declarationValue(declarations, property) : null;
+    const authored = declarationValue(ruleDeclarations(rule), property);
     if (authored !== null) return authored;
     /*
      * Not declared under this name, but the CSSOM may still answer — a `padding-left` covered by a

@@ -212,6 +212,68 @@ export function readRuleDeclarations(
   }));
 }
 
+/**
+ * A bare declaration block, with no selector around it.
+ *
+ * For the one place a rule's declarations have to be taken from the CSSOM rather than from a file:
+ * a linked stylesheet with no readable text. The values are whatever the browser hands over — a
+ * colour will already be `rgb(...)` — but the *list* is owned from then on, which is the difference
+ * between losing the author's notation once and losing the structure on every edit.
+ */
+export function readDeclarationBlock(body: string): AuthoredDeclaration[] {
+  return parseDeclarations(body, 0, body.length).map((entry) => ({
+    property: entry.property,
+    value: body.slice(entry.valueStart, entry.valueEnd).trim(),
+    important: entry.priorityEnd > entry.valueEnd,
+  }));
+}
+
+/**
+ * The list with one declaration set, added or removed, keeping every other byte in place.
+ *
+ * One definition of what editing a declaration means, wherever the declarations live. All three
+ * cases are about position, because order in a declaration list is precedence: an edit leaves the
+ * line where it is, an addition goes at the end — where the author would have typed it, and where
+ * `insertDeclaration` puts it in a file — and a removal takes the line out. An empty value removes,
+ * which is how every caller already spells it.
+ *
+ * Names match case-insensitively but the existing spelling is kept, so setting `Padding` does not
+ * rewrite a line that says `padding`.
+ *
+ * `writeInline` in `mutations.ts` implements this same rule for the `style` attribute and is not
+ * folded in yet, so the two agreeing is still a matter of care rather than of construction.
+ */
+export function withDeclaration(
+  declarations: readonly AuthoredDeclaration[],
+  property: string,
+  value: string,
+  important = false,
+): AuthoredDeclaration[] {
+  const next = declarations.map((one) => ({ ...one }));
+  const wanted = property.trim().toLowerCase();
+  const at = next.findIndex((one) => one.property.toLowerCase() === wanted);
+  const text = value.trim();
+  if (!text) {
+    if (at >= 0) next.splice(at, 1);
+    return next;
+  }
+  if (at >= 0) next[at] = { property: next[at].property, value: text, important };
+  else next.push({ property: property.trim(), value: text, important });
+  return next;
+}
+
+/** The value of one property in a list, last declaration winning, or null when absent. */
+export function declarationValue(
+  declarations: readonly AuthoredDeclaration[],
+  property: string,
+): string | null {
+  const wanted = property.trim().toLowerCase();
+  for (let index = declarations.length - 1; index >= 0; index -= 1) {
+    if (declarations[index].property.toLowerCase() === wanted) return declarations[index].value;
+  }
+  return null;
+}
+
 /** One declaration, as written. */
 export interface CssDeclaration {
   property: string;
