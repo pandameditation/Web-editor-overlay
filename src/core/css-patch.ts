@@ -1,3 +1,5 @@
+import type { Declaration } from './declaration-list.js';
+
 /**
  * Surgical edits to CSS *text*.
  *
@@ -167,13 +169,7 @@ export function hasSection(source: string): boolean {
 /** Enough to find one rule in a file. The subset of a patch that names a block. */
 export type RuleLocator = Pick<DeclarationPatch, 'selector' | 'path' | 'context' | 'occurrence'>;
 
-/** One declaration exactly as the file spells it. */
-export interface AuthoredDeclaration {
-  property: string;
-  /** The value text, without any `!important`, and otherwise untouched. */
-  value: string;
-  important: boolean;
-}
+
 
 /**
  * The declarations of one rule, read out of the file's own text.
@@ -198,7 +194,7 @@ export interface AuthoredDeclaration {
 export function readRuleDeclarations(
   source: string,
   locator: RuleLocator,
-): AuthoredDeclaration[] | null {
+): Declaration[] | null {
   const blocks = scanBlocks(source, 0, source.length);
   const rule = locate(blocks, locator);
   if (!rule || rule.bodyStart === -1) return null;
@@ -220,58 +216,12 @@ export function readRuleDeclarations(
  * colour will already be `rgb(...)` — but the *list* is owned from then on, which is the difference
  * between losing the author's notation once and losing the structure on every edit.
  */
-export function readDeclarationBlock(body: string): AuthoredDeclaration[] {
+export function readDeclarationBlock(body: string): Declaration[] {
   return parseDeclarations(body, 0, body.length).map((entry) => ({
     property: entry.property,
     value: body.slice(entry.valueStart, entry.valueEnd).trim(),
     important: entry.priorityEnd > entry.valueEnd,
   }));
-}
-
-/**
- * The list with one declaration set, added or removed, keeping every other byte in place.
- *
- * One definition of what editing a declaration means, wherever the declarations live. All three
- * cases are about position, because order in a declaration list is precedence: an edit leaves the
- * line where it is, an addition goes at the end — where the author would have typed it, and where
- * `insertDeclaration` puts it in a file — and a removal takes the line out. An empty value removes,
- * which is how every caller already spells it.
- *
- * Names match case-insensitively but the existing spelling is kept, so setting `Padding` does not
- * rewrite a line that says `padding`.
- *
- * `writeInline` in `mutations.ts` implements this same rule for the `style` attribute and is not
- * folded in yet, so the two agreeing is still a matter of care rather than of construction.
- */
-export function withDeclaration(
-  declarations: readonly AuthoredDeclaration[],
-  property: string,
-  value: string,
-  important = false,
-): AuthoredDeclaration[] {
-  const next = declarations.map((one) => ({ ...one }));
-  const wanted = property.trim().toLowerCase();
-  const at = next.findIndex((one) => one.property.toLowerCase() === wanted);
-  const text = value.trim();
-  if (!text) {
-    if (at >= 0) next.splice(at, 1);
-    return next;
-  }
-  if (at >= 0) next[at] = { property: next[at].property, value: text, important };
-  else next.push({ property: property.trim(), value: text, important });
-  return next;
-}
-
-/** The value of one property in a list, last declaration winning, or null when absent. */
-export function declarationValue(
-  declarations: readonly AuthoredDeclaration[],
-  property: string,
-): string | null {
-  const wanted = property.trim().toLowerCase();
-  for (let index = declarations.length - 1; index >= 0; index -= 1) {
-    if (declarations[index].property.toLowerCase() === wanted) return declarations[index].value;
-  }
-  return null;
 }
 
 /** One declaration, as written. */
@@ -582,7 +532,7 @@ function appendRule(
 function insertDeclaration(
   source: string,
   rule: Block,
-  declarations: Declaration[],
+  declarations: ScannedDeclaration[],
   property: string,
   value: string,
 ): string {
@@ -612,7 +562,7 @@ function insertDeclaration(
  * which reads as an accident in a diff. A declaration sharing a line with others
  * keeps the line.
  */
-function removeDeclaration(source: string, declaration: Declaration): string {
+function removeDeclaration(source: string, declaration: ScannedDeclaration): string {
   const lineStart = source.lastIndexOf('\n', declaration.start) + 1;
   const alone = source.slice(lineStart, declaration.start).trim() === '';
 
@@ -802,7 +752,7 @@ function scanBlocks(source: string, from: number, to: number): Block[] {
   return blocks;
 }
 
-interface Declaration {
+interface ScannedDeclaration {
   property: string;
   /** Offset of the first character of the property name. */
   start: number;
@@ -824,8 +774,8 @@ interface Declaration {
  * holds both declarations and rules, and `&:hover` looks exactly like the start of a
  * declaration until the `{` arrives.
  */
-function parseDeclarations(source: string, bodyStart: number, bodyEnd: number): Declaration[] {
-  const out: Declaration[] = [];
+function parseDeclarations(source: string, bodyStart: number, bodyEnd: number): ScannedDeclaration[] {
+  const out: ScannedDeclaration[] = [];
   let i = bodyStart;
   let start = -1;
   let colon = -1;
@@ -883,7 +833,7 @@ function declaration(
   valueLimit: number,
   end: number,
   terminated: boolean,
-): Declaration {
+): ScannedDeclaration {
   const raw = source.slice(colon + 1, valueLimit);
   const leading = raw.length - raw.trimStart().length;
   const valueStart = colon + 1 + leading;

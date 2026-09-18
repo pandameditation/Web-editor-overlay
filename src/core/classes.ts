@@ -1,7 +1,13 @@
 import { CLASS_STYLE_ID } from './constants.js';
-import { parseDeclarations } from './css.js';
+import {
+  fromRecord,
+  toRecord,
+  withPromotedSide,
+  withValue,
+  type Declaration,
+} from './declaration-list.js';
 import { queryDeep } from './dom.js';
-import { withParsedSheet } from './sheets.js';
+import { ruleDeclarations, withParsedSheet } from './sheets.js';
 import { declarationsToCSS, ManagedStyleSheet } from './stylesheet.js';
 import type { DesignClass } from './types.js';
 
@@ -84,7 +90,7 @@ export class ClassRegistry {
         for (const selector of rule.selectorText.split(',')) {
           const name = simpleClassName(selector);
           if (!name) continue;
-          const declarations = readDeclarations(rule.style);
+          const declarations = readDeclarations(rule);
           if (!Object.keys(declarations).length) continue;
           if (live) this.#noteOrigin(name, rule, declarations);
           const existing = this.#classes.get(name);
@@ -164,24 +170,24 @@ export class ClassRegistry {
    * Record what the page now says about a declaration this registry does not own.
    *
    * The other half of routing an edit through `originRule`: the value was changed in the rule that
-   * declares it, and a CSSOM mutation is invisible from here, so the copy held in this map is
-   * stale and the class editor would go on showing the old value.
+   * declares it, and a CSSOM mutation is invisible from here, so the copy held in this map is stale
+   * and the editor would go on showing the old value.
    *
-   * `setDeclaration` cannot do this job. It flips `origin` to `'user'`, which is precisely what
-   * makes `toCSS` emit the class — and emitting a class that was just patched in place is the
-   * duplicate this path exists to avoid.
+   * Handed the rule's whole declaration list rather than one property, because order is part of what
+   * changed. When a block holds both a shorthand and one of its longhands, the edit moves the
+   * touched side last so it wins — and a copy that took only the new value kept the old order, so
+   * the panel showed the other side as the winner while the page rendered this one. One list, copied
+   * across, cannot disagree with itself.
    *
-   * An empty value drops the property, because the declaration is no longer in the file either.
+   * `setDeclaration` cannot do this job. It flips `origin` to `'user'`, which is precisely what makes
+   * `toCSS` emit the class — and emitting something that was just patched in place is the duplicate
+   * this path exists to avoid.
    */
-  noteStylesheetValue(name: string, property: string, value: string): void {
+  noteStylesheetDeclarations(name: string, declarations: readonly Declaration[]): void {
     const key = name.replace(/^\./, '');
     const entry = this.#classes.get(key);
     if (!entry || entry.origin !== 'stylesheet') return;
-    const declarations = { ...entry.declarations };
-    const next = value.trim();
-    if (next) declarations[property] = next;
-    else delete declarations[property];
-    this.#classes.set(key, { ...entry, declarations });
+    this.#classes.set(key, { ...entry, declarations: toRecord(declarations) });
     // `#invalidate` rather than `#flush`: the managed sheet is built from `toCSS`, which leaves
     // scanned classes out, so rewriting it would emit the same bytes it already holds.
     this.#invalidate();
@@ -280,7 +286,23 @@ export class ClassRegistry {
     const entry = this.#classes.get(name.replace(/^\./, ''));
     if (!entry) return undefined;
     const next = value.trim();
-    const declarations = { ...entry.declarations, [property]: next };
+    /*
+     * The edit itself goes through the shared model, so a class, an inline style and a stylesheet
+     * rule cannot disagree about what setting a declaration means — including the promotion: when a
+     * block holds both a shorthand and one of its longhands, CSS decides between them by position,
+     * so the side just touched is moved last and wins.
+     *
+     * An emptied value is the one thing kept local, and it is a UI affordance rather than a storage
+     * rule: clearing a field is how you retype it, and having the row vanish mid-edit — taking the
+     * property name with it — costs more than an inert entry does. `toCSS` skips empties, so nothing
+     * invalid reaches the page, and `removeDeclaration` is how you actually get rid of one.
+     */
+    const declarations = next
+      ? toRecord(
+        withPromotedSide(withValue(fromRecord(entry.declarations), property, next), property),
+      )
+      : { ...entry.declarations, [property]: '' };
+
     return this.upsert({
       ...entry,
       declarations,
@@ -301,8 +323,9 @@ export class ClassRegistry {
   removeDeclaration(name: string, property: string): DesignClass | undefined {
     const entry = this.#classes.get(name.replace(/^\./, ''));
     if (!entry) return undefined;
-    const declarations = { ...entry.declarations };
-    delete declarations[property];
+    // Through the shared model like every other edit, so "remove a declaration" cannot come to mean
+    // two different things in two registries.
+    const declarations = toRecord(withValue(fromRecord(entry.declarations), property, ''));
     return this.upsert({ ...entry, declarations, origin: 'user' });
   }
 
@@ -409,13 +432,17 @@ export function simpleClassName(selector: string): string | null {
 /**
  * A rule's declarations, as they were written.
  *
- * Parsed from `cssText` rather than read by index, because indexing expands every
- * shorthand: a `.card` with four declarations came back as nineteen longhands,
- * which is what the class editor then had to show and what an export would have
- * emitted. The authored form is both shorter and what the developer will recognise.
+ * From the stylesheet's own text, not from the live rule. `rule.style.cssText` is the CSSOM's
+ * re-serialization, and a `CSSStyleDeclaration` is a flat list of longhands that rebuilds shorthands
+ * on the way out — so a class declaring `padding: 12px` and then `padding-left: 0` came back as one
+ * merged `padding`, and an authored `#222` came back `rgb(34, 34, 34)`. Scanning that way meant the
+ * editor could not see, and so could not show or export, declarations plainly in the file.
+ *
+ * The same read a stylesheet rule uses, because a class *is* a rule whose selector is one class
+ * name. Falls back to the live rule when the sheet has no text to read.
  */
-function readDeclarations(style: CSSStyleDeclaration): Record<string, string> {
-  return parseDeclarations(style.cssText);
+function readDeclarations(rule: CSSStyleRule): Record<string, string> {
+  return toRecord(ruleDeclarations(rule));
 }
 
 export function normalizeClassName(name: string): string {

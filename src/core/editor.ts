@@ -183,7 +183,13 @@ import {
   forgetProvenance,
 } from './provenance.js';
 import { startEdgeScroll } from './autoscroll.js';
-import { declarationValue, withDeclaration } from './css-patch.js';
+import {
+  sameOrder,
+  valueOf,
+  withPromotedSide,
+  withValue,
+  type Declaration,
+} from './declaration-list.js';
 import {
   collectStyleSources,
   describeRule,
@@ -807,6 +813,23 @@ const DEFAULT_TOOLBAR = { x: 24, y: 24 };
  * keeps the UI replaceable and the behaviour testable without a DOM harness for
  * every panel.
  */
+/**
+ * Replay a declaration list onto a live rule, in order.
+ *
+ * For the one thing a single `setProperty` cannot express: a reorder. When a block holds both a
+ * shorthand and one of its longhands, which wins is decided by which comes last — so promoting a
+ * side changes the rendered result without changing any value. The CSSOM has no "move this
+ * declaration" operation, and re-applying in order is what it does have.
+ *
+ * Reached only when the order actually changed, which is rare: an ordinary value edit paints with
+ * one `setProperty` and never comes through here.
+ */
+function paintInOrder(rule: CSSStyleRule, declarations: readonly Declaration[]): void {
+  for (const one of declarations) {
+    rule.style.setProperty(one.property, one.value, one.important ? 'important' : '');
+  }
+}
+
 export class EditorEngine {
   readonly store: Store<EditorState>;
   readonly history = new History();
@@ -2307,11 +2330,18 @@ export class EditorEngine {
     const before = this.#authoredRuleValue(rule, property);
     const beforePriority = rule.style.getPropertyPriority(property);
     const after = value.trim();
-    // Snapshotted before the write and recomputed rather than re-read, because the CSSOM cannot be
-    // asked afterwards what names it was given. Null when the rule's file text is unreachable, in
-    // which case the panel is reading the CSSOM anyway and there is nothing to keep in step.
+    /*
+     * Snapshotted before the write and recomputed rather than re-read, because the CSSOM cannot be
+     * asked afterwards what names it was given.
+     *
+     * `withPromotedSide` is what makes the edit the one that counts. When a block holds both a
+     * shorthand and one of its longhands, CSS decides between them by position — so the side the
+     * user just touched is moved last, and wins. Without it, adjusting `padding-left` on a block
+     * whose `padding` comes after it would change the file and change nothing on the page.
+     */
     const beforeList = ruleDeclarations(rule);
-    const afterList = withDeclaration(beforeList, property, after);
+    const afterList = withPromotedSide(withValue(beforeList, property, after), property);
+    const reordered = !sameOrder(withValue(beforeList, property, after), afterList);
     const selector = rule.selectorText;
     const target = this.store.value.selected;
 
@@ -2360,6 +2390,9 @@ export class EditorEngine {
       apply: () => {
         if (after) rule.style.setProperty(property, after);
         else rule.style.removeProperty(property);
+        // A promotion is a reorder, and the page only shows a reorder if the paint is replayed in
+        // the new order. Skipped when nothing moved, which is almost always.
+        if (reordered) paintInOrder(rule, afterList);
         /*
          * The declaration list this edit produces, kept beside the rule.
          *
@@ -2375,6 +2408,7 @@ export class EditorEngine {
       revert: () => {
         if (before) rule.style.setProperty(property, before, beforePriority);
         else rule.style.removeProperty(property);
+        if (reordered) paintInOrder(rule, beforeList);
         // Back to the exact list, not to a per-property undo: only the whole list can restore the
         // position of a declaration this edit appended or removed.
         rememberRuleDeclarations(rule, beforeList);
@@ -2435,7 +2469,7 @@ export class EditorEngine {
    * declared — which is how the callers already spell "this is new".
    */
   #authoredRuleValue(rule: CSSStyleRule, property: string): string {
-    const authored = declarationValue(ruleDeclarations(rule), property);
+    const authored = valueOf(ruleDeclarations(rule), property);
     if (authored !== null) return authored;
     /*
      * Not declared under this name, but the CSSOM may still answer — a `padding-left` covered by a
@@ -2483,12 +2517,13 @@ export class EditorEngine {
         this.tokens.remove(name);
       }
     }
-    const value = rule.style.getPropertyValue(property);
+    // The rule's own list, which is the authoritative account of both the values and their order.
+    const declarations = ruleDeclarations(rule);
     for (const part of rule.selectorText.split(',')) {
       const name = simpleClassName(part);
-      if (name) this.classes.noteStylesheetValue(name, property, value);
+      if (name) this.classes.noteStylesheetDeclarations(name, declarations);
     }
-    this.rules.noteStylesheetValue(rule.selectorText, property, value);
+    this.rules.noteStylesheetDeclarations(rule.selectorText, declarations);
   }
 
   /* ---------------------------------------------------------------------- */

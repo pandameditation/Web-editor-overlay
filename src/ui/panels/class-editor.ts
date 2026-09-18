@@ -1,6 +1,12 @@
 import { css, html, nothing, type CSSResult, type TemplateResult } from 'lit';
 import { repeat } from 'lit/directives/repeat.js';
 import { propertyMeta, resolveValue, searchProperties } from '../../core/css.js';
+import {
+  displayOrder,
+  fromRecord,
+  shorthandGroups,
+  type DisplayEntry,
+} from '../../core/declaration-list.js';
 import { checkDeclaration } from '../../core/declarations.js';
 import type { EditorEngine } from '../../core/editor.js';
 import type { DesignClass } from '../../core/types.js';
@@ -42,16 +48,6 @@ export interface DeclarationTarget {
   paste?: () => void;
   /** True when something more specific wins this property on the selected element. */
   overridden?(property: string): boolean;
-  /**
-   * True when a *later declaration in this same block* has completely overwritten this one.
-   *
-   * A different question from `overridden`, which is about the cascade between rules. This is about
-   * order inside one rule, which is the one thing a list keyed by property name cannot show:
-   * `padding-left: 0` followed by `padding: 20px` leaves the left side at 20px, so the first row is
-   * in the file, is valid, and does nothing. Without saying so the panel shows two declarations and
-   * lets the reader assume both apply.
-   */
-  shadowed?(property: string): boolean;
   /** The property's tooltip, when there is more to say than its name. */
   describe?(property: string): string;
   /** What the value comes to here, when that differs from what is written. */
@@ -116,6 +112,68 @@ export function focusDeclaration(root: ParentNode, property: string, scope?: str
       select: true,
     });
   });
+}
+
+/**
+ * A declaration list laid out as families, with the control that decides which side of each wins.
+ *
+ * Shared by every surface that lists declarations, which is the point: an element's own styles, a
+ * reusable class and a stylesheet rule all have the same shorthand-versus-longhand problem, so they
+ * get the same answer to it. Only the row itself differs — an element's row has a reset button and a
+ * cascade origin, a class's has neither — and that is what `renderRow` is for.
+ *
+ * The promote control is both a state and an action, because in CSS they are the same fact: the
+ * declaration that wins is the one written last, so "promoted" is not a flag stored anywhere, it is
+ * a position. The pressed one is the side currently last in the block; pressing the other moves it
+ * there. Promotion is expressed as re-asserting the declaration, because that is all it is — every
+ * write goes through the shared model, which moves the touched side last. No separate command
+ * exists, so there is nothing here to keep in step.
+ */
+export function renderFamilies(
+  entries: readonly DisplayEntry[],
+  renderRow: (property: string) => TemplateResult,
+  promote: (property: string) => void,
+  label: string,
+): TemplateResult {
+  const control = (property: string, active: boolean, what: string): TemplateResult => html`<button
+    class=${`promote${active ? ' on' : ''}`}
+    type="button"
+    aria-pressed=${active}
+    aria-label=${active ? `${what} wins in ${label}` : `Make ${what} win in ${label}`}
+    title=${active
+      ? `${what} comes last in this block, so it wins. Only one side can.`
+      : `Move ${what} last in this block so it wins over the other side.`}
+    ?disabled=${active}
+    @click=${() => promote(property)}
+  >
+    ${icon('arrowUp', 10)}
+  </button>`;
+
+  return html`${repeat(
+    entries,
+    (entry) => (entry.kind === 'family' ? `family:${entry.group.shorthand}` : entry.property),
+    (entry) => {
+      if (entry.kind === 'row') return renderRow(entry.property);
+      const { group } = entry;
+      const sides = group.longhands.length === 1 ? group.longhands[0] : 'the individual sides';
+      /*
+       * Always the shorthand first and its sides after, whatever order the block has them in.
+       *
+       * The block's order is what decides the result, and it changes as the user works — so letting
+       * the rows follow it would move the field under the caret and put a different property under
+       * the pointer mid-drag. The control carries that information instead, which is the one thing
+       * that should move.
+       */
+      return html`<div class="family">
+        ${control(group.shorthand, group.winner === 'shorthand', group.shorthand)}
+        <div class="fam-rows">${renderRow(group.shorthand)}</div>
+        ${control(group.longhands[0], group.winner === 'longhands', sides)}
+        <div class="fam-rows sides">
+          ${repeat(group.longhands, (name) => name, (name) => renderRow(name))}
+        </div>
+      </div>`;
+    },
+  )}`;
 }
 
 export interface PropertyAdderTarget {
@@ -285,20 +343,69 @@ export const ClassEditor = {
     .cls .decl.overridden heo-value-field {
       opacity: 0.45;
     }
-    /* A declaration a LATER one in the same rule overwrites. Marked rather than dimmed,
-       because unlike a cascade override this one is the author's own ordering mistake and
-       the fix is to move or delete the line. Dimming alone reads as "inherited". */
-    .cls .decl.shadowed .p {
-      color: color-mix(in oklab, var(--heo-warn) 80%, var(--heo-text));
-      text-decoration: line-through;
-      text-decoration-thickness: 1px;
-      text-decoration-color: color-mix(in oklab, currentColor 45%, transparent);
+    /* A shorthand and its own sides, shown as one thing.
+
+       The grouping is the explanation: these rows compete, and CSS settles it by which comes
+       last. Two columns — a narrow gutter for the promote control, and the rows themselves —
+       so one control can sit beside a whole group of sides rather than repeating per row. */
+    .family {
+      display: grid;
+      grid-template-columns: 16px minmax(0, 1fr);
+      align-items: start;
+      gap: 4px 4px;
+      margin: 1px 0;
+      padding: 4px 5px 4px 3px;
+      border: 1px solid var(--heo-line);
+      border-radius: var(--heo-r-sm);
+      background: color-mix(in oklab, var(--heo-sunken) 55%, transparent);
     }
-    .cls .decl .warn {
-      display: inline-flex;
-      margin-right: 3px;
-      color: var(--heo-warn);
-      vertical-align: -1px;
+    .family .fam-rows {
+      display: grid;
+      gap: 5px;
+      min-width: 0;
+    }
+    /* Indented and ruled, so the sides read as belonging under the shorthand above them. */
+    .family .fam-rows.sides {
+      padding-left: 7px;
+      border-left: 2px solid var(--heo-line);
+    }
+    /* The one control that says which side is in charge. Pressed means "this one wins"; the
+       other is the button you can press. Aligned to the first row of its group. */
+    .family .promote {
+      display: grid;
+      place-items: center;
+      width: 16px;
+      height: 22px;
+      padding: 0;
+      border: 0;
+      border-radius: 4px;
+      background: transparent;
+      color: var(--heo-text-faint);
+      cursor: pointer;
+      opacity: 0.55;
+      transition: opacity var(--heo-fast), color var(--heo-fast);
+    }
+    .family:hover .promote {
+      opacity: 1;
+    }
+    .family .promote:hover {
+      background: var(--heo-hover);
+      color: var(--heo-text);
+    }
+    .family .promote.on {
+      color: var(--heo-accent);
+      cursor: default;
+      opacity: 1;
+    }
+    .family .promote:focus-visible {
+      outline: 2px solid var(--heo-accent);
+      outline-offset: 1px;
+    }
+    /* The losing side is not wrong, it is just not in effect. Dimmed like a cascade override
+       rather than struck through: the fix is one click, and it may well be intentional. */
+    .family .promote:not(.on) + .fam-rows .decl .p,
+    .family .promote:not(.on) + .fam-rows heo-value-field {
+      opacity: 0.55;
     }
     .cls .decl .drop {
       display: grid;
@@ -495,7 +602,47 @@ export const ClassEditor = {
    */
   renderDeclarations(target: DeclarationTarget, host: ClassEditorHost): TemplateResult {
     const { engine, element } = host;
-    const properties = Object.keys(target.declarations);
+    const list = fromRecord(target.declarations);
+    const groups = shorthandGroups(list);
+    const rows = displayOrder(list, groups);
+
+    /**
+     * One declaration row.
+     *
+     * Keyed on the property by the caller, because these rows are not interchangeable. Rendered
+     * positionally, a change in the order of the declarations re-labels every row from that point
+     * on rather than moving it: the field the caret was in became a different property's field
+     * mid-edit, and the next keystroke edited that one instead.
+     */
+    const row = (property: string): TemplateResult => html`<div
+      class=${`decl${target.overridden?.(property) ? ' overridden' : ''}`}
+    >
+      <span class="p" title=${target.describe?.(property) ?? property}>${property}</span>
+      <heo-value-field
+        data-property=${property}
+        .computed=${target.resolve?.(property) ??
+      resolvedValue(target.declarations[property], element)}
+        .value=${target.declarations[property]}
+        .kind=${valueKindFor(property)}
+        .property=${property}
+        .suggestions=${buildSuggestions(engine, property, element)}
+        clearable
+        @value-input=${(event: CustomEvent<{ value: string }>) =>
+        target.preview(property, event.detail.value)}
+        @value-revert=${() => engine.cancelPreview()}
+        @value-change=${(event: CustomEvent<{ value: string }>) =>
+        target.commit(property, event.detail.value)}
+      ></heo-value-field>
+      <button
+        class="drop"
+        type="button"
+        title=${`Remove ${property} from ${target.label}`}
+        aria-label=${`Remove ${property} from ${target.label}`}
+        @click=${() => target.remove(property)}
+      >
+        ${icon('close', 10)}
+      </button>
+    </div>`;
 
     return html`
       <!-- Named so the focus helper can tell this list's rows from an identically named row in
@@ -513,71 +660,18 @@ export const ClassEditor = {
               </button>
             </div>`
         : nothing}
-        ${properties.length === 0
-        ? html`<p class="hint" style="margin:0">${target.empty}</p>`
-        : nothing}
-        ${/*
-         * Keyed on the property, because these rows are not interchangeable.
-         *
-         * Rendered positionally, a change in the order of the declarations re-labels
-         * every row from that point on rather than moving it: the field the caret was
-         * in became a different property's field mid-edit, and the next keystroke
-         * edited that one instead. Emptying a value is enough to trigger it, since the
-         * declaration briefly leaves the rule and comes back at the end.
-         */
-      repeat(
-        properties,
-        (property) => property,
-        (property) => html`<div
-            class=${`decl${target.overridden?.(property) ? ' overridden' : ''}${target.shadowed?.(property) ? ' shadowed' : ''}`}
-          >
-            <span
-              class="p"
-              title=${target.describe?.(property) ?? property}
-            >${target.shadowed?.(property)
-            ? html`<span
-                  class="warn"
-                  role="img"
-                  aria-label=${`${property} is overwritten by a later declaration in this rule`}
-                  title=${`A later declaration in this rule overwrites ${property}, so this line has no effect. Move it below the one that overwrites it, or remove it.`}
-                  >${icon('alert', 10)}</span
-                >`
-            : nothing}${property}</span>
-            <heo-value-field
-              data-property=${property}
-              .computed=${target.resolve?.(property) ??
-          resolvedValue(target.declarations[property], element)}
-              .value=${target.declarations[property]}
-              .kind=${valueKindFor(property)}
-              .property=${property}
-              .suggestions=${buildSuggestions(engine, property, element)}
-              clearable
-              @value-input=${(event: CustomEvent<{ value: string }>) =>
-            target.preview(property, event.detail.value)}
-              @value-revert=${() => engine.cancelPreview()}
-              @value-change=${(event: CustomEvent<{ value: string }>) =>
-            target.commit(property, event.detail.value)}
-            ></heo-value-field>
-            <button
-              class="drop"
-              type="button"
-              title=${`Remove ${property} from ${target.label}`}
-              aria-label=${`Remove ${property} from ${target.label}`}
-              @click=${() => target.remove(property)}
-            >
-              ${icon('close', 10)}
-            </button>
-          </div>`,
-      )}
+        ${rows.length === 0 ? html`<p class="hint" style="margin:0">${target.empty}</p>` : nothing}
+        ${renderFamilies(rows, row, (property) =>
+        target.commit(property, target.declarations[property] ?? ''), target.label)}
         ${renderPropertyAdder(
-        {
-          id: target.id,
-          label: target.label,
-          existing: target.declarations,
-          commit: target.commit,
-        },
-        host,
-      )}
+          {
+            id: target.id,
+            label: target.label,
+            existing: target.declarations,
+            commit: target.commit,
+          },
+          host,
+        )}
       </div>
     `;
   },

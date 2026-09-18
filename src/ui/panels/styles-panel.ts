@@ -12,13 +12,17 @@ import {
   parentLayoutProperties,
   PROPERTY_GROUP_LABELS,
   searchProperties,
-  shadowedDeclarations,
   sizeConstraints,
   stateRules,
   type AppliedRule,
   type DeclarationOrigin,
   type SizeConstraint,
 } from '../../core/css.js';
+import {
+  displayOrder,
+  fromRecord,
+  shorthandGroups,
+} from '../../core/declaration-list.js';
 import { ruleDeclarations } from '../../core/sheets.js';
 import {
   checkDeclaration,
@@ -40,6 +44,7 @@ import { adderStyles } from './adder.js';
 import {
   ClassEditor,
   focusDeclaration,
+  renderFamilies,
   initialValueFor,
   renderPropertyAdder,
   type DeclarationTarget,
@@ -1028,8 +1033,8 @@ export class HeoStylesPanel extends HeoElement {
       // Narrowed by the search like every other surface, on the name or the value.
       .filter((property) => this.#matches(property, declared.get(property)))
       /*
-       * Plain alphabetical, which is also what keeps a box's sides beside it: `padding`
-       * sorts immediately before `padding-bottom`.
+       * Plain alphabetical, which is the stable base the family grouping then arranges: a shorthand
+       * and its sides are pulled together by `displayOrder` regardless of where they sort.
        *
        * There used to be a rank ahead of this, putting names present in the style
        * attribute above the rest. Everything listed here is in the style attribute — the
@@ -1066,10 +1071,29 @@ export class HeoStylesPanel extends HeoElement {
             <!-- Named with the same id the adder below uses, so the focus helper lands in this
                  list rather than in a class or rule row for the same property. -->
             <div class="rows" data-declarations=${INLINE_ADDER_ID}>
-              ${repeat(
-          properties,
-          (property) => property,
+              ${renderFamilies(
+          /*
+           * Two orders, deliberately. Which side of a family wins is a fact about the *attribute*,
+           * so the groups are computed from `inline`, which is in attribute order. What the user
+           * sees is the stable alphabetical sequence above, so the display entries are built from
+           * that. Reading the winner off the display order instead had the sides always appear to
+           * win, because `padding` sorts before `padding-left` whatever the attribute says.
+           */
+          displayOrder(
+            properties.map((property) => ({
+              property,
+              value: declared.get(property) ?? '',
+              important: false,
+            })),
+            shorthandGroups(
+              fromRecord(inline).filter((one) => properties.includes(one.property)),
+            ),
+          ),
           (property) => this.#renderRow(property, el, computed, declared, undefined, origins),
+          // Re-asserting the declaration is what promotes it: the shared write path moves the
+          // touched side last. The same one line the class and rule lists use.
+          (property) => this.editor.setStyle(property, declared.get(property) ?? '', el),
+          'this element',
         )}
             </div>
             ${inlineCount && !filtering
@@ -1235,9 +1259,6 @@ export class HeoStylesPanel extends HeoElement {
     // shorthand-and-its-side case, which is the one that was broken, is two different names and
     // survives in the order the file has them.
     for (const one of source) declarations[one.property] = one.value;
-    // Computed from the authored list, not from the map, because it is a question about order and
-    // the map has already lost any repeated name.
-    const shadowed = shadowedDeclarations(source);
 
     // Subtract any live preview, exactly as the element's own rows do with an inline
     // one. `rule.declarations` was read off the live rule, and a preview is painted
@@ -1286,9 +1307,6 @@ export class HeoStylesPanel extends HeoElement {
         const winner = cascade.get(property);
         return winner ? winner.from !== rule : false;
       },
-      // Order inside this one rule, which is a different question from the cascade above and the
-      // only one a list keyed by name cannot answer for itself.
-      shadowed: (property) => shadowed.has(property),
       describe: (property) => {
         if (rule.pseudo) {
           return `${property} applies to ${shown}, a state this element is not in right now`;

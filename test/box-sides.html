@@ -680,17 +680,19 @@
           };
 
           const shadowedRows = await rowsFor('shadowed');
-          results.shadowedRows = {
+          results.familyLayout = {
             order: asText(shadowedRows),
-            // The side is declared before the shorthand, so the shorthand wipes it out. It is in
-            // the file, it is valid, and it does nothing — which is the thing worth saying.
-            flagsTheDeadDeclaration: shadowedRows?.some(
-              (r) => r.property === 'padding-left' && r.warned && r.hasIcon,
-            ),
-            andOnlyThatOne: shadowedRows?.filter((r) => r.warned).length === 1,
-            theShorthandIsNotFlagged: shadowedRows?.some(
-              (r) => r.property === 'padding' && !r.warned,
-            ),
+            /*
+             * The shorthand is shown above its own sides whichever way round the block has them.
+             *
+             * This block declares the side first and the shorthand after it, so in the file the
+             * shorthand wins. The rows do not say so by their position — position is fixed, because
+             * it changes as the user works and a moving row moves the field under the caret. The
+             * promote control says so instead, and it is asserted in the fixture that drives it.
+             */
+            showsTheShorthandFirst: asText(shadowedRows) === 'padding=20px,padding-left=0,color=#333',
+            // And no warning marker: the grouping carries what the warning used to say.
+            noWarningMarkers: (shadowedRows ?? []).every((row) => !row.warned && !row.hasIcon),
           };
 
           /*

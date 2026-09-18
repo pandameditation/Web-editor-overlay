@@ -1,8 +1,14 @@
 import { simpleClassName } from './classes.js';
 import { MIRROR_ATTR, RULE_STYLE_ID } from './constants.js';
-import { parseDeclarations } from './css.js';
+import {
+  fromRecord,
+  toRecord,
+  withPromotedSide,
+  withValue,
+  type Declaration,
+} from './declaration-list.js';
 import { countMatches, safeSelector } from './selectors.js';
-import { withParsedSheet } from './sheets.js';
+import { ruleDeclarations, withParsedSheet } from './sheets.js';
 import { declarationsToCSS, ManagedStyleSheet } from './stylesheet.js';
 import type { DesignRule } from './types.js';
 
@@ -154,7 +160,13 @@ export class RuleRegistry {
       // the two cannot drift into both claiming it.
       if (rule.selectorText.split(',').every((part) => simpleClassName(part))) continue;
 
-      const declarations = parseDeclarations(rule.style.cssText);
+      /*
+       * From the stylesheet's own text, not from the live rule, for the reason
+       * `ClassRegistry.readDeclarations` gives: the CSSOM rebuilds shorthands and renames values on
+       * the way out, so a block holding both a shorthand and one of its sides came back as one
+       * merged declaration and an authored `#222` came back `rgb(34, 34, 34)`.
+       */
+      const declarations = toRecord(ruleDeclarations(rule));
       const properties = Object.keys(declarations);
       if (!properties.length) continue;
       // A block of nothing but custom properties is the token registry's, and the Tokens
@@ -230,24 +242,24 @@ export class RuleRegistry {
    * Record what the page now says about a declaration this registry does not own.
    *
    * The other half of routing an edit through `originRule`: the value was changed in the rule that
-   * declares it, and a CSSOM mutation is invisible from here, so the copy held in this map is
-   * stale and the rule editor would go on showing the old value.
+   * declares it, and a CSSOM mutation is invisible from here, so the copy held in this map is stale
+   * and the editor would go on showing the old value.
    *
-   * `setDeclaration` cannot do this job. It flips `origin` to `'user'`, which is precisely what
-   * makes `toCSS` emit the rule — and emitting a rule that was just patched in place is the
-   * duplicate this path exists to avoid.
+   * Handed the rule's whole declaration list rather than one property, because order is part of what
+   * changed. When a block holds both a shorthand and one of its longhands, the edit moves the
+   * touched side last so it wins — and a copy that took only the new value kept the old order, so
+   * the panel showed the other side as the winner while the page rendered this one. One list, copied
+   * across, cannot disagree with itself.
    *
-   * An empty value drops the property, because the declaration is no longer in the file either.
+   * `setDeclaration` cannot do this job. It flips `origin` to `'user'`, which is precisely what makes
+   * `toCSS` emit the rule — and emitting something that was just patched in place is the duplicate
+   * this path exists to avoid.
    */
-  noteStylesheetValue(selector: string, property: string, value: string): void {
+  noteStylesheetDeclarations(selector: string, declarations: readonly Declaration[]): void {
     const key = safeSelector(selector) || String(selector ?? '').trim();
     const entry = this.#rules.get(key);
     if (!entry || entry.origin !== 'stylesheet') return;
-    const declarations = { ...entry.declarations };
-    const next = value.trim();
-    if (next) declarations[property] = next;
-    else delete declarations[property];
-    this.#rules.set(key, { ...entry, declarations });
+    this.#rules.set(key, { ...entry, declarations: toRecord(declarations) });
     // `#invalidate` rather than `#flush`: the managed sheet is built from `toCSS`, which leaves
     // scanned rules out, so rewriting it would emit the same bytes it already holds.
     this.#invalidate();
@@ -345,7 +357,17 @@ export class RuleRegistry {
     const next = value.trim();
     return this.upsert({
       ...entry,
-      declarations: { ...entry.declarations, [property]: next },
+      /*
+       * The edit itself goes through the shared model, so a rule, a class and an inline style cannot
+       * disagree about what setting a declaration means — including the promotion: when a block
+       * holds both a shorthand and one of its longhands, CSS decides between them by position, so
+       * the side just touched is moved last and wins.
+       */
+      declarations: next
+        ? toRecord(
+          withPromotedSide(withValue(fromRecord(entry.declarations), property, next), property),
+        )
+        : { ...entry.declarations, [property]: '' },
       /*
        * A rule read out of the page becomes this session's the moment it is edited, and that word
        * is what makes the edit real: `toCSS` leaves `'stylesheet'` rules out, so without the flip
@@ -366,8 +388,9 @@ export class RuleRegistry {
   removeDeclaration(selector: string, property: string): DesignRule | undefined {
     const entry = this.get(selector);
     if (!entry) return undefined;
-    const declarations = { ...entry.declarations };
-    delete declarations[property];
+    // Through the shared model like every other edit, so "remove a declaration" cannot come to mean
+    // two different things in two registries.
+    const declarations = toRecord(withValue(fromRecord(entry.declarations), property, ''));
     /*
      * Also an edit, so also `'user'` — with one caveat worth stating.
      *

@@ -12,6 +12,13 @@
       font-family: system-ui, sans-serif;
     }
 
+    /* A class holding both a shorthand and one of its sides, for the promotion group. */
+    .promoted {
+      padding: 12px;
+      padding-left: 0;
+      color: #333;
+    }
+
     /* The same three rules as the linked sheet, in a <style> block, so the two can be compared. */
     #inline {
       padding: 12px;
@@ -40,6 +47,8 @@
     <p id="inline">From a style block.</p>
     <p id="inline-dead">Side before shorthand, in a style block.</p>
     <p id="inline-media">Inside @media, in a style block.</p>
+    <p id="promote-inline" style="padding:12px;padding-left:0;color:#444">Promotion, inline.</p>
+    <p id="promote-class" class="promoted">Promotion, in a class.</p>
   </main>
 
   <div id="report">
@@ -189,8 +198,8 @@
            * `12px 12px 12px 0px` and no `padding-left` row existed — which is what a
            * `CSSStyleDeclaration` serialises the pair as.
            */
-          linkedAddsALine: linkedAfter === 'padding=12px,color=#222,padding-left=0px',
-          inlineAddsALine: inlineAfter === 'padding=12px,color=#222,padding-left=0px',
+          linkedAddsALine: linkedAfter === 'padding=12px,padding-left=0px,color=#222',
+          inlineAddsALine: inlineAfter === 'padding=12px,padding-left=0px,color=#222',
           shorthandWasNotRewritten:
             /padding=12px,/.test(linkedAfter ?? '') && /padding=12px,/.test(inlineAfter ?? ''),
           bothSheetsAgree: linkedAfter === inlineAfter,
@@ -227,16 +236,20 @@
         /* ------------------------------------------------------------------ *
          * 4. A declaration a later one in the same rule overwrites is marked.
          * ------------------------------------------------------------------ */
-        progress.textContent = 'shadowed';
+        progress.textContent = 'familyLayout';
         const linkedDead = await rowsFor('linked-dead');
         const inlineDead = await rowsFor('inline-dead');
-        results.shadowed = {
+        results.familyLayout = {
           linked: linkedDead,
           inline: inlineDead,
-          // The side is declared before the shorthand, so the shorthand wipes it out. It is in the
-          // file, it is valid, and it does nothing.
-          linkedFlagsTheDeadOne: linkedDead === 'padding-left=0!,padding=20px',
-          inlineFlagsTheDeadOne: inlineDead === 'padding-left=0!,padding=20px',
+          /*
+            * The side is declared before the shorthand, so in the file the shorthand wins. The rows
+            * do not say that by their position: the shorthand is shown first either way, because
+            * display position is fixed while the block's order is not. Which side actually wins is
+            * the promote control's job, asserted in `promoting` below.
+            */
+          linkedShowsShorthandFirst: linkedDead === 'padding=20px,padding-left=0',
+          inlineShowsShorthandFirst: inlineDead === 'padding=20px,padding-left=0',
           bothSheetsAgree: linkedDead === inlineDead,
         };
 
@@ -253,6 +266,124 @@
           inlineReadsTheBlock: inlineMedia === 'margin=4px,color=#333',
           bothSheetsAgree: linkedMedia === inlineMedia,
         };
+
+        /* ------------------------------------------------------------------ *
+         * 6. Promotion, through the UI, on all three surfaces.
+         *
+         *    The behaviour the three used to disagree about, now driven the same
+         *    way in each: a family shows its shorthand above its own sides, one
+         *    shared control per side says which is last in the block, and pressing
+         *    the other one moves it there.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'promoting';
+        {
+          /** A family's two controls, and which one is pressed. */
+          const familyIn = (root) => {
+            const fam = root?.querySelector('.family');
+            if (!fam) return null;
+            const controls = Array.from(fam.querySelectorAll('.promote'));
+            return {
+              controls: controls.length,
+              pressed:
+                controls[0]?.getAttribute('aria-pressed') === 'true'
+                  ? 'shorthand'
+                  : controls[1]?.getAttribute('aria-pressed') === 'true'
+                    ? 'sides'
+                    : 'neither',
+              // The pressed one is a statement, not a button: pressing it again would mean nothing.
+              pressedIsInert: controls.find((c) => c.getAttribute('aria-pressed') === 'true')
+                ?.disabled === true,
+              other: controls.find((c) => c.getAttribute('aria-pressed') !== 'true') ?? null,
+            };
+          };
+          const panelRoot = () => deep('heo-styles-panel').shadowRoot;
+          const sectionNamed = (heading) =>
+            Array.from(panelRoot().querySelectorAll('heo-section')).find(
+              (s) => s.heading === heading,
+            );
+
+          /* --- The element's own styles. --- */
+          const el = document.getElementById('promote-inline');
+          api.select(el);
+          engine.setDockTab('styles');
+          await frames();
+          await wait(400);
+          const inlineFamily = () =>
+            familyIn(sectionNamed('Set on this element')?.querySelector('.rows'));
+          const startedAt = inlineFamily();
+          results.promoting = {
+            inlineHasOneControlPerSide: startedAt?.controls === 2,
+            // The attribute declares the side last, so the sides win. A reading of the file.
+            inlineStartsWithSidesWinning: startedAt?.pressed === 'sides',
+            inlineWinnerIsInert: startedAt?.pressedIsInert === true,
+            inlineRendersTheSide: getComputedStyle(el).paddingLeft === '0px',
+          };
+          startedAt?.other?.click();
+          await frames();
+          await wait(400);
+          results.promoting.inlineNowShorthandWins = inlineFamily()?.pressed === 'shorthand';
+          results.promoting.inlineAttribute = el.getAttribute('style');
+          // The shorthand moved last in the attribute, so it overwrites the side — and the page
+          // shows it. A reorder with no value changed.
+          results.promoting.inlineRerenders = getComputedStyle(el).paddingLeft === '12px';
+          results.promoting.inlineMovedTheShorthandLast = /padding:\s*12px;?\s*$/.test(
+            el.getAttribute('style') ?? '',
+          );
+
+          /* --- A class. --- */
+          api.select(document.getElementById('promote-class'));
+          await frames();
+          await wait(400);
+          const classes = sectionNamed('Classes');
+          if (classes && !classes.open) classes.shadowRoot.querySelector('.head')?.click();
+          await frames();
+          await wait(200);
+          const chip = Array.from(classes?.querySelectorAll('button[aria-expanded]') ?? []).find(
+            (c) => c.textContent.includes('promoted'),
+          );
+          if (chip?.getAttribute('aria-expanded') !== 'true') chip?.click();
+          await frames();
+          await wait(350);
+          const classFamily = () => familyIn(sectionNamed('Classes')?.querySelector('.decls'));
+          results.promoting.classHasOneControlPerSide = classFamily()?.controls === 2;
+          results.promoting.classStartsWithSidesWinning = classFamily()?.pressed === 'sides';
+          classFamily()?.other?.click();
+          await frames();
+          await wait(400);
+          results.promoting.classNowShorthandWins = classFamily()?.pressed === 'shorthand';
+          results.promoting.classRerenders =
+            getComputedStyle(document.getElementById('promote-class')).paddingLeft === '12px';
+
+          /* --- And a stylesheet rule. --- */
+          api.select(document.getElementById('linked'));
+          await frames();
+          await wait(400);
+          const rules = sectionNamed('CSS rules');
+          if (rules && !rules.open) rules.shadowRoot.querySelector('.head')?.click();
+          await frames();
+          await wait(200);
+          const header = Array.from(rules?.querySelectorAll('.cls > header') ?? []).find((h) =>
+            h.textContent.includes('#linked'),
+          );
+          if (header?.getAttribute('aria-expanded') !== 'true') header?.click();
+          await frames();
+          await wait(350);
+          const ruleFamily = () =>
+            familyIn(sectionNamed('CSS rules')?.querySelector('.cls .decls'));
+          results.promoting.ruleHasOneControlPerSide = ruleFamily()?.controls === 2;
+          const rulePressed = ruleFamily()?.pressed;
+          ruleFamily()?.other?.click();
+          await frames();
+          await wait(400);
+          results.promoting.rulePromoteFlipsTheWinner =
+            ruleFamily()?.pressed !== rulePressed && ruleFamily()?.pressed !== 'neither';
+
+          // All three surfaces answered the same way, which is the whole point of the change.
+          results.promoting.allThreeAgree =
+            results.promoting.inlineHasOneControlPerSide === true &&
+            results.promoting.classHasOneControlPerSide === true &&
+            results.promoting.ruleHasOneControlPerSide === true;
+        }
 
         /* ------------------------------------------------------------------ */
         const failed = Object.entries(results)

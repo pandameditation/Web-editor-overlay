@@ -1,9 +1,6 @@
 import type { FileHost } from './file-host.js';
-import {
-  readDeclarationBlock,
-  readRuleDeclarations,
-  type AuthoredDeclaration,
-} from './css-patch.js';
+import { readDeclarationBlock, readRuleDeclarations } from './css-patch.js';
+import type { Declaration } from './declaration-list.js';
 import { nextChangeId, type Command } from './history.js';
 import { safeSelector } from './selectors.js';
 import {
@@ -404,7 +401,7 @@ export function describeRule(rule: CSSRule): RuleLocation | null {
  * - a cross-origin sheet, whose rules are unreadable anyway so this will not come up;
  * - a linked sheet whose text nothing has fetched yet.
  */
-export function authoredDeclarationsOf(rule: CSSStyleRule): AuthoredDeclaration[] | null {
+export function authoredDeclarationsOf(rule: CSSStyleRule): Declaration[] | null {
   const at = describeRule(rule);
   if (!at) return null;
   const text = sourceTextOf(at.sheet);
@@ -435,7 +432,7 @@ export function authoredDeclarationsOf(rule: CSSStyleRule): AuthoredDeclaration[
  * edited one stays where it is, so what the panel shows and what the file will say are the same
  * sequence.
  */
-const ruleEdits = new WeakMap<CSSStyleRule, AuthoredDeclaration[]>();
+const ruleEdits = new WeakMap<CSSStyleRule, Declaration[]>();
 
 /**
  * What a rule declares now, always as a list.
@@ -456,7 +453,7 @@ const ruleEdits = new WeakMap<CSSStyleRule, AuthoredDeclaration[]>();
  *
  * Never null for a rule that has a style block, so callers have one shape to handle.
  */
-export function ruleDeclarations(rule: CSSStyleRule): AuthoredDeclaration[] {
+export function ruleDeclarations(rule: CSSStyleRule): Declaration[] {
   const edited = ruleEdits.get(rule);
   if (edited) return edited;
   return authoredDeclarationsOf(rule) ?? readDeclarationBlock(rule.style.cssText);
@@ -465,7 +462,7 @@ export function ruleDeclarations(rule: CSSStyleRule): AuthoredDeclaration[] {
 /** Replace what this session believes a rule declares. Null forgets the edits entirely. */
 export function rememberRuleDeclarations(
   rule: CSSStyleRule,
-  declarations: AuthoredDeclaration[] | null,
+  declarations: Declaration[] | null,
 ): void {
   if (declarations) ruleEdits.set(rule, declarations);
   else ruleEdits.delete(rule);

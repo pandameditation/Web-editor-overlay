@@ -1,5 +1,13 @@
 import { INSERTED_ATTR, SOURCE_ATTR } from './constants.js';
 import { parseDeclarations } from './css.js';
+import {
+  fromRecord,
+  toText,
+  valueOf,
+  withPromotedSide,
+  withValue,
+  type Declaration,
+} from './declaration-list.js';
 import { directText, labelFor, nearestSourceRef, selectorFor } from './dom.js';
 import type { ElementAnchor } from './html-patch.js';
 import { nextChangeId, type Command } from './history.js';
@@ -269,42 +277,42 @@ export function setTextContent(el: HTMLElement, after: string): Command {
  * declarations it considers equivalent. Writes here match on the exact name given, which is what
  * lets two spellings of the same property sit side by side.
  */
-type Declaration = [name: string, value: string];
-
+/** The attribute as a declaration list, exactly as written. */
 function authoredEntries(el: HTMLElement): Declaration[] {
-  return Object.entries(parseDeclarations(el.getAttribute('style') ?? ''));
+  return fromRecord(parseDeclarations(el.getAttribute('style') ?? ''));
 }
 
-/** The authored value of one exact name, or the empty string when it is not there. */
+/** The authored value of one name, or the empty string when it is not there. */
 function authoredValue(el: HTMLElement, property: string): string {
-  const wanted = property.trim().toLowerCase();
-  return authoredEntries(el).find(([name]) => name.toLowerCase() === wanted)?.[1] ?? '';
+  return valueOf(authoredEntries(el), property) ?? '';
 }
 
 /**
- * Apply declarations to the attribute, by exact name. An empty value removes one.
+ * Apply declarations to the attribute. An empty value removes one.
  *
- * Matching is on the name as written rather than on what the browser considers the same property,
- * so setting `transform` leaves an existing `-webkit-transform` alone. Existing declarations keep
- * their position and new ones are appended, because in CSS order is precedence: a fallback pair
- * only works if the standard name comes last, and that is the author's decision to make.
+ * The splice itself is `withValue`, shared with classes and stylesheet rules, so what "set a
+ * declaration" means cannot differ between the three surfaces. This function is only the part that
+ * genuinely is inline-specific: reading the attribute and writing it back.
+ *
+ * `withPromotedSide` after it is the other shared rule. When the attribute holds both a shorthand
+ * and one of its longhands, CSS decides between them by position, so the side just touched is moved
+ * last and wins. Without it, nudging `padding-left` on an element whose `padding` comes after it
+ * would change the attribute and change nothing on screen.
  */
-function writeInline(el: HTMLElement, declarations: Record<string, string>): void {
-  const entries = authoredEntries(el);
+function writeInline(
+  el: HTMLElement,
+  declarations: Record<string, string>,
+  { promote = true }: { promote?: boolean } = {},
+): void {
+  let list = authoredEntries(el);
   for (const [rawName, rawValue] of Object.entries(declarations)) {
     const name = rawName.trim();
     if (!name) continue;
-    const value = rawValue.trim();
-    const at = entries.findIndex(([existing]) => existing.toLowerCase() === name.toLowerCase());
-    if (!value) {
-      if (at >= 0) entries.splice(at, 1);
-      continue;
-    }
-    if (at >= 0) entries[at] = [name, value];
-    else entries.push([name, value]);
+    list = withValue(list, name, rawValue);
+    if (promote) list = withPromotedSide(list, name);
   }
-  const text = entries.map(([name, value]) => `${name}: ${value}`).join('; ');
-  if (text) el.setAttribute('style', `${text};`);
+  const text = toText(list);
+  if (text) el.setAttribute('style', text);
   else el.removeAttribute('style');
 }
 
@@ -320,9 +328,16 @@ function restoreStyleAttribute(el: HTMLElement, text: string | null): void {
   else el.setAttribute('style', text);
 }
 
-/** Exported for the live-preview path, which paints without going through a command. */
+/**
+ * Exported for the live-preview path, which paints without going through a command.
+ *
+ * Deliberately does not promote. A preview is paint, and promotion is a change to the block's
+ * order — so reordering here would mean an exploration the user then cancelled had still moved a
+ * declaration, and the value-only restore that follows a cancel cannot put the order back. The
+ * commit promotes; looking is free.
+ */
 export function previewInline(el: HTMLElement, property: string, value: string): void {
-  writeInline(el, { [property]: value });
+  writeInline(el, { [property]: value }, { promote: false });
 }
 
 export { authoredValue as inlineAuthoredValue };
