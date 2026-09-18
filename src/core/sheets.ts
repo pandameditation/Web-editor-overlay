@@ -263,8 +263,40 @@ export async function fetchStyleSource(
 
   if (!source.href || source.readOnly) return readStyleSource(source);
   try {
-    const response = await fetch(source.href, { credentials: 'same-origin' });
+    /*
+     * Asked for as a stylesheet, and kept out of the shared cache. Both matter, and neither is
+     * fussiness — a dev server decides what a `.css` URL *is* from the request.
+     *
+     * Vite serves the same URL two ways: with `Accept: text/css` it returns the file, and with
+     * anything else it returns a JavaScript module that injects the file's text at runtime, for
+     * hot reloading. A bare `fetch` sends `Accept: * / *`, so this used to come back as JS — which
+     * means the text cached from it was a module, `readRuleDeclarations` found no rules in it, and
+     * every reader silently fell back to the CSSOM. The feature was inert in exactly the
+     * environment the Vite plugin exists for.
+     *
+     * Worse, the response was cacheable. Vite answers with `Vary: Origin` and not `Vary: Accept`, so
+     * the browser files the JavaScript-typed response under the stylesheet's own URL — and the next
+     * time the document is served from cache rather than re-requested, which is what restoring a
+     * closed tab does, the `<link>` is handed that entry and refuses it: "didn't load because its
+     * MIME type, text/javascript, isn't text/css". The page loses all its styles, on a page that
+     * loaded fine a moment earlier. `no-store` keeps this read out of that cache entirely, so it
+     * cannot answer a question the browser did not ask it.
+     */
+    const response = await fetch(source.href, {
+      credentials: 'same-origin',
+      cache: 'no-store',
+      headers: { Accept: 'text/css,*/*;q=0.1' },
+    });
     if (!response.ok) return readStyleSource(source);
+    /*
+     * And checked on the way out, because the header is a request rather than a guarantee. A server
+     * that hands back JavaScript anyway must not have it mistaken for the stylesheet's text: that is
+     * what would be written back over the file on save.
+     */
+    const type = response.headers.get('content-type') ?? '';
+    if (type && !/text\/css|text\/plain|application\/octet-stream/i.test(type)) {
+      return readStyleSource(source);
+    }
     const text = await response.text();
     return text || readStyleSource(source);
   } catch {

@@ -93,6 +93,36 @@
       addEventListener('error', (e) => errors.push('error: ' + e.message));
       addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + String(e.reason)));
 
+      /*
+       * A spy on fetch, installed before anything mounts.
+       *
+       * The editor reads each linked stylesheet's text on mount, and *how* it asks turns out to
+       * matter a great deal. A dev server decides what a `.css` URL is from the request: Vite returns
+       * the file for `Accept: text/css` and a JavaScript module that injects it for anything else. A
+       * bare fetch sends `* / *`, so this used to come back as JS — the cached text was a module, no
+       * rules were found in it, and every reader silently fell back to the CSSOM.
+       *
+       * And the response was cacheable under the stylesheet's own URL, because Vite answers with
+       * `Vary: Origin` rather than `Vary: Accept`. The next time the document came from cache instead
+       * of the network — which is what restoring a closed tab does — the `<link>` was handed a
+       * JavaScript-typed entry and refused it, and the page lost every style it had.
+       *
+       * Neither symptom is visible from inside a page on a plain file server, so what is asserted is
+       * the request.
+       */
+      const fetches = [];
+      const realFetch = window.fetch.bind(window);
+      window.fetch = async (input, init) => {
+        const url = typeof input === 'string' ? input : (input?.url ?? '');
+        if (url.includes('.css')) {
+          fetches.push({
+            accept: new Headers(init?.headers ?? {}).get('accept'),
+            cache: init?.cache ?? null,
+          });
+        }
+        return realFetch(input, init);
+      };
+
       const progress = document.getElementById('progress');
       const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
       const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -511,6 +541,21 @@
             saysWhatItRemoves: /^Remove /.test(kill?.getAttribute('aria-label') ?? ''),
           };
         }
+
+        /* ------------------------------------------------------------------ *
+         * 8. How the stylesheet text is asked for.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'sheetFetch';
+        results.sheetFetch = {
+          calls: fetches.length,
+          // It happened at all, so the assertions below are not vacuous.
+          readTheLinkedSheet: fetches.length > 0,
+          // Asked for as a stylesheet, so a dev server hands back the file rather than a module.
+          everyCallAsksForCss: fetches.every((one) => (one.accept ?? '').includes('text/css')),
+          // And kept out of the shared cache, so it cannot answer a question the browser did not
+          // ask it — which is what left a JavaScript-typed entry under a stylesheet's URL.
+          everyCallBypassesTheCache: fetches.every((one) => one.cache === 'no-store'),
+        };
 
         /* ------------------------------------------------------------------ */
         const failed = Object.entries(results)
