@@ -10,6 +10,7 @@ import type { DesignClass, DesignRule, DesignToken, TokenGroup } from '../../cor
 import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
 import { classSuggestions } from '../suggestions.js';
+import { killStyles, renderKill } from '../kill.js';
 import { baseStyles } from '../theme.js';
 import { ClassEditor, focusDeclaration } from './class-editor.js';
 import { RuleEditor, type RuleEditorHost } from './rule-editor.js';
@@ -47,6 +48,7 @@ const openGroups = new Set<string>(['component', 'color', 'space', 'classes', 'r
 export class HeoTokensPanel extends HeoElement {
   static override styles = [
     baseStyles,
+    killStyles,
     ClassEditor.styles,
     RuleEditor.styles,
     css`
@@ -109,21 +111,6 @@ export class HeoTokensPanel extends HeoElement {
       }
       .token .preview .glyph {
         color: var(--heo-text-faint);
-      }
-      .token .kill {
-        display: grid;
-        place-items: center;
-        width: 22px;
-        height: 24px;
-        border: 1px solid transparent;
-        border-radius: 5px;
-        background: transparent;
-        color: var(--heo-text-faint);
-        cursor: pointer;
-      }
-      .token .kill:hover {
-        border-color: var(--heo-line);
-        color: var(--heo-danger);
       }
       .token .used {
         min-width: 20px;
@@ -531,17 +518,13 @@ export class HeoTokensPanel extends HeoElement {
       <span class="used" title=${count ? `Referenced ${count} times` : 'Not referenced yet'}>
         ${count ? `${count}×` : ''}
       </span>
-      <button
-        class="kill"
-        type="button"
-        aria-label=${`Delete --${token.name}`}
-        title=${count
+      ${renderKill({
+      label: `Delete --${token.name}`,
+      title: count
         ? `Used ${count} times. Deleting will fall back to each var()'s default.`
-        : `Delete --${token.name}`}
-        @click=${() => this.#removeToken(token)}
-      >
-        ${icon('trash', 12)}
-      </button>
+        : `Delete --${token.name}`,
+      onClick: () => this.#removeToken(token),
+    })}
     </div>`;
   }
 

@@ -12,6 +12,14 @@
       font-family: system-ui, sans-serif;
     }
 
+    /* A loose declaration BETWEEN the two sides, which is the shape that used to move. */
+    #between {
+      padding: 12px;
+      color: #222;
+      padding-left: 0;
+      font-size: 15px;
+    }
+
     /* A class holding both a shorthand and one of its sides, for the promotion group. */
     .promoted {
       padding: 12px;
@@ -49,6 +57,10 @@
     <p id="inline-media">Inside @media, in a style block.</p>
     <p id="promote-inline" style="padding:12px;padding-left:0;color:#444">Promotion, inline.</p>
     <p id="promote-class" class="promoted">Promotion, in a class.</p>
+    <p id="between">Loose declaration between the two sides.</p>
+    <p id="between-inline" style="padding:12px;color:#444;padding-left:0;font-size:15px">
+      Loose declarations between the two sides, inline.
+    </p>
   </main>
 
   <div id="report">
@@ -323,12 +335,21 @@
           await wait(400);
           results.promoting.inlineNowShorthandWins = inlineFamily()?.pressed === 'shorthand';
           results.promoting.inlineAttribute = el.getAttribute('style');
-          // The shorthand moved last in the attribute, so it overwrites the side — and the page
-          // shows it. A reorder with no value changed.
+          // The shorthand now comes after its side, so it overwrites it — and the page shows that.
+          // A reorder with no value changed.
           results.promoting.inlineRerenders = getComputedStyle(el).paddingLeft === '12px';
-          results.promoting.inlineMovedTheShorthandLast = /padding:\s*12px;?\s*$/.test(
-            el.getAttribute('style') ?? '',
-          );
+          /*
+           * After the side, and not at the end of the block. Winning only needs beating the sibling,
+           * and moving further would step over `color` — which is what made unrelated rows appear to
+           * jump around. Pinned here so that cannot come back.
+           */
+          results.promoting.inlineMovedPastItsSideOnly = (() => {
+            const attribute = el.getAttribute('style') ?? '';
+            const side = attribute.indexOf('padding-left');
+            const shorthand = attribute.search(/(^|;)\s*padding:/);
+            const loose = attribute.indexOf('color');
+            return side < shorthand && shorthand < loose;
+          })();
 
           /* --- A class. --- */
           api.select(document.getElementById('promote-class'));
@@ -383,6 +404,112 @@
             results.promoting.inlineHasOneControlPerSide === true &&
             results.promoting.classHasOneControlPerSide === true &&
             results.promoting.ruleHasOneControlPerSide === true;
+        }
+
+        /* ------------------------------------------------------------------ *
+         * 7. Promoting, repeatedly, must not move anything on screen.
+         *
+         *    The regression this pins. Promotion used to move the winning side to
+         *    the end of the block, stepping over every unrelated declaration on the
+         *    way — so a `color` sitting between the two sides appeared to jump above
+         *    and below the family on each click. Winning only requires coming after
+         *    the sibling, so the two sides now swap within the slots the family
+         *    already occupies and nothing outside it moves.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'stableOrder';
+        {
+          const panelRoot = () => deep('heo-styles-panel').shadowRoot;
+          const sectionNamed = (heading) =>
+            Array.from(panelRoot().querySelectorAll('heo-section')).find(
+              (s) => s.heading === heading,
+            );
+          /** Every row top to bottom, whichever container it sits in. */
+          const visualOrder = (root) =>
+            Array.from(root?.querySelectorAll('.decl:not(.property-adder), .row') ?? [])
+              .map((r) => r.dataset.property ?? r.querySelector('.p')?.textContent?.trim())
+              .filter(Boolean)
+              .join(',');
+          const pressedIn = (root) => {
+            const controls = Array.from(root?.querySelectorAll('.family .promote') ?? []);
+            return controls[0]?.getAttribute('aria-pressed') === 'true'
+              ? 'shorthand'
+              : controls[1]?.getAttribute('aria-pressed') === 'true' ? 'sides' : 'neither';
+          };
+          /** Flip a list's promotion four times, recording what moved and what flipped. */
+          const flipFourTimes = async (listOf) => {
+            const orders = [visualOrder(listOf())];
+            const pressed = [pressedIn(listOf())];
+            for (let round = 0; round < 4; round += 1) {
+              listOf()?.querySelector('.family .promote:not(.on)')?.click();
+              await frames();
+              await wait(320);
+              orders.push(visualOrder(listOf()));
+              pressed.push(pressedIn(listOf()));
+            }
+            return {
+              order: orders[0],
+              stayedPut: new Set(orders).size === 1,
+              /*
+               * And the control genuinely changed sides each time, so the stability above cannot be
+               * a disabled button quietly doing nothing.
+               */
+              alternated:
+                pressed.join(',') === 'sides,shorthand,sides,shorthand,sides' ||
+                pressed.join(',') === 'shorthand,sides,shorthand,sides,shorthand',
+            };
+          };
+
+          /* A rule with a loose declaration sitting between the two sides, which is the shape that
+             moved: `padding`, then `color`, then `padding-left`. */
+          api.select(document.getElementById('between'));
+          engine.setDockTab('styles');
+          await frames();
+          await wait(400);
+          const rules = sectionNamed('CSS rules');
+          if (rules && !rules.open) rules.shadowRoot.querySelector('.head')?.click();
+          await frames();
+          await wait(200);
+          const header = Array.from(rules?.querySelectorAll('.cls > header') ?? []).find((h) =>
+            h.textContent.includes('#between'),
+          );
+          if (header?.getAttribute('aria-expanded') !== 'true') header?.click();
+          await frames();
+          await wait(350);
+          results.stableOrder = {
+            rule: await flipFourTimes(() =>
+              sectionNamed('CSS rules')?.querySelector('.cls .decls'),
+            ),
+          };
+
+          /* And the same element, inline, with the same shape. */
+          api.select(document.getElementById('between-inline'));
+          await frames();
+          await wait(450);
+          results.stableOrder.inline = await flipFourTimes(() =>
+            sectionNamed('Set on this element')?.querySelector('.rows'),
+          );
+
+          /*
+           * The remove control, visible without hovering.
+           *
+           * It used to be `opacity: 0` until the pointer was over its row, so from a standing start
+           * the row appeared to offer no way to remove a declaration at all. It is the shared
+           * control the Tokens panel uses now, which is always visible and reddens on hover.
+           */
+          // Back to the rule, whose declaration rows are the ones carrying this control. The
+          // element's own rows have a reset button instead, which is a different affordance.
+          api.select(document.getElementById('between'));
+          await frames();
+          await wait(450);
+          const kill = sectionNamed('CSS rules')?.querySelector('.cls .decls .kill');
+          const killStyle = kill ? getComputedStyle(kill) : null;
+          results.removeControl = {
+            exists: Boolean(kill),
+            opacity: killStyle?.opacity ?? null,
+            visibleWithoutHovering: Number(killStyle?.opacity ?? 0) > 0.9,
+            isTheTrashIcon: Boolean(kill?.querySelector('svg')),
+            saysWhatItRemoves: /^Remove /.test(kill?.getAttribute('aria-label') ?? ''),
+          };
         }
 
         /* ------------------------------------------------------------------ */

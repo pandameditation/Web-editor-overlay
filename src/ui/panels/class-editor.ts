@@ -11,6 +11,7 @@ import { checkDeclaration } from '../../core/declarations.js';
 import type { EditorEngine } from '../../core/editor.js';
 import type { DesignClass } from '../../core/types.js';
 import { icon } from '../icons.js';
+import { killStyles, renderKill } from '../kill.js';
 import { buildSuggestions, valueKindFor } from '../suggestions.js';
 import '../controls/value-field.js';
 
@@ -273,7 +274,9 @@ export function renderPropertyAdder(
 }
 
 export const ClassEditor = {
-  styles: css`
+  styles: [
+    killStyles,
+    css`
     .cls {
       border: 1px solid var(--heo-line);
       border-radius: var(--heo-r-sm);
@@ -407,28 +410,6 @@ export const ClassEditor = {
     .family .promote:not(.on) + .fam-rows heo-value-field {
       opacity: 0.55;
     }
-    .cls .decl .drop {
-      display: grid;
-      place-items: center;
-      width: 18px;
-      height: 18px;
-      border: 0;
-      border-radius: 4px;
-      background: transparent;
-      color: var(--heo-text-faint);
-      cursor: pointer;
-      padding: 0;
-      opacity: 0;
-      transition: opacity var(--heo-fast);
-    }
-    .cls .decl:hover .drop,
-    .cls .decl .drop:focus-visible {
-      opacity: 1;
-    }
-    .cls .decl .drop:hover {
-      background: color-mix(in oklab, var(--heo-danger) 18%, transparent);
-      color: var(--heo-danger);
-    }
     .cls .decl .p {
       overflow: hidden;
       color: var(--heo-text-dim);
@@ -479,7 +460,8 @@ export const ClassEditor = {
       gap: 5px;
       padding: 0 8px 8px;
     }
-  ` as CSSResult,
+  `,
+  ] as CSSResult[],
 
   /**
    * One collapsible class.
@@ -633,15 +615,12 @@ export const ClassEditor = {
         @value-change=${(event: CustomEvent<{ value: string }>) =>
         target.commit(property, event.detail.value)}
       ></heo-value-field>
-      <button
-        class="drop"
-        type="button"
-        title=${`Remove ${property} from ${target.label}`}
-        aria-label=${`Remove ${property} from ${target.label}`}
-        @click=${() => target.remove(property)}
-      >
-        ${icon('close', 10)}
-      </button>
+      ${renderKill({
+      label: `Remove ${property} from ${target.label}`,
+      tight: true,
+      size: 11,
+      onClick: () => target.remove(property),
+    })}
     </div>`;
 
     return html`

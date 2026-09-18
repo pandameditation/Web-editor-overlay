@@ -94,20 +94,6 @@ export function withValue(
   return next;
 }
 
-/**
- * The list with these properties moved to the end, keeping their order relative to each other.
- *
- * Which is all "promote" means in CSS: last wins, so being last *is* winning. Nothing is rewritten
- * and nothing is dropped — the same declarations come back in a different order.
- */
-export function promote(list: readonly Declaration[], properties: readonly string[]): Declaration[] {
-  const wanted = properties.map((name) => name.toLowerCase());
-  const isWanted = (one: Declaration): boolean => wanted.includes(one.property.toLowerCase());
-  return [...list.filter((one) => !isWanted(one)), ...list.filter(isWanted)].map((one) => ({
-    ...one,
-  }));
-}
-
 /* -------------------------------------------------------------------------- */
 /* Shorthands and their longhands                                              */
 /* -------------------------------------------------------------------------- */
@@ -302,9 +288,37 @@ export function withPromotedSide(
   list: readonly Declaration[],
   property: string,
 ): Declaration[] {
+  const next = list.map((one) => ({ ...one }));
   const group = groupFor(list, property);
-  if (!group) return list.map((one) => ({ ...one }));
-  return promote(list, same(group.shorthand, property) ? [group.shorthand] : group.longhands);
+  if (!group) return next;
+
+  const isShorthand = (one: Declaration): boolean => same(one.property, group.shorthand);
+  const isSide = (one: Declaration): boolean =>
+    group.longhands.some((name) => same(name, one.property));
+
+  /*
+   * The family's own positions, reused.
+   *
+   * Moving the promoted side to the end of the *block* would also be enough to win, and it is what
+   * this did first — but it steps over every unrelated declaration on the way, so the family ends up
+   * on the other side of them. The panel derives its layout from the block, so a `color` between the
+   * two sides appeared to jump from below the family to above it and back on each promotion, which
+   * is the one thing the control exists to avoid.
+   *
+   * Winning only requires coming after the *sibling*, so the two sides swap within the slots the
+   * family already occupies. Nothing outside the family moves, and the file's diff stays local.
+   */
+  const slots = next.map((one, index) => (isShorthand(one) || isSide(one) ? index : -1))
+    .filter((index) => index >= 0);
+  const shorthands = next.filter(isShorthand);
+  const sides = next.filter(isSide);
+  const ordered = same(group.shorthand, property)
+    ? [...sides, ...shorthands]
+    : [...shorthands, ...sides];
+  slots.forEach((slot, at) => {
+    next[slot] = ordered[at];
+  });
+  return next;
 }
 
 /**

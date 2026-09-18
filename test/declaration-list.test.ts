@@ -13,7 +13,6 @@ import {
   displayOrder,
   fromRecord,
   groupFor,
-  promote,
   shorthandChain,
   shorthandGroups,
   shorthandsFor,
@@ -113,23 +112,6 @@ test('important rides along as a flag', () => {
 /* Promotion                                                                   */
 /* -------------------------------------------------------------------------- */
 
-test('promoting moves declarations last, keeping their order relative to each other', () => {
-  assert.equal(
-    flat(promote(block('a=1 b=2 c=3 d=4'), ['b', 'd'])),
-    'a=1 c=3 b=2 d=4',
-  );
-});
-
-test('promoting changes nothing but the order', () => {
-  const before = block('padding=12px padding-left=0 color=#222');
-  const after = promote(before, ['padding']);
-  assert.equal(after.length, before.length);
-  assert.deepEqual(
-    [...after].map((one) => one.property).sort(),
-    [...before].map((one) => one.property).sort(),
-  );
-});
-
 /* -------------------------------------------------------------------------- */
 /* Shorthands                                                                  */
 /* -------------------------------------------------------------------------- */
@@ -191,18 +173,48 @@ test('a property finds its own group from either side', () => {
 /* -------------------------------------------------------------------------- */
 
 test('touching the shorthand makes the shorthand win', () => {
+  // Within the family's own two slots. `color` is untouched at the end, where it started.
   assert.equal(
     flat(withPromotedSide(block('padding=12px padding-left=0 color=#222'), 'padding')),
-    'padding-left=0 color=#222 padding=12px',
+    'padding-left=0 padding=12px color=#222',
   );
 });
 
-test('touching a longhand makes the whole longhand group win, contiguously', () => {
-  // The group moves as a unit because the panel offers it one shared control: the group is what a
+test('touching a longhand makes the whole longhand group win, as a unit', () => {
+  // The group moves together because the panel offers it one shared control: the group is what a
   // user reasons about, not the individual side.
   assert.equal(
-    flat(withPromotedSide(block('padding=12px padding-left=0 padding-top=1px color=#222'), 'padding-top')),
-    'padding=12px color=#222 padding-left=0 padding-top=1px',
+    flat(
+      withPromotedSide(
+        block('padding-left=0 padding-top=1px padding=12px color=#222'),
+        'padding-top',
+      ),
+    ),
+    'padding=12px padding-left=0 padding-top=1px color=#222',
+  );
+});
+
+test('promotion moves nothing outside the family', () => {
+  /*
+   * The regression this pins. Moving the promoted side to the end of the block steps over every
+   * unrelated declaration, so a `color` sitting between the two sides appeared to jump above and
+   * below the family on each promotion — the exact churn the control exists to prevent.
+   */
+  const list = block('padding=12px color=#222 padding-left=0');
+  assert.equal(flat(withPromotedSide(list, 'padding')), 'padding-left=0 color=#222 padding=12px');
+  assert.equal(flat(withPromotedSide(list, 'padding-left')), 'padding=12px color=#222 padding-left=0');
+  // `color` never leaves the middle, whichever side is promoted.
+  for (const property of ['padding', 'padding-left']) {
+    assert.equal(withPromotedSide(list, property)[1].property, 'color');
+  }
+});
+
+test('promotion is a reorder and nothing else', () => {
+  const before = block('padding=12px color=#222 padding-left=0');
+  const after = withPromotedSide(before, 'padding');
+  assert.deepEqual(
+    after.map((one) => `${one.property}=${one.value}`).sort(),
+    before.map((one) => `${one.property}=${one.value}`).sort(),
   );
 });
 

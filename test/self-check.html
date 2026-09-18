@@ -2372,8 +2372,10 @@
         return `present=${'letter-spacing' in declarations} value=${JSON.stringify(declarations['letter-spacing'])}`;
       });
       check('clearedRowStaysOnScreen', () => Boolean(newField()));
+      // The shared remove control from `kill.ts`, which every row-listing surface now uses. It
+      // replaced a per-row button that was invisible until hovered.
       check('rowHasAnExplicitRemove', () =>
-        Boolean(tokensPanel.shadowRoot.querySelector('.decl .drop')));
+        Boolean(tokensPanel.shadowRoot.querySelector('.decl .kill')));
       engine.removeClassDeclaration('card', 'letter-spacing');
       await frame();
       check('explicitRemoveDropsTheProperty', () =>
