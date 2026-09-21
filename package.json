@@ -48,6 +48,7 @@
     "check:inline": "node scripts/browser-check.mjs test/inline-edit-fidelity.html 45000",
     "check:undo": "node scripts/browser-check.mjs test/undo-identity.html 60000",
     "check:warn": "node scripts/browser-check.mjs test/rewrite-warning.html 45000",
+    "check:stalemarker": "node scripts/browser-check.mjs test/stale-marker.html 45000",
     "check:seo": "node scripts/browser-check.mjs test/seo-writeback.html 45000",
     "check:late": "node scripts/browser-check.mjs test/late-mount.html 45000",
     "check:advisory": "node scripts/browser-check.mjs test/advisory.html 45000",

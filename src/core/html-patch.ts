@@ -262,9 +262,21 @@ interface OpenTag {
 function resolveAnchor(html: string, anchor: ElementAnchor): OpenTag | string {
   const wanted = anchor.tag.toLowerCase();
 
+  /*
+   * The marker first, and only when the tag it lands on agrees that it is this element.
+   *
+   * A matching tag name is not agreement, and `<div>` is why: a marker counts lines in the file
+   * the build read, and a text that has since gained a line — or was read as *served* rather
+   * than as stored — puts a neighbouring `<div>` where the marker points. Taken on the name
+   * alone, that answered a container lookup with the container's own container, and the save
+   * reported "the file's <div> has 0 <p> children" about a file holding two of them.
+   *
+   * Declining is not a dead end: the id, text and position routes below read the file as it is
+   * rather than as the marker remembers it, and they place the edit correctly.
+   */
   if (anchor.line != null) {
     const tag = tagAtPosition(html, anchor.line, anchor.column ?? 1);
-    if (tag && tag.name === wanted) return tag;
+    if (tag && tag.name === wanted && markerAgrees(html, tag, anchor)) return tag;
   }
 
   /*
@@ -426,13 +438,7 @@ function classesAgree(html: string, tag: OpenTag, classes: string | undefined): 
 
 /** The `class` attribute of a raw opening tag, sorted to match how the anchor records it. */
 function classSignatureOf(raw: string): string {
-  const range = attributeRange(raw, 'class');
-  if (!range) return '';
-  const value = raw
-    .slice(range.start, range.end)
-    .replace(/^class\s*=\s*/i, '')
-    .replace(/^["']|["']$/g, '');
-  return value
+  return (attributeValueOf(raw, 'class') ?? '')
     .split(/\s+/)
     .filter((name) => name && !name.startsWith('heo-'))
     .sort()
@@ -467,9 +473,53 @@ function tagAtPosition(html: string, line: number, column: number): OpenTag | nu
   const at = offset + column - 1;
   // The marker points at the `<`, but a column off by a character should not lose the
   // tag, so the search starts a little before and takes the first tag at or after it.
-  const from = Math.max(0, at - 2);
+  const from = Math.max(offset, at - 2);
+  // And it stops at the end of that line, because a marker names a line. Unbounded, a marker
+  // whose line has since become blank ran on to whatever tag came next, tens of lines away.
+  const lineEnd = html.indexOf('\n', offset);
+  const limit = lineEnd === -1 ? html.length : lineEnd;
   const lt = html.indexOf('<', from);
-  return lt === -1 ? null : readOpenTag(html, lt);
+  return lt === -1 || lt > limit ? null : readOpenTag(html, lt);
+}
+
+/**
+ * Whether the tag a marker points at is the element the anchor is describing.
+ *
+ * An id settles it: unique in a valid document, so the tag either carries this one or is a
+ * different element. Failing that, classes — *shared* rather than identical, because both sides
+ * legitimately differ. The file has what the author wrote; the live element may have picked up a
+ * state class from the page's own code, or had one added by the very edit being placed. One class
+ * in common separates "the same element, dressed differently" from "the div two lines up".
+ *
+ * Silent when the anchor has neither, which is the honest answer: a `<body>` or an unadorned
+ * `<h1>` says nothing about itself, and there is nothing to check it against.
+ *
+ * Looser than `classesAgree` on purpose. That one decides whether a lone tag *anywhere* in the
+ * file may stand in for this element, where a full match is the least that should be asked. Here
+ * the file has already put the tag at the line the build recorded, and the question is only
+ * whether that is still true.
+ */
+function markerAgrees(html: string, tag: OpenTag, anchor: ElementAnchor): boolean {
+  const raw = html.slice(tag.start, tag.end + 1);
+  if (anchor.id) return attributeValueOf(raw, 'id') === anchor.id;
+  const theirs = classSignatureOf(raw);
+  if (!anchor.classes || !theirs) return true;
+  const mine = new Set(anchor.classes.split(' '));
+  return theirs.split(' ').some((name) => mine.has(name));
+}
+
+/**
+ * One attribute's value out of a raw opening tag, unquoted, or null when it has none.
+ *
+ * The four places that needed this each stripped `name="` with a regex of their own, one of them
+ * built at runtime from the attribute name. `attributeRange` has already found the span, so the
+ * value is simply what follows the `=` — no second pattern required, and one place to be wrong.
+ */
+function attributeValueOf(raw: string, name: string): string | null {
+  const range = attributeRange(raw, name);
+  if (!range) return null;
+  const text = raw.slice(range.start, range.end);
+  return text.slice(text.indexOf('=') + 1).trim().replace(/^["']|["']$/g, '');
 }
 
 /**
@@ -488,15 +538,11 @@ function tagWithAttribute(
   const matches: OpenTag[] = [];
   for (const tag of openTags(html)) {
     if (tag.name !== name) continue;
-    const range = attributeRange(html.slice(tag.start, tag.end + 1), attribute);
-    if (!range) continue;
-    const raw = html
-      .slice(tag.start + range.start, tag.start + range.end)
-      .replace(new RegExp(`^${escapeRegExp(attribute)}\\s*=\\s*`, 'i'), '')
-      .replace(/^["']|["']$/g, '');
+    const found = attributeValueOf(html.slice(tag.start, tag.end + 1), attribute);
+    if (found === null) continue;
     // Both spellings, since the file may have escaped what the DOM hands back plain. These
     // values are `name`/`property`/`rel` keys rather than prose, so this is insurance.
-    if (raw === value || raw === escapeAttribute(value)) matches.push(tag);
+    if (found === value || found === escapeAttribute(value)) matches.push(tag);
   }
   if (!matches.length) return null;
   if (matches.length > 1) {
@@ -509,12 +555,7 @@ function tagWithAttribute(
 function tagWithId(html: string, id: string): OpenTag | null | string {
   const matches: OpenTag[] = [];
   for (const tag of openTags(html)) {
-    const raw = html.slice(tag.start, tag.end + 1);
-    const range = attributeRange(raw, 'id');
-    if (!range) continue;
-    // The range covers `id="value"`, so the value is what is left after the quotes.
-    const value = raw.slice(range.start, range.end).replace(/^id\s*=\s*/i, '').replace(/^["']|["']$/g, '');
-    if (value === id) matches.push(tag);
+    if (attributeValueOf(html.slice(tag.start, tag.end + 1), 'id') === id) matches.push(tag);
   }
   if (matches.length > 1) return `the file has ${matches.length} elements with id "${id}"`;
   return matches[0] ?? null;

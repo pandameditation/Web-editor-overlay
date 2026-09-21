@@ -5136,10 +5136,13 @@ export class EditorEngine {
   /**
    * The page's own source, read once.
    *
-   * Cached because the placeability check asks for it after every change and the answer cannot
-   * move underneath it: the file on disk only changes when this editor writes it, and
-   * `#markSaved` drops this then. `null` is cached too — a page whose own source is unreadable
-   * is not going to become readable by being asked twice a second.
+   * Cached because the placeability check asks for it after every change, and dropped by the
+   * three things that change the answer: a save, because the file now says something else, and
+   * a project connecting or disconnecting, because *which text this is* changes with it. Without
+   * a host the only route is fetching the page, and a dev server does not serve the file
+   * verbatim — so a cache kept across a connect answers file questions with the served copy.
+   * `null` is cached the same way: a page that could not fetch itself will not start being able
+   * to twice a second, but connecting a folder is exactly the thing that makes it readable.
    */
   #ownSource: string | null | undefined = undefined;
 
@@ -5150,7 +5153,14 @@ export class EditorEngine {
     return source;
   }
 
-  /** The page's own HTML as served, from disk when possible. */
+  /**
+   * The page's own HTML: the file when a host can read it, and the served page otherwise.
+   *
+   * The two are not interchangeable, which is why the order matters rather than being a
+   * preference. A dev server transforms the document on its way out — Vite puts its client
+   * script at the top of `<head>` and replaces inline module scripts with requests — so the
+   * served copy answers "what does this page contain" but not "what is on line 113".
+   */
   async #readOwnDocument(): Promise<string | null> {
     const host = this.#project;
     if (host) {
@@ -6705,6 +6715,22 @@ export class EditorEngine {
     if (!options.quiet) {
       this.notify(`Connected to ${host.label}. Saving will write these files.`, 'success');
     }
+    /*
+     * And the page's own source has to be read again, because until now it was not the file.
+     *
+     * With no host there is one way to read it — fetching the page — and what comes back is
+     * what the *server* served, which under a dev server is not what is on disk: Vite adds its
+     * client script to `<head>` and hoists inline module scripts out into separate requests, so
+     * every line below them sits at a different number than the file has it. `data-heo-src`
+     * counts lines in the file, so resolving one against the served copy lands a line or two
+     * off — on a neighbouring tag of the same name, if there is one.
+     *
+     * That is how a save that patched three lines cleanly was preceded by a warning saying it
+     * could not be patched at all: the warning had read the served page, the save read the
+     * file, and only one of them could find the element. `null` is dropped for the same
+     * reason — a page on an opaque origin could not fetch itself, and now it does not need to.
+     */
+    this.#ownSource = undefined;
     // Connecting changed what the editor can read, so what it has read is out of date.
     // Stylesheets the browser refused are now files on disk, and the design system in
     // them is the whole reason someone hands a folder over.
@@ -6812,6 +6838,8 @@ export class EditorEngine {
   async disconnectProject(): Promise<void> {
     const host = this.#project;
     this.#project = null;
+    // The file is out of reach again, so the source read from it must not be answered with.
+    this.#ownSource = undefined;
     this.store.patch({ project: null, writePlan: null });
     await host?.release();
     if (host) this.notify(`Disconnected from ${host.label}.`, 'info');

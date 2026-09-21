@@ -72,6 +72,7 @@ export const FIXTURES = [
   { page: 'test/inline-edit-fidelity.html', budget: 45000, weight: 5500, fast: true },
   { page: 'test/undo-identity.html', budget: 60000, weight: 9000, fast: true },
   { page: 'test/rewrite-warning.html', budget: 45000, weight: 6500, fast: true },
+  { page: 'test/stale-marker.html', budget: 45000, weight: 3000, fast: true },
   { page: 'test/seo-writeback.html', budget: 45000, weight: 4000, fast: true },
   { page: 'test/token-target.html', budget: 45000, weight: 2200, fast: true },
   { page: 'test/text-drag.html', budget: 45000, weight: 2100 },

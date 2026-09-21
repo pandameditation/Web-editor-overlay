@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Editor overlay — a build marker that no longer points at its element</title>
+  <!--
+    `data-heo-src` counts lines in the file the build read. The text the editor searches is not
+    always that text: a dev server adds its own script to `<head>`, which pushes everything below
+    it down two lines, and a file edited by hand moves the same way. Off by two, the marker points
+    at a neighbour — and on a real page the neighbour two lines up is another `<div>`.
+
+    Taken on the tag name alone, that answered lookups with the wrong element: a container's own
+    container, whose children are nothing like the ones being counted. What the user saw was a
+    save warning insisting "the file's <div> has 0 <p> children" about a file plainly holding two,
+    for an edit the save then went on to patch in place perfectly.
+
+    So the marker has to agree with what the anchor knows about the element before it is believed,
+    and the page's own source has to be re-read once a project makes the real file reachable.
+
+        npm run build:lib && npm run check:stalemarker
+  -->
+  <style>
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: system-ui, sans-serif;
+    }
+  </style>
+</head>
+
+<body>
+  <!-- The shape of the reported page: a marked outer div with an id, a canvas its script draws
+       on, and an inner div holding two paragraphs with a heading between them. -->
+  <div class="slab carve" id="slab">
+    <canvas class="dust-canvas" id="dust"></canvas>
+    <div class="slab-inner">
+      <p class="banner-num">Story 04</p>
+      <h1 class="banner-title" id="story-title">Making it work</h1>
+      <p class="banner-meta">Original meta line.</p>
+    </div>
+  </div>
+
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const errors = [];
+      window.addEventListener('error', (e) => errors.push('error: ' + e.message));
+      window.addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+
+      const results = {};
+      const progress = document.getElementById('progress');
+      const step = (name) => { progress.textContent = name; };
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      // Past the placeability debounce, which is one question per burst of edits.
+      const settle = () => new Promise((r) => setTimeout(r, 800));
+
+      /* ------------------------------------------------------------------ *
+       * The file, as the build read it.
+       *
+       * Written out here rather than fetched, because the whole point is that it is NOT the
+       * text this page was served as. Line numbers are computed from it, so editing the array
+       * cannot leave the markers pointing somewhere else.
+       * ------------------------------------------------------------------ */
+      const fileLines = [
+        '<!doctype html>',
+        '<html lang="en">',
+        '',
+        '<head>',
+        '  <meta charset="utf-8">',
+        '  <title>Story</title>',
+        '</head>',
+        '',
+        '<body>',
+        '  <div class="slab carve" id="slab">',
+        '    <canvas class="dust-canvas" id="dust"></canvas>',
+        '    <div class="slab-inner">',
+        '      <p class="banner-num">Story 04</p>',
+        '      <h1 class="banner-title" id="story-title">Making it work</h1>',
+        '      <p class="banner-meta">Original meta line.</p>',
+        '    </div>',
+        '  </div>',
+        '</body>',
+        '',
+        '</html>',
+      ];
+      const file = fileLines.join('\n');
+      const page = decodeURIComponent(location.pathname).split('/').pop();
+      // `file:line:column`, 1-based, exactly as the Vite plugin stamps it.
+      const markerFor = (needle) => {
+        const index = fileLines.findIndex((line) => line.includes(needle));
+        return `${page}:${index + 1}:${fileLines[index].indexOf('<') + 1}`;
+      };
+      const mark = (el, needle) => el.setAttribute('data-heo-src', markerFor(needle));
+      const byId = (id) => document.getElementById(id);
+      const meta = () => document.querySelector('.banner-meta');
+      const inner = () => document.querySelector('.slab-inner');
+
+      mark(byId('slab'), 'id="slab"');
+      mark(byId('dust'), '<canvas');
+      mark(inner(), 'slab-inner');
+      mark(document.querySelector('.banner-num'), 'banner-num');
+      mark(byId('story-title'), 'banner-title');
+      mark(meta(), 'banner-meta');
+
+      /*
+       * And a class the file does not have, put on by the page's own code — which is why the
+       * marker check compares classes for overlap rather than equality. `is-carving` is the real
+       * one from the reported page.
+       */
+      byId('slab').classList.add('is-carving');
+
+      /*
+       * What a dev server serves: two lines added at the top of `<head>`, so every marker below
+       * them is two lines short. Measured from Vite 7, which injects its client script followed
+       * by a blank line.
+       */
+      const served = [
+        ...fileLines.slice(0, 4),
+        // The closing tag is escaped so this fixture's own parser does not end the script here.
+        '  <script type="module" src="/@vite/client"><\/script>',
+        '',
+        ...fileLines.slice(4),
+      ].join('\n');
+
+      const disk = new Map([[page, file]]);
+      const directory = decodeURIComponent(location.pathname).replace(/[^/]*$/, '');
+      const project = {
+        kind: 'directory',
+        label: 'memory',
+        resolve(url) {
+          const path = decodeURIComponent(new URL(url, location.href).pathname);
+          return path.startsWith(directory) ? path.slice(directory.length) : null;
+        },
+        read: async (path) => (disk.has(path) ? disk.get(path) : null),
+        write: async (path, text) => { disk.set(path, text); },
+        ensureWritable: async () => true,
+        release: async () => { },
+      };
+
+      /*
+       * Script detection left on, because that is what puts the served page in the cache: the
+       * baseline pass runs at mount, before any project can have connected, so the only source
+       * it can read is the page as served. A session that then connects a folder must not go on
+       * answering questions about the file with that copy.
+       */
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark' });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+
+      const notices = [];
+      engine.store.subscribe((s) => {
+        const t = s.toast;
+        if (!t || notices.at(-1)?.message === t.message) return;
+        notices.push({ message: t.message, tone: t.tone });
+      });
+      const warningsSince = (from) =>
+        notices.slice(from).filter((n) => /rewrite the whole HTML file/.test(n.message));
+
+      const retype = async (el, text) => {
+        engine.beginTextEdit(el);
+        await frames();
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        getSelection().removeAllRanges();
+        getSelection().addRange(range);
+        document.execCommand('insertText', false, text);
+        await frames();
+        engine.endTextEdit(true);
+        await frames();
+      };
+
+      /* ------------------------------------------------------------------ *
+       * 1. A marker two lines out still places the edit — by position,
+       *    since the tag it points at is plainly a different element.
+       * ------------------------------------------------------------------ */
+      step('aShiftedMarker');
+      {
+        await retype(meta(), 'Edited meta line.');
+        const attempt = engine.exportPatchedHTML(served);
+        const lines = attempt.html.split('\n');
+        results.aMarkerTwoLinesOutStillPlacesTheEdit = {
+          patched: attempt.patched,
+          why: attempt.why,
+          // The edit landed on the meta paragraph, and on nothing else.
+          metaLine: lines.find((line) => line.includes('banner-meta')) ?? null,
+          numLine: lines.find((line) => line.includes('banner-num')) ?? null,
+          headingLine: lines.find((line) => line.includes('banner-title')) ?? null,
+          ok:
+            attempt.patched === true &&
+            attempt.html.includes('<p class="banner-meta">Edited meta line.</p>') &&
+            attempt.html.includes('<p class="banner-num">Story 04</p>') &&
+            attempt.html.includes('>Making it work</h1>'),
+        };
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 2. And an edit to the element the shifted marker points *at* is not
+       *    written into that element. The wrong-element write is the half of
+       *    this worth more care than any reformatting.
+       * ------------------------------------------------------------------ */
+      step('theWrongElement');
+      {
+        api.select(byId('slab'));
+        engine.setStyle('outline', '2px solid red');
+        await frames();
+        const attempt = engine.exportPatchedHTML(served);
+        const lines = attempt.html.split('\n');
+        const outlined = lines.filter((line) => line.includes('outline: 2px solid red'));
+        results.anEditIsNotWrittenIntoTheElementTheMarkerLandsOn = {
+          patched: attempt.patched,
+          why: attempt.why,
+          outlined,
+          ok:
+            attempt.patched === true &&
+            outlined.length === 1 &&
+            outlined[0].includes('id="slab"'),
+        };
+      }
+
+      /* ------------------------------------------------------------------ *
+       * 3. Connecting a project re-reads the page's source, so the warning
+       *    stops describing the served copy.
+       *
+       * This is the false positive as reported: a warning saying the file
+       * cannot be patched, followed by a save that patches it cleanly.
+       * ------------------------------------------------------------------ */
+      step('theWarningReadsTheFile');
+      {
+        api.select(null);
+        engine.resetAll();
+        await settle();
+        await engine.attachProject(project, { quiet: true });
+        await frames();
+        const from = notices.length;
+        await retype(meta(), 'Meta line edited against the file.');
+        await settle();
+        const plan = await engine.previewWritePlan();
+        const write = (plan?.writes ?? []).find((w) => w.kind === 'document');
+        results.connectingAProjectStopsTheWarningReadingTheServedCopy = {
+          warnings: warningsSince(from),
+          reason: write?.reason ?? null,
+          // One line differs from the file, and it is the right one.
+          diff: write
+            ? write.after.split('\n').filter((line, i) => line !== file.split('\n')[i])
+            : null,
+          ok:
+            warningsSince(from).length === 0 &&
+            Boolean(write) &&
+            /patched in place/.test(write?.reason ?? '') &&
+            write?.after ===
+            file.replace(
+              '<p class="banner-meta">Original meta line.</p>',
+              '<p class="banner-meta">Meta line edited against the file.</p>',
+            ),
+        };
+      }
+
+      const failed = Object.entries(results)
+        .filter(([, group]) => group && typeof group === 'object')
+        .filter(([, group]) => group.ok === false)
+        .map(([name]) => name);
+
+      document.getElementById('out').textContent = 'RESULTS:' + JSON.stringify(
+        { ok: failed.length === 0, failed, ...results, notices, errors }, null, 1,
+      ) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"ok":false,"__fatal":' + JSON.stringify(String((e && e.stack) || e)) + '}:END';
+    });
+  </script>
+</body>
+
+</html>
