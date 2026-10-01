@@ -760,6 +760,7 @@ of it is a real leak.
 | `Mod+S` | Review and save changes |
 | `S T E B P M H` | Styles, Tokens, Tree, Library, Props, Media, HTML |
 | `Escape` | Close the topmost thing, then deselect, then leave edit mode |
+| `Escape` while editing text | Finish the edit and keep it; `Mod+Z` takes it back |
 
 Inside a value field, `↑` / `↓` step the number, `Shift` makes it ×10 and `Alt`
 ×0.1. Dragging a field's label scrubs it, and clicking the unit chip cycles units.

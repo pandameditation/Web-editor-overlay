@@ -59,6 +59,7 @@ export const FIXTURES = [
   { page: 'test/opaque-origin.html', budget: 45000, strict: true, weight: 3000 },
   { page: 'test/link-newtab.html', budget: 45000, weight: 3000 },
   { page: 'test/element-clipboard.html', budget: 45000, weight: 2500 },
+  { page: 'test/escape-commits.html', budget: 45000, weight: 2000 },
   { page: 'test/shield.html', budget: 45000, weight: 2900 },
   { page: 'test/bundle.html', budget: 45000, strict: true, weight: 2800 },
   { page: 'test/css-rules.html', budget: 45000, weight: 2400, fast: true },

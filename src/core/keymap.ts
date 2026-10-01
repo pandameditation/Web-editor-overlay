@@ -163,10 +163,12 @@ export function handleKeyDown(engine: EditorEngine, event: KeyboardEvent): void 
           break;
       }
     }
-    if (key === 'Escape') {
-      event.preventDefault();
-      engine.endTextEdit(false);
-    } else if (key === 'Enter' && mod) {
+    /*
+     * Escape keeps what was typed. It is the key people reach for to get out of an edit, not
+     * only to abandon one, and discarding on it threw away work that was pressed by mistake with
+     * no way back. Committed, the edit is one step on the undo stack, so Mod+Z still discards it.
+     */
+    if (key === 'Escape' || (key === 'Enter' && mod)) {
       event.preventDefault();
       engine.endTextEdit(true);
     }
@@ -311,6 +313,7 @@ export const SHORTCUTS: Array<{ keys: string; action: string }> = [
   { keys: 'Mod+S', action: 'Review and save changes' },
   { keys: 'S T E B P M C O', action: 'Styles, Tokens, Tree, Library, Props, Media, Code, SEO' },
   { keys: 'Escape', action: 'Close the topmost thing, then deselect, then leave edit mode' },
+  { keys: 'Escape (editing text)', action: 'Finish the edit and keep it; Mod+Z takes it back' },
 ];
 
 /**

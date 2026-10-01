@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Escape ends a text edit and keeps it</title>
+  <style>
+    body { margin: 0; padding: 24px; font-family: system-ui, sans-serif; }
+    pre { margin-top: 16px; }
+  </style>
+</head>
+<body>
+  <main id="page">
+    <p id="para">The original words.</p>
+  </main>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const errors = [];
+      window.addEventListener('error', (e) => errors.push('error: ' + e.message));
+      window.addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+      const results = {};
+      const check = async (name, fn) => {
+        document.getElementById('progress').textContent = name;
+        try { results[name] = await fn(); }
+        catch (err) { results[name] = 'THREW: ' + String(err && err.message); }
+      };
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const para = document.getElementById('para');
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark' });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      const directory = decodeURIComponent(location.pathname).replace(/[^/]*$/, '');
+      const disk = new Map();
+      await engine.attachProject({
+        kind: 'directory',
+        label: 'memory',
+        resolve(url) {
+          const path = decodeURIComponent(new URL(url, location.href).pathname);
+          return path.startsWith(directory) ? path.slice(directory.length) : null;
+        },
+        read: async (path) => {
+          if (disk.has(path)) return disk.get(path);
+          try {
+            const text = await (await fetch('./' + path)).text();
+            disk.set(path, text);
+            return text;
+          } catch { return null; }
+        },
+        write: async (path, text) => { disk.set(path, text); },
+        ensureWritable: async () => true,
+        release: async () => { },
+      }, { quiet: true });
+      await frames();
+
+      await check('escapeKeepsWhatWasTyped', async () => {
+        api.select(para);
+        engine.beginTextEdit(para);
+        await frames();
+        const range = document.createRange();
+        range.selectNodeContents(para);
+        range.collapse(false);
+        getSelection().removeAllRanges();
+        getSelection().addRange(range);
+        document.execCommand('insertText', false, ' Typed by hand.');
+        await frames();
+        const event = new KeyboardEvent('keydown', {
+          key: 'Escape', bubbles: true, composed: true, cancelable: true,
+        });
+        para.dispatchEvent(event);
+        await frames();
+        return {
+          claimed: event.defaultPrevented,
+          stillEditing: engine.store.value.textEditing !== null,
+          stillSelected: engine.store.value.selected === para,
+          text: para.textContent,
+          undoable: engine.store.value.canUndo,
+        };
+      });
+
+      await check('andItReachesTheSave', async () => {
+        const plan = await engine.previewWritePlan();
+        const write = (plan?.writes ?? []).find((w) => w.kind === 'document');
+        const file = new DOMParser().parseFromString(write?.after ?? '', 'text/html');
+        return { reason: write?.reason ?? null, saved: file.getElementById('para')?.textContent ?? null };
+      });
+
+      await check('undoTakesItBackAndRedoRestoresIt', async () => {
+        engine.undo();
+        await frames();
+        const undone = para.textContent;
+        engine.redo();
+        await frames();
+        return { undone, redone: para.textContent };
+      });
+
+      results.__errors = errors;
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"__errors":["' + String(e && e.message) + '"]}:END';
+    });
+  </script>
+</body>
+</html>
