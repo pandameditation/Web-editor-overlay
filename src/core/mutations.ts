@@ -485,7 +485,7 @@ export function setAttribute(el: HTMLElement, name: string, value: string | null
  */
 export function setAttributes(
   el: HTMLElement,
-  values: Record<string, string>,
+  values: Record<string, string | null>,
   label = 'Set attributes',
 ): Command {
   const names = Object.keys(values);
@@ -494,11 +494,12 @@ export function setAttributes(
     if (value === null) el.removeAttribute(name);
     else el.setAttribute(name, value);
   };
+  // `null` removes the attribute, recorded exactly as `setAttribute` records a removal.
   const describe = (name: string): ChangeRecord =>
-    record(el, 'attribute', `Set ${name}="${values[name]}" on ${labelFor(el)}`, {
+    record(el, 'attribute', `Set ${name}="${values[name] ?? ''}" on ${labelFor(el)}`, {
       before: before.get(name) ?? undefined,
       after: values[name] || undefined,
-      detail: { attribute: name, value: values[name] },
+      detail: { attribute: name, value: values[name] ?? '' },
     });
 
   return {

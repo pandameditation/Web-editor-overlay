@@ -1855,7 +1855,7 @@ export class EditorEngine {
    * `attributeRefusal` before it gets here, exactly as the markup path screens through `sanitize`.
    */
   setAttributes(
-    values: Record<string, string>,
+    values: Record<string, string | null>,
     label?: string,
     el = this.store.value.selected,
   ): void {
@@ -5822,35 +5822,78 @@ export class EditorEngine {
    */
   #textEditRange: Range | null = null;
 
-  /** Wrap the current selection in a link. Empty `href` unlinks. */
+  /**
+   * The link the toolbar acts on: the one around the edited element, or the first one the
+   * selection touches inside it. The same answer `insertLink` works from, so the field shows
+   * the state of the link Apply is about to change.
+   */
+  linkAtSelection(): HTMLAnchorElement | null {
+    const el = this.store.value.textEditing;
+    if (!el) return null;
+    const host = el.closest('a[href]');
+    if (host instanceof HTMLAnchorElement) return host;
+    return linksInSelection(el)[0] ?? null;
+  }
+
+  /**
+   * Link the current selection, or change the link it is in. Empty `href` removes the link.
+   *
+   * A link the selection touches is always acted on as a whole: a caret in it, a word of it, or
+   * a sweep that runs past its end all mean "this link". Leaving that to `createLink` and
+   * `unlink` acted on the selected characters only — a caret did nothing at all, a word split
+   * the link in two, and New tab landed on a fragment while the rest of the link kept its old
+   * target. Only a selection that touches no link makes a new one.
+   */
   insertLink(href: string, target?: '_blank' | null): void {
     const el = this.store.value.textEditing;
     if (!el) return;
     // The URL field had the focus a moment ago, so the page's selection has to come back first.
     this.#restoreTextSelection();
     const url = href.trim();
+    const newTab = target === '_blank';
 
     /*
-     * Read before the command runs, because running it destroys the answer.
+     * The link is the element being edited, or wraps it.
+     *
+     * Clicking a link selects the `<a>` itself, so that is usually the case. Nothing inside the
+     * edit can change it: `unlink` cannot remove the editing host, and the edit is committed as
+     * the element's inner markup, which carries none of its own attributes — so whatever was
+     * done to it was rolled back and nothing reached the save. The edit is closed first, and
+     * the change is made with the same commands the rest of the editor uses.
      */
-    const carried = new Map<string, string>();
-    for (const anchor of selectedAnchors(el)) {
-      for (const attribute of Array.from(anchor.attributes)) {
-        if (attribute.name === 'href' || attribute.name === 'target') continue;
-        if (attribute.name === 'rel') {
-          const kept = withRel(attribute.value, false);
-          if (kept) carried.set('rel', kept);
-          continue;
-        }
-        carried.set(attribute.name, attribute.value);
+    const host = el.closest('a[href]');
+    if (host instanceof HTMLElement) {
+      this.endTextEdit(true);
+      if (!url) {
+        this.unwrap(host);
+        return;
       }
+      const changed = Object.fromEntries(
+        Object.entries(linkAttributes(host, url, newTab)).filter(
+          ([name, value]) => host.getAttribute(name) !== value,
+        ),
+      );
+      this.setAttributes(changed, 'Edit link', host);
+      return;
     }
 
-    if (!url) {
-      document.execCommand('unlink');
+    const anchors = linksInSelection(el);
+    if (anchors.length) {
+      if (!url) {
+        unwrapLinks(anchors);
+      } else {
+        for (const anchor of anchors) {
+          for (const [name, value] of Object.entries(linkAttributes(anchor, url, newTab))) {
+            if (value === null) anchor.removeAttribute(name);
+            else anchor.setAttribute(name, value);
+          }
+        }
+      }
       this.#bumpRevision();
       return;
     }
+    if (!url) return;
+
     const selection = getSelection();
     if (!selection || selection.rangeCount === 0) return;
     if (selection.isCollapsed) {
@@ -5859,28 +5902,15 @@ export class EditorEngine {
       document.execCommand('createLink', false, url);
     }
     /*
-     * Set or cleared on the links the selection actually produced, and always both ways.
-     *
-     * Two things were wrong with matching `a[href]` against the URL string instead. Nothing
-     * ever *removed* `target`, so unticking New tab on a link that already had it was ignored
-     * — and `execCommand` does not always keep the href verbatim, so a URL typed without a
-     * scheme could match nothing and the choice was silently dropped. Locating them through
-     * the selection asks the question that was meant: which links did this just make.
+     * Found through the selection rather than by matching the href: `execCommand` does not
+     * always keep the href verbatim, so a URL typed without a scheme could match nothing and
+     * the New tab choice was silently dropped.
      */
     for (const anchor of selectedAnchors(el, url)) {
-      // `execCommand` rebuilds an anchor it relinks, dropping everything it was carrying. An
-      // author's `rel="nofollow"`, an id, a class: none of that is this feature's to discard.
-      for (const [name, value] of carried) {
-        if (!anchor.hasAttribute(name)) anchor.setAttribute(name, value);
-      }
-      if (target === '_blank') {
-        anchor.setAttribute('target', '_blank');
-        anchor.setAttribute('rel', withRel(anchor.getAttribute('rel'), true));
-      } else {
-        anchor.removeAttribute('target');
-        const rel = withRel(anchor.getAttribute('rel'), false);
-        if (rel) anchor.setAttribute('rel', rel);
-        else anchor.removeAttribute('rel');
+      for (const [name, value] of Object.entries(linkAttributes(anchor, url, newTab))) {
+        if (name === 'href') continue;
+        if (value === null) anchor.removeAttribute(name);
+        else anchor.setAttribute(name, value);
       }
     }
     this.#bumpRevision();
@@ -8911,6 +8941,54 @@ function selectedAnchors(el: HTMLElement, url?: string): HTMLAnchorElement[] {
     if (touched.length) return touched;
   }
   return url === undefined ? [] : anchors.filter((anchor) => anchor.getAttribute('href') === url);
+}
+
+/**
+ * The links inside `el` that the selection touches, a bare caret included.
+ *
+ * `intersectsNode` counts a link the range only partly covers, and a collapsed range inside
+ * one, which is the point: any part of a link stands for all of it.
+ */
+function linksInSelection(el: HTMLElement): HTMLAnchorElement[] {
+  const selection = getSelection();
+  const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+  if (!range || !el.contains(range.commonAncestorContainer)) return [];
+  return Array.from(el.querySelectorAll('a[href]')).filter(
+    (node): node is HTMLAnchorElement =>
+      node instanceof HTMLAnchorElement && range.intersectsNode(node),
+  );
+}
+
+/** Replace each link with what it holds, and leave what it held selected. */
+function unwrapLinks(anchors: HTMLAnchorElement[]): void {
+  let first: Node | null = null;
+  let last: Node | null = null;
+  for (const anchor of anchors) {
+    const parent = anchor.parentNode;
+    if (!parent) continue;
+    first ??= anchor.firstChild;
+    last = anchor.lastChild ?? last;
+    while (anchor.firstChild) parent.insertBefore(anchor.firstChild, anchor);
+    anchor.remove();
+  }
+  const selection = getSelection();
+  if (!selection || !first?.parentNode || !last?.parentNode) return;
+  const range = document.createRange();
+  range.setStartBefore(first);
+  range.setEndAfter(last);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+/**
+ * What a link's attributes become for `url` and the New tab choice. `null` removes one.
+ *
+ * Every other attribute the link carries is left as it is, and so are the author's own `rel`
+ * tokens: only the new-tab ones are ours to add or take away.
+ */
+function linkAttributes(anchor: Element, url: string, newTab: boolean): Record<string, string | null> {
+  const rel = withRel(anchor.getAttribute('rel'), newTab);
+  return { href: url, target: newTab ? '_blank' : null, rel: rel || null };
 }
 
 /** `rel` with the new-tab tokens added or removed, leaving the author's own tokens in place. */

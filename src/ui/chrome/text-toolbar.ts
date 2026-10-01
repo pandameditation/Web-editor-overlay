@@ -225,11 +225,8 @@ export class HeoTextToolbar extends HeoElement {
    * the same interaction.
    */
   #openLink(): void {
-    const selection = getSelection();
     let existing = '';
-    const node = selection?.anchorNode;
-    const start = node instanceof HTMLElement ? node : node?.parentElement;
-    const anchor = start?.closest('a[href]');
+    const anchor = this.editor.linkAtSelection();
     /*
      * An existing link answers for itself; a new one inherits the last choice made.
      *

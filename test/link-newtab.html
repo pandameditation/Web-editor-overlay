@@ -15,6 +15,12 @@
   <p id="existing">Editing <a href="https://example.com/old" target="_blank" rel="noopener noreferrer nofollow">an existing link</a> here.</p>
   <p id="bare">Bare host without a scheme in it.</p>
   <p id="fresh">Fresh paragraph nothing has linked yet.</p>
+  <p id="hostTab">Host <a id="hostTabLink" href="https://example.com/host" target="_blank" rel="noopener noreferrer">link edited directly</a> here.</p>
+  <p id="hostGone">Host <a id="hostGoneLink" href="https://example.com/host-gone">link removed directly</a> here.</p>
+  <p id="partTab">Inner <a href="https://example.com/part">part of <em>this</em> link</a> ticked.</p>
+  <p id="partUntick">Inner <a href="https://example.com/untick" target="_blank" rel="noopener noreferrer nofollow">part of this link</a> unticked.</p>
+  <p id="partGone">Inner <a href="https://example.com/part-gone">part of <em>this</em> link</a> removed.</p>
+  <p id="caretGone">Caret <a href="https://example.com/caret-gone">in this link</a> removed.</p>
   <pre id="progress">start</pre>
   <pre id="out">pending</pre>
   <script src="../dist/html-editor-overlay.iife.js"></script>
@@ -48,6 +54,29 @@
       const engine = api.engine;
       api.setEditing(true);
       await engine.whenReady();
+      // An in-memory project over this file, so what a save would write can be read back.
+      const page = decodeURIComponent(location.pathname).split('/').pop();
+      const directory = decodeURIComponent(location.pathname).replace(/[^/]*$/, '');
+      const disk = new Map();
+      await engine.attachProject({
+        kind: 'directory',
+        label: 'memory',
+        resolve(url) {
+          const path = decodeURIComponent(new URL(url, location.href).pathname);
+          return path.startsWith(directory) ? path.slice(directory.length) : null;
+        },
+        read: async (path) => {
+          if (disk.has(path)) return disk.get(path);
+          try {
+            const text = await (await fetch('./' + path)).text();
+            disk.set(path, text);
+            return text;
+          } catch { return null; }
+        },
+        write: async (path, text) => { disk.set(path, text); },
+        ensureWritable: async () => true,
+        release: async () => { },
+      }, { quiet: true });
       await frames();
 
       const toolbar = () => deep(document, 'heo-text-toolbar');
@@ -194,6 +223,117 @@
         await frames();
         // Cancelling still keeps the choice, because it was written through when ticked.
         return { ticked, stillRemembered: engine.linkOpensInNewTab };
+      });
+
+      /* ------------------------------------------------------------------ *
+       * Any part of a link stands for the whole link: New tab and Remove link
+       * change all of it, whether the `<a>` is the element being edited (what
+       * clicking a link gives) or sits inside the paragraph being edited.
+       * ------------------------------------------------------------------ */
+      /** Select `[start, end)` of `text`'s first occurrence inside `root`; equal ends make a caret. */
+      const selectText = (root, text, start, end = start) => {
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          const at = node.data.indexOf(text);
+          if (at < 0) continue;
+          const range = document.createRange();
+          range.setStart(node, at + start);
+          range.setEnd(node, at + end);
+          getSelection().removeAllRanges();
+          getSelection().addRange(range);
+          return true;
+        }
+        return false;
+      };
+      const setNewTab = async (want) => {
+        await frames();
+        barButton('Insert link')?.click();
+        await frames();
+        const box = inBar('input[type="checkbox"]');
+        const shown = {
+          url: inBar('input[type="url"]')?.value ?? null,
+          ticked: box?.checked ?? null,
+        };
+        if (box && box.checked !== want) { box.click(); await frames(); }
+        barButton('Apply')?.click();
+        await frames();
+        engine.endTextEdit(true);
+        await frames();
+        return shown;
+      };
+      const removeLink = async () => {
+        await frames();
+        barButton('Remove link')?.click();
+        await frames();
+        engine.endTextEdit(true);
+        await frames();
+      };
+      const linksOf = (p) => Array.from(p.querySelectorAll('a')).map((a) => a.outerHTML);
+
+      await check('hostLinkUntickedFromAPartOfItsText', async () => {
+        const a = byId('hostTabLink');
+        engine.beginTextEdit(a);
+        await frames();
+        selectText(a, 'edited', 0, 3);
+        const shown = await setNewTab(false);
+        return { shown, links: linksOf(byId('hostTab')) };
+      });
+      await check('hostLinkRemovedFromACaret', async () => {
+        const a = byId('hostGoneLink');
+        engine.beginTextEdit(a);
+        await frames();
+        selectText(a, 'removed', 2);
+        await removeLink();
+        return { links: linksOf(byId('hostGone')), text: byId('hostGone').textContent };
+      });
+      await check('innerLinkTickedFromOneWord', async () => {
+        engine.beginTextEdit(byId('partTab'));
+        await frames();
+        selectText(byId('partTab'), 'part of', 0, 4);
+        const shown = await setNewTab(true);
+        return { shown, links: linksOf(byId('partTab')) };
+      });
+      await check('innerLinkUntickedFromASweepStartingOutsideIt', async () => {
+        const p = byId('partUntick');
+        engine.beginTextEdit(p);
+        await frames();
+        const range = document.createRange();
+        range.setStart(p.firstChild, 2);
+        range.setEnd(p.querySelector('a').firstChild, 4);
+        getSelection().removeAllRanges();
+        getSelection().addRange(range);
+        const shown = await setNewTab(false);
+        return { shown, links: linksOf(p) };
+      });
+      await check('innerLinkRemovedFromOneWord', async () => {
+        engine.beginTextEdit(byId('partGone'));
+        await frames();
+        selectText(byId('partGone'), 'this', 0, 4);
+        await removeLink();
+        return { links: linksOf(byId('partGone')), html: byId('partGone').innerHTML };
+      });
+      await check('innerLinkRemovedFromACaret', async () => {
+        engine.beginTextEdit(byId('caretGone'));
+        await frames();
+        selectText(byId('caretGone'), 'this', 2);
+        await removeLink();
+        return { links: linksOf(byId('caretGone')), text: byId('caretGone').textContent };
+      });
+      await check('everyOneOfThoseReachesTheSave', async () => {
+        const plan = await engine.previewWritePlan();
+        const write = (plan?.writes ?? []).find((w) => w.kind === 'document');
+        const file = new DOMParser().parseFromString(write?.after ?? '', 'text/html');
+        const inner = (id) => file.getElementById(id)?.innerHTML ?? null;
+        return {
+          hostTab: inner('hostTab'),
+          hostGone: inner('hostGone'),
+          partTab: inner('partTab'),
+          partUntick: inner('partUntick'),
+          partGone: inner('partGone'),
+          caretGone: inner('caretGone'),
+          warnings: write?.warnings ?? null,
+          reason: write?.reason ?? null,
+        };
       });
 
       const settled = { ...results };
