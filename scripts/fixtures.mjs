@@ -74,6 +74,7 @@ export const FIXTURES = [
   /* The same on a long article, with real drags into other elements. */
   { page: 'test/journal-fuzz-article.html', budget: 300000, weight: 70000 },
   { page: 'test/content-model.html', budget: 60000, weight: 3000, fast: true },
+  { page: 'test/render-risk.html', budget: 60000, weight: 2500, fast: true },
   { page: 'test/ornament-divider.html', budget: 60000, weight: 2300 },
   { page: 'test/provenance.html', budget: 45000, weight: 2300 },
   { page: 'test/inline-edit-fidelity.html', budget: 45000, weight: 5500, fast: true },

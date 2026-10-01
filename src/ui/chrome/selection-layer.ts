@@ -2,7 +2,16 @@ import { css, html, nothing, type TemplateResult } from 'lit';
 import { customElement } from 'lit/decorators.js';
 import { isHorizontalFlow, isMutable, labelFor, selectableParent, visualBox } from '../../core/dom.js';
 import type { EditorEngine, TransformState } from '../../core/editor.js';
-import { describeProvenance } from '../../core/provenance.js';
+import { describeProvenance, type Provenance } from '../../core/provenance.js';
+
+/** The badge's tooltip: what is known, then where it comes from when anything can say. */
+function riskTitle(provenance: Provenance): string {
+  const origin = provenance.origin;
+  const at = origin?.file ?? origin?.url;
+  const where = at ? `${at}${origin?.line ? `:${origin.line}` : ''}` : '';
+  const expression = origin?.expression ? ` — ${origin.expression}` : '';
+  return `${describeProvenance(provenance)}${where ? `\n\nRendered from ${where}${expression}.` : ''}`;
+}
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import { handleCursor, RESIZE_HANDLES, type ResizeHandle } from '../../core/transform.js';
 import { HeoElement } from '../context.js';
@@ -571,7 +580,7 @@ export class HeoSelectionLayer extends HeoElement {
     const parent = selectableParent(el);
     const horizontal = parent ? isHorizontalFlow(parent) : false;
     const canMove = isMutable(el);
-    const rendered = this.editor.provenanceOf(el);
+    const rendered = this.editor.renderRiskOf(el);
 
     // Keep the badge inside the viewport: flip below the element when there is
     // no room above it.
@@ -614,7 +623,7 @@ export class HeoSelectionLayer extends HeoElement {
           the editor enforces and a rule the user can work with.
         -->
         ${rendered
-        ? html`<span class="owned" title=${describeProvenance(rendered)}>
+        ? html`<span class="owned" title=${riskTitle(rendered)}>
               ${icon('code', 10)} rendered${rendered.confidence === 'possible' ? '?' : ''}
             </span>`
         : nothing}

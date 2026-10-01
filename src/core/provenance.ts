@@ -50,7 +50,15 @@ export type ProvenanceKind =
   /** An attribute on the element holds exactly its text, so that is the real source. */
   | 'mirrored'
   /** Changed after the document parsed, by something that left no trace. */
-  | 'runtime';
+  | 'runtime'
+  /** In the HTML file, but its words now differ from the file's: something rewrites them. */
+  | 'changed'
+  /** In the HTML file, but the page has changed some of its attributes since it loaded. */
+  | 'attributes'
+  /** Matched to the HTML file only by a guess, because the page added or removed siblings like it. */
+  | 'uncertain'
+  /** Inside a shadow tree, which a component renders and no HTML file holds. */
+  | 'shadow';
 
 /**
  * How much the evidence actually supports.
@@ -103,6 +111,73 @@ export interface Provenance {
    * someone to make an edit, and saying so is better than opening the wrong file.
    */
   vendor?: boolean;
+  /** The attributes the page changed, for `attributes`. */
+  attributes?: string[];
+  /**
+   * Where this is rendered from, as precisely as anything has been able to say.
+   *
+   * Today that is a file and a line — a template marker from the build, or a frame caught
+   * writing it. The shape leaves room for more: a resolver that understands a framework's
+   * templates (a Vite plugin for Astro, Vue, Svelte…) can name the expression that produces the
+   * content, and the static text inside it, so the user can be taken straight to the one thing
+   * to change. See `registerOriginResolver`.
+   */
+  origin?: RenderOrigin;
+}
+
+/** A place in the project that renders an element, from whatever could trace it. */
+export interface RenderOrigin {
+  /** Project-relative file, when known. */
+  file?: string;
+  /** Absolute URL, when only that is known. */
+  url?: string;
+  line?: number;
+  column?: number;
+  /**
+   * The expression that produces the content — `isOpen ? 'Close' : 'Open'`, `item.title` —
+   * when a resolver can name it. Not produced yet; reserved so a resolver can add it without
+   * anything downstream changing shape.
+   */
+  expression?: string;
+  /** Static text inside that expression which an edit could change directly, when known. */
+  literal?: string;
+  /** Who traced it: `build-marker`, `stack`, or a resolver's own name. */
+  via: string;
+}
+
+/**
+ * Something that can say where an element is rendered from.
+ *
+ * Asked in registration order; the first answer wins. The built-in answers come from the
+ * provenance itself — a build marker, a captured stack — and a framework integration can
+ * register a sharper one.
+ */
+export type OriginResolver = (el: Element, provenance: Provenance) => RenderOrigin | null;
+
+const resolvers: OriginResolver[] = [];
+
+/** Add a resolver ahead of the built-in ones. Returns a function that removes it. */
+export function registerOriginResolver(resolver: OriginResolver): () => void {
+  resolvers.unshift(resolver);
+  return () => {
+    const at = resolvers.indexOf(resolver);
+    if (at !== -1) resolvers.splice(at, 1);
+  };
+}
+
+/** The best answer any resolver has for where this element is rendered from. */
+export function originOf(el: Element, provenance: Provenance): RenderOrigin | undefined {
+  for (const resolver of resolvers) {
+    const found = resolver(el, provenance);
+    if (found) return found;
+  }
+  if (provenance.file) {
+    return { file: provenance.file, line: provenance.line, column: provenance.column, via: 'build-marker' };
+  }
+  if (provenance.url) {
+    return { url: provenance.url, line: provenance.line, column: provenance.column, via: 'stack' };
+  }
+  return undefined;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -309,9 +384,23 @@ export function describeProvenance(provenance: Provenance): string {
       return 'This content is not in the page’s HTML file, so something on the page builds it. An edit here will most likely be replaced, and saving would write the generated markup into your HTML.';
     case 'mirrored':
       return `This element’s text is also in its ${provenance.attribute} attribute, which usually means the attribute is what renders it — if so, an edit here is replaced the next time that code runs.`;
+    case 'changed':
+      return 'This element is in the page’s HTML file, but its text on the page is not the file’s — something rewrites it after loading. An edit is written to the file and the page will most likely replace it again.';
+    case 'attributes':
+      return `This element is in the page’s HTML file, but the page has changed its ${listOf(provenance.attributes ?? [])} since it loaded. Edits to ${provenance.attributes?.length === 1 ? 'that attribute' : 'those attributes'} may be replaced by the page’s code.`;
+    case 'uncertain':
+      return 'The page’s code has added or removed elements like this one, so which one in the HTML file it is cannot be told for certain. Edits here may not be saveable.';
+    case 'shadow':
+      return 'This element is inside a component’s shadow tree, which the component renders and no HTML file holds. An edit here is not saved.';
     default:
       return 'This content changed after the page loaded, so something on the page may be generating it. An edit here may not survive.';
   }
+}
+
+function listOf(names: readonly string[]): string {
+  const quoted = names.map((name) => `“${name}”`);
+  if (quoted.length <= 1) return `${quoted[0] ?? 'attributes'} attribute`;
+  return `${quoted.slice(0, -1).join(', ')} and ${quoted.at(-1)} attributes`;
 }
 
 /** `file:line`, or the bare file, or a stand-in when neither is known. */
@@ -366,7 +455,12 @@ function mirroredTextAttribute(el: HTMLElement): string | undefined {
 /* -------------------------------------------------------------------------- */
 
 /** Extensions the build-time marker uses for code rather than for markup. */
-const CODE_FILE = /\.(?:m?[jt]sx?|c[jt]s|svelte|vue)$/i;
+/*
+ * Code and component templates alike: whatever the extension, a marker naming a file other than
+ * the page's HTML means the element comes out of something that renders it — a Lit template, a
+ * Vue or Svelte component, an Astro page, a server template.
+ */
+const CODE_FILE = /\.(?:m?[jt]sx?|c[jt]s|svelte|vue|astro|mdx|marko|hbs|handlebars|njk|liquid|pug|ejs|twig)$/i;
 
 function templateProvenance(el: HTMLElement): Provenance | undefined {
   const raw = el.getAttribute(SOURCE_ATTR);

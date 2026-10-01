@@ -184,7 +184,9 @@ import {
   withoutProvenance,
   type Provenance,
   forgetProvenance,
+  originOf as renderOriginOf,
 } from './provenance.js';
+import { indexSource, type SourceIndex, type SourceRisk } from './source-patch.js';
 import { startEdgeScroll } from './autoscroll.js';
 import {
   sameOrder,
@@ -833,6 +835,27 @@ function paintInOrder(rule: CSSStyleRule, declarations: readonly Declaration[]):
   }
 }
 
+/** How long after a change the page is compared with its file again. */
+const SOURCE_INDEX_DELAY_MS = 250;
+/** How old a comparison may be before selecting an element asks for a fresh one. */
+const SOURCE_INDEX_MAX_AGE_MS = 1500;
+
+/** A finding from the file comparison, in the vocabulary the rest of the editor speaks. */
+function fromSourceRisk(risk: SourceRisk): Provenance {
+  switch (risk.kind) {
+    case 'not-in-file':
+      return { kind: 'file', confidence: 'likely', subtree: true };
+    case 'text-differs':
+      return { kind: 'changed', confidence: 'likely' };
+    case 'attributes-differ':
+      return { kind: 'attributes', confidence: 'possible', attributes: risk.attributes };
+    case 'uncertain':
+      return { kind: 'uncertain', confidence: 'possible' };
+    case 'shadow':
+      return { kind: 'shadow', confidence: 'likely' };
+  }
+}
+
 export class EditorEngine {
   readonly store: Store<EditorState>;
   readonly history = new History();
@@ -1083,6 +1106,7 @@ export class EditorEngine {
         // Whether this change set can still be written as edits to the file, said out loud the
         // moment it stops being true rather than only in the save dialog. See `#checkPlaceability`.
         this.#checkPlaceability();
+        this.#scheduleSourceIndex();
         this.store.patch({
           canUndo: this.history.canUndo,
           canRedo: this.history.canRedo,
@@ -1433,6 +1457,9 @@ export class EditorEngine {
     });
     if (el && options.reveal !== false) this.#revealIfNeeded(el);
     this.#observeSelected(el);
+    // The page may have rendered something since the last comparison; a stale answer about
+    // the element just picked is the one that matters most.
+    if (el && Date.now() - this.#sourceIndexAt > SOURCE_INDEX_MAX_AGE_MS) this.#scheduleSourceIndex(0);
   }
 
   hover(el: HTMLElement | null): void {
@@ -5115,7 +5142,76 @@ export class EditorEngine {
     if (source === null || this.#destroyed) return 0;
     const marked = establishBaseline(source);
     if (marked) this.#bumpRevision();
+    this.#scheduleSourceIndex(0);
     return marked;
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* What the HTML file says about the page                                 */
+  /* ---------------------------------------------------------------------- */
+
+  /**
+   * The page bound to its HTML file, the same way the save binds it.
+   *
+   * Rebuilt in the background a moment after anything that could change the answer — an edit,
+   * a save, the page loading — and when an element is selected against an old one. Null while
+   * the file cannot be read.
+   */
+  #sourceIndex: SourceIndex | null = null;
+  #sourceIndexAt = 0;
+  #sourceIndexTimer: ReturnType<typeof setTimeout> | null = null;
+
+  #scheduleSourceIndex(delay = SOURCE_INDEX_DELAY_MS): void {
+    if (this.options.detectScriptContent === false || this.#destroyed) return;
+    if (this.#sourceIndexTimer !== null) clearTimeout(this.#sourceIndexTimer);
+    this.#sourceIndexTimer = setTimeout(() => {
+      this.#sourceIndexTimer = null;
+      void this.#refreshSourceIndex();
+    }, delay);
+  }
+
+  async #refreshSourceIndex(): Promise<void> {
+    const source = await this.#ownDocumentSource();
+    if (this.#destroyed) return;
+    const path = documentPath();
+    this.#sourceIndex =
+      source === null
+        ? null
+        : indexSource(source, {
+          ...this.history.journal,
+          written: (path && this.#writtenDocuments.get(path)) || null,
+        });
+    this.#sourceIndexAt = Date.now();
+    this.#bumpRevision();
+  }
+
+  /** Bring the comparison up to date now, for a caller that is about to ask. */
+  async refreshRenderRisks(): Promise<void> {
+    if (this.#sourceIndexTimer !== null) clearTimeout(this.#sourceIndexTimer);
+    this.#sourceIndexTimer = null;
+    await this.#refreshSourceIndex();
+  }
+
+  /**
+   * Whether an edit to this element may not be saved, or not hold once saved — and why.
+   *
+   * What the selection badge shows as "rendered" or "rendered?". Two kinds of evidence, the
+   * stronger first: what was seen happening — a write caught with its stack, a template marker
+   * from the build, an edit the page took back — and what the HTML file says when the page is
+   * bound to it, which catches content built before the editor arrived, text the page rewrote,
+   * attributes it changed, siblings it added, and shadow trees no file holds.
+   *
+   * Informs and never blocks: the save decides what it can write on its own.
+   */
+  renderRiskOf(el = this.store.value.selected): Provenance | undefined {
+    if (!el || this.options.detectScriptContent === false) return undefined;
+    const seen = provenanceOf(el);
+    const strong = seen && (seen.kind === 'observed' || seen.kind === 'template' || seen.kind === 'script');
+    const risk = this.#sourceIndex?.riskOf(el) ?? null;
+    const found = strong ? seen : (risk ? fromSourceRisk(risk) : seen);
+    if (!found) return undefined;
+    const origin = renderOriginOf(el, found);
+    return origin ? { ...found, origin } : found;
   }
 
   /* ---------------------------------------------------------------------- */
@@ -5250,7 +5346,7 @@ export class EditorEngine {
    */
   #warnScriptOwned(el: HTMLElement): void {
     if (this.#warnedAbout.has(el)) return;
-    const provenance = provenanceOf(el);
+    const provenance = this.renderRiskOf(el);
     if (!provenance) return;
     this.#warnedAbout.add(el);
     this.notify(
@@ -7089,6 +7185,7 @@ export class EditorEngine {
    */
   #markSaved(): void {
     this.history.markSaved();
+    this.#scheduleSourceIndex();
     // The file on disk is not what was read any more, so the placeability check has to re-read
     // it: everything just written is now *in* the file, which is exactly what changes the answer.
     this.#ownSource = undefined;

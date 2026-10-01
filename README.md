@@ -480,6 +480,35 @@ prompt:
   to include it.
 - **An edit whose rule is no longer in the file**, because the file changed since the
   session started. *Recheck* re-reads and usually resolves it.
+- **Content the page's own code renders.** It is not in the HTML file, or the page
+  rewrites it after loading, so an edit there is either not saved or not kept.
+
+### "rendered" and "rendered?"
+
+The label above the selected element says **rendered** when an edit there may not be
+saved or may not survive being saved, and **rendered?** when that is possible but
+unproven. Hover it for the reason. It comes from binding the page to its HTML file —
+the same binding the save uses — plus what the editor saw happening:
+
+| Reads | When |
+| --- | --- |
+| rendered | Built by the page's code (not in the file, or inside something that is not); text the page rewrote after loading; inside a shadow tree; from a component or template file named by the Vite plugin's marker; written by a script caught in the act; an edit the page already took back |
+| rendered? | Attributes the page changed after loading; siblings the page added or removed, so which one in the file this is cannot be told for certain; text mirrored in an attribute |
+
+When the file and line are known they are named in the tooltip. A framework
+integration can say more — the expression that renders an element and the static
+text inside it — by registering a resolver. For example, with a marker of your own
+build's choosing:
+
+```ts
+import { registerOriginResolver } from 'html-editor-overlay';
+
+registerOriginResolver((el) =>
+  el.matches('[data-astro-expr]')
+    ? { file: 'src/components/Card.astro', line: 12, expression: el.dataset.astroExpr, via: 'astro' }
+    : null,
+);
+```
 
 ### Saving, once a project is connected
 
@@ -1432,6 +1461,7 @@ missing on purpose, and the runner refuses to start until every page is in one l
 | `test/writeback.html` | The multi-file case, with a linked stylesheet and an external script. Asserts that a stylesheet write is surgical byte for byte, that comments and `#fff` and `margin: 0` survive it, that a rule edited in an inline `<style>` reaches the exported HTML, that unticking a change keeps it out of the file, that saving twice writes nothing the second time, that a whole-buffer CSS edit is described as the one declaration that changed while still being written in full, and that writing sets the baseline the change count is measured from — including that undoing a saved change reappears on the count as a rollback. |
 | `test/structural-journal.html` | The reported nested case: unwrap a link, type inside its `<b>`, unwrap the `<b>`. Asserts the save is a patch touching only that paragraph, and that undoing all three and redoing all three restore the exact markup. |
 | `test/journal-review.html` | The ways a journal-driven save could write the wrong thing or lose an edit: a sibling the page removed must not shift an edit onto its neighbour, a list the page re-rendered is refused rather than guessed at, one edit shown as several rows cannot be half written, an unticked change that was saved stays out of later saves, an unticked rollback keeps the saved value — on that save and every later one — a value saved unticked is never written by unticking its rollback, commands falling off the undo stack neither leak nor appear as rollbacks, unticking one row of a CSS paste does not block markup edits, a page script's banner does not make an untouched element uncertain, a refused patch stays pending, edits inside a shadow root undo exactly, and redoing a component's attribute does not duplicate its rendering. |
+| `test/render-risk.html` | The "rendered" badge, from the same binding of page to file the save uses. Content a script built before the editor arrived, text it rewrote, a list it re-rendered and a shadow tree all read "rendered"; a class it toggled reads "rendered?"; a component's build marker names its file and line; a registered resolver can name the expression that renders an element; and the user's own edits and insertions are never flagged. |
 | `test/content-model.html` | Trees the DOM accepts and an HTML file cannot hold. Moving a block into a paragraph or putting anything inside a `<br>` is undone at once with the reason; a drag never offers a paragraph as a place for a block; Enter inside a paragraph is a line break rather than a nested `<div>`; and a text edit that nests a block anyway is reported on the spot and named precisely by the save rather than as a child count. |
 | `test/journal-fuzz-article.html` | `journal-fuzz` on a long article — figure, list, blockquote, table, pre, nested sections — adding real drags into other elements. Every refusal must name the actual HTML problem. `?runs=40&steps=40` reproduces long monkey sessions. |
 | `test/journal-fuzz.html` | Thirty random sequences of every kind of edit — unwrap, wrap, move, duplicate, delete, insert, retag, replace, attributes, styles, classes, typing and the browser's own editing commands — on markup with implied tags, entities and comments. Every single step is undone and redone; every save must be a verified patch that reads back as the page shows it and leaves untouched bytes alone; then saving, editing, undoing and saving again must round-trip. Pass `?runs=400&offset=1000` for a longer run. |

@@ -6,7 +6,7 @@ import type { BundleOptions, BundlePlan } from './core/bundle.js';
 
 import type { PlannedWrite, WritePlan, WriteResult } from './core/writeback.js';
 import { releaseModals } from './core/modal.js';
-import { installProvenance } from './core/provenance.js';
+import { installProvenance, registerOriginResolver } from './core/provenance.js';
 import { installEventShield, shieldOverlayEvents } from './core/shield.js';
 import { ManagedStyleSheet } from './core/stylesheet.js';
 import { publishLit } from './core/lit-bridge.js';
@@ -56,6 +56,17 @@ export { VERSION };
  * the element fails to register.
  */
 export { normalizeCustomElementTag };
+
+/**
+ * Teach the editor where elements are rendered from.
+ *
+ * The "rendered" badge already names a file and line when the build marker or a caught write
+ * gives one. A framework integration that understands its own templates — a Vite plugin for
+ * Astro, Vue or Svelte — can do better: name the expression that produces an element's content
+ * and the static text inside it, so the user can be sent to exactly what to change.
+ */
+export { registerOriginResolver };
+export type { OriginResolver, RenderOrigin } from './core/provenance.js';
 
 /**
  * Also exported in lower case so the IIFE global reads the same as the module.
@@ -420,6 +431,7 @@ export interface HtmlEditorOverlayGlobal {
   configure: typeof configure;
   getInstance: typeof getInstance;
   normalizeCustomElementTag: typeof normalizeCustomElementTag;
+  registerOriginResolver: typeof registerOriginResolver;
 }
 
 const globalAPI: HtmlEditorOverlayGlobal = {
@@ -429,6 +441,7 @@ const globalAPI: HtmlEditorOverlayGlobal = {
   configure,
   getInstance,
   normalizeCustomElementTag,
+  registerOriginResolver,
 };
 
 if (typeof window !== 'undefined') {

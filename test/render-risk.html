@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Rendered: what the HTML file does not account for</title>
+  <style>
+    body { margin: 0; padding: 48px 24px; font-family: system-ui, sans-serif; }
+  </style>
+</head>
+
+<body>
+  <!--
+    The badge beside the selected element's name says "rendered" when an edit there may not be
+    saved, or may not survive being saved, and "rendered?" when that is possible but unproven.
+    The page here does what real pages do before the editor arrives — fill a container, rewrite
+    a label, toggle a class, re-render a list — and every one of those has to show.
+
+        npm run build:lib && node scripts/browser-check.mjs test/render-risk.html 60000
+  -->
+  <main id="page">
+    <p id="authored">Plain authored text.</p>
+    <section id="filled"></section>
+    <h2 id="label">Original label</h2>
+    <div id="toggled" class="panel">A panel</div>
+    <ul id="list"><li>One</li><li>Two</li><li>Three</li></ul>
+    <div id="host"></div>
+    <p id="component" data-heo-src="src/components/Card.astro:12:3">From a component</p>
+    <p id="edited">Edit me.</p>
+  </main>
+  <script>
+    // What the page's own code does on load, before the editor is there to see it.
+    document.getElementById('filled').innerHTML = '<article class="card"><h3>Built card</h3><p>By script</p></article>';
+    document.getElementById('label').textContent = 'Translated label';
+    document.getElementById('toggled').classList.add('is-open');
+    const list = document.getElementById('list');
+    list.innerHTML = '<li>Uno</li><li>Dos</li>';
+    document.getElementById('host').attachShadow({ mode: 'open' }).innerHTML = '<p id="inner">Shadow text</p>';
+  </script>
+
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const errors = [];
+      addEventListener('error', (e) => errors.push('error: ' + e.message));
+      addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+      const results = {};
+      const progress = document.getElementById('progress');
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const byId = (id) => document.getElementById(id);
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark' });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await engine.establishContentBaseline();
+      await engine.refreshRenderRisks();
+      await frames();
+
+      const risk = (el) => engine.renderRiskOf(el);
+      const kind = (el) => {
+        const found = risk(el);
+        return found ? found.kind + (found.confidence === 'possible' ? '?' : '') : null;
+      };
+      /** The badge text on screen for the selected element. */
+      const badge = async (el) => {
+        api.select(el);
+        await frames();
+        const layer = document.querySelector('html-editor-overlay > heo-overlay')
+          ?.shadowRoot?.querySelector('heo-selection-layer');
+        const owned = layer?.shadowRoot?.querySelector('.badge .owned');
+        return owned ? owned.textContent.replace(/\s+/g, ' ').trim() : null;
+      };
+
+      progress.textContent = 'kinds';
+      results.eachRiskIsRecognised = {
+        authored: kind(byId('authored')) === null,
+        builtByScript: kind(document.querySelector('#filled .card')) === 'file',
+        insideBuilt: kind(document.querySelector('#filled h3')) === 'file',
+        rewrittenText: kind(byId('label')) === 'changed',
+        toggledClass: kind(byId('toggled')) === 'attributes?',
+        // Re-rendered with different words: proven, whichever item in the file it lines up with.
+        rerenderedList: kind(document.querySelector('#list li')) === 'changed',
+        shadow: kind(byId('host').shadowRoot.getElementById('inner')) === 'shadow',
+        component: kind(byId('component')) === 'template',
+      };
+      results.details = {
+        list: kind(document.querySelector('#list li')),
+        toggled: risk(byId('toggled'))?.attributes ?? null,
+      };
+
+      progress.textContent = 'badge';
+      results.theBadgeSaysSo = {
+        authored: (await badge(byId('authored'))) === null,
+        built: (await badge(document.querySelector('#filled .card'))) === 'rendered',
+        rewritten: (await badge(byId('label'))) === 'rendered',
+        toggled: (await badge(byId('toggled'))) === 'rendered?',
+      };
+
+      progress.textContent = 'origin';
+      {
+        const builtIn = risk(byId('component'))?.origin;
+        const stop = window.HtmlEditorOverlay.registerOriginResolver((el) =>
+          el.id === 'component'
+            ? { file: 'src/components/Card.astro', line: 12, expression: "open ? 'Close' : 'Open'", literal: 'Open', via: 'test' }
+            : null,
+        );
+        const resolved = risk(byId('component'))?.origin;
+        stop();
+        results.whereItComesFromCanBeNamed = {
+          fromTheBuildMarker: builtIn?.file === 'src/components/Card.astro' && builtIn?.line === 12,
+          aResolverCanNameTheExpression: resolved?.expression === "open ? 'Close' : 'Open'" && resolved?.via === 'test',
+        };
+      }
+
+      progress.textContent = 'editsAreNotRisks';
+      {
+        // The user's own edits are not a discrepancy the page made.
+        const edited = byId('edited');
+        engine.beginTextEdit(edited);
+        await frames();
+        edited.focus();
+        const range = document.createRange();
+        range.selectNodeContents(edited);
+        getSelection().removeAllRanges();
+        getSelection().addRange(range);
+        document.execCommand('insertText', false, 'Edited by the user.');
+        engine.endTextEdit(true);
+        await frames();
+        engine.setAttribute('title', 'mine', byId('authored'));
+        const added = engine.insertMarkup('<p class="added">Added by the user</p>', { reference: byId('authored'), position: 'after' });
+        await engine.refreshRenderRisks();
+        results.theUsersOwnWorkIsNotFlagged = {
+          editedText: kind(edited) === null,
+          editedAttribute: kind(byId('authored')) === null,
+          inserted: kind(added) === null,
+        };
+      }
+
+      const failed = Object.entries(results)
+        .filter(([name, group]) => name !== 'details' && Object.values(group).some((value) => value === false))
+        .map(([name]) => name);
+      results.failed = failed;
+      results.ok = failed.length === 0 && errors.length === 0;
+      results.__errors = errors;
+      document.getElementById('out').textContent = 'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify({ ok: false, __errors: [String((e && e.stack) || e)] }) + ':END';
+    });
+  </script>
+</body>
+
+</html>

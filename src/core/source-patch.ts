@@ -1442,6 +1442,129 @@ function sameShape(actual: Shape, wanted: Shape, path: string, parent: Node | nu
 /* Putting it together                                                         */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * The page before any of the editor's work, and the page as the file on disk describes it.
+ *
+ * The first is the live tree with every journaled operation taken back; the second adds back
+ * whatever an earlier save in this session already wrote.
+ */
+function fileState(journal: SourceJournal): { base: TreeView; file: TreeView } {
+  const allOps = [...journal.retired, ...journal.applied].map((entry) => entry.ops);
+  const base = new TreeView();
+  for (let i = allOps.length - 1; i >= 0; i -= 1) {
+    const ops = allOps[i];
+    for (let j = ops.length - 1; j >= 0; j -= 1) base.revert(ops[j]);
+  }
+  const file = base.fork();
+  for (const ops of journal.written?.ops ?? []) for (const op of ops) file.replay(op);
+  return { base, file };
+}
+
+/* -------------------------------------------------------------------------- */
+/* What the file says about one element                                        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Why an element's content is not simply what the HTML file declares.
+ *
+ * The same identity the save uses, asked from the other side: instead of "where do these
+ * changes go in the file", "does the file account for this element". A difference the user did
+ * not make is the page's own code at work, and an edit there is either not in the file or will
+ * be undone by that code — which is what the user has to know before they make it.
+ */
+export type SourceRisk =
+  /** No counterpart in the file: built by the page's code. Everything inside it as well. */
+  | { kind: 'not-in-file'; confidence: 'likely' }
+  /** In the file, with different words now: something rewrites its text. */
+  | { kind: 'text-differs'; confidence: 'likely' }
+  /** In the file, with attributes the page has changed since it loaded. */
+  | { kind: 'attributes-differ'; confidence: 'possible'; attributes: string[] }
+  /** Matched to the file only by guess, because the page added or removed similar siblings. */
+  | { kind: 'uncertain'; confidence: 'possible' }
+  /** Inside a shadow tree, which no HTML file holds. */
+  | { kind: 'shadow'; confidence: 'likely' };
+
+export interface SourceIndex {
+  /** Why this element is at risk, or null when the file accounts for it exactly. */
+  riskOf(el: Element): SourceRisk | null;
+}
+
+function directSample(nodes: readonly Node[], data: (node: CharacterData) => string): string {
+  return nodes
+    .filter((node) => node.nodeType === Node.TEXT_NODE)
+    .map((node) => data(node as CharacterData))
+    .join('')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** Attributes worth comparing: not the editor's, and not the build's source markers. */
+function comparableAttributes(names: readonly string[]): string[] {
+  return names.filter((name) => !name.startsWith('data-heo-'));
+}
+
+/**
+ * Bind the page to its file once, and answer questions about any element from that.
+ *
+ * Null when the file cannot be read as HTML, in which case nothing can be said.
+ */
+export function indexSource(source: string, journal: SourceJournal): SourceIndex | null {
+  let tree: SourceTree;
+  try {
+    tree = parseSource(source);
+  } catch {
+    return null;
+  }
+  const { file } = fileState(journal);
+  const binding = bind(tree, file, document);
+  const memo = new WeakMap<Element, SourceRisk | null>();
+
+  const riskOf = (el: Element): SourceRisk | null => {
+    if (memo.has(el)) return memo.get(el)!;
+    let risk: SourceRisk | null = null;
+    if (isEditorOwned(el)) {
+      risk = null;
+    } else if (el.getRootNode() instanceof ShadowRoot) {
+      risk = { kind: 'shadow', confidence: 'likely' };
+    } else if (!file.connected(el)) {
+      // Not on the page as the file has it: something the user added, which is theirs.
+      risk = null;
+    } else {
+      const counterpart = binding.toSource.get(el);
+      if (!counterpart) {
+        risk = { kind: 'not-in-file', confidence: 'likely' };
+      } else {
+        const parent = file.parent(el);
+        const inherited = parent instanceof Element ? riskOf(parent) : null;
+        if (inherited?.kind === 'not-in-file') {
+          risk = inherited;
+        } else if (
+          // Words that differ from the file are proof whichever element this is in it.
+          directSample(file.children(el), (node) => file.data(node)) !==
+          directSample(Array.from(counterpart.childNodes), (node) => node.data)
+        ) {
+          risk = { kind: 'text-differs', confidence: 'likely' };
+        } else if (binding.uncertain.has(el)) {
+          risk = { kind: 'uncertain', confidence: 'possible' };
+        } else {
+          const sourceEl = counterpart as Element;
+          const names = new Set([
+            ...comparableAttributes(file.attributeNames(el)),
+            ...comparableAttributes(sourceEl.getAttributeNames()),
+          ]);
+          const changed = [...names].filter(
+            (name) => file.attribute(el, name) !== sourceEl.getAttribute(name),
+          );
+          if (changed.length) risk = { kind: 'attributes-differ', confidence: 'possible', attributes: changed };
+        }
+      }
+    }
+    memo.set(el, risk);
+    return risk;
+  };
+  return { riskOf };
+}
+
 /** Changes whose every operation landed on something on the page that this write leaves out. */
 function strandedChanges(entries: readonly JournalRow[], target: TreeView): Set<string> {
   const out = new Set<string>();
@@ -1474,15 +1597,8 @@ export function patchSourceFromJournal(input: SourcePatchInput): SourcePatchResu
 
   const onPage = [...journal.retired, ...journal.applied];
   const allOps = onPage.map((entry) => entry.ops);
-  const base = new TreeView();
-  for (let i = allOps.length - 1; i >= 0; i -= 1) {
-    const ops = allOps[i];
-    for (let j = ops.length - 1; j >= 0; j -= 1) base.revert(ops[j]);
-  }
-
+  const { base, file } = fileState(journal);
   const fileOps = journal.written?.ops ?? [];
-  const file = base.fork();
-  for (const ops of fileOps) for (const op of ops) file.replay(op);
 
   let tree: SourceTree;
   try {
