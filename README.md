@@ -31,6 +31,7 @@ root, no build step required on the consuming side.
   - [Bookmarklet](#2-bookmarklet)
   - [Vite plugin](#3-vite-plugin)
 - [The workflow](#the-workflow)
+  - [Splitting at double line breaks](#splitting-at-double-line-breaks)
 - [Writing to files](#writing-to-files)
 - [AI edits](#ai-edits)
   - [Where the API key goes](#where-the-api-key-goes)
@@ -292,6 +293,30 @@ two collapse into the single change that is true of the file: `2 → 7`, not `2 
 The save dialog opens whether or not anything is pending. It is also where the change
 list, the file plan, the design-system hand-off and the folder connection live, and none
 of those stop being worth reaching because the count is zero.
+
+### Splitting at double line breaks
+
+Inside a paragraph, Enter gives a line break rather than a new paragraph, so pressing it
+twice leaves one `<p>` holding a blank line. When that happens — or when the selected element
+already has one — a dashed divider appears across the blank line with a **Split** button.
+Splitting ends the element at the blank line and moves what follows into a new sibling of the
+same kind: one `<p>` becomes two, one `<h2>` becomes two, one `<li>` becomes two. The new one
+keeps the class and styles but not the `id`, and bold or links that span the blank line carry
+on into it. The caret stays where it was, and the split is its own undo step.
+
+The chevron beside the button turns on **Split automatically**, which is also in **Settings**
+(the gear in the toolbar):
+
+- Every double line break already in the page is split at once, as one undo step that also
+  takes the setting back.
+- From then on, pressing Enter twice while editing opens the new paragraph straight away.
+- The setting is saved in the page's seed, so it holds on the next load. A page that loads with
+  it on and still has double line breaks — the file was edited by hand, say — is split when
+  editing starts, announced with an Undo.
+
+A single line break is never split, and neither is the blank line at the very end of an
+element. Table cells, `<pre>`, list containers, form controls and content the page's own
+scripts render are left alone.
 
 ### What the prompt looks like
 
@@ -586,7 +611,7 @@ guards it:
 ## AI edits
 
 Put a key in `.env`, select an element, press the **AI** button beside it, and describe
-the change. There is no configuration step — [the plugin finds the key
+the change. Providers are configured under **Settings** (the gear in the toolbar). There is no configuration step — [the plugin finds the key
 itself](#where-the-api-key-goes).
 
 The model does not touch the page. It returns a list of typed operations — set this text,
@@ -1085,6 +1110,11 @@ diff rather than a copy of your theme.
 
 Import merges without overwriting existing entries unless you ask it to.
 
+A document may also carry `"settings"`, the editor preferences that belong to a page — today
+only `{ "splitDoubleBreaks": true }`. Only values that differ from the defaults are written, and
+importing a document without them leaves the current settings alone. The seed the editor writes
+into a page on save carries them beside the block library.
+
 ---
 
 ## Design system seeds
@@ -1473,6 +1503,8 @@ missing on purpose, and the runner refuses to start until every page is in one l
 | `test/script-tag.html` | The one-tag integration. Its whole setup is a single `<script>`, so the file is both the fixture and the example. Asserts every `data-*` attribute lands. |
 | `test/script-tag-manual.html` | That a bundle *without* `data-heo` mounts nothing, and that `mount()` and `unmount()` still behave. |
 | `test/opaque-origin.html` | A page opened from disk, run **without** `--allow-file-access-from-files` so the origins are genuinely opaque. Confirms the stylesheet's rules really are refused and a sibling `fetch` really does fail, then that connecting a folder makes both files readable, offers the stylesheet as a design-system target, and says the preview cannot update. |
+| `test/line-break-split.html` | Splitting at double line breaks: which blank lines count, the divider and Split button while typing and on a selected element, the caret surviving the split, "Split automatically" sweeping the page as one undo step with the setting, Enter twice opening a new paragraph, the setting in both seeds, the save patching every split in place, and the Settings dialog's switch. |
+| `test/line-break-split-seed.html` | A page whose seed has "Split automatically" on: nothing changes until editing starts, then its blank lines split as one announced, undoable step — leaving table cells and script-rendered content alone — and only once. |
 
 `test/writeback.html` hands the engine an in-memory `FileHost` rather than a real
 folder, because a directory picker cannot be driven from a headless browser. That is

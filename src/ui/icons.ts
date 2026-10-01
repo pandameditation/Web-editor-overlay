@@ -14,6 +14,8 @@ const PATHS: Record<string, string> = {
   sparkle: 'M8 2v3M8 11v3M3.5 8h3M9.5 8h3M4.8 4.8l2 2M9.2 9.2l2 2M11.2 4.8l-2 2M6.8 9.2l-2 2',
   close: 'M4 4l8 8M12 4l-8 8',
   check: 'M3.5 8.5l3 3 6-7',
+  // Two blocks pulled apart at a dashed seam: splitting one element into two.
+  split: 'M3 2.5h10M3 5h7M1.5 8h1.5M5.5 8h1.5M9 8h1.5M13 8h1.5M3 11h10M3 13.5h7',
   minus: 'M3.5 8h9',
   plus: 'M8 3.5v9M3.5 8h9',
   search: 'M7 12a5 5 0 100-10 5 5 0 000 10zM10.6 10.6L14 14',

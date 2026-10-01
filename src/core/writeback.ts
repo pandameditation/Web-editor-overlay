@@ -673,6 +673,8 @@ export async function buildWritePlan(
         }
         continue;
       }
+      // Back to the default with no seed in the file: the file already says what this says.
+      if (record.detail?.block === 'settings' && record.detail.value === 'false') continue;
       unwritable.push({
         record,
         reason:

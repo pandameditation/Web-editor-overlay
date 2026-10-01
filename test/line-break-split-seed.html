@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Splitting on load when the seed says so</title>
+  <!-- A page seed carrying { settings: { splitDoubleBreaks: true } } and no blocks. -->
+  <script type="application/heo-seed">heo1p.eyJuYW1lIjoiQmxvY2sgbGlicmFyeSIsInZlcnNpb24iOjEsInRva2VucyI6W10sImNsYXNzZXMiOltdLCJibG9ja3MiOltdLCJzZXR0aW5ncyI6eyJzcGxpdERvdWJsZUJyZWFrcyI6dHJ1ZX19</script>
+  <style>
+    body { margin: 0; padding: 24px; font: 16px/1.5 system-ui, sans-serif; }
+    pre { margin-top: 16px; }
+  </style>
+</head>
+<body>
+  <main id="page">
+    <p id="loaded">Arrived with<br><br>a blank line</p>
+    <li-holder><ul><li id="item">Item top<br><br>item bottom</li></ul></li-holder>
+    <table><tr><td id="cell">Cell top<br><br>cell bottom</td></tr></table>
+    <div id="rendered-host"></div>
+  </main>
+  <script>
+    // Content the page builds itself is not in the file, so it is not the editor's to reshape.
+    document.getElementById('rendered-host').innerHTML = '<p id="rendered">Built<br><br>by script</p>';
+  </script>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const errors = [];
+      window.addEventListener('error', (e) => errors.push('error: ' + e.message));
+      window.addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+      const results = {};
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const byId = (id) => document.getElementById(id);
+      const html = () => ({
+        loaded: byId('page').querySelector(':scope > p:nth-of-type(1)').outerHTML +
+          (byId('loaded').nextElementSibling?.tagName === 'P' ? byId('loaded').nextElementSibling.outerHTML.replace(/ data-heo-inserted=""/, '') : ''),
+        item: byId('item').parentElement.innerHTML.replace(/ data-heo-inserted=""/g, ''),
+        cell: byId('cell').innerHTML,
+        rendered: byId('rendered').outerHTML,
+      });
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark' });
+      const engine = api.engine;
+      await engine.whenReady();
+      await engine.establishContentBaseline();
+      await frames();
+      const split = () => !byId('loaded').querySelector('br');
+      results.beforeEditing = { on: engine.settings.value.splitDoubleBreaks, untouched: !split() };
+
+      api.setEditing(true);
+      for (let i = 0; i < 20 && !split(); i += 1) await frames();
+      results.onceEditingStarts = {
+        ...html(),
+        toast: engine.store.value.toast?.message ?? null,
+        undoable: engine.store.value.canUndo,
+      };
+
+      engine.undo();
+      await frames();
+      results.undone = { ...html(), stillOn: engine.settings.value.splitDoubleBreaks };
+
+      // Leaving and re-entering edit mode does not sweep a second time behind the user's back.
+      api.setEditing(false);
+      api.setEditing(true);
+      for (let i = 0; i < 5; i += 1) await frames();
+      results.notSweptTwice = !split();
+
+      results.__errors = errors;
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"__errors":["' + String(e && e.message) + '"]}:END';
+    });
+  </script>
+</body>
+</html>

@@ -16,6 +16,11 @@ import { icon } from '../icons.js';
 import { baseStyles, surfaceStyles } from '../theme.js';
 
 /**
+ * Settings: how the editor behaves on this page, and where a model is connected.
+ *
+ * Editing preferences come first and are short — they travel with the page in its seed. The rest of
+ * the dialog is the AI providers, which are most of what there is to configure.
+ *
  * Where a model is connected, and what it is trusted with.
  *
  * Two questions on one surface, and they are deliberately not separated. Which provider a request
@@ -133,6 +138,54 @@ export class HeoAiSettings extends HeoElement {
         flex: 1 1 auto;
         padding: 0 16px 4px;
         overflow-y: auto;
+      }
+
+      /* A titled group of settings: Editing, then AI providers. */
+      .section {
+        padding: 2px 16px 10px;
+      }
+      .section h3 {
+        margin: 0 0 6px;
+        color: var(--heo-text-faint);
+        font-size: 10.5px;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+      .section > p {
+        margin: 0;
+        color: var(--heo-text-dim);
+        font-size: 11px;
+        line-height: 1.55;
+      }
+      .section.providers {
+        padding-bottom: 6px;
+        border-top: 1px solid var(--heo-line);
+        padding-top: 10px;
+      }
+      .setting {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        cursor: pointer;
+      }
+      .setting input {
+        margin: 2px 0 0;
+        width: 14px;
+        height: 14px;
+        accent-color: var(--heo-accent);
+      }
+      .setting .name {
+        display: block;
+        font-size: 12px;
+        font-weight: 600;
+      }
+      .setting .why {
+        display: block;
+        margin-top: 2px;
+        color: var(--heo-text-dim);
+        font-size: 11px;
+        line-height: 1.5;
       }
 
       /* One tab in the provider list: a button, because picking one is the only thing it does. */
@@ -410,7 +463,7 @@ export class HeoAiSettings extends HeoElement {
   protected state = new StoreController(
     this,
     this.editor.store,
-    (s) => [s.aiSettingsOpen, s.registry] as const,
+    (s) => [s.aiSettingsOpen, s.registry, s.splitDoubleBreaks] as const,
     shallowArrayEquals,
   );
 
@@ -439,7 +492,7 @@ export class HeoAiSettings extends HeoElement {
       class="dialog surface"
       role="dialog"
       aria-modal="true"
-      aria-labelledby="heo-ai-settings-title"
+      aria-labelledby="heo-settings-title"
       @pointerdown=${(event: Event) => event.stopPropagation()}
       @keydown=${(event: KeyboardEvent) => {
         event.stopPropagation();
@@ -450,11 +503,8 @@ export class HeoAiSettings extends HeoElement {
     >
       <header>
         <div class="body">
-          <h2 id="heo-ai-settings-title">AI providers</h2>
-          <p>
-            Bring your own model. The first in the list is the default; drag order is priority.
-            Each one carries its own rules about what it may change.
-          </p>
+          <h2 id="heo-settings-title">Settings</h2>
+          <p>How the editor behaves on this page, and which AI models it can use.</p>
         </div>
         <button
           class="btn icon ghost close"
@@ -465,6 +515,33 @@ export class HeoAiSettings extends HeoElement {
           ${icon('close', 14)}
         </button>
       </header>
+
+      <section class="section" aria-labelledby="heo-settings-editing">
+        <h3 id="heo-settings-editing">Editing</h3>
+        <label class="setting">
+          <input
+            type="checkbox"
+            .checked=${this.state.value.splitDoubleBreaks}
+            @change=${(event: Event) =>
+              this.editor.setSplitDoubleBreaks((event.target as HTMLInputElement).checked)}
+          />
+          <span>
+            <span class="name">Split automatically at double line breaks</span>
+            <span class="why">
+              Two line breaks in a row inside a paragraph, a heading or any text element become two
+              separate elements — including the ones already in the page. Saved with the page.
+            </span>
+          </span>
+        </label>
+      </section>
+
+      <section class="section providers" aria-labelledby="heo-settings-ai">
+        <h3 id="heo-settings-ai">AI providers</h3>
+        <p>
+          Bring your own model. The first in the list is the default; drag order is priority.
+          Each one carries its own rules about what it may change.
+        </p>
+      </section>
 
       ${sets.length
         ? html`<div class=${`split${sets.length === 1 ? ' solo' : ''}`}>

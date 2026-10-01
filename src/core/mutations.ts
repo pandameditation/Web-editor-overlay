@@ -12,6 +12,7 @@ import { directText, labelFor, nearestSourceRef, selectorFor } from './dom.js';
 import type { ElementAnchor } from './html-patch.js';
 import { nextChangeId, type Command } from './history.js';
 import { morphChildren } from './morph.js';
+import { splitRun, type BreakRun } from './line-breaks.js';
 import { markRelocated } from './provenance.js';
 import { sanitizeFragment } from './sanitize.js';
 import type { ChangeRecord } from './types.js';
@@ -1009,6 +1010,51 @@ export function unwrapElement(el: HTMLElement): Command | null {
       for (const child of children) host.appendChild(child);
     },
   };
+}
+
+/**
+ * Split elements at runs of line breaks, as one undo step.
+ *
+ * Done once, by `apply`, and never again: the journal `History` captures from it is what undo and
+ * redo replay, so `revert` has nothing to do. The records describe each split against the element
+ * as it was before it, which is the one moment its anchor still means what the file says.
+ */
+export function splitAtBreaks(
+  runs: readonly BreakRun[],
+  label = 'Split at a double line break',
+): { command: Command; created: HTMLElement[] } | null {
+  if (!runs.length) return null;
+  const records = runs.map((run) =>
+    record(run.block, 'insert', `Split ${labelFor(run.block)} at a double line break`, {
+      detail: { position: 'after', split: 'line-break' },
+    }),
+  );
+  const created: HTMLElement[] = [];
+  let done = false;
+  const command: Command = {
+    label,
+    record: records[0],
+    extraRecords: records.slice(1),
+    domOnly: true,
+    apply: () => {
+      if (done) return;
+      done = true;
+      // Last first, so cutting one run never moves the breaks of a run still to be cut.
+      const made: HTMLElement[] = [];
+      for (let index = runs.length - 1; index >= 0; index -= 1) {
+        const next = splitRun(runs[index]);
+        made[index] = next;
+        records[index].after = exact(cleanMarkup(next));
+        records[index].detail = { ...records[index].detail, html: cleanMarkup(next) };
+        records[index].group = elementKey(next);
+      }
+      created.push(...made);
+    },
+    revert: () => {
+      // The journal restores the exact nodes; see above.
+    },
+  };
+  return { command, created };
 }
 
 /**

@@ -560,7 +560,7 @@ export class HeoAiMenu extends HeoElement {
           <button
             class="btn icon ghost"
             type="button"
-            aria-label="AI settings"
+            aria-label="Settings"
             title="Providers, keys and what the AI may change"
             @click=${() => this.editor.setAiSettings(true)}
           >

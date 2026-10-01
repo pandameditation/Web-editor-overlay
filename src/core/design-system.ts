@@ -26,12 +26,14 @@ import { queryDeep } from './dom.js';
 import type { BlockLibrary } from './library.js';
 import type { RuleRegistry } from './rules.js';
 import { safeSelector } from './selectors.js';
+import { portableSettings, type SettingsRegistry } from './settings.js';
 import type { TokenRegistry } from './tokens.js';
 import type {
   DesignClass,
   DesignRule,
   DesignSystemDocument,
   DesignToken,
+  EditorSettings,
   LibraryBlock,
 } from './types.js';
 
@@ -65,6 +67,8 @@ export interface DesignRegistries {
    * without it should put back what it took rather than clearing what it never saw.
    */
   ai?: AiAgent;
+  /** Editor preferences that travel with the seed. Optional for the same reason `ai` is. */
+  settings?: SettingsRegistry;
 }
 
 /**
@@ -92,6 +96,8 @@ export interface DesignSystemSelection {
    * it belongs to would install against nothing. Never true unless a user set it.
    */
   aiKeys: boolean;
+  /** Editor preferences. Optional so existing selections keep compiling; absent means carried. */
+  settings?: boolean;
 }
 
 /** Everything the session owns, and no credentials. The default for every existing caller. */
@@ -102,6 +108,7 @@ export const WHOLE_DESIGN_SYSTEM: DesignSystemSelection = {
   blocks: true,
   ai: true,
   aiKeys: false,
+  settings: true,
 };
 
 export function exportDesignSystem(
@@ -130,6 +137,7 @@ export function exportDesignSystem(
     selection.ai && selection.aiKeys
       ? (registries.ai?.revealKeysForExport(ai.map((entry) => entry.id)) ?? [])
       : [];
+  const settings = selection.settings !== false ? (registries.settings?.export() ?? {}) : {};
   /*
    * An unselected kind becomes an empty array rather than a missing key.
    *
@@ -149,6 +157,7 @@ export function exportDesignSystem(
     blocks: selection.blocks ? registries.library.export() : [],
     ...(ai.length ? { ai } : {}),
     ...(aiKeys.length ? { aiKeys } : {}),
+    ...(Object.keys(settings).length ? { settings } : {}),
   };
 }
 
@@ -359,6 +368,8 @@ export interface ImportResult {
   aiSets: number;
   /** Credentials that arrived with the providers. Almost always zero; see `aiKeys`. */
   aiKeys: number;
+  /** Editor settings the document set. */
+  settings?: number;
 }
 
 export function importDesignSystem(
@@ -388,6 +399,8 @@ export function importDesignSystem(
    * its own action in the AI settings.
    */
   const aiKeys = registries.ai ? registries.ai.adoptKeys(parsed.aiKeys ?? []) : 0;
+  // Only the keys the document mentions: a seed without settings leaves the session's alone.
+  const settings = registries.settings && parsed.settings ? registries.settings.import(parsed.settings) : 0;
   return {
     tokens: registries.tokens.import(parsed.tokens, options),
     classes: registries.classes.import(parsed.classes, options),
@@ -395,6 +408,7 @@ export function importDesignSystem(
     blocks: registries.library.import(parsed.blocks, options),
     aiSets,
     aiKeys,
+    settings,
   };
 }
 
@@ -421,6 +435,8 @@ export interface DesignSystemSnapshot {
   blocks: LibraryBlock[];
   /** Absent when the caller had no agent to snapshot; see `DesignRegistries.ai`. */
   ai?: AiProviderSet[];
+  /** Absent when the caller had no settings to snapshot. */
+  settings?: EditorSettings;
 }
 
 export function snapshotDesignSystem(registries: DesignRegistries): DesignSystemSnapshot {
@@ -440,6 +456,7 @@ export function snapshotDesignSystem(registries: DesignRegistries): DesignSystem
     ...(registries.ai
       ? { ai: registries.ai.list().map((entry) => ({ ...entry })) }
       : {}),
+    ...(registries.settings ? { settings: { ...registries.settings.value } } : {}),
   };
 }
 
@@ -493,6 +510,7 @@ export function restoreDesignSystem(
   // from an empty array — and clearing every configured provider because an older caller did
   // not know to snapshot them would be the worst possible reading of the difference.
   if (registries.ai && snapshot.ai) registries.ai.import(snapshot.ai);
+  if (registries.settings && snapshot.settings) registries.settings.set(snapshot.settings);
 }
 
 /** Validate and normalise an untrusted design system document. */
@@ -534,6 +552,7 @@ export function parseDesignSystem(input: unknown): DesignSystemDocument {
    * registry: what may arrive is a property of the incoming document, not of what this page
    * already happens to have configured.
    */
+  const settings = portableSettings(doc.settings);
   const inPage = new Set(
     ai.filter((entry) => entry.transport === 'in-page').map((entry) => entry.id),
   );
@@ -574,6 +593,7 @@ export function parseDesignSystem(input: unknown): DesignSystemDocument {
     ),
     ai,
     aiKeys,
+    ...(settings ? { settings } : {}),
   };
 }
 

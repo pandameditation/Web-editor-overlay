@@ -12,6 +12,7 @@ import './chrome/ai-menu.js';
 import './chrome/ai-settings.js';
 import './chrome/insert-menu.js';
 import './chrome/text-toolbar.js';
+import './chrome/break-splitter.js';
 import './chrome/drag-chip.js';
 import './chrome/toast.js';
 import './chrome/save-dialog.js';
@@ -117,6 +118,7 @@ export class HeoOverlay extends HeoElement {
       ${state.editing && state.quickMenuOpen ? html`<heo-quick-menu></heo-quick-menu>` : nothing}
       ${state.editing && state.aiMenuOpen ? html`<heo-ai-menu></heo-ai-menu>` : nothing}
       ${state.editing && state.insertAnchor ? html`<heo-insert-menu></heo-insert-menu>` : nothing}
+      ${state.editing ? html`<heo-break-splitter></heo-break-splitter>` : nothing}
       ${state.editing && state.textEditing ? html`<heo-text-toolbar></heo-text-toolbar>` : nothing}
       ${state.drag ? html`<heo-drag-chip></heo-drag-chip>` : nothing}
       ${state.savePreview != null ? html`<heo-save-dialog></heo-save-dialog>` : nothing}

@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Splitting an element at a double line break</title>
+  <style>
+    body { margin: 0; padding: 24px 24px 400px; font: 16px/1.5 system-ui, sans-serif; }
+    pre { margin-top: 16px; }
+  </style>
+</head>
+<body>
+  <main id="page">
+    <p id="first">First half second half</p>
+    <p id="existing" class="lead">One line<br><br>Another line</p>
+    <p id="single">Single<br>break only</p>
+    <p id="trailing">Ends in a blank line<br><br></p>
+    <h2 id="heading">Heading top<br><br>Heading bottom</h2>
+    <p id="menu">Menu here<br><br>menu there</p>
+    <p id="sweep"><b>Bold one<br>
+      <br>bold two</b> plain</p>
+    <p id="live">Live text</p>
+  </main>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const errors = [];
+      window.addEventListener('error', (e) => errors.push('error: ' + e.message));
+      window.addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+      const results = {};
+      const check = async (name, fn) => {
+        document.getElementById('progress').textContent = name;
+        try { results[name] = await fn(); }
+        catch (err) { results[name] = 'THREW: ' + String(err && err.stack); }
+      };
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const byId = (id) => document.getElementById(id);
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark' });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      const directory = decodeURIComponent(location.pathname).replace(/[^/]*$/, '');
+      const disk = new Map();
+      await engine.attachProject({
+        kind: 'directory',
+        label: 'memory',
+        resolve(url) {
+          const path = decodeURIComponent(new URL(url, location.href).pathname);
+          return path.startsWith(directory) ? path.slice(directory.length) : null;
+        },
+        read: async (path) => {
+          if (disk.has(path)) return disk.get(path);
+          try {
+            const text = await (await fetch('./' + path)).text();
+            disk.set(path, text);
+            return text;
+          } catch { return null; }
+        },
+        write: async (path, text) => { disk.set(path, text); },
+        ensureWritable: async () => true,
+        release: async () => { },
+      }, { quiet: true });
+      await frames();
+
+      const overlay = () => document.querySelector('html-editor-overlay > heo-overlay')?.shadowRoot;
+      const splitter = () => overlay()?.querySelector('heo-break-splitter')?.shadowRoot ?? null;
+      const dividers = () => Array.from(splitter()?.querySelectorAll('.divider') ?? []);
+      const caretAt = (node, offset) => {
+        const range = document.createRange();
+        range.setStart(node, offset);
+        range.collapse(true);
+        getSelection().removeAllRanges();
+        getSelection().addRange(range);
+      };
+      const caretNow = () => {
+        const s = getSelection();
+        return s.rangeCount ? { text: s.focusNode?.textContent ?? null, offset: s.focusOffset } : null;
+      };
+      /** Wait for something on screen, such as a divider whose line is still scrolling into view. */
+      const until = async (test, tries = 40) => {
+        for (let i = 0; i < tries && !test(); i += 1) await frames();
+        return test();
+      };
+      const editingId = () => {
+        const el = engine.store.value.textEditing;
+        return el ? (el.id || `${el.tagName.toLowerCase()} after #${el.previousElementSibling?.id}`) : null;
+      };
+
+      await check('findsOnlyRealBlankLines', () =>
+        engine.breakRuns().map((run) => `${run.block.id}:${run.breaks.length}`));
+
+      /* ---- Typing two line breaks shows the divider; Split splits and keeps the caret. ---- */
+      await check('twoBreaksTypedShowADividerAndSplitKeepsTheCaret', async () => {
+        const p = byId('first');
+        engine.beginTextEdit(p);
+        await frames();
+        caretAt(p.firstChild, 'First half '.length);
+        document.execCommand('insertLineBreak');
+        await frames();
+        const afterOne = dividers().length;
+        document.execCommand('insertLineBreak');
+        await frames();
+        const afterTwo = dividers().length;
+        const button = splitter()?.querySelector('.divider .split');
+        // A real press: pointerdown must not end the edit or move the caret.
+        button?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, composed: true, cancelable: true }));
+        button?.click();
+        await frames();
+        const next = p.nextElementSibling;
+        const caret = caretNow();
+        document.execCommand('insertText', false, '→');
+        await frames();
+        const typed = next?.textContent;
+        engine.endTextEdit(true);
+        await frames();
+        return {
+          afterOne, afterTwo,
+          first: p.outerHTML,
+          next: next?.outerHTML ?? null,
+          caret,
+          typedLandsInTheNewParagraph: typed,
+        };
+      });
+
+      await check('undoTakesBackTheTypingThenTheSplit', async () => {
+        engine.undo();
+        await frames();
+        const afterTyping = byId('first').parentElement.querySelectorAll('p').length;
+        engine.undo();
+        await frames();
+        return { afterFirstUndo: afterTyping, html: byId('first').outerHTML, nextIsExisting: byId('first').nextElementSibling?.id };
+      });
+
+      /* ---- A blank line already in the page, on the selected element. ---- */
+      await check('aSelectedElementShowsItsDividerAndSplits', async () => {
+        engine.endTextEdit(true);
+        api.select(byId('existing'));
+        await until(() => dividers().length);
+        const shown = dividers().length;
+        splitter()?.querySelector('.divider .split')?.click();
+        await frames();
+        const next = byId('existing').nextElementSibling;
+        return {
+          shown,
+          existing: byId('existing').outerHTML,
+          next: next?.outerHTML.replace(/ data-heo-inserted=""/, '') ?? null,
+          selected: engine.store.value.selected?.id ?? null,
+        };
+      });
+
+      /* ---- The chevron menu turns on automatic splitting, which sweeps the page. ---- */
+      await check('splitAutomaticallyFromTheMenuSweepsThePage', async () => {
+        api.select(byId('menu'));
+        await frames();
+        await until(() => dividers().length);
+        splitter()?.querySelector('.divider .more')?.click();
+        await frames();
+        const item = splitter()?.querySelector('[role="menuitemcheckbox"]');
+        const before = { label: item?.textContent.trim(), checked: item?.getAttribute('aria-checked') };
+        item?.click();
+        await frames();
+        return {
+          before,
+          on: engine.settings.value.splitDoubleBreaks,
+          remaining: engine.breakRuns().map((run) => run.block.id),
+          heading: byId('heading').outerHTML + byId('heading').nextElementSibling.outerHTML.replace(/ data-heo-inserted=""/, ''),
+          sweep: byId('sweep').outerHTML + byId('sweep').nextElementSibling.outerHTML.replace(/ data-heo-inserted=""/, ''),
+          trailingLeftAlone: byId('trailing').outerHTML,
+          dividersLeft: dividers().length,
+        };
+      });
+
+      await check('oneUndoTakesBackTheSweepAndTheSetting', async () => {
+        engine.undo();
+        await frames();
+        const undone = {
+          on: engine.settings.value.splitDoubleBreaks,
+          runsBack: engine.breakRuns().map((run) => run.block.id),
+        };
+        engine.redo();
+        await frames();
+        return { undone, redone: { on: engine.settings.value.splitDoubleBreaks, runs: engine.breakRuns().length } };
+      });
+
+      /* ---- With it on, pressing Enter twice while typing opens a new paragraph at once. ---- */
+      await check('withItOnTwoEntersOpenANewParagraph', async () => {
+        const p = byId('live');
+        engine.beginTextEdit(p);
+        await frames();
+        caretAt(p.firstChild, p.firstChild.length);
+        document.execCommand('insertLineBreak');
+        await frames();
+        const afterOne = { html: p.innerHTML, siblings: p.parentElement.children.length };
+        document.execCommand('insertLineBreak');
+        await frames();
+        const next = p.nextElementSibling;
+        const editingNew = engine.store.value.textEditing === next;
+        document.execCommand('insertText', false, 'Next paragraph');
+        await frames();
+        engine.endTextEdit(true);
+        await frames();
+        return {
+          afterOne,
+          live: p.outerHTML,
+          next: next?.outerHTML.replace(/ data-heo-inserted=""/, '') ?? null,
+          editingNew,
+        };
+      });
+
+      /* ---- The setting travels in the seed, both the page's and an exported one. ---- */
+      const decode = (seed) => {
+        const body = seed.replace(/^heo1p\./, '').replace(/-/g, '+').replace(/_/g, '/');
+        return JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(body), (c) => c.charCodeAt(0))));
+      };
+      await check('theSettingTravelsInTheSeed', async () => {
+        const pageSeed = engine.blockLibrarySeed();
+        const exported = await engine.designSystemSeed();
+        const doc = await engine.decodeSeedText(exported);
+        return {
+          pageSeed: pageSeed ? decode(pageSeed).settings ?? null : null,
+          exportedSeed: doc?.settings ?? null,
+        };
+      });
+
+      await check('andTheSaveWritesTheSplitsAndTheSeed', async () => {
+        const plan = await engine.previewWritePlan();
+        const write = (plan?.writes ?? []).find((w) => w.kind === 'document');
+        const file = new DOMParser().parseFromString(write?.after ?? '', 'text/html');
+        const seed = file.querySelector('script[type="application/heo-seed"]')?.textContent.trim() ?? '';
+        return {
+          reason: write?.reason ?? null,
+          warnings: write?.warnings ?? [],
+          unwritable: (plan?.unwritable ?? []).map((u) => u.reason),
+          paragraphsInFile: file.querySelectorAll('main > p, main > h2').length,
+          headingSplit: file.querySelectorAll('main > h2').length,
+          existingInFile: file.getElementById('existing')?.outerHTML ?? null,
+          seedSettings: seed ? decode(seed).settings ?? null : null,
+          // The page content only: the file is this fixture, whose own script names the markers.
+          noEditorMarkersInTheFile: !/data-heo-|contenteditable/.test(file.querySelector('main')?.outerHTML ?? 'missing'),
+        };
+      });
+
+      /* ---- Settings, renamed from "AI settings", holds the same switch. ---- */
+      await check('theSettingsDialogHoldsTheSwitch', async () => {
+        const toolbarButton = Array.from(
+          overlay()?.querySelector('heo-toolbar')?.shadowRoot?.querySelectorAll('button') ?? [],
+        ).find((b) => b.getAttribute('aria-label') === 'Settings');
+        toolbarButton?.click();
+        await frames();
+        const dialog = overlay()?.querySelector('heo-ai-settings')?.shadowRoot;
+        const title = dialog?.querySelector('h2')?.textContent.trim();
+        const box = dialog?.querySelector('.setting input[type="checkbox"]');
+        const checked = box?.checked ?? null;
+        box?.click();
+        await frames();
+        const off = engine.settings.value.splitDoubleBreaks;
+        engine.undo();
+        await frames();
+        const backOn = engine.settings.value.splitDoubleBreaks;
+        engine.setAiSettings(false);
+        await frames();
+        return { toolbarButton: Boolean(toolbarButton), title, checked, off, backOn };
+      });
+
+      results.__errors = errors;
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"__errors":["' + String(e && e.message) + '"]}:END';
+    });
+  </script>
+</body>
+</html>

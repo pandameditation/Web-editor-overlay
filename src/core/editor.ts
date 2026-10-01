@@ -76,6 +76,8 @@ import { inexpressibleAt, refusalFor } from './content-model.js';
 import { domRecorder, movesOf, revertOps, shadowRootsOf, within, type DomOp } from './dom-journal.js';
 import { History, nextChangeId, type Command } from './history.js';
 import { handleKeyDown, handleKeyUp, matchesShortcut } from './keymap.js';
+import { findBreakRuns, type BreakRun } from './line-breaks.js';
+import { SettingsRegistry } from './settings.js';
 import {
   applyBlockProps,
   BlockLibrary,
@@ -92,6 +94,7 @@ import {
   type IdentityMap,
   copyOfElement,
   duplicateElement,
+  splitAtBreaks,
   insertHTML,
   insertNodes,
   INSERT_POSITION_LABELS,
@@ -695,6 +698,11 @@ export interface EditorState {
    * is remembered between asking for it and the save that carries it out.
    */
   removeBlockLibrary: boolean;
+  /**
+   * Whether double line breaks become paragraph splits on their own. Mirrors `engine.settings`
+   * so the chrome re-renders when it changes; the registry is the authority.
+   */
+  splitDoubleBreaks: boolean;
   extraction: Extraction | null;
   /** A single class or rule opened for editing on its own, when one is. */
   styleEdit: StyleEdit | null;
@@ -878,6 +886,8 @@ export class EditorEngine {
    * Empty until the user configures a provider, which is deliberate — see `AiAgent`.
    */
   readonly ai = new AiAgent();
+  /** Editor preferences that travel with the page in its seed. */
+  readonly settings = new SettingsRegistry();
   readonly options: MountOptions;
 
   #listeners: Array<() => void> = [];
@@ -1050,6 +1060,7 @@ export class EditorEngine {
        */
       saveBlockLibrary: true,
       removeBlockLibrary: false,
+      splitDoubleBreaks: false,
       extraction: null,
       styleEdit: null,
       confirm: null,
@@ -1151,6 +1162,14 @@ export class EditorEngine {
     if (restoredScope) this.store.patch({ aiContextScope: restoredScope });
     this.#listeners.push(this.ai.onChange(() => this.#bumpRegistry()));
     this.#listeners.push(keyVault.onChange(() => this.#bumpRegistry()));
+    // The seed may already have set some, synchronously above, or may set them a tick from now.
+    const syncSettings = (): void => {
+      this.store.patch({ splitDoubleBreaks: this.settings.value.splitDoubleBreaks });
+      this.#replanSave();
+    };
+    syncSettings();
+    this.#listeners.push(this.settings.onChange(syncSettings));
+    if (this.store.value.editing) void this.#sweepOnLoad();
 
     this.#bindPageEvents();
     this.#observePage();
@@ -1393,6 +1412,7 @@ export class EditorEngine {
       insertAnchor: null,
       dockOpen: editing ? this.store.value.dockOpen : false,
     });
+    if (editing) void this.#sweepOnLoad();
   }
 
   toggleEditing(): void {
@@ -2788,11 +2808,11 @@ export class EditorEngine {
     }
     const set = this.ai.active;
     if (!set) {
-      this.notify('Connect a model first, in the AI settings.', 'info');
+      this.notify('Connect a model first, in Settings.', 'info');
       return null;
     }
     if (set.transport === 'in-page' && !keyVault.ready(set)) {
-      this.notify(`${set.label} needs an API key. Add one in the AI settings.`, 'error');
+      this.notify(`${set.label} needs an API key. Add one in Settings.`, 'error');
       return null;
     }
 
@@ -3363,7 +3383,9 @@ export class EditorEngine {
   blockLibrarySeed(): string {
     if (!this.store.value.saveBlockLibrary) return '';
     const blocks = this.library.export();
-    if (!blocks.length) return '';
+    // The page's editor settings ride along: they are the other thing only a seed can carry.
+    const settings = this.settings.export();
+    if (!blocks.length && !Object.keys(settings).length) return '';
     /*
      * Only the blocks, deliberately.
      *
@@ -3377,6 +3399,7 @@ export class EditorEngine {
       tokens: [],
       classes: [],
       blocks,
+      ...(Object.keys(settings).length ? { settings } : {}),
     });
   }
 
@@ -3408,6 +3431,7 @@ export class EditorEngine {
     return (
       this.store.value.saveBlockLibrary &&
       this.blockLibrarySize() === 0 &&
+      this.settings.isDefault &&
       this.blockLibraryInPage()
     );
   }
@@ -3941,6 +3965,192 @@ export class EditorEngine {
     this.select(node);
     this.notify(`Pasted ${labelFor(node)}.`, 'success');
     return node;
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Splitting at double line breaks                                        */
+  /* ---------------------------------------------------------------------- */
+
+  /**
+   * Every run of double breaks under `root` the editor may reshape.
+   *
+   * The block is looked for all the way up to `<body>`, not only inside `root`: when the element
+   * being edited is an inline one, the paragraph around it is what a blank line splits.
+   */
+  breakRuns(root: HTMLElement = document.body, options: { allowTrailing?: boolean } = {}): BreakRun[] {
+    if (!root?.isConnected) return [];
+    return findBreakRuns(root, {
+      limit: document.body,
+      allowTrailing: options.allowTrailing,
+      accept: (block) => this.#mayReshape(block),
+    });
+  }
+
+  /**
+   * Whether a split may touch this element.
+   *
+   * Content the page's own code renders is left alone: the file does not hold it, so a split could
+   * not be saved and the next render would put the breaks back anyway.
+   */
+  #mayReshape(block: HTMLElement): boolean {
+    if (!isMutable(block)) return false;
+    const rendered = this.provenanceOf(block);
+    return !rendered || rendered.confidence === 'possible';
+  }
+
+  /**
+   * Split at the double break that `br` belongs to, from the divider's Split button.
+   *
+   * Inside a text edit the edit is committed first and picked up again where the caret was, so the
+   * typing so far and the split are two undo steps, in the order they happened.
+   */
+  splitAtBreak(br: HTMLBRElement): HTMLElement | null {
+    const editing = this.store.value.textEditing;
+    const inEdit = Boolean(editing?.contains(br));
+    const root = inEdit ? editing! : (br.parentElement ?? document.body);
+    const run = this.breakRuns(root, { allowTrailing: inEdit }).find((one) => one.breaks.includes(br));
+    if (!run) return null;
+    const created = inEdit ? this.#splitDuringEdit([run]) : this.#commitSplit([run]);
+    if (!created?.length) return null;
+    if (!inEdit) this.select(run.block);
+    return created[0];
+  }
+
+  /** Split every run in the page. Returns how many elements were split. */
+  splitAllBreaks(label = 'Split at double line breaks'): number {
+    this.endTextEdit(true);
+    const runs = this.breakRuns(document.body);
+    return this.#commitSplit(runs, label)?.length ?? 0;
+  }
+
+  /**
+   * Turn automatic splitting on or off, as one undoable change.
+   *
+   * Turning it on also splits every double break already in the page, in the same undo step: the
+   * setting is a promise about the page, and it should be true the moment it is made. Undo takes
+   * the splits back and the setting with them.
+   */
+  setSplitDoubleBreaks(on: boolean): void {
+    const previous = this.settings.value.splitDoubleBreaks;
+    if (previous === on) return;
+    this.endTextEdit(true);
+    const sweep = on ? splitAtBreaks(this.breakRuns(document.body), 'Split at double line breaks') : null;
+    const record: ChangeRecord = {
+      id: nextChangeId(),
+      // `block`, because the seed is where it is written, beside the library.
+      kind: 'block',
+      summary: on
+        ? 'Turn on splitting automatically at double line breaks'
+        : 'Turn off splitting automatically at double line breaks',
+      target: 'settings',
+      detail: { block: 'settings', setting: 'splitDoubleBreaks', value: String(on) },
+      at: Date.now(),
+    };
+    const sweepRecords = sweep ? [sweep.command.record, ...(sweep.command.extraRecords ?? [])] : [];
+    this.history.commit({
+      label: on ? 'Split automatically' : 'Stop splitting automatically',
+      record,
+      extraRecords: sweepRecords,
+      apply: () => {
+        this.settings.set({ splitDoubleBreaks: on });
+        sweep?.command.apply();
+      },
+      revert: () => {
+        this.settings.set({ splitDoubleBreaks: previous });
+      },
+    });
+    this.#bumpRevision();
+    const split = sweep?.created.length ?? 0;
+    this.notify(
+      on
+        ? `Double line breaks now split automatically${split ? `. Split ${split} element${split === 1 ? '' : 's'} already in the page` : ''}.`
+        : 'Double line breaks are no longer split automatically.',
+      'success',
+      { label: 'Undo', run: () => this.undo() },
+    );
+  }
+
+  /** Whether the page has been checked for double breaks since the setting was found on. */
+  #sweptOnLoad = false;
+
+  /**
+   * Split what the page arrived with, once, when automatic splitting came with its seed.
+   *
+   * Run when editing starts rather than at mount: the editor does not reshape a page nobody is
+   * editing, and by then a compressed seed has had time to land. One undo step, announced.
+   */
+  async #sweepOnLoad(): Promise<void> {
+    await this.whenReady();
+    if (this.#sweptOnLoad || this.#destroyed || !this.store.value.editing) return;
+    this.#sweptOnLoad = true;
+    if (!this.settings.value.splitDoubleBreaks) return;
+    const count = this.splitAllBreaks('Split at double line breaks');
+    if (!count) return;
+    this.notify(
+      `Split ${count} element${count === 1 ? '' : 's'} at double line breaks, because “Split automatically” is on.`,
+      'info',
+      { label: 'Undo', run: () => this.undo() },
+    );
+  }
+
+  #commitSplit(runs: readonly BreakRun[], label?: string): HTMLElement[] | null {
+    const result = splitAtBreaks(runs, label);
+    if (!result || !this.history.commit(result.command)) return null;
+    this.#bumpRevision();
+    return result.created;
+  }
+
+  /**
+   * Split inside the live text edit, and carry on editing where the caret was.
+   *
+   * The caret is held as a node and an offset rather than as a live `Range`: a live range snaps
+   * to the parent of any node moved out from under it, and the split moves exactly the text the
+   * caret is usually in. Text nodes keep their identity through the move, so the plain pair still
+   * points at the right place afterwards.
+   */
+  #splitDuringEdit(runs: readonly BreakRun[]): HTMLElement[] | null {
+    const host = this.store.value.textEditing;
+    if (!host) return null;
+    const selection = getSelection();
+    const node = selection?.rangeCount ? selection.focusNode : null;
+    const offset = selection?.focusOffset ?? 0;
+    // Which piece the caret will be in, read before the split moves anything.
+    const pieceIndex = node
+      ? runs.reduce((found, run, index) => {
+        const cut = document.createRange();
+        cut.setStartAfter(run.breaks[run.breaks.length - 1]);
+        return run.block.contains(node) && cut.comparePoint(node, offset) >= 0 ? index : found;
+      }, -1)
+      : -1;
+
+    this.endTextEdit(true);
+    const created = this.#commitSplit(runs);
+    if (!created) {
+      if (host.isConnected) this.beginTextEdit(host);
+      return null;
+    }
+
+    const piece = pieceIndex >= 0 ? created[pieceIndex] : null;
+    const target =
+      piece && !host.contains(piece) ? piece : host.isConnected ? host : (created[0] ?? null);
+    if (!target) return created;
+    this.beginTextEdit(target, 'leave-selection');
+    target.focus({ preventScroll: true });
+    const caret = document.createRange();
+    if (node instanceof Text && node.isConnected && target.contains(node)) {
+      caret.setStart(node, Math.min(offset, node.length));
+    } else if (piece && target.contains(piece)) {
+      caret.setStart(piece, 0);
+    } else if (piece === target) {
+      caret.setStart(target, 0);
+    } else {
+      caret.selectNodeContents(target);
+      caret.collapse(false);
+    }
+    caret.collapse(true);
+    getSelection()?.removeAllRanges();
+    getSelection()?.addRange(caret);
+    return created;
   }
 
   remove(el = this.store.value.selected): void {
@@ -5152,7 +5362,28 @@ export class EditorEngine {
     // On `document` in the capture phase, through the shield's own `listen`: the shield stops
     // page-bound input events there, and only the editor's listeners on that target still run.
     listen(document, 'beforeinput', onBeforeInput, true);
-    this.#textEditCleanup = () => unlisten(document, 'beforeinput', onBeforeInput, true);
+    /*
+     * With automatic splitting on, a blank line becomes a new paragraph as soon as it is typed.
+     *
+     * After the browser has finished its own work on the keystroke, not during it: `input` fires
+     * once the DOM holds the new break, and the split waits a microtask beyond that so it never
+     * reshapes the tree under an editing command still unwinding.
+     */
+    const onInput = (event: Event): void => {
+      if (!this.settings.value.splitDoubleBreaks) return;
+      if (!event.composedPath().includes(el)) return;
+      if (event instanceof InputEvent && event.isComposing) return;
+      queueMicrotask(() => {
+        if (this.store.value.textEditing !== el || !this.settings.value.splitDoubleBreaks) return;
+        const runs = this.breakRuns(el, { allowTrailing: true });
+        if (runs.length) this.#splitDuringEdit(runs);
+      });
+    };
+    listen(document, 'input', onInput, true);
+    this.#textEditCleanup = () => {
+      unlisten(document, 'beforeinput', onBeforeInput, true);
+      unlisten(document, 'input', onInput, true);
+    };
     this.store.patch({ textEditing: el, selected: el });
 
     // Focus on the next frame so the attribute has taken effect before the
@@ -8923,7 +9154,9 @@ function isOverlayChrome(node: EventTarget): boolean {
  * different place to be working, and pressing there means the text edit is over.
  */
 function isTextEditChrome(node: EventTarget): boolean {
-  return node instanceof Element && node.tagName.toLowerCase() === 'heo-text-toolbar';
+  if (!(node instanceof Element)) return false;
+  const tag = node.tagName.toLowerCase();
+  return tag === 'heo-text-toolbar' || tag === 'heo-break-splitter';
 }
 
 /**
@@ -9156,7 +9389,7 @@ function describeImport(result: ImportResult): string {
    * this machine.
    */
   if (result.aiKeys) {
-    return `Imported ${listed}. The key is held for this page only — save it in the AI settings to keep it.`;
+    return `Imported ${listed}. The key is held for this page only — save it in Settings to keep it.`;
   }
   return result.aiSets
     ? `Imported ${listed}. Providers arrive without their API keys, so add one to use them.`

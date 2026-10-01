@@ -6,6 +6,7 @@ import {
 } from './ai/types.js';
 import { prettifyClassName } from './classes.js';
 import { parseDesignSystem } from './design-system.js';
+import { portableSettings } from './settings.js';
 import { prettifyTokenName } from './tokens.js';
 import type {
   DesignClass,
@@ -145,9 +146,11 @@ export function compactDesignSystem(doc: DesignSystemDocument): DesignSystemDocu
     .map((entry) => portableProviderKey(entry))
     .filter((entry): entry is AiProviderKey => entry !== null);
 
+  const settings = portableSettings(doc.settings);
+
   // `rules` is omitted entirely when there are none, rather than carried as `[]`. Every
   // page without a rule would otherwise pay four characters for saying so, and the
-  // parser already defaults a missing key. Same for `ai` and `aiKeys`.
+  // parser already defaults a missing key. Same for `ai`, `aiKeys` and `settings`.
   return {
     name: doc.name,
     version: doc.version,
@@ -157,6 +160,7 @@ export function compactDesignSystem(doc: DesignSystemDocument): DesignSystemDocu
     ...(rules.length ? { rules } : {}),
     ...(ai.length ? { ai } : {}),
     ...(aiKeys.length ? { aiKeys } : {}),
+    ...(settings ? { settings } : {}),
   };
 }
 

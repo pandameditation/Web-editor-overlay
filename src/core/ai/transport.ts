@@ -66,7 +66,7 @@ async function* streamOperations(
     );
   }
   if (set.transport === 'in-page' && !keyVault.ready(set)) {
-    throw new Error('This provider needs an API key. Add one in the AI settings.');
+    throw new Error('This provider needs an API key. Add one in Settings.');
   }
   /*
    * No base URL, no request.

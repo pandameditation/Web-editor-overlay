@@ -300,6 +300,15 @@ export class HeoToolbar extends HeoElement {
       >
         ${icon('redo', 14)}
       </button>
+      <button
+        class="btn icon ghost"
+        type="button"
+        title="Settings"
+        aria-label="Settings"
+        @click=${() => this.editor.setAiSettings(true)}
+      >
+        ${icon('settings', 14)}
+      </button>
 
       <span class="sep"></span>
 

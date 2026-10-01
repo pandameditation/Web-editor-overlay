@@ -187,7 +187,26 @@ export interface DesignSystemDocument {
    * committed, and the surface that offers it says so.
    */
   aiKeys?: AiProviderKey[];
+  /**
+   * Editor preferences that belong to the page, such as splitting at double line breaks.
+   *
+   * Only values that differ from the defaults are carried, and an absent key leaves the receiving
+   * session's own value alone. Rebuilt from an allow-list on the way in; see `portableSettings`.
+   */
+  settings?: PortableSettings;
 }
+
+/** Editor preferences carried by the seed. See `DEFAULT_SETTINGS` for what each one starts as. */
+export interface EditorSettings {
+  /**
+   * Turn every run of two or more line breaks inside a paragraph (or any text block) into two
+   * sibling elements, as soon as one appears and across the page when it is switched on.
+   */
+  splitDoubleBreaks: boolean;
+}
+
+/** The subset of settings a document carries: only the ones that differ from the defaults. */
+export type PortableSettings = Partial<EditorSettings>;
 
 /** Source location injected by the Vite plugin (or by hand) as `data-heo-src`. */
 export interface SourceRef {

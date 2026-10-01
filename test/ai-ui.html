@@ -905,7 +905,7 @@
           await frames();
         };
         await openProbe();
-        const box = () => root()?.querySelector('input[type="checkbox"]');
+        const box = () => root()?.querySelector('.pane input[type="checkbox"]');
 
         // Nothing stored yet: session is the default, so the box is clear.
         const beforeAnyKey = box()?.checked;
