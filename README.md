@@ -754,6 +754,7 @@ of it is a real leak.
 | `Shift+↑` / `Shift+↓` | Move the element up / down |
 | `Shift+←` / `Shift+→` | Move out of / into a container |
 | `Mod+D` | Duplicate |
+| `Mod+C` / `Mod+V` | Copy the element / paste it after the selected one |
 | `Delete` | Delete |
 | `Mod+Z` / `Shift+Mod+Z` | Undo / redo |
 | `Mod+S` | Review and save changes |

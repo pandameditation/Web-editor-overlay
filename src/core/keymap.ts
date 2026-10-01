@@ -197,6 +197,25 @@ export function handleKeyDown(engine: EditorEngine, event: KeyboardEvent): void 
   // Anything typed into a page field belongs to that field.
   if (isEditableTarget(event)) return;
 
+  /*
+   * Copy and paste a whole element, after every guard above: only with an element selected and
+   * the page focused, never inside a text edit, a page field or the overlay's own controls,
+   * where Mod+C and Mod+V keep their usual meaning on text. Plain Mod only, so the browser's
+   * own variants such as Mod+Shift+V are left alone.
+   */
+  if (mod && !event.shiftKey && !event.altKey && state.selected) {
+    if (key.toLowerCase() === 'c') {
+      event.preventDefault();
+      engine.copyElement();
+      return;
+    }
+    if (key.toLowerCase() === 'v' && engine.hasCopiedElement) {
+      event.preventDefault();
+      engine.pasteElement();
+      return;
+    }
+  }
+
   switch (key) {
     case 'Escape':
       // Unwind one layer at a time rather than closing everything at once.
@@ -286,6 +305,7 @@ export const SHORTCUTS: Array<{ keys: string; action: string }> = [
   { keys: 'Shift+↑ / Shift+↓', action: 'Move the element up / down' },
   { keys: 'Shift+← / Shift+→', action: 'Move out of / into a container' },
   { keys: 'Mod+D', action: 'Duplicate' },
+  { keys: 'Mod+C / Mod+V', action: 'Copy the element / paste it after the selected one' },
   { keys: 'Delete', action: 'Delete' },
   { keys: 'Mod+Z / Shift+Mod+Z', action: 'Undo / redo' },
   { keys: 'Mod+S', action: 'Review and save changes' },

@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Copying an element with Mod+C and pasting it with Mod+V</title>
+  <style>
+    body { margin: 0; padding: 24px; font-family: system-ui, sans-serif; }
+    pre { margin-top: 16px; }
+  </style>
+</head>
+<body>
+  <main id="page">
+    <section id="first">
+      <div id="card" class="card"><h3>Card title</h3><p>Card body.</p></div>
+    </section>
+    <section id="second">
+      <p id="target">Paste lands after this paragraph.</p>
+    </section>
+    <ul id="list"><li id="item">A list item</li></ul>
+    <p id="inline-holder">Words with <span id="inline">an inline span</span> inside.</p>
+    <p id="field-holder"><input id="field" type="text" value="page field"></p>
+  </main>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const errors = [];
+      window.addEventListener('error', (e) => errors.push('error: ' + e.message));
+      window.addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+      const results = {};
+      const check = async (name, fn) => {
+        document.getElementById('progress').textContent = name;
+        try { results[name] = await fn(); }
+        catch (err) { results[name] = 'THREW: ' + String(err && err.message); }
+      };
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const byId = (id) => document.getElementById(id);
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark' });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      const directory = decodeURIComponent(location.pathname).replace(/[^/]*$/, '');
+      const disk = new Map();
+      await engine.attachProject({
+        kind: 'directory',
+        label: 'memory',
+        resolve(url) {
+          const path = decodeURIComponent(new URL(url, location.href).pathname);
+          return path.startsWith(directory) ? path.slice(directory.length) : null;
+        },
+        read: async (path) => {
+          if (disk.has(path)) return disk.get(path);
+          try {
+            const text = await (await fetch('./' + path)).text();
+            disk.set(path, text);
+            return text;
+          } catch { return null; }
+        },
+        write: async (path, text) => { disk.set(path, text); },
+        ensureWritable: async () => true,
+        release: async () => { },
+      }, { quiet: true });
+      await frames();
+
+      /** A real keydown, as the browser sends it; reports whether the editor claimed it. */
+      const press = async (key, { ctrl = false, target = document.body } = {}) => {
+        const event = new KeyboardEvent('keydown', {
+          key, bubbles: true, composed: true, cancelable: true,
+          metaKey: !ctrl, ctrlKey: ctrl,
+        });
+        target.dispatchEvent(event);
+        await frames();
+        return event.defaultPrevented;
+      };
+      const cards = () => Array.from(document.querySelectorAll('.card'));
+      const describe = (el) => el && {
+        parent: el.parentElement?.id ?? null,
+        previous: el.previousElementSibling?.id || el.previousElementSibling?.className || null,
+        id: el.getAttribute('id'),
+        text: el.textContent,
+      };
+
+      await check('nothingCopiedYetLeavesModVAlone', async () => {
+        api.select(byId('target'));
+        await frames();
+        return { claimed: await press('v'), cards: cards().length };
+      });
+
+      await check('copyThenPasteAfterABlockElsewhere', async () => {
+        api.select(byId('card'));
+        await frames();
+        const copied = await press('c');
+        api.select(byId('target'));
+        await frames();
+        const pasted = await press('v');
+        const copy = engine.store.value.selected;
+        return {
+          copied,
+          pasted,
+          cards: cards().length,
+          theCopy: describe(copy),
+          theOriginalIsUntouched: describe(byId('card')),
+          theCopyIsSelected: copy !== byId('card') && copy?.classList.contains('card'),
+        };
+      });
+
+      await check('pastingAgainWithCtrlGivesAnIndependentCopy', async () => {
+        const first = engine.store.value.selected;
+        const pasted = await press('v', { ctrl: true });
+        const second = engine.store.value.selected;
+        return {
+          pasted,
+          cards: cards().length,
+          secondFollowsFirst: second.previousElementSibling === first,
+          distinct: second !== first,
+        };
+      });
+
+      await check('theCopyIsTakenWhenCopiedNotWhenPasted', async () => {
+        byId('card').querySelector('h3').textContent = 'Changed after copying';
+        api.select(byId('inline'));
+        await frames();
+        // After a span inside a paragraph is a <div> in a <p>, which no file can hold: refused.
+        const before = cards().length;
+        await press('v');
+        const refused = cards().length === before;
+        api.select(byId('list'));
+        await frames();
+        await press('v');
+        const copy = engine.store.value.selected;
+        return {
+          refusedInsideAParagraph: refused,
+          pastedTitle: copy?.querySelector('h3')?.textContent ?? null,
+          after: copy?.previousElementSibling?.id ?? null,
+        };
+      });
+
+      await check('undoTakesThePasteBack', async () => {
+        const before = cards().length;
+        engine.undo();
+        await frames();
+        return { before, after: cards().length };
+      });
+
+      await check('aTextEditKeepsItsOwnCopyAndPaste', async () => {
+        engine.beginTextEdit(byId('target'));
+        await frames();
+        const c = await press('c', { target: byId('target') });
+        const v = await press('v', { target: byId('target') });
+        engine.endTextEdit(false);
+        await frames();
+        return { claimedCopy: c, claimedPaste: v };
+      });
+
+      await check('aPageFieldKeepsItsOwnCopyAndPaste', async () => {
+        api.select(byId('card'));
+        await frames();
+        byId('field').focus();
+        const before = cards().length;
+        const c = await press('c', { target: byId('field') });
+        const v = await press('v', { target: byId('field') });
+        byId('field').blur();
+        return { claimedCopy: c, claimedPaste: v, cardsAdded: cards().length - before };
+      });
+
+      await check('theOverlayKeepsItsOwnCopyAndPaste', async () => {
+        api.select(byId('card'));
+        await frames();
+        const host = document.querySelector('html-editor-overlay');
+        const before = cards().length;
+        const v = await press('v', { target: host ?? document.body });
+        return { claimedPaste: v, cardsAdded: cards().length - before };
+      });
+
+      await check('thePasteReachesTheSave', async () => {
+        const plan = await engine.previewWritePlan();
+        const write = (plan?.writes ?? []).find((w) => w.kind === 'document');
+        const file = new DOMParser().parseFromString(write?.after ?? '', 'text/html');
+        return {
+          reason: write?.reason ?? null,
+          warnings: write?.warnings ?? [],
+          cardsInFile: file.querySelectorAll('.card').length,
+          afterTarget: file.getElementById('target')?.nextElementSibling?.className ?? null,
+          noDuplicateIds: file.querySelectorAll('#card').length === 1,
+        };
+      });
+
+      results.__errors = errors;
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"__errors":["' + String(e && e.message) + '"]}:END';
+    });
+  </script>
+</body>
+</html>

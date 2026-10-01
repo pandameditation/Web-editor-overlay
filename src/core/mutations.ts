@@ -714,9 +714,13 @@ export function removeElement(el: HTMLElement): Command | null {
   };
 }
 
-export function duplicateElement(el: HTMLElement): { command: Command; node: HTMLElement } | null {
-  const parent = remember(el.parentNode);
-  if (!parent) return null;
+/**
+ * A deep copy of an element that can stand somewhere else in the page.
+ *
+ * Shared by duplicate and by copy and paste, which make the same promise: a copy inherits
+ * appearance, not identity.
+ */
+export function copyOfElement(el: HTMLElement): HTMLElement {
   const clone = el.cloneNode(true) as HTMLElement;
   clone.removeAttribute('id');
   /*
@@ -737,6 +741,13 @@ export function duplicateElement(el: HTMLElement): { command: Command; node: HTM
   for (const node of Array.from(clone.querySelectorAll(`[${SOURCE_ATTR}]`))) {
     node.removeAttribute(SOURCE_ATTR);
   }
+  return clone;
+}
+
+export function duplicateElement(el: HTMLElement): { command: Command; node: HTMLElement } | null {
+  const parent = remember(el.parentNode);
+  if (!parent) return null;
+  const clone = copyOfElement(el);
   clone.setAttribute(INSERTED_ATTR, '');
   const before = remember(el.nextSibling);
   const command: Command = {

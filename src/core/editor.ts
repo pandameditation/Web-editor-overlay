@@ -90,6 +90,7 @@ import {
   cleanMarkup,
   writeChildren,
   type IdentityMap,
+  copyOfElement,
   duplicateElement,
   insertHTML,
   insertNodes,
@@ -3881,6 +3882,65 @@ export class EditorEngine {
     if (instance) this.#instances.set(result.node, { ...instance, values: { ...instance.values } });
     this.select(result.node);
     this.notify('Duplicated.', 'success');
+  }
+
+  /**
+   * The element Mod+C took, held as a detached copy rather than a reference.
+   *
+   * Taken at the moment of copying, the way any clipboard works: editing or deleting the
+   * original afterwards does not change what the next paste puts down. Kept on the engine and
+   * not the system clipboard, so a paste rebuilds the element exactly — markup through the
+   * system clipboard would be re-parsed and sanitised on the way back in, and would lose the
+   * block bookkeeping that `duplicate` carries across.
+   */
+  #copied: {
+    node: HTMLElement;
+    instance?: { blockId: string; values: Record<string, string>; css: string };
+  } | null = null;
+
+  /** Whether an element is waiting to be pasted. */
+  get hasCopiedElement(): boolean {
+    return this.#copied !== null;
+  }
+
+  /** Copy an element so `pasteElement` can put it down after any other. */
+  copyElement(el = this.store.value.selected): boolean {
+    if (!el || !el.isConnected || el === document.body || el === document.documentElement) return false;
+    const instance = this.#instances.get(el);
+    this.#copied = {
+      node: copyOfElement(el),
+      instance: instance && { ...instance, values: { ...instance.values } },
+    };
+    this.notify(`Copied ${labelFor(el)}.`, 'success');
+    return true;
+  }
+
+  /**
+   * Put a fresh copy of the copied element right after `el`, and select it.
+   *
+   * After, because that is where Mod+D puts a duplicate and where the next thing in reading
+   * order goes. `<body>` has no "after", so there it goes in last. Each paste is its own copy,
+   * so pasting twice gives two independent elements.
+   */
+  pasteElement(el = this.store.value.selected): HTMLElement | null {
+    const copied = this.#copied;
+    if (!copied) {
+      this.notify('Nothing to paste yet. Select an element and copy it first.', 'info');
+      return null;
+    }
+    if (!el || !el.isConnected) return null;
+    const node = copied.node.cloneNode(true) as HTMLElement;
+    const position = el === document.body || el === document.documentElement ? 'lastChild' : 'after';
+    const reference = el === document.documentElement ? document.body : el;
+    const command = insertNodes(reference, position, [node], `Paste ${labelFor(node)}`);
+    // A refused commit has already said why, and taken the node back out.
+    if (!command || !this.history.commit(command)) return null;
+    if (copied.instance) {
+      this.#instances.set(node, { ...copied.instance, values: { ...copied.instance.values } });
+    }
+    this.select(node);
+    this.notify(`Pasted ${labelFor(node)}.`, 'success');
+    return node;
   }
 
   remove(el = this.store.value.selected): void {
