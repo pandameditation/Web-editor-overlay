@@ -296,6 +296,36 @@ const PANEL_KEYS: Record<string, PanelId> = {
   o: 'seo',
 };
 
+/**
+ * The release of Escape ends a text edit its press could not reach.
+ *
+ * On macOS, Firefox passes keys through the system's text input first, and once a word has been
+ * cut short — selecting some text and deleting it is enough — the system is often holding an
+ * inline prediction or a correction there. The first Escape goes to dismissing that: the page
+ * gets its `keydown` as `Process` (keyCode 229) rather than `Escape`, the edit stayed open, and
+ * only a second press — or holding the key until it repeated — got through. The `keyup` still
+ * says `Escape`, so it finishes the job. When the press did end the edit there is no edit left
+ * by now and this does nothing, so a single Escape never does two things.
+ */
+export function handleKeyUp(engine: EditorEngine, event: KeyboardEvent): void {
+  const state = engine.store.value;
+  if (event.key !== 'Escape' || !state.editing || !state.textEditing) return;
+  if (
+    state.extraction ||
+    state.htmlPaste ||
+    state.cssPaste ||
+    state.aiSettingsOpen ||
+    state.confirm ||
+    state.transform ||
+    state.savePreview != null
+  ) {
+    return;
+  }
+  if (insideNativeModal(event) || fromOverlay(event)) return;
+  event.preventDefault();
+  engine.endTextEdit(true);
+}
+
 /** Documentation of the keymap, for a help surface or a README. */
 export const SHORTCUTS: Array<{ keys: string; action: string }> = [
   { keys: 'Mod+E', action: 'Toggle edit mode' },

@@ -75,7 +75,7 @@ import { containTab } from './focus.js';
 import { inexpressibleAt, refusalFor } from './content-model.js';
 import { domRecorder, movesOf, revertOps, shadowRootsOf, within, type DomOp } from './dom-journal.js';
 import { History, nextChangeId, type Command } from './history.js';
-import { handleKeyDown, matchesShortcut } from './keymap.js';
+import { handleKeyDown, handleKeyUp, matchesShortcut } from './keymap.js';
 import {
   applyBlockProps,
   BlockLibrary,
@@ -8478,6 +8478,12 @@ export class EditorEngine {
         return;
       }
       handleKeyDown(this, event);
+      this.#claimKey(event, prevented);
+    });
+
+    on(document, 'keyup', (event) => {
+      const prevented = event.defaultPrevented;
+      handleKeyUp(this, event);
       this.#claimKey(event, prevented);
     });
 

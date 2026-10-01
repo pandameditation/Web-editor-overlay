@@ -11,6 +11,7 @@
 <body>
   <main id="page">
     <p id="para">The original words.</p>
+    <p id="ime">Cut short by the system.</p>
   </main>
   <pre id="progress">start</pre>
   <pre id="out">pending</pre>
@@ -71,6 +72,10 @@
           key: 'Escape', bubbles: true, composed: true, cancelable: true,
         });
         para.dispatchEvent(event);
+        // And the release, which must not do a second thing — deselecting, say.
+        para.dispatchEvent(new KeyboardEvent('keyup', {
+          key: 'Escape', bubbles: true, composed: true, cancelable: true,
+        }));
         await frames();
         return {
           claimed: event.defaultPrevented,
@@ -95,6 +100,52 @@
         engine.redo();
         await frames();
         return { undone, redone: para.textContent };
+      });
+
+      /*
+       * Firefox on macOS: the system's text input is holding a prediction, so it takes the press
+       * to dismiss it. The page sees `Process` / 229 on the way down, and `Escape` only on the
+       * way up.
+       */
+      await check('anEscapeTheSystemTookOnTheWayDownStillEndsTheEdit', async () => {
+        const ime = document.getElementById('ime');
+        api.select(ime);
+        engine.beginTextEdit(ime);
+        await frames();
+        const range = document.createRange();
+        range.selectNodeContents(ime);
+        range.collapse(false);
+        getSelection().removeAllRanges();
+        getSelection().addRange(range);
+        document.execCommand('insertText', false, ' Kept.');
+        await frames();
+        ime.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'Process', keyCode: 229, isComposing: true,
+          bubbles: true, composed: true, cancelable: true,
+        }));
+        await frames();
+        const afterPress = engine.store.value.textEditing !== null;
+        const up = new KeyboardEvent('keyup', {
+          key: 'Escape', bubbles: true, composed: true, cancelable: true,
+        });
+        ime.dispatchEvent(up);
+        await frames();
+        return {
+          stillEditingAfterThePress: afterPress,
+          stillEditingAfterTheRelease: engine.store.value.textEditing !== null,
+          claimed: up.defaultPrevented,
+          stillSelected: engine.store.value.selected === ime,
+          text: ime.textContent,
+        };
+      });
+
+      await check('aReleaseWithNoEditOpenDoesNothing', async () => {
+        const up = new KeyboardEvent('keyup', {
+          key: 'Escape', bubbles: true, composed: true, cancelable: true,
+        });
+        document.body.dispatchEvent(up);
+        await frames();
+        return { claimed: up.defaultPrevented, stillSelected: engine.store.value.selected?.id ?? null };
       });
 
       results.__errors = errors;
