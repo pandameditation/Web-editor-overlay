@@ -399,17 +399,27 @@
        * substring replaced. Any reformatting anywhere in the file fails this.
        */
       check('theStylesheetWriteIsSurgical', () => {
-        const own = cssWrite.after.slice(0, cssWrite.after.indexOf('/* heo:design-system start'));
-        return own.trimEnd() === originalCSS.replace('padding: 16px;', 'padding: 40px;').trimEnd();
+        // Only the editor's own section is appended; everything before it is the original with
+        // the padding edited and the new token added to the `:root` the file already has.
+        const at = cssWrite.after.indexOf('/* heo:design-system start');
+        const own = at === -1 ? cssWrite.after : cssWrite.after.slice(0, at);
+        return own.trimEnd() === originalCSS
+          .replace('padding: 16px;', 'padding: 40px;')
+          .replace('  --space-md: 16px;\n}', '  --space-md: 16px;\n  --brand-accent: #ff0055;\n}')
+          .trimEnd();
       });
       check('theStylesheetKeepsItsComments', () =>
         cssWrite.after.includes('a trailing comment, tied to this declaration'));
       check('theStylesheetKeepsShortHexAndUnitlessZero', () =>
         cssWrite.after.includes('background: #fff;') && cssWrite.after.includes('margin: 0;'));
       check('theMediaQueryRuleIsUntouched', () => /@media[^{]*\{\s*\.card\s*\{\s*padding: 24px;/.test(cssWrite.after));
-      check('theNewTokenLandedInTheStylesheetNotTheMarkup', () =>
-        cssWrite.after.includes('--brand-accent: #ff0055') &&
-        cssWrite.after.includes('heo:design-system start'));
+      check('theNewTokenLandedInTheStylesheetNotTheMarkup', () => {
+        // In the file's own `:root`, not in a second one appended at the end.
+        const at = cssWrite.after.indexOf('/* heo:design-system start');
+        const section = at === -1 ? '' : cssWrite.after.slice(at);
+        return /:root \{[^}]*--brand-accent: #ff0055;[^}]*\}/.test(cssWrite.after.slice(0, at === -1 ? undefined : at)) &&
+          !section.includes('--brand-accent');
+      });
 
       check('theCrossOriginSheetIsReportedRatherThanWritten', () =>
         plan.unwritable.map((entry) => entry.reason));

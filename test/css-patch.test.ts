@@ -9,6 +9,7 @@
 import assert from 'node:assert/strict';
 import {
   diffCSS,
+  mergeIntoRules,
   normalizeSelector,
   patchCSS,
   readDeclarationBlock,
@@ -648,6 +649,95 @@ test('a bare declaration block parses without a selector around it', () => {
     'color=rgb(34, 34, 34)',
   ]);
   assert.deepEqual(flat(readDeclarationBlock('')), []);
+});
+
+/* -------------------------------------------------------------------------- */
+/* New design-system CSS goes into the rules the file already has               */
+/* -------------------------------------------------------------------------- */
+
+const THEME = `/* Theme */
+:root {
+  --brand: #ff0000;
+  --space: 8px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --brand: #880000;
+  }
+}
+
+.card {
+  padding: 16px;
+}
+`;
+
+test('a new token goes into the existing :root, not a new block', () => {
+  const merged = mergeIntoRules(THEME, ':root {\n  --link: #193dff;\n}');
+  assert.equal(merged.rest, '');
+  const css = upsertSection(merged.css, merged.rest);
+  assert.ok(css.includes('  --space: 8px;\n  --link: #193dff;\n}'), css);
+  assert.equal(css.split(':root').length - 1, 2, 'no extra :root');
+  assert.ok(!css.includes('heo:design-system'), 'no managed section');
+  // Inside the media query, nothing moved.
+  assert.ok(css.includes('    --brand: #880000;\n  }'));
+});
+
+test('a file that already has a managed :root has it moved into its own', () => {
+  const before = upsertSection(THEME, ':root {\n  --link: #193dff;\n}');
+  assert.ok(before.includes('heo:design-system start'));
+  const merged = mergeIntoRules(before, ':root {\n  --link: #193dff;\n}');
+  const css = upsertSection(merged.css, merged.rest);
+  assert.ok(!css.includes('heo:design-system'), css);
+  assert.ok(css.includes('  --space: 8px;\n  --link: #193dff;\n}'), css);
+});
+
+test('a class the file does not have still goes in the managed section', () => {
+  const merged = mergeIntoRules(THEME, ':root {\n  --link: blue;\n}\n\n.badge {\n  color: var(--link);\n}');
+  assert.ok(merged.rest.includes('.badge {'), merged.rest);
+  assert.ok(!merged.rest.includes(':root'), merged.rest);
+  const css = upsertSection(merged.css, merged.rest);
+  assert.ok(css.endsWith('/* heo:design-system end */\n'), css);
+});
+
+test('a rule the file already has gains the new declaration in place', () => {
+  const merged = mergeIntoRules(THEME, '.card {\n  border-radius: 4px;\n}');
+  assert.equal(merged.rest, '');
+  assert.ok(merged.css.includes('.card {\n  padding: 16px;\n  border-radius: 4px;\n}'), merged.css);
+});
+
+test('a token removed later is taken back out, and an overwritten value restored', () => {
+  const first = mergeIntoRules(THEME, ':root {\n  --link: #193dff;\n  --brand: #00ff00;\n}');
+  assert.ok(first.css.includes('--brand: #00ff00;'));
+  assert.deepEqual(
+    first.placed.map((entry) => `${entry.property}=${entry.original}`),
+    ['--link=null', '--brand=#ff0000'],
+  );
+  // The next save has neither: the editor's token goes, the author's value comes back.
+  const second = mergeIntoRules(first.css, '', first.placed);
+  assert.equal(second.css, THEME);
+});
+
+test('a changed value keeps what the file said originally', () => {
+  const first = mergeIntoRules(THEME, ':root {\n  --brand: #00ff00;\n}');
+  const second = mergeIntoRules(first.css, ':root {\n  --brand: #0000ff;\n}', first.placed);
+  assert.ok(second.css.includes('--brand: #0000ff;'));
+  assert.equal(second.placed[0].original, '#ff0000');
+  assert.equal(mergeIntoRules(second.css, '', second.placed).css, THEME);
+});
+
+test('design CSS inside an at-rule is not merged', () => {
+  const merged = mergeIntoRules(THEME, '@media (min-width: 40em) {\n  .card {\n    padding: 24px;\n  }\n}');
+  assert.ok(merged.rest.startsWith('@media (min-width: 40em)'), merged.rest);
+  assert.equal(merged.css, THEME);
+});
+
+test('what is not merged keeps its comments and its notation', () => {
+  const design =
+    '/* tokens */\n:root {\n  --link: #193dff;\n}\n\n/* block: hero */\n.hero { border: 2px solid red; }\n';
+  const merged = mergeIntoRules(THEME, design);
+  assert.equal(merged.rest, '/* block: hero */\n.hero { border: 2px solid red; }');
+  assert.ok(merged.css.includes('--link: #193dff;'));
 });
 
 if (failures.length) {

@@ -187,6 +187,7 @@ import {
   originOf as renderOriginOf,
 } from './provenance.js';
 import { indexSource, type SourceIndex, type SourceRisk } from './source-patch.js';
+import type { Placement } from './css-patch.js';
 import { startEdgeScroll } from './autoscroll.js';
 import {
   sameOrder,
@@ -898,6 +899,8 @@ export class EditorEngine {
    * in it. Keyed by project path.
    */
   #writtenDocuments = new Map<string, { text: string; ops: readonly (readonly DomOp[])[] }>();
+  /** Design-system declarations a save put into each file's own rules, by path. */
+  #placements = new Map<string, Placement[]>();
   /** Identity of the descendants the snapshot above was taken with. See `beginTextEdit`. */
   #textEditIdentity: IdentityMap | undefined = undefined;
   /** The edited element's text as the edit began, for `restorePlainSpaces`. */
@@ -7086,6 +7089,7 @@ export class EditorEngine {
         pending: this.history.records,
         written: this.#writtenDocuments,
       },
+      placements: this.#placements,
     };
   }
 
@@ -7159,10 +7163,11 @@ export class EditorEngine {
     }
 
     const result = await applyWritePlan(host, plan);
-    // What each document now holds, so the next save starts from it rather than from load time.
+    // What each file now holds, so the next save starts from it rather than from load time.
     for (const write of plan.writes) {
-      if (write.kind !== 'document' || !write.journalOps) continue;
       if (!result.written.includes(write.path)) continue;
+      if (write.placements) this.#placements.set(write.path, write.placements);
+      if (write.kind !== 'document' || !write.journalOps) continue;
       this.#writtenDocuments.set(write.path, { text: write.after, ops: write.journalOps });
     }
     if (!result.failed.length && !blocked) this.#markSaved();

@@ -1,13 +1,21 @@
 import { BLOCK_ATTR } from './constants.js';
 import {
+  mergeIntoRules,
   patchCSS,
   upsertSection,
   type DeclarationPatch,
   type PatchFailure,
+  type Placement,
 } from './css-patch.js';
 import { isEditorOwned, type DomOp } from './dom-journal.js';
 import type { JournalEntry } from './history.js';
-import { dropBlockLinks, upsertSeedBlock, upsertStyleBlock } from './html-patch.js';
+import {
+  dropBlockLinks,
+  STYLE_BLOCK_END,
+  STYLE_BLOCK_START,
+  upsertSeedBlock,
+  upsertStyleBlock,
+} from './html-patch.js';
 import { elementOfRecord } from './mutations.js';
 import { patchSourceFromJournal } from './source-patch.js';
 import type { FileHost } from './file-host.js';
@@ -74,6 +82,13 @@ export interface PlannedWrite {
    * Handed back after a successful write so the next save knows what the file already says.
    */
   journalOps?: readonly (readonly DomOp[])[];
+  /**
+   * Design-system declarations this write puts into rules the file already had.
+   *
+   * Handed back after a successful write, for the same reason as `journalOps`: the next save has
+   * to know what the editor added, to take it out again if it goes.
+   */
+  placements?: Placement[];
 }
 
 /** The page's DOM history, as the save needs it. See `History.journal`. */
@@ -219,6 +234,8 @@ export interface WriteSubject {
    * Without it the document cannot be patched, and is not written.
    */
   journal?: DocumentJournal;
+  /** What earlier saves in this session placed into each file's own rules, by path. */
+  placements?: ReadonlyMap<string, readonly Placement[]>;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -459,7 +476,12 @@ export async function buildWritePlan(
       const existing = writes.find((write) => write.path === path);
       const before = existing ? existing.before : await host.read(path);
       const base = existing ? existing.after : (before ?? '');
-      const after = upsertSection(base, systemCSS);
+      /*
+       * Into the rules the file already has first — a new token into the existing `:root` — and
+       * only what has no rule of its own into the managed section at the end.
+       */
+      const merged = mergeIntoRules(base, systemCSS, subject.placements?.get(path) ?? []);
+      const after = upsertSection(merged.css, merged.rest);
       if (after !== before) {
         systemFiled = true;
         /*
@@ -478,17 +500,21 @@ export async function buildWritePlan(
           // was undone, and `upsertSection` closed the gap it left behind.
           if (existing) {
             existing.after = after;
+            existing.placements = merged.placed;
             existing.reason = `${existing.reason}, plus ${systemKinds || 'its design system block removed'
               }`;
           } else {
             writes.push({
               path,
               kind: 'stylesheet',
-              reason: systemKinds ? `new ${systemKinds}` : 'the design system block removed',
+              reason: systemKinds
+                ? `new ${systemKinds}${merged.placed.length ? ', in the rules already there' : ''}`
+                : 'the design system removed',
               before,
               after,
               records: [],
               unplaced: [],
+              placements: merged.placed,
             });
           }
         }
@@ -604,6 +630,7 @@ export async function buildWritePlan(
               ),
               unplaced: [],
               journalOps: patched.ops,
+              placements: patched.placements,
             });
           }
         } else {
@@ -866,6 +893,7 @@ function tryPatchDocument(
   ops: (readonly DomOp[])[];
   stranded: ChangeRecord[];
   unplaced: ChangeRecord[];
+  placements: Placement[];
 } | null {
   if (!records.length) return null;
   const blockSeed = subject.blockLibrarySeed?.trim() ?? '';
@@ -916,17 +944,67 @@ function tryPatchDocument(
    * other byte-identical. Removal of the library is the third state and happens last of all,
    * taking the instance links with it.
    */
+  const placedInPage = mergeIntoPageStyles(
+    result.html,
+    designSystemCSS,
+    subject.placements?.get(documentPath) ?? [],
+  );
   const withBlocks = upsertSeedBlock(
-    upsertStyleBlock(result.html, designSystemCSS),
+    upsertStyleBlock(placedInPage.html, placedInPage.rest),
     blockSeed,
     removeBlockLibrary,
   );
   return {
     html: removeBlockLibrary ? dropBlockLinks(withBlocks) : withBlocks,
+    placements: placedInPage.placed,
     ops: result.ops,
     stranded: records.filter((record) => result.stranded.has(record.id)),
     unplaced: records.filter((record) => result.unplaced.has(record.id)),
   };
+}
+
+/**
+ * Merge design-system CSS into the HTML file's own `<style>` blocks, the way `mergeIntoRules`
+ * does for a stylesheet.
+ *
+ * Later blocks are offered each rule first, because they win the cascade; what no block has a
+ * rule for is handed back for the managed `<style>`. The managed block itself, anything inside a
+ * comment, and the editor's own `<style>` elements are never targets.
+ */
+function mergeIntoPageStyles(
+  html: string,
+  css: string,
+  previous: readonly Placement[],
+): { html: string; rest: string; placed: Placement[] } {
+  const blocks: Array<{ start: number; end: number }> = [];
+  const managedStart = html.indexOf(STYLE_BLOCK_START);
+  const managedEnd = html.indexOf(STYLE_BLOCK_END);
+  const comments: Array<[number, number]> = [];
+  for (const match of html.matchAll(/<!--[\s\S]*?-->/g)) comments.push([match.index!, match.index! + match[0].length]);
+  const insideComment = (at: number): boolean => comments.some(([a, b]) => at > a && at < b);
+  for (const match of html.matchAll(/<style\b([^>]*)>([\s\S]*?)<\/style\s*>/gi)) {
+    const at = match.index!;
+    if (managedStart !== -1 && managedEnd > managedStart && at > managedStart && at < managedEnd) continue;
+    if (insideComment(at) || /data-heo-/i.test(match[1])) continue;
+    const start = at + match[0].indexOf('>') + 1;
+    blocks.push({ start, end: start + match[2].length });
+  }
+
+  let out = html;
+  let rest = css;
+  const placed: Placement[] = [];
+  for (let k = blocks.length - 1; k >= 0; k -= 1) {
+    const { start, end } = blocks[k];
+    const merged = mergeIntoRules(
+      out.slice(start, end),
+      rest,
+      previous.filter((entry) => entry.scope === k),
+    );
+    out = out.slice(0, start) + merged.css + out.slice(end);
+    rest = merged.rest;
+    placed.push(...merged.placed.map((entry) => ({ ...entry, scope: k })));
+  }
+  return { html: out, rest, placed };
 }
 
 function groupFor(

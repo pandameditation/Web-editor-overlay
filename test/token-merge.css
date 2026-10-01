@@ -1,0 +1,15 @@
+/* The project's own tokens, where a new one belongs. */
+:root {
+  --ink: #172033;
+  --space: 8px;
+}
+
+.card {
+  padding: var(--space);
+}
+
+/* heo:design-system start — managed by html-editor-overlay */
+:root {
+  --link: #193dff;
+}
+/* heo:design-system end */

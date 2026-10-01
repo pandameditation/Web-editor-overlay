@@ -402,10 +402,13 @@ how its size changes — before anything is written.
 - **Linked stylesheets** get the declarations that changed, and nothing else.
 - **External scripts** are replaced outright. Nothing else is possible: the editor
   knows the new text, never which part of it is the change.
-- **New tokens and reusable classes** go into the first writable stylesheet, inside a
-  marked block so the next save replaces it rather than adding another. A page with no
-  stylesheet keeps them in the `<style>` block they are already rendering from. Change
-  the destination in the Files step.
+- **New tokens and reusable classes** go into the first writable stylesheet. Each
+  declaration is patched into the rule that already exists for its selector — a new
+  token joins the file's own `:root`, an edited one changes in place, a removed one
+  leaves (or gets its authored value back). Only what has no rule to go into — a class
+  the file never defined, at-rules — is appended, inside a marked block so the next save
+  replaces it rather than adding another. With the page as the destination, the page's
+  own `<style>` rules take them the same way. Change the destination in the Files step.
 
 **Edits are replayed against each file's own text.** This matters more than it
 sounds. Reading a stylesheet back out of the CSSOM gives you the browser's
@@ -784,8 +787,8 @@ different unit. Edits write the individual longhand, never a shorthand that woul
 reset sides you never touched.
 
 **Tokens** — tokens the selected component uses come first, then the full palette
-by group, then the class registry, then import/export. Token edits are written to
-a managed stylesheet so everything referencing them updates immediately, and they
+by group, then the class registry, then import/export. Token edits are written into
+the chosen stylesheet's existing `:root` so everything referencing them updates immediately, and they
 are undoable like any other change. "Extract class" opens a review step: rename the class, untick the
 declarations that do not belong in every use, and see the resulting rule before
 anything is committed. What the class absorbs is removed from the element; what you

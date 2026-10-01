@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>A new token goes into the :root the file already has</title>
+  <link rel="stylesheet" href="./token-merge.css">
+  <style>
+    :root {
+      --page-bg: #fafafa;
+    }
+
+    body { margin: 0; padding: 24px; font-family: system-ui, sans-serif; }
+  </style>
+</head>
+
+<body>
+  <!--
+    A token added in the editor used to be written as a second `:root` in a managed block at the
+    end of the chosen file, even when the file already kept its tokens in a `:root` of its own.
+    It belongs in that one; the managed block is only for what has no rule to go into.
+
+        npm run build:lib && node scripts/browser-check.mjs test/token-merge.html 60000
+  -->
+  <p class="card" id="card">A card.</p>
+
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const errors = [];
+      addEventListener('error', (e) => errors.push('error: ' + e.message));
+      addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+      const results = {};
+      const progress = document.getElementById('progress');
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+      const page = decodeURIComponent(location.pathname).split('/').pop();
+      const directory = decodeURIComponent(location.pathname).replace(/[^/]*$/, '');
+      const disk = new Map();
+      const project = {
+        kind: 'directory',
+        label: 'memory',
+        resolve(url) {
+          const path = decodeURIComponent(new URL(url, location.href).pathname);
+          return path.startsWith(directory) ? path.slice(directory.length) : null;
+        },
+        read: async (path) => {
+          if (disk.has(path)) return disk.get(path);
+          try {
+            const text = await (await fetch('./' + path)).text();
+            disk.set(path, text);
+            return text;
+          } catch { return null; }
+        },
+        write: async (path, text) => { disk.set(path, text); },
+        ensureWritable: async () => true,
+        release: async () => { },
+      };
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark', detectScriptContent: false });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await engine.attachProject(project, { quiet: true });
+      await frames();
+      const original = await project.read('token-merge.css');
+      const originalPage = await project.read(page);
+
+      /** A token added the way the panel adds one: an undoable change. */
+      let counter = 0;
+      const addToken = (name, value) => {
+        engine.history.commit({
+          label: `Add --${name}`,
+          record: { id: `token-${++counter}`, kind: 'token', summary: `Add --${name}`, target: `--${name}`, after: value, at: Date.now() },
+          apply: () => engine.tokens.upsert({ name, value, group: 'color', origin: 'user' }),
+          revert: () => engine.tokens.remove(name),
+        });
+      };
+      const sheet = () => disk.get('token-merge.css');
+      const rootOf = (css) => /:root \{[^}]*\}/.exec(css)?.[0] ?? '';
+      const ownPart = (css) => {
+        const at = css.indexOf('/* heo:design-system start');
+        return at === -1 ? css : css.slice(0, at);
+      };
+
+      const target = engine.styleTargets().map((t) => t.value).find((t) => /token-merge\.css$/.test(t));
+      engine.setDesignSystemTarget(target);
+
+      /* 1. The reported case: the managed :root moves into the file's own. */
+      progress.textContent = 'reported';
+      addToken('link', '#193dff');
+      await engine.writeToProject();
+      results.theTokenGoesIntoTheExistingRoot = {
+        inTheOwnRoot: rootOf(sheet()).includes('--link: #193dff;'),
+        noManagedSection: !sheet().includes('heo:design-system'),
+        onlyThatChanged:
+          sheet().trimEnd() ===
+          original
+            .slice(0, original.indexOf('/* heo:design-system start'))
+            .replace('  --space: 8px;\n}', '  --space: 8px;\n  --link: #193dff;\n}')
+            .trimEnd(),
+      };
+
+      /* 2. Another token later joins it, and a removed one leaves. */
+      progress.textContent = 'later';
+      engine.history.sealStep();
+      addToken('accent', '#ff0055');
+      await engine.writeToProject();
+      const withBoth = rootOf(sheet());
+      engine.tokens.remove('link');
+      engine.history.sealStep();
+      addToken('third', '#00aa00');
+      await engine.writeToProject();
+      results.laterChangesStayInTheSameRule = {
+        bothAdded: withBoth.includes('--link: #193dff;') && withBoth.includes('--accent: #ff0055;'),
+        removedOneLeft: !sheet().includes('--link'),
+        othersStayed: rootOf(sheet()).includes('--accent: #ff0055;') && rootOf(sheet()).includes('--third: #00aa00;'),
+        stillOneRoot: (sheet().match(/:root/g) ?? []).length === 1,
+        authoredTokensUntouched: rootOf(sheet()).includes('--ink: #172033;') && rootOf(sheet()).includes('--space: 8px;'),
+      };
+
+      /* 3. A class the file has no rule for still needs the managed section. */
+      progress.textContent = 'class';
+      engine.classes.upsert({ name: 'badge', declarations: { color: 'var(--accent)' }, origin: 'user' });
+      engine.history.sealStep();
+      addToken('fourth', '#123456');
+      await engine.writeToProject();
+      results.onlyWhatHasNoRuleIsAppended = {
+        classInSection: /heo:design-system start[\s\S]*\.badge \{[\s\S]*heo:design-system end/.test(sheet()),
+        tokenNotInSection: !/heo:design-system start[\s\S]*--fourth/.test(sheet()),
+        tokenInOwnRoot: rootOf(ownPart(sheet())).includes('--fourth: #123456;'),
+      };
+
+      /* 4. With the page as the target, the page's own <style> :root takes it. */
+      progress.textContent = 'page';
+      engine.classes.remove('badge');
+      engine.setDesignSystemTarget('document');
+      engine.history.sealStep();
+      addToken('page-ink', '#222222');
+      const plan = await engine.previewWritePlan();
+      const write = (plan?.writes ?? []).find((w) => w.kind === 'document');
+      const style = /<style>[\s\S]*?<\/style>/.exec(write?.after ?? '')?.[0] ?? '';
+      results.thePagesOwnStyleTakesIt = {
+        written: Boolean(write),
+        inThePageRoot: /:root \{[^}]*--page-bg: #fafafa;[^}]*--page-ink: #222222;/.test(style),
+        // Parsed: this fixture's own script names both the marker and the token.
+        noManagedStyleForTokens: (() => {
+          const styles = Array.from(new DOMParser().parseFromString(write?.after ?? '', 'text/html')
+            .querySelectorAll('style')).map((el) => el.textContent ?? '');
+          return styles.filter((css) => css.includes('--page-ink')).length === 1 && styles[0].includes('--page-ink');
+        })(),
+        // The page now holds the whole user design system, each token inside its own :root.
+        restOfThePageUntouched:
+          (write?.after ?? '').replace(/\n      --(accent|fourth|page-ink|third): #[0-9a-f]+;/g, '') === originalPage,
+      };
+
+      const failed = Object.entries(results)
+        .filter(([, group]) => Object.values(group).some((value) => value === false))
+        .map(([name]) => name);
+      results.failed = failed;
+      results.sheet = sheet();
+      results.ok = failed.length === 0 && errors.length === 0;
+      results.__errors = errors;
+      document.getElementById('out').textContent = 'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify({ ok: false, __errors: [String((e && e.stack) || e)] }) + ':END';
+    });
+  </script>
+</body>
+
+</html>

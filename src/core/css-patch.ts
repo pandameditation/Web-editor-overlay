@@ -163,6 +163,165 @@ export function hasSection(source: string): boolean {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Merging new vocabulary into the rules a file already has                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One declaration the editor put into a rule the file already had.
+ *
+ * Remembered so the next save can take it out again if the token or class behind it has gone,
+ * putting back whatever the rule said before — the editor's own addition removed, the author's
+ * value restored.
+ */
+export interface Placement {
+  selector: string;
+  /** Which top-level rule with this selector, counting from the first. */
+  occurrence: number;
+  property: string;
+  /** What the rule said for this property before the editor touched it; null when it had none. */
+  original: string | null;
+  /** Which of the HTML file's `<style>` blocks, counting from the first, for a page target. */
+  scope?: number;
+}
+
+export interface MergeResult {
+  css: string;
+  /** What found no rule of its own in the file, for the managed section. */
+  rest: string;
+  /** Everything now placed in the file's own rules. */
+  placed: Placement[];
+}
+
+/**
+ * Put new design-system CSS into the rules the file already has, wherever it can.
+ *
+ * A new token belongs in the `:root` the project already keeps its tokens in, not in a second
+ * `:root` appended at the bottom; the same goes for a class or rule whose selector the file
+ * already has at the top level. So each declaration is patched into the last such rule — the
+ * one that wins the cascade — and only a rule with no counterpart, or anything inside an
+ * at-rule, is handed back to go into the managed section at the end.
+ *
+ * Rules inside the managed section are never targets: that section is the editor's own and is
+ * rebuilt from `rest`, so a file that already has one gets its contents moved into the real
+ * rules on the next save.
+ *
+ * `previous` is what an earlier save placed. Anything in it the design system no longer has is
+ * taken back out, restoring the rule to what it said before.
+ */
+export function mergeIntoRules(
+  source: string,
+  designCSS: string,
+  previous: readonly Placement[] = [],
+): MergeResult {
+  const wanted: Array<{
+    selector: string;
+    declarations: Array<{ property: string; value: string }>;
+    /** Where the rule sits in `designCSS`, with the comment that heads it. */
+    from: number;
+    to: number;
+  }> = [];
+  for (const block of scanBlocks(designCSS, 0, designCSS.length)) {
+    if (block.atRule || block.bodyStart === -1 || block.children.length) continue;
+    wanted.push({
+      selector: block.prelude,
+      declarations: parseDeclarations(designCSS, block.bodyStart, block.bodyEnd).map((entry) => ({
+        property: entry.property,
+        value: designCSS.slice(entry.valueStart, entry.priorityEnd),
+      })),
+      from: headingComment(designCSS, block.preludeStart),
+      to: block.bodyEnd + 1,
+    });
+  }
+  /** Ranges of `designCSS` that went into the file's own rules; the rest stays as written. */
+  const merged: Array<[number, number]> = [];
+
+  let css = source;
+  /** Top-level rules with this selector that are the file's own, outside the managed section. */
+  const ownRules = (selector: string): Block[] => {
+    const start = css.indexOf(SECTION_START);
+    const end = css.indexOf(SECTION_END);
+    return scanBlocks(css, 0, css.length).filter(
+      (block) =>
+        !block.atRule &&
+        block.bodyStart !== -1 &&
+        block.prelude === selector &&
+        !(start !== -1 && end > start && block.preludeStart > start && block.preludeStart < end),
+    );
+  };
+  /** The patch locator's ordinal for the `own`-th own rule, counting the managed section's too. */
+  const ordinal = (selector: string, own: number): number | null => {
+    const target = ownRules(selector)[own];
+    if (!target) return null;
+    return scanBlocks(css, 0, css.length)
+      .filter((block) => !block.atRule && block.bodyStart !== -1 && block.prelude === selector)
+      .indexOf(target);
+  };
+  const keyOf = (selector: string, property: string): string => `${selector}\u0000${propertyKey(property)}`;
+  const earlier = new Map(previous.map((entry) => [keyOf(entry.selector, entry.property), entry]));
+  const placed: Placement[] = [];
+  const still = new Set<string>();
+
+  for (const rule of wanted) {
+    const targets = ownRules(rule.selector);
+    if (!targets.length) continue;
+    merged.push([rule.from, rule.to]);
+    const occurrence = targets.length - 1;
+    for (const { property, value } of rule.declarations) {
+      const key = keyOf(rule.selector, property);
+      still.add(key);
+      const target = ownRules(rule.selector)[occurrence];
+      const existing = parseDeclarations(css, target.bodyStart, target.bodyEnd).find((entry) =>
+        sameProperty(entry.property, property),
+      );
+      const before = earlier.get(key);
+      const original = before
+        ? before.original
+        : existing
+          ? css.slice(existing.valueStart, existing.priorityEnd)
+          : null;
+      css = applyPatch(css, {
+        selector: rule.selector,
+        occurrence: ordinal(rule.selector, occurrence) ?? occurrence,
+        property,
+        value,
+      }).css;
+      placed.push({ selector: rule.selector, occurrence, property, original });
+    }
+  }
+
+  // What an earlier save put in and the design system no longer has: put the rule back.
+  for (const entry of previous) {
+    if (still.has(keyOf(entry.selector, entry.property))) continue;
+    const at = ordinal(entry.selector, entry.occurrence);
+    if (at === null) continue;
+    css = applyPatch(css, {
+      selector: entry.selector,
+      occurrence: at,
+      property: entry.property,
+      value: entry.original ?? '',
+    }).css;
+  }
+
+  let rest = designCSS;
+  for (const [from, to] of merged.reverse()) rest = rest.slice(0, from) + rest.slice(to);
+  rest = rest.replace(/\n[ \t]*\n(?:[ \t]*\n)+/g, '\n\n').trim();
+  return { css, rest, placed };
+}
+
+/** Where a rule starting at `at` begins once the comment right above it is counted in. */
+function headingComment(source: string, at: number): number {
+  let i = at;
+  while (i > 0 && isSpace(source[i - 1])) i -= 1;
+  if (source.slice(i - 2, i) !== '*/') return at;
+  const open = source.lastIndexOf('/*', i - 2);
+  if (open === -1) return at;
+  // Only when the comment opens its own line: one trailing a previous rule belongs to that rule.
+  let j = open;
+  while (j > 0 && (source[j - 1] === ' ' || source[j - 1] === '\t')) j -= 1;
+  return j === 0 || source[j - 1] === '\n' ? open : at;
+}
+
+/* -------------------------------------------------------------------------- */
 /* Diffing two stylesheets                                                     */
 /* -------------------------------------------------------------------------- */
 

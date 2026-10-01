@@ -61,6 +61,7 @@
     "check:journalreview": "node scripts/browser-check.mjs test/journal-review.html 60000",
     "check:fuzz": "node scripts/browser-check.mjs test/journal-fuzz.html 180000",
     "check:fuzzarticle": "node scripts/browser-check.mjs test/journal-fuzz-article.html 300000",
+    "check:tokenmerge": "node scripts/browser-check.mjs test/token-merge.html 60000",
     "check:renderrisk": "node scripts/browser-check.mjs test/render-risk.html 60000",
     "check:contentmodel": "node scripts/browser-check.mjs test/content-model.html 60000",
     "check:cssrules": "node scripts/browser-check.mjs test/css-rules.html 45000",
