@@ -1,5 +1,6 @@
 import { parseDeclarations } from './css.js';
 import { isBookkeepingAttribute, isEditorOwned, TreeView, type DomOp } from './dom-journal.js';
+import { inexpressibleAt } from './content-model.js';
 import { editOpenTag, type OpenTagEdit } from './html-patch.js';
 
 /**
@@ -715,6 +716,8 @@ type Expected =
     kids: Expected[];
     ws: boolean;
     template?: string;
+    /** The page's node this stands for, so a failed check can say where. */
+    live?: Node;
   }
   | { k: 'text'; data: string }
   | { k: 'comment'; data: string };
@@ -774,6 +777,7 @@ class Emitter {
   readonly #keep: ReadonlySet<string>;
   readonly #styleEdits: ReadonlyMap<Element, (css: string) => string>;
   readonly #eol: string;
+  readonly #forced: ReadonlyMap<Node, 'all' | 'pure'>;
 
   constructor(options: {
     source: string;
@@ -785,6 +789,8 @@ class Emitter {
     keep: ReadonlySet<string>;
     styleEdits: ReadonlyMap<Element, (css: string) => string>;
     eol: string;
+    forced: ReadonlyMap<Node, 'all' | 'pure'>;
+    strict: boolean;
   }) {
     this.#source = options.source;
     this.#tree = options.tree;
@@ -795,15 +801,16 @@ class Emitter {
     this.#keep = options.keep;
     this.#styleEdits = options.styleEdits;
     this.#eol = options.eol;
+    this.#forced = options.forced;
+    this.#strict = options.strict;
   }
 
-  run(root: Document, strict: boolean): { text: string; exp: Expected } {
-    this.#strict = strict;
+  run(root: Document): { text: string; exp: Expected } {
     const range = this.#tree.ranges.get(this.#tree.doc)!;
     const content = this.#content(root, this.#tree.doc, range);
     return {
       text: content.text,
-      exp: { k: 'el', name: '#document', ns: null, attrs: new Map(), kids: content.exp, ws: false },
+      exp: { k: 'el', name: '#document', ns: null, attrs: new Map(), kids: content.exp, ws: false, live: root },
     };
   }
 
@@ -857,7 +864,8 @@ class Emitter {
     }
 
     const name = node.localName;
-    const closeMissing = moved && this.#strict && !range.explicitClose && !VOID.has(name);
+    // Moved, the end the file left implied would be decided by whatever now follows it.
+    const closeMissing = moved && !range.explicitClose && !VOID.has(name);
     if (!this.#needsRender(node)) {
       return {
         text: this.#slice(range) + (closeMissing ? `</${name}>` : ''),
@@ -919,6 +927,7 @@ class Emitter {
           attrs,
           kids: [...inner.exp, ...tail],
           ws: inner.ws,
+          live: node,
           ...(node instanceof HTMLTemplateElement ? { template: (source as HTMLTemplateElement).innerHTML } : {}),
         },
       ],
@@ -926,7 +935,7 @@ class Emitter {
   }
 
   /** An element the file has never seen, written out with whatever inside it the file has. */
-  #serialize(el: Element, _moved: boolean): Rendered {
+  #serialize(el: Element, _moved: boolean, pure = false): Rendered {
     const name = el.localName;
     const attrs = new Map<string, string>();
     let text = `<${name}`;
@@ -939,23 +948,44 @@ class Emitter {
     text += '>';
     if (VOID.has(name)) {
       if (this.#kids(el).length) this.why.push(`the page puts content inside a <${name}>, which HTML cannot express`);
-      return { text, exp: [{ k: 'el', name, ns: el.namespaceURI, attrs, kids: [], ws: false }] };
+      return { text, exp: [{ k: 'el', name, ns: el.namespaceURI, attrs, kids: [], ws: false, live: el }] };
     }
     if (el instanceof HTMLTemplateElement) {
       const html = el.innerHTML;
       return {
         text: `${text}${html}</${name}>`,
-        exp: [{ k: 'el', name, ns: el.namespaceURI, attrs, kids: [], ws: false, template: html }],
+        exp: [{ k: 'el', name, ns: el.namespaceURI, attrs, kids: [], ws: false, template: html, live: el }],
       };
     }
     const kids: Expected[] = [];
     for (const kid of this.#kids(el)) {
-      const rendered = this.render(kid, true);
+      const rendered = pure ? this.#pure(kid) : this.render(kid, true);
       text += rendered.text;
       kids.push(...rendered.exp);
     }
     text += `</${name}>`;
-    return { text, exp: [{ k: 'el', name, ns: el.namespaceURI, attrs, kids, ws: false }] };
+    return { text, exp: [{ k: 'el', name, ns: el.namespaceURI, attrs, kids, ws: false, live: el }] };
+  }
+
+  /**
+   * A node written from the page alone, the way a serializer would, with no bytes from the file.
+   *
+   * The last resort for one container whose minimal patch did not read back: still only that
+   * container's content, and still verified.
+   */
+  #pure(node: Node): Rendered {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const data = this.#target.data(node as Text);
+      const parent = this.#target.parent(node);
+      const raw = parent instanceof Element && RAW_PARENT.has(parent.localName);
+      return { text: raw ? data : escapeText(data), exp: [{ k: 'text', data }] };
+    }
+    if (node.nodeType === Node.COMMENT_NODE) {
+      const data = this.#target.data(node as Comment);
+      return { text: `<!--${data}-->`, exp: [{ k: 'comment', data }] };
+    }
+    if (!(node instanceof Element)) return { text: '', exp: [] };
+    return this.#serialize(node, true, true);
   }
 
   /** The tag edits that carry the user's attribute changes, and nothing the page did. */
@@ -1020,6 +1050,17 @@ class Emitter {
       !liveAll.some((kid) => kid.nodeType === Node.TEXT_NODE && !liveSpace(kid)) &&
       !sourceAll.some((kid) => kid.nodeType === Node.TEXT_NODE && !sourceSpace(kid));
 
+    const level = this.#forced.get(live);
+    if (level === 'pure') {
+      // Everything between the tags written from the page; what follows the closing tag stays.
+      const parts = liveAll.map((kid) => this.#pure(kid));
+      return {
+        text: parts.map((part) => part.text).join(''),
+        exp: parts.flatMap((part) => part.exp),
+        ws: false,
+      };
+    }
+
     const sourceItems = block ? sourceAll.filter((kid) => !sourceSpace(kid)) : sourceAll;
     const liveItems = block ? liveAll.filter((kid) => !liveSpace(kid)) : liveAll;
     const sourceOnly = (node: Node): boolean => !this.#binding.toLive.has(node);
@@ -1029,7 +1070,9 @@ class Emitter {
     let i = 0;
     let j = 0;
     const kept: Array<[Node, Node]> = [];
-    while (i < sourceItems.length && j < liveItems.length) {
+    // Forced: nothing is kept in place, every child is written again in order.
+    const keepEnds = level !== 'all';
+    while (keepEnds && i < sourceItems.length && j < liveItems.length) {
       if (sourceOnly(sourceItems[i]) && this.#tree.ranges.has(sourceItems[i])) {
         i += 1;
         continue;
@@ -1041,7 +1084,7 @@ class Emitter {
     }
     let si = sourceItems.length;
     let lj = liveItems.length;
-    while (si > i && lj > j) {
+    while (keepEnds && si > i && lj > j) {
       if (sourceOnly(sourceItems[si - 1]) && this.#tree.ranges.has(sourceItems[si - 1])) {
         si -= 1;
         continue;
@@ -1124,7 +1167,8 @@ class Emitter {
         beforeRange !== undefined &&
         !beforeRange.explicitClose &&
         !VOID.has(before.localName);
-      const closer = openEnded && this.#strict ? `</${(before as Element).localName}>` : '';
+      const closer =
+        openEnded && (this.#strict || pieces.length) ? `</${(before as Element).localName}>` : '';
 
       let text: string;
       if (block) {
@@ -1277,20 +1321,29 @@ interface Shape {
   template?: string;
   ws?: boolean;
   kids?: () => Shape[];
+  /** The page's node this stands for, when there is one. */
+  live?: Node | null;
 }
 
-function fromNode(node: Node): Shape | null {
-  if (node.nodeType === Node.TEXT_NODE) return { type: 'text', data: (node as Text).data };
-  if (node.nodeType === Node.COMMENT_NODE) return { type: 'comment', data: (node as Comment).data };
-  if (node.nodeType === Node.DOCUMENT_TYPE_NODE) return { type: 'doctype' };
+interface Mismatch {
+  message: string;
+  /** The page's node whose children did not read back. */
+  parent: Node | null;
+  /** The child of it where they first parted, when that is known. */
+  child: Node | null;
+}
+
+function fromNode(node: Node, toLive?: ReadonlyMap<Node, Node>): Shape | null {
+  const live = toLive?.get(node) ?? null;
+  if (node.nodeType === Node.TEXT_NODE) return { type: 'text', data: (node as Text).data, live };
+  if (node.nodeType === Node.COMMENT_NODE) return { type: 'comment', data: (node as Comment).data, live };
+  if (node.nodeType === Node.DOCUMENT_TYPE_NODE) return { type: 'doctype', live };
+  const childrenOf = (of: Node): Shape[] =>
+    Array.from(of.childNodes)
+      .map((kid) => fromNode(kid, toLive))
+      .filter((x): x is Shape => Boolean(x));
   if (node.nodeType === Node.DOCUMENT_NODE) {
-    return {
-      type: 'el',
-      name: '#document',
-      ns: null,
-      attrs: new Map(),
-      kids: () => Array.from(node.childNodes).map(fromNode).filter((x): x is Shape => Boolean(x)),
-    };
+    return { type: 'el', name: '#document', ns: null, attrs: new Map(), kids: () => childrenOf(node), live };
   }
   if (!(node instanceof Element)) return null;
   const attrs = new Map<string, string>();
@@ -1301,15 +1354,13 @@ function fromNode(node: Node): Shape | null {
     ns: node.namespaceURI,
     attrs,
     template: node instanceof HTMLTemplateElement ? node.innerHTML : undefined,
-    kids: () =>
-      node instanceof HTMLTemplateElement
-        ? []
-        : Array.from(node.childNodes).map(fromNode).filter((x): x is Shape => Boolean(x)),
+    kids: () => (node instanceof HTMLTemplateElement ? [] : childrenOf(node)),
+    live,
   };
 }
 
-function fromExpected(exp: Expected): Shape | null {
-  if (exp.k === 'node') return fromNode(exp.node);
+function fromExpected(exp: Expected, toLive: ReadonlyMap<Node, Node>): Shape | null {
+  if (exp.k === 'node') return fromNode(exp.node, toLive);
   if (exp.k === 'text') return { type: 'text', data: exp.data };
   if (exp.k === 'comment') return { type: 'comment', data: exp.data };
   return {
@@ -1319,7 +1370,8 @@ function fromExpected(exp: Expected): Shape | null {
     attrs: exp.attrs,
     template: exp.template,
     ws: exp.ws,
-    kids: () => exp.kids.map(fromExpected).filter((x): x is Shape => Boolean(x)),
+    kids: () => exp.kids.map((kid) => fromExpected(kid, toLive)).filter((x): x is Shape => Boolean(x)),
+    live: exp.live ?? null,
   };
 }
 
@@ -1328,7 +1380,7 @@ function normalize(kids: Shape[], ws: boolean): Shape[] {
   for (const kid of kids) {
     const last = out.at(-1);
     if (kid.type === 'text' && last?.type === 'text') {
-      out[out.length - 1] = { type: 'text', data: last.data! + kid.data! };
+      out[out.length - 1] = { type: 'text', data: last.data! + kid.data!, live: last.live ?? kid.live };
       continue;
     }
     out.push(kid);
@@ -1336,28 +1388,51 @@ function normalize(kids: Shape[], ws: boolean): Shape[] {
   return ws ? out.filter((kid) => kid.type !== 'text' || kid.data!.trim() !== '') : out;
 }
 
-function sameShape(actual: Shape, wanted: Shape, path: string): string | null {
-  if (actual.type !== wanted.type) return `${path}: found ${actual.type}, expected ${wanted.type}`;
+function sameShape(actual: Shape, wanted: Shape, path: string, parent: Node | null): Mismatch | null {
+  const miss = (message: string, child: Node | null = wanted.live ?? null): Mismatch => ({
+    message,
+    parent,
+    child,
+  });
+  if (actual.type !== wanted.type) return miss(`${path}: found ${actual.type}, expected ${wanted.type}`);
   if (actual.type === 'text' || actual.type === 'comment') {
-    return actual.data === wanted.data ? null : `${path}: ${actual.type} differs`;
+    return actual.data === wanted.data ? null : miss(`${path}: ${actual.type} differs`);
   }
   if (actual.type === 'doctype') return null;
   if (actual.name !== wanted.name || actual.ns !== wanted.ns) {
-    return `${path}: found <${actual.name}>, expected <${wanted.name}>`;
+    return miss(`${path}: found <${actual.name}>, expected <${wanted.name}>`);
   }
   const a = actual.attrs!;
   const b = wanted.attrs!;
   if (a.size !== b.size || [...a].some(([name, value]) => b.get(name) !== value)) {
-    return `${path}/<${actual.name}>: attributes differ`;
+    return miss(`${path}/<${actual.name}>: attributes differ`);
   }
-  if ((actual.template ?? null) !== (wanted.template ?? null)) return `${path}/<${actual.name}>: template differs`;
+  if ((actual.template ?? null) !== (wanted.template ?? null)) {
+    return miss(`${path}/<${actual.name}>: template differs`);
+  }
   const ws = Boolean(wanted.ws || actual.ws);
   const left = normalize(actual.kids!(), ws);
   const right = normalize(wanted.kids!(), ws);
   const here = `${path}/<${actual.name}>`;
-  if (left.length !== right.length) return `${here}: ${left.length} children, expected ${right.length}`;
+  const self = wanted.live ?? null;
+  if (left.length !== right.length) {
+    let k = 0;
+    while (
+      k < Math.min(left.length, right.length) &&
+      left[k].type === right[k].type &&
+      left[k].name === right[k].name &&
+      (left[k].type !== 'text' || left[k].data === right[k].data)
+    ) {
+      k += 1;
+    }
+    return {
+      message: `${here}: ${left.length} children, expected ${right.length}`,
+      parent: self,
+      child: right[k]?.live ?? null,
+    };
+  }
   for (let k = 0; k < left.length; k += 1) {
-    const mismatch = sameShape(left[k], right[k], here);
+    const mismatch = sameShape(left[k], right[k], here, self);
     if (mismatch) return mismatch;
   }
   return null;
@@ -1573,13 +1648,29 @@ export function patchSourceFromJournal(input: SourcePatchInput): SourcePatchResu
 
   const eol = source.includes('\r\n') ? '\r\n' : '\n';
   const keep = new Set(input.keep ?? []);
+  /*
+   * Emit, read back, and when that does not match, find out why before trying again.
+   *
+   * Either the page holds something HTML cannot express — a block inside a paragraph, a link
+   * inside a link — and no file can hold it, which is said in those words. Or the minimal patch of
+   * one container did not come out right, and only that container is written again: first every
+   * child in order, then from the page alone. Never more than the container that failed, and the
+   * result is checked again every time.
+   */
+  const forced = new Map<Node, 'all' | 'pure'>();
   let failure = 'the result did not read back as the page shows it';
-  for (const strict of [false, true]) {
-    const emitter = new Emitter({ source, tree, binding, file, target, dirty, keep, styleEdits, eol });
-    const { text, exp } = emitter.run(root, strict);
+  for (let attempt = 0; attempt < 16; attempt += 1) {
+    for (const node of forced.keys()) {
+      for (let at: Node | null = node; at && !dirty.touched.has(at); at = target.parent(at)) dirty.touched.add(at);
+    }
+    const emitter = new Emitter({
+      source, tree, binding, file, target, dirty, keep, styleEdits, eol, forced,
+      strict: attempt > 0,
+    });
+    const { text, exp } = emitter.run(root);
     if (emitter.why.length) return { ok: false, why: emitter.why };
     const parsed = new DOMParser().parseFromString(text, 'text/html');
-    const mismatch = sameShape(fromNode(parsed)!, fromExpected(exp)!, '');
+    const mismatch = sameShape(fromNode(parsed)!, fromExpected(exp, binding.toLive)!, '', null);
     if (!mismatch) {
       return {
         ok: true,
@@ -1592,7 +1683,38 @@ export function patchSourceFromJournal(input: SourcePatchInput): SourcePatchResu
         unplaced,
       };
     }
-    failure = `the edited markup would not read back as the page shows it (${mismatch})`;
+    failure = `the edited markup would not read back as the page shows it (${mismatch.message})`;
+
+    /*
+     * Ask the parser about every child of the container that did not read back, not only the one
+     * the comparison stopped at: a paragraph holding a block is reported one level up, as the
+     * container having more children than it should.
+     */
+    const where = mismatch.parent;
+    if (where instanceof Element && where.isConnected) {
+      const suspects = mismatch.child ? [mismatch.child, ...liveKids(target, where)] : liveKids(target, where);
+      for (const kid of suspects) {
+        if (kid.nodeType === Node.TEXT_NODE && !(kid as Text).data.trim()) continue;
+        const offender = inexpressibleAt(where, kid);
+        if (offender) return { ok: false, why: [offender.message] };
+      }
+    }
+    let container: Node | null = where;
+    while (container && !binding.toSource.has(container)) container = target.parent(container);
+    if (!container) break;
+    const level = forced.get(container);
+    const top = container.nodeType === Node.DOCUMENT_NODE || (container as Element).localName === 'html';
+    if (!level) {
+      forced.set(container, 'all');
+    } else if (level === 'all' && !top) {
+      forced.set(container, 'pure');
+    } else {
+      const up = target.parent(container);
+      if (!up || up.nodeType === Node.DOCUMENT_NODE) break;
+      if (!forced.has(up)) forced.set(up, 'all');
+      else if (forced.get(up) === 'all' && (up as Element).localName !== 'html') forced.set(up, 'pure');
+      else break;
+    }
   }
   return { ok: false, why: [failure] };
 }

@@ -215,7 +215,18 @@
       /* 6. A refused patch is not reported as saved. */
       step('refusedIsNotSaved');
       {
-        engine.insertMarkup('<div class="inside">block</div>', { reference: byId('para'), position: 'lastChild' });
+        // A text edit is the one way left to nest a block in a paragraph: the browser's own editing.
+        const para = byId('para');
+        engine.beginTextEdit(para);
+        await frames();
+        para.focus();
+        const range = document.createRange();
+        range.setStart(para.firstChild, 2);
+        range.collapse(true);
+        getSelection().removeAllRanges();
+        getSelection().addRange(range);
+        document.execCommand('insertParagraph');
+        engine.endTextEdit(true);
         await frames();
         const pending = engine.records.length;
         const result = await engine.writeToProject();

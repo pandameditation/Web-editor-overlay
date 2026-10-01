@@ -99,6 +99,8 @@ export class History {
   #past: Command[] = [];
   #future: Command[] = [];
   #retired: Array<{ ops: readonly DomOp[]; saved: boolean }> = [];
+  #validate: ((ops: readonly DomOp[]) => string | null) | null = null;
+  #onRefused: ((reason: string) => void) | null = null;
   /** Which shadow roots a command's own element lives in, so they are journaled with it. */
   #rootsOf: ((record: ChangeRecord) => Node[]) | null = null;
   #lastCommitAt = 0;
@@ -240,8 +242,8 @@ export class History {
    */
   commit(
     command: Command,
-    options: { alreadyApplied?: boolean; journal?: readonly DomOp[] } = {},
-  ): void {
+    options: { alreadyApplied?: boolean; journal?: readonly DomOp[]; validate?: boolean } = {},
+  ): boolean {
     if (!options.alreadyApplied) {
       // Not attributed to the page. Every command in here writes to the document
       // through the same DOM APIs `provenance` watches, and counting the editor's own
@@ -252,6 +254,25 @@ export class History {
       );
     } else if (options.journal) {
       command.journal = options.journal;
+    }
+    /*
+     * A change that leaves the page in a shape no HTML file can hold is taken back at once.
+     *
+     * Otherwise the page looks right and can never be saved: the file would be read back
+     * restructured, so the save has to refuse, and the user finds out long after the edit.
+     */
+    if (options.validate !== false && command.journal && this.#validate) {
+      const refusal = this.#validate(command.journal);
+      if (refusal) {
+        try {
+          this.#revert(command);
+        } catch (error) {
+          console.error('[html-editor-overlay] could not take back a refused change', error);
+        }
+        this.#onRefused?.(refusal);
+        this.#emit();
+        return false;
+      }
     }
     this.#future = [];
 
@@ -299,6 +320,17 @@ export class History {
 
     this.#lastCommitAt = now;
     this.#emit();
+    return true;
+  }
+
+  /**
+   * Check every change before it is kept, and say why one was refused.
+   *
+   * The check sees the operations the change made and returns a reason to refuse it, or null.
+   */
+  validateWith(validate: (ops: readonly DomOp[]) => string | null, onRefused: (reason: string) => void): void {
+    this.#validate = validate;
+    this.#onRefused = onRefused;
   }
 
   /**

@@ -60,6 +60,8 @@
     "check:journal": "node scripts/browser-check.mjs test/structural-journal.html 60000",
     "check:journalreview": "node scripts/browser-check.mjs test/journal-review.html 60000",
     "check:fuzz": "node scripts/browser-check.mjs test/journal-fuzz.html 180000",
+    "check:fuzzarticle": "node scripts/browser-check.mjs test/journal-fuzz-article.html 300000",
+    "check:contentmodel": "node scripts/browser-check.mjs test/content-model.html 60000",
     "check:cssrules": "node scripts/browser-check.mjs test/css-rules.html 45000",
     "check:boxsides": "node scripts/browser-check.mjs test/box-sides.html 60000",
     "check:ruleauthoring": "node scripts/browser-check.mjs test/rule-authoring.html 90000",

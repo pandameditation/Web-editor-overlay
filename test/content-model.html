@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Edits HTML cannot express</title>
+  <style>
+    body { margin: 0; padding: 24px; font-family: system-ui, sans-serif; }
+    .card { padding: 16px; border: 1px solid #ccc; margin: 8px 0; }
+    #para { padding: 24px; min-height: 60px; }
+  </style>
+</head>
+
+<body>
+  <!--
+    The DOM accepts trees an HTML file cannot hold: a block inside a paragraph, anything inside a
+    <br>. They look fine and can never be saved, because a browser reading the file restructures
+    them. The editor must not create them, and when one exists anyway, the save must say exactly
+    what and where rather than report a child count.
+
+        npm run build:lib && node scripts/browser-check.mjs test/content-model.html 60000
+  -->
+  <main id="page">
+    <p id="para">A paragraph with <b id="bold">bold</b> words.</p>
+    <div class="card" id="card">A card<br id="br"> with a break.</div>
+    <div class="box" id="box"><span>Box</span></div>
+    <p id="typed">Type here</p>
+  </main>
+
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const errors = [];
+      addEventListener('error', (e) => errors.push('error: ' + e.message));
+      addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+      const results = {};
+      const progress = document.getElementById('progress');
+      const step = (name) => { progress.textContent = name; };
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const byId = (id) => document.getElementById(id);
+
+      const page = decodeURIComponent(location.pathname).split('/').pop();
+      const directory = decodeURIComponent(location.pathname).replace(/[^/]*$/, '');
+      const disk = new Map();
+      const project = {
+        kind: 'directory',
+        label: 'memory',
+        resolve(url) {
+          const path = decodeURIComponent(new URL(url, location.href).pathname);
+          return path.startsWith(directory) ? path.slice(directory.length) : null;
+        },
+        read: async (path) => {
+          if (disk.has(path)) return disk.get(path);
+          try {
+            const text = await (await fetch('./' + path)).text();
+            disk.set(path, text);
+            return text;
+          } catch { return null; }
+        },
+        write: async (path, text) => { disk.set(path, text); },
+        ensureWritable: async () => true,
+        release: async () => { },
+      };
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark', detectScriptContent: false });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await engine.attachProject(project, { quiet: true });
+      await frames();
+      const notices = [];
+      engine.store.subscribe((s) => {
+        const t = s.toast;
+        if (t && notices.at(-1) !== t.message) notices.push(t.message);
+      });
+      const main = () => byId('page').innerHTML;
+      const clear = async () => { engine.resetAll(); await frames(); };
+
+      /* 1. Moving a block into a paragraph is undone, with the reason. */
+      step('moveIntoParagraph');
+      {
+        const before = main();
+        const depth = engine.history.size;
+        // `in` moves into the next sibling, which for the box is the paragraph after it.
+        const box = byId('box');
+        engine.move('in', box);
+        await frames();
+        await wait(20);
+        results.aBlockIsNotMovedIntoAParagraph = {
+          notInside: box.parentElement?.id !== 'typed',
+          pageUnchanged: main() === before,
+          nothingRecorded: engine.history.size === depth,
+          saidWhy: notices.some((n) => /a <div> cannot go inside <p>/.test(n)),
+        };
+        await clear();
+      }
+
+      /* 2. Nothing can be put inside a <br>. */
+      step('insideBr');
+      {
+        const before = main();
+        engine.insertMarkup('<em>inside</em>', { reference: byId('br'), position: 'lastChild' });
+        await frames();
+        await wait(20);
+        results.nothingGoesInsideABr = {
+          pageUnchanged: main() === before,
+          saidWhy: notices.some((n) => /<br> cannot contain anything/.test(n)),
+        };
+        await clear();
+      }
+
+      /* 3. A drag does not offer a paragraph as somewhere to put a block. */
+      step('dragOverParagraph');
+      {
+        const card = byId('card');
+        const para = byId('para').getBoundingClientRect();
+        api.select(card);
+        engine.startDrag(card, card.getBoundingClientRect().left + 4, card.getBoundingClientRect().top + 4);
+        for (let k = 0; k < 14; k += 1) {
+          engine.updateDrag(para.left + para.width / 2, para.top + para.height / 2);
+          await wait(50);
+        }
+        engine.endDrag();
+        await frames();
+        results.aDragDoesNotDropABlockIntoAParagraph = {
+          notInside: card.parentElement?.id !== 'para',
+        };
+        await clear();
+      }
+
+      /* 4. A valid move into a container still works and is patched. */
+      step('validMove');
+      {
+        const span = document.createElement('span');
+        engine.insertMarkup('<span id="extra">Extra</span>', { reference: byId('box'), position: 'before' });
+        await frames();
+        engine.move('in', byId('extra'));
+        await frames();
+        const plan = await engine.previewWritePlan();
+        const write = (plan?.writes ?? []).find((w) => w.kind === 'document');
+        const box = new DOMParser().parseFromString(write?.after ?? '', 'text/html').getElementById('box');
+        results.aValidMoveIsKeptAndPatched = {
+          moved: byId('extra')?.parentElement?.id === 'box',
+          patched: /patched in place/.test(write?.reason ?? ''),
+          inTheFile: Boolean(box?.querySelector('#extra')),
+        };
+        void span;
+        await clear();
+      }
+
+      /* 5. Enter inside a paragraph is a line break, not a <div> nested in it. */
+      step('enterInParagraph');
+      {
+        const typed = byId('typed');
+        engine.beginTextEdit(typed);
+        await frames();
+        typed.focus();
+        const range = document.createRange();
+        range.setStart(typed.firstChild, 4);
+        range.collapse(true);
+        getSelection().removeAllRanges();
+        getSelection().addRange(range);
+        const event = new InputEvent('beforeinput', { inputType: 'insertParagraph', cancelable: true, bubbles: true });
+        const allowed = typed.dispatchEvent(event);
+        engine.endTextEdit(true);
+        await frames();
+        results.enterBecomesALineBreak = {
+          defaultPrevented: allowed === false,
+          hasBreak: Boolean(typed.querySelector('br')),
+          noNestedBlock: !typed.querySelector('div, p'),
+        };
+        await clear();
+      }
+
+      /* 6. A text edit that nests a block anyway is reported at once, and precisely on save. */
+      step('nestedByEditing');
+      {
+        const typed = byId('typed');
+        engine.beginTextEdit(typed);
+        await frames();
+        typed.focus();
+        const range = document.createRange();
+        range.setStart(typed.firstChild, 4);
+        range.collapse(true);
+        getSelection().removeAllRanges();
+        getSelection().addRange(range);
+        document.execCommand('insertParagraph');
+        engine.endTextEdit(true);
+        await frames();
+        const nested = Boolean(typed.querySelector('div'));
+        const plan = await engine.previewWritePlan();
+        const reasons = (plan?.unwritable ?? []).map((u) => u.reason);
+        results.aNestedBlockIsNamedNotCounted = {
+          nested,
+          warnedOnTheEdit: !nested || notices.some((n) => /cannot be saved as it is: a <div> cannot go inside <p>/.test(n)),
+          saveNamesIt: !nested || reasons.some((r) => /a <div> cannot go inside <p>/.test(r)),
+          noChildCount: !reasons.some((r) => /children, expected/.test(r)),
+        };
+        await clear();
+      }
+
+      const failed = Object.entries(results)
+        .filter(([, group]) => Object.values(group).some((value) => value === false))
+        .map(([name]) => name);
+      results.failed = failed;
+      results.notices = notices;
+      results.ok = failed.length === 0 && errors.length === 0;
+      results.__errors = errors;
+      document.getElementById('out').textContent = 'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify({ ok: false, __errors: [String((e && e.stack) || e)] }) + ':END';
+    });
+  </script>
+</body>
+
+</html>

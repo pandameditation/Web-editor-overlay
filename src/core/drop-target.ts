@@ -1,4 +1,28 @@
+import { inexpressibleAt } from './content-model.js';
 import { acceptsChildren, isHorizontalFlow, isOverlayNode, isSelectable, labelFor } from './dom.js';
+
+/**
+ * Whether the dragged element may go into a container at all.
+ *
+ * A drop HTML cannot express — a card into a paragraph, a link into a link — would look fine and
+ * could never be saved, so such a container is simply not offered. Remembered per container for
+ * the drag in flight, because this is asked on every pointer sample.
+ */
+const placeable = new WeakMap<HTMLElement, WeakMap<Node, boolean>>();
+function canPlace(dragged: HTMLElement, container: Node | null): boolean {
+  if (!(container instanceof Element)) return true;
+  let known = placeable.get(dragged);
+  if (!known) {
+    known = new WeakMap();
+    placeable.set(dragged, known);
+  }
+  let answer = known.get(container);
+  if (answer === undefined) {
+    answer = !inexpressibleAt(container, dragged);
+    known.set(container, answer);
+  }
+  return answer;
+}
 
 /** Which side of the reference element the drop lands on. */
 export type DropSide = 'before' | 'after' | 'inside';
@@ -92,7 +116,8 @@ export function planDrag(
   if (insideHome) {
     leftHomeAt = null;
     // Descending: resting well inside a container that is not the current parent.
-    const host = hostUnder(dragged, x, y, home);
+    const found = hostUnder(dragged, x, y, home);
+    const host = found && canPlace(dragged, found) ? found : null;
     if (host) {
       if (dwell?.host !== host) dwell = { host, since: now };
       if (now - dwell.since >= reparentMs) {
@@ -110,7 +135,7 @@ export function planDrag(
     leftHomeAt ??= now;
     if (now - leftHomeAt >= reparentMs) {
       const next = siblingHomeUnder(dragged, x, y, home);
-      if (next && next !== home) {
+      if (next && next !== home && canPlace(dragged, next)) {
         home = next;
         leftHomeAt = null;
       } else {

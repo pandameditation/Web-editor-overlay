@@ -3,7 +3,7 @@
 
 <head>
   <meta charset="utf-8">
-  <title>Journal stress: random edits, exact undo, patched saves</title>
+  <title>Journal stress on an article: drags into other elements</title>
   <style>
     body { margin: 0; padding: 24px; font-family: system-ui, sans-serif; }
   </style>
@@ -20,29 +20,33 @@
 
         npm run build:lib && node scripts/browser-check.mjs test/journal-fuzz.html 120000
   -->
-  <main id="fuzz">
-    <h1 class=title id="heading">A <em>heading</em> with &amp; entities</h1>
-    <p id="story">These discoveries led me to write a <b>
-        <a href="https://link.com" target="_blank" rel="noopener noreferrer">thought-leadership article</a>
-      </b> about our insights and approach</p>
-    <ul class='list'>
-      <li>First <strong>item</strong>
-      <li>Second item
-      <!-- a comment between items -->
-      <li><span data-note='x'>Third</span> item</li>
-    </ul>
-    <section id="cards">
-      <div class="card"><h2>Card one</h2><p>Body <i>one</i>.</p></div>
-      <div class="card">
-        <h2>Card two</h2>
-        <p>Body two<br />continued.</p>
-      </div>
-    </section>
-    <table id="grid">
-      <tr><td>a1</td><td>b1</td></tr>
-      <tr><td>a2</td><td>b2</td></tr>
-    </table>
-    <div id="mixed">Lead text <span>inline</span> trailing <code>x &lt; y</code> end.</div>
+  <main id="page">
+    <article id="fuzz" class="case-study">
+      <h1 class="title">Designing a <em>calm</em> assistant</h1>
+      <p class="lede">These discoveries led me to write a <b>
+          <a href="https://link.com" target="_blank" rel="noopener noreferrer">thought-leadership article</a>
+        </b> about our insights and approach</p>
+      <figure class="hero"><img src="dot.svg" alt="A dot" width="40" height="40"><figcaption>The <i>first</i> sketch</figcaption></figure>
+      <h2 id="context">Context</h2>
+      <p>With no research budget, <strong>I secured $100</strong> of credit &amp; reached <b>30 travelers</b>.<br>
+        Then we asked five questions.</p>
+      <ul class="points">
+        <li><strong>Directional survey.</strong> Forced-choice statements.</li>
+        <li>Alignment workshop with <a href="#eng">Engineering</a></li>
+        <li>Prototype rounds</li>
+      </ul>
+      <blockquote cite="#q"><p>“What would make someone angry enough to quit?”</p></blockquote>
+      <hr>
+      <section class="outcome">
+        <h3>Outcome</h3>
+        <p>Three <span class="tag">findings</span>, presented <em>in the same week</em>.</p>
+        <div class="metrics"><div class="metric"><span class="n">30</span> users</div><div class="metric"><span class="n">5</span> questions</div></div>
+      </section>
+      <pre class="code">npm run build
+  --watch</pre>
+      <table class="results"><tr><th>Item</th><th>Score</th></tr><tr><td>Speed</td><td>4</td></tr></table>
+      <p class="footnote">Written &copy; 2026 &mdash; <a href="#top">back to top</a></p>
+    </article>
   </main>
   <div id="sentinel" data-kept='yes'>
     <P CLASS=Upper>Never   touched &nbsp; bytes &#169; <BR> here.</P>
@@ -164,6 +168,22 @@
         engine.endTextEdit(true);
         await frames();
       };
+      const boxOf = (node) => node.getBoundingClientRect();
+      const dragInto = async (el) => {
+        const targets = elements().filter((t) => t !== el && !el.contains(t));
+        if (!targets.length) return;
+        const target = pick(targets);
+        const box = boxOf(target);
+        const x = box.left + Math.max(2, box.width * random());
+        const y = box.top + Math.max(2, box.height * random());
+        engine.startDrag(el, boxOf(el).left + 2, boxOf(el).top + 2);
+        for (let k = 0; k < 10; k += 1) {
+          engine.updateDrag(x, y);
+          await new Promise((r) => setTimeout(r, 45));
+        }
+        engine.endDrag();
+        await frames();
+      };
       const operations = [
         async (el) => engine.unwrap(el),
         async (el) => engine.wrap(pick(['<div class="w"></div>', '<span class="s"></span>']), el),
@@ -179,6 +199,9 @@
         async (el) => engine.setClasses([...el.classList, 'k' + (++counter)], el),
         async (el) => { if (el.textContent.trim()) await typeInto(el, ' typed' + (++counter)); },
         async (el) => engine.retag(pick(['section', 'em', 'div', 'span']), el),
+        dragInto,
+        dragInto,
+        async (el) => engine.move('in', el),
         async (el) => engine.replaceMarkup(`<aside class="r">replaced ${++counter} <b>bold</b></aside>`, el),
         async (el) => {
           // The browser's own editing commands, which split and merge nodes however they like.
@@ -211,9 +234,9 @@
       const walk = (node) => { originalNodes.push([node, node.parentNode]); node.childNodes.forEach(walk); };
       fuzz().childNodes.forEach(walk);
 
-      const RUNS = Number(new URLSearchParams(location.search).get('runs') ?? 30);
+      const RUNS = Number(new URLSearchParams(location.search).get('runs') ?? 20);
       const OFFSET = Number(new URLSearchParams(location.search).get('offset') ?? 0);
-      const STEPS = Number(new URLSearchParams(location.search).get('steps') ?? 8);
+      const STEPS = Number(new URLSearchParams(location.search).get('steps') ?? 12);
       for (let run = 0; run < RUNS; run += 1) {
         seed = (run + OFFSET) * 7919 + 13;
         progress.textContent = 'run ' + run;

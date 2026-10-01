@@ -28,7 +28,8 @@
  * conclude the page generates it, which quietly makes the change unsaveable.
  */
 
-import { domRecorder, shadowRootsOf, type DomOp } from '../dom-journal.js';
+import { refusalFor } from '../content-model.js';
+import { domRecorder, revertOps, shadowRootsOf, type DomOp } from '../dom-journal.js';
 import { withoutProvenance, markUserOwned } from '../provenance.js';
 import { upsertClassCommand, upsertRuleCommand, type CssRegistries } from '../css-commands.js';
 import { nextChangeId, type Command, type History } from '../history.js';
@@ -185,9 +186,18 @@ export class AiRun {
       return;
     }
 
-    this.#journal.push(
-      ...domRecorder.capture(() => withoutProvenance(() => command.apply()), shadowRootsOf(this.element)),
+    const ops = domRecorder.capture(
+      () => withoutProvenance(() => command.apply()),
+      shadowRootsOf(this.element),
     );
+    // An operation that leaves a shape no HTML file can hold is taken back and reported.
+    const refusal = refusalFor(ops);
+    if (refusal) {
+      withoutProvenance(() => domRecorder.ignore(() => revertOps(ops)));
+      this.#entries.push({ outcome: 'refused', text: `${plan.describe} — ${refusal}` });
+      return;
+    }
+    this.#journal.push(...ops);
     this.#commands.push(command);
     this.#entries.push({
       outcome: 'done',
@@ -239,7 +249,7 @@ export class AiRun {
             for (const command of [...commands].reverse()) command.revert();
           },
         },
-        { alreadyApplied: true, journal: this.#journal },
+        { alreadyApplied: true, journal: this.#journal, validate: false },
       );
       this.#host.changed();
     }

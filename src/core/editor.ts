@@ -72,6 +72,7 @@ import {
   type ImportResult,
 } from './design-system.js';
 import { containTab } from './focus.js';
+import { inexpressibleAt, refusalFor } from './content-model.js';
 import { domRecorder, movesOf, revertOps, shadowRootsOf, within, type DomOp } from './dom-journal.js';
 import { History, nextChangeId, type Command } from './history.js';
 import { handleKeyDown, matchesShortcut } from './keymap.js';
@@ -865,6 +866,8 @@ export class EditorEngine {
   #textEditSnapshot: string | null = null;
   /** Every DOM operation the current text edit makes, for an exact undo and an exact save. */
   #textEditJournal: { end(): DomOp[]; cancel(): void } | null = null;
+  /** Takes off what `beginTextEdit` attached to the element. */
+  #textEditCleanup: (() => void) | null = null;
   /** The same for the drag in flight. */
   #dragJournal: { end(): DomOp[]; cancel(): void } | null = null;
   /**
@@ -975,6 +978,13 @@ export class EditorEngine {
     this.options = options;
     // A change to something inside a shadow tree is journaled from inside that tree.
     this.history.observeRootsWith((record) => shadowRootsOf(elementOfRecord(record)));
+    /*
+     * A change that leaves something HTML cannot express is undone on the spot, with the reason.
+     * Said after the command's own message, which would otherwise announce a success.
+     */
+    this.history.validateWith(refusalFor, (reason) => {
+      setTimeout(() => this.notify(`Undone: ${reason}.`, 'warn'), 0);
+    });
     this.library = new BlockLibrary({ presets: options.presets !== false });
     this.store = new Store<EditorState>({
       editing: Boolean(options.startInEditMode),
@@ -5035,6 +5045,24 @@ export class EditorEngine {
       within(el, ['contenteditable', 'spellcheck']),
       shadowRootsOf(el),
     );
+    /*
+     * Enter in an element that cannot hold a paragraph is a line break.
+     *
+     * The browser cannot split the element being edited, so for a paragraph break it nests a
+     * `<div>` inside it instead — a `<p>` holding a `<div>`, which no HTML file can express and the
+     * save would have to refuse. A `<br>` is what a line break inside a paragraph really is.
+     */
+    const onBeforeInput = (event: Event): void => {
+      if (!(event instanceof InputEvent) || event.inputType !== 'insertParagraph') return;
+      if (!event.composedPath().includes(el)) return;
+      if (!inexpressibleAt(el, document.createElement('div'))) return;
+      event.preventDefault();
+      document.execCommand('insertLineBreak');
+    };
+    // On `document` in the capture phase, through the shield's own `listen`: the shield stops
+    // page-bound input events there, and only the editor's listeners on that target still run.
+    listen(document, 'beforeinput', onBeforeInput, true);
+    this.#textEditCleanup = () => unlisten(document, 'beforeinput', onBeforeInput, true);
     this.store.patch({ textEditing: el, selected: el });
 
     // Focus on the next frame so the attribute has taken effect before the
@@ -5515,6 +5543,8 @@ export class EditorEngine {
     // into text that has since been replaced.
     this.#textEditRange = null;
     this.store.patch({ textEditing: null });
+    this.#textEditCleanup?.();
+    this.#textEditCleanup = null;
     const session = this.#textEditJournal;
     this.#textEditJournal = null;
     /*
@@ -5608,7 +5638,15 @@ export class EditorEngine {
     // The user has taken this element over. Said once, here, so no later signal can
     // decide the page generates content the user has just written by hand.
     markUserOwned(el);
-    this.history.commit(command, { alreadyApplied: true, journal });
+    // Typing is never thrown away. A shape the file cannot hold is said now, with the way back.
+    this.history.commit(command, { alreadyApplied: true, journal, validate: false });
+    const unsavable = journal ? refusalFor(journal) : null;
+    if (unsavable) {
+      this.notify(`This edit cannot be saved as it is: ${unsavable}.`, 'warn', {
+        label: 'Undo',
+        run: () => this.undo(),
+      });
+    }
     // And now find out whether that was true. Every other signal predicts what will
     // happen to this edit; this one waits for it.
     this.#watchEdit(el, el.textContent ?? '');
