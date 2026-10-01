@@ -1,59 +1,21 @@
 /**
- * Editing an HTML file by changing only the part that changed.
+ * Text-level helpers for HTML files.
  *
- * The document write used to be `exportHTML()` — the live page serialized — replacing the
- * file wholesale. That is the wrong shape for a save, and in four separate ways at once.
- * The browser's serializer normalises quoting, letter case and self-closing tags, so every
- * save reformatted lines nobody touched. The live page contains whatever the page's own
- * code built, so a list rendered from data was written back as hand-authored markup. It
- * also *lacks* whatever that code removed at load, so authored markup could be deleted
- * from the file with no record it had existed. And a dev server's injected tags came along
- * too, one more copy per save.
+ * Two jobs live here. Editing one opening tag in place — an attribute, or some declarations of
+ * its `style` — keeping the file's quoting and order, for the journal-driven patcher in
+ * `source-patch.ts`. And the editor's two managed regions in `<head>`, the design-system
+ * `<style>` block and the block-library seed, which are found by their marker comments and
+ * replaced as wholes.
  *
- * All four have the same cause and the same cure: never rewrite a byte that did not change.
- * This is what `css-patch.ts` already does for stylesheets, which is why a one-declaration
- * CSS edit produces a one-line diff while an HTML edit produced a reformatted file.
- *
- * The hard part is not the editing, it is saying *where*. An element in the live DOM has to
- * be found in the source text, and the two are not the same tree — the user has been
- * inserting and moving things, and the page's own code has been rendering. So position is
- * not usable as an anchor. Three things are:
- *
- * - **A build-time source marker.** `data-heo-src` carries the file, line and column of the
- *   tag itself. Exact, and free on any page using the Vite plugin.
- * - **An `id`.** Unique in a valid document by definition, and unaffected by anything moving.
- * - **The text being replaced.** For a text edit, the old text is known, and when it occurs
- *   exactly once in the file it identifies the element beyond doubt. This is the one that
- *   makes plain hand-written pages work, because that is where the text edits are.
- *
- * Anything that cannot be anchored is reported, not guessed at. The caller then falls back
- * to writing the whole file, which is what it did before — so nothing that used to reach
- * the file stops reaching it.
+ * `ElementAnchor` stays here because change records carry one to describe where an edit was
+ * made. Saving no longer looks anything up by it: the file is patched from the DOM journal.
  */
 
-// The only import this module has, and it is a string. Everything else here is text in, text
-// out — but the seed tag it writes has to be the tag the engine looks for, and two copies of
-// that MIME type is how the writer and the reader end up describing different tags.
+// The seed tag written here has to be the tag the engine looks for, so its MIME type is shared.
 import { SEED_SCRIPT_TYPE } from './constants.js';
 import { parseDeclarations } from './css.js';
 
-/**
- * The file, line and column out of a `data-heo-src` value.
- *
- * Split from the right so a Windows drive letter survives, matching `sourceRefOf`.
- */
-export function parseSourceMarker(
-  raw: string,
-): { file: string; line: number; column: number } | null {
-  const parts = raw.split(':');
-  const column = Number.parseInt(parts.pop() ?? '', 10);
-  const line = Number.parseInt(parts.pop() ?? '', 10);
-  const file = parts.join(':');
-  if (!file || !Number.isFinite(line) || !Number.isFinite(column)) return null;
-  return { file, line, column };
-}
-
-/** Where an element is, in terms the source text can be searched for. */
+/** Where an element is, as a change record describes it to a reader. */
 export interface ElementAnchor {
   /** Tag name, always. Every resolved position is checked against it before being used. */
   tag: string;
@@ -93,356 +55,12 @@ export interface ElementAnchor {
   classes?: string;
 }
 
-export type HtmlPatch =
-  | { anchor: ElementAnchor; kind: 'attribute'; name: string; value: string | null }
-  /**
-   * Some of the declarations in a `style` attribute, leaving the rest of it as the file has it.
-   *
-   * The difference between this and an `attribute` patch is the whole point of it. Writing the
-   * attribute wholesale writes whatever else is in there at save time — a transition caught
-   * mid-flight, a `display` a script toggled, the leftovers of a drag preview — none of which
-   * the user asked for and none of which belongs in their file. A style edit is a statement
-   * about the properties it names and about nothing else, so only those are written.
-   *
-   * `null` for a value removes that declaration. Properties absent from the map are not
-   * consulted, added or removed.
-   */
-  | {
-    anchor: ElementAnchor;
-    kind: 'declarations';
-    declarations: Readonly<Record<string, string | null>>;
-  }
-  /**
-   * A whole tag in `<head>`, added, rewritten or taken away.
-   *
-   * The one place a document edit is genuinely structural and still worth patching. Adding a
-   * `<meta>` puts a line into `<head>`; clearing one takes a line out; neither is an edit to an
-   * attribute of a tag that is already there, which is why both used to fall back to rewriting
-   * the file. `<head>` is a flat, unordered list of tags, so a line can be added to it or removed
-   * from it without reproducing anyone's layout — the thing that makes structural edits in
-   * `<body>` risky does not apply.
-   *
-   * `null` markup removes the tag. Absent from the file and non-null markup adds it; present and
-   * different rewrites it; present and identical does nothing.
-   */
-  | { anchor: ElementAnchor; kind: 'headTag'; markup: string | null }
-  | { anchor: ElementAnchor; kind: 'text'; value: string };
-
-export interface HtmlPatchFailure {
-  patch: HtmlPatch;
-  reason: string;
-}
-
-export interface HtmlPatchResult {
-  html: string;
-  /** How many patches changed the text. One the file already satisfied counts here. */
-  applied: number;
-  failed: HtmlPatchFailure[];
-}
-
-/**
- * Apply every patch that can be placed, and report the ones that cannot.
- *
- * Edits are collected first and written last, in descending offset order, so that each
- * one is computed against the original text and no earlier edit can shift a later
- * offset out from under it.
- */
-export function patchHTML(html: string, patches: readonly HtmlPatch[]): HtmlPatchResult {
-  const edits: Array<{ start: number; end: number; text: string; patch: HtmlPatch }> = [];
-  const failed: HtmlPatchFailure[] = [];
-  let applied = 0;
-
-  for (const patch of patches) {
-    /*
-     * Resolved by itself, because "not in the file" is an answer rather than a failure for this
-     * one: a tag being absent is exactly the case that means "add it".
-     */
-    if (patch.kind === 'headTag') {
-      const edit = headTagEdit(html, patch.anchor, patch.markup);
-      if (typeof edit === 'string') {
-        failed.push({ patch, reason: edit });
-        continue;
-      }
-      applied += 1;
-      if (edit) edits.push({ ...edit, patch });
-      continue;
-    }
-
-    const found = resolveAnchor(html, patch.anchor);
-    if (typeof found === 'string') {
-      failed.push({ patch, reason: found });
-      continue;
-    }
-
-    const edit =
-      patch.kind === 'attribute'
-        ? attributeEdit(html, found, patch.name, patch.value)
-        : patch.kind === 'declarations'
-          ? declarationsEdit(html, found, patch.declarations)
-          : textEdit(html, found, patch.value);
-    if (typeof edit === 'string') {
-      failed.push({ patch, reason: edit });
-      continue;
-    }
-    applied += 1;
-    // A patch the file already satisfies is applied and contributes nothing to write.
-    if (edit) edits.push({ ...edit, patch });
-  }
-
-  if (!edits.length) return { html, applied, failed };
-
-  /*
-   * An edit swallowed whole by a text edit is redundant, not in competition.
-   *
-   * A text patch replaces everything between one element's tags, and its value is read from
-   * the live DOM — so an attribute the user changed on a child is already inside the bytes
-   * about to be written. Both edits describe the same intent and the wider one carries it.
-   *
-   * Reported as applied and dropped from the write, because that is exactly what it is:
-   * counting it as a failure took a whole save down to a rewrite over an edit that was
-   * already in hand. Bolding a few words and then styling the new `<b>` is the plain case —
-   * the text edit covers the paragraph, the style edit sits inside it.
-   *
-   * Containment, not mere overlap. Two edits that *partly* overlap disagree about the same
-   * bytes and one of them is wrong; that still has to surface below.
-   */
-  const swallowed = new Set<typeof edits[number]>();
-  for (const edit of edits) {
-    for (const other of edits) {
-      if (other === edit || other.patch.kind !== 'text') continue;
-      if (other.start <= edit.start && edit.end <= other.end) {
-        swallowed.add(edit);
-        break;
-      }
-    }
-  }
-  const placed = edits.filter((edit) => !swallowed.has(edit));
-  if (!placed.length) return { html, applied, failed };
-
-  // Overlapping edits would corrupt each other, and two edits to one attribute is the
-  // only way that happens — the last one recorded is the one the user last asked for.
-  // Applied back to front so that earlier offsets stay valid as the text changes under them.
-  placed.sort((a, b) => b.start - a.start || b.end - a.end);
-  let out = html;
-  let previousStart = Number.POSITIVE_INFINITY;
-  for (const edit of placed) {
-    /*
-     * Overlapping edits cannot both be applied, and the one that loses says so.
-     *
-     * Skipping it quietly is how a container rebuild went missing: the rebuild spans
-     * everything between its tags, so a one-attribute edit on a child overlapped it, won on
-     * position, and the rebuild was dropped — while still counted as applied, so the save
-     * reported patching an insert into the file that was not in it. Callers order their passes
-     * to keep this from arising; when it does arise it is a bug and has to surface as one.
-     */
-    if (edit.end > previousStart) {
-      failed.push({ patch: edit.patch, reason: 'this edit overlaps another one in the same pass' });
-      applied -= 1;
-      continue;
-    }
-    out = out.slice(0, edit.start) + edit.text + out.slice(edit.end);
-    previousStart = edit.start;
-  }
-  return { html: out, applied, failed };
-}
-
-/* -------------------------------------------------------------------------- */
-/* Finding the element                                                         */
-/* -------------------------------------------------------------------------- */
-
 /** An opening tag located in the source: `start` is the `<`, `end` is the `>`. */
 interface OpenTag {
   name: string;
   start: number;
   end: number;
   selfClosing: boolean;
-}
-
-/** The tag, or a sentence explaining why it could not be found. */
-function resolveAnchor(html: string, anchor: ElementAnchor): OpenTag | string {
-  const wanted = anchor.tag.toLowerCase();
-
-  /*
-   * The marker first, and only when the tag it lands on agrees that it is this element.
-   *
-   * A matching tag name is not agreement, and `<div>` is why: a marker counts lines in the file
-   * the build read, and a text that has since gained a line — or was read as *served* rather
-   * than as stored — puts a neighbouring `<div>` where the marker points. Taken on the name
-   * alone, that answered a container lookup with the container's own container, and the save
-   * reported "the file's <div> has 0 <p> children" about a file holding two of them.
-   *
-   * Declining is not a dead end: the id, text and position routes below read the file as it is
-   * rather than as the marker remembers it, and they place the edit correctly.
-   */
-  if (anchor.line != null) {
-    const tag = tagAtPosition(html, anchor.line, anchor.column ?? 1);
-    if (tag && tag.name === wanted && markerAgrees(html, tag, anchor)) return tag;
-  }
-
-  /*
-   * An anchor that names an id is answered by that id or not at all.
-   *
-   * Falling through to a weaker match was a real bug: a newly inserted `<p id="added">` is
-   * not in the file, and the tag-name fallback below then handed back the only `<p>` that
-   * was — so the new element was written as a second copy of an existing one. An id that is
-   * absent is information, not a dead end.
-   */
-  if (anchor.id) {
-    const tag = tagWithId(html, anchor.id);
-    if (typeof tag === 'string') return tag;
-    if (!tag) return `the file has no element with id "${anchor.id}"`;
-    if (tag.name !== wanted) {
-      return `the file has ${anchor.id} on a <${tag.name}> rather than a <${wanted}>`;
-    }
-    return tag;
-  }
-
-  /*
-   * An anchor that names an identifying attribute is answered by it or not at all, for the same
-   * reason an id is: falling through to a weaker match would land on a different `<meta>`, and
-   * writing someone's page description into their `og:title` is worse than declining.
-   */
-  if (anchor.attr) {
-    const tag = tagWithAttribute(html, wanted, anchor.attr.name, anchor.attr.value);
-    if (typeof tag === 'string') return tag;
-    if (!tag) {
-      return `the file has no <${wanted}> with ${anchor.attr.name}="${anchor.attr.value}"`;
-    }
-    return tag;
-  }
-
-  if (anchor.text) {
-    const tag = tagAroundText(html, anchor.text, wanted);
-    if (typeof tag === 'string') return tag;
-    if (tag) return tag;
-  }
-
-  /*
-   * A tag the file contains exactly once identifies itself.
-   *
-   * `<body>` is why this exists: a top-level element's container has no id and needs none,
-   * and without this every reorder at the top of a page fell back to serializing. The
-   * uniqueness requirement is the same safeguard the text anchor uses — one match is a fact,
-   * two is a guess.
-   */
-  /*
-   * Nothing named this element, so a tag the file holds exactly once will do. Reached only
-   * when there was no id and no marker to go on — `<body>` and `<br>` rather than anything
-   * that was supposed to identify itself.
-   */
-  /*
-   * And only when nothing about the element contradicts it.
-   *
-   * Uniqueness answers "which `<body>`", and it must not be allowed to answer "which `<p>`". An
-   * element that recorded classes is describing itself, so a lone tag in the file wearing
-   * different ones is a different element — and accepting it wrote an edit meant for a
-   * script-built `p.card` into the only `<p>` the file happened to contain, then reported the
-   * patch as a success. A wrong element written confidently is the one outcome worth more care
-   * than a reformatted file.
-   */
-  const unique = uniqueTag(html, wanted);
-  if (unique && classesAgree(html, unique, anchor.classes)) return unique;
-
-  /*
-   * Failing all that: the nth child of a container that can be found.
-   *
-   * This is what makes an ordinary `<div class="sec">` addressable. Reading an index against
-   * the whole file would be hopeless, but read against one container's direct children it is
-   * a short list — and the tag name and classes are compared before the answer is used, so a
-   * file whose shape no longer matches is declined instead of patched at the wrong element.
-   */
-  if (anchor.parent && (anchor.nth != null || anchor.nthTag != null)) {
-    const container = resolveAnchor(html, anchor.parent);
-    if (typeof container === 'string') return container;
-    const children = directChildTags(html, container).filter((child) => child.name === wanted);
-
-    /*
-     * Narrowed by class first, then by tag alone.
-     *
-     * Two passes because the classes may be the thing that changed: an edit that adds a class
-     * is recorded after the fact, so the anchor describes classes the file has not got yet.
-     * Falling back to the tag keeps that edit placeable instead of rewriting the file over it.
-     */
-    const sameClass = children.filter(
-      (child) => classSignatureOf(html.slice(child.start, child.end + 1)) === (anchor.classes ?? ''),
-    );
-    if (anchor.nth != null && sameClass.length > anchor.nth) return sameClass[anchor.nth];
-    if (anchor.nthTag != null && children.length > anchor.nthTag) return children[anchor.nthTag];
-
-    const described = anchor.classes ? `<${wanted} class="${anchor.classes}">` : `<${wanted}>`;
-    return (
-      `the file's <${container.name}> has ${children.length} <${wanted}> ` +
-      `${children.length === 1 ? 'child' : 'children'}, not enough to reach the ${described} this changed`
-    );
-  }
-
-  return `could not find this <${wanted}> in the file`;
-}
-
-/**
- * The direct element children of an open tag, in order.
- *
- * Each child is skipped past to its own close before looking for the next, so a nested tag is
- * never mistaken for a sibling. Raw-text bodies are stepped over whole.
- */
-export function directChildTags(html: string, container: OpenTag): OpenTag[] {
-  if (container.selfClosing) return [];
-  const end = matchingClose(html, container);
-  const limit = end === -1 ? html.length : end;
-  const out: OpenTag[] = [];
-  let i = container.end + 1;
-
-  while (i < limit) {
-    const lt = html.indexOf('<', i);
-    if (lt === -1 || lt >= limit) break;
-    // A comment is stepped over to its own end, not to the next `>`: `<!-- a > b -->` has one
-    // inside it, and stopping there read the rest of the comment as markup.
-    if (html.startsWith('<!--', lt)) {
-      const end = html.indexOf('-->', lt + 4);
-      i = end === -1 ? limit : end + 3;
-      continue;
-    }
-    // A close tag or a doctype is not a child; step over it.
-    if (html.startsWith('</', lt) || html.startsWith('<!', lt)) {
-      const gt = html.indexOf('>', lt);
-      i = gt === -1 ? limit : gt + 1;
-      continue;
-    }
-    const tag = readOpenTag(html, lt);
-    if (!tag) {
-      i = lt + 1;
-      continue;
-    }
-    out.push(tag);
-    if (tag.selfClosing) {
-      i = tag.end + 1;
-      continue;
-    }
-    const close = matchingClose(html, tag);
-    i = close === -1 ? tag.end + 1 : close;
-  }
-  return out;
-}
-
-/**
- * Whether a tag found in the file wears the classes the anchor remembers.
- *
- * True when the anchor recorded none, because then it is not making a claim: plenty of things
- * worth finding — `<body>`, a `<br>`, an unadorned `<h1>` — have no classes, and demanding a
- * match would refuse them all.
- */
-function classesAgree(html: string, tag: OpenTag, classes: string | undefined): boolean {
-  if (!classes) return true;
-  return classSignatureOf(html.slice(tag.start, tag.end + 1)) === classes;
-}
-
-/** The `class` attribute of a raw opening tag, sorted to match how the anchor records it. */
-function classSignatureOf(raw: string): string {
-  return (attributeValueOf(raw, 'class') ?? '')
-    .split(/\s+/)
-    .filter((name) => name && !name.startsWith('heo-'))
-    .sort()
-    .join(' ');
 }
 
 /** The only tag of this name in the file, or null when there are none or several. */
@@ -457,58 +75,6 @@ function uniqueTag(html: string, name: string): OpenTag | null {
 }
 
 /**
- * The opening tag at a line and column, from a build-time marker.
- *
- * The marker records where the tag *started* in the file the plugin transformed, so the
- * lookup is exact when the file has not been edited since — and when it has, the tag name
- * check rejects the miss rather than patching a neighbour.
- */
-function tagAtPosition(html: string, line: number, column: number): OpenTag | null {
-  let offset = 0;
-  for (let current = 1; current < line; current += 1) {
-    const next = html.indexOf('\n', offset);
-    if (next === -1) return null;
-    offset = next + 1;
-  }
-  const at = offset + column - 1;
-  // The marker points at the `<`, but a column off by a character should not lose the
-  // tag, so the search starts a little before and takes the first tag at or after it.
-  const from = Math.max(offset, at - 2);
-  // And it stops at the end of that line, because a marker names a line. Unbounded, a marker
-  // whose line has since become blank ran on to whatever tag came next, tens of lines away.
-  const lineEnd = html.indexOf('\n', offset);
-  const limit = lineEnd === -1 ? html.length : lineEnd;
-  const lt = html.indexOf('<', from);
-  return lt === -1 || lt > limit ? null : readOpenTag(html, lt);
-}
-
-/**
- * Whether the tag a marker points at is the element the anchor is describing.
- *
- * An id settles it: unique in a valid document, so the tag either carries this one or is a
- * different element. Failing that, classes — *shared* rather than identical, because both sides
- * legitimately differ. The file has what the author wrote; the live element may have picked up a
- * state class from the page's own code, or had one added by the very edit being placed. One class
- * in common separates "the same element, dressed differently" from "the div two lines up".
- *
- * Silent when the anchor has neither, which is the honest answer: a `<body>` or an unadorned
- * `<h1>` says nothing about itself, and there is nothing to check it against.
- *
- * Looser than `classesAgree` on purpose. That one decides whether a lone tag *anywhere* in the
- * file may stand in for this element, where a full match is the least that should be asked. Here
- * the file has already put the tag at the line the build recorded, and the question is only
- * whether that is still true.
- */
-function markerAgrees(html: string, tag: OpenTag, anchor: ElementAnchor): boolean {
-  const raw = html.slice(tag.start, tag.end + 1);
-  if (anchor.id) return attributeValueOf(raw, 'id') === anchor.id;
-  const theirs = classSignatureOf(raw);
-  if (!anchor.classes || !theirs) return true;
-  const mine = new Set(anchor.classes.split(' '));
-  return theirs.split(' ').some((name) => mine.has(name));
-}
-
-/**
  * One attribute's value out of a raw opening tag, unquoted, or null when it has none.
  *
  * The four places that needed this each stripped `name="` with a regex of their own, one of them
@@ -519,67 +85,9 @@ function attributeValueOf(raw: string, name: string): string | null {
   const range = attributeRange(raw, name);
   if (!range) return null;
   const text = raw.slice(range.start, range.end);
-  return text.slice(text.indexOf('=') + 1).trim().replace(/^["']|["']$/g, '');
-}
-
-/**
- * The only `<name>` in the file whose `attribute` equals `value`, or a reason when it is not one.
- *
- * Two matches is refused rather than guessed at, the same standard the id and unique-tag routes
- * hold to: a duplicate `<meta name="description">` is a mistake in the file, and picking one of
- * them to edit would make the editor's behaviour depend on which.
- */
-function tagWithAttribute(
-  html: string,
-  name: string,
-  attribute: string,
-  value: string,
-): OpenTag | null | string {
-  const matches: OpenTag[] = [];
-  for (const tag of openTags(html)) {
-    if (tag.name !== name) continue;
-    const found = attributeValueOf(html.slice(tag.start, tag.end + 1), attribute);
-    if (found === null) continue;
-    // Both spellings, since the file may have escaped what the DOM hands back plain. These
-    // values are `name`/`property`/`rel` keys rather than prose, so this is insurance.
-    if (found === value || found === escapeAttribute(value)) matches.push(tag);
-  }
-  if (!matches.length) return null;
-  if (matches.length > 1) {
-    return `the file has ${matches.length} <${name}> tags with ${attribute}="${value}"`;
-  }
-  return matches[0];
-}
-
-/** The opening tag carrying `id`, or a reason when the file has more than one. */
-function tagWithId(html: string, id: string): OpenTag | null | string {
-  const matches: OpenTag[] = [];
-  for (const tag of openTags(html)) {
-    if (attributeValueOf(html.slice(tag.start, tag.end + 1), 'id') === id) matches.push(tag);
-  }
-  if (matches.length > 1) return `the file has ${matches.length} elements with id "${id}"`;
-  return matches[0] ?? null;
-}
-
-/**
- * The element whose content is exactly this text, when the file contains it once.
- *
- * The uniqueness requirement is what makes this safe: a second occurrence means the text
- * cannot say which element it belongs to, and a guess here writes the edit into the wrong
- * place — far worse than declining and letting the whole file be written.
- */
-function tagAroundText(html: string, text: string, wanted: string): OpenTag | null | string {
-  const first = html.indexOf(text);
-  if (first === -1) return null;
-  if (html.indexOf(text, first + text.length) !== -1) {
-    return `“${clip(text)}” appears more than once in the file, so it cannot say which element changed`;
-  }
-  // Back to the opening tag that encloses it.
-  const lt = html.lastIndexOf('<', first);
-  if (lt === -1) return null;
-  const tag = readOpenTag(html, lt);
-  if (!tag || tag.name !== wanted) return null;
-  return tag;
+  const equals = text.indexOf('=');
+  if (equals === -1) return '';
+  return text.slice(equals + 1).trim().replace(/^["']|["']$/g, '');
 }
 
 /** Every opening tag in the source, in order, skipping raw-text element bodies. */
@@ -709,13 +217,7 @@ function declarationsEdit(
   declarations: Readonly<Record<string, string | null>>,
 ): { start: number; end: number; text: string } | null | string {
   const raw = html.slice(tag.start, tag.end + 1);
-  const range = attributeRange(raw, 'style');
-  const existing = range
-    ? raw
-      .slice(range.start, range.end)
-      .replace(/^style\s*=\s*/i, '')
-      .replace(/^["']|["']$/g, '')
-    : '';
+  const existing = attributeValueOf(raw, 'style') ?? '';
 
   const entries: Array<[string, string]> = Object.entries(parseDeclarations(existing));
   for (const [property, value] of Object.entries(declarations)) {
@@ -731,85 +233,6 @@ function declarationsEdit(
 
   const text = entries.map(([name, value]) => `${name}: ${value}`).join('; ');
   return attributeEdit(html, tag, 'style', text ? `${text};` : null);
-}
-
-/**
- * Add, rewrite or remove one whole tag in `<head>`.
- *
- * Whitespace is handled at line granularity, which is what `<head>` is written in: a tag that
- * goes away takes its line with it rather than leaving a blank one, and a tag that arrives gets
- * the indentation its neighbours use rather than landing hard against the margin.
- */
-function headTagEdit(
-  html: string,
-  anchor: ElementAnchor,
-  markup: string | null,
-): { start: number; end: number; text: string } | null | string {
-  const wanted = anchor.tag.toLowerCase();
-  const found = anchor.attr
-    ? tagWithAttribute(html, wanted, anchor.attr.name, anchor.attr.value)
-    : uniqueTag(html, wanted);
-  if (typeof found === 'string') return found;
-
-  if (found) {
-    const end = elementEnd(html, found);
-    if (markup === null) {
-      // The line goes, not just the tag: back over the indentation, forward over the newline.
-      let start = found.start;
-      while (start > 0 && (html[start - 1] === ' ' || html[start - 1] === '\t')) start -= 1;
-      let after = end;
-      if (html[after] === '\r') after += 1;
-      if (html[after] === '\n') after += 1;
-      // Unless something else shares the line, in which case only the tag is ours to remove.
-      if (start > 0 && html[start - 1] !== '\n') return { start: found.start, end, text: '' };
-      return { start, end: after, text: '' };
-    }
-    if (html.slice(found.start, end) === markup) return null;
-    return { start: found.start, end, text: markup };
-  }
-
-  // Absent. Nothing to remove, and otherwise a line to add.
-  if (markup === null) return null;
-
-  const head = uniqueTag(html, 'head');
-  if (!head) return 'the file has no <head> to put this in';
-  const close = matchingClose(html, head);
-  if (close === -1) return 'could not find the closing </head> in the file';
-
-  /*
-   * Indented like the tag before it, or like the closing tag one level in. Copying a sibling is
-   * the better guess: `<head>` contents are often indented differently from the tags around
-   * them, and matching the neighbours is what makes the diff one added line.
-   */
-  const siblings = directChildTags(html, head);
-  const last = siblings.at(-1);
-  const indent = last ? lineIndentAt(html, last.start) : `${lineIndentAt(html, close)}  `;
-  const lineStart = html.lastIndexOf('\n', close) + 1;
-  return { start: lineStart, end: lineStart, text: `${indent}${markup}\n` };
-}
-
-/** Where an element ends, closing tag included, for a tag that has one. */
-function elementEnd(html: string, tag: OpenTag): number {
-  // A void element — `<meta>`, `<link>` — ends at its own `>`; there is no close to look for.
-  if (tag.selfClosing || VOID.has(tag.name)) return tag.end + 1;
-  const close = matchingClose(html, tag);
-  if (close === -1) return tag.end + 1;
-  const gt = html.indexOf('>', close);
-  return gt === -1 ? tag.end + 1 : gt + 1;
-}
-
-/** Replace an element's content, leaving its opening and closing tags alone. */
-function textEdit(
-  html: string,
-  tag: OpenTag,
-  value: string,
-): { start: number; end: number; text: string } | null | string {
-  if (tag.selfClosing) return `<${tag.name}> has no content to change`;
-  const close = matchingClose(html, tag);
-  if (close === -1) return `could not find the closing </${tag.name}> in the file`;
-  const start = tag.end + 1;
-  if (html.slice(start, close) === value) return null;
-  return { start, end: close, text: value };
 }
 
 /**
@@ -857,13 +280,42 @@ function matchingClose(html: string, tag: OpenTag): number {
   return -1;
 }
 
-/** The span of `name="…"` within an opening tag's text, quotes included. */
+/** The span of `name="…"` (or a bare `name`) within an opening tag's text, quotes included. */
 function attributeRange(raw: string, name: string): { start: number; end: number } | null {
-  const pattern = new RegExp(`(^|\\s)(${escapeRegExp(name)})\\s*=\\s*("[^"]*"|'[^']*'|[^\\s>]+)`, 'i');
+  const pattern = new RegExp(
+    `(^|\\s)(${escapeRegExp(name)})(?=[\\s/>=]|$)(\\s*=\\s*("[^"]*"|'[^']*'|[^\\s>]+))?`,
+    'i',
+  );
   const match = pattern.exec(raw);
   if (!match) return null;
   const start = match.index + match[1].length;
   return { start, end: start + match[0].length - match[1].length };
+}
+
+/** One change to an opening tag: a whole attribute, or some declarations of its `style`. */
+export type OpenTagEdit =
+  | { name: string; value: string | null }
+  | { name: 'style'; declarations: Readonly<Record<string, string | null>> };
+
+/**
+ * Apply attribute edits to the text of one opening tag, keeping everything else in it.
+ *
+ * Quoting, attribute order, letter case and the declarations of a `style` nobody touched all
+ * stay as the file has them.
+ */
+export function editOpenTag(raw: string, edits: readonly OpenTagEdit[]): string {
+  let text = raw;
+  for (const edit of edits) {
+    const tag = readOpenTag(text, 0);
+    if (!tag) return raw;
+    const change =
+      'declarations' in edit
+        ? declarationsEdit(text, tag, edit.declarations)
+        : attributeEdit(text, tag, edit.name, edit.value);
+    if (!change || typeof change === 'string') continue;
+    text = text.slice(0, change.start) + change.text + text.slice(change.end);
+  }
+  return text;
 }
 
 function escapeAttribute(value: string): string {
@@ -873,56 +325,6 @@ function escapeAttribute(value: string): string {
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
-
-function clip(value: string, limit = 40): string {
-  const collapsed = value.replace(/\s+/g, ' ').trim();
-  return collapsed.length > limit ? `${collapsed.slice(0, limit - 1)}…` : collapsed;
-}
-
-/* -------------------------------------------------------------------------- */
-/* Reading the file back                                                       */
-/* -------------------------------------------------------------------------- */
-
-/**
- * An element's own text, exactly as the file has it.
- *
- * The whole point of reordering by reconciliation: a child that merely moved contributes the
- * bytes it already had, so its markup, comments, formatting and nested content come through
- * untouched. Leading whitespace on its line comes with it when the tag starts the line, which
- * is what makes a pure reorder reproduce the original lines rather than re-indent them.
- */
-export function elementText(html: string, anchor: ElementAnchor): string | null {
-  const tag = resolveAnchor(html, anchor);
-  if (typeof tag === 'string') return null;
-
-  let start = tag.start;
-  const lineStart = html.lastIndexOf('\n', start - 1) + 1;
-  if (html.slice(lineStart, start).trim() === '') start = lineStart;
-
-  if (tag.selfClosing) return html.slice(start, tag.end + 1);
-  const close = matchingClose(html, tag);
-  if (close === -1) return null;
-  const gt = html.indexOf('>', close);
-  return gt === -1 ? null : html.slice(start, gt + 1);
-}
-
-/** The whitespace an element sits behind on its line, for indenting what joins it. */
-export function indentOf(html: string, anchor: ElementAnchor): string {
-  const tag = resolveAnchor(html, anchor);
-  if (typeof tag === 'string') return '';
-  const lineStart = html.lastIndexOf('\n', tag.start - 1) + 1;
-  const lead = html.slice(lineStart, tag.start);
-  return lead.trim() === '' ? lead : '';
-}
-
-/** True when the file contains this element at all. */
-export function canResolve(html: string, anchor: ElementAnchor): boolean {
-  return typeof resolveAnchor(html, anchor) !== 'string';
-}
-
-/* -------------------------------------------------------------------------- */
-/* The design system's block in the markup                                     */
-/* -------------------------------------------------------------------------- */
 
 /**
  * Marker comments around the `<style>` block the editor owns inside a file it does not.

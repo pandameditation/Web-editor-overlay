@@ -1,37 +1,15 @@
-import {
-  BLOCK_ATTR,
-  HOST_TAG,
-  IGNORE_ATTR,
-  INSERTED_ATTR,
-  INJECTED_ATTR,
-  MIRROR_ATTR,
-  SOURCE_ATTR,
-} from './constants.js';
+import { BLOCK_ATTR } from './constants.js';
 import {
   patchCSS,
   upsertSection,
   type DeclarationPatch,
   type PatchFailure,
 } from './css-patch.js';
-import {
-  cleanMarkup,
-  cleanInnerMarkup,
-  elementOfRecord,
-  anchorFor,
-  inlineAuthoredValue,
-} from './mutations.js';
-import {
-  canResolve,
-  elementText,
-  indentOf,
-  parseSourceMarker,
-  patchHTML,
-  dropBlockLinks,
-  upsertSeedBlock,
-  upsertStyleBlock,
-  type ElementAnchor,
-  type HtmlPatch,
-} from './html-patch.js';
+import { isEditorOwned, type DomOp } from './dom-journal.js';
+import type { JournalEntry } from './history.js';
+import { dropBlockLinks, upsertSeedBlock, upsertStyleBlock } from './html-patch.js';
+import { elementOfRecord } from './mutations.js';
+import { patchSourceFromJournal } from './source-patch.js';
 import type { FileHost } from './file-host.js';
 import { DOCUMENT_TARGET, styleElementById } from './sheets.js';
 import type { ChangeRecord } from './types.js';
@@ -53,8 +31,9 @@ import type { ChangeRecord } from './types.js';
  *
  * **Three kinds of file come out of this.**
  *
- * 1. *The document.* Everything the exported HTML already carries — text, attributes,
- *    structure, inline `<style>` and `<script>` — is one write of one file.
+ * 1. *The document.* Every DOM change the session journaled — text, attributes,
+ *    structure, inline `<style>` and `<script>` — patched into the file's own text and
+ *    verified by reading it back. See `source-patch.ts`.
  * 2. *Linked stylesheets.* Rule edits are replayed as declaration patches against the
  *    file's own text, so a one-line change is a one-line diff. A whole-sheet edit from
  *    the CSS panel replaces the file outright, because that is literally what the user
@@ -86,11 +65,26 @@ export interface PlannedWrite {
    * Things about this write worth knowing before agreeing to it.
    *
    * Distinct from `unplaced`, which is about edits that did not land. This is about the
-   * write itself doing more than the change list implies — most of all the document
-   * write, which is a serialization of the live page and therefore carries whatever the
-   * page's own code built, alongside the edits that were actually asked for.
+   * write itself doing more than the change list implies.
    */
   warnings?: string[];
+  /**
+   * For a document write, the journal operations the written file now carries.
+   *
+   * Handed back after a successful write so the next save knows what the file already says.
+   */
+  journalOps?: readonly (readonly DomOp[])[];
+}
+
+/** The page's DOM history, as the save needs it. See `History.journal`. */
+export interface DocumentJournal {
+  retired: readonly JournalEntry[];
+  applied: readonly JournalEntry[];
+  rolledBack: readonly JournalEntry[];
+  /** Every pending change, ticked or not. */
+  pending: readonly ChangeRecord[];
+  /** What each file received from an earlier save in this session, by path. */
+  written: ReadonlyMap<string, { text: string; ops: readonly (readonly DomOp[])[] }>;
 }
 
 /**
@@ -133,6 +127,12 @@ function listPhrase(items: string[]): string {
 export interface UnwritableChange {
   record: ChangeRecord;
   reason: string;
+  /**
+   * True when the change could be written once the reason is dealt with — the document patch was
+   * refused — rather than having nowhere to go at all. Such a change is still pending after the
+   * save; it must not be counted as saved.
+   */
+  blocking?: boolean;
 }
 
 export interface WritePlan {
@@ -213,6 +213,12 @@ export interface WriteSubject {
    * much larger change than saying what is about to happen.
    */
   generatedRegions?: readonly HTMLElement[];
+  /**
+   * Every DOM operation the session made, which is what the document write is built from.
+   *
+   * Without it the document cannot be patched, and is not written.
+   */
+  journal?: DocumentJournal;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -516,6 +522,7 @@ export async function buildWritePlan(
   const isGenerated = (el: HTMLElement): boolean =>
     regions.some((region) => region === el || region.contains(el));
   const documentRecords: ChangeRecord[] = [];
+  const unreachableRecords: ChangeRecord[] = [];
   for (const record of records) {
     // Removing the library is a document change too: the seed region and the links it justified
     // both live in the markup, so the file has to be reached even with no seed to put in it.
@@ -523,6 +530,7 @@ export async function buildWritePlan(
     const beyondReach = unreachableInMarkup(record, isGenerated);
     if (beyondReach) {
       unwritable.push({ record, reason: beyondReach });
+      unreachableRecords.push(record);
       continue;
     }
     documentRecords.push(record);
@@ -539,93 +547,69 @@ export async function buildWritePlan(
       const before = await host.read(documentPath);
 
       /*
-       * Patch the file where every change can be placed in it.
+       * Patch the file from the journal, or do not write it.
        *
-       * All or nothing, deliberately. Patching some changes and serializing for the rest
-       * would mean writing the serialized page anyway, so the patches would be pointless;
-       * and patching some and dropping the rest would silently stop writing edits that
-       * used to reach the file. So either the whole change set can be expressed as edits to
-       * the file — in which case nothing else in it is touched, which is the entire point —
-       * or the page is serialized exactly as before.
-       */
-      /*
-       * Why the file had to be rewritten, if it did. Collected as it happens rather than
-       * reconstructed afterwards, because guessing at it produced a warning that named the
-       * wrong cause twice — and a caveat that misdescribes itself is worse than none.
+       * Never a serialization of the page: that reformats every line and drags the page's own
+       * rendering into the markup. The journal-driven patch either places every ticked change
+       * and proves the result reads back as intended, or names what stopped it — and then the
+       * changes are listed as not written, where the user can see them and act.
        */
       const why: string[] = [];
-      const patched =
-        before === null
-          ? null
-          : tryPatchDocument(
-            before,
-            documentRecords,
-            documentPath,
-            isGenerated,
-            why,
-            // Only when the document is where the design system is going. A stylesheet target
-            // has already had it written by step 3, and writing it twice is the bug that
-            // `isDocumentChange` exists to prevent.
-            systemInDocument ? systemCSS : '',
-            blockSeed,
-            removeLibrary,
-          );
-      if (patched) {
-        if (patched.html !== before) {
-          writes.push({
-            path: documentPath,
-            kind: 'document',
-            reason: `${plural(documentRecords.length, 'change')}, patched in place`,
-            before,
-            after: patched.html,
-            records: documentRecords,
-            unplaced: [],
-          });
-        }
-      } else if (before !== subject.html) {
-        const warnings: string[] = [];
-        const generated = (subject.generatedRegions ?? []).length;
-        // Only reached when a change could not be placed, so say which and why: this is
-        // the difference between "the editor reformatted my file" and a known trade.
-        if (why.length) {
-          warnings.push(
-            `The whole file is rewritten because ${why.slice(0, 2).join('; and ')}${why.length > 2 ? `; and ${why.length - 2} more` : ''}.`,
-          );
-        } else {
-          /*
-           * Every change was locatable, so the bail came from the shape of the markup rather
-           * than from a missing anchor — a container holding words alongside its elements
-           * cannot be rebuilt from those elements without dropping the words. Saying "could
-           * not be located" here would name the wrong cause, and a warning that misdescribes
-           * itself is worse than a vaguer one that does not.
-           */
-          warnings.push(
-            'The whole file is rewritten because part of this change is inside an element that ' +
-            'mixes text with other elements, which cannot be rebuilt without risking the text.',
-          );
-        }
-        if (generated) {
-          warnings.push(
-            `This is the page as it stands, so ${generated} element${generated === 1 ? '' : 's'} ` +
-            `built by the page's own code ${generated === 1 ? 'is' : 'are'} written into the ` +
-            `markup as well. The code will rebuild ${generated === 1 ? 'it' : 'them'} on the ` +
-            `next load either way. Untick the changes below to leave this file alone.`,
-          );
-        }
-        warnings.push(
-          'The whole file is rewritten from the page, so quoting, self-closing tags and ' +
-          'letter case are normalised even on lines that did not change.',
-        );
+      if (before === null) {
         writes.push({
           path: documentPath,
           kind: 'document',
-          reason: plural(documentRecords.length, 'change'),
+          reason: `${plural(documentRecords.length, 'change')}, written as a new file`,
           before,
           after: subject.html,
           records: documentRecords,
           unplaced: [],
-          warnings,
         });
+      } else {
+        const patched = tryPatchDocument(
+          before,
+          documentRecords,
+          documentPath,
+          why,
+          subject,
+          // Only when the document is where the design system is going. A stylesheet target
+          // has already had it written by step 3, and writing it twice is the bug that
+          // `isDocumentChange` exists to prevent.
+          systemInDocument ? systemCSS : '',
+          unreachableRecords,
+        );
+        if (patched) {
+          /*
+           * An edit made to something this write leaves out — a copy whose duplication was
+           * unticked — has nowhere in the file to go. Said, not silently dropped.
+           */
+          for (const record of patched.stranded) {
+            unwritable.push({
+              record,
+              reason: `“${record.summary}” was made to an element that is not itself going into the file.`,
+            });
+          }
+          for (const record of patched.unplaced) {
+            unwritable.push({ record, reason: unplacedReason(record) });
+          }
+          if (patched.html !== before) {
+            writes.push({
+              path: documentPath,
+              kind: 'document',
+              reason: `${plural(documentRecords.length, 'change')}, patched in place`,
+              before,
+              after: patched.html,
+              records: documentRecords.filter(
+                (record) => !patched.stranded.includes(record) && !patched.unplaced.includes(record),
+              ),
+              unplaced: [],
+              journalOps: patched.ops,
+            });
+          }
+        } else {
+          const reason = `This change could not be written into ${documentPath}: ${why[0] ?? 'it could not be placed in the file'}.`;
+          for (const record of documentRecords) unwritable.push({ record, reason, blocking: true });
+        }
       }
     }
   }
@@ -710,25 +694,21 @@ export function patchDocumentSource(
   source: string,
   subject: WriteSubject,
   documentPath: string,
-): { html: string } | { why: string[] } {
+): { html: string; why: string[] } | { why: string[] } {
   const attempt = attemptDocumentPatch(source, subject, documentPath);
-  if (attempt.html !== null) return { html: attempt.html };
+  if (attempt.html !== null) return { html: attempt.html, why: attempt.why };
   if (!attempt.records) return { why: ['nothing in this change set belongs to the markup'] };
   return { why: attempt.why.length ? attempt.why : ['no change could be placed in the file'] };
 }
 
 /**
- * Why saving would rewrite this file instead of editing it, or null when it would not.
+ * Why this change set cannot be written into the file, or null when it can.
  *
- * The same question the save plan answers, asked early enough to be worth answering. A user
- * finds out that their file is about to be reformatted when they open the save dialog, which is
- * long after the change that caused it and long after Undo was the obvious response — so the
- * editor asks this as each change lands and says so while the change is still the thing they
- * just did.
+ * The same question the save plan answers, asked as each change lands so the user hears it while
+ * Undo is still the obvious response rather than when the save dialog opens.
  *
- * Null for "nothing to write here" as much as for "this all fits", and the difference matters:
- * a change set with nothing in it for the markup is not about to rewrite anything, and warning
- * about it would be a warning nobody could act on.
+ * Null for "nothing to write here" as much as for "this all fits": a change set with nothing in
+ * it for the markup has nothing to warn about.
  */
 export function rewriteReason(
   source: string,
@@ -736,16 +716,16 @@ export function rewriteReason(
   documentPath: string,
 ): string | null {
   const attempt = attemptDocumentPatch(source, subject, documentPath);
-  if (attempt.html !== null || !attempt.records) return null;
+  if (!attempt.records) return null;
+  if (attempt.html !== null) return attempt.why[0] ?? null;
   return attempt.why[0] ?? 'part of this change cannot be placed in the file';
 }
 
 /**
  * One attempt at patching the document, described rather than decided.
  *
- * Shared so that the two callers above cannot drift: what the download offers and what the
- * live warning claims have to be the same judgement, or the editor is telling the user one
- * thing and doing another.
+ * Shared so that the callers cannot drift: what the download offers, what the live warning
+ * claims and what the save writes have to be the same judgement.
  */
 function attemptDocumentPatch(
   source: string,
@@ -762,11 +742,11 @@ function attemptDocumentPatch(
   // The same selection the write path makes: what the markup can carry, minus what the
   // page's own code owns. Literally the same, via `unreachableInMarkup`, because the two
   // answering this differently is how a warning ends up describing a save that never happens.
-  const documentRecords = subject.records.filter(
-    (record) =>
-      isDocumentChange(record, systemInDocument, Boolean(blockSeed), removeLibrary) &&
-      !unreachableInMarkup(record, isGenerated),
+  const candidates = subject.records.filter((record) =>
+    isDocumentChange(record, systemInDocument, Boolean(blockSeed), removeLibrary),
   );
+  const unreachable = candidates.filter((record) => unreachableInMarkup(record, isGenerated));
+  const documentRecords = candidates.filter((record) => !unreachable.includes(record));
   if (!documentRecords.length) return { html: null, records: 0, why: [] };
 
   const why: string[] = [];
@@ -774,35 +754,25 @@ function attemptDocumentPatch(
     source,
     documentRecords,
     documentPath,
-    isGenerated,
     why,
+    subject,
     systemInDocument ? designSystemCSSText(subject.designSystemCSS) : '',
-    blockSeed,
-    removeLibrary,
+    unreachable,
   );
+  if (patched) why.push(...patched.unplaced.map((record) => unplacedReason(record)));
   return { html: patched?.html ?? null, records: documentRecords.length, why };
 }
 
-/**
- * The change kinds that can be expressed as an edit to the file's text.
- *
- * Attribute, class and style edits rewrite one attribute; a text edit replaces one
- * element's content. Structural change — inserting, deleting, moving, wrapping — is a
- * different problem: it needs the file's own indentation and sibling layout reproduced, and
- * getting that subtly wrong makes a mess of a file rather than a wrong value in it. Those
- * still go through serialization, which handles them correctly.
- */
-const PATCHABLE = new Set<ChangeRecord['kind']>(['text', 'attribute', 'class', 'style']);
+/** Why a change to content the page builds is not in the file. */
+function unplacedReason(record: ChangeRecord): string {
+  return `“${record.summary}” is inside content the page builds, which the file does not contain`;
+}
 
 /**
  * Changes about where an element sits rather than what it says.
  *
- * All of them are handled by one operation — rebuilding the container's children against the
- * file — because they are all the same question asked from different sides. Inserting adds a
- * child, deleting removes one, moving does both, duplicating and wrapping add one that was
- * built from another. Treating them separately would mean three ways to get the ordering
- * wrong; reconciling the container gets the ordering from the live DOM, which is by
- * definition what the user arranged.
+ * The file receives them like any other DOM change, from the journal. They are named here
+ * because a structural change to an element the page builds has nowhere in the file to go.
  */
 const STRUCTURAL = new Set<ChangeRecord['kind']>([
   'insert', 'delete', 'move', 'duplicate', 'wrap', 'replace',
@@ -812,486 +782,99 @@ const STRUCTURAL = new Set<ChangeRecord['kind']>([
  * Changes to the design system rather than to any element.
  *
  * They reach a file as one block of CSS — `upsertSection` for a stylesheet, `upsertStyleBlock`
- * for the markup — so they are delivered wholesale rather than placed individually. Naming them
- * here is what lets the patcher skip them instead of failing to find an element they never had.
- */
-/*
- * `block` is here for the same reason and by a different route. A block change reaches a file
- * as one seed script rather than as CSS, but it is delivered wholesale just the same, and it
- * names no element — so the patcher has to skip it rather than hunt for one.
+ * for the markup — or, for `block`, as one seed script, so they are delivered wholesale rather
+ * than placed individually.
  */
 const DESIGN_SYSTEM = new Set<ChangeRecord['kind']>([
   'token', 'token-class', 'token-rule', 'block',
 ]);
 
 /**
- * Rebuild each changed container's children from the file plus the live arrangement.
+ * CSS rule edits that belong to one of the page's own `<style>` blocks, as text transforms.
  *
- * The trick that makes this preserve the file: a child still in the file contributes the
- * bytes it already had, verbatim, found by its own anchor. Only a child the file has never
- * seen is serialized, and only that child. So moving three items in a list of twenty
- * reorders three runs of original text and leaves the other seventeen — and everything
- * nested inside all twenty — exactly as written.
- *
- * Returns null when any of it cannot be done safely, and the caller then serializes the page
- * as it always did.
+ * A CSSOM edit changes what renders and leaves the element's text alone, so the journal never
+ * sees it. Replayed here against the block's text in the file, the same way a linked stylesheet
+ * is patched.
  */
-function reconcileContainers(
-  html: string,
+function inlineStyleTransforms(
   records: readonly ChangeRecord[],
-  generated: (el: HTMLElement) => boolean,
   why: string[],
-  /** The file being patched, so a container's build marker can be read as a position in it. */
-  documentPath: string,
-  /** Bookkeeping attributes that are not bookkeeping for this write. See `cleanMarkup`. */
-  keep: readonly string[] = [],
-): { html: string } | null {
-  const containers = new Map<string, ElementAnchor>();
-  for (const record of records) {
-    if (!STRUCTURAL.has(record.kind)) continue;
-    // Every container the change touched, which for a move is two of them.
-    const recorded = recordedContainers(record);
-    // No container recorded: not placeable. Whether it can be *found* is settled below,
-    // where both the file and the live page get a say — a tag unique in both is enough,
-    // which is what makes `<body>` a usable container.
-    if (!recorded.length) {
-      why.push(`no container was recorded for “${record.summary}”`);
-      return null;
-    }
-    for (const entry of recorded) {
-      const parent = placeMarkers(entry, documentPath);
-      containers.set(anchorKey(parent), parent);
-    }
+): Map<Element, (css: string) => string> {
+  const out = new Map<Element, (css: string) => string>();
+  for (const { element, patches } of inlineStyleEdits(records)) {
+    if (isEditorOwned(element)) continue;
+    out.set(element, (css) => {
+      const result = patchCSS(css, patches);
+      for (const failure of result.failed) why.push(failure.reason);
+      return result.css;
+    });
   }
-  if (!containers.size) return null;
-
-  /*
-   * Deepest container first, each rebuilt against the text the previous one produced.
-   *
-   * Containers nest: a paragraph the user added a tag to sits inside the `<body>` they also
-   * moved something in. A rebuild copies its children's bytes out of the file, so the inner one
-   * has to be in the text before the outer one reads it, or the outer rebuild copies the stale
-   * version and the inner change is quietly undone.
-   */
-  /*
-   * A container the file has not got yet is rebuilt through the nearest ancestor it has.
-   *
-   * Moving a cell inside a `<tr>` the user added a moment ago is the plain case: the row is not
-   * in the file, so there is nothing there to patch, and demanding one meant giving up on the
-   * whole save. The row's own container is not in the file either, and nor is the table, so the
-   * search walks out until something is — `<body>` at the very latest.
-   *
-   * The child on the path down to the missing container is then marked: the ancestor's rebuild
-   * has to serialize that branch from the live page rather than copy the file's bytes for it,
-   * because the file's bytes are the version without the move. Nothing is lost by serializing
-   * it, either — a subtree the file has never seen has no formatting in it to preserve.
-   */
-  const fromLive = new Set<HTMLElement>();
-  const targets = new Map<string, { anchor: ElementAnchor; el: HTMLElement }>();
-  for (const anchor of containers.values()) {
-    const el = liveElementFor(anchor);
-    if (!el) {
-      why.push(`the <${anchor.tag}> holding a moved element is no longer in the page`);
-      return null;
-    }
-    if (canResolve(html, anchor)) {
-      targets.set(anchorKey(anchor), { anchor, el });
-      continue;
-    }
-    let branch = el;
-    let host = el.parentElement;
-    let hostAnchor: ElementAnchor | undefined;
-    while (host) {
-      const candidate = placeMarkers(containerAnchorOf(host), documentPath);
-      if (canResolve(html, candidate)) {
-        hostAnchor = candidate;
-        break;
-      }
-      branch = host;
-      host = host.parentElement;
-    }
-    if (!host || !hostAnchor) {
-      why.push(`neither the <${anchor.tag}> holding a moved element nor anything around it is in the file`);
-      return null;
-    }
-    fromLive.add(branch);
-    targets.set(anchorKey(hostAnchor), { anchor: hostAnchor, el: host });
-  }
-
-  const ordered = [...targets.values()].sort((a, b) => depthOf(b.el) - depthOf(a.el));
-
-  let current = html;
-  for (const { anchor, el } of ordered) {
-
-    /*
-     * A container that mixes text with its elements is rebuilt inline instead.
-     *
-     * `<p>Hello <b>world</b> again</p>` cannot go back one child per indented line: that would
-     * push newlines into the middle of a sentence and change what the page renders. So in this
-     * mode the text nodes are copied out byte for byte and nothing is added between the parts —
-     * the spacing in the file is whatever the author's own text already says it is.
-     *
-     * Refusing these containers was the last thing that still forced a whole-file rewrite.
-     */
-    const inline = looseText(el);
-
-    const indent = indentOf(current, anchor);
-    const inner = inline ? '' : `${indent}  `;
-    const parts: string[] = [];
-    for (const child of Array.from(el.childNodes)) {
-      // The author's prose. The words between the tags are the whole reason for the inline mode.
-      if (inline && child.nodeType === Node.TEXT_NODE) {
-        parts.push(child.nodeValue ?? '');
-        continue;
-      }
-      /*
-       * Comments come through. They are the author's, they sit between the children being
-       * reordered, and emitting only elements would delete every one of them from the file —
-       * a silent loss, and exactly the kind this whole exercise exists to stop.
-       */
-      if (child.nodeType === Node.COMMENT_NODE) {
-        parts.push(`${inner}<!--${child.nodeValue ?? ''}-->`);
-        continue;
-      }
-      if (child.nodeType !== Node.ELEMENT_NODE) continue;
-      if (!(child instanceof HTMLElement)) {
-        why.push(`<${anchor.tag}> holds a node the editor does not know how to write`);
-        return null;
-      }
-      if (isEditorNode(child)) continue;
-      // Content the page renders is not the file's to carry, here as everywhere else.
-      if (generated(child)) continue;
-      /*
-       * A child the file has never seen is serialized from the live page rather than looked up.
-       *
-       * Two ways to be new, and both have to be caught here. `fromLive` holds a branch that
-       * contains a container the file has not got. `INSERTED_ATTR` marks the root of a subtree
-       * the editor itself created — a duplicate, inserted markup, a wrapper — and there is no
-       * honest answer to where that is in the file, because it is not in the file.
-       *
-       * Asking anyway is what wrote a duplicate out as its original. `anchorOf` describes a
-       * child by its id, its text and its tag; a copy has no id of its own and shares the
-       * other two with the element it was copied from, so `resolveAnchor` answered with the
-       * original's opening tag — through `tagAroundText` when the text occurs once in the
-       * file, through `uniqueTag` when the tag does — and `elementText` handed back the
-       * original's bytes. The copy then reached the file as a second, verbatim copy of the
-       * original *as the file had it*, so everything the user did to it afterwards was
-       * missing: the pass that places attribute and style patches skips anything inside a
-       * fresh subtree precisely because this rebuild is supposed to be carrying it.
-       *
-       * Nothing is lost by serializing instead. A subtree the file has never seen has no
-       * authored formatting in it to preserve.
-       */
-      const fresh = fromLive.has(child) || child.hasAttribute(INSERTED_ATTR);
-      const original = fresh ? null : elementText(current, anchorOf(child));
-      /*
-       * `cleanMarkup` rather than `outerHTML`, and this is the one place in the patch path
-       * where it matters.
-       *
-       * Everything else here comes out of the file, so it is already clean. A child the file
-       * has never seen has to be serialized from the live DOM instead — and the live DOM is
-       * stamped with `data-heo-src` by the build, `data-heo-inserted` by the editor, and
-       * whatever else was on it. Serializing it raw wrote all of that into the markup, on the
-       * new element and on every descendant. `cleanMarkup` is the same clone-and-strip the
-       * save prompt already uses, for the same reason: none of it belongs in a codebase.
-       */
-      /*
-       * Inline, the file's bytes arrive with the indentation of the line they were found on,
-       * which would land in the middle of a sentence. The neighbouring text nodes already
-       * carry whatever spacing belongs there.
-       */
-      const verbatim = inline && original ? original.replace(/^[ \t]+/, '') : original;
-      parts.push(verbatim ?? `${inner}${cleanMarkup(child, keep)}`);
-    }
-    /*
-     * Applied now rather than collected, so the next container out reads the result.
-     */
-    const rebuild = patchHTML(current, [
-      {
-        anchor,
-        kind: 'text',
-        value: inline
-          ? parts.join('')
-          : parts.length
-            ? `\n${parts.join('\n')}\n${indent}`
-            : '',
-      },
-    ]);
-    if (rebuild.failed.length) {
-      for (const failure of rebuild.failed) why.push(failure.reason);
-      return null;
-    }
-    current = rebuild.html;
-  }
-  return { html: current };
+  return out;
 }
 
 /**
- * The containers a structural change rearranged, as anchors.
+ * The pending changes the file must not receive: unticked ones, and ones with nowhere to go.
  *
- * One function because two passes need the same answer and them disagreeing is a bug rather
- * than a discrepancy: the rebuild uses it to decide what to reconcile, and the patch pass uses
- * it to decide whether a newly added element will be carried by one of those reconciliations.
- *
- * `anchor.parent` is the fallback rather than the source, because it can only ever name one —
- * and a move that changes an element's parent has to rebuild the container it left as well as
- * the one it joined, or the file keeps the element in both places.
+ * Everything else the journal holds is written, whichever record describes it. A command can
+ * change an element and a registry at once, and the element half belongs in the markup even when
+ * its record is filed under the design system.
  */
-function recordedContainers(record: ChangeRecord): readonly ElementAnchor[] {
-  if (record.containers?.length) return record.containers;
-  return record.anchor?.parent ? [record.anchor.parent] : [];
+function excludedChanges(
+  journal: DocumentJournal,
+  ticked: readonly ChangeRecord[],
+  unreachable: readonly ChangeRecord[],
+): Set<string> {
+  const present = new Set(ticked.map((record) => record.id));
+  const out = new Set<string>();
+  for (const record of journal.pending) {
+    // Rows about CSS or scripts say nothing about the markup, so unticking one leaves the DOM half
+    // of the same command alone.
+    if (!touchesMarkup(record)) continue;
+    if (!present.has(record.id)) out.add(record.id);
+  }
+  for (const record of unreachable) out.add(record.id);
+  return out;
+}
+
+/** Whether a change record describes the page's markup rather than a stylesheet or script file. */
+function touchesMarkup(record: ChangeRecord): boolean {
+  if (DESIGN_SYSTEM.has(record.kind)) return false;
+  const scope = record.detail?.scope;
+  if (scope === 'stylesheet rule' || scope === 'stylesheet' || scope === 'external script') return false;
+  if (scope === 'rendered source') return false;
+  return true;
 }
 
 /**
- * How to look this child up in the file.
+ * Turn the document changes into edits to the file, or return null and say why.
  *
- * Every child gets one, not just the ones with ids. A child that merely sat there while its
- * siblings were reordered must contribute its own bytes, and returning null for it meant
- * serializing it instead — which is how a `<br />` in the file came back as `<br>` after a
- * move it was not even involved in.
- *
- * Its text is offered as a fallback because `resolveAnchor` only accepts a text match that is
- * unique in the file, so a wrong answer is not among the possible outcomes.
- */
-function anchorOf(el: HTMLElement): ElementAnchor {
-  const text = (el.textContent ?? '').trim();
-  /*
-   * Identity only: no position. That restriction is the point of this one.
-   *
-   * A rebuild exists precisely because the live order and the file order have diverged, so
-   * asking the file for "the second `article.card`" during one gives a confidently wrong
-   * answer. Worse, an element the user just added has no position in the file at all, and
-   * counting siblings happily found it an existing element to be — the new card came out of
-   * the rebuild as a second copy of its neighbour, carrying that neighbour's edits with it.
-   *
-   * So a child is matched here only by something that is *about* it — its id, its build
-   * marker, or text the file holds exactly once. Anything else is serialized from the live
-   * page instead, which is correct if wordier.
-   *
-   * Being *about* the element is still not the same as being unique to it, which is why the
-   * caller refuses to use this for anything the editor created. A duplicate has the same
-   * text and the same tag as the element it came from, so identity alone cannot tell the two
-   * apart and this would answer with the original. See the `fresh` check in the rebuild.
-   */
-  return {
-    tag: el.tagName.toLowerCase(),
-    id: el.id || undefined,
-    src: el.getAttribute(SOURCE_ATTR) ?? undefined,
-    text: text.length >= 8 ? text : undefined,
-  };
-}
-
-/**
- * How to find this element in the file when it is a *container*, position included.
- *
- * The opposite trade from `anchorOf`, and for the opposite job. A container is being looked up
- * to find the range its children occupy, not to copy its own bytes, so landing on the wrong
- * `<tr>` is caught by everything downstream failing to fit — whereas refusing to look for it
- * positionally meant a nameless row could not be found at all, and a move inside one rewrote
- * the whole file.
- */
-function containerAnchorOf(el: HTMLElement): ElementAnchor {
-  const text = (el.textContent ?? '').trim();
-  return { ...anchorFor(el), text: text.length >= 8 ? text : undefined };
-}
-
-/** How far down the tree an element sits, for rebuilding the innermost container first. */
-function depthOf(el: HTMLElement | null): number {
-  let depth = 0;
-  for (let node = el; node; node = node.parentElement) depth += 1;
-  return depth;
-}
-
-/** True when the element has text of its own alongside its child elements. */
-function looseText(el: HTMLElement): boolean {
-  for (const node of Array.from(el.childNodes)) {
-    if (node.nodeType !== Node.TEXT_NODE) continue;
-    if ((node.nodeValue ?? '').trim() !== '') return true;
-  }
-  return false;
-}
-
-/** Nodes belonging to the editor or to the tooling, which no file ever declared. */
-function isEditorNode(el: Element): boolean {
-  if (el.tagName.toLowerCase() === HOST_TAG) return true;
-  return (
-    el.hasAttribute(IGNORE_ATTR) ||
-    el.hasAttribute(INJECTED_ATTR) ||
-    el.hasAttribute(MIRROR_ATTR) ||
-    el.hasAttribute('data-heo-generated') ||
-    el.hasAttribute('data-heo-internal')
-  );
-}
-
-/**
- * The anchor to use for this record against this file, or null when there is none.
- *
- * The source marker is only honoured when it names the file being patched. On a page built
- * from components it names a template instead, and its line number describes a position in
- * that template — following it into the HTML would land somewhere arbitrary and patch the
- * wrong element, which is the one outcome worth more care than a reformatted file.
- */
-function anchorInFile(record: ChangeRecord, documentPath: string): ElementAnchor | null {
-  const raw = record.anchor;
-  if (!raw) return null;
-  const anchor = placeMarkers(raw, documentPath);
-  // A structural change is placed by rebuilding its container, which needs the container
-  // findable rather than the element.
-  if (STRUCTURAL.has(record.kind)) return anchor.parent ?? null;
-  if (!PATCHABLE.has(record.kind)) return null;
-
-  if (anchor.line != null) return anchor;
-  if (anchor.id) return { tag: anchor.tag, id: anchor.id };
-  /*
-   * An identifying attribute is as good as an id, and for `<head>` it is the only thing there is.
-   *
-   * Narrowed to the tag and that attribute for the same reason the id branch narrows: the anchor
-   * is making one specific claim — "the `<meta>` whose name is description" — and carrying a
-   * sibling index alongside it would offer the resolution a second, weaker answer to fall back
-   * on. A dev server injects tags into the served `<head>`, so that index is wrong more often
-   * than it is right.
-   */
-  if (anchor.attr) return { tag: anchor.tag, attr: anchor.attr };
-  // Nothing durable on the element itself. For a text edit the text being replaced can
-  // stand in, provided the file contains it once — which is what makes a plain page with
-  // no ids and no build step patchable at all.
-  if (record.kind === 'text' && record.before) {
-    return { ...anchor, text: record.before };
-  }
-  /*
-   * And otherwise, where it sits inside a container that can be found.
-   *
-   * This is the case that used to force a whole-file rewrite for something as ordinary as a
-   * font size on a plain `<div>` — no id, no build marker, no distinctive text, so nothing
-   * could say which div. Its position among its siblings can, and the resolution verifies the
-   * tag and classes before believing it, so the failure mode is a decline rather than an edit
-   * landing on the wrong element.
-   */
-  if (anchor.parent && (anchor.nth != null || anchor.nthTag != null)) return anchor;
-  return null;
-}
-
-/** True when any of `roots` is a strict ancestor of `el`. */
-function enclosedBy(el: HTMLElement, roots: ReadonlySet<HTMLElement>): boolean {
-  if (!roots.size) return false;
-  for (let at = el.parentElement; at; at = at.parentElement) {
-    if (roots.has(at)) return true;
-  }
-  return false;
-}
-
-/**
- * Turn every build marker in an anchor chain into a position in *this* file.
- *
- * The whole chain, not just the anchor itself, and that is the point of it. A marker is the
- * strongest thing an anchor can carry, but the resolution reads `line` and `column` rather
- * than `src` — because whether a marker means anything depends on which file is being
- * patched, and only this side knows that. Translating the top link and leaving the rest raw
- * meant a container that carried a perfectly good marker was looked up as though it had
- * nothing, which is how an edit inside an `<li>` rewrote a whole page.
- *
- * A marker naming another file is left alone rather than dropped: on a component page it
- * describes a position in a template, and the positional route below is the honest one.
- */
-function placeMarkers(anchor: ElementAnchor, documentPath: string): ElementAnchor {
-  const marker = anchor.src ? parseSourceMarker(anchor.src) : null;
-  const placed =
-    marker && samePath(marker.file, documentPath)
-      ? { ...anchor, line: marker.line, column: marker.column }
-      : anchor;
-  if (!placed.parent) return placed;
-  const parent = placeMarkers(placed.parent, documentPath);
-  return parent === placed.parent ? placed : { ...placed, parent };
-}
-
-/** Two paths for the same file, allowing for one being root-relative and one not. */
-function samePath(a: string, b: string): boolean {
-  const clean = (value: string): string => value.replace(/^\.?\//, '');
-  return clean(a) === clean(b) || clean(b).endsWith(`/${clean(a)}`) || clean(a).endsWith(`/${clean(b)}`);
-}
-
-/** The element a record refers to, still in the page, or null. */
-function liveElementFor(anchor: ElementAnchor): HTMLElement | null {
-  if (anchor.id) {
-    const byId = document.getElementById(anchor.id);
-    if (byId) return byId;
-  }
-  /*
-   * The same route the file resolution takes, so both sides can find a head tag.
-   *
-   * Both halves have to agree or the change is placeable in the file and unreadable from the
-   * page, which is reported as "the element behind this is no longer in the page" — the exact
-   * failure a `<meta>` hit before this existed.
-   */
-  if (anchor.attr) {
-    const selector = `${anchor.tag}[${anchor.attr.name}="${CSS.escape(anchor.attr.value)}"]`;
-    const found = document.querySelector(selector);
-    if (found instanceof HTMLElement) return found;
-  }
-  if (anchor.src) {
-    const found = document.querySelector(`[${SOURCE_ATTR}="${CSS.escape(anchor.src)}"]`);
-    if (found instanceof HTMLElement) return found;
-  }
-  // A tag with one instance in the page, matching what the file resolution allows.
-  const all = document.getElementsByTagName(anchor.tag);
-  if (all.length === 1 && all[0] instanceof HTMLElement) return all[0];
-
-  /*
-   * And otherwise by position, the same way the file resolution finds it.
-   *
-   * Both sides have to walk the same route or a change is placeable in the file but its live
-   * element cannot be read back — which is exactly how a font size on a plain `<div>` ended
-   * up rewriting the whole file even after the file side could find it.
-   */
-  if (anchor.parent && (anchor.nth != null || anchor.nthTag != null)) {
-    const parent = liveElementFor(anchor.parent);
-    if (!parent) return null;
-    const children = Array.from(parent.children).filter(
-      (child): child is HTMLElement => child instanceof HTMLElement && child.localName === anchor.tag,
-    );
-    // Class first, then tag alone, in step with how the file side narrows it.
-    const sameClass = children.filter((child) => liveClassSignature(child) === (anchor.classes ?? ''));
-    if (anchor.nth != null && sameClass.length > anchor.nth) return sameClass[anchor.nth];
-    if (anchor.nthTag != null && children.length > anchor.nthTag) return children[anchor.nthTag];
-  }
-  return null;
-}
-
-/** The element's author-written classes, sorted, matching how the anchor recorded them. */
-function liveClassSignature(el: HTMLElement): string {
-  return Array.from(el.classList)
-    .filter((name) => !name.startsWith('heo-'))
-    .sort()
-    .join(' ');
-}
-
-/**
- * Turn the document changes into edits to the file, or return null.
- *
- * Null means "not every change fits", and the caller then serializes as it always did.
- * Nothing here is best-effort: a patch that resolved to the wrong element would write an
- * edit into unrelated markup, which is worse than the reformatting this avoids.
+ * The DOM half comes from the journal: exactly the attributes, text and child lists the ticked
+ * changes touched, written over their own bytes in the file and verified by reading the result
+ * back. CSSOM edits to the page's own `<style>` blocks are replayed into those blocks' text. The
+ * editor-managed regions — the design system and the block library — are upserted last.
  */
 function tryPatchDocument(
   html: string,
   records: readonly ChangeRecord[],
   documentPath: string,
-  generated: (el: HTMLElement) => boolean,
   why: string[],
+  subject: WriteSubject,
   designSystemCSS = '',
-  blockLibrarySeed = '',
-  removeBlockLibrary = false,
-): { html: string } | null {
+  unreachable: readonly ChangeRecord[] = [],
+): {
+  html: string;
+  ops: (readonly DomOp[])[];
+  stranded: ChangeRecord[];
+  unplaced: ChangeRecord[];
+} | null {
   if (!records.length) return null;
+  const blockSeed = subject.blockLibrarySeed?.trim() ?? '';
+  const removeBlockLibrary = subject.removeBlockLibrary === true;
 
   /*
-   * A whole-document rewrite is delivered by serializing the page, not by patching it.
-   *
-   * Declined here rather than attempted, so the plan gives the true reason. The record names
-   * no element — it *is* the document — so the structural path below found no container for it
-   * and reported "no container was recorded for Rewrite the HTML document", which describes a
-   * missing anchor rather than the thing that actually happened. The outcome was always going
-   * to be the serialized page; only the sentence was wrong.
+   * A change can still declare that it cannot be patched, and that declaration is honoured.
+   * Nothing in the editor makes one any more — the journal carries every DOM change — but a
+   * record from elsewhere is entitled to say so.
    */
   const forced = records.find((record) => record.detail?.forcesRewrite);
   if (forced?.detail?.forcesRewrite) {
@@ -1299,281 +882,51 @@ function tryPatchDocument(
     return null;
   }
 
-  /*
-   * Content edits first, containers second, and the order is the whole trick.
-   *
-   * A container patch replaces everything between its tags, so it and an attribute edit on one
-   * of its children both want to write the same bytes — and only one of them can. Rebuilding
-   * afterwards settles it: the rebuild copies each child's bytes out of the text as it stands,
-   * so a child's new attribute is already in what gets copied. Doing it the other way round
-   * silently dropped the rebuild and reported the insert as written when it was not.
-   */
-  const structural = records.filter((record) => STRUCTURAL.has(record.kind));
-
-  /*
-   * The containers this write is going to rebuild, as live elements.
-   *
-   * Worked out here so the pass below can ask whether an element the editor added will be
-   * carried by one of them, rather than assume it. Resolved from the same recorded anchors
-   * `reconcileContainers` works from, so the two passes cannot disagree about what is being
-   * rebuilt — which is the only thing that makes skipping a fresh element's patches safe.
-   */
-  const rebuilding: HTMLElement[] = [];
-  for (const record of structural) {
-    for (const entry of recordedContainers(record)) {
-      const container = liveElementFor(entry);
-      if (container) rebuilding.push(container);
-    }
-  }
-
-  /*
-   * The one `data-heo-*` attribute that is not bookkeeping for this write.
-   *
-   * Hoisted because both places that serialize live markup into the file have to agree
-   * about it — a text patch's value and a container rebuild's fresh child.
-   */
-  const keepAttributes = blockLibrarySeed.trim() ? [BLOCK_ATTR] : [];
-
-  /*
-   * Values come from the live element, not from the record.
-   *
-   * A style record's `after` is one declaration's value and a class record's is one class
-   * name, so writing either into the attribute it belongs to would produce `padding="12px"`.
-   * The element itself has the finished attribute, which is also what makes several edits to
-   * one attribute collapse into a single patch carrying the value the user ended up with.
-   * Keyed on the anchor and the attribute so that collapsing happens by construction.
-   */
-  const wanted = new Map<string, HtmlPatch>();
-
-  /*
-   * Elements whose whole content is about to be written out of the live DOM.
-   *
-   * A text patch replaces everything between its tags, so it and an edit to something
-   * *inside* it both want the same bytes — and `patchHTML` refuses overlapping edits
-   * outright, which took the whole save down to a rewrite. There is nothing to arbitrate,
-   * though: the text patch's value is read from the live element, so the descendant's new
-   * attribute is already inside what gets written. The inner patch is redundant, not in
-   * competition, and this is the same reasoning that orders the container rebuild last.
-   *
-   * Bolding a few words is how this surfaced. It commits a text edit on the paragraph, and
-   * styling the new `<b>` afterwards is an attribute edit strictly inside it.
-   */
-  const rewritten = new Set<HTMLElement>();
-  for (const record of records) {
-    if (record.kind !== 'text') continue;
-    const el = elementOfRecord(record);
-    if (el) rewritten.add(el);
-  }
-
-  for (const record of records) {
-    if (STRUCTURAL.has(record.kind)) continue;
-    /*
-     * A design-system change is carried by the managed block, not by an anchor.
-     *
-     * Skipped rather than failed, and that is the difference between patching and rewriting for
-     * every page with tokens in it. These records describe CSS, not an element: there is nothing
-     * in the markup to anchor to, so `anchorInFile` returns null and the loop below used to give
-     * up on the whole file — which is why editing one token reformatted the entire page. The CSS
-     * is applied once at the end, as a block, exactly the way a stylesheet target gets it.
-     */
-    if (DESIGN_SYSTEM.has(record.kind)) continue;
-    /*
-     * An edit to something the user just added needs no patch of its own.
-     *
-     * The element is not in the file yet, so there is nothing to patch — the rebuild of the
-     * container it was added to serializes it from the live page, edits and all. Trying to
-     * place it anyway failed to resolve and took the whole save down to a rewrite.
-     *
-     * But only when a rebuild is actually going to carry it, and that has to be checked
-     * rather than assumed. The test used to be that the change set held *some* structural
-     * record, which is not the same question: unticking "Duplicate figure" while keeping the
-     * edits made to the copy left no structural record at all, so the edits were placed by
-     * their own anchors — and a copy's anchor resolves to the element it was copied from.
-     * The `src` the user set on their new image was written over the original's, silently,
-     * in a plan that reported one change patched in place and nothing stranded.
-     *
-     * Declining is the honest answer instead. The file is serialized as it always was when a
-     * change cannot be placed, and the plan says why.
-     */
-    const live = elementOfRecord(record);
-    const added = live?.closest(`[${INSERTED_ATTR}]`);
-    if (added) {
-      if (rebuilding.some((container) => container.contains(added))) continue;
-      why.push(
-        `“${record.summary}” was made to an element that is not itself going into the file`,
-      );
-      return null;
-    }
-    // Already carried by an ancestor's text patch. See `rewritten`.
-    if (live && enclosedBy(live, rewritten)) continue;
-
-    /*
-     * A whole tag added to or taken out of `<head>`, which is placed rather than serialized.
-     *
-     * Handled before `anchorInFile`, and it has to be: that asks how to find an element *in the
-     * file*, and for a tag being added the answer is that it is not there yet — which is the
-     * point of the edit rather than a reason to give up. The record's own anchor is exact by
-     * construction, and the markup travels on the record because by save time a removed tag has
-     * no node left to read and an added one has nothing in the file to read from.
-     */
-    const headMarkup = record.detail?.headMarkup;
-    if (headMarkup !== undefined && record.anchor) {
-      wanted.set(`head|${anchorKey(record.anchor)}`, {
-        anchor: record.anchor,
-        kind: 'headTag',
-        markup: headMarkup || null,
-      });
-      continue;
-    }
-
-    const anchor = anchorInFile(record, documentPath);
-    if (!anchor) {
-      why.push(`“${record.summary}” could not be located in the file`);
-      return null;
-    }
-    // The element the change was made to, or failing that a lookup from its anchor.
-    const el = elementOfRecord(record) ?? liveElementFor(record.anchor ?? anchor);
-
-    if (record.kind === 'text') {
-      /*
-       * No live element is fine here: the recorded `after` is the text, and for a text
-       * anchor there is nothing else to read anyway.
-       *
-       * Cleaned rather than taken raw, for the same reason the container rebuild cleans a
-       * child it serializes. The live DOM is stamped with `data-heo-src` by the build and
-       * with the editor's own bookkeeping, and a paragraph holding marked-up inline tags —
-       * `<strong>`, a couple of `<b>` — wrote every one of those attributes into the file.
-       */
-      const value = el ? cleanInnerMarkup(el, keepAttributes) : (record.after ?? '');
-      wanted.set(`${anchorKey(anchor)}|#text`, { anchor, kind: 'text', value });
-      continue;
-    }
-
-    const name =
-      record.kind === 'style' ? 'style' : record.kind === 'class' ? 'class' : record.detail?.attribute;
-    if (!name || !el) {
-      why.push(
-        name
-          ? `the element behind “${record.summary}” is no longer in the page`
-          : `“${record.summary}” does not say which attribute it changed`,
-      );
-      return null;
-    }
-
-    /*
-     * A style edit writes the declarations it is about, not the whole attribute.
-     *
-     * The finished value still comes from the live element — several edits to one property
-     * collapse into the last one the user chose, which is the reason this reads the DOM at all —
-     * but only for the properties the edit names. Everything else in that attribute stays as the
-     * file has it, because it was never the user's to change: a transition caught mid-flight, a
-     * `display` a script toggles, the residue of a drag preview. All of that used to be written
-     * into the file alongside the one declaration that was asked for.
-     *
-     * Collapsing happens by construction here too: successive edits to one element merge into a
-     * single declarations patch, and a later edit to the same property overwrites the earlier
-     * entry rather than fighting it.
-     */
-    const governed = record.kind === 'style' ? record.detail?.styleProperties : undefined;
-    if (governed) {
-      const key = `${anchorKey(anchor)}|style`;
-      const existing = wanted.get(key);
-      const declarations: Record<string, string | null> =
-        existing?.kind === 'declarations' ? { ...existing.declarations } : {};
-      for (const property of governed.split(',')) {
-        const trimmed = property.trim();
-        if (!trimmed) continue;
-        // Empty means the user cleared it, which is a removal rather than an empty value.
-        declarations[trimmed] = inlineAuthoredValue(el, trimmed) || null;
-      }
-      wanted.set(key, { anchor, kind: 'declarations', declarations });
-      continue;
-    }
-
-    wanted.set(`${anchorKey(anchor)}|${name}`, {
-      anchor,
-      kind: 'attribute',
-      name,
-      value: el.getAttribute(name),
-    });
-  }
-
-  const result = patchHTML(html, [...wanted.values()]);
-  // One failure and the whole approach is off: the edit has to reach the file somehow.
-  if (result.failed.length) {
-    for (const failure of result.failed) why.push(failure.reason);
+  const journal = subject.journal;
+  if (!journal) {
+    why.push('the editor has no journal of how the page changed');
     return null;
   }
-  /*
-   * The instance links survive exactly when the library they point at does.
-   *
-   * A `data-heo-block` naming a template the next load has no copy of is worse than no
-   * attribute: it is a dangling reference in someone's markup. But when the seed is going into
-   * the same file, the two halves only work together — the library comes back and the elements
-   * that came from it can say so.
-   */
-  const reconciled = structural.length
-    ? reconcileContainers(
-      result.html,
-      structural,
-      generated,
-      why,
-      documentPath,
-      keepAttributes,
-    )
-    : { html: result.html };
-  if (!reconciled) return null;
+
+  const keepAttributes = blockSeed ? [BLOCK_ATTR] : [];
+  const styleEdits = inlineStyleTransforms(records, why);
+  const result = patchSourceFromJournal({
+    source: html,
+    journal: {
+      retired: journal.retired,
+      applied: journal.applied,
+      rolledBack: journal.rolledBack,
+      written: journal.written.get(documentPath) ?? null,
+    },
+    excluded: excludedChanges(journal, subject.records, unreachable),
+    markupRows: new Set(journal.pending.filter(touchesMarkup).map((record) => record.id)),
+    styleEdits,
+    keep: keepAttributes,
+  });
+  if (!result.ok) {
+    why.push(...result.why);
+    return null;
+  }
+  if (why.length) return null;
 
   /*
-   * The design system last, as one block.
+   * The design system and the library last, as managed regions.
    *
-   * After the containers, because a rebuild replaces everything between a container's tags and
-   * would either clobber the block or be clobbered by it. `<head>` is not a container any
-   * rebuild touches, so in practice they do not collide — but ordering it explicitly costs
-   * nothing and removes the question.
-   */
-  /*
-   * And the block library after it, for the same reason and in the same place.
-   *
-   * Two managed regions in `<head>`, each with its own markers, so a save that changes only the
-   * design system leaves the seed byte-identical and a save that changes only the library leaves
-   * the CSS alone. Both are no-ops when their payload is empty.
-   */
-  /*
-   * Removal is the third state, and it happens last of all.
-   *
-   * After the region is written rather than instead of writing it, so the two instructions cannot
-   * be given at once by accident: `removeBlockLibrary` forces the seed empty upstream, and this
-   * then takes out whatever the file was already carrying, links included.
+   * Two regions in `<head>`, each with its own markers, so a save that changes only one leaves the
+   * other byte-identical. Removal of the library is the third state and happens last of all,
+   * taking the instance links with it.
    */
   const withBlocks = upsertSeedBlock(
-    upsertStyleBlock(reconciled.html, designSystemCSS),
-    blockLibrarySeed,
+    upsertStyleBlock(result.html, designSystemCSS),
+    blockSeed,
     removeBlockLibrary,
   );
-  return { html: removeBlockLibrary ? dropBlockLinks(withBlocks) : withBlocks };
-}
-
-function anchorKey(anchor: ElementAnchor): string {
-  return [
-    anchor.tag,
-    anchor.id,
-    anchor.src,
-    anchor.line,
-    anchor.column,
-    anchor.text,
-    /*
-     * The identifying attribute belongs in the key, and leaving it out was a real collision.
-     *
-     * Every `<head>` tag anchored this way has the same tag name and nothing else positional, so
-     * `<meta name="description">` and `<meta name="twitter:card">` hashed to the same string —
-     * and the patch map is keyed on it, so the second edit quietly replaced the first. Adding a
-     * tag and removing another in one save applied only one of them.
-     */
-    anchor.attr && `${anchor.attr.name}=${anchor.attr.value}`,
-  ]
-    .map((part) => part ?? '')
-    .join('|');
+  return {
+    html: removeBlockLibrary ? dropBlockLinks(withBlocks) : withBlocks,
+    ops: result.ops,
+    stranded: records.filter((record) => result.stranded.has(record.id)),
+    unplaced: records.filter((record) => result.unplaced.has(record.id)),
+  };
 }
 
 function groupFor(

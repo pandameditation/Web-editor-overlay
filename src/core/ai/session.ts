@@ -28,6 +28,7 @@
  * conclude the page generates it, which quietly makes the change unsaveable.
  */
 
+import { domRecorder, shadowRootsOf, type DomOp } from '../dom-journal.js';
 import { withoutProvenance, markUserOwned } from '../provenance.js';
 import { upsertClassCommand, upsertRuleCommand, type CssRegistries } from '../css-commands.js';
 import { nextChangeId, type Command, type History } from '../history.js';
@@ -99,6 +100,8 @@ export class AiRun {
 
   #host: SessionHost;
   #commands: Command[] = [];
+  /** Every DOM operation the run's commands made, in order, for an exact undo. */
+  #journal: DomOp[] = [];
   #entries: RunEntry[] = [];
   #warnings: string[] = [];
   #summary = '';
@@ -182,7 +185,9 @@ export class AiRun {
       return;
     }
 
-    withoutProvenance(() => command.apply());
+    this.#journal.push(
+      ...domRecorder.capture(() => withoutProvenance(() => command.apply()), shadowRootsOf(this.element)),
+    );
     this.#commands.push(command);
     this.#entries.push({
       outcome: 'done',
@@ -234,7 +239,7 @@ export class AiRun {
             for (const command of [...commands].reverse()) command.revert();
           },
         },
-        { alreadyApplied: true },
+        { alreadyApplied: true, journal: this.#journal },
       );
       this.#host.changed();
     }

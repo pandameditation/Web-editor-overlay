@@ -1,0 +1,12 @@
+{
+  "servers": {
+    "kirograph": {
+      "type": "stdio",
+      "command": "kirograph",
+      "args": [
+        "serve",
+        "--mcp"
+      ]
+    }
+  }
+}

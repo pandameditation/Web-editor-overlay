@@ -72,6 +72,7 @@ import {
   type ImportResult,
 } from './design-system.js';
 import { containTab } from './focus.js';
+import { domRecorder, movesOf, revertOps, shadowRootsOf, within, type DomOp } from './dom-journal.js';
 import { History, nextChangeId, type Command } from './history.js';
 import { handleKeyDown, matchesShortcut } from './keymap.js';
 import {
@@ -111,6 +112,7 @@ import {
   wrapElement,
   type InsertPosition,
   elementKey,
+  elementOfRecord,
   anchorFor,
 } from './mutations.js';
 import { buildPrompt } from './prompt.js';
@@ -861,6 +863,15 @@ export class EditorEngine {
   #toastTimer = 0;
   #toastId = 0;
   #textEditSnapshot: string | null = null;
+  /** Every DOM operation the current text edit makes, for an exact undo and an exact save. */
+  #textEditJournal: { end(): DomOp[]; cancel(): void } | null = null;
+  /** The same for the drag in flight. */
+  #dragJournal: { end(): DomOp[]; cancel(): void } | null = null;
+  /**
+   * What each file received from a save in this session, so the next save knows what is already
+   * in it. Keyed by project path.
+   */
+  #writtenDocuments = new Map<string, { text: string; ops: readonly (readonly DomOp[])[] }>();
   /** Identity of the descendants the snapshot above was taken with. See `beginTextEdit`. */
   #textEditIdentity: IdentityMap | undefined = undefined;
   /** The edited element's text as the edit began, for `restorePlainSpaces`. */
@@ -962,6 +973,8 @@ export class EditorEngine {
 
   constructor(options: MountOptions = {}) {
     this.options = options;
+    // A change to something inside a shadow tree is journaled from inside that tree.
+    this.history.observeRootsWith((record) => shadowRootsOf(elementOfRecord(record)));
     this.library = new BlockLibrary({ presets: options.presets !== false });
     this.store = new Store<EditorState>({
       editing: Boolean(options.startInEditMode),
@@ -5017,6 +5030,11 @@ export class EditorEngine {
     el.setAttribute('contenteditable', 'true');
     el.setAttribute(EDITING_ATTR, '');
     el.setAttribute('spellcheck', 'true');
+    // From here on, every change inside the element is the user's edit, recorded exactly.
+    this.#textEditJournal = domRecorder.begin(
+      within(el, ['contenteditable', 'spellcheck']),
+      shadowRootsOf(el),
+    );
     this.store.patch({ textEditing: el, selected: el });
 
     // Focus on the next frame so the attribute has taken effect before the
@@ -5079,21 +5097,16 @@ export class EditorEngine {
   /**
    * Ask whether the change set can still reach the file as edits, and say so if it cannot.
    *
-   * The news the save dialog used to break far too late. "The whole file is rewritten because
-   * …" is a caveat about a file the user has open in an editor, and by the time they read it in
-   * the Files step the change that caused it is several steps back and no longer obviously
-   * connected to it. Undo is the response almost everyone wants, and it is only within reach
-   * while the change is still the last thing they did.
+   * The news the save dialog used to break far too late. "This change cannot be written into
+   * the file because …" arrives in the Files step several steps after the change that caused it,
+   * and Undo is only obviously the answer while that change is still the last thing they did.
    *
    * So this runs on every commit, undo and redo — debounced, because a slider scrub is one
    * decision and reading the file once per frame of it would be absurd — and the moment the
    * answer turns from yes to no it says which change did it and offers to take it back.
    *
-   * Deliberately not restricted to any one kind of edit. A change forces a rewrite when it
-   * cannot be anchored in the file, and that is a property of the change and the file rather
-   * than of the panel it came from: a move whose container has since been reshaped does it, a
-   * paste into an element the patcher cannot address does it, and so does an Apply in the code
-   * panel. One check, asked of the same function the save itself asks.
+   * Deliberately not restricted to any one kind of edit: one check, asked of the same function
+   * the save itself asks.
    */
   #checkPlaceability(): void {
     if (this.#placeTimer !== null) clearTimeout(this.#placeTimer);
@@ -5127,7 +5140,7 @@ export class EditorEngine {
     if (this.#warnedAboutRewrite === reason) return;
     this.#warnedAboutRewrite = reason;
     this.notify(
-      `Saving will rewrite the whole HTML file rather than edit it, because ${reason}.`,
+      `This change cannot be written into the HTML file, because ${reason}.`,
       'warn',
       { label: 'Undo', run: () => this.undo() },
     );
@@ -5473,7 +5486,7 @@ export class EditorEngine {
       this.updateSourceEdit({ error: 'Nothing has changed in this window yet.' });
       return false;
     }
-    this.history.commit(command, { alreadyApplied: true });
+    this.history.commit(command, { alreadyApplied: true, journal: [] });
     this.updateSourceEdit({ recorded: true, error: '' });
     this.notify(
       `Recorded an edit to ${pending.target.label}. It reaches the page when the file is saved.`,
@@ -5502,16 +5515,29 @@ export class EditorEngine {
     // into text that has since been replaced.
     this.#textEditRange = null;
     this.store.patch({ textEditing: null });
+    const session = this.#textEditJournal;
+    this.#textEditJournal = null;
+    /*
+     * Put the element back node for node, not just markup for markup.
+     *
+     * Typing splits and merges text nodes, and the commands below this one on the stack name the
+     * nodes they left behind. An edit that is discarded, or that ends where it began, still has
+     * to hand those exact nodes back or undoing the earlier commands finds strangers.
+     */
+    const rollBack = (): void => {
+      const ops = session?.end() ?? [];
+      withoutProvenance(() => domRecorder.ignore(() => revertOps(ops)));
+    };
 
-    if (before == null) return;
+    if (before == null) {
+      session?.cancel();
+      return;
+    }
     if (!commit) {
       // Not attributed: this is the editor putting the element back, not the page
       // rendering it, and counting it would make a discarded edit the last one allowed.
-      // Through `writeChildren`, so a discarded edit hands identity on the same way a
-      // reverted one does: the commands referring to what was in here must survive it.
-      withoutProvenance(() => {
-        writeChildren(el, before, beforeIdentity);
-      });
+      if (session) rollBack();
+      else withoutProvenance(() => writeChildren(el, before, beforeIdentity));
       return;
     }
     /*
@@ -5524,7 +5550,11 @@ export class EditorEngine {
      */
     restorePlainSpaces(el, beforeText ?? el.textContent ?? '');
     const after = el.innerHTML;
-    if (after === before) return;
+    if (after === before) {
+      rollBack();
+      return;
+    }
+    const journal = session?.end();
     /*
      * Stamped before the element is claimed, because claiming it hides the answer.
      *
@@ -5578,7 +5608,7 @@ export class EditorEngine {
     // The user has taken this element over. Said once, here, so no later signal can
     // decide the page generates content the user has just written by hand.
     markUserOwned(el);
-    this.history.commit(command, { alreadyApplied: true });
+    this.history.commit(command, { alreadyApplied: true, journal });
     // And now find out whether that was true. Every other signal predicts what will
     // happen to this edit; this one waits for it.
     this.#watchEdit(el, el.textContent ?? '');
@@ -5740,6 +5770,9 @@ export class EditorEngine {
     if (this.store.value.drag) this.cancelDrag();
     this.endTextEdit(true);
     this.#clearDragTimer();
+    // The move itself is journaled; the preview styling on the element is not part of it.
+    this.#dragJournal?.cancel();
+    this.#dragJournal = domRecorder.begin(movesOf(el), shadowRootsOf(el));
     // The preview treatment lives in the page stylesheet, keyed on this attribute.
     el.setAttribute(DRAGGING_ATTR, '');
     el.style.setProperty('pointer-events', 'none', 'important');
@@ -5944,6 +5977,8 @@ export class EditorEngine {
     tidyStyleAttribute(drag.element);
 
     if (drag.willCancel) {
+      this.#dragJournal?.cancel();
+      this.#dragJournal = null;
       this.#applyDrop(drag.origin.parent, drag.origin.nextSibling, drag.element);
       settleDrop(drag.element);
       this.store.patch({ drag: null });
@@ -5957,9 +5992,14 @@ export class EditorEngine {
     // The element is already where it belongs — it went there as the preview — so
     // committing is only about turning that preview solid.
     settleDrop(drag.element);
+    const journal = this.#dragJournal?.end();
+    this.#dragJournal = null;
     if (command) {
-      this.history.commit(command, { alreadyApplied: true });
+      this.history.commit(command, { alreadyApplied: true, journal });
       this.notify('Moved.', 'success', { label: 'Undo', run: () => this.undo() });
+    } else if (journal?.length) {
+      // Moved and moved back: the place is the same, the path there is not undoable, so undo it now.
+      withoutProvenance(() => domRecorder.ignore(() => revertOps(journal)));
     }
     this.#bumpGeometry();
   }
@@ -5976,6 +6016,8 @@ export class EditorEngine {
     this.#dragDwell = null;
     drag.element.style.removeProperty('pointer-events');
     tidyStyleAttribute(drag.element);
+    this.#dragJournal?.cancel();
+    this.#dragJournal = null;
     this.#applyDrop(drag.origin.parent, drag.origin.nextSibling, drag.element);
     settleDrop(drag.element);
     this.store.patch({ drag: null });
@@ -6905,6 +6947,11 @@ export class EditorEngine {
       blockLibrarySeed: this.blockLibrarySeed(),
       removeBlockLibrary: this.#removingLibrary(),
       generatedRegions: this.#generatedRegions(),
+      journal: {
+        ...this.history.journal,
+        pending: this.history.records,
+        written: this.#writtenDocuments,
+      },
     };
   }
 
@@ -6963,7 +7010,13 @@ export class EditorEngine {
     }
     const plan = await this.previewWritePlan();
     if (!plan) return null;
+    // A refused document patch leaves its changes pending: they are not in the file.
+    const blocked = plan.unwritable.find((entry) => entry.blocking);
     if (!plan.writes.length) {
+      if (blocked) {
+        this.notify(`Nothing was written. ${blocked.reason}`, 'error');
+        return { written: [], failed: [], unplaced: [] };
+      }
       // Nothing to do, and nothing to correct: the files already say what the page
       // says, which is exactly the state a save is trying to reach.
       this.#markSaved();
@@ -6972,7 +7025,13 @@ export class EditorEngine {
     }
 
     const result = await applyWritePlan(host, plan);
-    if (!result.failed.length) this.#markSaved();
+    // What each document now holds, so the next save starts from it rather than from load time.
+    for (const write of plan.writes) {
+      if (write.kind !== 'document' || !write.journalOps) continue;
+      if (!result.written.includes(write.path)) continue;
+      this.#writtenDocuments.set(write.path, { text: write.after, ops: write.journalOps });
+    }
+    if (!result.failed.length && !blocked) this.#markSaved();
     this.#reportWrite(result, plan);
     return result;
   }
@@ -7015,6 +7074,14 @@ export class EditorEngine {
     }
     // Named rather than counted when there is something left over, because "3 files
     // written" beside a change that was not is the sentence that gets misread.
+    const blocked = plan.unwritable.find((entry) => entry.blocking);
+    if (blocked) {
+      this.notify(
+        `Wrote ${wrote} file${wrote === 1 ? '' : 's'}, but not the page's HTML. ${blocked.reason}`,
+        'error',
+      );
+      return;
+    }
     const leftOver = plan.unwritable.length + result.unplaced.length;
     if (leftOver) {
       this.notify(
@@ -7635,7 +7702,7 @@ export class EditorEngine {
           ? { ...this.#writeSubject(), designSystemTarget: DOCUMENT_TARGET }
           : this.#writeSubject();
       const attempt = patchDocumentSource(source, subject, path);
-      if ('html' in attempt) return { html: attempt.html, patched: true, why: [] };
+      if ('html' in attempt) return { html: attempt.html, patched: true, why: attempt.why };
       return { html: serialized(), patched: false, why: attempt.why };
     }
     return {

@@ -634,16 +634,6 @@ export class HeoCodePanel extends HeoElement {
         detail: {
           html: this.draft,
           scope: 'document',
-          /*
-           * Stated by the change rather than worked out from it.
-           *
-           * A document rewrite names no element — it *is* the document — so the patcher has
-           * nothing to anchor and would report a missing container, which describes the shape of
-           * the record rather than what happened. Saying it here puts the true sentence in the
-           * save plan and, through `#checkPlaceability`, in front of the user while Undo is
-           * still one click away.
-           */
-          forcesRewrite: 'a document-wide edit cannot be patched into the file',
         },
         // What the change set compares. `before` and `after` are left off on purpose: the
         // change list renders them as a diff beside the summary, and a whole document of
@@ -652,6 +642,8 @@ export class HeoCodePanel extends HeoElement {
         markupAfter: stateAfter,
         at: Date.now(),
       },
+      // Every node the reconcile touches is journaled, so the save patches exactly those.
+      domOnly: true,
       apply: () => swap('before', 'after', after),
       revert: () => swap('after', 'before', before),
     });

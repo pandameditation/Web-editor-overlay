@@ -174,24 +174,18 @@
         // settles for "the only <aside>" has something to land on.
         theFileHoldsExactlyOneOfThem: sourceDoc.querySelectorAll('aside.pull').length === 1,
 
-        // The one that matters: the original is not quietly edited in the copy's place.
-        theOriginalIsStillInTheFileToCheck: Boolean(strandedOriginal),
+        // The one that matters: the original is not quietly edited in the copy's place. With the
+        // copy left out, nothing about it reaches the file, so the file is not written at all.
+        theFileIsLeftAlone: !stranded.write,
         theOriginalIsNotGivenTheCopysAttribute:
-          strandedOriginal?.hasAttribute('data-copy') === false,
-        norTheCopysStyle: strandedOriginal?.hasAttribute('style') === false,
-        /*
-         * Declining is stated rather than silent, which is the difference between a
-         * limitation and a bug.
-         *
-         * What it declines *into* is the whole-file serialization this path has always
-         * fallen back on, and that writes the live page — so the copy still reaches the
-         * file even though its duplicate was unticked. Unticking has never bound the
-         * serialized path; it decides what the patch set and the prompt carry. Left as
-         * it is rather than pinned either way, because the defect being closed here is
-         * the original being edited in the copy's place.
-         */
-        andThePlanSaysWhyItCouldNotPatch:
-          stranded.warnings.some((w) => /not itself going into the file/.test(w)),
+          !stranded.write || strandedOriginal?.hasAttribute('data-copy') === false,
+        norTheCopysStyle: !stranded.write || strandedOriginal?.hasAttribute('style') === false,
+        // Declining is stated rather than silent, which is the difference between a
+        // limitation and a bug: both edits to the copy are listed as having nowhere to go.
+        andThePlanSaysWhyTheyAreNotWritten:
+          (stranded.plan?.unwritable ?? []).filter((entry) =>
+            /not itself going into the file/.test(entry.reason),
+          ).length === 2,
       };
 
       // Put it back, so the groups below run in an ordinary session.

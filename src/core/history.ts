@@ -1,3 +1,4 @@
+import { domRecorder, replayOps, revertOps, type DomOp } from './dom-journal.js';
 import { withoutProvenance } from './provenance.js';
 import type { ChangeRecord } from './types.js';
 
@@ -47,6 +48,34 @@ export interface Command {
    * Examples: `style:e3:margin-top`, `class:e3`, `node:e9`, `move:e3`.
    */
   subject?: string;
+  /**
+   * Every page-DOM operation this command performed, captured by `History`.
+   *
+   * Undo and redo replay this rather than trusting `revert` and `apply` to find the same nodes
+   * again, and the save reads it to know exactly what changed. Absent only for a command that
+   * arrived already applied without a journal of its own, which is then undone the old way.
+   */
+  journal?: readonly DomOp[];
+  /**
+   * True when `apply` and `revert` do nothing but change the page DOM.
+   *
+   * Such a command is undone and redone from its journal alone. Any other command still runs its
+   * own `revert`/`apply` for the state outside the DOM — a registry, a stylesheet rule — and the
+   * DOM half of what that does is then corrected to the journal's exact answer.
+   */
+  domOnly?: boolean;
+}
+
+/** One command, as the save sees it. */
+export interface JournalEntry {
+  ops: readonly DomOp[];
+  /**
+   * Every row the save dialog shows for this command — its own change, its extra records, or the
+   * rollback of it — so unticking can be honoured exactly. Empty when it has no row.
+   */
+  changeIds: readonly string[];
+  /** True once a save has accounted for it, whether or not it went into a file. */
+  saved: boolean;
 }
 
 /**
@@ -69,6 +98,9 @@ export function nextChangeId(): string {
 export class History {
   #past: Command[] = [];
   #future: Command[] = [];
+  #retired: Array<{ ops: readonly DomOp[]; saved: boolean }> = [];
+  /** Which shadow roots a command's own element lives in, so they are journaled with it. */
+  #rootsOf: ((record: ChangeRecord) => Node[]) | null = null;
   #lastCommitAt = 0;
   #listeners = new Set<() => void>();
   #limit: number;
@@ -157,6 +189,8 @@ export class History {
    */
   markSaved(): void {
     this.#saved = new Map(this.#past.map((command) => [command.record.id, command]));
+    // A keystroke after a save starts a new step, so what was written stays one command.
+    this.#lastCommitAt = 0;
     this.#emit();
   }
 
@@ -204,12 +238,20 @@ export class History {
    * interaction — inline text editing and drag reordering both mutate the page
    * as they go, and re-applying would be a visible no-op flicker at best.
    */
-  commit(command: Command, options: { alreadyApplied?: boolean } = {}): void {
+  commit(
+    command: Command,
+    options: { alreadyApplied?: boolean; journal?: readonly DomOp[] } = {},
+  ): void {
     if (!options.alreadyApplied) {
       // Not attributed to the page. Every command in here writes to the document
       // through the same DOM APIs `provenance` watches, and counting the editor's own
       // work as the page's would make an element uneditable the moment it was edited.
-      withoutProvenance(() => command.apply());
+      command.journal = domRecorder.capture(
+        () => withoutProvenance(() => command.apply()),
+        this.#rootsOf?.(command.record) ?? [],
+      );
+    } else if (options.journal) {
+      command.journal = options.journal;
     }
     this.#future = [];
 
@@ -229,6 +271,11 @@ export class History {
         subject: command.subject,
         apply: command.apply,
         revert: previous.revert,
+        journal:
+          previous.journal && command.journal
+            ? [...previous.journal, ...command.journal]
+            : undefined,
+        domOnly: Boolean(previous.domOnly && command.domOnly),
         extraRecords: [...(previous.extraRecords ?? []), ...(command.extraRecords ?? [])],
         record: {
           ...command.record,
@@ -238,18 +285,77 @@ export class History {
       };
     } else {
       this.#past.push(command);
-      if (this.#past.length > this.#limit) this.#past.shift();
+      if (this.#past.length > this.#limit) {
+        const retired = this.#past.shift()!;
+        /*
+         * Still on the page, no longer undoable, and no longer anything the save dialog lists:
+         * kept as operations so the save still knows the page, and dropped from the save point so
+         * it is not mistaken for a saved change that has since been undone.
+         */
+        const saved = this.#saved?.delete(retired.record.id) ?? false;
+        if (retired.journal) this.#retired.push({ ops: retired.journal, saved });
+      }
     }
 
     this.#lastCommitAt = now;
     this.#emit();
   }
 
+  /**
+   * Take a command off the page.
+   *
+   * From its journal when it has one, which restores the exact nodes it found. A command with
+   * state outside the DOM still runs its own `revert` for that state first; whatever that does to
+   * the DOM is taken straight back, because the journal is the authority on the DOM.
+   */
+  #revert(command: Command): void {
+    const journal = command.journal;
+    withoutProvenance(() => {
+      if (!journal) {
+        command.revert();
+        return;
+      }
+      if (!command.domOnly) {
+        const stray = domRecorder.capture(() => {
+          try {
+            command.revert();
+          } catch (error) {
+            console.error('[html-editor-overlay] undo failed', error);
+          }
+        });
+        domRecorder.ignore(() => revertOps(stray));
+      }
+      domRecorder.ignore(() => revertOps(journal));
+    });
+  }
+
+  /** Put a reverted command back, by the same rules as `#revert`. */
+  #replay(command: Command): void {
+    const journal = command.journal;
+    withoutProvenance(() => {
+      if (!journal) {
+        command.apply();
+        return;
+      }
+      if (!command.domOnly) {
+        const stray = domRecorder.capture(() => {
+          try {
+            command.apply();
+          } catch (error) {
+            console.error('[html-editor-overlay] redo failed', error);
+          }
+        });
+        domRecorder.ignore(() => revertOps(stray));
+      }
+      domRecorder.ignore(() => replayOps(journal));
+    });
+  }
+
   undo(): Command | null {
     const command = this.#past.pop();
     if (!command) return null;
     try {
-      withoutProvenance(() => command.revert());
+      this.#revert(command);
     } catch (error) {
       console.error('[html-editor-overlay] undo failed', error);
     }
@@ -263,7 +369,7 @@ export class History {
     const command = this.#future.pop();
     if (!command) return null;
     try {
-      withoutProvenance(() => command.apply());
+      this.#replay(command);
     } catch (error) {
       console.error('[html-editor-overlay] redo failed', error);
     }
@@ -278,14 +384,111 @@ export class History {
     while (this.#past.length) {
       const command = this.#past.pop()!;
       try {
-        withoutProvenance(() => command.revert());
+        this.#revert(command);
       } catch (error) {
         console.error('[html-editor-overlay] reset failed', error);
       }
     }
+    for (let i = this.#retired.length - 1; i >= 0; i -= 1) {
+      const { ops } = this.#retired[i];
+      withoutProvenance(() => domRecorder.ignore(() => revertOps(ops)));
+    }
+    this.#retired = [];
     this.#future = [];
     this.#lastCommitAt = 0;
     this.#emit();
+  }
+
+  /**
+   * The page-DOM history the save works from.
+   *
+   * `retired` is what fell off the bottom of the undo stack: still on the page, no longer
+   * undoable. `applied` is the undo stack, oldest first. `rolledBack` is what was saved and has
+   * since been undone, which the file still holds. Each entry names the pending rows it is
+   * reported under, the same ids `records` hands out, so an unticked row can be left out.
+   */
+  get journal(): {
+    retired: readonly JournalEntry[];
+    applied: readonly JournalEntry[];
+    rolledBack: readonly JournalEntry[];
+  } {
+    const rows = this.#rowIds();
+    const saved = this.#saved;
+    const present = new Set(this.#past.map((command) => command.record.id));
+    const rolledBack: JournalEntry[] = [];
+    for (const command of saved?.values() ?? []) {
+      if (present.has(command.record.id) || !command.journal) continue;
+      rolledBack.push({ ops: command.journal, changeIds: rows.get(command) ?? [], saved: true });
+    }
+    return {
+      retired: this.#retired.map(({ ops, saved: done }) => ({ ops, changeIds: [], saved: done })),
+      applied: this.#past.map((command) => ({
+        ops: command.journal ?? [],
+        changeIds: rows.get(command) ?? [],
+        saved: saved?.has(command.record.id) ?? false,
+      })),
+      rolledBack,
+    };
+  }
+
+  /**
+   * Tell history how to find the shadow roots a change's element lives in.
+   *
+   * Only those are journaled with the command. Observing every shadow root on the page would
+   * also record a component's own re-render in reaction to an attribute the editor set on its
+   * host, and replaying that on redo would put the old rendering back beside the new one.
+   */
+  observeRootsWith(resolver: (record: ChangeRecord) => Node[]): void {
+    this.#rootsOf = resolver;
+  }
+
+  /** True when every applied command carries a journal, so the save can rely on it. */
+  get fullyJournaled(): boolean {
+    return this.#past.every((command) => command.journal !== undefined);
+  }
+
+  /**
+   * Which pending rows each command is reported under, worked out exactly as `records` does.
+   *
+   * A rolled-back command appears under its rollback's id, a subject under the first id of its
+   * run, and every extra record under its own id — or its group's, for staged block CSS.
+   */
+  #rowIds(): Map<Command, string[]> {
+    const saved = this.#saved;
+    const timeline: Array<{ original: Command; reported: Command }> = [];
+    if (saved) {
+      const present = new Set(this.#past.map((command) => command.record.id));
+      for (const command of saved.values()) {
+        if (!present.has(command.record.id)) timeline.push({ original: command, reported: asRolledBack(command) });
+      }
+      for (const command of this.#past) {
+        if (!saved.has(command.record.id)) timeline.push({ original: command, reported: command });
+      }
+    } else {
+      for (const command of this.#past) timeline.push({ original: command, reported: command });
+    }
+    const first = new Map<string, string>();
+    const out = new Map<Command, string[]>();
+    for (const { original, reported } of timeline) {
+      const ids: string[] = [];
+      if (reported.subject) {
+        if (!first.has(reported.subject)) first.set(reported.subject, reported.record.id);
+        ids.push(first.get(reported.subject)!);
+      } else {
+        ids.push(reported.record.id);
+      }
+      for (const extra of reported.extraRecords ?? []) {
+        if (extra.detail?.source === 'block-css-paste' && extra.group) {
+          const key = `extra:${extra.group}`;
+          if (!first.has(key)) first.set(key, extra.id);
+          ids.push(first.get(key)!);
+        } else {
+          ids.push(extra.id);
+        }
+      }
+      out.set(original, ids);
+    }
+    return out;
   }
 
   /**
@@ -297,6 +500,7 @@ export class History {
   clear(): void {
     this.#past = [];
     this.#future = [];
+    this.#retired = [];
     this.#saved = null;
     this.#lastCommitAt = 0;
     this.#emit();

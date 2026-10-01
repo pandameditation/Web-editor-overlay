@@ -67,6 +67,10 @@ export const FIXTURES = [
   { page: 'test/html-patch.html', budget: 45000, weight: 2300, fast: true },
   { page: 'test/duplicate-identity.html', budget: 60000, weight: 2300, fast: true },
   { page: 'test/unwrap-text.html', budget: 60000, weight: 2200, fast: true },
+  { page: 'test/structural-journal.html', budget: 60000, weight: 2000, fast: true },
+  { page: 'test/journal-review.html', budget: 60000, weight: 2500, fast: true },
+  /* Thirty random edit sequences, each step undone and redone, every save verified. */
+  { page: 'test/journal-fuzz.html', budget: 180000, weight: 32000 },
   { page: 'test/ornament-divider.html', budget: 60000, weight: 2300 },
   { page: 'test/provenance.html', budget: 45000, weight: 2300 },
   { page: 'test/inline-edit-fidelity.html', budget: 45000, weight: 5500, fast: true },

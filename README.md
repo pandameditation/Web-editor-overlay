@@ -391,8 +391,14 @@ did before.
 The save dialog grows a **Files** step listing every file, why it is in the list, and
 how its size changes — before anything is written.
 
-- **The page's own file** carries everything the HTML already held: text, attributes,
-  classes, structure, inline `<style>` and `<script>`.
+- **The page's own file** is patched, never re-serialized. Every DOM change the editor
+  makes is journaled as exact operations; the file is parsed into nodes that know their
+  own byte ranges and bound to the page, and only the attributes, text runs and child
+  lists the journal names are rewritten. Everything else — moved elements included —
+  keeps its original bytes. The result is parsed again and compared with what it should
+  contain before it is offered. A change the file cannot hold, such as an edit inside
+  content the page's own script builds, is listed as not written with the reason; the
+  file is never rewritten wholesale to make room for it.
 - **Linked stylesheets** get the declarations that changed, and nothing else.
 - **External scripts** are replaced outright. Nothing else is possible: the editor
   knows the new text, never which part of it is the change.
@@ -807,8 +813,8 @@ nine-point grid. Plus source, alt text, srcset, ratio presets and rendering.
 **Code** — the page's source, as three tabs over one subject instead of three
 separate tools. **HTML** is a syntax-highlighted editor: with an element selected
 it edits that element's markup, whole-element or contents-only; with nothing
-selected it shows the entire document, doctype to `</html>`, and applying rewrites
-the live page in one undoable step — the overlay, the design-system stylesheets and
+selected it shows the entire document, doctype to `</html>`, and applying reconciles
+the live page in one undoable step that saves as a patch — the overlay, the design-system stylesheets and
 `data-heo-edit` are all preserved through it rather than left to what the buffer
 happens to contain. **CSS** lists every stylesheet the page loads and edits it
 through the CSSOM, so the preview is live and undoable; a linked sheet opens as the
@@ -1314,11 +1320,13 @@ components are a pure projection of `store.value` plus calls back into engine
 methods. That keeps the UI replaceable and the behaviour testable without a DOM
 harness for every panel.
 
-**Every edit is a `Command`.** It carries its own inverse *and* a semantic
-`ChangeRecord`, so undo/redo and the save prompt both fall out of the same object.
-Commands hold live node references rather than serialized positions: a node
-removed from the document is still referenced by the command that removed it, so
-undo restores the exact same node, including browser state like form values.
+**Every edit is a `Command`, and every command is journaled.** A command carries a
+semantic `ChangeRecord` for the save prompt, and `History` records the exact DOM
+mutations its first application made. Undo and redo replay that journal rather than
+the command's own callbacks, so they restore the exact nodes — including browser state
+like form values — however later edits merged, split or moved them. Gestures that
+mutate the page as they go (typing, dragging) are journaled for their whole duration.
+The same journal is what the save writes into the HTML file.
 
 **Traversal follows the flattened tree.** A slotted element's visual parent is the
 `<slot>` that renders it, not its light-DOM parent. Ascent and descent are
@@ -1422,6 +1430,9 @@ missing on purpose, and the runner refuses to start until every page is in one l
 | --- | --- |
 | `test/self-check.html` | The regression suite: mounting, selection, styles, classes, structure, drag, tokens, undo/redo depth, prompt generation, export, unmount, and every panel rendering. |
 | `test/writeback.html` | The multi-file case, with a linked stylesheet and an external script. Asserts that a stylesheet write is surgical byte for byte, that comments and `#fff` and `margin: 0` survive it, that a rule edited in an inline `<style>` reaches the exported HTML, that unticking a change keeps it out of the file, that saving twice writes nothing the second time, that a whole-buffer CSS edit is described as the one declaration that changed while still being written in full, and that writing sets the baseline the change count is measured from — including that undoing a saved change reappears on the count as a rollback. |
+| `test/structural-journal.html` | The reported nested case: unwrap a link, type inside its `<b>`, unwrap the `<b>`. Asserts the save is a patch touching only that paragraph, and that undoing all three and redoing all three restore the exact markup. |
+| `test/journal-review.html` | The ways a journal-driven save could write the wrong thing or lose an edit: a sibling the page removed must not shift an edit onto its neighbour, a list the page re-rendered is refused rather than guessed at, one edit shown as several rows cannot be half written, an unticked change that was saved stays out of later saves, an unticked rollback keeps the saved value — on that save and every later one — a value saved unticked is never written by unticking its rollback, commands falling off the undo stack neither leak nor appear as rollbacks, unticking one row of a CSS paste does not block markup edits, a page script's banner does not make an untouched element uncertain, a refused patch stays pending, edits inside a shadow root undo exactly, and redoing a component's attribute does not duplicate its rendering. |
+| `test/journal-fuzz.html` | Thirty random sequences of every kind of edit — unwrap, wrap, move, duplicate, delete, insert, retag, replace, attributes, styles, classes, typing and the browser's own editing commands — on markup with implied tags, entities and comments. Every single step is undone and redone; every save must be a verified patch that reads back as the page shows it and leaves untouched bytes alone; then saving, editing, undoing and saving again must round-trip. Pass `?runs=400&offset=1000` for a longer run. |
 | `test/script-tag.html` | The one-tag integration. Its whole setup is a single `<script>`, so the file is both the fixture and the example. Asserts every `data-*` attribute lands. |
 | `test/script-tag-manual.html` | That a bundle *without* `data-heo` mounts nothing, and that `mount()` and `unmount()` still behave. |
 | `test/opaque-origin.html` | A page opened from disk, run **without** `--allow-file-access-from-files` so the origins are genuinely opaque. Confirms the stylesheet's rules really are refused and a sibling `fetch` really does fail, then that connecting a folder makes both files readable, offers the stylesheet as a design-system target, and says the preview cannot update. |

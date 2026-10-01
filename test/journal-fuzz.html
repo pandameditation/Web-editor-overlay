@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang='en'>
+
+<head>
+  <meta charset="utf-8">
+  <title>Journal stress: random edits, exact undo, patched saves</title>
+  <style>
+    body { margin: 0; padding: 24px; font-family: system-ui, sans-serif; }
+  </style>
+</head>
+
+<body>
+  <!--
+    Random sequences of every kind of edit, on authored markup with the shapes that break naive
+    patchers: inline formatting nested in prose, implied list and table structure, entities,
+    unquoted and single-quoted attributes, comments between siblings, and a pre whose whitespace
+    is content. Each run asserts that the save is a verified patch (or an explicit refusal for a
+    tree HTML cannot express), that the file reads back as the page shows it, that bytes nobody
+    touched survive, and that undo and redo restore the exact nodes.
+
+        npm run build:lib && node scripts/browser-check.mjs test/journal-fuzz.html 120000
+  -->
+  <main id="fuzz">
+    <h1 class=title id="heading">A <em>heading</em> with &amp; entities</h1>
+    <p id="story">These discoveries led me to write a <b>
+        <a href="https://link.com" target="_blank" rel="noopener noreferrer">thought-leadership article</a>
+      </b> about our insights and approach</p>
+    <ul class='list'>
+      <li>First <strong>item</strong>
+      <li>Second item
+      <!-- a comment between items -->
+      <li><span data-note='x'>Third</span> item</li>
+    </ul>
+    <section id="cards">
+      <div class="card"><h2>Card one</h2><p>Body <i>one</i>.</p></div>
+      <div class="card">
+        <h2>Card two</h2>
+        <p>Body two<br />continued.</p>
+      </div>
+    </section>
+    <table id="grid">
+      <tr><td>a1</td><td>b1</td></tr>
+      <tr><td>a2</td><td>b2</td></tr>
+    </table>
+    <div id="mixed">Lead text <span>inline</span> trailing <code>x &lt; y</code> end.</div>
+  </main>
+  <div id="sentinel" data-kept='yes'>
+    <P CLASS=Upper>Never   touched &nbsp; bytes &#169; <BR> here.</P>
+  </div>
+
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const errors = [];
+      addEventListener('error', (e) => errors.push('error: ' + e.message));
+      addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+      const progress = document.getElementById('progress');
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const fuzz = () => document.getElementById('fuzz');
+
+      const page = decodeURIComponent(location.pathname).split('/').pop();
+      const directory = decodeURIComponent(location.pathname).replace(/[^/]*$/, '');
+      const disk = new Map();
+      const project = {
+        kind: 'directory',
+        label: 'memory',
+        resolve(url) {
+          const path = decodeURIComponent(new URL(url, location.href).pathname);
+          return path.startsWith(directory) ? path.slice(directory.length) : null;
+        },
+        read: async (path) => {
+          if (disk.has(path)) return disk.get(path);
+          try {
+            const text = await (await fetch('./' + path)).text();
+            disk.set(path, text);
+            return text;
+          } catch { return null; }
+        },
+        write: async (path, text) => { disk.set(path, text); },
+        ensureWritable: async () => true,
+        release: async () => { },
+      };
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark', detectScriptContent: false });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await engine.attachProject(project, { quiet: true });
+      await frames();
+      const source = await project.read(page);
+      const sentinelBytes = /<div id="sentinel"[\s\S]*?<\/div>/.exec(source)[0];
+
+      /* ---------------------------------------------------------------- */
+      /* Comparing trees                                                   */
+      /* ---------------------------------------------------------------- */
+      const skipAttr = (name) => name.startsWith('data-heo-') || name === 'contenteditable' || name === 'spellcheck';
+      const canon = (node) => {
+        if (node.nodeType === Node.TEXT_NODE) return null;
+        if (node.nodeType === Node.COMMENT_NODE) return '<!--' + node.data + '-->';
+        if (node.nodeType !== Node.ELEMENT_NODE) return null;
+        const attrs = Array.from(node.attributes)
+          .filter((a) => !skipAttr(a.name))
+          .map((a) => a.name + '=' + JSON.stringify(a.value))
+          .sort()
+          .join(' ');
+        const kids = [];
+        let text = '';
+        const flush = () => {
+          if (text.trim()) kids.push(JSON.stringify(text));
+          text = '';
+        };
+        for (const child of node.childNodes) {
+          if (child.nodeType === Node.TEXT_NODE) { text += child.data; continue; }
+          flush();
+          const inner = canon(child);
+          if (inner !== null) kids.push(inner);
+        }
+        flush();
+        return '<' + node.localName + (attrs ? ' ' + attrs : '') + '>' + kids.join('') + '</' + node.localName + '>';
+      };
+      /*
+       * The exact tree — every text node, whitespace included — with attributes sorted, because
+       * attribute order is not part of the DOM's meaning and a browser editing command is free to
+       * create an element's attributes in either order.
+       */
+      const exact = (node) => {
+        if (node.nodeType === Node.TEXT_NODE) return '#' + JSON.stringify(node.data);
+        if (node.nodeType === Node.COMMENT_NODE) return '<!--' + node.data + '-->';
+        if (node.nodeType !== Node.ELEMENT_NODE) return '';
+        const attrs = Array.from(node.attributes).map((a) => a.name + '=' + JSON.stringify(a.value)).sort().join(' ');
+        return '<' + node.localName + ' ' + attrs + '>' + Array.from(node.childNodes).map(exact).join('') + '</>';
+      };
+      const state = () => exact(fuzz());
+      const representable = (el) => {
+        const html = el.outerHTML;
+        const doc = new DOMParser().parseFromString('<body>' + html, 'text/html');
+        return canon(doc.body.firstElementChild) === canon(el);
+      };
+
+      /* ---------------------------------------------------------------- */
+      /* Random edits                                                      */
+      /* ---------------------------------------------------------------- */
+      let seed = 1;
+      const random = () => {
+        seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+        return seed / 0x7fffffff;
+      };
+      const pick = (list) => list[Math.floor(random() * list.length)];
+      const elements = () => Array.from(fuzz().querySelectorAll('*'))
+        .filter((el) => el instanceof HTMLElement && !['TBODY', 'TR', 'TD', 'TABLE'].includes(el.tagName));
+      let counter = 0;
+      const typeInto = async (el, text) => {
+        engine.beginTextEdit(el);
+        await frames();
+        el.focus();
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        range.collapse(random() < 0.5);
+        getSelection().removeAllRanges();
+        getSelection().addRange(range);
+        document.execCommand('insertText', false, text);
+        engine.endTextEdit(true);
+        await frames();
+      };
+      const operations = [
+        async (el) => engine.unwrap(el),
+        async (el) => engine.wrap(pick(['<div class="w"></div>', '<span class="s"></span>']), el),
+        async (el) => engine.move(pick(['up', 'down', 'out', 'in']), el),
+        async (el) => engine.duplicate(el),
+        async (el) => engine.remove(el),
+        async (el) => engine.insertMarkup(`<em class="added">new ${++counter}</em>`, {
+          reference: el,
+          position: pick(['before', 'after', 'firstChild', 'lastChild']),
+        }),
+        async (el) => engine.setAttribute('data-n', String(++counter), el),
+        async (el) => engine.setStyle('color', pick(['red', 'blue', 'rgb(1, 2, 3)']), el),
+        async (el) => engine.setClasses([...el.classList, 'k' + (++counter)], el),
+        async (el) => { if (el.textContent.trim()) await typeInto(el, ' typed' + (++counter)); },
+        async (el) => engine.retag(pick(['section', 'em', 'div', 'span']), el),
+        async (el) => engine.replaceMarkup(`<aside class="r">replaced ${++counter} <b>bold</b></aside>`, el),
+        async (el) => {
+          // The browser's own editing commands, which split and merge nodes however they like.
+          if (!el.textContent.trim()) return;
+          engine.beginTextEdit(el);
+          await frames();
+          el.focus();
+          const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+          const texts = [];
+          while (walker.nextNode()) if (walker.currentNode.data.trim()) texts.push(walker.currentNode);
+          if (texts.length) {
+            const node = pick(texts);
+            const at = Math.floor(random() * node.data.length);
+            const range = document.createRange();
+            range.setStart(node, at);
+            range.setEnd(node, Math.min(node.data.length, at + 1 + Math.floor(random() * 4)));
+            getSelection().removeAllRanges();
+            getSelection().addRange(range);
+            document.execCommand(pick(['bold', 'italic', 'insertParagraph', 'delete', 'insertLineBreak']));
+          }
+          engine.endTextEdit(true);
+          await frames();
+        },
+      ];
+
+      const runs = [];
+      const stepFailures = [];
+      const original = state();
+      const originalNodes = [];
+      const walk = (node) => { originalNodes.push([node, node.parentNode]); node.childNodes.forEach(walk); };
+      fuzz().childNodes.forEach(walk);
+
+      const RUNS = Number(new URLSearchParams(location.search).get('runs') ?? 30);
+      const OFFSET = Number(new URLSearchParams(location.search).get('offset') ?? 0);
+      for (let run = 0; run < RUNS; run += 1) {
+        seed = (run + OFFSET) * 7919 + 13;
+        progress.textContent = 'run ' + run;
+        const log = [];
+        for (let step = 0; step < 8; step += 1) {
+          const list = elements();
+          if (!list.length) break;
+          const el = pick(list);
+          const index = Math.floor(random() * operations.length);
+          log.push(index + ':' + el.tagName.toLowerCase());
+          api.select(el);
+          const beforeStep = state();
+          const depth = engine.history.size;
+          await operations[index](el);
+          await frames();
+          // Every single step has to be exactly invertible on its own.
+          if (engine.history.size > depth) {
+            const afterStep = state();
+            const describeOps = () => engine.history.journal.applied.at(-1)?.ops.map((op) => op.type === 'children'
+              ? 'children ' + op.target.nodeName + ' -[' + op.removed.map((n) => n.nodeName + ':' + JSON.stringify(n.nodeValue)).join(',') + '] +[' + op.added.map((n) => n.nodeName + ':' + JSON.stringify(n.nodeValue)).join(',') + ']'
+              : op.type + ' ' + op.target.nodeName + ' ' + (op.name ?? '') + ' ' + JSON.stringify(op.before) + '->' + JSON.stringify(op.after));
+            const opsOfStep = describeOps();
+            engine.undo();
+            await frames();
+            const undone = state();
+            engine.redo();
+            await frames();
+            if (undone !== beforeStep || state() !== afterStep) {
+              log.push('NOT INVERTIBLE');
+              stepFailures.push({ run, step, op: index, tag: el.tagName, ops: opsOfStep, beforeStep, undone, afterStep, redone: state() });
+            }
+          }
+        }
+        api.select(null);
+        await frames();
+
+        const edited = state();
+        const live = canon(fuzz());
+        const plan = await engine.previewWritePlan();
+        const write = (plan?.writes ?? []).find((w) => w.kind === 'document');
+        const unwritable = (plan?.unwritable ?? []).map((u) => u.reason);
+        const expressible = representable(fuzz());
+        const parsed = write ? new DOMParser().parseFromString(write.after, 'text/html') : null;
+        const written = parsed ? canon(parsed.getElementById('fuzz')) : null;
+
+        const result = { run, log };
+        if (engine.records.length && expressible) {
+          result.patched = Boolean(write) && /patched in place/.test(write.reason) && !(write.warnings ?? []).length;
+          result.nothingUnwritable = unwritable.length === 0;
+          result.readsBackAsThePage = written === live;
+          result.sentinelBytesKept = Boolean(write) && write.after.includes(sentinelBytes);
+          if (!result.readsBackAsThePage) result.diff = { live, written, unwritable };
+        } else if (engine.records.length) {
+          // A tree no HTML can express: the save refuses with a reason rather than writing a lie.
+          result.refusedWithAReason = !write || written === live || unwritable.length > 0;
+        }
+
+        // Undo everything: the exact original nodes, in their original places.
+        while (engine.history.canUndo) engine.undo();
+        await frames();
+        result.undoRestoresMarkup = state() === original;
+        result.undoRestoresNodes = originalNodes.every(([node, parent]) => node.parentNode === parent);
+        if (!result.undoRestoresMarkup) result.undone = fuzz().innerHTML;
+
+        while (engine.history.canRedo) engine.redo();
+        await frames();
+        result.redoRestoresTheEdit = state() === edited;
+
+        engine.resetAll();
+        await frames();
+        result.resetRestoresMarkup = state() === original;
+        runs.push(result);
+      }
+
+      /* ---------------------------------------------------------------- */
+      /* Save, keep editing, save again                                    */
+      /* ---------------------------------------------------------------- */
+      progress.textContent = 'save twice';
+      const saves = {};
+      {
+        seed = 4242;
+        for (let step = 0; step < 6; step += 1) {
+          const el = pick(elements());
+          api.select(el);
+          await operations[Math.floor(random() * operations.length)](el);
+          await frames();
+        }
+        await engine.writeToProject();
+        const first = disk.get(page);
+        saves.firstSaveReadsBack = canon(new DOMParser().parseFromString(first, 'text/html').getElementById('fuzz')) === canon(fuzz());
+        for (let step = 0; step < 6; step += 1) {
+          const el = pick(elements());
+          api.select(el);
+          await operations[Math.floor(random() * operations.length)](el);
+          await frames();
+        }
+        engine.undo();
+        await frames();
+        const plan = await engine.previewWritePlan();
+        const write = (plan?.writes ?? []).find((w) => w.kind === 'document');
+        await engine.writeToProject();
+        const second = disk.get(page);
+        saves.secondSaveWasAPatch = !write || /patched in place/.test(write.reason);
+        saves.secondSaveReadsBack = canon(new DOMParser().parseFromString(second, 'text/html').getElementById('fuzz')) === canon(fuzz());
+        saves.sentinelStillByteIdentical = second.includes(sentinelBytes);
+
+        while (engine.history.canUndo) engine.undo();
+        await frames();
+        await engine.writeToProject();
+        const third = disk.get(page);
+        saves.undoingEverythingWritesTheOriginalBack =
+          canon(new DOMParser().parseFromString(third, 'text/html').getElementById('fuzz')) ===
+          canon(new DOMParser().parseFromString(source, 'text/html').getElementById('fuzz'));
+        saves.andTheOriginalMarkupIsBackOnThePage = state() === original;
+      }
+
+      const failedRuns = runs.filter((r) => Object.values(r).some((v) => v === false));
+      const failedSaves = Object.entries(saves).filter(([, v]) => v === false).map(([k]) => k);
+      const results = {
+        runs: runs.length,
+        failedRuns,
+        stepFailures: stepFailures.slice(0, 5),
+        saves,
+        failed: [...failedRuns.map((r) => 'run ' + r.run), ...failedSaves, ...stepFailures.map((f) => 'step ' + f.run + '.' + f.step)],
+        __errors: errors,
+      };
+      results.ok = results.failed.length === 0 && errors.length === 0;
+      document.getElementById('out').textContent = 'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify({ ok: false, __errors: [String((e && e.stack) || e)] }) + ':END';
+    });
+  </script>
+</body>
+
+</html>

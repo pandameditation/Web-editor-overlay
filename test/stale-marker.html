@@ -160,7 +160,7 @@
         notices.push({ message: t.message, tone: t.tone });
       });
       const warningsSince = (from) =>
-        notices.slice(from).filter((n) => /rewrite the whole HTML file/.test(n.message));
+        notices.slice(from).filter((n) => /cannot be written into the HTML file/.test(n.message));
 
       const retype = async (el, text) => {
         engine.beginTextEdit(el);

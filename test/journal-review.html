@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title id="doc-title">Journal edge cases</title>
+</head>
+
+<body>
+  <!--
+    The cases a code review found in the journal-driven save, each one a way to write the wrong
+    thing or to lose an edit while saying it was saved.
+
+        npm run build:lib && node scripts/browser-check.mjs test/journal-review.html 60000
+  -->
+  <ul id="list"><li class="f">Fallback</li><li class="a">Alpha</li><li class="b">Beta</li></ul>
+  <ol id="rerendered"><li>One</li><li>Two</li><li>Three</li></ol>
+  <p id="x">Ex</p>
+  <p id="y">Why</p>
+  <p id="z">Zed</p>
+  <p id="para">A paragraph.</p>
+  <div id="host"></div>
+  <header id="top"><span class="count">Cart 0</span></header>
+  <div class="container"><p id="copy" title="old">Copy text</p></div>
+  <x-badge id="badge" label="A"></x-badge>
+  <h2 class="pasted">Heading</h2>
+  <script>
+    // A component that renders its own shadow tree whenever its label changes.
+    customElements.define('x-badge', class extends HTMLElement {
+      static observedAttributes = ['label'];
+      connectedCallback() { this.render(); }
+      attributeChangedCallback() { this.render(); }
+      render() {
+        const root = this.shadowRoot ?? this.attachShadow({ mode: 'open' });
+        root.innerHTML = '<b>' + (this.getAttribute('label') ?? '') + '</b>';
+      }
+    });
+    // A script that updates a count and prepends a banner with no id.
+    document.querySelector('#top .count').textContent = 'Cart 3';
+    const banner = document.createElement('div');
+    banner.className = 'cookie-banner';
+    banner.textContent = 'Cookies';
+    document.body.prepend(banner);
+    // The page's own code: one sibling removed, and a list re-rendered with fewer, different items.
+    document.querySelector('#list .f').remove();
+    const ol = document.getElementById('rerendered');
+    ol.innerHTML = '<li>Uno</li><li>Dos</li>';
+    const shadow = document.getElementById('host').attachShadow({ mode: 'open' });
+    shadow.innerHTML = '<section><p id="inner">Inside</p></section>';
+  </script>
+
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const errors = [];
+      addEventListener('error', (e) => errors.push('error: ' + e.message));
+      addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+      const results = {};
+      const progress = document.getElementById('progress');
+      const step = (name) => { progress.textContent = name; };
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const byId = (id) => document.getElementById(id);
+
+      const page = decodeURIComponent(location.pathname).split('/').pop();
+      const directory = decodeURIComponent(location.pathname).replace(/[^/]*$/, '');
+      const disk = new Map();
+      const project = {
+        kind: 'directory',
+        label: 'memory',
+        resolve(url) {
+          const path = decodeURIComponent(new URL(url, location.href).pathname);
+          return path.startsWith(directory) ? path.slice(directory.length) : null;
+        },
+        read: async (path) => {
+          if (disk.has(path)) return disk.get(path);
+          try {
+            const text = await (await fetch('./' + path)).text();
+            disk.set(path, text);
+            return text;
+          } catch { return null; }
+        },
+        write: async (path, text) => { disk.set(path, text); },
+        ensureWritable: async () => true,
+        release: async () => { },
+      };
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark', detectScriptContent: false });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await engine.attachProject(project, { quiet: true });
+      await frames();
+      const source = await project.read(page);
+      const parse = (html) => new DOMParser().parseFromString(html ?? '', 'text/html');
+      const documentWrite = (plan) => (plan?.writes ?? []).find((w) => w.kind === 'document');
+      const typeAtEnd = async (el, text) => {
+        engine.beginTextEdit(el);
+        await frames();
+        el.focus();
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        range.collapse(false);
+        getSelection().removeAllRanges();
+        getSelection().addRange(range);
+        document.execCommand('insertText', false, text);
+        engine.endTextEdit(true);
+        await frames();
+      };
+      const clear = async () => {
+        engine.resetAll();
+        engine.includeAllChanges();
+        engine.history.sealStep();
+        await frames();
+      };
+
+      /* 1. A sibling removed by the page does not shift the edit onto its neighbour. */
+      step('shiftedSiblings');
+      {
+        await typeAtEnd(document.querySelector('#list .a'), ' EDITED');
+        const write = documentWrite(await engine.previewWritePlan());
+        const list = parse(write?.after).getElementById('list');
+        results.aRemovedSiblingDoesNotShiftTheEdit = {
+          patched: /patched in place/.test(write?.reason ?? ''),
+          fallbackUntouched: list?.querySelector('.f')?.textContent === 'Fallback',
+          alphaEdited: list?.querySelector('.a')?.textContent === 'Alpha EDITED',
+          betaUntouched: list?.querySelector('.b')?.textContent === 'Beta',
+        };
+        await clear();
+      }
+
+      /* 2. When the page rewrote the siblings, the edit is refused rather than guessed. */
+      step('rerenderedSiblings');
+      {
+        await typeAtEnd(document.querySelector('#rerendered li'), ' EDITED');
+        const plan = await engine.previewWritePlan();
+        const write = documentWrite(plan);
+        const ol = parse(write?.after).getElementById('rerendered');
+        results.anAmbiguousMatchIsRefusedNotGuessed = {
+          noWrongBytes: !write || Array.from(ol?.children ?? []).every((li) => !/EDITED/.test(li.textContent)),
+          saidSo: (plan?.unwritable ?? []).some((u) => /cannot be told for certain|could not be/.test(u.reason)),
+        };
+        await clear();
+      }
+
+      /* 3. One edit listed as several rows cannot be half written. */
+      step('splitRows');
+      {
+        engine.store.patch({ selected: byId('x') });
+        engine.setAttributes({ title: 'T', lang: 'fr' }, undefined, byId('x'));
+        await frames();
+        const rows = engine.records.filter((r) => /title|lang/.test(r.summary));
+        const lang = rows.find((r) => /lang/.test(r.summary));
+        engine.setChangeIncluded(lang.id, false);
+        await frames();
+        const plan = await engine.previewWritePlan();
+        const write = documentWrite(plan);
+        const x = parse(write?.after).getElementById('x');
+        results.halfAnEditIsNotWrittenSilently = {
+          twoRows: rows.length === 2,
+          langNotWritten: !x || x.getAttribute('lang') !== 'fr',
+          titleNotDroppedSilently:
+            (x && x.getAttribute('title') === 'T') ||
+            (plan?.unwritable ?? []).some((u) => /only some of them are ticked/.test(u.reason)),
+        };
+        await clear();
+      }
+
+      /* 4. An unticked change that was saved stays out of every later save. */
+      step('untickedThenSaved');
+      {
+        await typeAtEnd(byId('x'), ' unticked');
+        const unticked = engine.records.at(-1);
+        engine.setChangeIncluded(unticked.id, false);
+        await engine.writeToProject();
+        await typeAtEnd(byId('y'), ' ticked');
+        const write = documentWrite(await engine.previewWritePlan());
+        const doc = parse(write?.after);
+        results.anUntickedSavedChangeStaysOut = {
+          tickedWritten: doc.getElementById('y')?.textContent === 'Why ticked',
+          untickedNotWritten: doc.getElementById('x')?.textContent === 'Ex',
+        };
+        await engine.writeToProject();
+        await clear();
+        // Back to the file as it started, for the cases after this one.
+        await engine.writeToProject();
+        disk.set(page, source);
+      }
+
+      /* 5. Unticking a rollback keeps what was saved. */
+      step('rollbackRow');
+      {
+        engine.setAttribute('title', 'SAVED', byId('z'));
+        await engine.writeToProject();
+        engine.undo();
+        engine.history.sealStep();
+        engine.setAttribute('title', 'LATER', byId('z'));
+        await frames();
+        const rollback = engine.records.find((r) => r.id.endsWith('~'));
+        if (rollback) engine.setChangeIncluded(rollback.id, false);
+        await frames();
+        const plan = await engine.previewWritePlan();
+        const write = documentWrite(plan);
+        const fileTitle = parse(write?.after ?? disk.get(page)).getElementById('z')?.getAttribute('title');
+        results.anUntickedRollbackKeepsTheSavedValue = {
+          hadARollbackRow: Boolean(rollback),
+          laterNotWritten: fileTitle !== 'LATER',
+        };
+        await clear();
+        await engine.writeToProject();
+        disk.set(page, source);
+      }
+
+      /* 6. A refused patch is not reported as saved. */
+      step('refusedIsNotSaved');
+      {
+        engine.insertMarkup('<div class="inside">block</div>', { reference: byId('para'), position: 'lastChild' });
+        await frames();
+        const pending = engine.records.length;
+        const result = await engine.writeToProject();
+        results.aRefusedPatchStaysPending = {
+          nothingWritten: (result?.written ?? []).length === 0,
+          stillPending: engine.records.length === pending && pending > 0,
+          fileUnchanged: disk.get(page) === source,
+        };
+        await clear();
+      }
+
+      /* 7. Edits inside a shadow root are journaled, so undo restores them. */
+      step('shadowRoot');
+      {
+        const shadow = byId('host').shadowRoot;
+        const inner = shadow.getElementById('inner');
+        const section = shadow.querySelector('section');
+        engine.setAttribute('title', 'X', inner);
+        await frames();
+        engine.undo();
+        await frames();
+        const attributeRestored = !inner.hasAttribute('title');
+        engine.move('out', inner);
+        await frames();
+        const movedOut = inner.parentNode === shadow;
+        engine.undo();
+        await frames();
+        results.shadowRootEditsUndoExactly = {
+          attributeRestored,
+          movedOut,
+          moveUndone: inner.parentNode === section && inner.isConnected,
+        };
+        await clear();
+      }
+
+      /* 8. A kept rollback stays kept on every later save. */
+      step('keptRollbackPersists');
+      {
+        engine.setAttribute('title', 'SAVED', byId('z'));
+        await engine.writeToProject();
+        engine.undo();
+        await frames();
+        const rollback = engine.records.find((r) => r.id.endsWith('~'));
+        if (rollback) engine.setChangeIncluded(rollback.id, false);
+        await engine.writeToProject();
+        engine.history.sealStep();
+        await typeAtEnd(byId('y'), ' later');
+        const write = documentWrite(await engine.previewWritePlan());
+        const z = parse(write?.after ?? disk.get(page)).getElementById('z');
+        results.aKeptRollbackStaysKept = {
+          hadARollbackRow: Boolean(rollback),
+          stillSaved: z?.getAttribute('title') === 'SAVED',
+          laterWritten: parse(write?.after).getElementById('y')?.textContent === 'Why later',
+        };
+        await clear();
+        disk.set(page, source);
+      }
+
+      /* 9. A value never written is never written by unticking its rollback. */
+      step('neverWrittenRollback');
+      {
+        engine.setAttribute('title', 'OK', byId('y'));
+        engine.history.sealStep();
+        engine.setAttribute('title', 'NEVER', byId('x'));
+        const never = engine.records.find((r) => /NEVER/.test(r.summary));
+        engine.setChangeIncluded(never.id, false);
+        await engine.writeToProject();
+        engine.undo();
+        engine.history.sealStep();
+        engine.setAttribute('title', 'NEW', byId('x'));
+        engine.history.sealStep();
+        await typeAtEnd(byId('para'), ' more');
+        const row = engine.records.find((r) => r.id === never.id + '~');
+        if (row) engine.setChangeIncluded(row.id, false);
+        const write = documentWrite(await engine.previewWritePlan());
+        results.aNeverWrittenValueStaysUnwritten = {
+          neverNotWritten: parse(write?.after ?? disk.get(page)).getElementById('x')?.getAttribute('title') !== 'NEVER',
+        };
+        await clear();
+        disk.set(page, source);
+      }
+
+      /* 10. Falling off the undo stack is not a rollback, and does not leak what was unticked. */
+      step('retirement');
+      {
+        engine.setAttribute('title', 'UNTICKED', byId('x'));
+        const unticked = engine.records.at(-1);
+        engine.setChangeIncluded(unticked.id, false);
+        engine.history.sealStep();
+        engine.setAttribute('title', 'T0', byId('y'));
+        await engine.writeToProject();
+        for (let k = 0; k < 205; k += 1) {
+          engine.history.sealStep();
+          engine.setAttribute('data-k', String(k), byId('z'));
+        }
+        await frames();
+        const write = documentWrite(await engine.previewWritePlan());
+        results.retirementLeaksNothing = {
+          noPhantomRollbacks: !engine.records.some((r) => r.id.endsWith('~')),
+          untickedStaysOut: parse(write?.after ?? disk.get(page)).getElementById('x')?.getAttribute('title') !== 'UNTICKED',
+          latestWritten: parse(write?.after).getElementById('z')?.getAttribute('data-k') === '204',
+        };
+        await clear();
+        disk.set(page, source);
+      }
+
+      /* 11. Unticking one declaration of a CSS paste does not block markup edits. */
+      step('cssRowsDoNotBlock');
+      {
+        engine.setAttribute('title', 'DOC', byId('y'));
+        engine.history.sealStep();
+        engine.applyCssPaste(
+          { mode: 'declarations', declarations: { color: 'red', margin: '2px' }, rules: [], rejected: [], advice: [], unsupportedRules: 0 },
+          { kind: 'rule', selector: 'h2.pasted' },
+        );
+        await frames();
+        const margin = engine.records.find((r) => /margin/.test(r.summary));
+        if (margin) engine.setChangeIncluded(margin.id, false);
+        const plan = await engine.previewWritePlan();
+        const write = documentWrite(plan);
+        results.cssRowsDoNotBlockTheMarkup = {
+          hadTheRow: Boolean(margin),
+          docWritten: parse(write?.after).getElementById('y')?.getAttribute('title') === 'DOC',
+          notRefused: !(plan?.unwritable ?? []).some((u) => u.blocking),
+        };
+        await clear();
+      }
+
+      /* 12. A banner and a changed count elsewhere do not make an untouched element uncertain. */
+      step('classesTellSiblingsApart');
+      {
+        engine.setAttribute('title', 'new', byId('copy'));
+        await frames();
+        const plan = await engine.previewWritePlan();
+        const write = documentWrite(plan);
+        results.classesTellSiblingsApart = {
+          patched: /patched in place/.test(write?.reason ?? ''),
+          written: parse(write?.after).getElementById('copy')?.getAttribute('title') === 'new',
+          bannerNotWritten: !parse(write?.after).querySelector('.cookie-banner'),
+        };
+        await clear();
+      }
+
+      /* 13. Redo of an attribute a component renders from does not duplicate its rendering. */
+      step('componentRedo');
+      {
+        const badge = byId('badge');
+        engine.setAttribute('label', 'B', badge);
+        await frames();
+        engine.undo();
+        await frames();
+        const afterUndo = badge.shadowRoot.innerHTML;
+        engine.redo();
+        await frames();
+        results.componentRedoIsNotDuplicated = {
+          undone: afterUndo === '<b>A</b>',
+          redone: badge.shadowRoot.innerHTML === '<b>B</b>',
+        };
+        await clear();
+      }
+
+      const failed = Object.entries(results)
+        .filter(([, group]) => Object.values(group).some((value) => value === false))
+        .map(([name]) => name);
+      results.failed = failed;
+      results.ok = failed.length === 0 && errors.length === 0;
+      results.__errors = errors;
+      document.getElementById('out').textContent = 'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify({ ok: false, __errors: [String((e && e.stack) || e)] }) + ':END';
+    });
+  </script>
+</body>
+
+</html>

@@ -169,7 +169,7 @@
         results.addingAFieldTheFileLacksIsPatchedIn = {
           reason: write?.reason ?? null,
           warnings: write?.warnings ?? [],
-          announced: notices.slice(before3).filter((n) => /rewrite the whole HTML file/.test(n)),
+          announced: notices.slice(before3).filter((n) => /cannot be written into the HTML file/.test(n)),
           content: card?.getAttribute('content') ?? null,
           /*
            * Counted as "one line added", not by index. An insertion shifts every line after it,
@@ -184,7 +184,7 @@
           ok:
             /patched in place/.test(write?.reason ?? '') &&
             (write?.warnings ?? []).length === 0 &&
-            notices.slice(before3).every((n) => !/rewrite the whole HTML file/.test(n)) &&
+            notices.slice(before3).every((n) => !/cannot be written into the HTML file/.test(n)) &&
             card?.getAttribute('content') === 'summary_large_image' &&
             Boolean(d.head?.contains(card)) &&
             (write?.after ?? '').split('\n').length - source.split('\n').length === 1 &&
@@ -207,7 +207,7 @@
         results.clearingAFieldRemovesItsWholeTag = {
           reason: write?.reason ?? null,
           warnings: write?.warnings ?? [],
-          announced: notices.slice(before4).filter((n) => /rewrite the whole HTML file/.test(n)),
+          announced: notices.slice(before4).filter((n) => /cannot be written into the HTML file/.test(n)),
           descriptionStillThere: Boolean(d.querySelector('meta[name="description"]')),
           // Measured against the write just before it: by now the file has also gained a line,
           // so comparing with the original would net to zero and say nothing.

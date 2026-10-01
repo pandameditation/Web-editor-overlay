@@ -219,6 +219,7 @@ export function setInnerHTML(
       markupBefore: before,
       markupAfter: after,
     }),
+    domOnly: true,
     apply: () => {
       writeChildren(el, after, afterIdentity);
     },
@@ -239,6 +240,7 @@ export function setTextContent(el: HTMLElement, after: string): Command {
       before: exact(before),
       after: exact(after),
     }),
+    domOnly: true,
     apply: () => {
       live(el).textContent = after;
     },
@@ -368,6 +370,7 @@ export function setStyleProperty(el: HTMLElement, property: string, value: strin
        */
       detail: { property, value: after, styleProperties: property },
     }),
+    domOnly: true,
     apply: () => writeInline(el, { [property]: after }),
     revert: () => restoreStyleAttribute(el, beforeAttribute),
   };
@@ -419,6 +422,7 @@ export function setStyleProperties(
         styleProperties: entries.map(([property]) => property).join(','),
       },
     }),
+    domOnly: true,
     apply: () => writeInline(el, declarations),
     revert: () => restoreStyleAttribute(el, beforeAttribute),
   };
@@ -449,6 +453,7 @@ export function setAttribute(el: HTMLElement, name: string, value: string | null
       after: value ?? undefined,
       detail: { attribute: name, value: value ?? '' },
     }),
+    domOnly: true,
     apply: () => {
       if (value === null) el.removeAttribute(name);
       else el.setAttribute(name, value);
@@ -500,6 +505,7 @@ export function setAttributes(
     label,
     record: describe(names[0]),
     extraRecords: names.slice(1).map(describe),
+    domOnly: true,
     apply: () => {
       for (const name of names) write(name, values[name]);
     },
@@ -520,6 +526,7 @@ export function setClassList(el: HTMLElement, classes: string[]): Command {
       after,
       detail: { classes: after },
     }),
+    domOnly: true,
     apply: () => {
       if (after) el.setAttribute('class', after);
       else el.removeAttribute('class');
@@ -617,6 +624,7 @@ export function insertNodes(
         group: elementKey(nodes[0]),
       },
     ),
+    domOnly: true,
     apply: () => {
       for (const node of nodes) placeNode(anchor.parent, live(node), anchor.before);
     },
@@ -668,6 +676,7 @@ function replaceWithNodes(
       after: exact(markup),
       detail: { position: 'replace', html: markup },
     }),
+    domOnly: true,
     apply: () => {
       for (const node of nodes) insertNear(parent, node, reference);
       reference.remove();
@@ -694,6 +703,7 @@ export function removeElement(el: HTMLElement): Command | null {
     record: record(el, 'delete', `Delete ${labelFor(el)}`, {
       before: exact(cleanMarkup(el)),
     }),
+    domOnly: true,
     apply: () => {
       live(el).remove();
     },
@@ -737,6 +747,7 @@ export function duplicateElement(el: HTMLElement): { command: Command; node: HTM
       // this operation, which is the whole reason the group exists.
       group: elementKey(clone),
     }),
+    domOnly: true,
     apply: () => {
       placeNode(parent, live(clone), before);
     },
@@ -780,6 +791,7 @@ export function moveElement(
         previousIndex: String(indexWithin(originParent, originBefore, el)),
       },
     }),
+    domOnly: true,
     apply: () => {
       // Said before the move, not after, so nothing can compare the element against the
       // file in between and conclude the page built it. See `markRelocated`.
@@ -864,6 +876,7 @@ export function moveCommandFromOrigin(
         previousIndex: String(indexWithin(origin.parent, origin.nextSibling, el)),
       },
     }),
+    domOnly: true,
     apply: () => {
       markRelocated(el);
       placeNode(targetParent, live(el), targetBefore);
@@ -907,6 +920,7 @@ export function wrapElement(
       detail: { wrapper: cleanMarkup(wrapper) },
       group: elementKey(wrapper),
     }),
+    domOnly: true,
     apply: () => {
       placeNode(parent, live(wrapper), before);
       live(mountPoint).appendChild(live(el));
@@ -962,6 +976,7 @@ export function unwrapElement(el: HTMLElement): Command | null {
       before: exact(cleanMarkup(el)),
       after: exact(cleanInnerMarkup(el)),
     }),
+    domOnly: true,
     apply: () => {
       const host = live(el);
       for (const child of children) {
@@ -1010,6 +1025,7 @@ export function replaceElement(
       after: exact(cleanMarkup(replacement)),
       detail: { html: cleanMarkup(replacement) },
     }),
+    domOnly: true,
     apply: () => {
       parent.replaceChild(replacement, el);
     },
@@ -1032,8 +1048,8 @@ export function retagElement(
 
   const replacement = document.createElement(safeTag);
   for (const attr of Array.from(el.attributes)) replacement.setAttribute(attr.name, attr.value);
-  while (el.firstChild) replacement.appendChild(el.firstChild);
-  const originalChildren = Array.from(replacement.childNodes);
+  // Moved in `apply`, never here: a change made while building a command is outside its journal.
+  const originalChildren = Array.from(el.childNodes);
 
   const command: Command = {
     label: `Change to <${safeTag}>`,
@@ -1043,8 +1059,9 @@ export function retagElement(
       after: safeTag,
       detail: { tagName: safeTag },
     }),
+    domOnly: true,
     apply: () => {
-      while (el.firstChild) replacement.appendChild(el.firstChild);
+      for (const child of originalChildren) replacement.appendChild(child);
       parent.replaceChild(replacement, el);
     },
     revert: () => {

@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang='en'>
+
+<head>
+  <meta charset="utf-8">
+  <title>Structural edits, undo and source patching</title>
+</head>
+
+<body>
+  <main id="page">
+    <p id="story">These discoveries led me to write a <b>
+        <a href="https://link.com" target="_blank" rel="noopener noreferrer">thought-leadership article</a>
+      </b> about our insights and approach</p>
+    <p class=keep data-note='kept'>Untouched &amp; authored <br /> markup.</p>
+  </main>
+
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const errors = [];
+      addEventListener('error', (e) => errors.push('error: ' + e.message));
+      addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+      const results = {};
+      const progress = document.getElementById('progress');
+      const step = (name) => { progress.textContent = name; };
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const story = () => document.getElementById('story');
+
+      const page = decodeURIComponent(location.pathname).split('/').pop();
+      const directory = decodeURIComponent(location.pathname).replace(/[^/]*$/, '');
+      const disk = new Map();
+      const project = {
+        kind: 'directory',
+        label: 'memory',
+        resolve(url) {
+          const path = decodeURIComponent(new URL(url, location.href).pathname);
+          return path.startsWith(directory) ? path.slice(directory.length) : null;
+        },
+        read: async (path) => {
+          if (disk.has(path)) return disk.get(path);
+          try {
+            const text = await (await fetch('./' + path)).text();
+            disk.set(path, text);
+            return text;
+          } catch { return null; }
+        },
+        write: async (path, text) => { disk.set(path, text); },
+        ensureWritable: async () => true,
+        release: async () => { },
+      };
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark', detectScriptContent: false });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await engine.attachProject(project, { quiet: true });
+      await frames();
+      const source = await project.read(page);
+
+      const originalHTML = story().innerHTML;
+      const plan = async () => {
+        const result = await engine.previewWritePlan();
+        const write = (result?.writes ?? []).find((w) => w.kind === 'document');
+        return {
+          reason: write?.reason ?? '',
+          warnings: write?.warnings ?? [],
+          after: write?.after ?? '',
+          doc: new DOMParser().parseFromString(write?.after ?? '', 'text/html'),
+        };
+      };
+      const typeAtEnd = async (el, text) => {
+        engine.beginTextEdit(el);
+        await frames();
+        el.focus();
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        range.collapse(false);
+        const selection = getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        document.execCommand('insertText', false, text);
+        engine.endTextEdit(true);
+        await frames();
+      };
+
+      step('sequence');
+      engine.unwrap(story().querySelector('a'));
+      await frames();
+      await typeAtEnd(story().querySelector('b'), ' now');
+      engine.unwrap(story().querySelector('b'));
+      await frames();
+      const editedHTML = story().innerHTML;
+      const edited = await plan();
+
+      results.theSequencePatchesTheSource = {
+        reason: edited.reason,
+        warnings: edited.warnings,
+        patched: /patched in place/.test(edited.reason),
+        noWarnings: edited.warnings.length === 0,
+        noWrappersLeft: !edited.doc.querySelector('#story a, #story b'),
+        textInFile:
+          edited.doc.getElementById('story')?.textContent.replace(/\s+/g, ' ').trim() ===
+          'These discoveries led me to write a thought-leadership article now about our insights and approach',
+        untouchedBytesSurvive:
+          edited.after.includes(`<p class=keep data-note='kept'>Untouched &amp; authored <br /> markup.</p>`),
+        onlyTheStoryChanged:
+          edited.after.replace(/<p id="story">[\s\S]*?<\/p>/, '') ===
+          source.replace(/<p id="story">[\s\S]*?<\/p>/, ''),
+      };
+
+      step('undo');
+      engine.undo();
+      engine.undo();
+      engine.undo();
+      await frames();
+      results.undoRestoresTheExactOriginal = {
+        html: story().innerHTML,
+        same: story().innerHTML === originalHTML,
+        nothingPending: engine.records.length === 0,
+      };
+
+      step('redo');
+      engine.redo();
+      engine.redo();
+      engine.redo();
+      await frames();
+      results.redoRestoresTheExactEdit = {
+        same: story().innerHTML === editedHTML,
+      };
+
+      const failed = Object.entries(results)
+        .filter(([, group]) => Object.values(group).some((value) => value === false))
+        .map(([name]) => name);
+      results.failed = failed;
+      results.ok = failed.length === 0 && errors.length === 0;
+      results.__errors = errors;
+      document.getElementById('out').textContent = 'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify({ ok: false, __errors: [String(e && e.stack || e)] }) + ':END';
+    });
+  </script>
+</body>
+
+</html>

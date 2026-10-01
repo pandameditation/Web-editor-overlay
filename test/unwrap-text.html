@@ -42,6 +42,9 @@
     <div id="mixed-holder">
       <div id="mixed">text and <em id="em">an element</em> after</div>
     </div>
+    <p id="nested">These discoveries led me to write a <b id="nested-bold">
+        <a id="nested-link" href="https://link.com" target="_blank" rel="noopener noreferrer">thought-leadership article</a>
+      </b> about our insights and approach</p>
   </main>
 
   <pre id="progress">start</pre>
@@ -250,6 +253,39 @@
         soTheAuthorsUnquotedAttributeSurvives: /class=lead/.test(out.after),
         andNoEditorAttributeReachedTheFile:
           out.doc.querySelectorAll('[data-heo-src], [data-heo-inserted]').length === 0,
+      };
+
+      /* ------------------------------------------------------------------ *
+       * Consecutive nested unwraps collapse to the surviving container.
+       * ------------------------------------------------------------------ */
+      step('nestedUnwrapsPatchTheSurvivingParent');
+      api.select(byId('nested-link'));
+      engine.setQuickMenu(true);
+      await frames();
+      unwrapButton().click();
+      await frames();
+
+      api.select(byId('nested-bold'));
+      engine.setQuickMenu(true);
+      await frames();
+      unwrapButton().click();
+      await frames();
+
+      const nested = await planned();
+      results.nestedUnwrapsPatchTheSurvivingParent = {
+        bothWrappersAreGoneFromThePage:
+          byId('nested-link') === null && byId('nested-bold') === null,
+        bothWrappersAreGoneFromTheFile:
+          nested.doc.getElementById('nested-link') === null &&
+          nested.doc.getElementById('nested-bold') === null,
+        theWordsRemain:
+          nested.doc.getElementById('nested')?.textContent.replace(/\s+/g, ' ').trim() ===
+          'These discoveries led me to write a thought-leadership article about our insights and approach',
+        reason: nested.reason,
+        warnings: nested.warnings,
+        theFileWasPatchedRatherThanRewritten: /patched in place/.test(nested.reason),
+        withNothingToWarnAbout: nested.warnings.length === 0,
+        soUnrelatedFormattingStillSurvives: /class=lead/.test(nested.after),
       };
 
       /* ------------------------------------------------------------------ */

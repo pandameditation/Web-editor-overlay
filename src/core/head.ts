@@ -304,22 +304,14 @@ export function setHeadField(id: HeadFieldId, value: string): Command | null {
   };
 
   /*
-   * How the save finds this tag in the file.
-   *
-   * Without it a head edit had no anchor at all, so the patcher reported that "Set <title> to
-   * …" could not be located and the whole file was rewritten for a one-line change. A head tag
-   * is not hard to find — it is just found differently from everything else in a document.
+   * Which tag this is, for the change description.
    *
    * `<title>` names itself: one per file, so the tag alone is enough. Everything else is named
    * by an attribute — `meta[name=…]`, `meta[property=…]`, `link[rel=…]` — which is exactly what
-   * `ACCESS` already says, and the only durable way to tell two `<meta>` tags apart. Counting
-   * siblings would not do: a dev server injects tags of its own into the served `<head>`, so the
-   * live index and the file's index are different numbers.
+   * `ACCESS` already says, and the only durable way to tell two `<meta>` tags apart.
    *
-   * Creating and removing are left out, deliberately. Both are structural — a line appears in or
-   * disappears from `<head>` — and the patcher places edits to tags that are already there. They
-   * say so through `forcesRewrite` instead, which is honest and, since that is now announced as
-   * it happens, offers the undo at the moment it would help.
+   * What reaches the file is the journal of the DOM edit, which covers adding and removing the
+   * tag as well as changing it.
    */
   /*
    * Read off the node rather than parsed out of the selector.
@@ -341,26 +333,6 @@ export function setHeadField(id: HeadFieldId, value: string): Command | null {
   };
   const sample = existing ?? create();
   const anchor = identityOf(sample);
-  const structural = !existedBefore || !after;
-
-  /*
-   * The whole tag, as the file should read it — captured now, while there is something to read.
-   *
-   * Structural head edits are patched rather than serialized, and both directions need the text
-   * up front: a removal has no node left by the time the save runs, and an addition has no node
-   * in the file to read the shape from. A clone is written to rather than the live node, so
-   * nothing here touches the page.
-   */
-  const headMarkup = structural
-    ? after
-      ? (() => {
-        const clone = sample.cloneNode(true) as Element;
-        write(clone, after);
-        return clone.outerHTML;
-      })()
-      : ''
-    : undefined;
-
   return {
     label: `Set ${field.group === 'basics' ? '' : `${field.group} `}${field.label.toLowerCase()}`,
     // Successive edits to one field collapse into a single reported change.
@@ -384,12 +356,10 @@ export function setHeadField(id: HeadFieldId, value: string): Command | null {
         tag: field.tag,
         value: after,
         ...(attribute === 'textContent' ? {} : { attribute }),
-        // Present only for the structural cases, and it is what tells the save to add or remove
-        // the whole tag rather than look for an attribute of one that may not be there.
-        ...(headMarkup === undefined ? {} : { headMarkup }),
       },
       at: Date.now(),
     },
+    domOnly: true,
     apply,
     revert,
   };
