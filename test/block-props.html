@@ -84,6 +84,51 @@
         return { first, refocused, cleared };
       });
 
+      /*
+       * Two problems at once: no name and no markup. One is shown at a time, and each attempt to
+       * continue moves on to the next.
+       */
+      await check('severalProblemsAreShownOneAtATime', async () => {
+        engine.beginBlockExtraction(document.getElementById('card'));
+        await frames();
+        engine.updateExtraction({ name: '', html: '' });
+        await frames();
+        const errors = () => Array.from(dialog()?.querySelectorAll('.field-error') ?? []).map((el) => {
+          const owner = dialog().querySelector(`[aria-errormessage="${el.id}"]`);
+          return owner?.getAttribute('data-field');
+        });
+        const labels = Array.from(dialog()?.querySelectorAll('.label') ?? []).map(flat).filter((text) => /required/.test(text));
+        const focusedField = () => dialog()?.activeElement?.getAttribute('data-field') ?? dialog()?.activeElement?.tagName ?? null;
+
+        button('Continue')?.focus();
+        button('Continue')?.click();
+        await frames();
+        const afterFirst = { shown: errors(), focus: focusedField() };
+
+        // Leaving the flagged field brings up the next problem, without moving focus to it.
+        button('Continue')?.focus();
+        await frames();
+        const afterLeaving = { shown: errors(), focus: focusedField() };
+
+        button('Continue')?.click();
+        await frames();
+        const afterSecond = { shown: errors(), focus: focusedField() };
+
+        // A problem on another tab opens that tab. Clear the HTML problem, then make one in JS.
+        engine.updateExtraction({ name: 'Widget', html: '<p>x</p>', script: 'export {}', tag: '' });
+        await frames();
+        button('Continue')?.click();
+        await frames();
+        const onAnotherTab = {
+          shown: errors(),
+          focus: focusedField(),
+          jsTabOpen: Boolean(dialog()?.querySelector('[role="tab"][aria-selected="true"]')?.textContent.includes('JS')),
+        };
+        engine.cancelExtraction();
+        await frames();
+        return { labels, afterFirst, afterLeaving, afterSecond, onAnotherTab };
+      });
+
       await check('stepOneSaysWhatPropsAreBeforeThereAreAny', async () => {
         engine.beginBlockExtraction(document.getElementById('card'));
         await frames();
@@ -107,37 +152,39 @@
         };
       });
 
-      await check('aNameWithASpaceIsFlaggedAsItIsTyped', async () => {
+      await check('aNameWithASpaceIsFlaggedWhenSaving', async () => {
         button('Continue')?.click();
         await frames();
         const name = dialog()?.querySelector('.propcard input[aria-label="Name for title"]');
         await type(name, 'Card title');
         const card = name.closest('.propcard');
+        const beforeSaving = name.getAttribute('aria-invalid');
+        button('Save block')?.click();
+        await frames();
         return {
           step: engine.store.value.extraction?.step,
+          quietWhileTyping: beforeSaving === 'false',
           invalid: name.getAttribute('aria-invalid'),
-          problem: flat(card.querySelector('.problem')),
-          fix: flat(card.querySelector('.problem button')),
+          problem: flat(card.querySelector('.field-error .field-error-text')),
+          fix: flat(card.querySelector('.field-error button')),
+          focusedTheName: dialog()?.activeElement === name,
+          label: flat(card.querySelector('.label')),
           hasLabelField: Boolean(card.querySelector('input[aria-label="Label for title"]')),
         };
       });
 
-      await check('saveSaysWhyItCannotSaveInsteadOfDoingNothing', async () => {
-        button('Save block')?.click();
-        await frames();
-        return {
-          stillOpen: engine.store.value.extraction?.step ?? 'closed',
-          footerError: flat(dialog()?.querySelector('footer .error')),
-          saved: engine.library.list().some((block) => block.name === 'My card'),
-        };
-      });
+      await check('saveDoesNotSaveAndSaysNothingInTheFooter', async () => ({
+        stillOpen: engine.store.value.extraction?.step ?? 'closed',
+        footerError: flat(dialog()?.querySelector('footer .error')),
+        saved: engine.library.list().some((block) => block.name === 'My card'),
+      }));
 
       await check('theSuggestedNameFixesItAndTheBlockSaves', async () => {
-        dialog()?.querySelector('.propcard .problem button')?.click();
+        dialog()?.querySelector('.propcard .field-error button')?.click();
         await frames();
         const fixed = dialog()?.querySelector('.propcard input[aria-label="Name for title"]')?.value;
         const renamed = flat(dialog()?.querySelector('.propcard .renamed'));
-        const errorCleared = !flat(dialog()?.querySelector('footer .error'));
+        const errorCleared = !dialog()?.querySelector('.field-error');
         button('Save block')?.click();
         await frames();
         const block = engine.library.list().find((one) => one.name === 'My card');
@@ -165,17 +212,27 @@
         return { html: block?.html ?? null, props: Object.keys(block?.props ?? {}) };
       });
 
-      await check('aClassExtractionErrorIsShownToo', async () => {
+      await check('aClassExtractionErrorIsShownOnItsField', async () => {
         engine.beginClassExtraction(document.getElementById('styled'));
         await frames();
         const opened = engine.store.value.extraction?.mode ?? null;
         engine.updateExtraction({ name: '!!!' });
-        engine.commitExtraction();
         await frames();
-        const error = flat(dialog()?.querySelector('footer .error'));
+        const apply = Array.from(dialog()?.querySelectorAll('footer button.primary') ?? [])[0];
+        apply?.click();
+        await frames();
+        const input = dialog()?.querySelector('.name-input');
+        const result = {
+          opened,
+          label: flat(dialog()?.querySelector('.field .label')),
+          error: flat(dialog()?.querySelector('.field-error .field-error-text')),
+          focused: dialog()?.activeElement === input,
+          invalid: input?.getAttribute('aria-invalid'),
+          stillOpen: Boolean(engine.store.value.extraction),
+        };
         engine.cancelExtraction();
         await frames();
-        return { opened, error };
+        return result;
       });
 
       results.__errors = errors;

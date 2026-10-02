@@ -96,6 +96,88 @@ export const baseStyles = css`
     box-sizing: border-box;
   }
 
+  /*
+   * Form errors, one look everywhere. See \`form-errors.ts\` for the behaviour behind them.
+   */
+  .label .required,
+  label .required {
+    color: var(--heo-text-faint);
+    font-weight: 400;
+    letter-spacing: 0;
+    text-transform: none;
+  }
+  input[aria-invalid='true'],
+  select[aria-invalid='true'],
+  textarea[aria-invalid='true'],
+  .input[aria-invalid='true'] {
+    border-color: var(--heo-danger) !important;
+    box-shadow: 0 0 0 3px color-mix(in oklab, var(--heo-danger) 22%, transparent);
+  }
+  /* Custom controls draw their own border inside a shadow root, so the host gets the ring. The
+     code editor draws its own, on the shell, from the same attribute. */
+  heo-value-field[aria-invalid='true'],
+  heo-selector-field[aria-invalid='true'],
+  heo-search-field[aria-invalid='true'] {
+    border-radius: var(--heo-r-sm);
+    outline: 1px solid var(--heo-danger);
+    outline-offset: 1px;
+    box-shadow: 0 0 0 4px color-mix(in oklab, var(--heo-danger) 18%, transparent);
+  }
+  /* The message, directly below its field: a bubble pointing up at it. */
+  .field-error {
+    position: relative;
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    margin: 8px 0 0;
+    padding: 7px 10px;
+    border: 1px solid color-mix(in oklab, var(--heo-danger) 55%, transparent);
+    border-radius: var(--heo-r-sm);
+    background: color-mix(in oklab, var(--heo-danger) 14%, var(--heo-raised));
+    color: var(--heo-text);
+    font-size: 11.5px;
+    font-weight: 400;
+    letter-spacing: 0;
+    line-height: 1.45;
+    text-align: left;
+    text-transform: none;
+    white-space: normal;
+    animation: heo-field-error-in var(--heo-fast);
+  }
+  .field-error::before {
+    content: '';
+    position: absolute;
+    top: -5px;
+    left: 14px;
+    width: 8px;
+    height: 8px;
+    border-top: 1px solid color-mix(in oklab, var(--heo-danger) 55%, transparent);
+    border-left: 1px solid color-mix(in oklab, var(--heo-danger) 55%, transparent);
+    background: inherit;
+    transform: rotate(45deg);
+  }
+  .field-error > svg {
+    flex: 0 0 auto;
+    margin-top: 2px;
+    color: var(--heo-danger);
+  }
+  .field-error button {
+    margin-left: 4px;
+    padding: 1px 7px;
+    border: 1px solid var(--heo-line);
+    border-radius: 999px;
+    background: var(--heo-sunken);
+    color: var(--heo-text);
+    font: inherit;
+    cursor: pointer;
+  }
+  @keyframes heo-field-error-in {
+    from {
+      opacity: 0;
+      transform: translateY(-3px);
+    }
+  }
+
   :host {
     font-family: var(--heo-font);
     font-size: 12.5px;

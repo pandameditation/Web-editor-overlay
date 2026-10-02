@@ -18,6 +18,7 @@ import { baseStyles } from '../theme.js';
 import type { HeoCodeEditor } from '../controls/code-editor.js';
 import '../controls/code-editor.js';
 import '../controls/segmented.js';
+import { field, FormErrors } from '../form-errors.js';
 
 /**
  * The HTML editor.
@@ -132,6 +133,9 @@ export class HeoCodePanel extends HeoElement {
 
   @state() private draft = '';
   @state() private error = '';
+
+  /** The markup's one problem, shown under the editor when Apply is pressed. See `form-errors.ts`. */
+  protected form = new FormErrors(this, () => (this.error ? [{ field: 'code-html', message: this.error }] : []));
   @state() private dirty = false;
   @state() private stripped: string[] = [];
   /** Which element the buffer belongs to, so a new selection reloads it. */
@@ -246,12 +250,14 @@ export class HeoCodePanel extends HeoElement {
           heading=${isDoc
         ? 'HTML · full document'
         : `HTML · ${labelFor(el)} · ${this.mode === 'outer' ? 'whole element' : 'contents only'}`}
+          ${field(this.form, 'code-html')}
           .value=${this.draft}
-          .error=${this.error}
+          .error=${this.form.message('code-html') ?? ''}
           @code-input=${(event: CustomEvent<{ value: string }>) => this.#onInput(event.detail.value)}
           @code-submit=${() => this.#apply(el)}
           @code-cancel=${() => this.#reset(el)}
         ></heo-code-editor>
+        ${this.form.error('code-html')}
 
         ${this.stripped.length
         ? html`<div class="warn">
@@ -270,7 +276,7 @@ export class HeoCodePanel extends HeoElement {
         <button
           class="btn primary"
           type="button"
-          ?disabled=${!this.dirty || Boolean(this.error)}
+          ?disabled=${!this.dirty}
           @click=${() => this.#apply(el)}
         >
           ${icon('check', 12)} Apply
@@ -352,6 +358,7 @@ export class HeoCodePanel extends HeoElement {
     this.#loadedSource = source;
     this.draft = formatHTML(source);
     this.error = '';
+    this.form.reset();
     this.dirty = false;
     this.stripped = [];
   }
@@ -419,7 +426,7 @@ export class HeoCodePanel extends HeoElement {
 
   #apply(el: HTMLElement): void {
     this.#validate();
-    if (this.error) return;
+    if (!this.form.submit()) return;
 
     if (isWholeDocument(el)) {
       this.#applyDocument();

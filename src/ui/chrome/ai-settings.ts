@@ -14,6 +14,8 @@ import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
 import { baseStyles, surfaceStyles } from '../theme.js';
+import type { FieldIssue } from '../../core/validation.js';
+import { field, FormErrors } from '../form-errors.js';
 
 /**
  * Settings: how the editor behaves on this page, and where a model is connected.
@@ -469,6 +471,33 @@ export class HeoAiSettings extends HeoElement {
 
   protected modal = new ModalController(this, { initialFocus: '.close' });
 
+  /** What a provider needs before it can be tested or used. See `form-errors.ts`. */
+  protected providerForm = new FormErrors(this, () => this.#providerIssues());
+  protected keyForm = new FormErrors(this, () => {
+    const set = this.#currentOrNull();
+    if (!set || set.transport !== 'in-page') return [];
+    return (this.keyDraft[set.id] ?? '').trim()
+      ? []
+      : [{ field: 'ai-key', message: 'Paste the API key to use.' }];
+  });
+
+  #currentOrNull(): AiProviderSet | null {
+    const sets = this.editor.ai.list();
+    return sets.length ? this.#current(sets) : null;
+  }
+
+  #providerIssues(): FieldIssue[] {
+    const set = this.#currentOrNull();
+    if (!set) return [];
+    const issues: FieldIssue[] = [];
+    if (!set.label.trim()) issues.push({ field: 'ai-name', message: 'Give the provider a name.' });
+    if (set.transport !== 'proxy' && !(set.baseURL ?? '').trim()) {
+      issues.push({ field: 'ai-base', message: 'Type the address requests go to.' });
+    }
+    if (!set.model.trim()) issues.push({ field: 'ai-model', message: 'Type the model to use, as the provider names it.' });
+    return issues;
+  }
+
   /** Which set is expanded. One at a time: these are long forms and two open is a wall. */
   @state() private openId: string | null = null;
   /** Key drafts, per set. Never read back out of the vault — see `keys.ts`. */
@@ -676,13 +705,15 @@ export class HeoAiSettings extends HeoElement {
       </div>
 
       <label class="field">
-        <span>Name</span>
+        <span>Name <span class="required">(required)</span></span>
         <input
+          ${field(this.providerForm, 'ai-name', { required: true })}
           class="input"
           .value=${set.label}
           @change=${(event: Event) => patch({ label: (event.target as HTMLInputElement).value })}
         />
       </label>
+      ${this.providerForm.error('ai-name')}
 
       <div class="pair">
         <label class="field">
@@ -748,25 +779,29 @@ export class HeoAiSettings extends HeoElement {
       ${set.transport === 'proxy'
         ? nothing
         : html`<label class="field">
-            <span>Base URL</span>
+            <span>Base URL <span class="required">(required)</span></span>
             <input
+              ${field(this.providerForm, 'ai-base', { required: true })}
               class="input"
               .value=${set.baseURL ?? ''}
               placeholder=${DEFAULT_BASE_URL[set.provider] || 'http://127.0.0.1:11434/v1'}
               @change=${(event: Event) =>
             patch({ baseURL: (event.target as HTMLInputElement).value })}
             />
-          </label>`}
+          </label>
+          ${this.providerForm.error('ai-base')}`}
 
       <label class="field">
-        <span>Model</span>
+        <span>Model <span class="required">(required)</span></span>
         <input
+          ${field(this.providerForm, 'ai-model', { required: true })}
           class="input"
           .value=${set.model}
           placeholder="gpt-4o-mini"
           @change=${(event: Event) => patch({ model: (event.target as HTMLInputElement).value })}
         />
       </label>
+      ${this.providerForm.error('ai-model')}
 
       ${set.transport === 'in-page' ? this.#renderKeyField(set, status.hint, refusal) : nothing}
 
@@ -836,8 +871,10 @@ export class HeoAiSettings extends HeoElement {
     const stored = this.editor.ai.keyStatus(set.id);
     const remember = this.remember[set.id] ?? stored.persistence === 'origin';
     return html`<label class="field">
-      <span>API key${hint ? ` — currently ends ${hint}` : ''}</span>
+      <span>API key${hint ? ` — currently ends ${hint}` : html` <span class="required">(required)</span>`}</span>
       <input
+        ${field(this.keyForm, 'ai-key', { required: !hint })}
+        aria-label="API key"
         class="input"
         type="password"
         autocomplete="current-password"
@@ -848,11 +885,11 @@ export class HeoAiSettings extends HeoElement {
         this.keyDraft = { ...this.keyDraft, [set.id]: (event.target as HTMLInputElement).value };
       }}
       />
+      ${this.keyForm.error('ai-key')}
       <div class="acts">
         <button
           class="btn sm"
           type="button"
-          ?disabled=${!draft.trim()}
           @click=${() => void this.#saveKey(set)}
         >
           ${icon('check', 11)} Use this key
@@ -927,8 +964,8 @@ export class HeoAiSettings extends HeoElement {
   }
 
   async #saveKey(set: AiProviderSet): Promise<void> {
+    if (!this.keyForm.submit()) return;
     const draft = (this.keyDraft[set.id] ?? '').trim();
-    if (!draft) return;
     // The same resolution the checkbox draws itself from: the draft if there is one, else where
     // the key already lives. Reading only the draft made saving a second key quietly downgrade it.
     const keep = this.remember[set.id] ?? this.editor.ai.keyStatus(set.id).persistence === 'origin';
@@ -936,8 +973,9 @@ export class HeoAiSettings extends HeoElement {
     // Dropped from component state the moment the vault has it, so the only copy is the one in
     // the vault's closure rather than one in a Lit property anybody can read off the element.
     this.keyDraft = { ...this.keyDraft, [set.id]: '' };
-    if (result.refused) this.editor.notify(result.refused, 'error');
+    if (result.refused) this.keyForm.fail('ai-key', result.refused);
     else {
+      this.keyForm.reset();
       this.editor.notify(
         result.persistence === 'origin'
           ? `Key saved for ${set.label} on this machine.`
@@ -955,6 +993,7 @@ export class HeoAiSettings extends HeoElement {
    * healthy — so the test succeeds only on a reply this editor could actually use.
    */
   async #test(set: AiProviderSet): Promise<void> {
+    if (!this.providerForm.submit()) return;
     this.testing = set.id;
     this.verdict = { ...this.verdict, [set.id]: undefined as never };
     try {

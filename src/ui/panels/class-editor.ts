@@ -14,6 +14,7 @@ import { icon } from '../icons.js';
 import { killStyles, renderKill } from '../kill.js';
 import { buildSuggestions, valueKindFor } from '../suggestions.js';
 import '../controls/value-field.js';
+import { field, type FormErrors } from '../form-errors.js';
 
 /**
  * The reusable-class editor.
@@ -61,6 +62,8 @@ export interface ClassEditorHost {
   element: HTMLElement | null;
   /** Draft in the "add a property" field, owned by the host so it survives renders. */
   newProperty: string;
+  /** Where the add-a-property field reports what is wrong with a name. See `form-errors.ts`. */
+  form: FormErrors;
   onNewProperty: (value: string) => void;
   /** Called after a structural change so the host can drop its expanded state. */
   onRemoved?: (name: string) => void;
@@ -201,17 +204,25 @@ export function renderPropertyAdder(
 ): TemplateResult {
   const { engine } = host;
   const listId = `heo-props-${target.id}`;
+  const name = `prop-add-${target.id}`;
 
-  const commitProperty = (): void => {
+  /**
+   * Add the property. `left` is a commit made by leaving the field, which reports a problem without
+   * pulling focus back into it; Enter and the button do take the user there.
+   */
+  const commitProperty = (left = false): void => {
+    if (!host.newProperty.trim()) {
+      if (!left) host.form.fail(name, 'Type the property to add.');
+      return;
+    }
     const verdict = checkDeclaration({
       property: host.newProperty,
       existing: target.existing,
       label: target.label,
     });
-    if (!verdict.property) return;
-    if (verdict.refusal) {
-      engine.notify(verdict.refusal, verdict.refusal.includes('already sets') ? 'info' : 'error');
-      // Keep a refused draft in place so the name can be corrected rather than retyped.
+    if (verdict.refusal || !verdict.property) {
+      // Kept in the field, so the name can be corrected rather than retyped.
+      host.form.fail(name, verdict.refusal ?? 'That is not a property name.', { focus: !left });
       return;
     }
     host.onNewProperty('');
@@ -227,6 +238,7 @@ export function renderPropertyAdder(
       <span class="p">add</span>
       <div class="pair">
         <input
+          ${field(host.form, name)}
           class="input mono"
           type="text"
           list=${listId}
@@ -249,7 +261,7 @@ export function renderPropertyAdder(
       }
     }}
           @blur=${() => {
-      if (host.newProperty.trim()) commitProperty();
+      if (host.newProperty.trim()) commitProperty(true);
     }}
         />
         <button
@@ -257,13 +269,13 @@ export function renderPropertyAdder(
           type="button"
           title="Add this property"
           aria-label="Add this property"
-          ?disabled=${!host.newProperty.trim()}
           @pointerdown=${(event: Event) => event.preventDefault()}
-          @click=${commitProperty}
+          @click=${() => commitProperty()}
         >
           ${icon('check', 12)}
         </button>
       </div>
+      ${host.form.error(name)}
       <datalist id=${listId}>
         ${searchProperties(host.newProperty, 20).map(
       (meta) => html`<option value=${meta.name}></option>`,

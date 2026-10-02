@@ -45,6 +45,7 @@ root, no build step required on the consuming side.
 - [Inserting HTML elements](#inserting-html-elements)
   - [Turning an element into a block](#turning-an-element-into-a-block)
 - [Modal behaviour](#modal-behaviour)
+- [Forms and errors](#forms-and-errors)
 - [Authoring blocks](#authoring-blocks)
 - [Architecture](#architecture)
 - [Development](#development)
@@ -1300,6 +1301,32 @@ stop the page scrolling behind them.
 
 ---
 
+## Forms and errors
+
+Every form in the overlay — dialogs, panel forms, the add-a-property and add-a-class
+fields, the code panels' Apply — reports problems the same way:
+
+- A required field says so in its label: **Name (required)**.
+- An error appears directly below the field it is about, and nowhere else: not in a
+  footer, not in a toast.
+- Submit buttons are never disabled to signal a problem. Pressing one checks the form,
+  reveals the next field with a problem and moves focus into it — one field per press,
+  so pressing again moves on to the next.
+- With several problems at once, one is shown at a time: leaving a field that shows an
+  error reveals the next one.
+- The message is announced as it appears (`role="alert"`), and the field points at it
+  with `aria-invalid`, `aria-describedby` and `aria-errormessage`, so it is read again
+  whenever the field has focus. Editing the field updates or clears it.
+
+The mechanism is `src/ui/form-errors.ts`: a controller per form, given a function from
+the form's values to `{ field, message }` problems, plus a `field()` directive for each
+input and `form.error(name)` below it. Checks the engine also makes — naming a block or a
+class, pasting markup — live in `src/core/validation.ts`, so a caller of the public API
+is refused exactly what the dialog points at. Problems only discoverable on submit go
+through `form.fail(field, message)`.
+
+---
+
 ## Authoring blocks
 
 A block is a template plus optional prop declarations. `{{prop}}` placeholders
@@ -1545,8 +1572,9 @@ missing on purpose, and the runner refuses to start until every page is in one l
 | `test/script-tag-manual.html` | That a bundle *without* `data-heo` mounts nothing, and that `mount()` and `unmount()` still behave. |
 | `test/opaque-origin.html` | A page opened from disk, run **without** `--allow-file-access-from-files` so the origins are genuinely opaque. Confirms the stylesheet's rules really are refused and a sibling `fetch` really does fail, then that connecting a folder makes both files readable, offers the stylesheet as a design-system target, and says the preview cannot update. |
 | `test/line-break-split.html` | Splitting at double line breaks: which blank lines count, the divider and Split button while typing and on a selected element, the caret surviving the split, "Split automatically" sweeping the page as one undo step with the setting, Enter twice opening a new paragraph, the setting in both seeds, the save patching every split in place, and the Settings dialog's switch. |
+| `test/form-errors.html` | The one form-error mechanism on six different surfaces — the New token form, the rule composer, Insert HTML, changing a tag, the AI request box and the HTML code panel: "(required)" labels, buttons that stay enabled, each error below its own field and announced, focus taken to it, the next problem revealed on leaving a field and reached by pressing again, and nothing applied while a problem stands. |
 | `test/turn-into.html` | "Turn into" from the handle menu: placed before "Edit text", opens the picker in turn mode, and carries content across — a section into a card (text and link into props, the extra paragraph kept), a paragraph into a heading (markup and attributes kept), a list keeping every item, a stat and a figure keeping their parts, a plain box taking several pieces whole, a divider reporting what it could not hold, a refused placement, undo, and the save. |
-| `test/block-props.html` | "Save as a reusable block" with props: the HTML step explains `{{name}}` and lists the props it finds, a name with a space is flagged as it is typed with a one-click fix, Save says why it cannot save instead of silently doing nothing, renames reach the markup (and swapping two names swaps them), and class-extraction errors are shown too. |
+| `test/block-props.html` | "Save as a reusable block" with props: the HTML step explains `{{name}}` and lists the props it finds, an empty name, missing markup or a prop name with a space is flagged under its own field when Continue or Save is pressed — one at a time, with focus taken there and a one-click fix for the prop name — renames reach the markup (and swapping two names swaps them), and class-extraction errors are shown too. |
 | `test/line-break-split-seed.html` | A page whose seed has "Split automatically" on: nothing changes until editing starts, then its blank lines split as one announced, undoable step — leaving table cells and script-rendered content alone — and only once. |
 
 `test/writeback.html` hands the engine an in-memory `FileHost` rather than a real

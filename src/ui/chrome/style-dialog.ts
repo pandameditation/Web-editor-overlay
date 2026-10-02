@@ -12,6 +12,7 @@ import {
 } from '../panels/class-editor.js';
 import { RuleEditor, type RuleEditorHost } from '../panels/rule-editor.js';
 import type { HeoValueField } from '../controls/value-field.js';
+import { FormErrors } from '../form-errors.js';
 
 /**
  * One class or one CSS rule, on its own, in front of the user.
@@ -181,6 +182,9 @@ export class HeoStyleDialog extends HeoElement {
     `,
   ];
 
+  /** Where the add-a-property fields say what is wrong with a name; checks run on commit. */
+  protected propertyForm = new FormErrors(this, () => []);
+
   protected state = new StoreController(
     this,
     this.editor.store,
@@ -322,6 +326,7 @@ export class HeoStyleDialog extends HeoElement {
       // For token ranking and for Apply. Null is a valid answer: a class can be created with
       // nothing selected, and the editor drops both affordances rather than inventing a target.
       element: this.editor.selected,
+      form: this.propertyForm,
       newProperty: this.newProperty,
       onNewProperty: (value) => {
         this.newProperty = value;
@@ -336,6 +341,7 @@ export class HeoStyleDialog extends HeoElement {
     return {
       engine: this.editor,
       element: this.editor.selected,
+      form: this.propertyForm,
       newProperty: this.newProperty,
       onNewProperty: (value) => {
         this.newProperty = value;

@@ -25,6 +25,8 @@ import { PropForm } from './prop-form.js';
 import '../controls/value-field.js';
 import '../controls/search-field.js';
 import '../controls/section.js';
+import type { FieldIssue } from '../../core/validation.js';
+import { field, fieldLabel, FormErrors } from '../form-errors.js';
 
 const openSections = new Set<string>(['component', 'attributes']);
 
@@ -117,6 +119,12 @@ export class HeoPropsPanel extends HeoElement {
         align-items: center;
         gap: 6px;
       }
+      /* A value with room for its error below it. */
+      .row > .cell,
+      .two > .cell {
+        display: grid;
+        min-width: 0;
+      }
       .row .name {
         display: flex;
         align-items: center;
@@ -162,6 +170,7 @@ export class HeoPropsPanel extends HeoElement {
       .two {
         display: grid;
         grid-template-columns: 1fr auto;
+        align-items: start;
         gap: 6px;
       }
 
@@ -217,6 +226,12 @@ export class HeoPropsPanel extends HeoElement {
   );
 
   @state() private tagDraft = '';
+
+  /* The panel's forms, each with its own errors. See `form-errors.ts`. */
+  protected tagForm = new FormErrors(this, () => this.#tagIssues());
+  /** Attribute values written as they are edited; a refused one is reported on its row. */
+  protected attrForm = new FormErrors(this, () => []);
+  protected adderForm = new FormErrors(this, () => this.#adderIssues());
   @state() private version = 0;
   /** What the panel is being filtered by. Empty shows every section. */
   @state() private filter = '';
@@ -462,7 +477,9 @@ export class HeoPropsPanel extends HeoElement {
     const isCustom = current.includes('-');
     if (isCustom) return html``;
     return html`<div class="two">
+      <div class="cell">
       <input
+        ${field(this.tagForm, 'tag-name', { required: true })}
         class="input mono"
         type="text"
         list="heo-tag-list"
@@ -477,13 +494,14 @@ export class HeoPropsPanel extends HeoElement {
         if (event.key === 'Enter') this.#retag(current);
       }}
       />
+      ${this.tagForm.error('tag-name')}
+      </div>
       <datalist id="heo-tag-list">
         ${COMMON_TAGS.map((tag) => html`<option value=${tag}></option>`)}
       </datalist>
       <button
         class="btn"
         type="button"
-        ?disabled=${!this.tagDraft.trim() || this.tagDraft.trim() === current}
         title="Change the tag, keeping attributes and children"
         @click=${() => this.#retag(current)}
       >
@@ -492,10 +510,32 @@ export class HeoPropsPanel extends HeoElement {
     </div>`;
   }
 
-  #retag(current: string): void {
+  #tagIssues(): FieldIssue[] {
+    const el = this.editor.store.value.selected;
+    if (!el) return [];
+    const current = el.tagName.toLowerCase();
     const next = this.tagDraft.trim().toLowerCase();
-    if (!next || next === current) return;
-    if (this.editor.retag(next)) this.tagDraft = '';
+    if (!next) return [{ field: 'tag-name', message: 'Type the tag to change it to.' }];
+    if (next === current) {
+      return [{ field: 'tag-name', message: `It is already a <${current}>. Type a different tag.` }];
+    }
+    if (!/^[a-z][a-z0-9-]*$/.test(next)) {
+      return [{ field: 'tag-name', message: 'A tag name starts with a letter and uses only letters, numbers and -.' }];
+    }
+    return [];
+  }
+
+  #retag(current: string): void {
+    if (!this.tagForm.submit()) return;
+    const next = this.tagDraft.trim().toLowerCase();
+    if (next === current) return;
+    if (this.editor.retag(next)) {
+      this.tagDraft = '';
+      this.tagForm.reset();
+      return;
+    }
+    // The engine has the last word on what this element can become, and it said no.
+    this.tagForm.fail('tag-name', `This element cannot become a <${next}> here.`);
   }
 
   #renderProp(el: HTMLElement, prop: PropDescriptor): TemplateResult {
@@ -551,15 +591,19 @@ export class HeoPropsPanel extends HeoElement {
       <span class="name" title=${prop.attribute}>
         <span class="dot"></span><span class="t">${prop.label}</span>
       </span>
-      <heo-value-field
-        .value=${prop.value}
-        .kind=${prop.spec.type === 'number' ? 'number' : 'text'}
-        .suggestions=${valueSuggestions(prop.attribute)}
-        placeholder=${prop.unset ? prop.attribute : ''}
-        clearable
-        @value-change=${(event: CustomEvent<{ value: string }>) =>
+      <div class="cell">
+        <heo-value-field
+          ${field(this.attrForm, `attr-${prop.attribute}`)}
+          .value=${prop.value}
+          .kind=${prop.spec.type === 'number' ? 'number' : 'text'}
+          .suggestions=${valueSuggestions(prop.attribute)}
+          placeholder=${prop.unset ? prop.attribute : ''}
+          clearable
+          @value-change=${(event: CustomEvent<{ value: string }>) =>
         this.#write(el, prop.attribute, event.detail.value)}
-      ></heo-value-field>
+        ></heo-value-field>
+        ${this.attrForm.error(`attr-${prop.attribute}`)}
+      </div>
     </div>`;
   }
 
@@ -607,13 +651,17 @@ export class HeoPropsPanel extends HeoElement {
             <span class="name" title=${`${attr.name} — ${attributeHint(attr.name) || 'not a standard attribute'}`}>
               <span class="dot"></span><span class="t mono">${attr.name}</span>
             </span>
-            <heo-value-field
-              .value=${attr.value}
-              .suggestions=${valueSuggestions(attr.name)}
-              clearable
-              @value-change=${(event: CustomEvent<{ value: string }>) =>
+            <div class="cell">
+              <heo-value-field
+                ${field(this.attrForm, `attr-${attr.name}`)}
+                .value=${attr.value}
+                .suggestions=${valueSuggestions(attr.name)}
+                clearable
+                @value-change=${(event: CustomEvent<{ value: string }>) =>
               this.#write(el, attr.name, event.detail.value)}
-            ></heo-value-field>
+              ></heo-value-field>
+              ${this.attrForm.error(`attr-${attr.name}`)}
+            </div>
           </div>`,
         )}
       </div>
@@ -659,7 +707,8 @@ export class HeoPropsPanel extends HeoElement {
   #write(el: HTMLElement, name: string, value: string): boolean {
     const refusal = attributeRefusal(name, value, el.tagName);
     if (refusal) {
-      this.editor.notify(refusal, 'error');
+      // Said under the row's field, which keeps what was typed so it can be corrected.
+      this.attrForm.fail(`attr-${name}`, refusal);
       return false;
     }
     this.editor.setAttribute(name, value || null, el);
@@ -789,6 +838,7 @@ export class HeoPropsPanel extends HeoElement {
   #closeAdder(): void {
     this.adderOpen = false;
     this.draftRows = [];
+    this.adderForm.reset();
   }
 
   /*
@@ -877,6 +927,9 @@ export class HeoPropsPanel extends HeoElement {
         </button>
       </div>
 
+      <div class="poplabels" aria-hidden="true">
+        ${fieldLabel('Attribute', { required: true })}${fieldLabel('Value')}
+      </div>
       <div class="poprows">
         ${this.draftRows.map((row, index) => this.#renderDraftRow(el, row, index))}
       </div>
@@ -892,18 +945,11 @@ export class HeoPropsPanel extends HeoElement {
         >
           ${icon('plus', 12)} Another
         </button>
-        <!-- A disabled button is a dead end unless it says what is missing. -->
-        ${ready === 0
-        ? html`<span class="why">${icon('alert', 11)} Needs an attribute name</span>`
-        : nothing}
         <span class="spacer"></span>
         <button
           class="btn sm primary"
           type="button"
-          ?disabled=${ready === 0}
-          title=${ready === 0
-        ? 'Fill in an attribute name first'
-        : 'Write these attributes onto the element'}
+          title="Write these attributes onto the element"
           @click=${() => this.#commitRows(el)}
         >
           ${icon('check', 12)}
@@ -933,25 +979,35 @@ export class HeoPropsPanel extends HeoElement {
     };
     const meta = attributeMeta(row.name);
 
+    const nameField = `add-attr-name-${index}`;
+    const valueField = `add-attr-value-${index}`;
     return html`<div class="poprow">
-      <heo-search-field
-        mode="suggest"
-        label="Attribute name"
-        placeholder="attribute"
-        .value=${row.name}
-        .suggestions=${matches}
-        @search-input=${(event: CustomEvent<{ value: string }>) =>
+      <div class="cell">
+        <heo-search-field
+          ${field(this.adderForm, nameField, { required: true })}
+          mode="suggest"
+          label="Attribute name"
+          placeholder="attribute"
+          .value=${row.name}
+          .suggestions=${matches}
+          @search-input=${(event: CustomEvent<{ value: string }>) =>
         update({ name: event.detail.value })}
-      ></heo-search-field>
-      <heo-value-field
-        .value=${row.value}
-        .suggestions=${valueSuggestions(row.name)}
-        placeholder=${meta?.boolean ? 'no value needed' : (meta?.hint ?? 'value')}
-        @value-input=${(event: CustomEvent<{ value: string }>) =>
+        ></heo-search-field>
+        ${this.adderForm.error(nameField)}
+      </div>
+      <div class="cell">
+        <heo-value-field
+          ${field(this.adderForm, valueField)}
+          .value=${row.value}
+          .suggestions=${valueSuggestions(row.name)}
+          placeholder=${meta?.boolean ? 'no value needed' : (meta?.hint ?? 'value')}
+          @value-input=${(event: CustomEvent<{ value: string }>) =>
         update({ value: event.detail.value })}
-        @value-change=${(event: CustomEvent<{ value: string }>) =>
+          @value-change=${(event: CustomEvent<{ value: string }>) =>
         update({ value: event.detail.value })}
-      ></heo-value-field>
+        ></heo-value-field>
+        ${this.adderForm.error(valueField)}
+      </div>
       <button
         class="btn icon ghost sm"
         type="button"
@@ -974,17 +1030,40 @@ export class HeoPropsPanel extends HeoElement {
    * reported. A row the editor refuses is reported and stops the batch: writing two of three
    * attributes and complaining about the third would leave the user guessing which landed.
    */
+  /**
+   * What stops the rows being written, on the half of the row it is about: a name the editor will
+   * not write goes on the name, a value it will not write — a script URL — on the value.
+   */
+  #adderIssues(): FieldIssue[] {
+    const el = this.editor.store.value.selected;
+    if (!el || !this.adderOpen) return [];
+    const issues: FieldIssue[] = [];
+    let any = false;
+    this.draftRows.forEach((row, index) => {
+      const name = row.name.trim();
+      if (!name) return;
+      any = true;
+      const nameRefusal = attributeRefusal(name, '', el.tagName);
+      if (nameRefusal) {
+        issues.push({ field: `add-attr-name-${index}`, message: nameRefusal });
+        return;
+      }
+      const refusal = attributeRefusal(name, row.value.trim(), el.tagName);
+      if (refusal) issues.push({ field: `add-attr-value-${index}`, message: refusal });
+    });
+    if (!any) issues.unshift({ field: 'add-attr-name-0', message: 'Type the attribute to add.' });
+    return issues;
+  }
+
   #commitRows(el: HTMLElement): void {
+    if (!this.adderForm.submit()) return;
     const values: Record<string, string> = {};
     for (const row of this.draftRows) {
       const name = row.name.trim();
       if (!name) continue;
       const value = row.value.trim();
-      const refusal = attributeRefusal(name, value, el.tagName);
-      if (refusal) {
-        this.editor.notify(refusal, 'error');
-        return;
-      }
+      // Refusals were shown on their rows by `adderForm`; nothing refused reaches here.
+      if (attributeRefusal(name, value, el.tagName)) continue;
       // Empty is a real value, not an omission: `hidden`, `disabled` and `required` are written as
       // the empty string, which is exactly what makes `hasAttribute` true for them.
       values[name] = value;

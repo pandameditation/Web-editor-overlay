@@ -23,6 +23,7 @@ import {
 } from '../../core/bundle.js';
 import { designSystemCSSText, type PlannedWrite } from '../../core/writeback.js';
 import { fileAccessStyles } from '../panels/file-access.js';
+import { FormErrors } from '../form-errors.js';
 
 /**
  * The save review dialog.
@@ -829,6 +830,9 @@ export class HeoSaveDialog extends HeoElement {
     // cannot read its own files, because it is the same fact and should read the same way.
     fileAccessStyles,
   ];
+
+  /** The import field's errors, in the design-system hand-off. */
+  protected transferForm = new FormErrors(this, () => []);
 
   protected state = new StoreController(
     this,
@@ -2173,6 +2177,7 @@ export class HeoSaveDialog extends HeoElement {
       onTarget: (target) => {
         this.seedTarget = target;
       },
+      form: this.transferForm,
       incoming: this.incoming,
       onIncoming: (text) => {
         this.incoming = text;

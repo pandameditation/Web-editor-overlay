@@ -17,6 +17,7 @@ import { baseStyles } from '../theme.js';
 import { canOfferFolder, fileAccessStyles, renderFileAccess } from './file-access.js';
 import type { HeoCodeEditor } from '../controls/code-editor.js';
 import '../controls/code-editor.js';
+import { field, FormErrors } from '../form-errors.js';
 
 /**
  * The script editor.
@@ -211,6 +212,16 @@ export class HeoJsPanel extends HeoElement {
   @state() private draft = '';
   @state() private dirty = false;
   @state() private error = '';
+
+  /**
+   * The script's problems, shown under the editor. A syntax error is checked on Apply and Run; a
+   * run that throws is reported the same way. `error` keeps only a failure to read the file,
+   * which is about the source rather than this text.
+   */
+  protected form = new FormErrors(this, () => {
+    const problem = this.dirty ? syntaxErrorIn(this.draft) : '';
+    return problem ? [{ field: 'code-js', message: problem }] : [];
+  });
   /** A fetch in flight, so the pane can say so rather than looking empty. */
   @state() private loading = false;
 
@@ -271,7 +282,7 @@ export class HeoJsPanel extends HeoElement {
               class="btn"
               type="button"
               title="Execute this source again. Anything it declares or attaches happens a second time."
-              ?disabled=${Boolean(this.error) || !this.draft.trim() || this.loading}
+              ?disabled=${!this.draft.trim() || this.loading}
               @click=${() => this.#run(current)}
             >
               ${icon('play', 12)} Run
@@ -279,7 +290,7 @@ export class HeoJsPanel extends HeoElement {
         <button
           class="btn primary"
           type="button"
-          ?disabled=${!this.dirty || Boolean(current.readOnly) || Boolean(this.error)}
+          ?disabled=${!this.dirty || Boolean(current.readOnly)}
           @click=${() => this.#apply(current)}
         >
           ${icon('check', 12)} Apply
@@ -373,11 +384,13 @@ export class HeoJsPanel extends HeoElement {
         rows="16"
         heading=${`JS · ${source.label}`}
         .value=${this.draft}
-        .error=${this.error}
+        ${field(this.form, 'code-js')}
+        .error=${this.form.message('code-js') ?? ''}
         @code-input=${(event: CustomEvent<{ value: string }>) => this.#onInput(event.detail.value)}
         @code-submit=${() => this.#apply(source)}
         @code-cancel=${() => this.#reset(source)}
       ></heo-code-editor>
+      ${this.form.error('code-js')}
     `;
   }
 
@@ -425,6 +438,7 @@ export class HeoJsPanel extends HeoElement {
     this.#loadedId = source.id;
     this.error = '';
     this.dirty = false;
+    this.form.reset();
     if (!source.remote || source.readOnly) {
       this.draft = readScriptSource(source);
       this.loading = false;
@@ -453,11 +467,10 @@ export class HeoJsPanel extends HeoElement {
   #onInput(value: string): void {
     this.draft = value;
     this.dirty = true;
-    this.error = syntaxErrorIn(value);
   }
 
   #apply(source: ScriptSource): void {
-    if (source.readOnly) return;
+    if (source.readOnly || !this.form.submit()) return;
     const command = writeScriptSource(source, this.draft);
     if (!command) {
       this.dirty = false;
@@ -478,10 +491,10 @@ export class HeoJsPanel extends HeoElement {
   }
 
   #run(source: ScriptSource): void {
+    if (!this.form.submit()) return;
     const failure = runScriptSource(source, this.draft);
     if (failure) {
-      this.error = failure;
-      this.editor.notify(`${source.label} threw: ${failure}`, 'error');
+      this.form.fail('code-js', `It threw when it ran: ${failure}`);
       return;
     }
     this.editor.notify(`Ran ${source.label}.`, 'success');

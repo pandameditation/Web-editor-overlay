@@ -18,6 +18,8 @@ import { DesignTransfer, type DesignTransferHost } from './design-transfer.js';
 import '../controls/section.js';
 import '../controls/search-field.js';
 import '../controls/segmented.js';
+import { classNameIssues, selectorIssues, type FieldIssue } from '../../core/validation.js';
+import { field, fieldLabel, FormErrors } from '../form-errors.js';
 
 /** Which of the three registries the panel's search is scoped to. */
 type Facet = 'all' | 'tokens' | 'classes' | 'rules';
@@ -130,6 +132,7 @@ export class HeoTokensPanel extends HeoElement {
       .create .grid {
         display: grid;
         grid-template-columns: 1fr 96px;
+        align-items: start;
         gap: 6px;
       }
 
@@ -183,6 +186,12 @@ export class HeoTokensPanel extends HeoElement {
     DesignTransfer.styles,
   ];
 
+  /** Where the add-a-property fields say what is wrong with a name; checks run on commit. */
+  protected propertyForm = new FormErrors(this, () => []);
+
+  /** The import field's errors, in the design-system hand-off. */
+  protected transferForm = new FormErrors(this, () => []);
+
   protected state = new StoreController(
     this,
     this.editor.store,
@@ -196,6 +205,24 @@ export class HeoTokensPanel extends HeoElement {
   @state() private facet: Facet = 'all';
   @state() private newName = '';
   @state() private newValue = '';
+
+  /*
+   * Four small forms share this panel, each with its own errors: submitting one never reveals
+   * another's. See `form-errors.ts`.
+   */
+  /** The search box's add action: a class or a rule straight from what was typed. */
+  protected queryForm = new FormErrors(this, () => {
+    const seed = this.query.trim();
+    if (this.facet === 'classes') return classNameIssues('tokens-query', seed);
+    if (this.facet === 'rules' && seed) return selectorIssues('tokens-query', seed);
+    return [];
+  });
+
+  protected tokenForm = new FormErrors(this, () => this.#tokenIssues());
+
+  protected classForm = new FormErrors(this, () => classNameIssues('class-create', this.classDraft));
+
+  protected ruleForm = new FormErrors(this, () => selectorIssues('rule-create', this.ruleDraft));
   @state() private newGroup: TokenGroup = 'color';
   @state() private expandedClass: string | null = null;
   @state() private newClassProperty = '';
@@ -286,6 +313,7 @@ export class HeoTokensPanel extends HeoElement {
 
     return html`<div class="find">
       <heo-search-field
+        ${field(this.queryForm, 'tokens-query')}
         label="Search the design system"
         placeholder="Search tokens, classes and rules…"
         .value=${this.query}
@@ -298,6 +326,7 @@ export class HeoTokensPanel extends HeoElement {
       }}
         @search-submit=${() => this.#addFromQuery()}
       ></heo-search-field>
+      ${this.queryForm.error('tokens-query')}
       <heo-segmented
         .options=${[
         { value: 'all', label: 'All' },
@@ -392,6 +421,7 @@ export class HeoTokensPanel extends HeoElement {
    * missing half goes, rather than inventing a value or refusing outright.
    */
   #addFromQuery(): void {
+    if (!this.queryForm.submit()) return;
     const seed = this.query.trim();
     if (this.facet === 'classes') {
       this.#createClass(seed);
@@ -556,17 +586,24 @@ export class HeoTokensPanel extends HeoElement {
     >
       <div class="create">
         <div class="grid">
-          <input
-            class="input mono"
-            type="text"
-            placeholder="token-name"
-            .value=${this.newName}
-            spellcheck="false"
-            aria-label="Token name"
-            @input=${(event: Event) => {
+          <div class="field">
+            ${fieldLabel('Name', { required: true })}
+            <input
+              ${field(this.tokenForm, 'token-name', { required: true })}
+              class="input mono"
+              type="text"
+              placeholder="token-name"
+              .value=${this.newName}
+              spellcheck="false"
+              aria-label="Token name"
+              @input=${(event: Event) => {
         this.newName = (event.target as HTMLInputElement).value;
       }}
-          />
+            />
+            ${this.tokenForm.error('token-name')}
+          </div>
+          <div class="field">
+          ${fieldLabel('Group')}
           <select
             class="input"
             .value=${this.newGroup}
@@ -581,8 +618,12 @@ export class HeoTokensPanel extends HeoElement {
               </option>`,
       )}
           </select>
+          </div>
         </div>
+        <div class="field">
+        ${fieldLabel('Value', { required: true })}
         <heo-value-field
+          ${field(this.tokenForm, 'token-value', { required: true })}
           .value=${this.newValue}
           .kind=${this.newGroup === 'color'
         ? 'color'
@@ -591,14 +632,18 @@ export class HeoTokensPanel extends HeoElement {
           : 'text'}
           .suggestions=${[]}
           placeholder="value"
+          @value-input=${(event: CustomEvent<{ value: string }>) => {
+        this.newValue = event.detail.value;
+      }}
           @value-change=${(event: CustomEvent<{ value: string }>) => {
         this.newValue = event.detail.value;
       }}
         ></heo-value-field>
+        ${this.tokenForm.error('token-value')}
+        </div>
         <button
           class="btn"
           type="button"
-          ?disabled=${!this.newName.trim() || !this.newValue.trim()}
           @click=${this.#createToken}
         >
           ${icon('plus', 12)} Add
@@ -625,6 +670,7 @@ export class HeoTokensPanel extends HeoElement {
         this.#remember('classes', event.detail.open)}
     >
       <heo-value-field
+        ${field(this.classForm, 'class-create')}
         style="margin-bottom:8px"
         leading-icon="search"
         clearable
@@ -638,9 +684,12 @@ export class HeoTokensPanel extends HeoElement {
         @value-change=${(event: CustomEvent<{ value: string }>) => {
         this.classDraft = event.detail.value;
       }}
-        @value-submit=${(event: CustomEvent<{ value: string }>) =>
-        this.#createClass(event.detail.value)}
+        @value-submit=${(event: CustomEvent<{ value: string }>) => {
+        this.classDraft = event.detail.value;
+        if (this.classForm.submit()) this.#createClass(event.detail.value);
+      }}
       ></heo-value-field>
+      ${this.classForm.error('class-create')}
       <p class="hint" style="margin:0 0 8px">
         Search existing classes or type a new name, then press Enter or +.
       </p>
@@ -695,11 +744,9 @@ export class HeoTokensPanel extends HeoElement {
    * dialog leaves the list showing what was worked on rather than a collapsed row.
    */
   #createClass(raw: string): void {
+    // Checked by the form that called this; see `classForm` and `queryForm`.
     const name = normalizeClassName(raw);
-    if (!name) {
-      if (raw.trim()) this.editor.notify(`"${raw}" is not a valid class name.`, 'error');
-      return;
-    }
+    if (!name) return;
     const existing = this.editor.classes.get(name);
     if (existing) {
       this.editor.notify(`.${name} already exists — opening it.`, 'info');
@@ -818,6 +865,7 @@ export class HeoTokensPanel extends HeoElement {
     return html`<div class="compose">
       <div class="head">${icon('plus', 12)} New rule</div>
       <heo-selector-field
+        ${field(this.ruleForm, 'rule-create')}
         placeholder="h2 > p, a:hover, .card .title"
         action="Create rule"
         action-icon="plus"
@@ -826,9 +874,12 @@ export class HeoTokensPanel extends HeoElement {
         @selector-input=${(event: CustomEvent<{ value: string }>) => {
         this.ruleDraft = event.detail.value;
       }}
-        @selector-submit=${(event: CustomEvent<{ value: string }>) =>
-        this.#createRule(event.detail.value)}
+        @selector-submit=${(event: CustomEvent<{ value: string }>) => {
+        this.ruleDraft = event.detail.value;
+        if (this.ruleForm.submit()) this.#createRule(event.detail.value);
+      }}
       ></heo-selector-field>
+      ${this.ruleForm.error('rule-create')}
       ${seeds.length
         ? html`<div class="seed">
             ${seeds.map(
@@ -918,6 +969,7 @@ export class HeoTokensPanel extends HeoElement {
     return {
       engine: this.editor,
       element: el,
+      form: this.propertyForm,
       newProperty: this.newRuleProperty,
       onNewProperty: (value) => {
         this.newRuleProperty = value;
@@ -959,6 +1011,7 @@ export class HeoTokensPanel extends HeoElement {
       host: {
         engine: this.editor,
         element: el,
+        form: this.propertyForm,
         newProperty: this.newClassProperty,
         onNewProperty: (value) => {
           this.newClassProperty = value;
@@ -1005,6 +1058,7 @@ export class HeoTokensPanel extends HeoElement {
       onTarget: (target) => {
         this.seedTarget = target;
       },
+      form: this.transferForm,
       incoming: this.incoming,
       onIncoming: (text) => {
         this.incoming = text;
@@ -1093,18 +1147,26 @@ export class HeoTokensPanel extends HeoElement {
     });
   }
 
+  #tokenIssues(): FieldIssue[] {
+    const issues: FieldIssue[] = [];
+    const name = this.newName.trim().replace(/^--/, '');
+    if (!name) issues.push({ field: 'token-name', message: 'Type a name for the token.' });
+    else if (!/^[A-Za-z_][\w-]*$/.test(name)) {
+      issues.push({
+        field: 'token-name',
+        message: 'A token name starts with a letter or _ and uses only letters, numbers, - or _.',
+      });
+    } else if (this.editor.tokens.get(name)) {
+      issues.push({ field: 'token-name', message: `--${name} already exists. Choose another name, or edit it in the list.` });
+    }
+    if (!this.newValue.trim()) issues.push({ field: 'token-value', message: 'Give the token a value.' });
+    return issues;
+  }
+
   #createToken(): void {
+    if (!this.tokenForm.submit()) return;
     const name = this.newName.trim().replace(/^--/, '');
     const value = this.newValue.trim();
-    if (!name || !value) return;
-    if (!/^[A-Za-z_][\w-]*$/.test(name)) {
-      this.editor.notify(`"--${name}" is not a valid custom property name.`, 'error');
-      return;
-    }
-    if (this.editor.tokens.get(name)) {
-      this.editor.notify(`--${name} already exists.`, 'error');
-      return;
-    }
     const token: DesignToken = {
       name,
       value,

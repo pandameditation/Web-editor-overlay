@@ -282,18 +282,31 @@ color: rebeccapurple;`;
 
       const multipleRules = '.first-paste-rule { color: red; } .second-paste-rule { color: blue; }';
       await openPaste({ context: 'rule', element: target, selector: '#target' }, multipleRules);
-      check('multiplePastedSelectorsMustStayInBlockCSS', () => {
-        const warning = dialogRoot()?.querySelector('.note.warn')?.textContent
-          ?.replace(/\s+/g, ' ')
-          .trim() ?? '';
+      {
+        // Apply is never disabled: pressing it says why, on the CSS field, and changes nothing.
         const apply = Array.from(dialogRoot()?.querySelectorAll('footer .btn') ?? [])
           .find((element) => /Apply CSS/.test(element.textContent ?? ''));
-        return {
-          ok: /contains 2 selectors/.test(warning) && Boolean(apply?.hasAttribute('disabled')),
-          warning,
-          applyDisabled: apply?.hasAttribute('disabled') ?? false,
-        };
-      });
+        const styleBefore = target.getAttribute('style');
+        apply?.click();
+        await frames();
+        check('multiplePastedSelectorsMustStayInBlockCSS', () => {
+          const warning = dialogRoot()?.querySelector('.note.warn')?.textContent
+            ?.replace(/\s+/g, ' ')
+            .trim() ?? '';
+          const error = dialogRoot()?.querySelector('.field-error')?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+          const draft = dialogRoot()?.querySelector('heo-code-editor');
+          return {
+            ok: /contains 2 selectors/.test(warning) &&
+              /several CSS rules/.test(error) &&
+              draft?.getAttribute('aria-invalid') === 'true' &&
+              target.getAttribute('style') === styleBefore &&
+              Boolean(engine.store.value.cssPaste),
+            warning,
+            error,
+            neverDisabled: !apply?.hasAttribute('disabled'),
+          };
+        });
+      }
       engine.cancelCssPaste();
       await frames();
 
@@ -552,20 +565,28 @@ color: rebeccapurple;`;
       await openPaste({ context: 'block' }, '.missing-block-selector { color: blue; }');
       engine.updateCssPaste({ destination: 'block-inline' });
       await frames();
-      check('aNonmatchingPastedSelectorCanBeReplacedFromBlockMarkup', () => {
-        const field = blockInlineField();
-        const input = field?.shadowRoot?.querySelector('input');
+      {
         const apply = Array.from(dialogRoot()?.querySelectorAll('footer .btn') ?? [])
           .find((element) => /Use this CSS/.test(element.textContent ?? ''));
-        return {
-          ok: input?.value === '.missing-block-selector' &&
-            Boolean(field?.shadowRoot?.querySelector('.count.miss')) &&
-            apply?.hasAttribute('disabled') === true,
-          selector: input?.value ?? null,
-          countTone: field?.shadowRoot?.querySelector('.count')?.className ?? null,
-          applyDisabled: apply?.hasAttribute('disabled') ?? false,
-        };
-      });
+        apply?.click();
+        await frames();
+        check('aNonmatchingPastedSelectorCanBeReplacedFromBlockMarkup', () => {
+          const field = blockInlineField();
+          const input = field?.shadowRoot?.querySelector('input');
+          const error = dialogRoot()?.querySelector('.field-error')?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+          return {
+            ok: input?.value === '.missing-block-selector' &&
+              Boolean(field?.shadowRoot?.querySelector('.count.miss')) &&
+              /matches nothing/.test(error) &&
+              field?.getAttribute('aria-invalid') === 'true' &&
+              Boolean(engine.store.value.cssPaste),
+            selector: input?.value ?? null,
+            countTone: field?.shadowRoot?.querySelector('.count')?.className ?? null,
+            error,
+            neverDisabled: !apply?.hasAttribute('disabled'),
+          };
+        });
+      }
       const recoveryInput = blockInlineField()?.shadowRoot?.querySelector('input');
       if (recoveryInput) {
         recoveryInput.value = '.block-copy';

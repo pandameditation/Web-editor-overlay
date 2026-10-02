@@ -427,13 +427,32 @@
         Boolean(commitBtn()) && commitBtn().disabled === false;
       results.styles.seededAValue = Boolean((stylePanel.draftRows ?? [])[0]?.value);
 
-      // And when a row IS genuinely incomplete, the button says what it wants rather than
-      // ignoring the click -- which is what the reported bug felt like.
-      await setStretch('');
-      results.styles.saysWhyItCannotCommit =
-        commitBtn().disabled === true &&
-        /property and a value/i.test(commitBtn().getAttribute('title') ?? '') &&
-        Boolean(stylePanel.shadowRoot.querySelector('.popfoot .why'));
+      // And when a row IS genuinely incomplete -- no property -- pressing the button says what is
+      // missing under that field and puts focus there, rather than ignoring the click, which is
+      // what the reported bug felt like. The button is never disabled.
+      {
+        const nameField = stylePanel.shadowRoot.querySelector('.poprow heo-search-field');
+        const nameInput = nameField.shadowRoot.querySelector('input');
+        nameInput.value = '';
+        nameInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        await stylePanel.updateComplete;
+        await frames();
+        const styleBefore = target.getAttribute('style') ?? '';
+        commitBtn()?.click();
+        await stylePanel.updateComplete;
+        await frames();
+        const error = stylePanel.shadowRoot.querySelector('.addpop .field-error')?.textContent ?? '';
+        results.styles.saysWhyItCannotCommit =
+          commitBtn().disabled === false &&
+          /property to add/i.test(error) &&
+          nameField.getAttribute('aria-invalid') === 'true' &&
+          stylePanel.shadowRoot.activeElement === nameField &&
+          (target.getAttribute('style') ?? '') === styleBefore;
+        nameInput.value = 'font-stretch';
+        nameInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        await stylePanel.updateComplete;
+        await frames();
+      }
 
       await setStretch('50%');
       commitBtn()?.click();
@@ -602,6 +621,8 @@
         await wait(150);
         return {
           said: [...said],
+          // A refusal is said under the row's property field, not in a toast.
+          error: stylePanel.shadowRoot.querySelector('.addpop .field-error')?.textContent ?? '',
           stillOpen: Boolean(popup()),
           style: target.getAttribute('style') ?? '',
         };
@@ -621,12 +642,12 @@
 
       // The dedupe the panel never had, which a class always did.
       const twice = await addDeclaration('word-wrap', 'anywhere');
-      results.styles.duplicateIsRefused = twice.said.some((n) => /already sets/i.test(n));
+      results.styles.duplicateIsRefused = /already sets/i.test(twice.error);
       results.styles.refusalKeepsThePopupOpen = twice.stillOpen;
 
       // The validity check a class never had, which the panel always did.
       const junk = await addDeclaration('not a property', '1');
-      results.styles.junkIsRefused = junk.said.some((n) => /is not a property name/i.test(n));
+      results.styles.junkIsRefused = /is not a property name/i.test(junk.error);
       results.styles.junkIsNotWritten = !junk.style.includes('not a property');
 
       // And the trailing colon typed out of habit is normalised, not treated as gibberish:

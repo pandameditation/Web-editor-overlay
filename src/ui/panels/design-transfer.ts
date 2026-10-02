@@ -8,6 +8,7 @@ import {
 import type { EditorEngine } from '../../core/editor.js';
 import {
   compactDesignSystem,
+  decodeSeed,
   encodeSeed,
   recommendedTarget,
   seedSnippets,
@@ -16,6 +17,7 @@ import {
 } from '../../core/seed.js';
 import type { DesignSystemDocument } from '../../core/types.js';
 import { designSystemCSSText } from '../../core/writeback.js';
+import { field, fieldLabel, type FormErrors } from '../form-errors.js';
 import { icon } from '../icons.js';
 
 /**
@@ -45,6 +47,8 @@ export interface DesignTransferHost {
   onOverwrite(value: boolean): void;
   /** Called when a freshly encoded seed arrives, so the host re-renders. */
   onSeed(): void;
+  /** Where the import field says what is wrong with what was pasted. See `form-errors.ts`. */
+  form: FormErrors;
 }
 
 /*
@@ -652,7 +656,9 @@ export const DesignTransfer = {
 
       <p class="divide">Bring one in</p>
       <div class="field">
+        ${fieldLabel('Seed or design system JSON', { required: true })}
         <textarea
+          ${field(host.form, 'seed-incoming', { required: true })}
           class="paste"
           .value=${host.incoming}
           spellcheck="false"
@@ -668,12 +674,12 @@ export const DesignTransfer = {
         void load(host);
       }}
         ></textarea>
+        ${host.form.error('seed-incoming')}
       </div>
       <div class="row" style="margin-top:7px">
         <button
           class="btn primary"
           type="button"
-          ?disabled=${!host.incoming.trim()}
           @click=${() => void load(host)}
         >
           ${icon('check', 12)} Load
@@ -722,8 +728,22 @@ async function copySeed(engine: EditorEngine, seed: string): Promise<void> {
 /** Load whatever was pasted: a seed and raw JSON are the same act from here. */
 async function load(host: DesignTransferHost): Promise<void> {
   const text = host.incoming.trim();
-  if (!text) return;
-  if (await host.engine.importDesignSystemText(text, host.overwrite)) host.onIncoming('');
+  if (!text) {
+    host.form.fail('seed-incoming', 'Paste a seed or a design system JSON document to load.');
+    return;
+  }
+  // Read first, so a seed that cannot be read is said under the field rather than in a toast.
+  try {
+    await decodeSeed(text);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    host.form.fail('seed-incoming', `This cannot be loaded: ${message}`);
+    return;
+  }
+  if (await host.engine.importDesignSystemText(text, host.overwrite)) {
+    host.onIncoming('');
+    host.form.reset();
+  }
 }
 
 async function openFile(host: DesignTransferHost): Promise<void> {

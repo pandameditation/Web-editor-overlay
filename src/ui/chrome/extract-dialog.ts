@@ -7,9 +7,16 @@ import {
   normalizeCustomElementTag,
   propNameProblem,
   PROP_TYPES,
-  suggestPropName,
   type BlockPropRow,
 } from '../../core/library.js';
+import {
+  blockPropField,
+  blockPropIssues,
+  blockPropSuggestion,
+  blockSourceIssues,
+  classExtractionIssues,
+} from '../../core/validation.js';
+import { field, fieldLabel, FormErrors, type FieldIssue } from '../form-errors.js';
 import { templatePropNames } from '../../core/sanitize.js';
 import type { BlockExtraction, ClassExtraction } from '../../core/editor.js';
 import { ModalController } from '../../core/modal.js';
@@ -304,28 +311,6 @@ export class HeoExtractDialog extends HeoElement {
         gap: 4px;
         color: var(--heo-text-faint);
         font-size: 10px;
-      }
-      .propcard .input[aria-invalid='true'] {
-        border-color: var(--heo-danger);
-      }
-      .propcard .problem {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 6px;
-        margin: 5px 0 0;
-        color: var(--heo-danger);
-        font-size: 10.5px;
-        line-height: 1.45;
-      }
-      .propcard .problem button {
-        padding: 1px 7px;
-        border: 1px solid var(--heo-line);
-        border-radius: 999px;
-        background: var(--heo-sunken);
-        color: var(--heo-text);
-        font: inherit;
-        cursor: pointer;
       }
 
       /* What {{name}} does, beside the markup it is typed into. */
@@ -657,49 +642,6 @@ export class HeoExtractDialog extends HeoElement {
         font-size: 11px;
         line-height: 1.45;
       }
-      .input[aria-invalid='true'] {
-        border-color: var(--heo-danger);
-        box-shadow: 0 0 0 3px color-mix(in oklab, var(--heo-danger) 22%, transparent);
-      }
-      /* An error about one field, attached to it: a bubble pointing up at the input. */
-      .field-error {
-        position: relative;
-        display: flex;
-        align-items: flex-start;
-        gap: 6px;
-        margin: 8px 0 0;
-        padding: 7px 10px;
-        border: 1px solid color-mix(in oklab, var(--heo-danger) 55%, transparent);
-        border-radius: var(--heo-r-sm);
-        background: color-mix(in oklab, var(--heo-danger) 14%, var(--heo-raised));
-        color: var(--heo-text);
-        font-size: 11.5px;
-        line-height: 1.45;
-        animation: field-error-in var(--heo-fast) var(--heo-ease);
-      }
-      .field-error::before {
-        content: '';
-        position: absolute;
-        top: -5px;
-        left: 14px;
-        width: 8px;
-        height: 8px;
-        border-top: 1px solid color-mix(in oklab, var(--heo-danger) 55%, transparent);
-        border-left: 1px solid color-mix(in oklab, var(--heo-danger) 55%, transparent);
-        background: inherit;
-        transform: rotate(45deg);
-      }
-      .field-error > svg {
-        flex: 0 0 auto;
-        margin-top: 3px;
-        color: var(--heo-danger);
-      }
-      @keyframes field-error-in {
-        from {
-          opacity: 0;
-          transform: translateY(-3px);
-        }
-      }
     `,
   ];
 
@@ -765,24 +707,35 @@ export class HeoExtractDialog extends HeoElement {
 
   override updated(): void {
     this.#placeNameOptions();
-    this.#focusFieldError();
   }
 
-  /** The extraction a field error was last focused for, so each failed attempt focuses once. */
-  #focusedError: object | null = null;
+  /** What is wrong with the form on screen, field by field. Shared with the engine's own checks. */
+  protected form = new FormErrors(this, () => this.#issues(), {
+    // The block's buffers share one editor behind tabs, so a problem in one has to open its tab.
+    show: (name) => {
+      if (name === 'block-html') this.sourceTab = 'html';
+      else if (name === 'block-tag' || name === 'block-script') this.sourceTab = 'js';
+    },
+  });
+
+  #issues(): FieldIssue[] {
+    const pending = this.state.value.extraction;
+    if (!pending) return [];
+    if (pending.mode === 'class') return classExtractionIssues(pending);
+    return pending.step === 'props' ? blockPropIssues(pending.props) : blockSourceIssues(pending);
+  }
 
   /**
-   * Take the user to the field an error is about.
-   *
-   * Once per failed attempt — every attempt writes a new extraction object — so pressing Continue
-   * again brings focus back, while typing in the field (which clears the error) leaves it alone.
+   * Continue, Save or Apply: check the form first, and only hand it to the engine when it is
+   * complete. Moving on to the props step starts that step's form afresh.
    */
-  #focusFieldError(): void {
+  #submit(): void {
     const pending = this.state.value.extraction;
-    if (pending?.mode !== 'block' || pending.errorField !== 'name' || !pending.error) return;
-    if (this.#focusedError === pending) return;
-    this.#focusedError = pending;
-    this.nameInput?.focus();
+    if (!pending || !this.form.submit()) return;
+    const step = pending.mode === 'block' ? pending.step : null;
+    this.editor.commitExtraction();
+    const next = this.state.value.extraction;
+    if (next?.mode === 'block' && next.step !== step) this.form.reset();
   }
 
   override render(): TemplateResult | typeof nothing {
@@ -825,9 +778,10 @@ export class HeoExtractDialog extends HeoElement {
 
       <div class="body-scroll">
         <div class="field">
-          <span class="label">Class name</span>
+          ${fieldLabel('Class name', { required: true })}
           <div class="combo">
             <input
+              ${field(this.form, 'class-name', { required: true })}
               class="input mono name-input"
               type="text"
               role="combobox"
@@ -871,11 +825,12 @@ export class HeoExtractDialog extends HeoElement {
             </button>
           </div>
           ${this.nameOpen ? this.#renderNameOptions(pending) : nothing}
+          ${this.form.error('class-name')}
         </div>
 
         ${plan.existing ? this.#renderMerge(pending, plan) : nothing}
 
-        <div class="field">
+        <div class="field" ${field(this.form, 'declarations')}>
           <span class="label">Declarations (${kept.length} of ${properties.length})</span>
           ${repeat(
         properties,
@@ -912,6 +867,7 @@ export class HeoExtractDialog extends HeoElement {
               </div>`;
         },
       )}
+          ${this.form.error('declarations')}
         </div>
 
         <label class="check">
@@ -1383,28 +1339,24 @@ export class HeoExtractDialog extends HeoElement {
   ): TemplateResult {
     const active = SOURCE_TABS[this.sourceTab];
     const isElement = Boolean(tag && pending.script.trim());
-    const nameError = pending.errorField === 'name' && Boolean(pending.error);
+    const hasScript = Boolean(pending.script.trim());
+    // One editor shows three buffers, so its field name follows the tab it is showing.
+    const bufferField = this.sourceTab === 'html' ? 'block-html' : this.sourceTab === 'js' ? 'block-script' : 'block-css';
+    const bufferRequired = this.sourceTab === 'html' ? !hasScript : this.sourceTab === 'js' ? Boolean(tag) : false;
     return html`
       <div class="two">
         <div class="field">
-          <span class="label">Name</span>
+          ${fieldLabel('Name', { required: true })}
           <input
+            ${field(this.form, 'block-name', { required: true })}
             class="input name-input"
             type="text"
             .value=${pending.name}
             aria-label="Block name"
-            aria-required="true"
-            aria-invalid=${nameError ? 'true' : 'false'}
-            aria-describedby=${nameError ? 'heo-block-name-error' : nothing}
-            aria-errormessage=${nameError ? 'heo-block-name-error' : nothing}
             @input=${(event: Event) =>
         this.editor.updateExtraction({ name: (event.target as HTMLInputElement).value })}
           />
-          ${nameError
-        ? html`<p class="field-error" id="heo-block-name-error" role="alert">
-                ${icon('close', 10)} ${pending.error}
-              </p>`
-        : nothing}
+          ${this.form.error('block-name')}
         </div>
         <div class="field">
           <span class="label">Kind</span>
@@ -1478,8 +1430,9 @@ export class HeoExtractDialog extends HeoElement {
 
       ${this.sourceTab === 'js'
         ? html`<div class="field">
-              <span class="label">Custom element tag</span>
+              ${fieldLabel('Custom element tag', { required: hasScript })}
               <input
+                ${field(this.form, 'block-tag', { required: hasScript })}
                 class="input mono"
                 type="text"
                 placeholder="my-widget"
@@ -1496,12 +1449,13 @@ export class HeoExtractDialog extends HeoElement {
                     element names are lowercase and need a hyphen.
                   </p>`
             : nothing}
+              ${this.form.error('block-tag')}
             </div>`
         : nothing}
 
       <div class="field">
         <div class="label-row">
-          <span class="label">${active.heading}</span>
+          ${fieldLabel(active.heading, { required: bufferRequired })}
           ${this.sourceTab === 'html' || this.sourceTab === 'css'
         ? html`<button
                 class="paste"
@@ -1514,6 +1468,8 @@ export class HeoExtractDialog extends HeoElement {
         : nothing}
         </div>
         <heo-code-editor
+          ${field(this.form, bufferField, { required: bufferRequired })}
+          .error=${this.form.message(bufferField) ?? ''}
           language=${active.language}
           rows=${this.sourceTab === 'js' ? 12 : 9}
           heading=${active.heading}
@@ -1529,6 +1485,7 @@ export class HeoExtractDialog extends HeoElement {
           @code-input=${(event: CustomEvent<{ value: string }>) =>
         this.editor.updateExtraction({ [active.field]: event.detail.value })}
         ></heo-code-editor>
+        ${this.form.error(bufferField)}
         ${this.sourceTab === 'html' && !isElement ? this.#renderPropsHelp(pending) : nothing}
         ${this.sourceTab === 'css'
         ? html`<p class="note">
@@ -1566,9 +1523,8 @@ export class HeoExtractDialog extends HeoElement {
       </p>
       ${rows.map((row, index) => {
       const problem = propNameProblem(row.name, names.filter((_, other) => other !== index));
-      const suggestion = problem ? suggestPropName(row.name) : '';
-      const fixable =
-        Boolean(suggestion) && !propNameProblem(suggestion, names.filter((_, other) => other !== index));
+      const name = blockPropField(index);
+      const suggestion = blockPropSuggestion(rows, index);
       return html`<section class="propcard">
           <header>
             <code class="mono">{{${row.placeholder}}}</code>
@@ -1578,28 +1534,26 @@ export class HeoExtractDialog extends HeoElement {
           </header>
           <div class="two even">
             <div class="field">
-              <span class="label">Name in the markup</span>
+              ${fieldLabel('Name in the markup', { required: true })}
               <input
+                ${field(this.form, name, { required: true })}
                 class="input mono"
                 type="text"
                 .value=${row.name}
                 placeholder="propName"
                 spellcheck="false"
-                aria-invalid=${problem ? 'true' : 'false'}
                 aria-label=${`Name for ${row.placeholder}`}
                 @input=${(event: Event) =>
           this.#editProp(index, { name: (event.target as HTMLInputElement).value })}
               />
-              ${problem
-          ? html`<p class="problem" role="alert">
-                    ${problem}
-                    ${fixable
+              ${this.form.error(
+            name,
+            suggestion
               ? html`<button type="button" @click=${() => this.#editProp(index, { name: suggestion })}>
-                          Use ${suggestion}
-                        </button>`
-              : nothing}
-                  </p>`
-          : nothing}
+                    Use ${suggestion}
+                  </button>`
+              : nothing,
+          )}
             </div>
             <div class="field">
               <span class="label">Label</span>
@@ -1728,7 +1682,7 @@ export class HeoExtractDialog extends HeoElement {
      */
     const placed = editing && pending.id ? this.editor.blockInstances(pending.id).length : 0;
     return html`<footer>
-      ${pending.error && !pending.errorField
+      ${pending.error
         ? html`<span class="error" role="alert">${icon('close', 11)} ${pending.error}</span>`
         : nothing}
       ${placed
@@ -1751,13 +1705,16 @@ export class HeoExtractDialog extends HeoElement {
         : nothing}
       <span class="spacer"></span>
       ${onProps
-        ? html`<button class="btn" type="button" @click=${() => this.editor.backToBlockSource()}>
+        ? html`<button class="btn" type="button" @click=${() => {
+          this.form.reset();
+          this.editor.backToBlockSource();
+        }}>
             ${icon('chevronLeft', 12)} Back
           </button>`
         : html`<button class="btn" type="button" @click=${() => this.editor.cancelExtraction()}>
             Cancel
           </button>`}
-      <button class="btn primary" type="button" @click=${() => this.editor.commitExtraction()}>
+      <button class="btn primary" type="button" @click=${() => this.#submit()}>
         ${icon(onProps ? 'check' : 'chevronRight', 12)} ${label}
       </button>
     </footer>`;
@@ -1776,12 +1733,12 @@ export class HeoExtractDialog extends HeoElement {
 
   #footer(error: string, confirmLabel: string): TemplateResult {
     return html`<footer>
-      ${error ? html`<span class="error">${icon('close', 11)} ${error}</span>` : nothing}
+      ${error ? html`<span class="error" role="alert">${icon('close', 11)} ${error}</span>` : nothing}
       <span class="spacer"></span>
       <button class="btn" type="button" @click=${() => this.editor.cancelExtraction()}>
         Cancel
       </button>
-      <button class="btn primary" type="button" @click=${() => this.editor.commitExtraction()}>
+      <button class="btn primary" type="button" @click=${() => this.#submit()}>
         ${icon('check', 12)} ${confirmLabel}
       </button>
     </footer>`;
@@ -1797,7 +1754,7 @@ export class HeoExtractDialog extends HeoElement {
     }
     if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
-      this.editor.commitExtraction();
+      this.#submit();
     }
   }
 }

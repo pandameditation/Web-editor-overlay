@@ -68,11 +68,20 @@ export const adderStyles = css`
   }
   /* Name and value side by side: they are one thing, not two settings. The value gets the wider
      share, since it is the half that holds an expression. */
-  .poprow {
+  .poprow,
+  .poplabels {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) auto;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) 24px;
     gap: 5px;
-    align-items: center;
+    align-items: start;
+  }
+  /* The column names, once, above the rows: "Property (required)" and "Value". */
+  .poplabels {
+    flex: 0 0 auto;
+  }
+  .poprow > .cell {
+    display: grid;
+    min-width: 0;
   }
   .popfoot {
     display: flex;
@@ -81,15 +90,6 @@ export const adderStyles = css`
   }
   .popfoot .spacer {
     flex: 1 1 auto;
-  }
-  /* Why the primary action is unavailable, said next to it rather than left to be guessed. */
-  .popfoot .why {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    color: var(--heo-text-faint);
-    font-size: 10px;
-    line-height: 1.3;
   }
   .top .spacer {
     flex: 1 1 auto;

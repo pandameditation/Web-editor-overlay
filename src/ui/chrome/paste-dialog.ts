@@ -5,6 +5,8 @@ import type { InsertAnchor } from '../../core/editor.js';
 import { ModalController } from '../../core/modal.js';
 import { INSERT_POSITION_LABELS, type InsertPosition } from '../../core/mutations.js';
 import { nothingRemoved, previewMarkup } from '../../core/sanitize.js';
+import { htmlPasteIssues } from '../../core/validation.js';
+import { field, fieldLabel, FormErrors } from '../form-errors.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
@@ -176,6 +178,16 @@ export class HeoPasteDialog extends HeoElement {
 
   protected modal = new ModalController(this, { initialFocus: 'heo-code-editor' });
 
+  protected form = new FormErrors(this, () => {
+    const open = this.state.value.htmlPaste;
+    return open ? htmlPasteIssues(open) : [];
+  });
+
+  /** Insert, once the form says there is something insertable. */
+  #submit(): void {
+    if (this.form.submit()) this.editor.commitHtmlPaste();
+  }
+
   override render(): TemplateResult | typeof nothing {
     const open = this.state.value.htmlPaste;
     if (!open) return nothing;
@@ -211,24 +223,27 @@ export class HeoPasteDialog extends HeoElement {
 
       <div class="content">
         ${this.#renderWhere(open.anchor)}
+        ${fieldLabel('Markup to insert', { required: true })}
         <heo-code-editor
+          ${field(this.form, 'html-draft', { required: true })}
           fill
           language="html"
           rows="14"
           heading="Markup to insert"
           placeholder=${'<section class="card">\n  <h2>Title</h2>\n</section>'}
           .value=${open.draft}
-          .error=${open.error}
+          .error=${this.form.message('html-draft') ?? ''}
           @code-input=${(event: CustomEvent<{ value: string }>) =>
         this.editor.updateHtmlPaste({ draft: event.detail.value, error: '' })}
-          @code-submit=${() => this.editor.commitHtmlPaste()}
+          @code-submit=${() => this.#submit()}
           @code-cancel=${() => this.editor.cancelHtmlPaste()}
         ></heo-code-editor>
+        ${this.form.error('html-draft')}
         ${written ? this.#renderPreview(preview) : nothing}
       </div>
 
       <footer>
-        <span class=${`fine${open.error ? ' err' : ''}`}>
+        <span class=${`fine${open.error ? ' err' : ''}`} role=${open.error ? 'alert' : nothing}>
           ${open.error
         ? open.error
         : written
@@ -242,11 +257,8 @@ export class HeoPasteDialog extends HeoElement {
           <button
             class="btn primary"
             type="button"
-            ?disabled=${!written || preview.elements === 0}
-            title=${preview.elements === 0
-        ? 'Markup has to start with a tag'
-        : `Insert ${INSERT_POSITION_LABELS[open.anchor.position]} ${labelFor(open.anchor.reference)}`}
-            @click=${() => this.editor.commitHtmlPaste()}
+            title=${`Insert ${INSERT_POSITION_LABELS[open.anchor.position]} ${labelFor(open.anchor.reference)}`}
+            @click=${() => this.#submit()}
           >
             ${icon('plus', 12)} Insert
           </button>
@@ -277,6 +289,7 @@ export class HeoPasteDialog extends HeoElement {
 
     return html`<div class="where">
       <heo-segmented
+        ${field(this.form, 'html-where')}
         label="Where it goes"
         .options=${options}
         .value=${anchor.position}
@@ -293,6 +306,7 @@ export class HeoPasteDialog extends HeoElement {
         ? html`Replaces <b>${labelFor(reference)}</b> and everything inside it`
         : html`${INSERT_POSITION_LABELS[anchor.position]} <b>${labelFor(reference)}</b>`}
       </span>
+      ${this.form.error('html-where')}
     </div>`;
   }
 

@@ -1025,7 +1025,6 @@ export class HeoValueField extends LitElement {
                 type="button"
                 title=${this.action}
                 aria-label=${this.action}
-                ?disabled=${!this.draft.trim()}
                 @pointerdown=${(event: Event) => event.preventDefault()}
                 @click=${this.#submit}
               >
@@ -1777,8 +1776,8 @@ export class HeoValueField extends LitElement {
    * add button and Enter appeared to do nothing.
    */
   #submit(): void {
+    // Empty included: the host's form says what is missing, below the field.
     const next = this.draft.trim();
-    if (!next) return;
     this.open = false;
     this.dispatchEvent(
       new CustomEvent('value-submit', {

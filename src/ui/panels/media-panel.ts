@@ -10,6 +10,7 @@ import { buildSuggestions, valueKindFor } from '../suggestions.js';
 import '../controls/value-field.js';
 import '../controls/segmented.js';
 import '../controls/section.js';
+import { field, FormErrors } from '../form-errors.js';
 
 const FITS = ['fill', 'contain', 'cover', 'none', 'scale-down'] as const;
 const POSITIONS: Array<[string, string]> = [
@@ -177,6 +178,10 @@ export class HeoMediaPanel extends HeoElement {
         grid-template-columns: 96px 1fr;
         align-items: center;
         gap: 6px;
+      }
+      .row > .cell {
+        display: grid;
+        min-width: 0;
       }
       .row .name {
         overflow: hidden;
@@ -381,12 +386,16 @@ export class HeoMediaPanel extends HeoElement {
       <div class="rows">
         <div class="row">
           <span class="name">src</span>
+          <div class="cell">
           <heo-value-field
+            ${field(this.srcForm, 'media-src')}
             .value=${src}
             .suggestions=${[]}
             placeholder="https://…"
             @value-change=${(event: CustomEvent<{ value: string }>) => this.#setSrc(el, event.detail.value)}
           ></heo-value-field>
+          ${this.srcForm.error('media-src')}
+          </div>
         </div>
         ${tag === 'img'
           ? html`<div class="row">
@@ -470,10 +479,16 @@ export class HeoMediaPanel extends HeoElement {
     </div>`;
   }
 
+  /** The source field writes as it is edited; a refused address is reported under it. */
+  protected srcForm = new FormErrors(this, () => []);
+
   #setSrc(el: HTMLElement, value: string): void {
     const safe = safeURL(value, true);
     if (value && !safe) {
-      this.editor.notify('That URL was rejected as unsafe.', 'error');
+      this.srcForm.fail(
+        'media-src',
+        'That address cannot be used: script URLs and data URLs other than images are refused.',
+      );
       return;
     }
     this.editor.setAttribute('src', safe || null, el);

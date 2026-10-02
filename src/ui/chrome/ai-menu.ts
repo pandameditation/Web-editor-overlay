@@ -9,6 +9,7 @@ import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
 import { anchoredStyle, PopoverPlacer } from '../place.js';
 import { baseStyles, surfaceStyles } from '../theme.js';
+import { field, FormErrors } from '../form-errors.js';
 
 /**
  * Editing one element by describing the change.
@@ -412,11 +413,16 @@ export class HeoAiMenu extends HeoElement {
    * result can be read against the request and the sentence can be edited and sent again. A
    * quick action that sent something invisible would make its own outcome unaccountable.
    */
+  /** The request box: something has to be asked. See `form-errors.ts`. */
+  protected promptForm = new FormErrors(this, () =>
+    this.draft.trim() ? [] : [{ field: 'ai-prompt', message: 'Describe the change you want.' }],
+  );
+
   #send(prompt?: string): void {
     if (this.state.value.aiBusy) return;
     if (prompt !== undefined) this.draft = prompt;
-    const asked = (prompt ?? this.draft).trim();
-    if (!asked) return;
+    if (!this.promptForm.submit()) return;
+    const asked = this.draft.trim();
     // Kept, not cleared: a request that comes back with nothing useful is one the user wants to
     // rephrase rather than retype.
     void this.editor.promptAi(asked);
@@ -527,6 +533,7 @@ export class HeoAiMenu extends HeoElement {
         </div>
 
         <textarea
+          ${field(this.promptForm, 'ai-prompt', { required: true })}
           .value=${this.draft}
           placeholder="Describe a change in text or style"
           aria-label="Describe a change in text or style"
@@ -542,6 +549,7 @@ export class HeoAiMenu extends HeoElement {
         this.#send();
       }}
         ></textarea>
+        ${this.promptForm.error('ai-prompt')}
 
         ${missing
         ? html`<p class="note">
@@ -596,7 +604,8 @@ export class HeoAiMenu extends HeoElement {
         : html`<button
                 class="btn primary sm"
                 type="submit"
-                ?disabled=${!this.draft.trim() || missing}
+                ?disabled=${missing}
+                title=${missing ? 'This provider needs an API key first' : 'Send'}
               >
                 ${icon('sparkle', 11)} Send
               </button>`}

@@ -18,6 +18,7 @@ import { baseStyles } from '../theme.js';
 import { canOfferFolder, fileAccessStyles, renderFileAccess } from './file-access.js';
 import type { HeoCodeEditor } from '../controls/code-editor.js';
 import '../controls/code-editor.js';
+import { field, FormErrors } from '../form-errors.js';
 
 /**
  * The stylesheet editor.
@@ -204,6 +205,9 @@ export class HeoCssPanel extends HeoElement {
   @state() private draft = '';
   @state() private dirty = false;
   @state() private error = '';
+
+  /** The stylesheet's one problem, shown under the editor when Apply is pressed. */
+  protected form = new FormErrors(this, () => (this.error ? [{ field: 'code-css', message: this.error }] : []));
   /** Which source the buffer belongs to, so switching sheets reloads it. */
   #loadedId: string | null = null;
   /**
@@ -257,7 +261,7 @@ export class HeoCssPanel extends HeoElement {
         <button
           class="btn primary"
           type="button"
-          ?disabled=${!this.dirty || Boolean(current.readOnly) || Boolean(this.error)}
+          ?disabled=${!this.dirty || Boolean(current.readOnly)}
           @click=${() => this.#apply(current)}
         >
           ${icon('check', 12)} Apply
@@ -356,11 +360,13 @@ export class HeoCssPanel extends HeoElement {
         rows="16"
         heading=${`CSS · ${source.label}`}
         .value=${this.draft}
-        .error=${this.error}
+        ${field(this.form, 'code-css')}
+        .error=${this.form.message('code-css') ?? ''}
         @code-input=${(event: CustomEvent<{ value: string }>) => this.#onInput(event.detail.value)}
         @code-submit=${() => this.#apply(source)}
         @code-cancel=${() => this.#reset(source)}
       ></heo-code-editor>
+      ${this.form.error('code-css')}
     `;
   }
 
@@ -422,6 +428,7 @@ export class HeoCssPanel extends HeoElement {
     this.draft = readStyleSource(source);
     this.dirty = false;
     this.error = '';
+    this.form.reset();
 
     if (!source.href || source.readOnly) {
       source.pendingBefore = this.draft;
@@ -464,7 +471,7 @@ export class HeoCssPanel extends HeoElement {
   }
 
   #apply(source: StyleSource): void {
-    if (source.readOnly) return;
+    if (source.readOnly || !this.form.submit()) return;
     const command = writeStyleSource(source, this.draft);
     if (!command) {
       this.dirty = false;

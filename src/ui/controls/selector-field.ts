@@ -98,12 +98,6 @@ export class HeoSelectorField extends LitElement {
         height: 22px;
         border-radius: 5px;
       }
-      :host([data-invalid]) .wrap {
-        border-color: color-mix(in oklab, var(--heo-danger) 55%, transparent);
-      }
-      :host([data-invalid]) .wrap:focus-within {
-        box-shadow: 0 0 0 3px color-mix(in oklab, var(--heo-danger) 18%, transparent);
-      }
 
       .sigil {
         display: grid;
@@ -268,13 +262,6 @@ export class HeoSelectorField extends LitElement {
         text-transform: uppercase;
       }
 
-      .problem {
-        display: flex;
-        align-items: center;
-        gap: 5px;
-        color: color-mix(in oklab, var(--heo-danger) 80%, var(--heo-text));
-        font-size: 10.5px;
-      }
 
       /* ---- Popup ----
          Fixed and promoted to the top layer for the same reason the value field does
@@ -453,8 +440,6 @@ export class HeoSelectorField extends LitElement {
     // `:focus-within` is the question that can be answered from inside a shadow root;
     // `document.activeElement` reports the outermost host and is always this element.
     if (changed.has('value') && !this.matches(':focus-within')) this.draft = this.value;
-    const problem = selectorProblem(this.draft);
-    this.toggleAttribute('data-invalid', Boolean(problem));
   }
 
   override updated(): void {
@@ -491,7 +476,6 @@ export class HeoSelectorField extends LitElement {
     const problem = selectorProblem(this.draft);
     const trimmed = this.draft.trim();
     const matches = problem || !trimmed ? 0 : countMatches(trimmed, this.matchRoot ?? document);
-    const submittable = Boolean(trimmed) && !problem;
 
     return html`
       <div class="shell">
@@ -508,7 +492,6 @@ export class HeoSelectorField extends LitElement {
             aria-expanded=${this.open}
             aria-autocomplete="list"
             aria-label="CSS selector"
-            aria-invalid=${problem ? 'true' : 'false'}
             @input=${this.#onInput}
             @focus=${this.#onFocus}
             @blur=${this.#onBlur}
@@ -545,7 +528,6 @@ export class HeoSelectorField extends LitElement {
               type="button"
               title=${this.action}
               aria-label=${this.action}
-              ?disabled=${!submittable}
               @pointerdown=${(event: Event) => event.preventDefault()}
               @click=${this.#submit}
             >
@@ -555,9 +537,6 @@ export class HeoSelectorField extends LitElement {
         </div>
 
         ${this.#renderCombinators()}
-        ${problem
-        ? html`<p class="problem">${icon('alert', 11)} ${problem}</p>`
-        : nothing}
       </div>
       ${this.open ? this.#renderPopup() : nothing}
     `;
@@ -766,9 +745,14 @@ export class HeoSelectorField extends LitElement {
     this.input?.focus();
   }
 
+  /**
+   * Hand the selector to the host, whatever it is.
+   *
+   * The host's form decides whether it can be used and says why below this field (see
+   * `form-errors.ts`) — refusing here, silently, is what made the arrow look broken.
+   */
   #submit(): void {
-    const next = normalizeSelector(this.draft);
-    if (!next || selectorProblem(next)) return;
+    const next = normalizeSelector(this.draft) || this.draft.trim();
     this.#close();
     this.dispatchEvent(
       new CustomEvent('selector-submit', {

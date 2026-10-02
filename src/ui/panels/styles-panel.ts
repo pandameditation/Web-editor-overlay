@@ -55,6 +55,8 @@ import '../controls/search-field.js';
 import '../controls/box-editor.js';
 import '../controls/segmented.js';
 import '../controls/section.js';
+import { classNameIssues, forkNameIssues, type FieldIssue } from '../../core/validation.js';
+import { field, fieldLabel, FormErrors } from '../form-errors.js';
 
 interface SectionSpec {
   id: string;
@@ -695,6 +697,9 @@ export class HeoStylesPanel extends HeoElement {
     `,
   ];
 
+  /** Where the add-a-property fields say what is wrong with a name; checks run on commit. */
+  protected propertyForm = new FormErrors(this, () => []);
+
   protected state = new StoreController(
     this,
     this.editor.store,
@@ -727,6 +732,15 @@ export class HeoStylesPanel extends HeoElement {
    * separate entries on the undo stack.
    */
   @state() private draftRows: Array<{ property: string; value: string }> = [];
+
+  /* The panel's small forms, each with its own errors. See `form-errors.ts`. */
+  protected classForm = new FormErrors(this, () => classNameIssues('class-add', this.classDraft));
+  protected forkForm = new FormErrors(this, () => {
+    const name = this.detachOpen;
+    if (!name) return [];
+    return forkNameIssues('class-fork', this.forkDraft, name, (candidate) => Boolean(this.editor.classes.get(candidate)));
+  });
+  protected adderForm = new FormErrors(this, () => this.#adderIssues());
   /** The element whose size cap has already auto-opened the parent section. */
   #capsShownFor: HTMLElement | null = null;
   @state() private sectionsVersion = 0;
@@ -1118,6 +1132,7 @@ export class HeoStylesPanel extends HeoElement {
           {
             engine: this.editor,
             element: el,
+            form: this.propertyForm,
             newProperty: this.inlineProperty,
             onNewProperty: (value: string) => {
               this.inlineProperty = value;
@@ -1322,6 +1337,7 @@ export class HeoStylesPanel extends HeoElement {
     const host = {
       engine: this.editor,
       element: el,
+      form: this.propertyForm,
       newProperty: this.openRules.get(key) ?? '',
       onNewProperty: (value: string) => {
         this.openRules.set(key, value);
@@ -1469,6 +1485,7 @@ export class HeoStylesPanel extends HeoElement {
       ${filtering
         ? nothing
         : html`<heo-value-field
+              ${field(this.classForm, 'class-add')}
               leading-icon="search"
               clearable
               action="Add class"
@@ -1481,9 +1498,12 @@ export class HeoStylesPanel extends HeoElement {
               @value-change=${(event: CustomEvent<{ value: string }>) => {
             this.classDraft = event.detail.value;
           }}
-              @value-submit=${(event: CustomEvent<{ value: string }>) =>
-            this.#addClass(el, event.detail.value, event.target as HeoValueField)}
+              @value-submit=${(event: CustomEvent<{ value: string }>) => {
+            this.classDraft = event.detail.value;
+            if (this.classForm.submit()) this.#addClass(el, event.detail.value, event.target as HeoValueField);
+          }}
             ></heo-value-field>
+            ${this.classForm.error('class-add')}
             <p class="hint" style="margin:6px 0 0">
               Search the project's classes or type a new name, then press Enter or the add
               button.
@@ -1503,6 +1523,7 @@ export class HeoStylesPanel extends HeoElement {
     const host = {
       engine: this.editor,
       element: el,
+      form: this.propertyForm,
       newProperty: this.classProperty,
       onNewProperty: (value: string) => {
         this.classProperty = value;
@@ -1606,6 +1627,7 @@ export class HeoStylesPanel extends HeoElement {
         </p>
         <div class="row">
           <input
+            ${field(this.forkForm, 'class-fork')}
             class="input mono fork-input"
             type="text"
             .value=${this.forkDraft}
@@ -1626,6 +1648,7 @@ export class HeoStylesPanel extends HeoElement {
             ${icon('duplicate', 12)} Copy
           </button>
         </div>
+        ${this.forkForm.error('class-fork')}
       </div>
 
       <div class="choice">
@@ -1661,6 +1684,7 @@ export class HeoStylesPanel extends HeoElement {
 
   /** Fork the class, then follow it: the panel should be editing the copy. */
   #fork(name: string, el: HTMLElement): void {
+    if (!this.forkForm.submit()) return;
     const forked = this.editor.forkClass(name, el, this.forkDraft.trim() || undefined);
     if (!forked) return;
     this.forkDraft = '';
@@ -1675,20 +1699,19 @@ export class HeoStylesPanel extends HeoElement {
    * deliberately ignores external writes to `value`, otherwise every re-render of
    * this panel would overwrite what is being typed.
    */
-  #addClass(el: HTMLElement, raw: string, field?: HeoValueField): void {
+  #addClass(el: HTMLElement, raw: string, input?: HeoValueField): void {
+    // Checked by `classForm` before this is reached.
     const name = normalizeClassName(raw);
-    if (!name) {
-      if (raw.trim()) this.editor.notify(`"${raw}" is not a valid class name.`, 'error');
-      return;
-    }
+    if (!name) return;
     if (el.classList.contains(name)) {
       this.editor.notify(`${labelFor(el)} already has .${name}.`, 'info');
     } else {
       this.editor.toggleClass(name, el);
     }
     this.classDraft = '';
-    field?.reset('');
-    field?.focusInput();
+    this.classForm.reset();
+    input?.reset('');
+    input?.focusInput();
   }
 
   /**
@@ -2136,6 +2159,36 @@ export class HeoStylesPanel extends HeoElement {
   #closeAdder(): void {
     this.adderOpen = false;
     this.draftRows = [];
+    this.adderForm.reset();
+  }
+
+  /**
+   * What stops the rows being written: a property name that cannot be one, or one already set.
+   *
+   * A row with no property is left out rather than flagged — somebody who added a row and changed
+   * their mind — unless no row has one, which leaves nothing to add.
+   */
+  #adderIssues(): FieldIssue[] {
+    const el = this.editor.store.value.selected;
+    if (!el || !this.adderOpen) return [];
+    const inline = inlineDeclarations(el);
+    const claimed: Record<string, string> = {};
+    const issues: FieldIssue[] = [];
+    let any = false;
+    this.draftRows.forEach((row, index) => {
+      if (!row.property.trim()) return;
+      any = true;
+      const verdict = checkDeclaration({
+        property: row.property,
+        value: row.value,
+        existing: { ...inline, ...claimed },
+        label: labelFor(el),
+      });
+      if (verdict.refusal) issues.push({ field: `add-prop-${index}`, message: verdict.refusal });
+      else if (verdict.property) claimed[verdict.property] = row.value || 'initial';
+    });
+    if (!any) issues.unshift({ field: 'add-prop-0', message: 'Type the property to add.' });
+    return issues;
   }
 
   /**
@@ -2169,7 +2222,7 @@ export class HeoStylesPanel extends HeoElement {
    * the rows together means one undo entry for a change the user made as one decision.
    */
   #renderAddPopup(el: HTMLElement): TemplateResult {
-    const ready = this.draftRows.filter((row) => row.property.trim() && row.value.trim()).length;
+    const ready = this.draftRows.filter((row) => row.property.trim()).length;
 
     return html`<div
       class="addpop"
@@ -2198,6 +2251,9 @@ export class HeoStylesPanel extends HeoElement {
         </button>
       </div>
 
+      <div class="poplabels" aria-hidden="true">
+        ${fieldLabel('Property', { required: true })}${fieldLabel('Value')}
+      </div>
       <div class="poprows">
         ${this.draftRows.map((row, index) => this.#renderDraftRow(el, row, index))}
       </div>
@@ -2213,18 +2269,11 @@ export class HeoStylesPanel extends HeoElement {
         >
           ${icon('plus', 12)} Another
         </button>
-        <!-- A disabled button is a dead end unless it says what is missing. -->
-        ${ready === 0
-        ? html`<span class="why">${icon('alert', 11)} Needs a property and a value</span>`
-        : nothing}
         <span class="spacer"></span>
         <button
           class="btn sm primary"
           type="button"
-          ?disabled=${ready === 0}
-          title=${ready === 0
-        ? 'Fill in both a property and a value first'
-        : 'Write these declarations onto the element'}
+          title="Write these declarations onto the element"
           @click=${() => this.#commitRows(el)}
         >
           ${icon('check', 12)}
@@ -2249,16 +2298,21 @@ export class HeoStylesPanel extends HeoElement {
       );
     };
 
+    const name = `add-prop-${index}`;
     return html`<div class="poprow">
-      <heo-search-field
-        mode="suggest"
-        label="CSS property"
-        placeholder="property"
-        .value=${row.property}
-        .suggestions=${matches}
-        @search-input=${(event: CustomEvent<{ value: string }>) =>
+      <div class="cell">
+        <heo-search-field
+          ${field(this.adderForm, name, { required: true })}
+          mode="suggest"
+          label="CSS property"
+          placeholder="property"
+          .value=${row.property}
+          .suggestions=${matches}
+          @search-input=${(event: CustomEvent<{ value: string }>) =>
         update({ property: event.detail.value })}
-      ></heo-search-field>
+        ></heo-search-field>
+        ${this.adderForm.error(name)}
+      </div>
       <heo-value-field
         .value=${row.value}
         .kind=${row.property ? valueKindFor(row.property) : 'text'}
@@ -2293,6 +2347,7 @@ export class HeoStylesPanel extends HeoElement {
    * named individually so the message says which row to fix.
    */
   #commitRows(el: HTMLElement): void {
+    if (!this.adderForm.submit()) return;
     /*
      * Vetted through the shared check, so this agrees with a class and with a CSS rule.
      *
@@ -2315,11 +2370,8 @@ export class HeoStylesPanel extends HeoElement {
         existing: { ...inline, ...declarations },
         label: labelFor(el),
       });
-      if (verdict.refusal) {
-        this.editor.notify(verdict.refusal, 'error');
-        return;
-      }
-      if (!verdict.property) continue;
+      // Refusals were shown on their rows by `adderForm`; nothing refused reaches here.
+      if (verdict.refusal || !verdict.property) continue;
       // A value is no longer required: the popup seeds one, and a property with an empty value is
       // a row waiting to be filled rather than an error.
       const value = row.value.trim() || initialValueFor(verdict.property);

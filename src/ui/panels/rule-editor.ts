@@ -4,6 +4,9 @@ import type { DesignRule } from '../../core/types.js';
 import { icon } from '../icons.js';
 import { ClassEditor, type ClassEditorHost } from './class-editor.js';
 import '../controls/selector-field.js';
+import { safeSelector } from '../../core/selectors.js';
+import { selectorIssues } from '../../core/validation.js';
+import { field } from '../form-errors.js';
 
 /**
  * The CSS rule editor: one card per rule.
@@ -350,18 +353,32 @@ export const RuleEditor = {
 
   /** The selector field, shown while the user is retargeting the rule. */
   renderRetarget(entry: DesignRule, host: RuleEditorHost): TemplateResult {
+    const name = 'rule-retarget';
     return html`<div class="retarget">
       <heo-selector-field
+        ${field(host.form, name, { required: true })}
         .value=${entry.selector}
         action="Retarget this rule"
         @selector-submit=${(event: CustomEvent<{ value: string }>) => {
-        const next = host.engine.renameDesignRule(entry.selector, event.detail.value);
+        const raw = event.detail.value;
+        const wanted = safeSelector(raw);
+        const problem =
+          selectorIssues(name, raw)[0]?.message ??
+          (wanted && wanted !== entry.selector && host.engine.rules.has(wanted)
+            ? `${wanted} already has a rule. Choose another selector, or edit that rule.`
+            : null);
+        if (problem) {
+          host.form.fail(name, problem);
+          return;
+        }
+        const next = host.engine.renameDesignRule(entry.selector, raw);
         if (!next) return;
         host.onEditSelector(null);
         host.onRenamed?.(entry.selector, next);
       }}
         @selector-cancel=${() => host.onEditSelector(null)}
       ></heo-selector-field>
+      ${host.form.error(name)}
       <p class="hint" style="margin:0">
         The declarations stay where they are; only what they apply to changes.
       </p>

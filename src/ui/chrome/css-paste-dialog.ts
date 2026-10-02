@@ -13,6 +13,7 @@ import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
 import { classSuggestions } from '../suggestions.js';
+import { field, FormErrors, type FieldIssue } from '../form-errors.js';
 import { baseStyles, surfaceStyles } from '../theme.js';
 import '../controls/code-editor.js';
 import '../controls/segmented.js';
@@ -303,23 +304,6 @@ export class HeoCssPasteDialog extends HeoElement {
     const parsed = parsePastedCSS(open.draft);
     const block = open.context === 'block';
     const count = pastedDeclarationCount(parsed);
-    const hasMultipleRules = parsed.mode === 'rules' && parsed.rules.length > 1;
-    const blockRoot = block ? this.#blockMatchRoot() : null;
-    const blockSelector = block ? this.#blockSelector(open, parsed) : '';
-    const blockMatches = blockRoot ? countMatches(blockSelector, blockRoot) : 0;
-    const blockTargetReady = Boolean(
-      count && safeSelector(blockSelector) && blockMatches,
-    );
-    const blockRuleNeedsTarget = parsed.rules.length === 0 || open.selectorExplicit;
-    const ready = block
-      ? open.destination === 'block-inline'
-        ? parsed.rules.length > 1
-          ? parsed.rules.length > 0 && count > 0
-          : blockTargetReady
-        : open.destination === 'block-class'
-          ? count > 0 && (!open.applyClass || blockTargetReady)
-          : count > 0 && (!blockRuleNeedsTarget || blockTargetReady)
-      : count > 0 && !hasMultipleRules;
 
     return html`<div
       class="backdrop"
@@ -353,26 +337,29 @@ export class HeoCssPasteDialog extends HeoElement {
       </header>
 
       <div class="content">
+        <span class="label">CSS to paste <span class="required">(required)</span></span>
         <heo-code-editor
+          ${field(this.form, 'css-draft', { required: true })}
           fill
           language="css"
           rows="10"
           heading="CSS to paste"
           placeholder=${'.card {\n  padding: 1rem;\n  border-radius: 12px;\n}'}
           .value=${open.draft}
-          .error=${open.error}
+          .error=${this.form.message('css-draft') ?? ''}
           @code-input=${(event: CustomEvent<{ value: string }>) =>
         this.editor.updateCssPaste({ draft: event.detail.value, error: '' })}
           @code-cancel=${() => this.editor.cancelCssPaste()}
           @code-submit=${() => this.#apply(open)}
         ></heo-code-editor>
+        ${this.form.error('css-draft')}
 
         ${this.#renderRecognition(parsed, open)}
         ${block ? this.#renderBlockDestination(open, parsed) : this.#renderDestination(open)}
       </div>
 
       <footer>
-        <span class=${`fine${open.error ? ' err' : ''}`}>
+        <span class=${`fine${open.error ? ' err' : ''}`} role=${open.error ? 'alert' : nothing}>
           ${open.error || this.#footerSummary(open, count, parsed)}
         </span>
         <div class="actions">
@@ -382,7 +369,6 @@ export class HeoCssPasteDialog extends HeoElement {
           <button
             class="btn primary"
             type="button"
-            ?disabled=${!ready}
             @click=${() => this.#apply(open)}
           >
             ${icon('check', 12)} ${block ? 'Use this CSS' : 'Apply CSS'}
@@ -501,8 +487,9 @@ export class HeoCssPasteDialog extends HeoElement {
       ${destination === 'class'
         ? html`<div class="fields">
               <div class="field full">
-                <label>Class name</label>
+                <label>Class name <span class="required">(required)</span></label>
                 <heo-value-field
+                  ${field(this.form, 'css-class', { required: true })}
                   .value=${open.className}
                   .suggestions=${classSuggestions(this.editor, open.className)}
                   placeholder="find or create a class"
@@ -511,6 +498,7 @@ export class HeoCssPasteDialog extends HeoElement {
                   @value-change=${(event: CustomEvent<{ value: string }>) =>
             this.editor.updateCssPaste({ className: event.detail.value })}
                 ></heo-value-field>
+                ${this.form.error('css-class')}
               </div>
               <div class="target field full">
                 ${icon('blocks', 12)}
@@ -536,8 +524,9 @@ export class HeoCssPasteDialog extends HeoElement {
       ${destination === 'rule'
         ? html`<div class="fields">
               <div class="field full">
-                <label>Selector</label>
+                <label>Selector <span class="required">(required)</span></label>
                 <heo-selector-field
+                  ${field(this.form, 'css-selector', { required: true })}
                   .value=${open.selector}
                   placeholder="choose or create a selector"
                   .declaredCountFor=${(selector: string) =>
@@ -548,6 +537,7 @@ export class HeoCssPasteDialog extends HeoElement {
                   @selector-submit=${(event: CustomEvent<{ value: string }>) =>
             this.editor.updateCssPaste({ selector: event.detail.value })}
                 ></heo-selector-field>
+                ${this.form.error('css-selector')}
               </div>
               <div class="target field full">
                 ${icon('code', 12)}
@@ -613,8 +603,9 @@ export class HeoCssPasteDialog extends HeoElement {
             </div>`
           : html`<div class="fields">
               <div class="field full">
-                <label>Element selector</label>
+                <label>Element selector <span class="required">(required)</span></label>
                 <heo-selector-field
+                  ${field(this.form, 'css-selector', { required: true })}
                   .value=${blockSelector}
                   .matchRoot=${matchRoot}
                   .peek=${false}
@@ -625,6 +616,7 @@ export class HeoCssPasteDialog extends HeoElement {
                   @selector-submit=${(event: CustomEvent<{ value: string }>) =>
               this.editor.updateCssPaste({ selector: event.detail.value, selectorExplicit: true })}
                 ></heo-selector-field>
+                ${this.form.error('css-selector')}
               </div>
               <div class="target field full">
                 ${icon('cursor', 12)}
@@ -639,8 +631,9 @@ export class HeoCssPasteDialog extends HeoElement {
       ${open.destination === 'block-class'
         ? html`<div class="fields">
               <div class="field full">
-                <label>Class name</label>
+                <label>Class name <span class="required">(required)</span></label>
                 <heo-value-field
+                  ${field(this.form, 'css-class', { required: true })}
                   .value=${open.className}
                   .suggestions=${classSuggestions(this.editor, open.className)}
                   placeholder="find or create a global class"
@@ -649,6 +642,7 @@ export class HeoCssPasteDialog extends HeoElement {
                   @value-change=${(event: CustomEvent<{ value: string }>) =>
             this.editor.updateCssPaste({ className: event.detail.value })}
                 ></heo-value-field>
+                ${this.form.error('css-class')}
               </div>
               <div class="target field full">
                 ${icon('blocks', 12)}
@@ -669,8 +663,9 @@ export class HeoCssPasteDialog extends HeoElement {
                 </span>
               </label>
               <div class="field full">
-                <label>Element selector</label>
+                <label>Element selector <span class="required">(required)</span></label>
                 <heo-selector-field
+                  ${field(this.form, 'css-selector', { required: true })}
                   .value=${open.selector}
                   .matchRoot=${matchRoot}
                   .peek=${false}
@@ -681,6 +676,7 @@ export class HeoCssPasteDialog extends HeoElement {
                   @selector-submit=${(event: CustomEvent<{ value: string }>) =>
             this.editor.updateCssPaste({ selector: event.detail.value, selectorExplicit: true })}
                 ></heo-selector-field>
+                ${this.form.error('css-selector')}
               </div>
               <div class="target field full">
                 ${icon('cursor', 12)}
@@ -702,8 +698,9 @@ export class HeoCssPasteDialog extends HeoElement {
             </div>`
           : html`<div class="fields">
               <div class="field full">
-                <label>Element selector</label>
+                <label>Element selector <span class="required">(required)</span></label>
                 <heo-selector-field
+                  ${field(this.form, 'css-selector', { required: true })}
                   .value=${blockSelector}
                   .matchRoot=${matchRoot}
                   .peek=${false}
@@ -714,6 +711,7 @@ export class HeoCssPasteDialog extends HeoElement {
                   @selector-submit=${(event: CustomEvent<{ value: string }>) =>
               this.editor.updateCssPaste({ selector: event.detail.value, selectorExplicit: true })}
                 ></heo-selector-field>
+                ${this.form.error('css-selector')}
               </div>
               <div class="target field full">
                 ${icon('code', 12)}
@@ -821,85 +819,115 @@ export class HeoCssPasteDialog extends HeoElement {
     event.stopPropagation();
   }
 
+  /** What is wrong with the paste, field by field: the CSS, the class name, the selector. */
+  protected form = new FormErrors(this, () => this.#issues());
+
+  #issues(): FieldIssue[] {
+    const open = this.state.value.cssPaste;
+    if (!open) return [];
+    const parsed = parsePastedCSS(open.draft);
+    const count = pastedDeclarationCount(parsed);
+    const issues: FieldIssue[] = [];
+    const block = open.context === 'block';
+
+    if (!open.draft.trim()) {
+      issues.push({ field: 'css-draft', message: 'Paste the CSS to add.' });
+    } else if (!block && parsed.mode === 'rules' && parsed.rules.length > 1) {
+      issues.push({
+        field: 'css-draft',
+        message: 'This paste holds several CSS rules, and one destination can take only one. Paste a single rule.',
+      });
+    } else if (!count) {
+      issues.push({
+        field: 'css-draft',
+        message: 'No usable CSS declaration in this paste. Paste a declaration list or a complete rule.',
+      });
+    }
+
+    const classIssue = (): void => {
+      if (!open.className.trim()) issues.push({ field: 'css-class', message: 'Type a class name.' });
+      else if (!normalizeClassName(open.className)) {
+        issues.push({
+          field: 'css-class',
+          message: 'A class name starts with a letter and uses only letters, numbers, - or _.',
+        });
+      }
+    };
+    const blockSelectorIssue = (): void => {
+      const selector = this.#blockSelector(open, parsed);
+      const root = this.#blockMatchRoot();
+      if (!safeSelector(selector)) {
+        issues.push({ field: 'css-selector', message: 'Choose an element of the block from the list.' });
+      } else if (!root || !countMatches(selector, root)) {
+        issues.push({
+          field: 'css-selector',
+          message: 'That selector matches nothing in the block markup. Choose an element from the list.',
+        });
+      }
+    };
+
+    if (block) {
+      if (open.destination === 'block-inline' && parsed.rules.length <= 1) blockSelectorIssue();
+      if (open.destination === 'block-class') {
+        classIssue();
+        if (open.applyClass) blockSelectorIssue();
+      }
+      if (open.destination === 'block-rule' && (!parsed.rules.length || open.selectorExplicit)) {
+        blockSelectorIssue();
+      }
+    } else {
+      const destination = open.destination === 'inline' && !open.element?.isConnected ? 'class' : open.destination;
+      if (destination === 'class') classIssue();
+      if (destination === 'rule') {
+        if (!open.selector.trim()) issues.push({ field: 'css-selector', message: 'Type or choose a selector.' });
+        else if (!safeSelector(open.selector)) {
+          issues.push({ field: 'css-selector', message: 'The browser does not accept that selector.' });
+        }
+      }
+    }
+    return issues;
+  }
+
+  /**
+   * Apply the paste once the form has nothing to point at.
+   *
+   * Every check lives in `#issues`, so what remains here is the work. The one failure only the
+   * engine can see — a selector that matched when checked and not when written — goes back to the
+   * selector field like any other.
+   */
   #apply(open: NonNullable<typeof this.state.value.cssPaste>): void {
     const current = this.editor.store.value.cssPaste;
     if (!current || current !== open) return;
+    if (!this.form.submit()) return;
     const parsed = parsePastedCSS(open.draft);
+    const count = pastedDeclarationCount(parsed);
+    const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`;
 
     if (open.context === 'block') {
+      const selector = this.#blockSelector(open, parsed);
       if (open.destination === 'block-inline') {
-        if (!pastedDeclarationCount(parsed)) {
-          this.editor.updateCssPaste({ error: 'Paste at least one usable CSS declaration.' });
-          return;
-        }
-        const selector = this.#blockSelector(open, parsed);
-        if (parsed.rules.length <= 1) {
-          const matchRoot = this.#blockMatchRoot();
-          if (!safeSelector(selector)) {
-            this.editor.updateCssPaste({ error: 'Choose a valid selector from the block markup.' });
-            return;
-          }
-          if (!matchRoot || !countMatches(selector, matchRoot)) {
-            this.editor.updateCssPaste({
-              error: 'That selector does not match the block markup. Choose an element from the selector list.',
-            });
-            return;
-          }
-        }
         const matched = this.editor.applyBlockInlineCssPaste(parsed, selector);
         if (!matched) {
-          this.editor.updateCssPaste({
-            error: 'That selector does not match the block markup. Choose an element from the selector list.',
-          });
+          this.form.fail('css-selector', 'That selector matches nothing in the block markup. Choose an element from the list.');
           return;
         }
         this.editor.cancelCssPaste();
-        this.editor.notify(`Applied CSS inline to ${matched} block element${matched === 1 ? '' : 's'}.`, 'success');
+        this.editor.notify(`Applied CSS inline to ${plural(matched, 'block element')}.`, 'success');
         return;
       }
       if (open.destination === 'block-class') {
         const name = normalizeClassName(open.className);
-        if (!name) {
-          this.editor.updateCssPaste({
-            error: 'Use a class name beginning with a letter and containing only letters, numbers, hyphens, or underscores.',
-          });
-          return;
-        }
-        if (!pastedDeclarationCount(parsed)) {
-          this.editor.updateCssPaste({ error: 'Paste at least one usable CSS declaration for the class.' });
-          return;
-        }
-        const selector = this.#blockSelector(open, parsed);
-        if (open.applyClass) {
-          const matchRoot = this.#blockMatchRoot();
-          if (!safeSelector(selector) || !matchRoot || !countMatches(selector, matchRoot)) {
-            this.editor.updateCssPaste({
-              error: 'That selector does not match the block markup. Choose an element from the selector list.',
-            });
-            return;
-          }
-        }
         if (this.editor.applyBlockClassCssPaste(parsed, name, open.applyClass, selector)) {
           this.editor.cancelCssPaste();
           this.editor.notify(`Upserted CSS into global .${name}.`, 'success');
         }
         return;
       }
-      const selector = this.#blockSelector(open, parsed);
-      if (!parsed.rules.length || open.selectorExplicit) {
-        const matchRoot = this.#blockMatchRoot();
-        if (!safeSelector(selector) || !matchRoot || !countMatches(selector, matchRoot)) {
-          this.editor.updateCssPaste({
-            error: 'Choose a valid selector from the block markup to create the scoped rule.',
-          });
-          return;
-        }
-      }
       if (this.editor.applyBlockScopedCssPaste(open.draft, parsed, selector)) {
         this.editor.cancelCssPaste();
         this.editor.notify(
           parsed.rules.length
-            ? `Added ${parsed.rules.length} scoped CSS rule${parsed.rules.length === 1 ? '' : 's'} to the block.`
+            ? `Added ${plural(parsed.rules.length, 'scoped CSS rule')} to the block.`
             : `Added a scoped CSS rule for ${selector === ':scope' ? 'the block root' : selector} to the block.`,
           'success',
         );
@@ -907,33 +935,15 @@ export class HeoCssPasteDialog extends HeoElement {
       return;
     }
 
-    if (parsed.mode === 'rules' && parsed.rules.length > 1) {
-      this.editor.updateCssPaste({
-        error: 'This paste contains multiple CSS rules. Choose Block CSS to keep every selector.',
-      });
-      return;
-    }
-    if (!parsed.declarations || !pastedDeclarationCount(parsed)) {
-      this.editor.updateCssPaste({ error: 'Paste a declaration list or a CSS rule with at least one usable declaration.' });
-      return;
-    }
-    if (open.destination === 'inline') {
-      if (!open.element?.isConnected) {
-        this.editor.updateCssPaste({ error: 'The selected element is no longer in the page.' });
-        return;
-      }
+    if (open.destination === 'inline' && open.element?.isConnected) {
       if (this.editor.applyCssPaste(parsed, { kind: 'inline', element: open.element })) {
         this.editor.cancelCssPaste();
-        this.editor.notify(`Applied ${pastedDeclarationCount(parsed)} CSS ${pastedDeclarationCount(parsed) === 1 ? 'declaration' : 'declarations'} inline.`, 'success');
+        this.editor.notify(`Applied ${plural(count, 'CSS declaration')} inline.`, 'success');
       }
       return;
     }
-    if (open.destination === 'class') {
+    if (open.destination === 'inline' || open.destination === 'class') {
       const name = normalizeClassName(open.className);
-      if (!name) {
-        this.editor.updateCssPaste({ error: 'Use a class name beginning with a letter and containing only letters, numbers, hyphens, or underscores.' });
-        return;
-      }
       if (this.editor.applyCssPaste(parsed, {
         kind: 'class',
         name,
@@ -946,11 +956,7 @@ export class HeoCssPasteDialog extends HeoElement {
       return;
     }
 
-    const selector = safeSelector(open.selector);
-    if (!selector) {
-      this.editor.updateCssPaste({ error: 'Use a CSS selector the browser accepts.' });
-      return;
-    }
+    const selector = safeSelector(open.selector)!;
     if (this.editor.applyCssPaste(parsed, {
       kind: 'rule',
       selector,

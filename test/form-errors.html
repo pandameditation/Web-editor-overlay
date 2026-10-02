@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>One way to say what is wrong with a form, everywhere</title>
+  <style>body { margin: 0; padding: 24px; font: 16px/1.5 system-ui, sans-serif; } pre { margin-top: 16px; }</style>
+</head>
+<body>
+  <main id="page">
+    <section id="box"><p id="para">A paragraph.</p></section>
+  </main>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const errors = [];
+      window.addEventListener('error', (e) => errors.push('error: ' + e.message));
+      window.addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+      const results = {};
+      const check = async (name, fn) => {
+        document.getElementById('progress').textContent = name;
+        try { results[name] = await fn(); }
+        catch (err) { results[name] = 'THREW: ' + String(err && err.stack); }
+      };
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const flat = (node) => (node?.textContent ?? '').replace(/\s+/g, ' ').trim();
+      const byId = (id) => document.getElementById(id);
+      const deep = (root, selector) => {
+        const found = root.querySelector(selector);
+        if (found) return found;
+        for (const el of root.querySelectorAll('*')) {
+          if (!el.shadowRoot) continue;
+          const inner = deep(el.shadowRoot, selector);
+          if (inner) return inner;
+        }
+        return null;
+      };
+      /** The field's error bubble, found the way a screen reader would: through aria-errormessage. */
+      const errorOf = (fieldEl) => {
+        const id = fieldEl?.getAttribute('aria-errormessage');
+        return id ? flat(fieldEl.getRootNode().getElementById(id)) : '';
+      };
+      /** Which field has focus inside a shadow root, by the name the form gave it. */
+      const focusedField = (root) => {
+        let el = root.activeElement;
+        while (el && !el.hasAttribute?.('data-field')) el = el.parentElement ?? el.getRootNode().host;
+        return el?.getAttribute('data-field') ?? root.activeElement?.tagName ?? null;
+      };
+      const type = async (input, value) => {
+        input.value = value;
+        input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        await frames();
+      };
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark' });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+
+      /* ---- A panel form: the New token form in Tokens. ---- */
+      await check('aPanelFormRevealsOneProblemAtATime', async () => {
+        engine.setDockTab('tokens');
+        await frames();
+        const panel = deep(document, 'heo-tokens-panel');
+        const root = panel.shadowRoot;
+        const section = Array.from(root.querySelectorAll('heo-section')).find((s) => s.getAttribute('heading') === 'New token');
+        section?.setAttribute('open', '');
+        section && (section.open = true);
+        await frames();
+        const name = root.querySelector('[data-field="token-name"]');
+        const value = root.querySelector('[data-field="token-value"]');
+        const add = Array.from(root.querySelectorAll('.create button.btn')).find((b) => /Add/.test(flat(b)));
+        const labels = Array.from(root.querySelectorAll('.create .label')).map(flat);
+
+        add.focus();
+        add.click();
+        await frames();
+        const first = { name: errorOf(name), value: errorOf(value), focus: focusedField(root) };
+
+        // Leaving the name field brings up the value's problem too.
+        add.focus();
+        await frames();
+        const afterLeaving = { name: errorOf(name), value: errorOf(value) };
+
+        add.click();
+        await frames();
+        const second = { focus: focusedField(root) };
+
+        await type(name, 'brand-ink');
+        const valueInput = value.shadowRoot.querySelector('input');
+        await type(valueInput, '#123456');
+        valueInput.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+        await frames();
+        add.click();
+        await frames();
+        return {
+          labels,
+          disabled: add.disabled,
+          first,
+          afterLeaving,
+          second,
+          added: Boolean(engine.tokens.get('brand-ink')),
+          cleared: !root.querySelector('.create .field-error'),
+        };
+      });
+
+      /* ---- A composer: a rule selector the browser will not take. ---- */
+      await check('aComposerSaysWhyBelowItself', async () => {
+        const root = deep(document, 'heo-tokens-panel').shadowRoot;
+        const section = Array.from(root.querySelectorAll('heo-section')).find((s) => s.getAttribute('heading') === 'CSS rules');
+        if (section) section.open = true;
+        await frames();
+        const composer = root.querySelector('[data-field="rule-create"]');
+        const input = composer.shadowRoot.querySelector('input');
+        await type(input, 'h2 >');
+        const before = engine.rules.size;
+        composer.shadowRoot.querySelector('.go').click();
+        await frames();
+        return {
+          error: errorOf(composer),
+          invalid: composer.getAttribute('aria-invalid'),
+          noRuleMade: engine.rules.size === before,
+          noToast: !engine.store.value.toast || engine.store.value.toast.tone !== 'error',
+        };
+      });
+
+      /* ---- A dialog with a code editor: Insert HTML with nothing in it. ---- */
+      await check('aDialogFlagsItsCodeEditor', async () => {
+        api.select(byId('para'));
+        engine.beginHtmlPaste({ reference: byId('para'), position: 'after' });
+        await frames();
+        const root = deep(document, 'heo-paste-dialog').shadowRoot;
+        const editor = root.querySelector('heo-code-editor');
+        const insert = Array.from(root.querySelectorAll('footer button')).find((b) => /Insert/.test(flat(b)));
+        insert.click();
+        await frames();
+        const result = {
+          label: flat(root.querySelector('.label')),
+          disabled: insert.disabled,
+          error: errorOf(editor),
+          invalid: editor.getAttribute('aria-invalid'),
+          focusIsInTheEditor: editor.shadowRoot.activeElement?.tagName === 'TEXTAREA',
+          stillOpen: Boolean(engine.store.value.htmlPaste),
+        };
+        engine.cancelHtmlPaste();
+        await frames();
+        return result;
+      });
+
+      /* ---- A panel with a check only the editor can make: changing a tag to itself. ---- */
+      await check('aTagChangeExplainsItself', async () => {
+        api.select(byId('para'));
+        engine.setDockTab('props');
+        await frames();
+        const root = deep(document, 'heo-props-panel').shadowRoot;
+        const input = root.querySelector('[data-field="tag-name"]');
+        const change = Array.from(root.querySelectorAll('button')).find((b) => /Change tag/.test(flat(b)));
+        change.click();
+        await frames();
+        const empty = errorOf(input);
+        await type(input, 'p');
+        change.click();
+        await frames();
+        return { disabled: change.disabled, empty, same: errorOf(input), focused: root.activeElement === input };
+      });
+
+      /* ---- The AI request box. ---- */
+      await check('anEmptyRequestIsFlagged', async () => {
+        // A local model, so the menu offers the request box rather than "set up a model".
+        engine.ai.upsert({
+          id: 'form-errors-local',
+          label: 'Local',
+          transport: 'local',
+          provider: 'openai-compatible',
+          baseURL: 'http://127.0.0.1:9/v1',
+          model: 'test',
+        });
+        api.select(byId('para'));
+        engine.setAiMenu(true);
+        await frames();
+        const root = deep(document, 'heo-ai-menu')?.shadowRoot;
+        const prompt = root?.querySelector('[data-field="ai-prompt"]');
+        if (!prompt) return { error: 'no request box rendered' };
+        root?.querySelector('form')?.dispatchEvent(new Event('submit', { cancelable: true }));
+        await frames();
+        const result = {
+          error: errorOf(prompt),
+          focused: root.activeElement === prompt,
+          sendEnabled: !root.querySelector('button[type="submit"]')?.disabled,
+        };
+        engine.setAiMenu(false);
+        await frames();
+        return result;
+      });
+
+      /* ---- A code panel: two roots where the whole-element view needs one. ---- */
+      await check('aCodePanelFlagsWhatApplyCannotTake', async () => {
+        api.select(byId('box'));
+        engine.setDockTab('code');
+        await frames();
+        await frames();
+        const root = deep(document, 'heo-code-panel').shadowRoot;
+        const editor = root.querySelector('[data-field="code-html"]');
+        editor.dispatchEvent(new CustomEvent('code-input', { detail: { value: '<p>one</p><p>two</p>' }, bubbles: true, composed: true }));
+        await frames();
+        const apply = Array.from(root.querySelectorAll('button')).find((b) => /Apply/.test(flat(b)));
+        apply.click();
+        await frames();
+        return {
+          applyEnabled: !apply.disabled,
+          error: errorOf(editor),
+          nothingInlineInTheEditor: !/root elements/.test(flat(editor.shadowRoot.querySelector('.status'))),
+          boxUntouched: byId('box').children.length === 1,
+        };
+      });
+
+      results.__errors = errors;
+      document.getElementById('out').textContent = 'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent = 'RESULTS:{"__errors":["' + String(e && e.message) + '"]}:END';
+    });
+  </script>
+</body>
+</html>

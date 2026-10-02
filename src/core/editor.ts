@@ -78,6 +78,13 @@ import { History, nextChangeId, type Command } from './history.js';
 import { handleKeyDown, handleKeyUp, matchesShortcut } from './keymap.js';
 import { findBreakRuns, type BreakRun } from './line-breaks.js';
 import { applyTurnInto, finishTurnInto, planTurnInto } from './turn-into.js';
+import {
+  blockPropIssues,
+  blockSourceIssues,
+  classExtractionIssues,
+  htmlPasteIssues,
+  sourceEditIssues,
+} from './validation.js';
 import { SettingsRegistry } from './settings.js';
 import {
   applyBlockProps,
@@ -440,11 +447,6 @@ export interface BlockExtraction {
    */
   applyToInstances: boolean;
   error: string;
-  /**
-   * The field `error` is about, when it is about one. The dialog then shows the message beside
-   * that field and moves focus into it, instead of in the footer.
-   */
-  errorField?: 'name';
 }
 
 export type Extraction = ClassExtraction | BlockExtraction;
@@ -2720,15 +2722,7 @@ export class EditorEngine {
   updateExtraction(patch: Partial<ClassExtraction> & Partial<BlockExtraction>): void {
     const current = this.store.value.extraction;
     if (!current) return;
-    this.store.patch({
-      extraction: {
-        ...current,
-        ...patch,
-        error: patch.error ?? '',
-        // Belongs to the error it came with, so any other edit clears both.
-        errorField: patch.error ? patch.errorField : undefined,
-      } as Extraction,
-    });
+    this.store.patch({ extraction: { ...current, ...patch, error: patch.error ?? '' } as Extraction });
   }
 
   cancelExtraction(): void {
@@ -3046,26 +3040,28 @@ export class EditorEngine {
     return outcome;
   }
 
-  /** Apply the pending extraction. Returns false and sets an error if invalid. */
+  /**
+   * Apply the pending extraction. Returns false, and sets an error, if it cannot be applied.
+   *
+   * The checks are the ones in `validation.ts`, which the dialog runs first and shows field by
+   * field; here they only stop a caller of the public API that skipped the dialog.
+   */
   commitExtraction(): boolean {
     const pending = this.store.value.extraction;
     if (!pending) return false;
 
     if (pending.mode === 'class') {
-      const name = normalizeClassName(pending.name);
-      if (!name) {
-        this.updateExtraction({ error: 'A class name must start with a letter and contain only letters, numbers, hyphens or underscores.' });
+      const refused = classExtractionIssues(pending)[0];
+      if (refused) {
+        this.updateExtraction({ error: refused.message });
         return false;
       }
+      const name = normalizeClassName(pending.name);
       const declarations = Object.fromEntries(
         Object.entries(pending.declarations).filter(
           ([property, value]) => pending.include[property] !== false && value.trim() !== '',
         ),
       );
-      if (!Object.keys(declarations).length) {
-        this.updateExtraction({ error: 'Keep at least one declaration.' });
-        return false;
-      }
       this.#commitClass(
         pending.element,
         name,
@@ -3079,36 +3075,9 @@ export class EditorEngine {
 
     const name = pending.name.trim();
     const tag = normalizeCustomElementTag(pending.tag);
-    const hasScript = Boolean(pending.script.trim());
-
-    if (!name) {
-      this.updateExtraction({
-        error: 'Type a name for this block. It is how you will find it in the Library.',
-        errorField: 'name',
-      });
-      return false;
-    }
-    if (hasScript && !tag) {
-      this.updateExtraction({
-        error:
-          'A component with a module needs a custom element tag: lowercase letters, numbers and at least one hyphen.',
-      });
-      return false;
-    }
-    if (tag && !hasScript) {
-      this.updateExtraction({
-        error: `Add the module that defines <${tag}>, or clear the tag to save plain markup.`,
-      });
-      return false;
-    }
-    if (hasScript && !pending.script.includes('customElements.define')) {
-      this.updateExtraction({
-        error: `The module must call customElements.define('${tag}', …) for the tag to exist.`,
-      });
-      return false;
-    }
-    if (!hasScript && !pending.html.trim()) {
-      this.updateExtraction({ error: 'The block has no markup.' });
+    const sourceRefused = blockSourceIssues(pending)[0];
+    if (sourceRefused) {
+      this.updateExtraction({ error: sourceRefused.message });
       return false;
     }
 
@@ -3126,6 +3095,11 @@ export class EditorEngine {
       }
     }
 
+    const propRefused = pending.step === 'props' ? blockPropIssues(pending.props)[0] : undefined;
+    if (propRefused) {
+      this.updateExtraction({ error: propRefused.message });
+      return false;
+    }
     const applied = applyBlockProps(pending.html, pending.props);
     if (applied.error) {
       this.updateExtraction({ error: applied.error });
@@ -5302,27 +5276,14 @@ export class EditorEngine {
     const open = this.store.value.htmlPaste;
     if (!open) return null;
 
+    // The dialog shows these on their fields first; this only stops an API caller.
+    const refused = htmlPasteIssues(open)[0];
+    if (refused) {
+      this.updateHtmlPaste({ error: refused.message });
+      return null;
+    }
     const draft = open.draft.trim();
-    if (!draft) {
-      this.updateHtmlPaste({ error: 'Nothing to insert yet.' });
-      return null;
-    }
-
     const preview = previewMarkup(draft);
-    if (!preview.elements) {
-      this.updateHtmlPaste({
-        error: preview.looseText
-          ? 'That is text with no element around it. Wrap it in a tag — a <p>, say — and it can be placed.'
-          : 'No element in that markup. A paste has to start with a tag.',
-      });
-      return null;
-    }
-    if (open.anchor.position === 'replace' && !isMutable(open.anchor.reference)) {
-      this.updateHtmlPaste({
-        error: `${labelFor(open.anchor.reference)} cannot be replaced.`,
-      });
-      return null;
-    }
     if (!open.anchor.reference.isConnected) {
       this.updateHtmlPaste({
         error: 'The element this was going next to is no longer in the page.',
@@ -6014,9 +5975,10 @@ export class EditorEngine {
   commitSourceEdit(): boolean {
     const pending = this.store.value.sourceEdit;
     if (!pending || !pending.file || !pending.window) return false;
-    const command = writeSourceEdit(pending.target, pending.file, pending.window, pending.draft);
+    const refused = sourceEditIssues(pending)[0];
+    const command = refused ? null : writeSourceEdit(pending.target, pending.file, pending.window, pending.draft);
     if (!command) {
-      this.updateSourceEdit({ error: 'Nothing has changed in this window yet.' });
+      this.updateSourceEdit({ error: refused?.message ?? 'Nothing has changed in this window yet.' });
       return false;
     }
     this.history.commit(command, { alreadyApplied: true, journal: [] });

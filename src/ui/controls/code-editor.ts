@@ -80,8 +80,9 @@ export class HeoCodeEditor extends LitElement {
       .shell:focus-within {
         border-color: var(--heo-accent-line);
       }
-      :host([data-invalid]) .shell {
-        border-color: color-mix(in oklab, var(--heo-danger) 60%, transparent);
+      :host([aria-invalid='true']) .shell {
+        border-color: var(--heo-danger);
+        box-shadow: 0 0 0 3px color-mix(in oklab, var(--heo-danger) 22%, transparent);
       }
 
       .gutter {
@@ -326,9 +327,6 @@ export class HeoCodeEditor extends LitElement {
         color: var(--heo-text-faint);
         font-size: 10.5px;
       }
-      .status .error {
-        color: var(--heo-danger);
-      }
       /* Filling means the buffer is the point, so the status line gives back the space
          it does not need. It stays — a line count and the submit hint are worth a row —
          but it stops costing three. */
@@ -509,6 +507,12 @@ export class HeoCodeEditor extends LitElement {
   @property({ type: String }) value = '';
   @property({ type: String }) language: CodeLanguage = 'html';
   @property({ type: Number }) rows = 12;
+  /**
+   * The form's error for this field, shown in the expanded view's footer only.
+   *
+   * Inline, the form draws it below the editor like any other field's (see `form-errors.ts`).
+   * Expanded, the editor covers the form, so this is the one place the message can still be seen.
+   */
   @property({ type: String }) error = '';
   @property({ type: String }) placeholder = '';
   @property({ type: Boolean }) showStatus = true;
@@ -609,7 +613,6 @@ export class HeoCodeEditor extends LitElement {
       this.#loadBuffer(this.value);
       this.#lastEmitted = this.value;
     }
-    if (changed.has('error')) this.toggleAttribute('data-invalid', Boolean(this.error));
   }
 
   override connectedCallback(): void {
@@ -1073,9 +1076,7 @@ export class HeoCodeEditor extends LitElement {
   #renderStatus(): TemplateResult {
     const lines = this.#lineCount();
     return html`<div class="status">
-      <span class=${this.error ? 'error' : ''}
-        >${this.error || `${lines} line${lines === 1 ? '' : 's'}`}</span
-      >
+      <span>${lines} line${lines === 1 ? '' : 's'}</span>
       <span>Tab indents · ${modKey()}+Enter applies</span>
     </div>`;
   }

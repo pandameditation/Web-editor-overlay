@@ -8,6 +8,8 @@ import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
 import { baseStyles, surfaceStyles } from '../theme.js';
 import '../controls/code-editor.js';
+import { sourceEditIssues } from '../../core/validation.js';
+import { field, fieldLabel, FormErrors } from '../form-errors.js';
 
 /**
  * Editing the code that renders a piece of the page.
@@ -193,6 +195,15 @@ export class HeoSourceDialog extends HeoElement {
 
   protected modal = new ModalController(this, { initialFocus: 'heo-code-editor' });
 
+  protected form = new FormErrors(this, () => {
+    const open = this.state.value.sourceEdit;
+    return open ? sourceEditIssues(open) : [];
+  });
+
+  #submit(): void {
+    if (this.form.submit()) this.editor.commitSourceEdit();
+  }
+
   override render(): TemplateResult | typeof nothing {
     const open = this.state.value.sourceEdit;
     if (!open) return nothing;
@@ -235,26 +246,29 @@ export class HeoSourceDialog extends HeoElement {
         ? this.#renderAnchorNote(open.text, span.anchorKind, span.matched, open.searched, open.candidates)
         : nothing}
         ${span
-        ? html`<heo-code-editor
+        ? html`${fieldLabel('Code', { required: true })}
+            <heo-code-editor
+              ${field(this.form, 'source-draft', { required: true })}
               fill
               language="js"
               rows="16"
               .expandable=${false}
               heading=${`${target.label} · lines ${span.from}–${span.from + span.count - 1}`}
               .value=${open.draft}
-              .error=${open.error}
+              .error=${this.form.message('source-draft') ?? ''}
               @code-input=${(event: CustomEvent<{ value: string }>) =>
             this.editor.updateSourceEdit({ draft: event.detail.value, error: '' })}
-              @code-submit=${() => this.editor.commitSourceEdit()}
+              @code-submit=${() => this.#submit()}
               @code-cancel=${() => this.editor.closeSourceEdit()}
-            ></heo-code-editor>`
+            ></heo-code-editor>
+            ${this.form.error('source-draft')}`
         : open.error
           ? nothing
           : html`<div class="empty">Reading ${target.label}…</div>`}
       </div>
 
       <footer>
-        <span class=${`fine${open.error && span ? ' err' : ''}`}>
+        <span class=${`fine${open.error && span ? ' err' : ''}`} role=${open.error && span ? 'alert' : nothing}>
           ${open.error && span
         ? open.error
         : open.recorded
@@ -281,8 +295,9 @@ export class HeoSourceDialog extends HeoElement {
           <button
             class="btn primary"
             type="button"
-            ?disabled=${!span || open.draft === span.code}
-            @click=${() => this.editor.commitSourceEdit()}
+            ?disabled=${!span}
+            title=${span ? 'Record this edit' : 'The code is still being read'}
+            @click=${() => this.#submit()}
           >
             ${icon('check', 12)} Record this edit
           </button>
