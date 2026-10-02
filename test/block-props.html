@@ -44,6 +44,46 @@
         await frames();
       };
 
+      await check('anEmptyNameIsFlaggedOnTheFieldItself', async () => {
+        engine.beginBlockExtraction(document.getElementById('card'));
+        await frames();
+        engine.updateExtraction({ name: '' });
+        await frames();
+        const input = () => dialog()?.querySelector('.name-input');
+        const placeholder = input()?.getAttribute('placeholder');
+        // Focus elsewhere first, so moving it back to the field is something the error did.
+        button('Continue')?.focus();
+        button('Continue')?.click();
+        await frames();
+        const bubble = dialog()?.querySelector('.field-error');
+        const active = dialog()?.activeElement;
+        const first = {
+          noPlaceholder: placeholder === null,
+          stillOnSource: engine.store.value.extraction?.step,
+          bubble: flat(bubble),
+          bubbleIsAnAlert: bubble?.getAttribute('role') === 'alert',
+          inputInvalid: input()?.getAttribute('aria-invalid'),
+          describedByTheBubble: Boolean(bubble?.id) && input()?.getAttribute('aria-describedby') === bubble.id,
+          errormessage: input()?.getAttribute('aria-errormessage') === bubble?.id,
+          focusedTheField: active === input(),
+          notAlsoInTheFooter: !dialog()?.querySelector('footer .error'),
+        };
+        // Pressing Continue again from elsewhere brings focus back.
+        button('Continue')?.focus();
+        button('Continue')?.click();
+        await frames();
+        const refocused = dialog()?.activeElement === input();
+        await type(input(), 'Typed');
+        const cleared = {
+          bubbleGone: !dialog()?.querySelector('.field-error'),
+          inputValid: input()?.getAttribute('aria-invalid'),
+          noDescribedBy: !input()?.hasAttribute('aria-describedby'),
+        };
+        engine.cancelExtraction();
+        await frames();
+        return { first, refocused, cleared };
+      });
+
       await check('stepOneSaysWhatPropsAreBeforeThereAreAny', async () => {
         engine.beginBlockExtraction(document.getElementById('card'));
         await frames();

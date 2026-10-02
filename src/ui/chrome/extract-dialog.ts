@@ -145,9 +145,11 @@ export class HeoExtractDialog extends HeoElement {
         gap: 12px;
       }
 
+      /* Top-aligned, so a field that grows an error bubble does not drag its neighbour down. */
       .two {
         display: grid;
         grid-template-columns: 1fr 128px;
+        align-items: start;
         gap: 7px;
       }
       /* Both halves equal, for description + category where neither is secondary. */
@@ -302,10 +304,6 @@ export class HeoExtractDialog extends HeoElement {
         gap: 4px;
         color: var(--heo-text-faint);
         font-size: 10px;
-      }
-      /* A field that grows an error message must not pull its neighbour down with it. */
-      .propcard .two {
-        align-items: start;
       }
       .propcard .input[aria-invalid='true'] {
         border-color: var(--heo-danger);
@@ -659,6 +657,49 @@ export class HeoExtractDialog extends HeoElement {
         font-size: 11px;
         line-height: 1.45;
       }
+      .input[aria-invalid='true'] {
+        border-color: var(--heo-danger);
+        box-shadow: 0 0 0 3px color-mix(in oklab, var(--heo-danger) 22%, transparent);
+      }
+      /* An error about one field, attached to it: a bubble pointing up at the input. */
+      .field-error {
+        position: relative;
+        display: flex;
+        align-items: flex-start;
+        gap: 6px;
+        margin: 8px 0 0;
+        padding: 7px 10px;
+        border: 1px solid color-mix(in oklab, var(--heo-danger) 55%, transparent);
+        border-radius: var(--heo-r-sm);
+        background: color-mix(in oklab, var(--heo-danger) 14%, var(--heo-raised));
+        color: var(--heo-text);
+        font-size: 11.5px;
+        line-height: 1.45;
+        animation: field-error-in var(--heo-fast) var(--heo-ease);
+      }
+      .field-error::before {
+        content: '';
+        position: absolute;
+        top: -5px;
+        left: 14px;
+        width: 8px;
+        height: 8px;
+        border-top: 1px solid color-mix(in oklab, var(--heo-danger) 55%, transparent);
+        border-left: 1px solid color-mix(in oklab, var(--heo-danger) 55%, transparent);
+        background: inherit;
+        transform: rotate(45deg);
+      }
+      .field-error > svg {
+        flex: 0 0 auto;
+        margin-top: 3px;
+        color: var(--heo-danger);
+      }
+      @keyframes field-error-in {
+        from {
+          opacity: 0;
+          transform: translateY(-3px);
+        }
+      }
     `,
   ];
 
@@ -724,6 +765,24 @@ export class HeoExtractDialog extends HeoElement {
 
   override updated(): void {
     this.#placeNameOptions();
+    this.#focusFieldError();
+  }
+
+  /** The extraction a field error was last focused for, so each failed attempt focuses once. */
+  #focusedError: object | null = null;
+
+  /**
+   * Take the user to the field an error is about.
+   *
+   * Once per failed attempt — every attempt writes a new extraction object — so pressing Continue
+   * again brings focus back, while typing in the field (which clears the error) leaves it alone.
+   */
+  #focusFieldError(): void {
+    const pending = this.state.value.extraction;
+    if (pending?.mode !== 'block' || pending.errorField !== 'name' || !pending.error) return;
+    if (this.#focusedError === pending) return;
+    this.#focusedError = pending;
+    this.nameInput?.focus();
   }
 
   override render(): TemplateResult | typeof nothing {
@@ -1324,6 +1383,7 @@ export class HeoExtractDialog extends HeoElement {
   ): TemplateResult {
     const active = SOURCE_TABS[this.sourceTab];
     const isElement = Boolean(tag && pending.script.trim());
+    const nameError = pending.errorField === 'name' && Boolean(pending.error);
     return html`
       <div class="two">
         <div class="field">
@@ -1333,10 +1393,18 @@ export class HeoExtractDialog extends HeoElement {
             type="text"
             .value=${pending.name}
             aria-label="Block name"
-            placeholder="Pricing table"
+            aria-required="true"
+            aria-invalid=${nameError ? 'true' : 'false'}
+            aria-describedby=${nameError ? 'heo-block-name-error' : nothing}
+            aria-errormessage=${nameError ? 'heo-block-name-error' : nothing}
             @input=${(event: Event) =>
         this.editor.updateExtraction({ name: (event.target as HTMLInputElement).value })}
           />
+          ${nameError
+        ? html`<p class="field-error" id="heo-block-name-error" role="alert">
+                ${icon('close', 10)} ${pending.error}
+              </p>`
+        : nothing}
         </div>
         <div class="field">
           <span class="label">Kind</span>
@@ -1660,8 +1728,8 @@ export class HeoExtractDialog extends HeoElement {
      */
     const placed = editing && pending.id ? this.editor.blockInstances(pending.id).length : 0;
     return html`<footer>
-      ${pending.error
-        ? html`<span class="error">${icon('close', 11)} ${pending.error}</span>`
+      ${pending.error && !pending.errorField
+        ? html`<span class="error" role="alert">${icon('close', 11)} ${pending.error}</span>`
         : nothing}
       ${placed
         ? html`<label

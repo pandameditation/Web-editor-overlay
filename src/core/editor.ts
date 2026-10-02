@@ -440,6 +440,11 @@ export interface BlockExtraction {
    */
   applyToInstances: boolean;
   error: string;
+  /**
+   * The field `error` is about, when it is about one. The dialog then shows the message beside
+   * that field and moves focus into it, instead of in the footer.
+   */
+  errorField?: 'name';
 }
 
 export type Extraction = ClassExtraction | BlockExtraction;
@@ -2715,7 +2720,15 @@ export class EditorEngine {
   updateExtraction(patch: Partial<ClassExtraction> & Partial<BlockExtraction>): void {
     const current = this.store.value.extraction;
     if (!current) return;
-    this.store.patch({ extraction: { ...current, ...patch, error: patch.error ?? '' } as Extraction });
+    this.store.patch({
+      extraction: {
+        ...current,
+        ...patch,
+        error: patch.error ?? '',
+        // Belongs to the error it came with, so any other edit clears both.
+        errorField: patch.error ? patch.errorField : undefined,
+      } as Extraction,
+    });
   }
 
   cancelExtraction(): void {
@@ -3069,7 +3082,10 @@ export class EditorEngine {
     const hasScript = Boolean(pending.script.trim());
 
     if (!name) {
-      this.updateExtraction({ error: 'Give the block a name.' });
+      this.updateExtraction({
+        error: 'Type a name for this block. It is how you will find it in the Library.',
+        errorField: 'name',
+      });
       return false;
     }
     if (hasScript && !tag) {
