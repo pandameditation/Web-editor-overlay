@@ -161,7 +161,7 @@ export async function fetchScriptSource(
   // only thing that works, and behind a dev server a request can return a transformed
   // copy of a file this buffer will later be written back over.
   if (source.path && project) {
-    const text = await project.read(source.path);
+    const text = await project.read(source.path).catch(() => null);
     if (text !== null) return text;
   }
   if (!source.href || source.readOnly) return '';

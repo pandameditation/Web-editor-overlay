@@ -45,7 +45,7 @@ export interface FileHost {
    * that was handed over.
    */
   resolve(url: string): string | null;
-  /** The file's current text, or null when it is not there. */
+  /** The file's current text, or null when it is not there. Rejects when the host cannot be reached. */
   read(path: string): Promise<string | null>;
   write(path: string, text: string): Promise<void>;
   /**
@@ -417,19 +417,32 @@ class ServerHost implements FileHost {
     return path.startsWith(`${this.#base}/`) ? path.slice(this.#base.length + 1) : null;
   }
 
+  /**
+   * Null only when the file is not there. A server that stopped answering throws.
+   *
+   * The two used to be the same null, and the difference matters: a save planned while
+   * the dev server was restarting read every file as missing and proposed writing the
+   * page out whole, as a new file, over the one it was supposed to patch. A refusal is
+   * told apart by asking the probe — the endpoint also refuses paths it will not touch,
+   * and those are still "not there" from where the page stands.
+   */
   async read(path: string): Promise<string | null> {
     const clean = normalizePath(path);
     if (!clean) return null;
+    let response: Response;
     try {
-      const response = await fetch(this.#url(clean), {
+      response = await fetch(this.#url(clean), {
         credentials: 'same-origin',
         headers: this.#headers(),
       });
-      if (!response.ok) return null;
-      return await response.text();
     } catch {
-      return null;
+      throw new Error(`The dev server for ${this.label} is not answering.`);
     }
+    if (response.ok) return response.text();
+    if (response.status !== 404 && !(await this.ensureWritable())) {
+      throw new Error(`The dev server for ${this.label} no longer accepts this page's token.`);
+    }
+    return null;
   }
 
   async write(path: string, text: string): Promise<void> {

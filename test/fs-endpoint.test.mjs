@@ -249,6 +249,41 @@ async function bootstrapOf(atOrigin) {
   return text;
 }
 
+/** The module a page re-imports after a restart, asked for the way the page asks for it. */
+async function sessionOf(atOrigin) {
+  const response = await fetch(
+    `${atOrigin}/@id/__x00__virtual:html-editor-overlay/session?t=${Date.now()}`,
+  );
+  assert.equal(response.status, 200, 'the session module is served');
+  return response.text();
+}
+
+await test('the session module hands out the same pair the bootstrap did', async () => {
+  const source = await sessionOf(origin);
+  assert.match(source, /"sourceEndpoint":"\/__heo\/fs"/);
+  assert.equal(/"sourceToken":"([^"]+)"/.exec(source)?.[1], token);
+});
+
+await test('the bootstrap tells the page how to renew its token', () => {
+  assert.match(bootstrap, /renewSourceAccess/);
+  assert.match(bootstrap, /session\?t=/);
+});
+
+await test('after a restart the old token is refused and the session module has the new one', async () => {
+  // A restart is a new plugin instance — a new process, or Vite re-reading its config.
+  const restarted = await start(editorOverlay());
+  try {
+    const fresh = /"sourceToken":"([^"]+)"/.exec(await sessionOf(restarted.origin))?.[1];
+    assert.ok(fresh, 'a token is handed out');
+    assert.notEqual(fresh, token, 'and it is a new one');
+    const stale = await fetch(`${restarted.origin}/__heo/fs`, { headers: { 'x-heo-token': token } });
+    assert.equal(stale.status, 403, 'the token from before the restart no longer works');
+    const renewed = await fetch(`${restarted.origin}/__heo/fs`, { headers: { 'x-heo-token': fresh } });
+    assert.equal(renewed.status, 200, 'the renewed one does');
+  } finally {
+    await restarted.instance.close();
+  }
+});
 await test('write: false leaves no endpoint and no token', async () => {
   const quiet = await start(editorOverlay({ write: false }));
   try {
@@ -257,6 +292,7 @@ await test('write: false leaves no endpoint and no token', async () => {
     assert.ok(!source.includes('sourceEndpoint'), 'no endpoint is advertised');
     assert.ok(!source.includes('sourceToken'), 'no token is handed out');
     assert.ok(await endpointIsAbsent(quiet.origin), 'nothing answers at the endpoint');
+    assert.match(await sessionOf(quiet.origin), /export default null;/, 'nor through the session module');
   } finally {
     await quiet.instance.close();
   }

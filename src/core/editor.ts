@@ -815,6 +815,12 @@ export interface SourceEdit {
 export interface ProjectInfo {
   kind: FileHostKind;
   label: string;
+  /**
+   * True when a dev server that was connected has stopped answering, or restarted and
+   * no longer accepts this page's token. Still the project — the edits are still meant
+   * for it — but nothing can be read or written until it is reconnected.
+   */
+  lost?: boolean;
 }
 
 const DEFAULT_TOOLBAR = { x: 24, y: 24 };
@@ -1013,6 +1019,7 @@ export class EditorEngine {
 
   constructor(options: MountOptions = {}) {
     this.options = options;
+    this.#sourceAccess = { endpoint: options.sourceEndpoint, token: options.sourceToken };
     // A change to something inside a shadow tree is journaled from inside that tree.
     this.history.observeRootsWith((record) => shadowRootsOf(elementOfRecord(record)));
     /*
@@ -6997,8 +7004,28 @@ export class EditorEngine {
    */
   #project: FileHost | null = null;
 
+  /**
+   * The dev server's endpoint and token, as last handed over.
+   *
+   * Kept apart from `options` because they can change under a running page: a restart
+   * mints a new token, and `renewSourceAccess` is how the page learns it.
+   */
+  #sourceAccess: { endpoint?: string; token?: string } = {};
+
   get project(): FileHost | null {
     return this.#project;
+  }
+
+  /**
+   * Whether this page has a dev server it can connect back to.
+   *
+   * True for any page the Vite plugin set up, whether or not it is connected right now —
+   * which is the point: after a disconnect, or with the server restarting, the way back
+   * has to stay on offer rather than disappear with the connection.
+   */
+  get canReconnectServer(): boolean {
+    const { endpoint, token } = this.#sourceAccess;
+    return Boolean(endpoint && token) || Boolean(this.options.renewSourceAccess);
   }
 
   /**
@@ -7150,7 +7177,7 @@ export class EditorEngine {
 
   /** What this browser and page can offer, for the UI to explain itself. */
   hostOptions(): Promise<HostAvailability> {
-    return hostAvailability(this.options.sourceEndpoint, this.options.sourceToken);
+    return hostAvailability(this.#sourceAccess.endpoint, this.#sourceAccess.token);
   }
 
   /**
@@ -7179,8 +7206,68 @@ export class EditorEngine {
    * should not report the absence of something it never asked for.
    */
   async connectProjectServer(): Promise<boolean> {
-    const host = await connectServer(this.options.sourceEndpoint, this.options.sourceToken);
+    const host = await connectServer(this.#sourceAccess.endpoint, this.#sourceAccess.token);
     return host ? this.attachProject(host, { quiet: true }) : false;
+  }
+
+  /**
+   * Connect to the dev server again, after a restart or a Disconnect.
+   *
+   * The token held so far is tried first, since a Disconnect leaves it perfectly good. When
+   * the server turns it down — a restart minted a new one — the page asks for the current
+   * pair through `renewSourceAccess` and tries that. Either way this is a deliberate click,
+   * so it says how it went.
+   */
+  async reconnectProjectServer(): Promise<boolean> {
+    let host = await connectServer(this.#sourceAccess.endpoint, this.#sourceAccess.token);
+    const renew = this.options.renewSourceAccess;
+    if (!host && renew) {
+      const fresh = await renew().catch(() => null);
+      if (fresh?.sourceEndpoint && fresh.sourceToken) {
+        this.#sourceAccess = { endpoint: fresh.sourceEndpoint, token: fresh.sourceToken };
+        host = await connectServer(fresh.sourceEndpoint, fresh.sourceToken);
+      }
+    }
+    if (this.#destroyed) return false;
+    if (!host) {
+      this.notify('The dev server is still not answering. Start it again, then reconnect.', 'error');
+      return false;
+    }
+    return this.attachProject(host);
+  }
+
+  /**
+   * Find out whether a connected dev server still answers, and say so in the store.
+   *
+   * Asked when the save dialog opens, when Vite reports its socket closed, and whenever a
+   * read or write against the server fails — so the dialog can warn that the connection is
+   * gone before someone presses Write, and stop warning if it comes back by itself.
+   * A folder is not asked: re-checking its grant can mean a permission prompt.
+   */
+  async checkProjectConnection(): Promise<boolean> {
+    const host = this.#project;
+    if (!host || host.kind !== 'server') return true;
+    const ok = await host.ensureWritable();
+    if (this.#project === host) this.#setProjectLost(host, !ok);
+    return ok;
+  }
+
+  #setProjectLost(host: FileHost, lost: boolean): void {
+    const current = this.store.value.project;
+    if (!current || Boolean(current.lost) === lost) return;
+    this.store.patch({
+      project: lost ? { kind: host.kind, label: host.label, lost } : { kind: host.kind, label: host.label },
+      // A plan read from a server that has gone is not a plan of anything.
+      ...(lost ? { writePlan: null } : {}),
+    });
+  }
+
+  #notifyLost(host: FileHost): void {
+    this.notify(
+      `Lost the connection to the dev server for ${host.label}. Your edits are still here — ` +
+      'keep this page open, start the server again, then reconnect from the save dialog.',
+      'error',
+    );
   }
 
   /**
@@ -7379,8 +7466,14 @@ export class EditorEngine {
       return plan;
     } catch (error) {
       console.error('[html-editor-overlay] could not work out what to write', error);
-      this.notify('Could not read the project files. See the console for details.', 'error');
       this.store.patch({ writePlan: null });
+      // Most often the dev server restarting. Said as that, so it reads as something to wait
+      // out and reconnect from rather than as a broken project.
+      if (host.kind === 'server' && !(await this.checkProjectConnection())) {
+        this.#notifyLost(host);
+      } else {
+        this.notify('Could not read the project files. See the console for details.', 'error');
+      }
       return null;
     } finally {
       this.store.patch({ planning: false });
@@ -7464,7 +7557,12 @@ export class EditorEngine {
     const host = this.#project;
     if (!host) return null;
     if (!(await host.ensureWritable())) {
-      this.notify(`Lost write access to ${host.label}. Connect it again.`, 'error');
+      if (host.kind === 'server') {
+        if (this.#project === host) this.#setProjectLost(host, true);
+        this.#notifyLost(host);
+      } else {
+        this.notify(`Lost write access to ${host.label}. Connect it again.`, 'error');
+      }
       return null;
     }
     const plan = await this.previewWritePlan();
@@ -7492,6 +7590,8 @@ export class EditorEngine {
       this.#writtenDocuments.set(write.path, { text: write.after, ops: write.journalOps });
     }
     if (!result.failed.length && !blocked) this.#markSaved();
+    // A write that failed part-way may be the server going away mid-save.
+    else if (result.failed.length) void this.checkProjectConnection();
     this.#reportWrite(result, plan);
     return result;
   }

@@ -794,6 +794,35 @@ export class HeoSaveDialog extends HeoElement {
         text-decoration: underline;
         cursor: pointer;
       }
+      /* Sits right above the footer, where the buttons it affects are. */
+      .lost {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin: 0 18px 12px;
+        padding: 9px 11px;
+        border: 1px solid var(--heo-warn);
+        border-radius: var(--heo-r-sm);
+        color: var(--heo-warn);
+        font-size: 11px;
+        line-height: 1.45;
+      }
+      .lost > svg {
+        flex: 0 0 auto;
+      }
+      .lost .text {
+        flex: 1 1 auto;
+      }
+      .lost .text strong {
+        display: block;
+        font-weight: 600;
+      }
+      .lost .text span {
+        color: var(--heo-text-faint);
+      }
+      .lost .btn {
+        flex: 0 0 auto;
+      }
     `,
     DesignTransfer.styles,
     // The export step reuses the notice the code panels draw when a page opened from disk
@@ -846,6 +875,9 @@ export class HeoSaveDialog extends HeoElement {
    */
   @state() private canPickFolder = false;
 
+  /** True while a Reconnect is in flight, so a second click does not start another. */
+  @state() private reconnecting = false;
+
   /**
    * Which half of the dialog is showing.
    *
@@ -875,6 +907,9 @@ export class HeoSaveDialog extends HeoElement {
     void this.editor.hostOptions().then((options) => {
       this.canPickFolder = options.picker;
     });
+    // So a server that went away while the dialog was closed is reported on opening, not
+    // discovered on pressing Write.
+    void this.editor.checkProjectConnection();
     // The dialog is created fresh each time it opens, so whoever opened it gets to say
     // which step it lands on. The CSS and JS panels use that to send someone straight to
     // the file plan when a file they cannot read is what they came to ask about.
@@ -945,9 +980,11 @@ export class HeoSaveDialog extends HeoElement {
           <h2>
             ${planning
         ? 'Working out what to write…'
-        : writePlan
-          ? `${writePlan.writes.length} file${writePlan.writes.length === 1 ? '' : 's'} to write`
-          : 'Nothing to write'}
+        : project?.lost
+          ? 'Waiting for the dev server'
+          : writePlan
+            ? `${writePlan.writes.length} file${writePlan.writes.length === 1 ? '' : 's'} to write`
+            : 'Nothing to write'}
           </h2>
           <p>
             Every edit is replayed against the file's own text, so a one-line change is a
@@ -988,6 +1025,7 @@ export class HeoSaveDialog extends HeoElement {
         </section>
       </div>
 
+      ${this.#renderLost()}
       <footer>
         <button
           class="btn"
@@ -999,16 +1037,19 @@ export class HeoSaveDialog extends HeoElement {
           ${icon('chevronLeft', 12)} Back
         </button>
         <div class="actions">
-          ${this.#renderDisconnect()}
-          <button
-            class="btn"
-            type="button"
-            title="Read the files again and rebuild the list"
-            ?disabled=${planning}
-            @click=${() => void this.editor.previewWritePlan()}
-          >
-            ${icon('refresh', 12)} Recheck
-          </button>
+          ${this.#renderConnectionButton()}
+          <!-- Re-reading cannot help while the server is gone; Reconnect, above, is what can. -->
+          ${project?.lost
+        ? nothing
+        : html`<button
+                class="btn"
+                type="button"
+                title="Read the files again and rebuild the list"
+                ?disabled=${planning}
+                @click=${() => void this.editor.previewWritePlan()}
+              >
+                ${icon('refresh', 12)} Recheck
+              </button>`}
           ${this.#renderPrimary()}
         </div>
       </footer>
@@ -1018,6 +1059,11 @@ export class HeoSaveDialog extends HeoElement {
   #renderPlan(): TemplateResult {
     const plan = this.state.value.writePlan;
     if (!plan) {
+      if (this.state.value.project?.lost) {
+        return html`<div class="empty">
+          The files cannot be read until the dev server is back.
+        </div>`;
+      }
       return html`<div class="empty">
         Could not read the project files. Try Recheck, or reconnect the folder.
       </div>`;
@@ -1501,6 +1547,7 @@ export class HeoSaveDialog extends HeoElement {
     }
 
     const count = writePlan?.writes.length;
+    const lost = Boolean(project.lost);
 
     /*
      * Away from the Files step, this goes *to* it rather than writing.
@@ -1514,10 +1561,12 @@ export class HeoSaveDialog extends HeoElement {
       return html`<button
         class="btn primary"
         type="button"
-        ?disabled=${saving || nothingToDo}
-        title=${nothingToDo
-          ? 'Nothing to write'
-          : `Review the files this will write in ${project.label}`}
+        ?disabled=${saving || nothingToDo || lost}
+        title=${lost
+          ? `Reconnect to the dev server to write the files in ${project.label}`
+          : nothingToDo
+            ? 'Nothing to write'
+            : `Review the files this will write in ${project.label}`}
         @click=${() => this.#openFiles()}
       >
         ${icon('folder', 12)}
@@ -1529,10 +1578,12 @@ export class HeoSaveDialog extends HeoElement {
     return html`<button
       class="btn primary"
       type="button"
-      ?disabled=${saving || planning || nothingToDo || count === 0}
-      title=${count === 0
-        ? 'Every change is already in the files'
-        : `Write these files in ${project.label}`}
+      ?disabled=${saving || planning || nothingToDo || count === 0 || lost}
+      title=${lost
+        ? `Reconnect to the dev server to write the files in ${project.label}`
+        : count === 0
+          ? 'Every change is already in the files'
+          : `Write these files in ${project.label}`}
       @click=${() => void this.editor.save()}
     >
       ${icon('save', 12)}
@@ -1708,6 +1759,7 @@ export class HeoSaveDialog extends HeoElement {
             </div>`}
       </div>
 
+      ${this.#renderLost()}
       <footer>
         <button
           class="btn"
@@ -2197,6 +2249,7 @@ export class HeoSaveDialog extends HeoElement {
         ${this.tab === 'prompt' ? html`<pre>${preview}</pre>` : this.#renderChanges(records)}
       </div>
 
+      ${this.#renderLost()}
       <footer>
         <span class="note">
           ${dropped
@@ -2277,11 +2330,14 @@ export class HeoSaveDialog extends HeoElement {
        * this slot does not have to.
        */
       return html`
-        <span class="where" title=${`Connected to ${project.label}`}>
+        <span
+          class="where"
+          title=${project.lost ? `Lost the connection to ${project.label}` : `Connected to ${project.label}`}
+        >
           ${icon(project.kind === 'server' ? 'server' : 'folder', 11)}
           <code>${project.label}</code>
         </span>
-        ${this.#renderDisconnect()}
+        ${this.#renderConnectionButton()}
       `;
     }
 
@@ -2292,21 +2348,28 @@ export class HeoSaveDialog extends HeoElement {
      * position because saving a copy always works and this does not. Promoting it left nothing
      * for this slot to hold, and a second button doing the same thing beside it would be worse
      * than an empty one.
+     *
+     * The exception is a page with a dev server behind it. That connection was made for the
+     * user, so after a Disconnect there is no folder they would know to pick — Reconnect is the
+     * only way back that does not involve reloading the page and losing the edits.
      */
-    return nothing;
+    return this.#renderConnectionButton();
   }
 
   /**
-   * Hand the folder back, drawn the same in both footers.
+   * Hand the folder back, or take the dev server back up, drawn the same in both footers.
    *
    * Leaving the Files step on the way out is part of the action rather than a courtesy:
    * that step is a list of files in a project, and without the project there is no list
    * — staying there would leave the user looking at "could not read the project files"
    * as though something had gone wrong.
+   *
+   * A project whose server was lost keeps Disconnect here: the banner above the footer holds
+   * Reconnect, and giving up on the server is still a fair thing to want.
    */
-  #renderDisconnect(): TemplateResult | typeof nothing {
+  #renderConnectionButton(): TemplateResult | typeof nothing {
     const project = this.state.value.project;
-    if (!project) return nothing;
+    if (!project) return this.editor.canReconnectServer ? this.#renderReconnect() : nothing;
 
     return html`<button
       class="btn"
@@ -2319,6 +2382,51 @@ export class HeoSaveDialog extends HeoElement {
     >
       ${icon('unlink', 12)} Disconnect
     </button>`;
+  }
+
+  #renderReconnect(): TemplateResult {
+    return html`<button
+      class="btn"
+      type="button"
+      title="Connect to the dev server again. A server that restarted is picked up as it is now, with no reload."
+      ?disabled=${this.reconnecting}
+      @click=${() => void this.#reconnect()}
+    >
+      ${icon('link', 12)} ${this.reconnecting ? 'Reconnecting…' : 'Reconnect'}
+    </button>`;
+  }
+
+  async #reconnect(): Promise<void> {
+    this.reconnecting = true;
+    try {
+      await this.editor.reconnectProjectServer();
+    } finally {
+      this.reconnecting = false;
+    }
+  }
+
+  /**
+   * The warning that the dev server went away, above the footer it affects.
+   *
+   * The edits are only on the page at this point, and the reflex on seeing a broken dev
+   * server is to reload — which is the one thing that would lose them. So it says that
+   * first, and puts the way back right beside it.
+   */
+  #renderLost(): TemplateResult | typeof nothing {
+    const project = this.state.value.project;
+    if (!project?.lost) return nothing;
+
+    return html`<div class="lost" role="alert">
+      ${icon('alert', 14)}
+      <span class="text">
+        <strong>Lost the connection to the dev server.</strong>
+        <span>
+          Your edits are still on this page, so keep it open — if the browser offers to reload,
+          stay. Once the server is running again, reconnect to write the files.
+        </span>
+      </span>
+      ${this.#renderReconnect()}
+    </div>`;
   }
 
   /**

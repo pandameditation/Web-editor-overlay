@@ -16,6 +16,14 @@ import { instrumentHTML, instrumentTemplates } from './instrument.js';
 const SOURCE_ATTR = 'data-heo-src';
 const VIRTUAL_ID = 'virtual:html-editor-overlay/bootstrap';
 const RESOLVED_ID = `\0${VIRTUAL_ID}`;
+/**
+ * The endpoint and token on their own, for a page to re-import after the server restarts.
+ *
+ * A sibling of the bootstrap so the bootstrap can reach it by a relative URL, which keeps
+ * working under a `base` without the plugin having to spell the base out.
+ */
+const SESSION_ID = 'virtual:html-editor-overlay/session';
+const RESOLVED_SESSION_ID = `\0${SESSION_ID}`;
 
 /** Where the read/write endpoint is mounted on the dev server. */
 const FS_ENDPOINT = '/__heo/fs';
@@ -375,7 +383,8 @@ export default function editorOverlay(options: EditorOverlayPluginOptions = {}):
     },
 
     resolveId(id) {
-      return id === VIRTUAL_ID ? RESOLVED_ID : null;
+      if (id === VIRTUAL_ID) return RESOLVED_ID;
+      return id === SESSION_ID ? RESOLVED_SESSION_ID : null;
     },
 
     /**
@@ -384,11 +393,36 @@ export default function editorOverlay(options: EditorOverlayPluginOptions = {}):
      * and so a page CSP that forbids inline scripts still works.
      */
     load(id) {
+      // The token this server process holds, so a page that held the last one can catch up.
+      if (id.split('?')[0] === RESOLVED_SESSION_ID) {
+        const session = writable ? { sourceEndpoint: FS_ENDPOINT, sourceToken: token } : null;
+        return `export default ${JSON.stringify(session)};`;
+      }
       if (id !== RESOLVED_ID) return null;
       return [
         `import { mount } from 'html-editor-overlay';`,
-        `const api = mount(${buildMountOptions()});`,
+        `const options = ${buildMountOptions()};`,
+        /*
+         * How a page gets the new token after the server restarts, without a reload.
+         *
+         * Re-imported rather than fetched, so the token still only ever travels inside a
+         * same-origin ES module. The timestamp makes it a new module each time — the
+         * browser would otherwise hand back the instance it already has, holding the token
+         * of the server that went away. `import.meta.url` is read into a variable first so
+         * Vite does not take `new URL(…, import.meta.url)` for an asset reference.
+         */
+        ...(writable
+          ? [
+            `const here = import.meta.url;`,
+            `options.renewSourceAccess = () =>`,
+            `  import(/* @vite-ignore */ new URL('session?t=' + Date.now(), here).href).then((m) => m.default);`,
+          ]
+          : []),
+        `const api = mount(options);`,
         `if (import.meta.hot) {`,
+        // Vite's socket closing is the earliest sign the server went away. The engine
+        // probes rather than trusting it, so a blip that recovers does not raise a warning.
+        `  import.meta.hot.on('vite:ws:disconnect', () => void api.engine.checkProjectConnection());`,
         `  import.meta.hot.dispose(() => api.unmount());`,
         `}`,
         `export default api;`,

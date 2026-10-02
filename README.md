@@ -552,12 +552,20 @@ step to put `onSave` back in charge.
 With the dev-server path, writing the page's HTML makes Vite reload it — the files are
 on disk before that happens, and the toast says it is coming.
 
+If the dev server goes away mid-session — stopped, crashed, or restarted — the save
+dialog says so and disables writing until it is back. Your edits stay on the page, so
+keep it open: Vite will try to reload once the server returns, and the browser will ask
+first because there are unsaved changes, so choose to stay. Then press **Reconnect**. A
+restarted server has a new token, and Reconnect picks it up without a reload.
+Reconnect is also what replaces Disconnect afterwards, on any page the plugin set up, so
+handing the server back is never one-way.
+
 ### From code
 
 ```ts
 // Opens the picker, so it needs a user gesture. False means cancelled, not failed.
 await api.connectProject();
-api.getProject();          // { kind: 'directory' | 'server', label: string } | null
+api.getProject();          // { kind: 'directory' | 'server', label: string, lost?: true } | null
 await api.previewWrites();  // { writes: [...], unwritable: [...] } — reads, writes nothing
 await api.save();           // writes the files
 await api.disconnectProject();
@@ -590,7 +598,9 @@ guards it:
 
 - **A token.** Generated at every server start and inlined into the overlay's
   bootstrap module — a same-origin ES module, which is somewhere another origin cannot
-  read from. Every request carries it as `x-heo-token`. Requiring it in a header rather
+  read from. After a restart the page gets the new one the same way, by re-importing a
+  sibling virtual module that holds only the endpoint and token. Every request carries
+  it as `x-heo-token`. Requiring it in a header rather
   than the URL also makes such a request non-simple, so a cross-origin attempt is
   stopped by a preflight that is never answered.
 - **Confined to the Vite root.** Paths that climb out, and absolute paths, are refused
@@ -929,6 +939,7 @@ const api = mount({
   // read and write the project's files, plus the token every request carries.
   sourceEndpoint: undefined,       // e.g. '/__heo/fs'
   sourceToken: undefined,
+  renewSourceAccess: undefined,    // () => Promise<{ sourceEndpoint, sourceToken } | null>, for Reconnect after a restart
 });
 ```
 

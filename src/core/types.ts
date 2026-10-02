@@ -402,7 +402,17 @@ export interface MountOptions {
    * preflight before it reaches the handler.
    */
   sourceToken?: string;
-
+  /**
+   * Ask for the endpoint and token again, after the dev server has restarted.
+   *
+   * The token is per server start, so a restart leaves an open page holding one the
+   * server no longer accepts, and until now the only way to get the new one was to
+   * reload — which throws away every unsaved edit. The Vite plugin sets this to
+   * re-import a small same-origin module holding the current pair, so the token
+   * travels the same way it did the first time. Called when the user presses
+   * Reconnect in the save dialog; resolving null means there is nothing to reconnect to.
+   */
+  renewSourceAccess?: () => Promise<{ sourceEndpoint?: string; sourceToken?: string } | null>;
   /**
    * Keep the page's own event listeners out of the editor's interactions. Defaults on.
    *

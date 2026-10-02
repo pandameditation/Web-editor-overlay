@@ -257,7 +257,7 @@ export async function fetchStyleSource(
    * starting from a transformed copy means writing one back over the source.
    */
   if (source.path && project) {
-    const text = await project.read(source.path);
+    const text = await project.read(source.path).catch(() => null);
     if (text !== null) return text;
   }
 
