@@ -1812,6 +1812,7 @@ export class HeoStylesPanel extends HeoElement {
           .options=${segments}
           .value=${value || computedValue}
           clearable
+          ?removable=${isSet}
           label=${property}
           @segment-change=${(event: CustomEvent<{ value: string }>) =>
           this.editor.setStyle(property, event.detail.value, el)}

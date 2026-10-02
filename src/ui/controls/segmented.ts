@@ -20,6 +20,10 @@ export interface SegmentOption {
  *
  * Fires `segment-change` with `{ value }`. Clicking the active option clears it
  * when `clearable` is set, which is how "no override" is expressed.
+ *
+ * `removable` adds a visible ✕ at the end, the same one a value field shows when it holds a value.
+ * Clicking the active option again was the only way to remove a property drawn as segments, and
+ * nothing on screen said so — the rows beside it all had a ✕ and this one appeared to have none.
  */
 @customElement('heo-segmented')
 export class HeoSegmented extends LitElement {
@@ -75,6 +79,11 @@ export class HeoSegmented extends LitElement {
         background: var(--heo-accent);
         color: var(--heo-accent-ink);
       }
+      /* Matches the value field's clear button, so every set row ends the same way. */
+      button.remove {
+        flex: 0 0 22px;
+        padding: 0;
+      }
     `,
   ];
 
@@ -83,6 +92,8 @@ export class HeoSegmented extends LitElement {
   @property({ type: Boolean }) clearable = false;
   @property({ type: Boolean }) accent = false;
   @property({ type: String }) label = '';
+  /** Show a ✕ that clears the value. For a value that is set, rather than inherited or computed. */
+  @property({ type: Boolean }) removable = false;
 
   override render(): TemplateResult {
     return html`<div class="bar" role="group" aria-label=${this.label || 'Options'}>
@@ -103,7 +114,25 @@ export class HeoSegmented extends LitElement {
         }
         </button>`;
     })}
+      ${this.removable
+        ? html`<button
+            class="remove"
+            type="button"
+            aria-label=${`Remove ${this.label || 'value'}`}
+            title=${`Remove ${this.label || 'value'}`}
+            @click=${this.#remove}
+          >
+            ${icon('close', 11)}
+          </button>`
+        : nothing}
     </div>`;
+  }
+
+  #remove(): void {
+    this.value = '';
+    this.dispatchEvent(
+      new CustomEvent('segment-change', { detail: { value: '' }, bubbles: true, composed: true }),
+    );
   }
 
   #pick(option: SegmentOption, active: boolean): void {
