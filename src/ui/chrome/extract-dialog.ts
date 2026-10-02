@@ -3,7 +3,14 @@ import { customElement, query, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 import { normalizeClassName, planClassMerge, type ClassMergePlan } from '../../core/classes.js';
 import { labelFor } from '../../core/dom.js';
-import { normalizeCustomElementTag, PROP_TYPES, type BlockPropRow } from '../../core/library.js';
+import {
+  normalizeCustomElementTag,
+  propNameProblem,
+  PROP_TYPES,
+  suggestPropName,
+  type BlockPropRow,
+} from '../../core/library.js';
+import { templatePropNames } from '../../core/sanitize.js';
 import type { BlockExtraction, ClassExtraction } from '../../core/editor.js';
 import { ModalController } from '../../core/modal.js';
 import { listen, unlisten } from '../../core/shield.js';
@@ -42,7 +49,7 @@ const SOURCE_TABS = {
     language: 'html' as const,
     heading: 'Block HTML',
     field: 'html' as const,
-    placeholder: '<div class="my-block">…</div>  ·  use {{propName}} for props',
+    placeholder: '<div class="my-block">\n  <h3>{{title}}</h3>\n  <a href="{{link}}">{{label}}</a>\n</div>',
   },
   css: {
     label: 'CSS',
@@ -295,6 +302,73 @@ export class HeoExtractDialog extends HeoElement {
         gap: 4px;
         color: var(--heo-text-faint);
         font-size: 10px;
+      }
+      /* A field that grows an error message must not pull its neighbour down with it. */
+      .propcard .two {
+        align-items: start;
+      }
+      .propcard .input[aria-invalid='true'] {
+        border-color: var(--heo-danger);
+      }
+      .propcard .problem {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+        margin: 5px 0 0;
+        color: var(--heo-danger);
+        font-size: 10.5px;
+        line-height: 1.45;
+      }
+      .propcard .problem button {
+        padding: 1px 7px;
+        border: 1px solid var(--heo-line);
+        border-radius: 999px;
+        background: var(--heo-sunken);
+        color: var(--heo-text);
+        font: inherit;
+        cursor: pointer;
+      }
+
+      /* What {{name}} does, beside the markup it is typed into. */
+      .steps .optional {
+        color: var(--heo-text-faint);
+        font-weight: 400;
+      }
+      .props-help {
+        margin: 8px 0 0;
+        padding: 9px 11px;
+        border: 1px dashed var(--heo-line);
+        border-radius: var(--heo-r-sm);
+        color: var(--heo-text-dim);
+        font-size: 11px;
+        line-height: 1.55;
+      }
+      .props-help p {
+        display: flex;
+        gap: 7px;
+        margin: 0;
+      }
+      .props-help p > svg {
+        flex: 0 0 auto;
+        margin-top: 3px;
+        color: var(--heo-accent);
+      }
+      .props-help code {
+        color: var(--heo-accent);
+      }
+      .props-help .found {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 5px;
+        margin-top: 7px;
+        color: var(--heo-text-faint);
+      }
+      .props-help .found code {
+        padding: 1px 6px;
+        border-radius: 999px;
+        background: var(--heo-accent-soft);
       }
 
       .decl {
@@ -1225,8 +1299,13 @@ export class HeoExtractDialog extends HeoElement {
           ${onProps ? icon('check', 10) : html`<b>1</b>`} Source
         </span>
         <span class="bar"></span>
-        <span class="step" ?data-on=${onProps} ?data-muted=${!onProps}>
-          <b>2</b> Props
+        <span
+          class="step"
+          ?data-on=${onProps}
+          ?data-muted=${!onProps}
+          title="Fields the person inserting the block fills in. Created from {{name}} placeholders in the HTML."
+        >
+          <b>2</b> Props ${onProps ? nothing : html`<span class="optional">${this.#propSummary(pending)}</span>`}
         </span>
       </nav>
 
@@ -1382,6 +1461,7 @@ export class HeoExtractDialog extends HeoElement {
           @code-input=${(event: CustomEvent<{ value: string }>) =>
         this.editor.updateExtraction({ [active.field]: event.detail.value })}
         ></heo-code-editor>
+        ${this.sourceTab === 'html' && !isElement ? this.#renderPropsHelp(pending) : nothing}
         ${this.sourceTab === 'css'
         ? html`<p class="note">
               ${icon('lock', 11)} Selectors in this block CSS are scoped to the block root when it is
@@ -1409,45 +1489,92 @@ export class HeoExtractDialog extends HeoElement {
    */
   #renderBlockProps(pending: BlockExtraction): TemplateResult {
     const rows = pending.props;
+    const names = rows.map((row) => row.name);
     return html`
       <p class="lede">
-        ${rows.length} ${rows.length === 1 ? 'prop' : 'props'} found in the markup. Renaming one
-        rewrites its placeholder; the description is what the insert form shows.
+        ${rows.length} ${rows.length === 1 ? 'prop' : 'props'} found in the markup. Each one becomes a
+        field in the insert form, and whatever is typed there replaces its
+        <code class="mono">{{…}}</code> in that copy of the block.
       </p>
-      ${rows.map(
-      (row, index) => html`<section class="propcard">
+      ${rows.map((row, index) => {
+      const problem = propNameProblem(row.name, names.filter((_, other) => other !== index));
+      const suggestion = problem ? suggestPropName(row.name) : '';
+      const fixable =
+        Boolean(suggestion) && !propNameProblem(suggestion, names.filter((_, other) => other !== index));
+      return html`<section class="propcard">
           <header>
             <code class="mono">{{${row.placeholder}}}</code>
-            ${row.name !== row.placeholder
-          ? html`<span class="renamed">${icon('sparkle', 10)} renames to {{${row.name}}}</span>`
+            ${row.name.trim() !== row.placeholder && !problem
+          ? html`<span class="renamed">${icon('sparkle', 10)} renames to {{${row.name.trim()}}}</span>`
           : nothing}
           </header>
-          <div class="field">
-            <span class="label">Name</span>
-            <input
-              class="input mono"
-              type="text"
-              .value=${row.name}
-              placeholder="propName"
-              aria-label=${`Name for ${row.placeholder}`}
-              @input=${(event: Event) =>
+          <div class="two even">
+            <div class="field">
+              <span class="label">Name in the markup</span>
+              <input
+                class="input mono"
+                type="text"
+                .value=${row.name}
+                placeholder="propName"
+                spellcheck="false"
+                aria-invalid=${problem ? 'true' : 'false'}
+                aria-label=${`Name for ${row.placeholder}`}
+                @input=${(event: Event) =>
           this.#editProp(index, { name: (event.target as HTMLInputElement).value })}
-            />
+              />
+              ${problem
+          ? html`<p class="problem" role="alert">
+                    ${problem}
+                    ${fixable
+              ? html`<button type="button" @click=${() => this.#editProp(index, { name: suggestion })}>
+                          Use ${suggestion}
+                        </button>`
+              : nothing}
+                  </p>`
+          : nothing}
+            </div>
+            <div class="field">
+              <span class="label">Label</span>
+              <input
+                class="input"
+                type="text"
+                .value=${row.label}
+                placeholder="Card title"
+                aria-label=${`Label for ${row.placeholder}`}
+                title="What the insert form calls this field. Spaces are fine here."
+                @input=${(event: Event) =>
+          this.#editProp(index, { label: (event.target as HTMLInputElement).value })}
+              />
+            </div>
           </div>
-          <div class="field">
-            <span class="label">Type</span>
-            <select
-              class="input"
-              aria-label=${`Type for ${row.name}`}
-              @change=${(event: Event) =>
+          <div class="two even">
+            <div class="field">
+              <span class="label">Type</span>
+              <select
+                class="input"
+                aria-label=${`Type for ${row.placeholder}`}
+                @change=${(event: Event) =>
           this.#editProp(index, {
             type: (event.target as HTMLSelectElement).value as PropSpec['type'],
           })}
-            >
-              ${PROP_TYPES.map(
+              >
+                ${PROP_TYPES.map(
             (type) => html`<option value=${type} ?selected=${row.type === type}>${type}</option>`,
           )}
-            </select>
+              </select>
+            </div>
+            <div class="field">
+              <span class="label">Default</span>
+              <input
+                class="input"
+                type="text"
+                .value=${row.default}
+                placeholder="Used until the user changes it"
+                aria-label=${`Default value for ${row.placeholder}`}
+                @input=${(event: Event) =>
+          this.#editProp(index, { default: (event.target as HTMLInputElement).value })}
+              />
+            </div>
           </div>
           <div class="field">
             <span class="label">Description</span>
@@ -1455,27 +1582,51 @@ export class HeoExtractDialog extends HeoElement {
               class="input"
               type="text"
               .value=${row.description}
-              placeholder="What belongs here"
-              aria-label=${`Description for ${row.name}`}
+              placeholder="What belongs here — shown under the field in the insert form"
+              aria-label=${`Description for ${row.placeholder}`}
               @input=${(event: Event) =>
           this.#editProp(index, { description: (event.target as HTMLInputElement).value })}
             />
           </div>
-          <div class="field">
-            <span class="label">Default</span>
-            <input
-              class="input"
-              type="text"
-              .value=${row.default}
-              placeholder="Used until the user changes it"
-              aria-label=${`Default value for ${row.name}`}
-              @input=${(event: Event) =>
-          this.#editProp(index, { default: (event.target as HTMLInputElement).value })}
-            />
-          </div>
-        </section>`,
-    )}
+        </section>`;
+    })}
     `;
+  }
+
+  /**
+   * What `{{name}}` does, under the HTML it is typed into, and which ones it has found so far.
+   *
+   * Props were only ever mentioned in the editor's placeholder, which disappears the moment there
+   * is any markup — so the feature was invisible to anyone capturing an element, whose markup is
+   * there from the start.
+   */
+  #renderPropsHelp(pending: BlockExtraction): TemplateResult {
+    const found = templatePropNames(pending.html);
+    return html`<div class="props-help">
+      <p>
+        ${icon('sparkle', 11)}
+        <span>
+          <strong>Make parts editable with props.</strong> Replace text, a link or a colour with
+          <code class="mono">{{name}}</code> — for example
+          <code class="mono">&lt;h3&gt;{{title}}&lt;/h3&gt;</code> or
+          <code class="mono">href="{{link}}"</code>. Each one becomes a field to fill in when the
+          block is inserted. Names use letters, digits, - or _, with no spaces.
+        </span>
+      </p>
+      <div class="found">
+        ${found.length
+        ? html`${found.length === 1 ? 'Prop found:' : `${found.length} props found:`}
+              ${found.map((name) => html`<code class="mono">{{${name}}}</code>`)}
+              <span>· set them up in the next step</span>`
+        : html`No props yet — the block will be inserted exactly as written.`}
+      </div>
+    </div>`;
+  }
+
+  /** The second step's state, from the first: how many props it will ask about. */
+  #propSummary(pending: BlockExtraction): string {
+    const count = templatePropNames(pending.html).length;
+    return count ? `· ${count}` : '· none yet';
   }
 
   #editProp(index: number, patch: Partial<BlockPropRow>): void {

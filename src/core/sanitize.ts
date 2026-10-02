@@ -373,11 +373,17 @@ export function templatePropNames(html: string): string[] {
   return seen;
 }
 
-/** Rewrite every occurrence of one placeholder, leaving the rest of the markup alone. */
-export function renameTemplateProp(html: string, from: string, to: string): string {
-  return String(html ?? '').replace(PLACEHOLDER, (match, name: string) =>
-    name === from ? `{{${to}}}` : match,
-  );
+/**
+ * Rewrite placeholders, leaving the rest of the markup alone.
+ *
+ * In one pass, so renames cannot feed into each other: swapping two names, or renaming `a` to `b`
+ * while `b` becomes `c`, would otherwise rename the same placeholder twice.
+ */
+export function renameTemplateProps(html: string, renames: ReadonlyMap<string, string>): string {
+  return String(html ?? '').replace(PLACEHOLDER, (match, name: string) => {
+    const to = renames.get(name);
+    return to === undefined ? match : `{{${to}}}`;
+  });
 }
 
 export function renderBlockTemplate(

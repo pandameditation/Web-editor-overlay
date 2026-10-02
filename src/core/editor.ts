@@ -2700,10 +2700,16 @@ export class EditorEngine {
     });
   }
 
+  /**
+   * Change the open extraction. Any edit clears the last error, except an edit that *is* an error.
+   *
+   * The error used to be cleared unconditionally — after the patch was spread — so every message
+   * the dialog was asked to show was erased in the same write. Save looked like it did nothing.
+   */
   updateExtraction(patch: Partial<ClassExtraction> & Partial<BlockExtraction>): void {
     const current = this.store.value.extraction;
     if (!current) return;
-    this.store.patch({ extraction: { ...current, ...patch, error: '' } as Extraction });
+    this.store.patch({ extraction: { ...current, ...patch, error: patch.error ?? '' } as Extraction });
   }
 
   cancelExtraction(): void {

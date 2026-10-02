@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Block props: renaming, errors, and saying what {{name}} does</title>
+  <style>body { margin: 0; padding: 24px; font: 16px/1.5 system-ui, sans-serif; } pre { margin-top: 16px; }</style>
+</head>
+<body>
+  <main>
+    <div id="card" class="card"><h3>Card title</h3><p>Card body.</p></div>
+    <p id="styled" style="color: teal; padding: 4px">Styled inline</p>
+  </main>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const errors = [];
+      window.addEventListener('error', (e) => errors.push('error: ' + e.message));
+      window.addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+      const results = {};
+      const check = async (name, fn) => {
+        document.getElementById('progress').textContent = name;
+        try { results[name] = await fn(); }
+        catch (err) { results[name] = 'THREW: ' + String(err && err.stack); }
+      };
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const flat = (node) => (node?.textContent ?? '').replace(/\s+/g, ' ').trim();
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark' });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+
+      const dialog = () =>
+        document.querySelector('html-editor-overlay > heo-overlay')?.shadowRoot
+          ?.querySelector('heo-extract-dialog')?.shadowRoot ?? null;
+      const button = (label) =>
+        Array.from(dialog()?.querySelectorAll('footer button') ?? []).find((b) => flat(b).includes(label)) ?? null;
+      const type = async (input, value) => {
+        input.value = value;
+        input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        await frames();
+      };
+
+      await check('stepOneSaysWhatPropsAreBeforeThereAreAny', async () => {
+        engine.beginBlockExtraction(document.getElementById('card'));
+        await frames();
+        const help = dialog()?.querySelector('.props-help');
+        return {
+          explains: /\{\{name\}\}/.test(flat(help)) && /no spaces/.test(flat(help)),
+          found: flat(help?.querySelector('.found')),
+          stepTwo: flat(dialog()?.querySelectorAll('.steps .step')[1]),
+        };
+      });
+
+      await check('andListsThemOnceTheMarkupHasSome', async () => {
+        engine.updateExtraction({
+          name: 'My card',
+          html: '<div class="card"><h3>{{title}}</h3><p>{{body}}</p></div>',
+        });
+        await frames();
+        return {
+          found: flat(dialog()?.querySelector('.props-help .found')),
+          stepTwo: flat(dialog()?.querySelectorAll('.steps .step')[1]),
+        };
+      });
+
+      await check('aNameWithASpaceIsFlaggedAsItIsTyped', async () => {
+        button('Continue')?.click();
+        await frames();
+        const name = dialog()?.querySelector('.propcard input[aria-label="Name for title"]');
+        await type(name, 'Card title');
+        const card = name.closest('.propcard');
+        return {
+          step: engine.store.value.extraction?.step,
+          invalid: name.getAttribute('aria-invalid'),
+          problem: flat(card.querySelector('.problem')),
+          fix: flat(card.querySelector('.problem button')),
+          hasLabelField: Boolean(card.querySelector('input[aria-label="Label for title"]')),
+        };
+      });
+
+      await check('saveSaysWhyItCannotSaveInsteadOfDoingNothing', async () => {
+        button('Save block')?.click();
+        await frames();
+        return {
+          stillOpen: engine.store.value.extraction?.step ?? 'closed',
+          footerError: flat(dialog()?.querySelector('footer .error')),
+          saved: engine.library.list().some((block) => block.name === 'My card'),
+        };
+      });
+
+      await check('theSuggestedNameFixesItAndTheBlockSaves', async () => {
+        dialog()?.querySelector('.propcard .problem button')?.click();
+        await frames();
+        const fixed = dialog()?.querySelector('.propcard input[aria-label="Name for title"]')?.value;
+        const renamed = flat(dialog()?.querySelector('.propcard .renamed'));
+        const errorCleared = !flat(dialog()?.querySelector('footer .error'));
+        button('Save block')?.click();
+        await frames();
+        const block = engine.library.list().find((one) => one.name === 'My card');
+        return {
+          fixed,
+          renamed,
+          errorCleared,
+          closed: engine.store.value.extraction === null,
+          html: block?.html ?? null,
+          props: block ? Object.fromEntries(Object.entries(block.props ?? {}).map(([k, v]) => [k, v.label])) : null,
+        };
+      });
+
+      await check('swappedNamesSwapRatherThanMerge', async () => {
+        engine.beginBlockExtraction(document.getElementById('card'));
+        await frames();
+        engine.updateExtraction({ name: 'Swap', html: '<p>{{a}} then {{b}}</p>' });
+        engine.commitExtraction();
+        await frames();
+        const props = engine.store.value.extraction.props.map((row) => ({ ...row, name: row.name === 'a' ? 'b' : 'a' }));
+        engine.updateExtraction({ props });
+        engine.commitExtraction();
+        await frames();
+        const block = engine.library.list().find((one) => one.name === 'Swap');
+        return { html: block?.html ?? null, props: Object.keys(block?.props ?? {}) };
+      });
+
+      await check('aClassExtractionErrorIsShownToo', async () => {
+        engine.beginClassExtraction(document.getElementById('styled'));
+        await frames();
+        const opened = engine.store.value.extraction?.mode ?? null;
+        engine.updateExtraction({ name: '!!!' });
+        engine.commitExtraction();
+        await frames();
+        const error = flat(dialog()?.querySelector('footer .error'));
+        engine.cancelExtraction();
+        await frames();
+        return { opened, error };
+      });
+
+      results.__errors = errors;
+      document.getElementById('out').textContent = 'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent = 'RESULTS:{"__errors":["' + String(e && e.message) + '"]}:END';
+    });
+  </script>
+</body>
+</html>

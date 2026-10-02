@@ -1310,6 +1310,13 @@ Prop types: `text`, `number`, `color`, `select`, `url`, `boolean`, `token`. A
 `token` prop reuses the style editor's suggestion ordering, so blocks insert with
 the project's own values rather than the preset defaults.
 
+The same works from the page: select an element, choose **Save as a reusable block** from its
+menu, and replace the parts that should change per copy with `{{name}}` in the HTML. The dialog
+lists the props it finds as you type, then gives each one a step of its own: the **name in the
+markup** (letters, digits, `-` or `_`, no spaces; renaming rewrites every placeholder), a
+**label** the insert form shows, a type, a default and a description. An unusable name is
+flagged under its field with a suggested fix — `Card title` → `cardTitle`.
+
 **The `var(--token, fallback)` convention** is what makes the built-in presets
 feel native anywhere. When the host page defines a matching token the block
 adopts the project's design language on insert; when it does not, the fallback
@@ -1515,6 +1522,7 @@ missing on purpose, and the runner refuses to start until every page is in one l
 | `test/script-tag-manual.html` | That a bundle *without* `data-heo` mounts nothing, and that `mount()` and `unmount()` still behave. |
 | `test/opaque-origin.html` | A page opened from disk, run **without** `--allow-file-access-from-files` so the origins are genuinely opaque. Confirms the stylesheet's rules really are refused and a sibling `fetch` really does fail, then that connecting a folder makes both files readable, offers the stylesheet as a design-system target, and says the preview cannot update. |
 | `test/line-break-split.html` | Splitting at double line breaks: which blank lines count, the divider and Split button while typing and on a selected element, the caret surviving the split, "Split automatically" sweeping the page as one undo step with the setting, Enter twice opening a new paragraph, the setting in both seeds, the save patching every split in place, and the Settings dialog's switch. |
+| `test/block-props.html` | "Save as a reusable block" with props: the HTML step explains `{{name}}` and lists the props it finds, a name with a space is flagged as it is typed with a one-click fix, Save says why it cannot save instead of silently doing nothing, renames reach the markup (and swapping two names swaps them), and class-extraction errors are shown too. |
 | `test/line-break-split-seed.html` | A page whose seed has "Split automatically" on: nothing changes until editing starts, then its blank lines split as one announced, undoable step — leaving table cells and script-rendered content alone — and only once. |
 
 `test/writeback.html` hands the engine an in-memory `FileHost` rather than a real

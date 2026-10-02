@@ -2,7 +2,7 @@ import { BLOCK_STYLE_ID } from './constants.js';
 import { evaluateModule } from './lit-bridge.js';
 import { scopeBlockCSS } from './block-css.js';
 import { allPresets } from './presets.js';
-import { renameTemplateProp, renderBlockTemplate, sanitizeFragment, templatePropNames } from './sanitize.js';
+import { renameTemplateProps, renderBlockTemplate, sanitizeFragment, templatePropNames } from './sanitize.js';
 import { ManagedStyleSheet } from './stylesheet.js';
 import type { BlockKind, LibraryBlock, PropSpec } from './types.js';
 
@@ -457,6 +457,39 @@ export function blockPropRows(
   });
 }
 
+/** What a prop name has to look like: it is written between `{{` and `}}` in the markup. */
+const PROP_NAME = /^[A-Za-z][\w-]*$/;
+
+/**
+ * Why a prop name cannot be used, or null when it can.
+ *
+ * Shared by the dialog, which shows it under the field as the name is typed, and by
+ * `applyBlockProps`, which refuses to save with it — so the two can never disagree about what
+ * counts as a valid name. `others` are the names every other prop ends up with.
+ */
+export function propNameProblem(name: string, others: readonly string[] = []): string | null {
+  const trimmed = name.trim();
+  if (!trimmed) return 'Give it a name.';
+  if (!PROP_NAME.test(trimmed)) return 'Use letters, digits, - or _, starting with a letter — no spaces.';
+  if (others.some((other) => other.trim() === trimmed)) return `Another prop is already called ${trimmed}.`;
+  return null;
+}
+
+/** The nearest usable prop name to what was typed: `Card title` becomes `cardTitle`. */
+export function suggestPropName(text: string): string {
+  const words = String(text ?? '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .split(/[^A-Za-z0-9_-]+/)
+    .filter(Boolean);
+  const camel = words
+    .map((word, index) =>
+      index === 0 ? word.charAt(0).toLowerCase() + word.slice(1) : word.charAt(0).toUpperCase() + word.slice(1),
+    )
+    .join('');
+  return camel.replace(/^[^A-Za-z]+/, '');
+}
+
 /**
  * Turn reviewed rows into declared props, rewriting the markup for any rename.
  *
@@ -468,24 +501,21 @@ export function applyBlockProps(
   html: string,
   rows: readonly BlockPropRow[],
 ): { html: string; props: Record<string, PropSpec>; error?: string } {
-  let out = html;
+  const names = rows.map((row) => row.name.trim());
+  for (const [index, row] of rows.entries()) {
+    const problem = propNameProblem(row.name, names.filter((_, other) => other !== index));
+    if (problem) {
+      const suggestion = suggestPropName(row.name);
+      const hint = suggestion && suggestion !== row.name.trim() && !names.includes(suggestion) ? ` Try ${suggestion}.` : '';
+      return { html, props: {}, error: `{{${row.placeholder}}}: ${problem}${hint}` };
+    }
+  }
+
+  const renames = new Map<string, string>();
   const props: Record<string, PropSpec> = {};
-  for (const row of rows) {
-    const name = row.name.trim();
-    if (!name) {
-      return { html, props: {}, error: `Give {{${row.placeholder}}} a name, or remove it from the markup.` };
-    }
-    if (!/^[A-Za-z][\w-]*$/.test(name)) {
-      return {
-        html,
-        props: {},
-        error: `"${name}" cannot be a prop name: start with a letter, then letters, digits, - or _.`,
-      };
-    }
-    if (props[name]) {
-      return { html, props: {}, error: `Two props are called ${name}. Names have to be unique.` };
-    }
-    if (name !== row.placeholder) out = renameTemplateProp(out, row.placeholder, name);
+  for (const [index, row] of rows.entries()) {
+    const name = names[index];
+    if (name !== row.placeholder) renames.set(row.placeholder, name);
     // A label still matching what the placeholder produced was never chosen, so it
     // follows the rename. One the author set is left alone.
     const untouched = !row.label.trim() || row.label.trim() === humanisePropName(row.placeholder);
@@ -496,7 +526,7 @@ export function applyBlockProps(
       ...(row.default.trim() ? { default: row.default.trim() } : {}),
     };
   }
-  return { html: out, props };
+  return { html: renames.size ? renameTemplateProps(html, renames) : html, props };
 }
 
 /**
