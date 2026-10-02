@@ -77,6 +77,7 @@ import { domRecorder, movesOf, revertOps, shadowRootsOf, within, type DomOp } fr
 import { History, nextChangeId, type Command } from './history.js';
 import { handleKeyDown, handleKeyUp, matchesShortcut } from './keymap.js';
 import { findBreakRuns, type BreakRun } from './line-breaks.js';
+import { applyTurnInto, finishTurnInto, planTurnInto } from './turn-into.js';
 import { SettingsRegistry } from './settings.js';
 import {
   applyBlockProps,
@@ -301,6 +302,11 @@ export interface ToastMessage {
 export interface InsertAnchor {
   reference: HTMLElement;
   position: InsertPosition;
+  /**
+   * `turn` opens the picker to turn `reference` into the chosen block, carrying its content
+   * across, rather than to insert beside it. Always with `position: 'replace'`.
+   */
+  mode?: 'insert' | 'turn';
 }
 
 /**
@@ -4290,54 +4296,107 @@ export class EditorEngine {
         return null;
       }
       const replacing = target.position === 'replace' ? labelFor(target.reference) : null;
-      const command = insertNodes(
-        target.reference,
-        target.position,
-        nodes,
-        replacing ? `Replace with ${block.name}` : `Insert ${block.name}`,
-      );
-      if (!command) return null;
-
-      /*
-       * Instantiating a block can add one new managed stylesheet segment. Keep that CSS side effect
-       * in the same undo step as the insertion, but expose it with the existing token-rule
-       * vocabulary so the Save modal describes it alongside authored CSS rules.
-       */
-      const generatedBlockCSS = this.library.css.startsWith(cssBefore)
-        ? this.library.css.slice(cssBefore.length).trim()
-        : '';
-      if (generatedBlockCSS) {
-        const selector = `[data-heo-block="${block.id}"]`;
-        command.extraRecords = [{
-          id: nextChangeId(),
-          kind: 'token-rule',
-          summary: `Add CSS rule ${selector}`,
-          target: selector,
-          after: generatedBlockCSS,
-          detail: { selector, block: block.name },
-          at: Date.now(),
-        }];
-      }
-      this.history.commit(command);
-      if (block.element?.tag) this.#injectedElements.add(block.element.tag);
-      // Remember what the block was configured with, so the props panel can offer
-      // the same form again instead of leaving the values write-once — and so this
-      // element can be found again when the template it came from changes.
-      this.#linkInstance(nodes[0], block, props);
-      this.store.patch({ insertAnchor: null });
-      this.select(nodes[0]);
-      this.notify(
-        replacing ? `Replaced ${replacing} with ${block.name}.` : `Inserted ${block.name}.`,
-        'success',
-        { label: 'Undo', run: () => this.undo() },
-      );
-      return nodes[0];
+      return this.#commitBlockNodes(block, nodes, props, target, cssBefore, {
+        label: replacing ? `Replace with ${block.name}` : `Insert ${block.name}`,
+        message: replacing ? `Replaced ${replacing} with ${block.name}.` : `Inserted ${block.name}.`,
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error('[html-editor-overlay] insert failed', error);
       this.notify(`Could not insert ${block.name}: ${message}`, 'error');
       return null;
     }
+  }
+
+  /**
+   * Turn an element into a block, carrying its content into the block's places for it.
+   *
+   * Headings go to the block's heading, paragraphs to its paragraphs, links and images to its
+   * links and images — by tag, then by kind, then by order — and where the block declares a prop
+   * for a place the words become that prop's value, so the result is a real instance of the block.
+   * Content with no place of its own is added beside a place of the same kind, or joined to the
+   * last one that took text. A block with no places at all receives the old content whole.
+   *
+   * One undo step, like any replacement.
+   */
+  async turnInto(block: LibraryBlock, el = this.store.value.selected): Promise<HTMLElement | null> {
+    if (!isMutable(el)) {
+      if (el) this.notify(`${labelFor(el)} cannot be replaced.`, 'error');
+      return null;
+    }
+    const from = labelFor(el);
+    try {
+      const cssBefore = this.library.css;
+      const plan = planTurnInto(
+        el,
+        block,
+        (one, values) => this.library.expand(one, values),
+        this.library.defaultProps(block),
+      );
+      const { nodes } = await this.library.instantiate(block, plan.values);
+      if (!nodes.length) {
+        this.notify('That block produced no markup.', 'error');
+        return null;
+      }
+      const dropped = applyTurnInto(plan, nodes);
+      finishTurnInto(nodes);
+      return this.#commitBlockNodes(block, nodes, plan.values, { reference: el, position: 'replace' }, cssBefore, {
+        label: `Turn ${from} into ${block.name}`,
+        message: dropped
+          ? `Turned ${from} into ${block.name}. ${dropped} piece${dropped === 1 ? '' : 's'} of content had nowhere to go — Undo brings ${dropped === 1 ? 'it' : 'them'} back.`
+          : `Turned ${from} into ${block.name}.`,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('[html-editor-overlay] turn into failed', error);
+      this.notify(`Could not turn ${from} into ${block.name}: ${message}`, 'error');
+      return null;
+    }
+  }
+
+  /** Put built block nodes into the page as one undoable change, and tie them to their block. */
+  #commitBlockNodes(
+    block: LibraryBlock,
+    nodes: HTMLElement[],
+    props: Record<string, unknown>,
+    target: InsertAnchor,
+    cssBefore: string,
+    words: { label: string; message: string },
+  ): HTMLElement | null {
+    const command = insertNodes(target.reference, target.position, nodes, words.label);
+    if (!command) return null;
+
+    /*
+     * Instantiating a block can add one new managed stylesheet segment. Keep that CSS side effect
+     * in the same undo step as the insertion, but expose it with the existing token-rule
+     * vocabulary so the Save modal describes it alongside authored CSS rules.
+     */
+    const generatedBlockCSS = this.library.css.startsWith(cssBefore)
+      ? this.library.css.slice(cssBefore.length).trim()
+      : '';
+    if (generatedBlockCSS) {
+      const selector = `[data-heo-block="${block.id}"]`;
+      command.extraRecords = [{
+        id: nextChangeId(),
+        kind: 'token-rule',
+        summary: `Add CSS rule ${selector}`,
+        target: selector,
+        after: generatedBlockCSS,
+        detail: { selector, block: block.name },
+        at: Date.now(),
+      }];
+    }
+    // A refused change has already said why and put the page back.
+    if (!this.history.commit(command)) return null;
+    if (block.element?.tag) this.#injectedElements.add(block.element.tag);
+    // Remember what the block was configured with, so the props panel can offer
+    // the same form again instead of leaving the values write-once — and so this
+    // element can be found again when the template it came from changes.
+    this.#linkInstance(nodes[0], block, props);
+    this.store.patch({ insertAnchor: null });
+    this.select(nodes[0]);
+    this.notify(words.message, 'success', { label: 'Undo', run: () => this.undo() });
+    return nodes[0];
   }
 
   insertMarkup(html: string, anchor?: InsertAnchor): HTMLElement | null {

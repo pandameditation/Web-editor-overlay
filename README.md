@@ -43,6 +43,7 @@ root, no build step required on the consuming side.
 - [Design system format](#design-system-format)
 - [Design system seeds](#design-system-seeds)
 - [Inserting HTML elements](#inserting-html-elements)
+  - [Turning an element into a block](#turning-an-element-into-a-block)
 - [Modal behaviour](#modal-behaviour)
 - [Authoring blocks](#authoring-blocks)
 - [Architecture](#architecture)
@@ -1252,6 +1253,28 @@ one click away. The primitives deliberately stay out of the block library, so th
 Library panel, the quick menu's wrap list and every exported seed keep to the
 curated set.
 
+### Turning an element into a block
+
+**Turn into ›**, first in the element's handle menu, opens the same picker to *replace* the
+element while keeping what it says. Its content is read as pieces — headings, paragraphs, list
+items, links, images, loose text — and each piece goes to the block's place of the same tag, then
+of the same kind (a heading to the heading, a link to the link), then by order:
+
+- Where the block declares a prop for a place, the text becomes that prop's value, and a link's
+  address goes into the prop for its `href`. The result is a real instance of the block: its
+  Props panel shows the carried text.
+- Markup inside a sentence — a bold word, a link — comes along.
+- Content with no place of its own is added beside a place of the same kind (a fourth list item
+  into a three-item list), or joined to the last place that took text.
+- A block with nowhere for content, or a plain box like **Div**, takes the old content whole.
+- Turning one run of text into another, such as `<p>` into **Heading 2**, keeps its `id`, `class`
+  and `style`.
+- Places nothing was matched to keep the block's own text.
+
+It is one undo step. A block that cannot sit where the element is — a card inside a paragraph —
+is refused with the reason, and if something had nowhere to go at all (into a **Divider**, say)
+the confirmation says so.
+
 ---
 
 ## Modal behaviour
@@ -1522,6 +1545,7 @@ missing on purpose, and the runner refuses to start until every page is in one l
 | `test/script-tag-manual.html` | That a bundle *without* `data-heo` mounts nothing, and that `mount()` and `unmount()` still behave. |
 | `test/opaque-origin.html` | A page opened from disk, run **without** `--allow-file-access-from-files` so the origins are genuinely opaque. Confirms the stylesheet's rules really are refused and a sibling `fetch` really does fail, then that connecting a folder makes both files readable, offers the stylesheet as a design-system target, and says the preview cannot update. |
 | `test/line-break-split.html` | Splitting at double line breaks: which blank lines count, the divider and Split button while typing and on a selected element, the caret surviving the split, "Split automatically" sweeping the page as one undo step with the setting, Enter twice opening a new paragraph, the setting in both seeds, the save patching every split in place, and the Settings dialog's switch. |
+| `test/turn-into.html` | "Turn into" from the handle menu: placed before "Edit text", opens the picker in turn mode, and carries content across — a section into a card (text and link into props, the extra paragraph kept), a paragraph into a heading (markup and attributes kept), a list keeping every item, a stat and a figure keeping their parts, a plain box taking several pieces whole, a divider reporting what it could not hold, a refused placement, undo, and the save. |
 | `test/block-props.html` | "Save as a reusable block" with props: the HTML step explains `{{name}}` and lists the props it finds, a name with a space is flagged as it is typed with a one-click fix, Save says why it cannot save instead of silently doing nothing, renames reach the markup (and swapping two names swaps them), and class-extraction errors are shown too. |
 | `test/line-break-split-seed.html` | A page whose seed has "Split automatically" on: nothing changes until editing starts, then its blank lines split as one announced, undoable step — leaving table cells and script-rendered content alone — and only once. |
 

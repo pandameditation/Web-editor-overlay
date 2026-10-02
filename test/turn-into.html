@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Turn into: replacing an element with a block, keeping its content</title>
+  <style>body { margin: 0; padding: 24px; font: 16px/1.5 system-ui, sans-serif; } pre { margin-top: 16px; }</style>
+</head>
+<body>
+  <main id="page">
+    <section id="promo">
+      <h2>Spring sale</h2>
+      <p>Everything is <strong>20% off</strong> this week.</p>
+      <p>Ends on Sunday.</p>
+      <a href="https://example.com/sale">Shop now</a>
+    </section>
+    <p id="lead" class="lead">Hello <b>world</b>, again.</p>
+    <ul id="list"><li>Apples</li><li>Pears</li><li>Plums</li><li>Figs</li></ul>
+    <div id="stat"><span>42</span><span>Happy clients</span></div>
+    <figure id="photo"><img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" alt="A photo"><figcaption>The caption</figcaption></figure>
+    <p id="plain">Just a sentence.</p>
+    <p id="to-hr">Will not fit.</p>
+    <article id="multi"><h3>One</h3><p>Two</p></article>
+    <p id="holder">Words with <span id="inline">an inline span</span> inside.</p>
+  </main>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const errors = [];
+      window.addEventListener('error', (e) => errors.push('error: ' + e.message));
+      window.addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+      const results = {};
+      const check = async (name, fn) => {
+        document.getElementById('progress').textContent = name;
+        try { results[name] = await fn(); }
+        catch (err) { results[name] = 'THREW: ' + String(err && err.stack); }
+      };
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const flat = (node) => (node?.textContent ?? '').replace(/\s+/g, ' ').trim();
+      const byId = (id) => document.getElementById(id);
+      /** Markup without the editor's attributes or inline styles, so it reads as the structure. */
+      const shape = (el) => (el?.outerHTML ?? 'null')
+        .replace(/ (?:data-heo-[\w-]+|style)="[^"]*"/g, '')
+        .replace(/>\s+</g, '><')
+        .trim();
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark' });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      const directory = decodeURIComponent(location.pathname).replace(/[^/]*$/, '');
+      const disk = new Map();
+      await engine.attachProject({
+        kind: 'directory',
+        label: 'memory',
+        resolve(url) {
+          const path = decodeURIComponent(new URL(url, location.href).pathname);
+          return path.startsWith(directory) ? path.slice(directory.length) : null;
+        },
+        read: async (path) => {
+          if (disk.has(path)) return disk.get(path);
+          try { const text = await (await fetch('./' + path)).text(); disk.set(path, text); return text; }
+          catch { return null; }
+        },
+        write: async (path, text) => { disk.set(path, text); },
+        ensureWritable: async () => true,
+        release: async () => { },
+      }, { quiet: true });
+      await frames();
+
+      const overlay = () => document.querySelector('html-editor-overlay > heo-overlay')?.shadowRoot;
+      const quickMenu = () => overlay()?.querySelector('heo-quick-menu')?.shadowRoot;
+      const picker = () => overlay()?.querySelector('heo-insert-menu')?.shadowRoot;
+      /** Select, open the handle menu, choose Turn into, and pick a row by its visible name. */
+      const turnVia = async (el, rowName) => {
+        api.select(el);
+        engine.setQuickMenu(true);
+        await frames();
+        Array.from(quickMenu()?.querySelectorAll('button.item') ?? []).find((b) => flat(b).startsWith('Turn into'))?.click();
+        await frames();
+        const row = Array.from(picker()?.querySelectorAll('.list button.row') ?? [])
+          .find((b) => flat(b.querySelector('.name')) === rowName);
+        if (!row) return null;
+        row.click();
+        for (let i = 0; i < 10 && engine.store.value.insertAnchor; i += 1) await frames();
+        await frames();
+        return engine.store.value.selected;
+      };
+
+      await check('turnIntoComesBeforeEditText', async () => {
+        api.select(byId('promo'));
+        engine.setQuickMenu(true);
+        await frames();
+        const labels = Array.from(quickMenu()?.querySelectorAll('button.item') ?? []).map((b) => flat(b.querySelector('.text')));
+        const item = Array.from(quickMenu().querySelectorAll('button.item')).find((b) => flat(b).startsWith('Turn into'));
+        item?.click();
+        await frames();
+        const anchor = engine.store.value.insertAnchor;
+        const result = {
+          firstTwo: labels.slice(0, 2),
+          hint: flat(item?.querySelector('.hint')),
+          pickerOpen: Boolean(picker()?.querySelector('.pop')),
+          mode: anchor?.mode ?? null,
+          header: flat(picker()?.querySelector('.where .turning')),
+          noPasteHtml: !Array.from(picker()?.querySelectorAll('.list button.row') ?? []).some((b) => /Paste HTML/.test(flat(b))),
+        };
+        engine.setInsertAnchor(null);
+        await frames();
+        return result;
+      });
+
+      await check('aSectionBecomesACardWithItsContent', async () => {
+        const card = await turnVia(byId('promo'), 'Card');
+        const instance = engine.blockInstance(card);
+        return {
+          shape: shape(card),
+          props: instance?.values ?? null,
+          oldGone: !byId('promo'),
+        };
+      });
+
+      await check('undoBringsTheSectionBack', async () => {
+        engine.undo();
+        await frames();
+        return shape(byId('promo'));
+      });
+
+      await check('aParagraphBecomesAHeadingKeepingItsMarkupAndAttributes', async () =>
+        shape(await turnVia(byId('lead'), 'Heading 2')));
+
+      await check('aListKeepsEveryItem', async () => {
+        const list = await turnVia(byId('list'), 'List');
+        return { shape: shape(list), props: engine.blockInstance(list)?.values ?? null };
+      });
+
+      await check('aStatKeepsValueAndLabelApart', async () =>
+        shape(await turnVia(byId('stat'), 'Stat')));
+
+      await check('aFigureKeepsItsImageAndCaption', async () =>
+        shape(await turnVia(byId('photo'), 'Image')));
+
+      await check('unfilledPlacesKeepTheBlocksOwnText', async () =>
+        shape(await turnVia(byId('plain'), 'Centered page')));
+
+      await check('aPlainBoxTakesSeveralPiecesWhole', async () =>
+        shape(await turnVia(byId('multi'), 'Div')));
+
+      await check('aDividerSaysTheContentHadNowhereToGo', async () => {
+        const hr = await turnVia(byId('to-hr'), 'Divider');
+        return { shape: shape(hr), toast: engine.store.value.toast?.message ?? null };
+      });
+
+      await check('aBlockThatCannotGoThereIsRefusedNotFaked', async () => {
+        await turnVia(byId('inline'), 'Card');
+        return {
+          spanStillThere: Boolean(byId('inline')),
+          noArticleInParagraph: !byId('holder').querySelector('article'),
+          toast: engine.store.value.toast?.message ?? null,
+        };
+      });
+
+      await check('theSaveWritesTheConversions', async () => {
+        const plan = await engine.previewWritePlan();
+        const write = (plan?.writes ?? []).find((w) => w.kind === 'document');
+        const file = new DOMParser().parseFromString(write?.after ?? '', 'text/html');
+        return {
+          reason: write?.reason ?? null,
+          warnings: write?.warnings ?? [],
+          headingInFile: shape(file.querySelector('main h2.lead')),
+          noEditorMarkers: !/data-heo-(inserted|turn-extra)|contenteditable/.test(file.querySelector('main')?.outerHTML ?? 'missing'),
+        };
+      });
+
+      results.__errors = errors;
+      document.getElementById('out').textContent = 'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent = 'RESULTS:{"__errors":["' + String(e && e.message) + '"]}:END';
+    });
+  </script>
+</body>
+</html>

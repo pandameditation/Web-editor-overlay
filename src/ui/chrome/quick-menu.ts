@@ -212,6 +212,18 @@ export class HeoQuickMenu extends HeoElement {
     const rendered = this.editor.provenanceOf(el);
 
     const content: MenuItem[] = [
+      {
+        id: 'turn-into',
+        label: 'Turn into',
+        glyph: 'blocks',
+        hint: '›',
+        disabled: !mutable,
+        // The block picker, in a mode that carries this element's content into what is picked.
+        run: () => {
+          this.editor.setQuickMenu(false);
+          this.editor.setInsertAnchor({ reference: el, position: 'replace', mode: 'turn' });
+        },
+      },
       rendered
         ? {
           id: 'source',

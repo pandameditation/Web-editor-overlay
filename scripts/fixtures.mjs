@@ -63,6 +63,7 @@ export const FIXTURES = [
   { page: 'test/line-break-split.html', budget: 60000, weight: 3000 },
   { page: 'test/line-break-split-seed.html', budget: 45000, weight: 2000 },
   { page: 'test/block-props.html', budget: 45000, weight: 2000 },
+  { page: 'test/turn-into.html', budget: 60000, weight: 2500 },
   { page: 'test/split-save-modes.html', budget: 45000, weight: 2000, fast: true },
   { page: 'test/shield.html', budget: 45000, weight: 2900 },
   { page: 'test/bundle.html', budget: 45000, strict: true, weight: 2800 },

@@ -110,6 +110,23 @@ export class HeoInsertMenu extends HeoElement {
         text-overflow: ellipsis;
         white-space: nowrap;
       }
+      .where .turning {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        color: var(--heo-text-dim);
+        font-size: 11.5px;
+      }
+      .where .turn-note {
+        color: var(--heo-text-faint);
+        font-size: 10.5px;
+        line-height: 1.4;
+      }
+      .where .turning b {
+        color: var(--heo-text);
+        font-family: var(--heo-mono);
+        font-weight: 500;
+      }
       .where .target b {
         color: var(--heo-text-dim);
         font-weight: 500;
@@ -373,6 +390,8 @@ export class HeoInsertMenu extends HeoElement {
      * field to write it in. Otherwise it sits at the end, out of the way of the answers that
      * needed no typing.
      */
+    // Writing markup by hand has no content to carry, so turning offers only blocks and elements.
+    if (this.#turning) return ordered;
     const paste: InsertEntry = { id: 'paste', kind: 'paste' };
     return ordered.length ? [...ordered, paste] : [paste];
   }
@@ -424,7 +443,7 @@ export class HeoInsertMenu extends HeoElement {
         ${icon('search', 13)}
         <input
           type="text"
-          placeholder="Search blocks and HTML…"
+          placeholder=${this.#turning ? 'Turn into… search blocks and HTML' : 'Search blocks and HTML…'}
           .value=${this.query}
           spellcheck="false"
           autocomplete="off"
@@ -451,7 +470,7 @@ export class HeoInsertMenu extends HeoElement {
       }}
         ></heo-segmented>
       </div>
-      ${this.#renderWhere(anchor)}
+      ${this.#turning ? this.#renderTurn(anchor) : this.#renderWhere(anchor)}
       <div class="list" role="listbox">
         ${entries.length === 0
         ? html`<div class="empty">
@@ -595,6 +614,19 @@ export class HeoInsertMenu extends HeoElement {
     </div>`;
   }
 
+  /** Whether the picker was opened from "Turn into", which replaces and carries content across. */
+  get #turning(): boolean {
+    return this.state.value.insertAnchor?.mode === 'turn';
+  }
+
+  /** In place of the position switch: what is being turned, and what happens to its content. */
+  #renderTurn(anchor: InsertAnchor): TemplateResult {
+    return html`<div class="where">
+      <span class="turning">${icon('blocks', 12)} Turn <b>${labelFor(anchor.reference)}</b> into…</span>
+      <span class="turn-note">Its text, links and images move into the block you pick.</span>
+    </div>`;
+  }
+
   #renderConfigure(block: LibraryBlock): TemplateResult {
     return html`<div class="configure">
       <div class="chead">
@@ -691,6 +723,11 @@ export class HeoInsertMenu extends HeoElement {
       return;
     }
     const { block } = entry;
+    // Turning fills the props from the element's own content, so there is nothing to ask first.
+    if (this.#turning) {
+      void this.#insert(block);
+      return;
+    }
     if (block.props && Object.keys(block.props).length) {
       this.props = this.editor.library.defaultProps(block);
       this.configuring = block;
@@ -701,7 +738,8 @@ export class HeoInsertMenu extends HeoElement {
 
   async #insert(block: LibraryBlock): Promise<void> {
     const anchor = this.state.value.insertAnchor;
-    await this.editor.insertBlock(block, this.props, anchor ?? undefined);
+    if (anchor?.mode === 'turn') await this.editor.turnInto(block, anchor.reference);
+    else await this.editor.insertBlock(block, this.props, anchor ?? undefined);
     this.configuring = null;
     this.query = '';
     this.highlight = 0;
