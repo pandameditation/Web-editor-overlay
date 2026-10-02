@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>A split paragraph saves in every mode</title>
+  <style>
+    body { margin: 0; padding: 24px; font: 16px/1.5 system-ui, sans-serif; }
+  </style>
+</head>
+<body>
+  <!--
+    No ids, on purpose. An id lets the file comparison find a paragraph whatever its text says,
+    which hid the bug: a split changes the paragraph's words, and an id-less paragraph whose words
+    no longer match the file was concluded to be built by the page's code — refused by the write
+    plan, and left out of the Save-as-HTML copy altogether.
+  -->
+  <main>
+    <p class="a">Alpha one<br><br>Alpha two</p>
+    <p class="b">Bravo one<br><br>Bravo two</p>
+    <section>
+      <p>Charlie one<br><br>Charlie two</p>
+      <p>Delta one<br><br>Delta two</p>
+    </section>
+  </main>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const errors = [];
+      window.addEventListener('error', (e) => errors.push('error: ' + e.message));
+      window.addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+      const results = {};
+      const check = async (name, fn) => {
+        document.getElementById('progress').textContent = name;
+        try { results[name] = await fn(); }
+        catch (err) { results[name] = { threw: false, error: String(err && err.stack) }; }
+      };
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const EXPECTED = [
+        'Alpha one', 'Alpha two', 'Bravo one', 'Bravo two',
+        'Charlie one', 'Charlie two', 'Delta one', 'Delta two',
+      ];
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark' });
+      const engine = api.engine;
+      // Every toast, kept, so a warning that came and went is still on the record.
+      const toasts = [];
+      const notify = engine.notify.bind(engine);
+      engine.notify = (message, ...rest) => {
+        toasts.push(message);
+        notify(message, ...rest);
+      };
+      api.setEditing(true);
+      await engine.whenReady();
+
+      /*
+       * One in-memory project, reachable as either kind of host.
+       *
+       * `directory` is a folder handed over through the picker; `server` is what the Vite plugin
+       * connects. Sharing the disk is what makes the reconnect realistic: the second host reads
+       * the same file the first one did, the way a restarted dev server serves the same project.
+       */
+      const directory = decodeURIComponent(location.pathname).replace(/[^/]*$/, '');
+      const disk = new Map();
+      const hostOf = (kind) => ({
+        kind,
+        label: kind === 'server' ? 'dev server' : 'folder',
+        resolve(url) {
+          const path = decodeURIComponent(new URL(url, location.href).pathname);
+          return path.startsWith(directory) ? path.slice(directory.length) : null;
+        },
+        read: async (path) => {
+          if (disk.has(path)) return disk.get(path);
+          try {
+            const text = await (await fetch('./' + path)).text();
+            disk.set(path, text);
+            return text;
+          } catch { return null; }
+        },
+        write: async (path, text) => { disk.set(path, text); },
+        ensureWritable: async () => true,
+        release: async () => { },
+      });
+
+      const paragraphs = () => Array.from(document.querySelectorAll('main p'));
+      const textsIn = (root) => Array.from(root.querySelectorAll('main p')).map((p) => p.textContent.trim());
+      const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+      const parse = (html) => new DOMParser().parseFromString(html, 'text/html');
+
+      const risks = () => paragraphs()
+        .map((p) => [p.textContent.trim(), engine.renderRiskOf(p)])
+        .filter(([, risk]) => risk)
+        .map(([text, risk]) => `${text}: ${risk.kind}/${risk.confidence}`);
+      /** The selection badge's answer for every paragraph, from a comparison brought up to date. */
+      const riskState = async () => {
+        await engine.refreshRenderRisks();
+        const list = risks();
+        return { noParagraphLooksRendered: list.length === 0, risks: list };
+      };
+
+      /** What a save would do right now, asked the way the Files step asks. */
+      const planState = async () => {
+        // A fresh comparison against the file, which is what connecting or reconnecting forces.
+        await engine.establishContentBaseline();
+        const plan = await engine.previewWritePlan();
+        const write = (plan?.writes ?? []).find((w) => w.kind === 'document');
+        const texts = write ? textsIn(parse(write.after)) : [];
+        return {
+          writesTheDocument: Boolean(write),
+          nothingRefused: (plan?.unwritable ?? []).length === 0,
+          fileHasEveryParagraph: same(texts, EXPECTED),
+          ...(await riskState()),
+          unwritable: (plan?.unwritable ?? []).map((u) => `${u.record.summary}: ${u.reason}`),
+          texts,
+        };
+      };
+
+      await engine.attachProject(hostOf('directory'), { quiet: true });
+      await frames();
+
+      /* ---- Three ways to split, none of them on an element with an id. ---- */
+      await check('splitThreeWays', async () => {
+        // The divider's Split button on a selected element, outside any text edit.
+        const a = document.querySelector('p.a');
+        api.select(a);
+        const fromDivider = engine.splitAtBreak(a.querySelector('br'));
+        await frames();
+
+        // Inside a text edit, which commits the typing first.
+        const b = document.querySelector('p.b');
+        engine.beginTextEdit(b);
+        await frames();
+        const duringEdit = engine.splitAtBreak(b.querySelector('br'));
+        await frames();
+        engine.endTextEdit(true);
+        await frames();
+
+        // Everything left, the way "Split all" and the automatic sweep do it.
+        const swept = engine.splitAllBreaks();
+        await frames();
+
+        return {
+          fromDivider: Boolean(fromDivider),
+          duringEdit: Boolean(duringEdit),
+          sweptTwo: swept === 2,
+          pageHasEveryParagraph: same(textsIn(document), EXPECTED),
+          texts: textsIn(document),
+        };
+      });
+
+      /* ---- A folder handed over through the picker. ---- */
+      await check('folder', planState);
+
+      /* ---- Disconnected: Save as HTML, which drops whatever it thinks the page generated. ---- */
+      await check('disconnectedSaveAsHtml', async () => {
+        await engine.disconnectProject();
+        await engine.establishContentBaseline();
+        const texts = textsIn(parse(engine.exportHTML()));
+        return {
+          exportKeepsEveryParagraph: same(texts, EXPECTED),
+          ...(await riskState()),
+          texts,
+        };
+      });
+
+      /* ---- Reconnected to a dev server, which re-reads the file and compares again. ---- */
+      await check('reconnectedDevServer', async () => {
+        await engine.attachProject(hostOf('server'), { quiet: true });
+        return planState();
+      });
+
+      /* ---- And once more after Disconnect and Reconnect, the reported sequence. ---- */
+      await check('disconnectReconnectAgain', async () => {
+        await engine.disconnectProject();
+        await engine.attachProject(hostOf('server'), { quiet: true });
+        return planState();
+      });
+
+      /* ---- The write itself, and the next save finding nothing left to do. ---- */
+      await check('saveWritesTheSplits', async () => {
+        const ok = await engine.save();
+        const path = Array.from(disk.keys()).find((key) => key.endsWith('.html'));
+        const texts = path ? textsIn(parse(disk.get(path))) : [];
+        await engine.establishContentBaseline();
+        return {
+          saved: ok === true,
+          fileHasEveryParagraph: same(texts, EXPECTED),
+          ...(await riskState()),
+          nothingPending: engine.handoffRecords.length === 0,
+          texts,
+        };
+      });
+
+      /* ---- Editing on after the save: the file has moved on, and the checks must know it. ---- */
+      await check('editAfterSave', async () => {
+        const from = toasts.length;
+        const two = paragraphs().find((p) => p.textContent.trim() === 'Alpha two');
+        engine.beginTextEdit(two);
+        await frames();
+        two.firstChild.data = 'Alpha two, edited';
+        engine.endTextEdit(true);
+        await frames();
+        // Longer than the placeability check's debounce, which is what raises the warning.
+        await new Promise((r) => setTimeout(r, 900));
+        const warnings = toasts.slice(from).filter((m) => /cannot be written/.test(m));
+        const plan = await engine.previewWritePlan();
+        const write = (plan?.writes ?? []).find((w) => w.kind === 'document');
+        const expected = EXPECTED.map((t) => (t === 'Alpha two' ? 'Alpha two, edited' : t));
+        return {
+          noFalseWarning: warnings.length === 0,
+          nothingRefused: (plan?.unwritable ?? []).length === 0,
+          fileHasTheEdit: write ? same(textsIn(parse(write.after)), expected) : false,
+          ...(await riskState()),
+          warnings,
+        };
+      });
+
+      /* ---- Undo after the save, then redo: the same nodes come back, still the user's. ---- */
+      await check('undoRedoAfterSave', async () => {
+        engine.undo();
+        await frames();
+        engine.undo();
+        await frames();
+        const undone = textsIn(document);
+        engine.redo();
+        await frames();
+        await engine.establishContentBaseline();
+        return {
+          undoRejoinedAParagraph: undone.length === EXPECTED.length - 2,
+          redoRestoredEveryParagraph: same(textsIn(document), EXPECTED),
+          ...(await riskState()),
+          undone,
+        };
+      });
+
+      results.browserErrors = { ok: errors.length === 0, errors };
+      const failed = Object.entries(results)
+        .filter(([, group]) => group && typeof group === 'object')
+        .filter(([, group]) => Object.values(group).some((value) => value === false))
+        .map(([name]) => name);
+      document.getElementById('out').textContent = 'RESULTS:' + JSON.stringify({
+        ok: failed.length === 0,
+        failed,
+        ...results,
+      }, null, 1) + ':END';
+    })().catch((error) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"ok":false,"__fatal":' + JSON.stringify(String((error && error.stack) || error)) + '}:END';
+    });
+  </script>
+</body>
+</html>

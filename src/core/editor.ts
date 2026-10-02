@@ -916,6 +916,16 @@ export class EditorEngine {
    * in it. Keyed by project path.
    */
   #writtenDocuments = new Map<string, { text: string; ops: readonly (readonly DomOp[])[] }>();
+  /**
+   * The same record for this page's own file, kept apart from its path.
+   *
+   * The save files it under the host's path for the page, but the live checks — the badge, the
+   * "cannot be written" warning, Save as HTML — can be asked with no host, or another one, where
+   * the page goes by another path. Looking it up under that path found nothing, so every check
+   * after the first save compared the new file against the old journal and called the user's own
+   * saved edits the page's code at work.
+   */
+  #writtenPage: { text: string; ops: readonly (readonly DomOp[])[] } | null = null;
   /** Design-system declarations a save put into each file's own rules, by path. */
   #placements = new Map<string, Placement[]>();
   /** Identity of the descendants the snapshot above was taken with. See `beginTextEdit`. */
@@ -5474,13 +5484,12 @@ export class EditorEngine {
   async #refreshSourceIndex(): Promise<void> {
     const source = await this.#ownDocumentSource();
     if (this.#destroyed) return;
-    const path = documentPath();
     this.#sourceIndex =
       source === null
         ? null
         : indexSource(source, {
           ...this.history.journal,
-          written: (path && this.#writtenDocuments.get(path)) || null,
+          written: this.#writtenPage,
         });
     this.#sourceIndexAt = Date.now();
     this.#bumpRevision();
@@ -5551,7 +5560,7 @@ export class EditorEngine {
       this.#warnedAboutRewrite = null;
       return;
     }
-    const path = documentPath();
+    const path = this.#documentKey();
     if (!path) return;
     const source = await this.#ownDocumentSource();
     if (source === null || this.#destroyed) return;
@@ -7501,10 +7510,28 @@ export class EditorEngine {
       journal: {
         ...this.history.journal,
         pending: this.history.records,
-        written: this.#writtenDocuments,
+        written: this.#writtenByPath(),
       },
       placements: this.#placements,
     };
+  }
+
+  /**
+   * The path this page's own file goes by right now.
+   *
+   * The connected host's path for it, which is what the save plan uses, and the URL's path with
+   * no host. The two differ whenever the project root is not the server root — a folder handed
+   * over for a page served from a sub-path, or a Vite `base`.
+   */
+  #documentKey(): string | null {
+    return this.#project?.resolve(location.href) ?? documentPath();
+  }
+
+  /** What saves wrote, by path, with this page's own file findable under its current path. */
+  #writtenByPath(): ReadonlyMap<string, { text: string; ops: readonly (readonly DomOp[])[] }> {
+    const key = this.#documentKey();
+    if (!key || !this.#writtenPage) return this.#writtenDocuments;
+    return new Map(this.#writtenDocuments).set(key, this.#writtenPage);
   }
 
   /**
@@ -7583,11 +7610,14 @@ export class EditorEngine {
 
     const result = await applyWritePlan(host, plan);
     // What each file now holds, so the next save starts from it rather than from load time.
+    const pagePath = host.resolve(location.href);
     for (const write of plan.writes) {
       if (!result.written.includes(write.path)) continue;
       if (write.placements) this.#placements.set(write.path, write.placements);
       if (write.kind !== 'document' || !write.journalOps) continue;
-      this.#writtenDocuments.set(write.path, { text: write.after, ops: write.journalOps });
+      const entry = { text: write.after, ops: write.journalOps };
+      this.#writtenDocuments.set(write.path, entry);
+      if (write.path === pagePath) this.#writtenPage = entry;
     }
     if (!result.failed.length && !blocked) this.#markSaved();
     // A write that failed part-way may be the server going away mid-save.
@@ -8253,7 +8283,7 @@ export class EditorEngine {
     source: string | null,
     options: { designSystemInDocument?: boolean } = {},
   ): { html: string; patched: boolean; why: string[] } {
-    const path = documentPath();
+    const path = this.#documentKey();
     const inDocument = options.designSystemInDocument;
     const serialized = (): string => this.exportHTML({ designSystemInDocument: inDocument });
 

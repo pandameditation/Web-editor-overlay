@@ -13,7 +13,7 @@ import type { ElementAnchor } from './html-patch.js';
 import { nextChangeId, type Command } from './history.js';
 import { morphChildren } from './morph.js';
 import { splitRun, type BreakRun } from './line-breaks.js';
-import { markRelocated } from './provenance.js';
+import { markRelocated, markUserOwned } from './provenance.js';
 import { sanitizeFragment } from './sanitize.js';
 import type { ChangeRecord } from './types.js';
 
@@ -1043,6 +1043,16 @@ export function splitAtBreaks(
       const made: HTMLElement[] = [];
       for (let index = runs.length - 1; index >= 0; index -= 1) {
         const next = splitRun(runs[index]);
+        /*
+         * The block the split cut short is the user's now, the way a text edit's element is.
+         *
+         * Its words no longer match the file's, and the file comparison reads exactly that as
+         * the page's code having built it. Any pass after the split then refused the split on
+         * save as "built by the page's own code" — a reconnect forces one, so did building the
+         * plan — unless the split happened to come out of a text edit, whose commit already
+         * marked the element. The new half needs nothing: it carries the inserted marker.
+         */
+        markUserOwned(runs[index].block);
         made[index] = next;
         records[index].after = exact(cleanMarkup(next));
         records[index].detail = { ...records[index].detail, html: cleanMarkup(next) };

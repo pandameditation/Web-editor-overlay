@@ -78,6 +78,7 @@
     "check:links": "node scripts/browser-check.mjs test/links.html 45000",
     "check:newtab": "node scripts/browser-check.mjs test/link-newtab.html 45000",
     "check:textdrag": "node scripts/browser-check.mjs test/text-drag.html 45000",
+    "check:splitmodes": "node scripts/browser-check.mjs test/split-save-modes.html 45000",
     "check:edgescroll": "node scripts/browser-check.mjs test/edge-scroll.html 150000",
     "check:paste": "node scripts/browser-check.mjs test/paste-html.html 45000",
     "check:csspaste": "node scripts/browser-check.mjs test/css-paste.html 45000",
