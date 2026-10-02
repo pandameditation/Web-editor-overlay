@@ -1135,6 +1135,8 @@ export class EditorEngine {
 
     this.#listeners.push(
       this.history.onChange(() => {
+        // First, so anything that renders off this change already knows the index predates it.
+        this.#pageGeneration += 1;
         // Whether this change set can still be written as edits to the file, said out loud the
         // moment it stops being true rather than only in the save dialog. See `#checkPlaceability`.
         this.#checkPlaceability();
@@ -5471,6 +5473,18 @@ export class EditorEngine {
   #sourceIndex: SourceIndex | null = null;
   #sourceIndexAt = 0;
   #sourceIndexTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * Bumped by every committed change, undo and redo, and recorded by the index when it is built.
+   *
+   * The index is rebuilt a moment after a change rather than at it, and in that moment it was
+   * still being asked — by the selection badge, which redraws the instant a split or an edit
+   * lands. It compared the page as it now is with the journal from before the change, so for a
+   * fraction of a second a freshly split paragraph read as "not in the page's HTML file" and the
+   * half it was cut from as "rewritten by the page". While the two differ, only what the index
+   * had already concluded is used. See `SourceIndex.peek`.
+   */
+  #pageGeneration = 0;
+  #sourceIndexGeneration = 0;
 
   #scheduleSourceIndex(delay = SOURCE_INDEX_DELAY_MS): void {
     if (this.options.detectScriptContent === false || this.#destroyed) return;
@@ -5484,6 +5498,8 @@ export class EditorEngine {
   async #refreshSourceIndex(): Promise<void> {
     const source = await this.#ownDocumentSource();
     if (this.#destroyed) return;
+    // Read after the wait, alongside the journal and the page it is built from, which are as of now.
+    this.#sourceIndexGeneration = this.#pageGeneration;
     this.#sourceIndex =
       source === null
         ? null
@@ -5517,7 +5533,9 @@ export class EditorEngine {
     if (!el || this.options.detectScriptContent === false) return undefined;
     const seen = provenanceOf(el);
     const strong = seen && (seen.kind === 'observed' || seen.kind === 'template' || seen.kind === 'script');
-    const risk = this.#sourceIndex?.riskOf(el) ?? null;
+    const index = this.#sourceIndex;
+    const current = this.#sourceIndexGeneration === this.#pageGeneration;
+    const risk = (index && (current ? index.riskOf(el) : index.peek(el))) ?? null;
     const found = strong ? seen : (risk ? fromSourceRisk(risk) : seen);
     if (!found) return undefined;
     const origin = renderOriginOf(el, found);

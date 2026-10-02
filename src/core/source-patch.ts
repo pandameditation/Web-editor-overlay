@@ -1487,6 +1487,15 @@ export type SourceRisk =
 export interface SourceIndex {
   /** Why this element is at risk, or null when the file accounts for it exactly. */
   riskOf(el: Element): SourceRisk | null;
+  /**
+   * The answer already worked out for this element, or undefined when it has not been asked.
+   *
+   * For an index the page has moved on from. What it concluded before an edit still describes
+   * every element the edit did not touch — and the touched ones were asked about while they
+   * looked as they did then — but anything it works out now compares the page after the edit
+   * with the journal from before it, which reads the user's own edit as the page's code at work.
+   */
+  peek(el: Element): SourceRisk | null | undefined;
 }
 
 function directSample(nodes: readonly Node[], data: (node: CharacterData) => string): string {
@@ -1562,7 +1571,7 @@ export function indexSource(source: string, journal: SourceJournal): SourceIndex
     memo.set(el, risk);
     return risk;
   };
-  return { riskOf };
+  return { riskOf, peek: (el) => memo.get(el) };
 }
 
 /** Changes whose every operation landed on something on the page that this write leaves out. */

@@ -118,6 +118,61 @@
 
       await engine.attachProject(hostOf('directory'), { quiet: true });
       await frames();
+      await engine.refreshRenderRisks();
+
+      /* ---- The badge, the instant a split lands, before the comparison has been rebuilt. ---- */
+      await check('badgeRightAfterASplit', async () => {
+        const a = document.querySelector('p.a');
+        api.select(a);
+        // What the badge asks on selection, against an index that is up to date.
+        const before = engine.renderRiskOf(a);
+        const created = engine.splitAtBreak(a.querySelector('br'));
+        // Same tick, as the badge does: the rebuild is still a debounce away.
+        const block = engine.renderRiskOf(a);
+        const fresh = created ? engine.renderRiskOf(created) : 'nothing was split';
+        engine.undo();
+        await frames();
+        return {
+          cleanBefore: !before,
+          cutParagraphNotFlagged: !block,
+          newParagraphNotFlagged: !fresh,
+          undone: same(textsIn(document).slice(0, 2), ['Alpha oneAlpha two', 'Bravo oneBravo two']),
+          flagged: [block, fresh].filter(Boolean).map((r) => (typeof r === 'string' ? r : r.kind)),
+        };
+      });
+
+      /*
+       * ---- Splitting while typing, which carries the edit on into the new paragraph. ----
+       *
+       * The path the warning was seen on. Starting the edit in the new paragraph asks whether it is
+       * the page's to render, a moment before the comparison has caught up with the split — and
+       * the answer was "not in the page's HTML file", shown as a warning for three seconds.
+       */
+      await check('noWarningWhenSplittingWhileTyping', async () => {
+        const a = document.querySelector('p.a');
+        api.select(a);
+        engine.beginTextEdit(a);
+        await frames();
+        const caret = document.createRange();
+        caret.setStart(a.lastChild, 3);
+        caret.collapse(true);
+        getSelection().removeAllRanges();
+        getSelection().addRange(caret);
+        const from = toasts.length;
+        engine.splitAtBreak(a.querySelector('br'));
+        const editingTheNewParagraph = engine.store.value.textEditing?.textContent.trim() === 'Alpha two';
+        const warnings = toasts.slice(from);
+        engine.endTextEdit(true);
+        await frames();
+        engine.undo();
+        await frames();
+        return {
+          editingTheNewParagraph,
+          noWarning: warnings.length === 0,
+          undone: textsIn(document)[0] === 'Alpha oneAlpha two',
+          warnings,
+        };
+      });
 
       /* ---- Three ways to split, none of them on an element with an id. ---- */
       await check('splitThreeWays', async () => {
