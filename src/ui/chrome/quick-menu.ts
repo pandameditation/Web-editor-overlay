@@ -18,6 +18,8 @@ interface MenuItem {
   hint?: string;
   danger?: boolean;
   disabled?: boolean;
+  /** Why it is disabled, shown as text inside the item so it is part of its accessible name. */
+  reason?: string;
   run: () => void;
 }
 
@@ -155,7 +157,8 @@ export class HeoQuickMenu extends HeoElement {
   protected state = new StoreController(
     this,
     this.editor.store,
-    (s) => [s.quickMenuOpen, s.selected, s.geometry, s.canUndo, s.canRedo] as const,
+    (s) =>
+      [s.quickMenuOpen, s.selected, s.geometry, s.canUndo, s.canRedo, s.selection, s.quickMenuAnchor] as const,
     shallowArrayEquals,
   );
 
@@ -191,11 +194,109 @@ export class HeoQuickMenu extends HeoElement {
       return nothing;
     }
     const el = state.selected;
-    this.#place(el);
+    const members = state.selection.filter((member) => member.isConnected);
+    /*
+     * Beside the thumb that was clicked, not the primary's. With a group every member has a
+     * thumb, and a menu that opened by the first member when the third was clicked sat a
+     * screen away from the pointer. An anchor that is no longer a member falls back.
+     */
+    const anchor =
+      state.quickMenuAnchor && members.includes(state.quickMenuAnchor) ? state.quickMenuAnchor : el;
+    this.#place(anchor);
 
+    // A group gets only the actions that have one unambiguous meaning for all of it (DP-6).
+    if (members.length > 1) {
+      return html`<div class="menu surface" role="menu">
+        ${this.view === 'wrap' ? this.#renderWrap(members) : this.#renderGroup(members)}
+      </div>`;
+    }
     return html`<div class="menu surface" role="menu">
       ${this.view === 'wrap' ? this.#renderWrap(el) : this.#renderRoot(el)}
     </div>`;
+  }
+
+  #renderGroup(members: readonly HTMLElement[]): TemplateResult {
+    const state = this.state.value;
+    const actions = this.editor.groupActions(members);
+    const reasonOf = (verdict: { ok: boolean; reason?: string }): string | undefined =>
+      verdict.ok ? undefined : verdict.reason;
+
+    const selection: MenuItem[] = [
+      {
+        id: 'group-wrap',
+        label: 'Wrap in a container…',
+        glyph: 'wrap',
+        disabled: !actions.wrap.ok,
+        reason: reasonOf(actions.wrap),
+        run: () => {
+          this.view = 'wrap';
+        },
+      },
+      {
+        id: 'group-save-block',
+        label: 'Save as a reusable block…',
+        glyph: 'blocks',
+        disabled: !actions.saveBlock.ok,
+        reason: reasonOf(actions.saveBlock),
+        run: () => {
+          this.editor.beginGroupBlockExtraction(members);
+          this.editor.setQuickMenu(false);
+        },
+      },
+      {
+        id: 'group-merge',
+        label: 'Merge',
+        glyph: 'unwrap',
+        disabled: !actions.merge.ok,
+        reason: reasonOf(actions.merge),
+        run: () => {
+          this.editor.mergeSelection(members);
+          this.editor.setQuickMenu(false);
+        },
+      },
+      {
+        id: 'group-delete',
+        label: 'Delete',
+        glyph: 'trash',
+        hint: '⌫',
+        danger: true,
+        disabled: !actions.delete.ok,
+        reason: reasonOf(actions.delete),
+        run: () => {
+          this.editor.removeSelection(members);
+          this.editor.setQuickMenu(false);
+        },
+      },
+    ];
+
+    const rest: MenuItem[] = [
+      {
+        id: 'undo',
+        label: 'Undo',
+        glyph: 'undo',
+        hint: `${modLabel()}+Z`,
+        disabled: !state.canUndo,
+        run: () => this.editor.undo(),
+      },
+      {
+        id: 'redo',
+        label: 'Redo',
+        glyph: 'redo',
+        hint: `⇧${modLabel()}+Z`,
+        disabled: !state.canRedo,
+        run: () => this.editor.redo(),
+      },
+    ];
+
+    return html`
+      <div class="head">
+        ${icon('cursor', 11)}<span class="name">${members.length} elements</span>
+      </div>
+      <div class="group">Selection</div>
+      ${selection.map((item) => this.#renderItem(item))}
+      <div class="group">Other</div>
+      ${rest.map((item) => this.#renderItem(item))}
+    `;
   }
 
   #renderRoot(el: HTMLElement): TemplateResult {
@@ -433,8 +534,16 @@ export class HeoQuickMenu extends HeoElement {
     `;
   }
 
-  #renderWrap(el: HTMLElement): TemplateResult {
+  #renderWrap(target: HTMLElement | readonly HTMLElement[]): TemplateResult {
     const containers = this.editor.library.list('container');
+    const title =
+      target instanceof HTMLElement ? `Wrap ${labelFor(target)} in…` : `Wrap ${target.length} elements in…`;
+    /*
+     * The Plain container row comes first, and is not a library preset: every preset brings
+     * layout of its own, and wrapping a few elements just to keep them together needs a
+     * container that changes nothing. Hard-coded, so the library, its panel and every preset
+     * count stay as they are.
+     */
     return html`
       <div class="head">
         <button class="back" type="button" title="Back" @click=${() => {
@@ -442,13 +551,26 @@ export class HeoQuickMenu extends HeoElement {
       }}>
           ${icon('chevronLeft', 12)}
         </button>
-        <span class="name">Wrap ${labelFor(el)} in…</span>
+        <span class="name">${title}</span>
       </div>
+      <button
+        class="item"
+        type="button"
+        data-id="wrap-plain"
+        @click=${() => this.#wrap('<div></div>', target)}
+      >
+        <span class="glyph">${icon('wrap', 14)}</span>
+        <span class="text">
+          Plain container
+          <span class="desc">A div with no styles of its own</span>
+        </span>
+      </button>
       ${containers.map(
         (block) => html`<button
           class="item"
           type="button"
-          @click=${() => this.#wrapWith(block.id, el)}
+          data-id=${`wrap-${block.id}`}
+          @click=${() => this.#wrapWith(block.id, target)}
         >
           <span class="glyph">${icon(block.icon ?? 'wrap', 14)}</span>
           <span class="text">
@@ -460,7 +582,7 @@ export class HeoQuickMenu extends HeoElement {
     `;
   }
 
-  async #wrapWith(blockId: string, el: HTMLElement): Promise<void> {
+  async #wrapWith(blockId: string, target: HTMLElement | readonly HTMLElement[]): Promise<void> {
     const block = this.editor.library.get(blockId);
     if (!block) return;
     // Wrap with an empty shell: the element being wrapped is the content, so the
@@ -469,7 +591,13 @@ export class HeoQuickMenu extends HeoElement {
     const shell = nodes[0];
     if (!shell) return;
     shell.innerHTML = '';
-    this.editor.wrap(shell.outerHTML, el);
+    this.#wrap(shell.outerHTML, target);
+  }
+
+  /** One element goes through the single wrap; several through the group wrap. */
+  #wrap(wrapperHTML: string, target: HTMLElement | readonly HTMLElement[]): void {
+    if (target instanceof HTMLElement) this.editor.wrap(wrapperHTML, target);
+    else this.editor.wrapSelection(wrapperHTML, target);
     this.view = 'root';
     this.editor.setQuickMenu(false);
   }
@@ -479,11 +607,14 @@ export class HeoQuickMenu extends HeoElement {
       class=${`item${item.danger ? ' danger' : ''}`}
       type="button"
       role="menuitem"
+      data-id=${item.id}
       ?disabled=${item.disabled}
       @click=${item.run}
     >
       <span class="glyph">${icon(item.glyph, 14)}</span>
-      <span class="text">${item.label}</span>
+      <span class="text">${item.label}${item.disabled && item.reason
+        ? html`<span class="desc">${item.reason}</span>`
+        : nothing}</span>
       ${item.hint ? html`<span class="hint">${item.hint}</span>` : nothing}
     </button>`;
   }

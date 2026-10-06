@@ -1,0 +1,1133 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Selecting several elements, and what a group can do</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 40px 60px;
+      font-family: system-ui, sans-serif;
+    }
+
+    section {
+      margin: 0 0 16px;
+    }
+
+    p,
+    h2,
+    h3 {
+      margin: 0 0 8px;
+    }
+
+    #icons svg {
+      width: 24px;
+      height: 24px;
+    }
+  </style>
+</head>
+
+<body>
+  <!--
+    Shift+click builds a selection of several elements; the thumb on any of them opens a menu of
+    group actions (wrap, save as a block, merge, delete).
+
+    The selection half is pinned here: membership, the Shift press never editing, the trimmed
+    group chrome, a thumb drag moving one element out of the group, the panel notice and the
+    shortcuts that collapse first. The group actions add their sections at the marked places.
+
+    Every section starts from nothing selected and undoes back to where it began, so a section
+    that fails cannot leave the next one reading a changed page.
+  -->
+  <main id="page">
+    <section id="row">
+      <p id="a">Paragraph a, the first of the row.</p>
+      <p id="x">Paragraph x, the sibling between.</p>
+      <p id="b">Paragraph b, the last of the row.</p>
+    </section>
+    <p id="far" style="margin-top:400px">Far</p>
+    <section id="other">
+      <p id="c">Paragraph c, in another container.</p>
+    </section>
+    <section id="links"><a id="lnk" href="#nowhere">a link</a></section>
+    <section id="merge-p">
+      <p id="m1" class="lead">Hello</p>
+      <p id="m2" class="x" data-note="n">world</p>
+    </section>
+    <section id="merge-space">
+      <p id="sp1">Hello </p>
+      <p id="sp2">world</p>
+    </section>
+    <section id="merge-same">
+      <p class="same">One</p>
+      <p class="same">Two</p>
+    </section>
+    <section id="merge-div">
+      <div id="d1"><span id="s1">first span</span></div>
+      <div id="d2"><span id="s2">second span</span></div>
+    </section>
+    <section id="mismatch">
+      <p id="q1">A paragraph</p>
+      <h2 id="q2">A heading</h2>
+      <p id="q3">Another paragraph</p>
+      <ul id="q4">
+        <li>a list item</li>
+      </ul>
+      <p id="q5">A last paragraph</p>
+    </section>
+    <section id="icons"><svg id="i1" viewBox="0 0 24 24">
+        <path d="M2 2h20v20H2z"></path>
+      </svg><svg id="i2" viewBox="0 0 24 24">
+        <path d="M12 2l10 20H2z"></path>
+      </svg></section>
+    <section id="trio">
+      <p id="t1">One</p>
+      <p id="t2">Two</p>
+      <p id="t3">Three</p>
+      <p id="t4">Four</p>
+    </section>
+    <section id="solo">
+      <p id="o1">Only one</p>
+      <p id="o2">Only two</p>
+    </section>
+    <section id="nest">
+      <div id="np">
+        <p id="nc">A child</p>
+      </div>
+      <p id="nafter">After the parent</p>
+    </section>
+    <p id="host"><span id="h1">a</span> <span id="h2">b</span></p>
+    <section id="shadow-row">
+      <p id="lightp">In the light tree</p>
+      <div id="shadowhost"></div>
+    </section>
+    <section id="blocks">
+      <h3 id="k1" class="card-title">Title</h3>
+      <p id="k2" class="card-title">Body</p>
+    </section>
+  </main>
+
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const errors = [];
+      window.addEventListener('error', (e) => errors.push('error: ' + e.message));
+      window.addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+
+      const results = {};
+      const progress = document.getElementById('progress');
+      const step = (name) => { progress.textContent = name; };
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const byId = (id) => document.getElementById(id);
+      const same = (x, y) => JSON.stringify(x) === JSON.stringify(y);
+
+      // Script-built, so it is not in the file and no plan is read for it.
+      byId('shadowhost').attachShadow({ mode: 'open' }).innerHTML = '<p id="shadowp">In a shadow tree</p>';
+
+      // The fixture's own file, fetched once, for the sections that compare the planned write.
+      const original = await (await fetch(location.href)).text();
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark' });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+
+      const page = decodeURIComponent(location.pathname).split('/').pop();
+      const directory = decodeURIComponent(location.pathname).replace(/[^/]*$/, '');
+      const disk = new Map();
+      const project = {
+        kind: 'directory',
+        label: 'memory',
+        resolve(url) {
+          const path = decodeURIComponent(new URL(url, location.href).pathname);
+          return path.startsWith(directory) ? path.slice(directory.length) : null;
+        },
+        read: async (path) => {
+          if (disk.has(path)) return disk.get(path);
+          try {
+            const text = await (await fetch('./' + path)).text();
+            disk.set(path, text);
+            return text;
+          } catch { return null; }
+        },
+        write: async (path, text) => { disk.set(path, text); },
+        ensureWritable: async () => true,
+        release: async () => { },
+      };
+      await engine.attachProject(project, { quiet: true });
+      await frames();
+
+      const planned = async () => {
+        const plan = await engine.previewWritePlan();
+        const write = (plan?.writes ?? []).find((w) => w.kind === 'document');
+        return {
+          reason: write?.reason ?? '',
+          warnings: write?.warnings ?? [],
+          after: write?.after ?? '',
+          doc: new DOMParser().parseFromString(write?.after ?? '', 'text/html'),
+        };
+      };
+
+      /*
+       * Helpers. Every query is re-run on use, never held: the layer and the menu re-render on
+       * every selection change, so a node taken before a press is stale after it.
+       */
+      const overlay = () => document.querySelector('html-editor-overlay > heo-overlay');
+      const layer = () => overlay().shadowRoot.querySelector('heo-selection-layer')?.shadowRoot;
+      const menu = () => overlay().shadowRoot.querySelector('heo-quick-menu')?.shadowRoot;
+      const count = (selector) => layer()?.querySelectorAll(selector).length ?? 0;
+      const ids = () => engine.selection.map((el) => el.id);
+      const item = (id) => menu()?.querySelector(`[data-id="${id}"]`);
+      const thumbAt = (i) => layer()?.querySelector(`.thumb[data-index="${i}"]`);
+      const thumb = () => layer()?.querySelector('.thumb');
+      const centre = (el) => {
+        const r = el.getBoundingClientRect();
+        return { clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
+      };
+      /** A press and its click, as the page sees them, with Shift held when asked. */
+      const press = (el, { shift = false } = {}) => {
+        const init = {
+          bubbles: true, composed: true, cancelable: true, button: 0, buttons: 1, pointerId: 1,
+          pointerType: 'mouse', isPrimary: true, shiftKey: shift, ...centre(el),
+        };
+        const down = new PointerEvent('pointerdown', init);
+        el.dispatchEvent(down);
+        const click = new MouseEvent('click', init);
+        el.dispatchEvent(click);
+        return { down, click };
+      };
+      /*
+       * Composed, because the thumb gesture listens on the window in the capture phase, and an
+       * event dispatched inside the layer's shadow root reaches the window only when composed.
+       */
+      const POINTER = { bubbles: true, composed: true, cancelable: true, button: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true };
+      /** The thumb toggles the menu on pointerup, not on click, so press() would not open it. */
+      const clickThumb = (i) => {
+        const target = i === undefined ? thumb() : thumbAt(i);
+        const at = centre(target);
+        target.dispatchEvent(new PointerEvent('pointerdown', { ...POINTER, buttons: 1, ...at }));
+        target.dispatchEvent(new PointerEvent('pointerup', { ...POINTER, buttons: 0, ...at }));
+      };
+      const key = (k, mods = {}) =>
+        document.body.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, composed: true, cancelable: true, ...mods }));
+      /** [a, b] through the engine, the set most sections start from. */
+      const pickAB = () => {
+        engine.select(byId('a'));
+        engine.toggleSelection(byId('b'));
+      };
+      /** Take a node out as a page re-render would, and hand back how to put it exactly back. */
+      const detach = (el) => {
+        const parent = el.parentNode;
+        const at = el.nextSibling;
+        el.remove();
+        return () => parent.insertBefore(el, at);
+      };
+      /** The isolation rule: every section starts from nothing selected and ends where it began. */
+      const section = async (name, body) => {
+        step(name);
+        const entry = engine.history.size;
+        engine.select(null);
+        await frames();
+        try {
+          results[name] = await body();
+        } catch (error) {
+          results[name] = { threw: false, message: String(error && error.stack || error) };
+        }
+        if (engine.store.value.textEditing) engine.endTextEdit(true);
+        engine.setQuickMenu(false);
+        engine.select(null);
+        while (engine.history.size > entry) engine.undo();
+        await frames();
+      };
+
+      /* ------------------------------------------------------------------ *
+       * Shift+click adds to the selection and takes out of it.
+       * ------------------------------------------------------------------ */
+      await section('shiftClickTogglesMembership', async () => {
+        const a = byId('a'), b = byId('b'), c = byId('c'), x = byId('x');
+        const out = {};
+
+        press(a);
+        press(b, { shift: true });
+        await frames();
+        out.plainClickThenShiftClickHoldsBoth = same(ids(), ['a', 'b']);
+        // The primary is the element picked first, which the panels show.
+        out.thePrimaryIsTheFirstClicked = engine.selected === a;
+        out.bothOutlinesAreDrawn = count('.select') === 2;
+        out.bothThumbsAreDrawn = count('.thumb') === 2;
+
+        press(b, { shift: true });
+        await frames();
+        out.shiftClickingAMemberAgainDropsIt = same(ids(), ['a']);
+        out.andItsOutlineAndThumbGo = count('.select') === 1 && count('.thumb') === 1;
+
+        engine.select(null);
+        press(c, { shift: true });
+        await frames();
+        out.shiftClickWithNothingSelectedSelectsOnlyThat = same(ids(), ['c']) && engine.selected === c;
+
+        // The body cannot be changed, so it can never join a group.
+        const beforeBody = ids();
+        press(document.body, { shift: true });
+        await frames();
+        out.shiftClickOnBodyChangesNothing = same(ids(), beforeBody);
+
+        engine.select(a);
+        engine.toggleSelection(b);
+        out.theEngineCanToggleWithoutAPointer = same(ids(), ['a', 'b']);
+
+        // Click order must never leak into a group result: b first, then a, still reads [a, b].
+        engine.select(null);
+        press(b);
+        press(a, { shift: true });
+        await frames();
+        out.theSetIsInDocumentOrderWhateverTheClickOrder = same(ids(), ['a', 'b']) && engine.selected === b;
+
+        /*
+         * Anything aimed at the old set closes when the set changes, one assertion per surface.
+         * Through the engine rather than a press, so a pointer handler closing the menu on its
+         * own cannot make these pass.
+         */
+        pickAB();
+        engine.setQuickMenu(true, b);
+        const menuWasOpen = engine.store.value.quickMenuOpen && engine.store.value.quickMenuAnchor === b;
+        engine.toggleSelection(c);
+        out.changingTheSetClosesTheMenu =
+          menuWasOpen && engine.store.value.quickMenuOpen === false && engine.store.value.quickMenuAnchor === null;
+
+        pickAB();
+        engine.setInsertAnchor({ reference: a, position: 'after' });
+        const anchorWasSet = engine.store.value.insertAnchor !== null;
+        engine.toggleSelection(c);
+        out.changingTheSetClearsTheInsertAnchor = anchorWasSet && engine.store.value.insertAnchor === null;
+
+        pickAB();
+        engine.setAiMenu(true);
+        const aiWasOpen = engine.store.value.aiMenuOpen === true;
+        engine.toggleSelection(c);
+        out.changingTheSetClosesTheAiMenu = aiWasOpen && engine.store.value.aiMenuOpen === false;
+        engine.setAiMenu(false);
+
+        // Outlines left on the other members would be chrome over a page no longer being edited.
+        pickAB();
+        engine.setEditing(false);
+        out.leavingEditModeEmptiesTheWholeSet =
+          engine.selection.length === 0 && engine.selected === null && engine.store.value.selection.length === 0;
+        engine.setEditing(true);
+        await frames();
+
+        /*
+         * Three fixtures patch the primary straight into the store, leaving the stored set empty.
+         * Before the set existed that primary survived every page mutation, and it still must.
+         */
+        engine.select(null);
+        engine.store.patch({ selected: x });
+        let ripple = document.createTextNode(' ');
+        byId('other').append(ripple);
+        await frames();
+        out.aPatchedPrimarySurvivesAPageMutation = engine.selected === x;
+        ripple.remove();
+        await frames();
+        press(b, { shift: true });
+        await frames();
+        out.andCountsAsAMemberForShiftClick = same(ids(), ['x', 'b']) && engine.selected === x;
+
+        /*
+         * A primary patched over a live multi-selection replaces it. Without that the rules
+         * counted [x, a, b] and the layer kept outlining a and b, which the user no longer picked.
+         */
+        engine.select(a);
+        engine.toggleSelection(b);
+        engine.store.patch({ selected: x });
+        ripple = document.createTextNode(' ');
+        byId('other').append(ripple);
+        await frames();
+        out.aPatchedPrimaryReplacesAStaleSet =
+          same(ids(), ['x']) && engine.selected === x && count('.select') === 1;
+        ripple.remove();
+        await frames();
+
+        /*
+         * A page re-render that detaches members, outside the engine. Each node goes back to its
+         * exact place afterwards, so later sections see the original page.
+         */
+        engine.select(a);
+        press(b, { shift: true });
+        press(c, { shift: true });
+        await frames();
+        let restore = detach(b);
+        await frames();
+        out.aDetachedMemberIsDropped =
+          same(ids(), ['a', 'c']) && engine.selected === a && count('.select') === 2;
+        restore();
+        await frames();
+
+        engine.select(c);
+        press(a, { shift: true });
+        press(b, { shift: true });
+        await frames();
+        restore = detach(c);
+        await frames();
+        // A detached node has no document position, so "next" is the first remaining.
+        out.aDetachedPrimaryHandsOverToTheFirstRemaining = engine.selected === a && same(ids(), ['a', 'b']);
+        restore();
+        await frames();
+
+        engine.select(b);
+        press(a, { shift: true });
+        await frames();
+        const revision = engine.store.value.revision;
+        press(b, { shift: true });
+        await frames();
+        // The revision is what makes the panels re-render on the new primary.
+        out.deselectingThePrimaryPromotesTheFirstRemaining =
+          engine.selected === a && same(ids(), ['a']) && engine.store.value.revision > revision;
+
+        // A direct call would otherwise leave [a, b] with a still being edited.
+        engine.select(a);
+        engine.beginTextEdit(a);
+        engine.toggleSelection(b);
+        out.theEngineToggleCommitsALiveEditFirst =
+          engine.store.value.textEditing === null && same(ids(), ['a', 'b']);
+        await frames();
+
+        // A synthetic click on an <a> runs its activation behaviour, so a missing cancel would
+        // change the hash.
+        engine.select(a);
+        const hash = location.hash;
+        const { click } = press(byId('lnk'), { shift: true });
+        await frames();
+        out.shiftClickOnALinkTogglesWithoutNavigating =
+          click.defaultPrevented === true && location.hash === hash && ids().includes('lnk');
+
+        return out;
+      });
+
+      /* ------------------------------------------------------------------ *
+       * A Shift press is a toggle, never the start of a text edit.
+       * ------------------------------------------------------------------ */
+      await section('shiftClickNeverEdits', async () => {
+        const a = byId('a'), b = byId('b'), x = byId('x');
+        const out = {};
+
+        // Discriminating: a plain press on the selected element starts an edit on pointerdown.
+        engine.select(a);
+        await frames();
+        const { down } = press(a, { shift: true });
+        await frames();
+        out.shiftClickOnAMemberDoesNotStartATextEdit = engine.store.value.textEditing === null;
+        // Synthetic events never create a native selection, so the cancel itself is the evidence:
+        // measured with trusted input, it is the one cancel that stops the highlight.
+        out.theShiftPressWasCancelledSoNoTextIsHighlighted = down.defaultPrevented === true;
+        out.andThePageHoldsNoRange = getSelection().type !== 'Range';
+
+        engine.select(a);
+        engine.toggleSelection(x);
+        engine.toggleSelection(b);
+        await frames();
+        press(b);
+        await frames();
+        out.aPlainClickCollapsesTheGroupToThatElement = same(ids(), ['b']);
+        out.withoutStartingAnEdit = engine.store.value.textEditing === null;
+
+        // The regression guard: one element selected, a second click still edits.
+        press(b);
+        await frames();
+        out.aPlainClickOnASingleSelectionStillEdits = engine.store.value.textEditing === b;
+
+        press(a, { shift: true });
+        await frames();
+        out.shiftClickOutsideALiveEditCommitsItAndToggles =
+          engine.store.value.textEditing === null && same(ids(), ['a', 'b']);
+
+        return out;
+      });
+
+      /* ------------------------------------------------------------------ *
+       * With several selected, only the chrome that can act on all of them.
+       * ------------------------------------------------------------------ */
+      await section('groupChromeIsTrimmed', async () => {
+        const out = {};
+        pickAB();
+        await frames();
+        out.noResizeFrameWithSeveral = count('.frame') === 0 && count('.h') === 0;
+        out.noAiButtonWithSeveral = count('.ai') === 0;
+        out.noInsertButtonsWithSeveral = count('.insert') === 0;
+        const badges = Array.from(layer().querySelectorAll('.badge'));
+        out.thePrimaryBadgeCountsTheGroup =
+          badges.filter((badge) => badge.textContent.includes('2 selected')).length === 1;
+
+        engine.hover(byId('b'));
+        await frames();
+        out.membersGetNoHoverOutline = count('.hover') === 0;
+        // Makes the previous one discriminating: hover still draws for a non-member.
+        engine.hover(byId('x'));
+        await frames();
+        out.butANonMemberStillGetsOne = count('.hover') === 1;
+
+        // #a is a block <p>, so alone it gets the resize frame.
+        engine.collapseSelection();
+        await frames();
+        out.andTheyComeBackForOne = count('.frame') === 1 && count('.ai') === 1 && count('.insert') === 2;
+
+        // The page observer's early return needs a selection that existed and was lost; with
+        // nothing selected to begin with, a mutation must leave hover alone.
+        engine.select(null);
+        engine.hover(byId('x'));
+        const ripple = document.createTextNode(' ');
+        byId('other').append(ripple);
+        await frames();
+        out.hoverSurvivesAPageMutationWithNothingSelected =
+          engine.store.value.hovered === byId('x') && count('.hover') === 1;
+        ripple.remove();
+        engine.hover(null);
+        await frames();
+        return out;
+      });
+
+      /* ------------------------------------------------------------------ *
+       * Escape takes the group apart one layer at a time.
+       * ------------------------------------------------------------------ */
+      await section('escapeUnwindsTheGroup', async () => {
+        const out = {};
+        pickAB();
+        engine.setQuickMenu(true, byId('b'));
+        await frames();
+        const opened = engine.store.value.quickMenuOpen === true;
+        key('Escape');
+        await frames();
+        // Discriminating: the menu really was open, and closing it must not cost the set.
+        out.escapeWithTheMenuOpenOnlyClosesIt =
+          opened && engine.store.value.quickMenuOpen === false && same(ids(), ['a', 'b']);
+        key('Escape');
+        await frames();
+        // The whole set, not only the primary: a second press that left b selected is the bug.
+        out.escapeAgainEmptiesTheWholeSet = ids().length === 0 && engine.selected === null;
+        return out;
+      });
+
+      /* ------------------------------------------------------------------ *
+       * Any member's thumb opens the group menu, beside that thumb.
+       * ------------------------------------------------------------------ */
+      await section('theThumbOpensTheGroupMenu', async () => {
+        const a = byId('a'), c = byId('c'), far = byId('far');
+        const out = {};
+        // From the top, so the clamp below is computed against a known scroll position.
+        scrollTo(0, 0);
+        await frames();
+        engine.select(a);
+        engine.toggleSelection(far);
+        await frames();
+        clickThumb(1);
+        await frames();
+        out.theMenuOpensFromTheSecondThumb =
+          engine.store.value.quickMenuOpen === true && engine.store.value.quickMenuAnchor === far;
+
+        const host = overlay().shadowRoot.querySelector('heo-quick-menu');
+        const box = host.getBoundingClientRect();
+        const menuTop = parseFloat(host.style.top);
+        const handle = thumbAt(1).getBoundingClientRect();
+        const farTop = far.getBoundingClientRect().top;
+        const aTop = a.getBoundingClientRect().top;
+        out.itSitsBesideThatThumb = Math.max(0, handle.left - box.right, box.left - handle.right) < 300;
+        /*
+         * Where the menu's placement puts it for an element at a given top: clamped so the whole
+         * menu stays on screen. The harness window is short (about 470 px, not the 900 of a
+         * screenshot), so #far sits below the fold and its menu is clamped well above it. The
+         * relative check is therefore made between the two placements the menu could take, not
+         * the raw element tops, which no correct menu could satisfy here.
+         */
+        const placed = (top) =>
+          Math.round(Math.min(Math.max(8, top), Math.max(8, innerHeight - Math.min(innerHeight * 0.7, 460) - 8)));
+        // #far is 400 px below #row, so a menu placed by the primary would sit by #a instead.
+        out.itIsAnchoredToTheClickedThumbNotThePrimary =
+          placed(farTop) !== placed(aTop) && Math.abs(menuTop - placed(farTop)) < Math.abs(menuTop - placed(aTop));
+        // Exact, so a menu that merely drifted towards #far cannot pass the relative check alone.
+        out.menuTopIsFarsClampedTop = menuTop === placed(farTop);
+        out.theHeaderCountsTheGroup = (menu().querySelector('.head')?.textContent ?? '').trim() === '2 elements';
+        // Single-element items have no one target in a group, so none of them may be offered.
+        out.itOffersExactlyTheGroupItems = same(
+          Array.from(menu().querySelectorAll('.item[data-id]')).map((el) => el.dataset.id),
+          ['group-wrap', 'group-save-block', 'group-merge', 'group-delete', 'undo', 'redo'],
+        );
+
+        // The reason is text inside the item, not a tooltip, so it is read out with it.
+        engine.setQuickMenu(false);
+        engine.select(a);
+        engine.toggleSelection(c);
+        await frames();
+        clickThumb(1);
+        await frames();
+        const wrapItem = item('group-wrap');
+        out.differentContainersDisableWrapAndSayWhy =
+          wrapItem?.disabled === true &&
+          (wrapItem.querySelector('.desc')?.textContent ?? '').trim() === 'Selected elements are in different containers.';
+
+        engine.setQuickMenu(false);
+        engine.select(a);
+        await frames();
+        clickThumb();
+        await frames();
+        out.withOneElementTheItemsAreUnchanged = same(
+          Array.from(menu()?.querySelectorAll('.item[data-id]') ?? []).map((el) => el.dataset.id),
+          ['turn-into', 'text', 'html', 'props', 'styles', 'duplicate', 'wrap', 'unwrap', 'extract', 'save-block', 'up', 'down', 'out', 'in', 'undo', 'redo', 'copy', 'delete'],
+        );
+        // The one change to the single menu: the wrap view gains a plain, style-free first row.
+        item('wrap')?.click();
+        await frames();
+        const rows = Array.from(menu()?.querySelectorAll('.item[data-id]') ?? []).map((el) => el.dataset.id);
+        out.singleWrapOffersPlainContainerFirst =
+          rows[0] === 'wrap-plain' && rows.length > 1 && rows.slice(1).every((id) => id.startsWith('wrap-'));
+        engine.setQuickMenu(false);
+        await frames();
+        return out;
+      });
+
+      /* ------------------------------------------------------------------ *
+       * Dragging one member's thumb moves that element alone.
+       * ------------------------------------------------------------------ */
+      await section('draggingAThumbMovesOnlyThatElement', async () => {
+        const a = byId('a'), b = byId('b'), c = byId('c');
+        const out = {};
+        pickAB();
+        await frames();
+        const scrolled = scrollY;
+        const home = { parent: a.parentNode, next: a.nextSibling };
+
+        const handle = thumbAt(1);
+        const at = centre(handle);
+        handle.dispatchEvent(new PointerEvent('pointerdown', { ...POINTER, buttons: 1, ...at }));
+        handle.dispatchEvent(new PointerEvent('pointermove', { ...POINTER, buttons: 1, clientX: at.clientX, clientY: at.clientY + 20 }));
+        const dragged = engine.store.value.drag?.element ?? null;
+        const during = ids();
+        await frames();
+        // The collapse has replaced the thumb by now, so the rest goes to the document, as a
+        // release away from the old thumb would.
+        document.dispatchEvent(new PointerEvent('pointermove', { ...POINTER, buttons: 1, clientX: at.clientX, clientY: at.clientY + 30 }));
+        document.dispatchEvent(new PointerEvent('pointerup', { ...POINTER, buttons: 0, clientX: at.clientX, clientY: at.clientY + 30 }));
+        const dragAfterRelease = engine.store.value.drag;
+        // The worst case the browser could produce: the follow-up click on the page under the
+        // pointer. Without the swallow the engine selects the body.
+        document.body.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true, cancelable: true, button: 0, clientX: at.clientX, clientY: at.clientY + 30 }));
+        const selectedAfterDrop = engine.selected;
+
+        out.theDragIsOfB = dragged === b;
+        out.theSetCollapsedToBWhenItStarted = same(during, ['b']);
+        out.thePageDidNotScroll = scrollY === scrolled;
+        // Guards the capture-loss defect: with listeners on the thumb the drag stays live.
+        out.releasingAwayFromTheReplacedThumbStillEndsTheDrag = dragAfterRelease === null;
+        out.aDidNotMove = a.parentNode === home.parent && a.nextSibling === home.next;
+        out.theDropLeavesTheDraggedElementSelected = selectedAfterDrop === b;
+
+        // The swallow is one-shot and one frame long.
+        await frames();
+        press(c);
+        await frames();
+        out.aLaterClickIsNotSwallowed = engine.selected === c;
+        return out;
+      });
+
+      const toast = () => engine.store.value.toast;
+      const allConnected = () => engine.selection.every((el) => el.isConnected);
+
+      /* ------------------------------------------------------------------ *
+       * Wrap: one container where the first member was, members inside in order.
+       * ------------------------------------------------------------------ */
+      await section('wrapKeepsOrderAndPosition', async () => {
+        const a = byId('a'), b = byId('b'), x = byId('x'), row = byId('row');
+        const out = {};
+        // b first, so the container's order can only come from the document, not the clicks.
+        press(b);
+        press(a, { shift: true });
+        await frames();
+        const size = engine.history.size;
+        clickThumb(0);
+        await frames();
+        item('group-wrap')?.click();
+        await frames();
+        item('wrap-plain')?.click();
+        await frames();
+
+        const container = row.firstElementChild;
+        out.theContainerTakesTheFirstMembersPlace = container?.localName === 'div' && container !== a;
+        out.itHoldsTheMembersInDocumentOrder =
+          container?.children.length === 2 && container.children[0] === a && container.children[1] === b;
+        // x sat between the members and was not picked, so it stays in the row, after the container.
+        out.theSiblingBetweenStaysOutsideAfterIt =
+          row.children.length === 2 && row.children[0] === container && row.children[1] === x;
+        out.theContainerIsTheOnlySelection = engine.selection.length === 1 && engine.selected === container;
+        out.itIsOneUndoStep = engine.history.size === size + 1;
+
+        const file = await planned();
+        const fileRow = file.doc.getElementById('row');
+        const fileBox = fileRow?.firstElementChild;
+        out.theFileHoldsTheContainerWithBothInside =
+          fileBox?.localName === 'div' && same(Array.from(fileBox.children).map((el) => el.id), ['a', 'b']);
+        out.withXAfterIt = fileRow?.children.length === 2 && fileRow.children[1].id === 'x';
+        out.patchedInPlace = /patched in place/.test(file.reason);
+
+        engine.undo();
+        await frames();
+        out.oneUndoPutsEveryNodeBack =
+          row.children.length === 3 && row.children[0] === a && row.children[1] === x && row.children[2] === b &&
+          !container?.isConnected;
+        out.noDetachedElementStaysSelected = allConnected();
+        return out;
+      });
+
+      /* ------------------------------------------------------------------ *
+       * A wrap the file could not hold is taken back at once, and says why.
+       * ------------------------------------------------------------------ */
+      await section('aWrapThePageCannotHoldIsTakenBack', async () => {
+        const host = byId('host');
+        const out = {};
+        const before = host.innerHTML;
+        engine.select(byId('h1'));
+        engine.toggleSelection(byId('h2'));
+        const size = engine.history.size;
+        // A <div> inside a <p> is a shape no HTML file can hold: the parser would close the <p>.
+        engine.wrapSelection('<div></div>');
+        await wait(20);
+        out.theParagraphIsUnchanged = host.innerHTML === before;
+        out.theUndoStackDidNotGrow = engine.history.size === size;
+        out.theSelectionIsUnchanged = same(ids(), ['h1', 'h2']);
+        out.andTheToastSaysWhy = toast()?.tone === 'warn' && (toast()?.message ?? '').startsWith('Undone:');
+        return out;
+      });
+
+      /* ------------------------------------------------------------------ *
+       * Merge two paragraphs: one is left, holding both texts.
+       * ------------------------------------------------------------------ */
+      await section('mergeTwoParagraphs', async () => {
+        const m1 = byId('m1'), m2 = byId('m2'), holder = byId('merge-p');
+        const m2Text = m2.firstChild;
+        const out = {};
+        engine.select(m1);
+        engine.toggleSelection(m2);
+        await frames();
+        const size = engine.history.size;
+        clickThumb(0);
+        await frames();
+        item('group-merge')?.click();
+        await frames();
+        const said = toast()?.message ?? '';
+
+        out.oneParagraphIsLeft = holder.querySelectorAll('p').length === 1;
+        out.itReadsHelloWorld = m1.textContent === 'Hello world';
+        out.theFirstIsTheSameNode = holder.firstElementChild === m1;
+        out.theSecondIsGone = !m2.isConnected;
+        out.theMergedOneIsSelected = engine.selected === m1 && same(ids(), ['m1']);
+        out.itKeepsItsOwnClasses = m1.className === 'lead';
+        // m2 carried a class and a data attribute the first lacks; losing them silently is the bug.
+        out.andTheToastSaysSo = said.includes("Kept the first element's attributes");
+        out.itIsOneUndoStep = engine.history.size === size + 1;
+
+        const file = await planned();
+        const fileParas = file.doc.getElementById('merge-p')?.querySelectorAll('p') ?? [];
+        out.theFileHasOneHelloWorldParagraph =
+          fileParas.length === 1 && fileParas[0].id === 'm1' && fileParas[0].textContent === 'Hello world';
+
+        engine.undo();
+        await frames();
+        out.oneUndoRestoresBothWithTheirOwnAttributes =
+          m2.isConnected && m2.className === 'x' && m2.getAttribute('data-note') === 'n' &&
+          m2.firstChild === m2Text && m1.textContent === 'Hello';
+        out.noDetachedElementStaysSelectedAfterUndo = allConnected();
+
+        // Discriminating for the note: two members with identical attributes drop nothing.
+        const [one, two] = Array.from(byId('merge-same').children);
+        engine.select(one);
+        engine.toggleSelection(two);
+        engine.mergeSelection();
+        const plain = toast()?.message ?? '';
+        out.noAttributeNoteWhenNothingWasDropped =
+          plain.startsWith('Merged 2 elements.') && !plain.includes("Kept the first element's attributes");
+        engine.undo();
+        await frames();
+
+        // "Hello " already ends in a space, so no separator is added.
+        engine.select(byId('sp1'));
+        engine.toggleSelection(byId('sp2'));
+        engine.mergeSelection();
+        out.noDoubleSpaceWhenOneIsThere = byId('sp1').textContent === 'Hello world';
+        engine.undo();
+        await frames();
+        return out;
+      });
+
+      /* ------------------------------------------------------------------ *
+       * Merge two divs: the second's children move, by identity, into the first.
+       * ------------------------------------------------------------------ */
+      await section('mergeTwoDivs', async () => {
+        const d1 = byId('d1'), d2 = byId('d2'), s1 = byId('s1'), s2 = byId('s2');
+        const out = {};
+        engine.select(d1);
+        engine.toggleSelection(d2);
+        engine.mergeSelection();
+        await frames();
+        out.oneDivHoldsBothSpans = d1.children.length === 2 && d1.children[0] === s1;
+        out.theSecondSpanIsTheSameNode = d1.children[1] === s2;
+        out.theSecondDivIsGone = !d2.isConnected;
+        return out;
+      });
+
+      /* ------------------------------------------------------------------ *
+       * Merges that would change what the page means are refused, and say why.
+       * ------------------------------------------------------------------ */
+      await section('mergeRefusals', async () => {
+        const out = {};
+        const reasonFor = async (first, second, thumbIndex = 0) => {
+          engine.setQuickMenu(false);
+          engine.select(first);
+          engine.toggleSelection(second);
+          await frames();
+          clickThumb(thumbIndex);
+          await frames();
+          const merge = item('group-merge');
+          const reason = merge?.disabled === true ? (merge.querySelector('.desc')?.textContent ?? '').trim() : null;
+          engine.setQuickMenu(false);
+          engine.select(null);
+          await frames();
+          return reason;
+        };
+        out.aParagraphBesideAHeadingCannotMerge =
+          (await reasonFor(byId('q1'), byId('q2'))) === 'Merge needs elements of the same type.';
+        out.paragraphsWithAListBetweenCannotMerge =
+          (await reasonFor(byId('q3'), byId('q5'))) === 'Merge needs elements side by side in the same container.';
+        /*
+         * SVG members are reachable only through the engine API: a pointer press on an SVG is not
+         * an HTMLElement event target the page handlers select. Merging two icons used to fold
+         * both paths into one viewBox.
+         */
+        out.twoIconsCannotMerge =
+          (await reasonFor(byId('i1'), byId('i2'), 1)) === 'Merge needs elements that can hold content.';
+
+        // The menu is advisory; the engine is the gate.
+        const mismatch = byId('mismatch').innerHTML;
+        out.theEngineRefusesToo =
+          engine.mergeSelection([byId('q1'), byId('q2')]) === null && byId('mismatch').innerHTML === mismatch;
+
+        // [m1, m1] once moved m1's children into itself and then removed it.
+        const m1 = byId('m1');
+        const size = engine.history.size;
+        out.aRepeatedMemberIsNotAMerge =
+          engine.mergeSelection([m1, m1]) === null && m1.isConnected && engine.history.size === size;
+        return out;
+      });
+
+      /* ------------------------------------------------------------------ *
+       * Delete: every member, as one undo step, then the nearest survivor.
+       * ------------------------------------------------------------------ */
+      await section('deleteSeveral', async () => {
+        const [t1, t2, t3, t4] = ['t1', 't2', 't3', 't4'].map(byId);
+        const trio = byId('trio');
+        const out = {};
+        engine.select(t1);
+        engine.toggleSelection(t2);
+        engine.toggleSelection(t3);
+        await frames();
+        let size = engine.history.size;
+        clickThumb(0);
+        await frames();
+        item('group-delete')?.click();
+        await frames();
+        const said = toast();
+
+        out.allThreeAreGone = !t1.isConnected && !t2.isConnected && !t3.isConnected;
+        out.asOneUndoStep = engine.history.size === size + 1;
+        out.theToastOffersUndo = said?.message === 'Deleted 3 elements.' && said?.action?.label === 'Undo';
+        out.theNearestSurvivorIsSelected = engine.selected === t4;
+        const file = await planned();
+        // Each element leaves with its own line, as a single delete does: the indentation before it
+        // goes too, so the file has no blank lines where they stood.
+        const expected = ['<p id="t1">One</p>', '<p id="t2">Two</p>', '<p id="t3">Three</p>']
+          .reduce((text, literal) => text.replace('\n      ' + literal, ''), original);
+        out.theFileLosesExactlyThose = file.after === expected;
+
+        engine.undo();
+        await frames();
+        out.oneUndoRestoresAllThreeInPlace = same(Array.from(trio.children).map((el) => el.id), ['t1', 't2', 't3', 't4']) &&
+          trio.children[0] === t1 && trio.children[1] === t2 && trio.children[2] === t3 && trio.children[3] === t4;
+        out.noDetachedElementStaysSelectedAfterUndo = allConnected();
+
+        engine.select(t1);
+        engine.toggleSelection(t2);
+        key('Backspace');
+        await frames();
+        out.backspaceDeletesTheWholeSet = !t1.isConnected && !t2.isConnected && t3.isConnected;
+        engine.undo();
+        await frames();
+
+        // A child goes with its parent: one deletion, read as one element.
+        const np = byId('np'), nc = byId('nc');
+        engine.select(np);
+        engine.toggleSelection(nc);
+        size = engine.history.size;
+        key('Delete');
+        await frames();
+        out.theParentAndItsChildGoTogether = !np.isConnected && engine.history.size === size + 1;
+        out.aParentAndChildReadAsOneElement = toast()?.message === 'Deleted div#np.';
+        engine.undo();
+        await frames();
+        out.oneUndoBringsBothBack = np.isConnected && nc.parentNode === np;
+
+        // Every child gone: the container is the nearest thing left, as for a single delete.
+        engine.select(byId('o1'));
+        engine.toggleSelection(byId('o2'));
+        engine.removeSelection();
+        out.deletingEveryChildSelectsTheirContainer = engine.selected === byId('solo');
+        engine.undo();
+        await frames();
+
+        // None of these may fall through to "whatever is selected".
+        const a = byId('a');
+        engine.select(a);
+        size = engine.history.size;
+        engine.removeSelection([document.createElement('p')]);
+        out.anEmptyMemberListTouchesNothing = a.isConnected && engine.history.size === size && engine.selected === a;
+        engine.removeSelection([]);
+        out.andAnExplicitEmptyListToo = a.isConnected && engine.history.size === size && engine.selected === a;
+
+        // [t1, t1] once read "Deleted 2 elements" for one paragraph.
+        size = engine.history.size;
+        engine.removeSelection([t1, t1]);
+        out.aRepeatedMemberCountsOnce =
+          toast()?.message === 'Deleted p#t1.' && engine.history.size === size + 1 && !t1.isConnected;
+        engine.undo();
+        await frames();
+        return out;
+      });
+
+      /* ------------------------------------------------------------------ *
+       * A delete across a shadow boundary is one undo step for both trees.
+       * ------------------------------------------------------------------ */
+      await section('deleteAcrossAShadowBoundary', async () => {
+        const lightp = byId('lightp');
+        const shadowRoot = byId('shadowhost').shadowRoot;
+        const shadowp = shadowRoot.getElementById('shadowp');
+        const out = {};
+        engine.select(lightp);
+        engine.toggleSelection(shadowp);
+        out.bothAreSelected = engine.selection.length === 2;
+        const size = engine.history.size;
+        engine.removeSelection();
+        await frames();
+        out.bothAreGone = !lightp.isConnected && !shadowp.isConnected;
+        out.asOneUndoStep = engine.history.size === size + 1;
+        engine.undo();
+        await frames();
+        out.oneUndoBringsTheLightOneBack = lightp.parentNode === byId('shadow-row');
+        // Discriminating: journaling only the first record's tree left this removal unrecorded,
+        // so undo could not bring it back.
+        out.andTheShadowOneToo = shadowp.parentNode === shadowRoot;
+        return out;
+      });
+
+      /* ------------------------------------------------------------------ *
+       * Unticking every row a group action produced leaves the file alone.
+       * ------------------------------------------------------------------ */
+      await section('untickingAGroupActionLeavesTheFileAlone', async () => {
+        const out = {};
+        const untick = async (perform) => {
+          const entry = engine.history.size;
+          const known = new Set(engine.records.map((r) => r.id));
+          perform();
+          await frames();
+          const newIds = engine.records.map((r) => r.id).filter((id) => !known.has(id));
+          for (const id of newIds) engine.setChangeIncluded(id, false);
+          const file = await planned();
+          // Discriminating: the action has to have produced rows for unticking them to mean anything.
+          const alone = newIds.length > 0 && (file.after || original) === original;
+          engine.includeAllChanges();
+          while (engine.history.size > entry) engine.undo();
+          await frames();
+          return alone;
+        };
+        out.wrapUntickedLeavesTheFileAlone = await untick(() => {
+          pickAB();
+          engine.wrapSelection('<div></div>');
+        });
+        out.mergeUntickedLeavesTheFileAlone = await untick(() => {
+          engine.select(byId('m1'));
+          engine.toggleSelection(byId('m2'));
+          engine.mergeSelection();
+        });
+        out.deleteUntickedLeavesTheFileAlone = await untick(() => {
+          engine.select(byId('t1'));
+          engine.toggleSelection(byId('t2'));
+          engine.toggleSelection(byId('t3'));
+          engine.removeSelection();
+        });
+        return out;
+      });
+
+      /* ------------------------------------------------------------------ *
+       * The dock shows the primary, and says it is showing one of several.
+       * ------------------------------------------------------------------ */
+      const deep = (tag, root = document) => {
+        const direct = root.querySelector?.(tag);
+        if (direct) return direct;
+        for (const el of root.querySelectorAll?.('*') ?? []) {
+          if (el.shadowRoot) {
+            const found = deep(tag, el.shadowRoot);
+            if (found) return found;
+          }
+        }
+        return null;
+      };
+      const notice = (tag) => deep(tag)?.shadowRoot?.querySelector('.multi-notice') ?? null;
+      // Placed before the header, not inside it: in Styles the header is a flex row, and a third
+      // item there would squeeze the chip and the filter, which a text check cannot see.
+      const aboveTheHeader = (el) =>
+        Boolean(el) && el.nextElementSibling?.classList.contains('top') === true && el.closest('.top') === null;
+
+      await section('panelsShowThePrimaryAndSaySo', async () => {
+        const out = {};
+        pickAB();
+        engine.setDockTab('styles');
+        await frames();
+        await wait(300);
+        const styles = notice('heo-styles-panel');
+        out.stylesSaysOneOtherIsSelected =
+          (styles?.textContent ?? '').trim().startsWith('Showing p#a. 1 other element is selected');
+        out.stylesNoticeIsAboveTheHeader = aboveTheHeader(styles);
+
+        engine.setDockTab('props');
+        await frames();
+        await wait(300);
+        const props = notice('heo-props-panel');
+        out.propsSaysSoToo = (props?.textContent ?? '').trim().startsWith('Showing p#a. 1 other element is selected');
+        out.propsNoticeIsAboveTheHeader = aboveTheHeader(props);
+
+        engine.collapseSelection();
+        await frames();
+        // Discriminating: the props panel is still showing p#a, only the notice went.
+        out.noNoticeForOne = Boolean(deep('heo-props-panel')) && notice('heo-props-panel') === null;
+        engine.setDock(false);
+        await frames();
+        return out;
+      });
+
+      /* ------------------------------------------------------------------ *
+       * Shortcuts that act on one element collapse the group to its primary first.
+       * ------------------------------------------------------------------ */
+      await section('otherShortcutsCollapseFirst', async () => {
+        const a = byId('a');
+        const out = {};
+
+        pickAB();
+        key('ArrowDown');
+        await frames();
+        out.arrowsCollapseToOne = engine.selection.length === 1;
+
+        pickAB();
+        key('Enter');
+        await frames();
+        out.enterEditsThePrimaryAlone = engine.store.value.textEditing === a && same(ids(), ['a']);
+        engine.endTextEdit(true);
+        await frames();
+
+        pickAB();
+        key('c', { ctrlKey: true });
+        await frames();
+        out.modCCopiesThePrimaryAlone = same(ids(), ['a']) && engine.hasCopiedElement === true;
+
+        // Every plain Mod chord enters the copy/paste block, so a collapse at its head would
+        // drop the group here. ctrlKey, because the keymap's Mod is meta or ctrl.
+        pickAB();
+        key('a', { ctrlKey: true });
+        await frames();
+        out.anUnboundModChordKeepsTheGroup = same(ids(), ['a', 'b']);
+        return out;
+      });
+
+      /* ------------------------------------------------------------------ *
+       * Several elements saved as one block. Last: it changes the class registry, which must
+       * never show up in another section's planned write.
+       * ------------------------------------------------------------------ */
+      await section('saveSeveralAsOneBlock', async () => {
+        // Held, because inserting the block puts copies with the same ids earlier in the page.
+        const k1 = byId('k1'), k2 = byId('k2'), nafter = byId('nafter');
+        const out = {};
+        engine.classes.upsert({ name: 'card-title', declarations: { color: 'rgb(1, 2, 3)' }, origin: 'user' });
+        try {
+          engine.select(k2);
+          engine.toggleSelection(k1);
+          await frames();
+          clickThumb(0);
+          await frames();
+          item('group-save-block')?.click();
+          await frames();
+          const draft = engine.store.value.extraction;
+          out.theDialogOpened = draft?.mode === 'block';
+          const html = draft?.html ?? '';
+          out.itHoldsBothInDocumentOrder = html.includes('Title') && html.indexOf('Title') < html.indexOf('Body');
+          out.asAComponent = draft?.kind === 'component';
+          // Both elements use the class; shipping its rule twice would be two definitions to drift.
+          out.theClassCssAppearsOnce = ((draft?.css ?? '').match(/\.card-title \{/g) ?? []).length === 1;
+          out.nothingIsLinked = draft?.element === null;
+
+          const blocks = engine.library.list().length;
+          const size = engine.history.size;
+          engine.updateExtraction({ name: 'Pair' });
+          const committed = engine.commitExtraction() === true;
+          await frames();
+          const block = engine.library.list().find((one) => one.name === 'Pair');
+          out.oneMoreLibraryBlock = committed && engine.library.list().length === blocks + 1 && Boolean(block);
+          out.oneUndoStep = engine.history.size === size + 1;
+          // A group is never an instance: the instance model is one element, drift one root.
+          out.neitherElementGainedTheBlockAttribute =
+            !k1.hasAttribute('data-heo-block') && !k2.hasAttribute('data-heo-block');
+
+          await engine.insertBlock(block, {}, { reference: nafter, position: 'after' });
+          await frames();
+          const first = nafter.nextElementSibling, second = first?.nextElementSibling;
+          out.insertingItPlacesBothRootsInOrder =
+            first?.localName === 'h3' && first.textContent === 'Title' &&
+            second?.localName === 'p' && second.textContent === 'Body';
+          while (engine.history.size > size + 1) engine.undo();
+          await frames();
+          engine.undo();
+          await frames();
+          out.oneUndoRemovesTheBlock = engine.library.get(block.id) === undefined;
+
+          // The dialog disables Container, but the engine is callable without the dialog.
+          engine.select(k1);
+          engine.toggleSelection(k2);
+          engine.beginGroupBlockExtraction();
+          engine.updateExtraction({ name: 'Pair two', kind: 'container' });
+          engine.commitExtraction();
+          await frames();
+          out.theEngineKeepsAGroupAComponent =
+            engine.library.list().find((one) => one.name === 'Pair two')?.kind === 'component';
+        } finally {
+          if (engine.store.value.extraction) engine.cancelExtraction();
+          engine.classes.remove('card-title');
+        }
+        return out;
+      });
+
+      /* ------------------------------------------------------------------ */
+      const failed = Object.entries(results)
+        .filter(([, group]) => group && typeof group === 'object' && !Array.isArray(group))
+        .filter(([, group]) => Object.values(group).some((value) => value === false))
+        .map(([name]) => name);
+
+      results.failed = failed;
+      results.ok = failed.length === 0 && errors.length === 0;
+      results.__errors = errors;
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"ok":false,"__errors":["' + String(e && e.message) + '"]}:END';
+    });
+  </script>
+</body>
+
+</html>

@@ -3,6 +3,7 @@ import { customElement } from 'lit/decorators.js';
 import { isHorizontalFlow, isMutable, labelFor, selectableParent, visualBox } from '../../core/dom.js';
 import type { EditorEngine, TransformState } from '../../core/editor.js';
 import { describeProvenance, type Provenance } from '../../core/provenance.js';
+import { listen, unlisten } from '../../core/shield.js';
 
 /** The badge's tooltip: what is known, then where it comes from when anything can say. */
 function riskTitle(provenance: Provenance): string {
@@ -515,6 +516,8 @@ export class HeoSelectionLayer extends HeoElement {
       [
         s.editing,
         s.selected,
+        s.selection,
+        s.quickMenuAnchor,
         s.hovered,
         s.textEditing,
         s.geometry,
@@ -548,13 +551,53 @@ export class HeoSelectionLayer extends HeoElement {
     this.toggleAttribute('data-ai-busy', Boolean(state.aiBusy));
 
     const selected = state.selected;
+    /*
+     * No hover outline on anything already outlined as selected. The second test keeps a primary
+     * patched straight into the store (selection still empty) exactly as it was drawn before.
+     */
     const hovered =
-      state.hovered && state.hovered !== selected && !state.drag ? state.hovered : null;
+      state.hovered &&
+        !state.selection.includes(state.hovered) &&
+        state.hovered !== selected &&
+        !state.drag
+        ? state.hovered
+        : null;
+    const members = state.selection.filter((el) => el.isConnected);
 
     return html`
       ${state.drag ? this.#renderScope(state.drag.home) : nothing}
       ${hovered ? this.#renderHover(hovered) : nothing}
-      ${selected && selected.isConnected ? this.#renderSelection(selected) : nothing}
+      ${members.length > 1
+        ? members.map((el, index) => this.#renderMember(el, index, members.length))
+        : selected && selected.isConnected
+          ? this.#renderSelection(selected)
+          : nothing}
+    `;
+  }
+
+  /**
+   * One member of a multi-selection: outline, badge, thumb, and nothing else.
+   *
+   * The resize frame, the AI button, the insert buttons and the Replace mark all act on one
+   * element, and with several selected none of them has an unambiguous target. The thumb stays
+   * on every member because it is how the group menu is reached from whichever element the user
+   * is looking at, and how one of them is dragged out of the group.
+   */
+  #renderMember(el: HTMLElement, index: number, count: number): TemplateResult {
+    const box = visualBox(el);
+    const primary = el === this.state.value.selected;
+    const badgeAbove = box.top > 26;
+    const badgeStyle = `left:${Math.max(4, Math.round(box.left))}px;top:${Math.round(
+      badgeAbove ? box.top - 25 : box.top + box.height + 4,
+    )}px`;
+    return html`
+      <div class="select" style=${boxStyle(box)}></div>
+      <div class="badge" style=${badgeStyle}>
+        ${icon('cursor', 11)}
+        <span>${labelFor(el)}</span>
+        ${primary ? html`<span class="dim">· ${count} selected</span>` : nothing}
+      </div>
+      ${isMutable(el) ? this.#renderThumb(box, el, index, count) : nothing}
     `;
   }
 
@@ -641,7 +684,7 @@ export class HeoSelectionLayer extends HeoElement {
         : nothing}
 
       ${canMove && !state.drag && !editingText ? this.#renderAiButton(box, badgeAbove) : nothing}
-      ${canMove ? this.#renderThumb(box) : nothing}
+      ${canMove ? this.#renderThumb(box, el) : nothing}
       ${canMove ? this.#renderInsert(box, horizontal, 'before') : nothing}
       ${canMove ? this.#renderInsert(box, horizontal, 'after') : nothing}
     `;
@@ -816,16 +859,25 @@ export class HeoSelectionLayer extends HeoElement {
     window.addEventListener('keyup', key, true);
   }
 
-  #renderThumb(box: { top: number; left: number; height: number }): TemplateResult {
+  #renderThumb(
+    box: { top: number; left: number; height: number },
+    el: HTMLElement,
+    index?: number,
+    count?: number,
+  ): TemplateResult {
     const left = Math.round(Math.max(4, box.left - 26));
     const top = Math.round(Math.max(4, box.top + Math.min(box.height / 2 - 12, 4)));
+    // With several selected, the thumb says that a click is about all of them and a drag about
+    // this one, since the same button now does both.
+    const group = count !== undefined && count > 1;
     return html`<button
       class="thumb"
       type="button"
-      title="Drag to move · click for actions"
-      aria-label="Element actions and drag handle"
+      data-index=${group ? String(index) : nothing}
+      title=${group ? 'Drag to move this one · click for group actions' : 'Drag to move · click for actions'}
+      aria-label=${group ? `Actions for ${count} selected elements and drag handle` : 'Element actions and drag handle'}
       style=${`left:${left}px;top:${top}px`}
-      @pointerdown=${this.#onThumbDown}
+      @pointerdown=${(event: PointerEvent) => this.#onThumbDown(event, el)}
     >
       ${icon('grip', 12)}
     </button>`;
@@ -879,44 +931,78 @@ export class HeoSelectionLayer extends HeoElement {
    *
    * Distinguishing by distance rather than by time means a deliberate click is
    * never interpreted as a drag, and a fast drag never opens the menu.
+   *
+   * With several selected, a drag moves only this member and the set collapses to it as the drag
+   * starts, and a click toggles the group menu beside this thumb.
    */
-  #onThumbDown(event: PointerEvent): void {
+  #onThumbDown(event: PointerEvent, el: HTMLElement): void {
     event.preventDefault();
     event.stopPropagation();
-    const el = this.state.value.selected;
-    if (!el) return;
-
     const thumb = event.currentTarget as HTMLElement;
     const start = { x: event.clientX, y: event.clientY };
     let started = false;
-    thumb.setPointerCapture(event.pointerId);
+    // Kept for the cursor and hover while the thumb exists.
+    try {
+      thumb.setPointerCapture(event.pointerId);
+    } catch {
+      /* synthetic or released pointer: the window listeners carry the gesture anyway */
+    }
 
     const move = (moveEvent: PointerEvent): void => {
       if (!started) {
         const distance = Math.hypot(moveEvent.clientX - start.x, moveEvent.clientY - start.y);
         if (distance < 4) return;
         started = true;
+        // The drag moves this element only, so the set collapses to it as it starts. No reveal:
+        // scrolling the page at the start of a drag would move the drop target under the pointer.
+        if (this.state.value.selection.length > 1) this.editor.select(el, { reveal: false });
         this.editor.startDrag(el, moveEvent.clientX, moveEvent.clientY);
       }
       this.editor.updateDrag(moveEvent.clientX, moveEvent.clientY);
     };
     const up = (): void => {
-      thumb.removeEventListener('pointermove', move);
-      thumb.removeEventListener('pointerup', up);
-      thumb.removeEventListener('pointercancel', cancel);
-      if (started) this.editor.endDrag();
-      else this.editor.setQuickMenu(!this.state.value.quickMenuOpen);
+      detach();
+      if (started) {
+        /*
+         * After a collapse the captured thumb has been replaced, so the release is hit-tested to
+         * the page and the follow-up click can reach the engine's document click handler, which
+         * would select whatever is under the pointer instead of the element just dropped. That
+         * one click is swallowed, for one frame. Window capture runs before the engine's
+         * document listener in either phase.
+         */
+        const swallow = (clickEvent: MouseEvent): void => {
+          clickEvent.preventDefault();
+          clickEvent.stopImmediatePropagation();
+        };
+        listen(window, 'click', swallow, true);
+        requestAnimationFrame(() => unlisten(window, 'click', swallow, true));
+        this.editor.endDrag();
+        return;
+      }
+      // The same toggle as before for one element; with several, another member's thumb moves
+      // the open menu to itself rather than closing it.
+      const s = this.state.value;
+      const openHere = s.quickMenuOpen && (s.quickMenuAnchor ?? s.selected) === el;
+      this.editor.setQuickMenu(!openHere, el);
     };
     const cancel = (): void => {
-      thumb.removeEventListener('pointermove', move);
-      thumb.removeEventListener('pointerup', up);
-      thumb.removeEventListener('pointercancel', cancel);
+      detach();
       if (started) this.editor.cancelDrag();
     };
-
-    thumb.addEventListener('pointermove', move);
-    thumb.addEventListener('pointerup', up);
-    thumb.addEventListener('pointercancel', cancel);
+    /*
+     * On the window, in the capture phase, not on the thumb. Collapsing the set at drag start
+     * re-renders the layer and replaces the thumb that holds the capture; a removed element loses
+     * capture, so listeners on it would never hear the rest of the gesture and the drag would be
+     * stranded mid-flight. While the thumb exists its events still reach the window first.
+     */
+    const detach = (): void => {
+      unlisten(window, 'pointermove', move, true);
+      unlisten(window, 'pointerup', up, true);
+      unlisten(window, 'pointercancel', cancel, true);
+    };
+    listen(window, 'pointermove', move, true);
+    listen(window, 'pointerup', up, true);
+    listen(window, 'pointercancel', cancel, true);
   }
 }
 

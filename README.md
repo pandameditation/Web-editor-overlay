@@ -306,8 +306,9 @@ same kind: one `<p>` becomes two, one `<h2>` becomes two, one `<li>` becomes two
 keeps the class and styles but not the `id`, and bold or links that span the blank line carry
 on into it. The caret stays where it was, and the split is its own undo step.
 
-The chevron beside the button turns on **Split automatically**, which is also in **Settings**
-(the gear in the toolbar):
+The chevron beside the button turns on **Split automatically** straight away. It is also in
+**Settings** (the gear in the toolbar), where, like everything in that dialog, it takes effect
+when you press **Save settings**:
 
 - Every double line break already in the page is split at once, as one undo step that also
   takes the setting back.
@@ -736,6 +737,13 @@ Whichever route it arrives by, press **Test** in the settings panel to confirm i
 sends a real request and succeeds only on a reply the editor could use, because a
 reachable host with a model name that does not exist is the most common
 misconfiguration by a distance and a ping would call it healthy.
+
+**Settings** is a draft until you press **Save settings**: adding, editing, promoting and
+deleting providers, typing or forgetting a key, and the editing options all wait for it, and
+**Cancel** (or Escape) throws them away, asking first if anything changed. **Test** uses the
+provider as drafted, including a key typed but not saved yet, which is lent to the request in
+memory and dropped afterwards. Saving checks every provider, and opens the first incomplete one
+at the field that needs filling.
 
 ### Why the key is on the server
 
@@ -1572,6 +1580,7 @@ missing on purpose, and the runner refuses to start until every page is in one l
 | `test/script-tag-manual.html` | That a bundle *without* `data-heo` mounts nothing, and that `mount()` and `unmount()` still behave. |
 | `test/opaque-origin.html` | A page opened from disk, run **without** `--allow-file-access-from-files` so the origins are genuinely opaque. Confirms the stylesheet's rules really are refused and a sibling `fetch` really does fail, then that connecting a folder makes both files readable, offers the stylesheet as a design-system target, and says the preview cannot update. |
 | `test/line-break-split.html` | Splitting at double line breaks: which blank lines count, the divider and Split button while typing and on a selected element, the caret surviving the split, "Split automatically" sweeping the page as one undo step with the setting, Enter twice opening a new paragraph, the setting in both seeds, the save patching every split in place, and the Settings dialog's switch. |
+| `test/settings-draft.html` | Settings as a draft: Cancel and Save settings (primary) in the footer and the add button inside the providers section — beside Test, below the tabs, or in the empty state — edits, the editing option, adding, promoting and deleting all waiting for Save, Cancel and Escape asking before discarding, an incomplete provider on another tab opened at its field on Save, and a key tested from the draft without being stored, then stored on Save, and forgotten only on Save. |
 | `test/form-errors.html` | The one form-error mechanism on six different surfaces — the New token form, the rule composer, Insert HTML, changing a tag, the AI request box and the HTML code panel: "(required)" labels, buttons that stay enabled, each error below its own field and announced, focus taken to it, the next problem revealed on leaving a field and reached by pressing again, and nothing applied while a problem stands. |
 | `test/turn-into.html` | "Turn into" from the handle menu: placed before "Edit text", opens the picker in turn mode, and carries content across — a section into a card (text and link into props, the extra paragraph kept), a paragraph into a heading (markup and attributes kept), a list keeping every item, a stat and a figure keeping their parts, a plain box taking several pieces whole, a divider reporting what it could not hold, a refused placement, undo, and the save. |
 | `test/block-props.html` | "Save as a reusable block" with props: the HTML step explains `{{name}}` and lists the props it finds, an empty name, missing markup or a prop name with a space is flagged under its own field when Continue or Save is pressed — one at a time, with focus taken there and a one-click fix for the prop name — renames reach the markup (and swapping two names swaps them), and class-extraction errors are shown too. |

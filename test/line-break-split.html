@@ -255,13 +255,18 @@
         const checked = box?.checked ?? null;
         box?.click();
         await frames();
-        const off = engine.settings.value.splitDoubleBreaks;
+        // A draft until saved: the page is not reshaped by ticking a box.
+        const stillOnBeforeSaving = engine.settings.value.splitDoubleBreaks;
+        Array.from(dialog?.querySelectorAll('footer button') ?? [])
+          .find((one) => /save settings/i.test(one.textContent ?? ''))
+          ?.click();
+        await frames();
+        const off = !engine.settings.value.splitDoubleBreaks;
+        const closed = !engine.store.value.aiSettingsOpen;
         engine.undo();
         await frames();
         const backOn = engine.settings.value.splitDoubleBreaks;
-        engine.setAiSettings(false);
-        await frames();
-        return { toolbarButton: Boolean(toolbarButton), title, checked, off, backOn };
+        return { toolbarButton: Boolean(toolbarButton), title, checked, stillOnBeforeSaving, off, closed, backOn };
       });
 
       results.__errors = errors;

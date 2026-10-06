@@ -331,13 +331,29 @@
         buttonSaying(/add a provider/i)?.click();
         await frames();
 
-        const set = engine.ai.list()[0];
-        // Configured through the agent rather than by typing into every field: what this group
-        // is about is what the panel *shows* for a given configuration, not the plumbing of
-        // its inputs, which `change` events would only re-test at one remove.
-        engine.ai.upsert({
-          ...set, transport: 'in-page', provider: 'openai-compatible', model: 'test-model',
-        });
+        /*
+         * Configured through the form, then saved: the dialog edits a draft, and nothing reaches the
+         * agent until Save settings is pressed.
+         */
+        const fieldLabelled = (label) =>
+          Array.from(shadow()?.querySelectorAll('.field') ?? []).find((one) =>
+            (one.querySelector('span')?.textContent ?? '').trim().startsWith(label),
+          );
+        const change = async (control, value) => {
+          if (!control) return;
+          control.value = value;
+          control.dispatchEvent(new Event('change', { bubbles: true }));
+          await frames();
+        };
+        await change(fieldLabelled('Where the key lives')?.querySelector('select'), 'in-page');
+        await change(fieldLabelled('Base URL')?.querySelector('input'), 'https://gateway.example/v1');
+        await change(fieldLabelled('Model')?.querySelector('input'), 'test-model');
+        const nothingSavedBeforeSave = engine.ai.list().length === 0;
+        buttonSaying(/save settings/i)?.click();
+        await frames();
+        await frames();
+        const closedOnSave = engine.store.value.aiSettingsOpen === false;
+        engine.setAiSettings(true);
         await frames();
 
         const key = shadow()?.querySelector('input[type="password"]');
@@ -346,7 +362,10 @@
         const shield = shadow()?.querySelector('.shield');
 
         results.addAProviderAndConfigureIt = {
+          nothingSavedBeforeSave,
+          closedOnSave,
           created: engine.ai.list().length === 1,
+          savedAsDrafted: engine.ai.list()[0]?.transport === 'in-page' && engine.ai.list()[0]?.model === 'test-model',
           // A real password field in a form, so the browser's own manager can hold it — which
           // is the recommended path precisely because the editor then persists nothing.
           keyFieldIsAPassword: Boolean(key),
@@ -368,7 +387,10 @@
         };
         const group = results.addAProviderAndConfigureIt;
         group.ok =
+          group.nothingSavedBeforeSave === true &&
+          group.closedOnSave === true &&
           group.created === true &&
+          group.savedAsDrafted === true &&
           group.keyFieldIsAPassword === true &&
           group.usesThePasswordManager === true &&
           group.noScopeRows === true &&
@@ -797,6 +819,12 @@
           select.dispatchEvent(new Event('change', { bubbles: true }));
           return true;
         };
+        // What the form is showing: the dialog edits a draft, and the agent only hears on Save.
+        const baseField = () =>
+          Array.from(root()?.querySelectorAll('.field') ?? [])
+            .find((one) => (one.querySelector('span')?.textContent ?? '').trim().startsWith('Base URL'))
+            ?.querySelector('input') ?? null;
+        const shownBase = () => baseField()?.value ?? undefined;
 
         // A proxied set carries no base URL by design: the server decides and the page is not told.
         const proxiedHasNone = engine.ai.get(id)?.baseURL === undefined;
@@ -817,22 +845,34 @@
          */
         pick('Where the key lives', 'in-page');
         await frames();
-        const afterLeavingProxy = engine.ai.get(id)?.baseURL ?? '';
+        const afterLeavingProxy = shownBase() ?? '';
 
         pick('API shape', 'openai');
         await frames();
-        const afterOpenai = engine.ai.get(id)?.baseURL;
+        const afterOpenai = shownBase();
 
         pick('API shape', 'anthropic');
         await frames();
-        const afterAnthropic = engine.ai.get(id)?.baseURL;
+        const afterAnthropic = shownBase();
 
         // A host the user typed is theirs, and a later dialect change must not take it.
-        engine.ai.upsert({ ...engine.ai.get(id), baseURL: 'https://my-gateway.internal/v1' });
+        const typed = baseField();
+        if (typed) {
+          typed.value = 'https://my-gateway.internal/v1';
+          typed.dispatchEvent(new Event('change', { bubbles: true }));
+        }
         await frames();
         pick('API shape', 'google');
         await frames();
-        const afterTyped = engine.ai.get(id)?.baseURL;
+        const afterTyped = shownBase();
+        const untouchedUntilSaved = engine.ai.get(id)?.transport === 'proxy';
+
+        Array.from(root()?.querySelectorAll('footer button') ?? [])
+          .find((one) => /save settings/i.test(one.textContent ?? ''))
+          ?.click();
+        await frames();
+        await frames();
+        const saved = engine.ai.get(id);
 
         results.theDialectFillsInItsHost = {
           proxiedHasNone,
@@ -847,6 +887,11 @@
           anthropicOmitsV1: afterAnthropic === 'https://api.anthropic.com',
           afterTyped,
           leavesATypedHostAlone: afterTyped === 'https://my-gateway.internal/v1',
+          untouchedUntilSaved,
+          savedWhatTheFormShowed:
+            saved?.transport === 'in-page' &&
+            saved?.provider === 'google' &&
+            saved?.baseURL === 'https://my-gateway.internal/v1',
         };
         const group = results.theDialectFillsInItsHost;
         group.ok =
@@ -854,7 +899,9 @@
           group.compatibleDialectStaysEmpty === true &&
           group.openaiCarriesV1 === true &&
           group.anthropicOmitsV1 === true &&
-          group.leavesATypedHostAlone === true;
+          group.leavesATypedHostAlone === true &&
+          group.untouchedUntilSaved === true &&
+          group.savedWhatTheFormShowed === true;
 
         engine.ai.remove(id);
         /*

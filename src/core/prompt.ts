@@ -353,10 +353,28 @@ function stepsFor(record: ChangeRecord, blocks: Block[]): string[] {
       const ref = detail.wrapper
         ? block(blocks, 'html', `wrapper for ${record.target}`, detail.wrapper)
         : 'a new parent';
+      // Several members, one record: without naming them all the agent would wrap only the first.
+      if (detail.members) {
+        return [
+          `Wrap ${code(detail.members)} together in ${ref}, in their current order, placed where the first one is; siblings between them stay outside, after it.`,
+        ];
+      }
       return [`Wrap in ${ref}, unchanged inside and in the same position among its siblings.`];
     }
 
     case 'replace': {
+      /*
+       * Before the bare replace below, because a merge record carries `html` as well. Read as a
+       * replace, it told the agent to rewrite this element and left the merged ones in the file.
+       */
+      if (detail.merged) {
+        const result = detail.html
+          ? block(blocks, 'html', `merged ${record.target}`, detail.html)
+          : 'the combined contents';
+        return [
+          `Merge ${code(detail.merged)} into this element: append their contents in order, then remove them. Result: ${result}.`,
+        ];
+      }
       if (detail.html) {
         return [`Replace with ${block(blocks, 'html', `replaces ${record.target}`, detail.html)}.`];
       }

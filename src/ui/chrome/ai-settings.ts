@@ -102,7 +102,7 @@ export class HeoAiSettings extends HeoElement {
         display: flex;
         flex-direction: column;
         gap: 4px;
-        padding: 4px 10px 10px 16px;
+        padding: 10px;
         border-right: 1px solid var(--heo-line);
         overflow-y: auto;
       }
@@ -110,8 +110,33 @@ export class HeoAiSettings extends HeoElement {
         display: none;
       }
       .pane {
-        padding: 4px 16px 12px;
+        padding: 8px 16px 14px;
         overflow-y: auto;
+      }
+      /* Another row of the list, drawn as a slot waiting to be filled rather than as a provider. */
+      .add-list {
+        justify-content: flex-start;
+        width: 100%;
+        margin-top: 2px;
+        border: 1px dashed var(--heo-line);
+        background: transparent;
+        color: var(--heo-text-dim);
+      }
+      .add-list:hover {
+        color: var(--heo-text);
+      }
+      /* With one provider the list is hidden, and the button moves into that provider's actions. */
+      .split.solo .add-list {
+        display: none;
+      }
+      .empty-acts {
+        display: flex;
+        justify-content: center;
+        padding-bottom: 6px;
+      }
+      .key-note {
+        color: var(--heo-text-faint);
+        font-size: 10.5px;
       }
 
       header {
@@ -142,33 +167,60 @@ export class HeoAiSettings extends HeoElement {
         overflow-y: auto;
       }
 
-      /* A titled group of settings: Editing, then AI providers. */
-      .section {
-        padding: 2px 16px 10px;
+      /*
+       * The body: titled sections, each one a card.
+       *
+       * The providers section takes the remaining height and scrolls inside its card, so the
+       * footer with Save stays in view however long a provider's form gets.
+       */
+      .sections {
+        display: flex;
+        flex: 1 1 auto;
+        flex-direction: column;
+        gap: 16px;
+        min-height: 0;
+        padding: 2px 16px 14px;
       }
-      .section h3 {
-        margin: 0 0 6px;
+      .section {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .section.providers {
+        flex: 1 1 auto;
+        min-height: 0;
+      }
+      .section-head h3 {
+        margin: 0;
         color: var(--heo-text-faint);
         font-size: 10.5px;
         font-weight: 600;
         letter-spacing: 0.06em;
         text-transform: uppercase;
       }
-      .section > p {
-        margin: 0;
+      .section-head p {
+        margin: 3px 0 0;
         color: var(--heo-text-dim);
         font-size: 11px;
         line-height: 1.55;
       }
-      .section.providers {
-        padding-bottom: 6px;
-        border-top: 1px solid var(--heo-line);
-        padding-top: 10px;
+      .card {
+        border: 1px solid var(--heo-line);
+        border-radius: var(--heo-r-md);
+        background: color-mix(in oklab, var(--heo-sunken) 60%, transparent);
+      }
+      .providers-card {
+        display: flex;
+        flex: 1 1 auto;
+        flex-direction: column;
+        min-height: 0;
+        overflow: hidden;
       }
       .setting {
         display: flex;
         align-items: flex-start;
         gap: 10px;
+        padding: 11px 12px;
         cursor: pointer;
       }
       .setting input {
@@ -182,7 +234,7 @@ export class HeoAiSettings extends HeoElement {
         font-size: 12px;
         font-weight: 600;
       }
-      .setting .why {
+      .setting .desc {
         display: block;
         margin-top: 2px;
         color: var(--heo-text-dim);
@@ -291,7 +343,7 @@ export class HeoAiSettings extends HeoElement {
       }
 
       .body-rows {
-        padding: 0 10px 10px;
+        padding: 0;
       }
       /* The security sentence on the left, the actions on the provider itself on the right. */
       .why {
@@ -390,10 +442,30 @@ export class HeoAiSettings extends HeoElement {
         display: flex;
         align-items: center;
         gap: 8px;
-        padding: 12px 16px 15px;
+        padding: 12px 16px 14px;
+        border-top: 1px solid var(--heo-line);
       }
       footer .spacer {
         flex: 1 1 auto;
+      }
+      footer .quiet {
+        color: var(--heo-text-faint);
+        font-size: 11px;
+      }
+      footer .unsaved {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        color: var(--heo-warn);
+        font-size: 11px;
+        font-weight: 600;
+      }
+      footer .unsaved::before {
+        content: '';
+        width: 6px;
+        height: 6px;
+        border-radius: 999px;
+        background: currentColor;
       }
 
       /*
@@ -443,9 +515,16 @@ export class HeoAiSettings extends HeoElement {
           padding-right: 12px;
         }
         header,
-        footer {
+        footer,
+        .sections {
           padding-left: 12px;
           padding-right: 12px;
+        }
+        /* The add button stays a short chip at the end of the strip of tabs. */
+        .add-list {
+          width: auto;
+          flex: 0 0 auto;
+          margin-top: 0;
         }
         /* One control per line, which is the whole point of the breakpoint. */
         .pair {
@@ -471,24 +550,86 @@ export class HeoAiSettings extends HeoElement {
 
   protected modal = new ModalController(this, { initialFocus: '.close' });
 
-  /** What a provider needs before it can be tested or used. See `form-errors.ts`. */
-  protected providerForm = new FormErrors(this, () => this.#providerIssues());
-  protected keyForm = new FormErrors(this, () => {
+  /** What a provider needs before it can be tested or saved. See `form-errors.ts`. */
+  protected providerForm = new FormErrors(this, () => {
     const set = this.#currentOrNull();
-    if (!set || set.transport !== 'in-page') return [];
-    return (this.keyDraft[set.id] ?? '').trim()
-      ? []
-      : [{ field: 'ai-key', message: 'Paste the API key to use.' }];
+    return set ? this.#issuesFor(set) : [];
   });
 
+  /**
+   * The settings as they will be once saved. Nothing in here reaches the editor until Save.
+   *
+   * Taken from the editor when the dialog opens, and taken again whenever the editor changes while
+   * nothing here has been touched — so a provider the dev server reports a moment after opening
+   * still shows up, but an edit in progress is never overwritten by one.
+   */
+  @state() private draft: SettingsDraft | null = null;
+  /** What the draft was taken from: tells an edit from no edit, and a removal from a newcomer. */
+  #baseline: SettingsDraft | null = null;
+  /** Stored keys to forget on Save, by provider id. */
+  @state() private forget: ReadonlySet<string> = new Set();
+
+  override willUpdate(): void {
+    if (!this.state.value.aiSettingsOpen) {
+      this.draft = null;
+      this.#baseline = null;
+      return;
+    }
+    if (this.draft && this.#dirty) return;
+    const now = this.#snapshot();
+    if (this.draft && sameDraft(now, this.#baseline)) return;
+    this.#baseline = now;
+    this.draft = cloneDraft(now);
+  }
+
+  #snapshot(): SettingsDraft {
+    return {
+      sets: this.editor.ai.list().map((set) => ({ ...set })),
+      split: this.editor.settings.value.splitDoubleBreaks,
+    };
+  }
+
+  /** Whether Save would change anything. */
+  get #dirty(): boolean {
+    if (!this.draft || !this.#baseline) return false;
+    return (
+      !sameDraft(this.draft, this.#baseline) ||
+      this.forget.size > 0 ||
+      Object.values(this.keyDraft).some((key) => key.trim())
+    );
+  }
+
+  #sets(): AiProviderSet[] {
+    return this.draft?.sets ?? [];
+  }
+
+  #setDraft(next: Partial<SettingsDraft>): void {
+    if (this.draft) this.draft = { ...this.draft, ...next };
+  }
+
+  #updateSet(id: string, next: Partial<AiProviderSet>): void {
+    this.#setDraft({ sets: this.#sets().map((one) => (one.id === id ? { ...one, ...next } : one)) });
+  }
+
   #currentOrNull(): AiProviderSet | null {
-    const sets = this.editor.ai.list();
+    const sets = this.#sets();
     return sets.length ? this.#current(sets) : null;
   }
 
-  #providerIssues(): FieldIssue[] {
-    const set = this.#currentOrNull();
-    if (!set) return [];
+  /**
+   * Whether a request could be made with this provider once the draft is saved.
+   *
+   * A key typed here counts, and a key marked to be forgotten does not, so the list and the badge
+   * describe what Save will produce rather than what the vault holds right now.
+   */
+  #hasKey(set: AiProviderSet): boolean {
+    if (set.transport !== 'in-page') return this.editor.ai.ready(set);
+    if ((this.keyDraft[set.id] ?? '').trim()) return true;
+    if (this.forget.has(set.id)) return false;
+    return this.editor.ai.ready(set);
+  }
+
+  #issuesFor(set: AiProviderSet): FieldIssue[] {
     const issues: FieldIssue[] = [];
     if (!set.label.trim()) issues.push({ field: 'ai-name', message: 'Give the provider a name.' });
     if (set.transport !== 'proxy' && !(set.baseURL ?? '').trim()) {
@@ -514,8 +655,9 @@ export class HeoAiSettings extends HeoElement {
   @state() private verdict: Record<string, { ok: boolean; text: string }> = {};
 
   override render(): TemplateResult | typeof nothing {
-    if (!this.state.value.aiSettingsOpen) return nothing;
-    const sets = this.editor.ai.list();
+    if (!this.state.value.aiSettingsOpen || !this.draft) return nothing;
+    const sets = this.draft.sets;
+    const dirty = this.#dirty;
 
     return html`<div
       class="dialog surface"
@@ -527,7 +669,7 @@ export class HeoAiSettings extends HeoElement {
         event.stopPropagation();
         if (event.key !== 'Escape') return;
         event.preventDefault();
-        this.editor.setAiSettings(false);
+        this.#cancel();
       }}
     >
       <header>
@@ -539,70 +681,97 @@ export class HeoAiSettings extends HeoElement {
           class="btn icon ghost close"
           type="button"
           aria-label="Close"
-          @click=${() => this.editor.setAiSettings(false)}
+          @click=${() => this.#cancel()}
         >
           ${icon('close', 14)}
         </button>
       </header>
 
-      <section class="section" aria-labelledby="heo-settings-editing">
-        <h3 id="heo-settings-editing">Editing</h3>
-        <label class="setting">
-          <input
-            type="checkbox"
-            .checked=${this.state.value.splitDoubleBreaks}
-            @change=${(event: Event) =>
-              this.editor.setSplitDoubleBreaks((event.target as HTMLInputElement).checked)}
-          />
-          <span>
-            <span class="name">Split automatically at double line breaks</span>
-            <span class="why">
-              Two line breaks in a row inside a paragraph, a heading or any text element become two
-              separate elements — including the ones already in the page. Saved with the page.
+      <div class="sections">
+        <section class="section" aria-labelledby="heo-settings-editing">
+          <div class="section-head">
+            <h3 id="heo-settings-editing">Editing</h3>
+          </div>
+          <label class="setting card">
+            <input
+              type="checkbox"
+              .checked=${this.draft.split}
+              @change=${(event: Event) =>
+        this.#setDraft({ split: (event.target as HTMLInputElement).checked })}
+            />
+            <span>
+              <span class="name">Split automatically at double line breaks</span>
+              <span class="desc">
+                Two line breaks in a row inside a paragraph, a heading or any text element become
+                two separate elements — including the ones already in the page. Saved with the
+                page.
+              </span>
             </span>
-          </span>
-        </label>
-      </section>
+          </label>
+        </section>
 
-      <section class="section providers" aria-labelledby="heo-settings-ai">
-        <h3 id="heo-settings-ai">AI providers</h3>
-        <p>
-          Bring your own model. The first in the list is the default; drag order is priority.
-          Each one carries its own rules about what it may change.
-        </p>
-      </section>
-
-      ${sets.length
+        <section class="section providers" aria-labelledby="heo-settings-ai">
+          <div class="section-head">
+            <h3 id="heo-settings-ai">AI providers</h3>
+            <p>
+              Bring your own model. The first in the list is the default, and Promote moves one to
+              the top. Each one carries its own rules about what it may change.
+            </p>
+          </div>
+          <div class="card providers-card">
+            ${sets.length
         ? html`<div class=${`split${sets.length === 1 ? ' solo' : ''}`}>
-              <div class="list" role="tablist" aria-label="Providers">
-                ${sets.map((set, index) => this.#renderRow(set, index))}
-              </div>
-              <div class="pane">${this.#renderForm(this.#current(sets), sets)}</div>
-            </div>`
+                  <div class="list" role="tablist" aria-label="Providers">
+                    ${sets.map((set, index) => this.#renderRow(set, index))}
+                    ${this.#renderAdd('list')}
+                  </div>
+                  <div class="pane">${this.#renderForm(this.#current(sets), sets)}</div>
+                </div>`
         : html`<div class="pane">
-              <!--
-                The empty state names the shortest route rather than only stating the situation.
-                A key in .env is one line and needs no configuration, and it is also the only
-                tier that keeps the credential out of this page — so it is the one to put first.
-              -->
-              <p class="empty">
-                No model yet. Put a key in <code>.env</code> and restart the dev server — 
-                <code>ANTHROPIC_API_KEY</code>, <code>OPENAI_API_KEY</code> and
-                <code>GEMINI_API_KEY</code> are all picked up on their own, and stay on the
-                server. Or add a provider below to use a local model or your own key.
-              </p>
-            </div>`}
+                  <!--
+                    The empty state names the shortest route rather than only stating the situation.
+                    A key in .env is one line and needs no configuration, and it is also the only
+                    tier that keeps the credential out of this page — so it is the one to put first.
+                  -->
+                  <p class="empty">
+                    No model yet. Put a key in <code>.env</code> and restart the dev server —
+                    <code>ANTHROPIC_API_KEY</code>, <code>OPENAI_API_KEY</code> and
+                    <code>GEMINI_API_KEY</code> are all picked up on their own, and stay on the
+                    server. Or add a provider to use a local model or your own key.
+                  </p>
+                  <div class="empty-acts">${this.#renderAdd('empty')}</div>
+                </div>`}
+          </div>
+        </section>
+      </div>
 
       <footer>
-        <button class="btn primary sm" type="button" @click=${() => this.#add()}>
-          ${icon('plus', 12)} Add a provider
-        </button>
+        ${dirty
+        ? html`<span class="unsaved" role="status">Unsaved changes</span>`
+        : html`<span class="quiet">Changes apply when you save them.</span>`}
         <span class="spacer"></span>
-        <button class="btn sm" type="button" @click=${() => this.editor.setAiSettings(false)}>
-          Done
+        <button class="btn sm" type="button" @click=${() => this.#cancel()}>Cancel</button>
+        <button class="btn sm primary" type="button" @click=${() => void this.#save()}>
+          ${icon('check', 12)} Save settings
         </button>
       </footer>
     </div>`;
+  }
+
+  /**
+   * Add a provider, inside the providers section rather than in the dialog's footer.
+   *
+   * Beside the list when there is one, so it reads as "another row"; in the action line of the
+   * only provider when there is just one; centred under the explanation when there are none.
+   */
+  #renderAdd(where: 'list' | 'acts' | 'empty'): TemplateResult {
+    return html`<button
+      class=${`btn sm add add-${where}`}
+      type="button"
+      @click=${() => this.#add()}
+    >
+      ${icon('plus', 12)} ${where === 'acts' ? 'Add another provider' : 'Add a provider'}
+    </button>`;
   }
 
   /**
@@ -617,8 +786,8 @@ export class HeoAiSettings extends HeoElement {
 
   /** One row in the list: the name, and a dot saying how exposed its credential is. */
   #renderRow(set: AiProviderSet, index: number): TemplateResult {
-    const chosen = this.#current(this.editor.ai.list()).id === set.id;
-    const needsKey = !this.editor.ai.ready(set);
+    const chosen = this.#current(this.#sets()).id === set.id;
+    const needsKey = !this.#hasKey(set);
     const tone = needsKey ? 'needs' : set.transport === 'in-page' ? 'exposed' : 'safe';
     return html`<button
       class="tab"
@@ -626,7 +795,10 @@ export class HeoAiSettings extends HeoElement {
       role="tab"
       aria-current=${chosen ? 'true' : 'false'}
       @click=${() => {
+        if (this.openId === set.id) return;
         this.openId = set.id;
+        // The errors on screen were about the provider being left.
+        this.providerForm.reset();
       }}
     >
       <span class=${`dot ${tone}`}></span>
@@ -641,7 +813,7 @@ export class HeoAiSettings extends HeoElement {
     const badge = describeTransport(set, status.persistence);
     const refusal = this.editor.ai.persistenceRefusal();
     const verdict = this.verdict[set.id];
-    const needsKey = !this.editor.ai.ready(set);
+    const needsKey = !this.#hasKey(set);
     const shield = needsKey ? 'needs' : set.transport === 'in-page' ? 'exposed' : 'safe';
     /**
      * Write one field, over whatever the set holds *now*.
@@ -653,13 +825,12 @@ export class HeoAiSettings extends HeoElement {
      * it is not setting.
      */
     const patch = (next: Partial<AiProviderSet>): void => {
-      const live = this.editor.ai.get(set.id) ?? set;
-      this.editor.ai.upsert({ ...live, ...next });
+      this.#updateSet(set.id, next);
       // A changed destination invalidates whatever the last test proved.
       this.verdict = { ...this.verdict, [set.id]: undefined as never };
     };
     /** The set as it stands, for a handler that needs to read a field before writing another. */
-    const live = (): AiProviderSet => this.editor.ai.get(set.id) ?? set;
+    const live = (): AiProviderSet => this.#sets().find((one) => one.id === set.id) ?? set;
 
     return html`<div class="body-rows">
       <div class="head">
@@ -688,7 +859,7 @@ export class HeoAiSettings extends HeoElement {
                 class="btn sm"
                 type="button"
                 title="Move to the top of the list, making it the default"
-                @click=${() => this.editor.ai.reorder(set.id, 0)}
+                @click=${() => this.#promote(set.id)}
               >
                 ${icon('arrowUp', 12)} Promote
               </button>`
@@ -839,6 +1010,8 @@ export class HeoAiSettings extends HeoElement {
               ${icon(verdict.ok ? 'check' : 'alert', 11)} ${verdict.text}
             </span>`
         : nothing}
+        <span class="spacer"></span>
+        ${sets.length === 1 ? this.#renderAdd('acts') : nothing}
       </div>
     </div>`;
   }
@@ -870,30 +1043,31 @@ export class HeoAiSettings extends HeoElement {
      */
     const stored = this.editor.ai.keyStatus(set.id);
     const remember = this.remember[set.id] ?? stored.persistence === 'origin';
-    return html`<label class="field">
-      <span>API key${hint ? ` — currently ends ${hint}` : html` <span class="required">(required)</span>`}</span>
+    const forgetting = this.forget.has(set.id);
+    const current = forgetting ? undefined : hint;
+    return html`<div class="field">
+      <label for=${`heo-ai-key-${set.id}`}>
+        <span>API key${current ? ` — currently ends ${current}` : ''}</span>
+      </label>
       <input
-        ${field(this.keyForm, 'ai-key', { required: !hint })}
-        aria-label="API key"
+        id=${`heo-ai-key-${set.id}`}
         class="input"
         type="password"
         autocomplete="current-password"
         name=${`heo-ai-key-${set.id}`}
         .value=${draft}
-        placeholder=${hint ? '••••••••' : 'sk-…'}
+        placeholder=${current ? '•••••••• (unchanged)' : 'sk-…'}
         @input=${(event: Event) => {
         this.keyDraft = { ...this.keyDraft, [set.id]: (event.target as HTMLInputElement).value };
+        this.verdict = { ...this.verdict, [set.id]: undefined as never };
       }}
       />
-      ${this.keyForm.error('ai-key')}
+      ${draft.trim()
+        ? html`<span class="key-note">
+            ${current ? 'Replaces the current key when you save.' : 'Stored when you save.'}
+          </span>`
+        : nothing}
       <div class="acts">
-        <button
-          class="btn sm"
-          type="button"
-          @click=${() => void this.#saveKey(set)}
-        >
-          ${icon('check', 11)} Use this key
-        </button>
         <label class="verdict" title=${refusal ?? 'Keep it on this machine until you remove it'}>
           <input
             type="checkbox"
@@ -909,19 +1083,32 @@ export class HeoAiSettings extends HeoElement {
           Remember on this machine
         </label>
         <span class="spacer"></span>
-        ${hint
-        ? html`<button
-              class="btn sm danger"
-              type="button"
-              title="Forget this key everywhere it is stored"
-              @click=${() => this.editor.ai.clearKey(set.id)}
-            >
-              ${icon('unlink', 12)} Forget key
-            </button>`
-        : nothing}
+        ${forgetting
+        ? html`<span class="key-note">Forgotten when you save.</span>
+              <button class="btn sm" type="button" @click=${() => this.#keepKey(set.id)}>
+                Keep it
+              </button>`
+        : hint
+          ? html`<button
+                class="btn sm danger"
+                type="button"
+                title="Forget this key everywhere it is stored, when you save"
+                @click=${() => {
+              this.forget = new Set([...this.forget, set.id]);
+            }}
+              >
+                ${icon('unlink', 12)} Forget key
+              </button>`
+          : nothing}
       </div>
       ${refusal ? html`<span class="verdict">${refusal}</span>` : nothing}
-    </label>`;
+    </div>`;
+  }
+
+  #keepKey(id: string): void {
+    const next = new Set(this.forget);
+    next.delete(id);
+    this.forget = next;
   }
 
   /* ---------------------------------------------------------------------- */
@@ -936,53 +1123,129 @@ export class HeoAiSettings extends HeoElement {
      * means the environment did not supply what you wanted, and the useful thing to offer is the
      * other keyless option rather than a `proxy` set with an id no server has heard of.
      */
-    this.editor.ai.upsert({
-      id,
-      label: 'New provider',
-      transport: 'local',
-      provider: 'openai-compatible',
-      baseURL: 'http://127.0.0.1:11434/v1',
-      model: '',
+    this.#setDraft({
+      sets: [
+        ...this.#sets(),
+        {
+          id,
+          label: 'New provider',
+          transport: 'local',
+          provider: 'openai-compatible',
+          baseURL: 'http://127.0.0.1:11434/v1',
+          model: '',
+        },
+      ],
     });
     this.openId = id;
+    this.providerForm.reset();
   }
 
+  /** Take a provider out of the draft. Nothing is lost until Save, so there is nothing to confirm. */
   #remove(set: AiProviderSet): void {
+    this.#setDraft({ sets: this.#sets().filter((one) => one.id !== set.id) });
+    const { [set.id]: _typed, ...keys } = this.keyDraft;
+    this.keyDraft = keys;
+    this.#keepKey(set.id);
+    if (this.openId === set.id) this.openId = null;
+    this.providerForm.reset();
+  }
+
+  /** First in the list is the default. */
+  #promote(id: string): void {
+    const sets = this.#sets();
+    const moving = sets.find((one) => one.id === id);
+    if (!moving) return;
+    this.#setDraft({ sets: [moving, ...sets.filter((one) => one.id !== id)] });
+  }
+
+  /**
+   * Close, discarding the draft — after asking, when there is something to lose.
+   */
+  #cancel(): void {
+    if (!this.#dirty) {
+      this.editor.setAiSettings(false);
+      return;
+    }
     this.editor.askToConfirm({
-      title: `Remove ${set.label}?`,
-      message: 'Its settings and its stored key are both forgotten.',
-      confirmLabel: 'Remove',
-      tone: 'danger',
-      // Honest: the agent's registry is not on the undo stack, so this really is one way.
+      title: 'Discard your changes?',
+      message: 'Nothing you changed in Settings has been saved yet.',
+      confirmLabel: 'Discard changes',
+      dismissLabel: 'Keep editing',
+      tone: 'warn',
       reversible: false,
-      run: () => {
-        this.editor.ai.clearKey(set.id);
-        this.editor.ai.remove(set.id);
-        if (this.openId === set.id) this.openId = null;
-      },
+      run: () => this.editor.setAiSettings(false),
     });
   }
 
-  async #saveKey(set: AiProviderSet): Promise<void> {
-    if (!this.keyForm.submit()) return;
-    const draft = (this.keyDraft[set.id] ?? '').trim();
-    // The same resolution the checkbox draws itself from: the draft if there is one, else where
-    // the key already lives. Reading only the draft made saving a second key quietly downgrade it.
-    const keep = this.remember[set.id] ?? this.editor.ai.keyStatus(set.id).persistence === 'origin';
-    const result = await this.editor.ai.setKey(set.id, draft, keep ? 'origin' : 'session');
-    // Dropped from component state the moment the vault has it, so the only copy is the one in
-    // the vault's closure rather than one in a Lit property anybody can read off the element.
-    this.keyDraft = { ...this.keyDraft, [set.id]: '' };
-    if (result.refused) this.keyForm.fail('ai-key', result.refused);
-    else {
-      this.keyForm.reset();
-      this.editor.notify(
-        result.persistence === 'origin'
-          ? `Key saved for ${set.label} on this machine.`
-          : `Key held for ${set.label} until this tab closes.`,
-        'success',
-      );
+  /**
+   * Apply the draft, then close.
+   *
+   * Every provider is checked, not only the one on screen: an incomplete one elsewhere in the list
+   * is opened and its first problem shown, the same way a form takes the user to a field. Then the
+   * difference is written — removals, edits, order, keys, and the editing setting last, because it
+   * may split the page and says so in its own message.
+   */
+  async #save(): Promise<void> {
+    const draft = this.draft;
+    const before = this.#baseline;
+    if (!draft || !before) return;
+    if (!this.#dirty) {
+      this.editor.setAiSettings(false);
+      return;
     }
+
+    const incomplete = draft.sets.find((set) => this.#issuesFor(set).length);
+    if (incomplete) {
+      if (this.#current(draft.sets).id !== incomplete.id) {
+        this.openId = incomplete.id;
+        this.providerForm.reset();
+        await this.updateComplete;
+      }
+      this.providerForm.submit();
+      return;
+    }
+
+    const ai = this.editor.ai;
+    const kept = new Set(draft.sets.map((set) => set.id));
+    for (const set of before.sets) {
+      if (kept.has(set.id)) continue;
+      ai.clearKey(set.id);
+      ai.remove(set.id);
+    }
+    for (const set of draft.sets) {
+      const was = before.sets.find((one) => one.id === set.id);
+      if (!was || JSON.stringify(was) !== JSON.stringify(set)) ai.upsert(set);
+    }
+    const order = draft.sets.map((set) => set.id).join('|');
+    if (order !== before.sets.filter((set) => kept.has(set.id)).map((set) => set.id).join('|')) {
+      draft.sets.forEach((set, index) => ai.reorder(set.id, index));
+    }
+
+    const notes: string[] = [];
+    for (const id of this.forget) if (kept.has(id)) ai.clearKey(id);
+    for (const set of draft.sets) {
+      const key = (this.keyDraft[set.id] ?? '').trim();
+      if (!key || set.transport !== 'in-page') continue;
+      // The same resolution the checkbox draws itself from: the draft if there is one, else where
+      // the key already lives. Reading only the draft made saving a second key quietly downgrade it.
+      const keep = this.remember[set.id] ?? ai.keyStatus(set.id).persistence === 'origin';
+      const result = await ai.setKey(set.id, key, keep ? 'origin' : 'session');
+      if (result.refused) {
+        // Not remembered, but not lost: held for this tab, and said why.
+        await ai.setKey(set.id, key, 'session');
+        notes.push(`${set.label}: ${result.refused} The key is held until this tab closes.`);
+      }
+    }
+    // Dropped the moment the vault has them, so the only copy is the one in the vault's closure.
+    this.keyDraft = {};
+    this.forget = new Set();
+
+    const splitChanged = draft.split !== this.editor.settings.value.splitDoubleBreaks;
+    this.editor.setAiSettings(false);
+    // Its own message, with Undo and a count of what was split, says more than "saved" would.
+    if (splitChanged) this.editor.setSplitDoubleBreaks(draft.split);
+    if (notes.length) this.editor.notify(notes.join(' '), 'warn');
+    else if (!splitChanged) this.editor.notify('Settings saved.', 'success');
   }
 
   /**
@@ -991,16 +1254,27 @@ export class HeoAiSettings extends HeoElement {
    * A real request rather than a reachability probe. A host that answers and a model name that
    * does not exist is the most common misconfiguration by a distance, and a ping would call it
    * healthy — so the test succeeds only on a reply this editor could actually use.
+   *
+   * Tests the provider as it is drafted, key included. A key typed but not saved is lent to the
+   * vault for the request alone, in memory, under an id of its own, and taken back afterwards; a
+   * key marked to be forgotten is left out.
    */
   async #test(set: AiProviderSet): Promise<void> {
     if (!this.providerForm.submit()) return;
     this.testing = set.id;
     this.verdict = { ...this.verdict, [set.id]: undefined as never };
+    const typed = (this.keyDraft[set.id] ?? '').trim();
+    const borrowed = set.transport === 'in-page' && typed ? `${set.id}::test` : null;
+    const probe =
+      borrowed ? { ...set, id: borrowed }
+        : set.transport === 'in-page' && this.forget.has(set.id) ? { ...set, id: `${set.id}::forgotten` }
+          : set;
     try {
+      if (borrowed) await this.editor.ai.setKey(borrowed, typed, 'none');
       const transport =
         this.editor.options.aiTransport ??
         createTransport(this.editor.project?.aiEndpoint?.() ?? null);
-      const result = await testTransport(transport, set);
+      const result = await testTransport(transport, probe);
       this.verdict = {
         ...this.verdict,
         [set.id]: result.ok
@@ -1008,9 +1282,24 @@ export class HeoAiSettings extends HeoElement {
           : { ok: false, text: result.reason },
       };
     } finally {
+      if (borrowed) this.editor.ai.clearKey(borrowed);
       this.testing = null;
     }
   }
+}
+
+/** What the dialog edits: the providers in priority order, and the editing setting. */
+interface SettingsDraft {
+  sets: AiProviderSet[];
+  split: boolean;
+}
+
+function cloneDraft(draft: SettingsDraft): SettingsDraft {
+  return { sets: draft.sets.map((set) => structuredClone(set)), split: draft.split };
+}
+
+function sameDraft(a: SettingsDraft | null, b: SettingsDraft | null): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
 }
 
 declare global {

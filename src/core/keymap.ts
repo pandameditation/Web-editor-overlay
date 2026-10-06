@@ -128,6 +128,8 @@ export function handleKeyDown(engine: EditorEngine, event: KeyboardEvent): void 
   // is exactly the kind of leak between the two surfaces that has no good explanation.
   if (mod && key.toLowerCase() === 'd' && state.selected && !isEditableTarget(event)) {
     event.preventDefault();
+    // Element shortcuts act on one element, so a group collapses to its primary first.
+    engine.collapseSelection();
     engine.duplicate();
     return;
   }
@@ -206,13 +208,17 @@ export function handleKeyDown(engine: EditorEngine, event: KeyboardEvent): void 
    * own variants such as Mod+Shift+V are left alone.
    */
   if (mod && !event.shiftKey && !event.altKey && state.selected) {
+    // Collapsed inside the two branches that act, not at the head of this block: every plain
+    // Mod chord enters it (Mod+A, Mod+F, Mod+V with nothing copied), and those must keep a group.
     if (key.toLowerCase() === 'c') {
       event.preventDefault();
+      engine.collapseSelection();
       engine.copyElement();
       return;
     }
     if (key.toLowerCase() === 'v' && engine.hasCopiedElement) {
       event.preventDefault();
+      engine.collapseSelection();
       engine.pasteElement();
       return;
     }
@@ -232,19 +238,23 @@ export function handleKeyDown(engine: EditorEngine, event: KeyboardEvent): void 
     case 'Backspace':
       if (!state.selected) return;
       event.preventDefault();
-      engine.remove();
+      // The whole set: the one key that has an unambiguous meaning for every member (DP-4).
+      if (state.selection.length > 1) engine.removeSelection();
+      else engine.remove();
       return;
 
     case 'Enter':
       if (!state.selected) return;
       event.preventDefault();
+      engine.collapseSelection();
       engine.beginTextEdit();
       return;
 
     // Unshifted arrows move the selection, Shift moves the element, Alt walks
-    // the hierarchy rather than the sibling list.
+    // the hierarchy rather than the sibling list. Each starts from the primary alone.
     case 'ArrowUp':
       event.preventDefault();
+      engine.collapseSelection();
       if (event.shiftKey) engine.move('up');
       else if (event.altKey) engine.navigate('parent');
       else engine.navigate('previous');
@@ -252,6 +262,7 @@ export function handleKeyDown(engine: EditorEngine, event: KeyboardEvent): void 
 
     case 'ArrowDown':
       event.preventDefault();
+      engine.collapseSelection();
       if (event.shiftKey) engine.move('down');
       else if (event.altKey) engine.navigate('child');
       else engine.navigate('next');
@@ -259,12 +270,14 @@ export function handleKeyDown(engine: EditorEngine, event: KeyboardEvent): void 
 
     case 'ArrowLeft':
       event.preventDefault();
+      engine.collapseSelection();
       if (event.shiftKey) engine.move('out');
       else engine.navigate('parent');
       return;
 
     case 'ArrowRight':
       event.preventDefault();
+      engine.collapseSelection();
       if (event.shiftKey) engine.move('in');
       else engine.navigate('child');
       return;
@@ -330,6 +343,7 @@ export function handleKeyUp(engine: EditorEngine, event: KeyboardEvent): void {
 export const SHORTCUTS: Array<{ keys: string; action: string }> = [
   { keys: 'Mod+E', action: 'Toggle edit mode' },
   { keys: 'Click', action: 'Select an element' },
+  { keys: 'Shift+Click', action: 'Add an element to the selection, or take it out' },
   { keys: 'Second click / Enter', action: 'Edit text, caret where you clicked' },
   { keys: '↑ / ↓', action: 'Previous / next sibling' },
   { keys: '← / →', action: 'Parent / first child' },
@@ -338,11 +352,11 @@ export const SHORTCUTS: Array<{ keys: string; action: string }> = [
   { keys: 'Shift+← / Shift+→', action: 'Move out of / into a container' },
   { keys: 'Mod+D', action: 'Duplicate' },
   { keys: 'Mod+C / Mod+V', action: 'Copy the element / paste it after the selected one' },
-  { keys: 'Delete', action: 'Delete' },
+  { keys: 'Delete', action: 'Delete (every selected element)' },
   { keys: 'Mod+Z / Shift+Mod+Z', action: 'Undo / redo' },
   { keys: 'Mod+S', action: 'Review and save changes' },
   { keys: 'S T E B P M C O', action: 'Styles, Tokens, Tree, Library, Props, Media, Code, SEO' },
-  { keys: 'Escape', action: 'Close the topmost thing, then deselect, then leave edit mode' },
+  { keys: 'Escape', action: 'Close the topmost thing, then clear the selection, then leave edit mode' },
   { keys: 'Escape (editing text)', action: 'Finish the edit and keep it; Mod+Z takes it back' },
 ];
 

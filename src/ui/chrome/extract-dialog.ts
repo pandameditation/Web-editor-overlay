@@ -1286,6 +1286,7 @@ export class HeoExtractDialog extends HeoElement {
     const editing = pending.id !== null;
     const onProps = pending.step === 'props';
     const captured = pending.element;
+    const group = pending.group;
     const tag = normalizeCustomElementTag(pending.tag);
     const tagCorrected = Boolean(pending.tag.trim()) && tag !== pending.tag.trim();
 
@@ -1294,7 +1295,11 @@ export class HeoExtractDialog extends HeoElement {
         <div class="body">
           <h2>${editing ? `Edit ${pending.name || 'block'}` : 'New block'}</h2>
           <p>
-            ${captured
+            ${group.length > 1
+        ? html`Captures ${group.length} elements
+                (${group.map((el, index) => html`${index ? ', ' : ''}<code class="mono">${labelFor(el)}</code>`)})
+                and the classes they use, so they can be inserted again from the Library as one block.`
+        : captured
         ? html`Captures <code class="mono">${labelFor(captured)}</code> and the classes it uses, so
                 it can be inserted again from the Library.`
         : html`Markup, styles and — for a real web component — a module, saved to the Library
@@ -1343,6 +1348,9 @@ export class HeoExtractDialog extends HeoElement {
     // One editor shows three buffers, so its field name follows the tab it is showing.
     const bufferField = this.sourceTab === 'html' ? 'block-html' : this.sourceTab === 'js' ? 'block-script' : 'block-css';
     const bufferRequired = this.sourceTab === 'html' ? !hasScript : this.sourceTab === 'js' ? Boolean(tag) : false;
+    // A container has one slot in one root; several roots have no single place for it. The
+    // engine forces the kind on commit as well, so this only keeps the dialog honest.
+    const severalRoots = pending.group.length > 1;
     return html`
       <div class="two">
         <div class="field">
@@ -1370,8 +1378,15 @@ export class HeoExtractDialog extends HeoElement {
         })}
           >
             <option value="component" ?selected=${pending.kind === 'component'}>Component</option>
-            <option value="container" ?selected=${pending.kind === 'container'}>Container</option>
+            <option
+              value="container"
+              ?selected=${pending.kind === 'container'}
+              ?disabled=${severalRoots}
+            >Container</option>
           </select>
+          ${severalRoots
+        ? html`<p class="note">A block made of several elements can only be a component.</p>`
+        : nothing}
         </div>
       </div>
 

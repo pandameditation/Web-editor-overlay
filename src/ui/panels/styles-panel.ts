@@ -41,6 +41,7 @@ import { anchoredStyle } from '../place.js';
 import { baseStyles } from '../theme.js';
 import { buildSuggestions, classSuggestions, valueKindFor } from '../suggestions.js';
 import { adderStyles } from './adder.js';
+import { selectionNotice, selectionNoticeStyles } from './selection-notice.js';
 import {
   ClassEditor,
   focusDeclaration,
@@ -278,6 +279,7 @@ export class HeoStylesPanel extends HeoElement {
     baseStyles,
     ClassEditor.styles,
     adderStyles,
+    selectionNoticeStyles,
     css`
       :host {
         display: block;
@@ -703,7 +705,7 @@ export class HeoStylesPanel extends HeoElement {
   protected state = new StoreController(
     this,
     this.editor.store,
-    (s) => [s.selected, s.revision, s.registry, s.geometry] as const,
+    (s) => [s.selected, s.selection, s.revision, s.registry, s.geometry] as const,
     shallowArrayEquals,
   );
 
@@ -803,6 +805,7 @@ export class HeoStylesPanel extends HeoElement {
     const found = filtering ? this.#matchCount(el, computed, declared, matching) : -1;
 
     return html`
+      ${selectionNotice(this.editor.selection.length, el)}
       <div class="top">
         <span class="chip">${icon('cursor', 11)} ${labelFor(el)}</span>
         <!--

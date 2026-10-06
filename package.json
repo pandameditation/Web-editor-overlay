@@ -59,6 +59,7 @@
     "check:unwraptext": "node scripts/browser-check.mjs test/unwrap-text.html 60000",
     "check:journal": "node scripts/browser-check.mjs test/structural-journal.html 60000",
     "check:journalreview": "node scripts/browser-check.mjs test/journal-review.html 60000",
+    "check:multiselect": "node scripts/browser-check.mjs test/multi-select.html 60000",
     "check:fuzz": "node scripts/browser-check.mjs test/journal-fuzz.html 180000",
     "check:fuzzarticle": "node scripts/browser-check.mjs test/journal-fuzz-article.html 300000",
     "check:tokenmerge": "node scripts/browser-check.mjs test/token-merge.html 60000",

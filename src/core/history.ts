@@ -245,12 +245,24 @@ export class History {
     options: { alreadyApplied?: boolean; journal?: readonly DomOp[]; validate?: boolean } = {},
   ): boolean {
     if (!options.alreadyApplied) {
+      /*
+       * Every shadow root any of the command's records touches, not only the first record's.
+       *
+       * A group delete whose members sit in different shadow trees journaled only the first
+       * member's tree, so the other removals were never recorded: undo could not bring them back
+       * and the save never heard of them. For a command without extra records this is exactly
+       * the list it always was.
+       */
+      const roots = new Set<Node>();
+      for (const rec of [command.record, ...(command.extraRecords ?? [])]) {
+        for (const root of this.#rootsOf?.(rec) ?? []) roots.add(root);
+      }
       // Not attributed to the page. Every command in here writes to the document
       // through the same DOM APIs `provenance` watches, and counting the editor's own
       // work as the page's would make an element uneditable the moment it was edited.
       command.journal = domRecorder.capture(
         () => withoutProvenance(() => command.apply()),
-        this.#rootsOf?.(command.record) ?? [],
+        [...roots],
       );
     } else if (options.journal) {
       command.journal = options.journal;

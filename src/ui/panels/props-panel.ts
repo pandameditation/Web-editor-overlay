@@ -21,6 +21,7 @@ import { icon } from '../icons.js';
 import { anchoredStyle } from '../place.js';
 import { baseStyles } from '../theme.js';
 import { adderStyles } from './adder.js';
+import { selectionNotice, selectionNoticeStyles } from './selection-notice.js';
 import { PropForm } from './prop-form.js';
 import '../controls/value-field.js';
 import '../controls/search-field.js';
@@ -71,6 +72,7 @@ export class HeoPropsPanel extends HeoElement {
     baseStyles,
     PropForm.styles,
     adderStyles,
+    selectionNoticeStyles,
     css`
       :host {
         display: block;
@@ -221,7 +223,7 @@ export class HeoPropsPanel extends HeoElement {
   protected state = new StoreController(
     this,
     this.editor.store,
-    (s) => [s.selected, s.revision] as const,
+    (s) => [s.selected, s.selection, s.revision] as const,
     shallowArrayEquals,
   );
 
@@ -272,6 +274,7 @@ export class HeoPropsPanel extends HeoElement {
       : -1;
 
     return html`
+      ${selectionNotice(this.editor.selection.length, el)}
       <div class="top">
         <div class="id">
           <span class="chip">${icon(isComponent ? 'component' : 'cursor', 11)} ${labelFor(el)}</span>

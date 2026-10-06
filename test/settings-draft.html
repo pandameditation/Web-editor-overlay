@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Settings: a draft until Save settings</title>
+  <style>body { margin: 0; padding: 24px; font: 16px/1.5 system-ui, sans-serif; } pre { margin-top: 16px; }</style>
+</head>
+<body>
+  <p>Page</p>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const errors = [];
+      window.addEventListener('error', (e) => errors.push('error: ' + e.message));
+      window.addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+      const results = {};
+      const check = async (name, fn) => {
+        document.getElementById('progress').textContent = name;
+        try { results[name] = await fn(); }
+        catch (err) { results[name] = 'THREW: ' + String(err && err.stack); }
+      };
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const flat = (node) => (node?.textContent ?? '').replace(/\s+/g, ' ').trim();
+
+      // A transport that records what a Test sent, so a borrowed key can be seen without a network.
+      const seen = [];
+      let engine = null;
+      const aiTransport = async function* (request) {
+        seen.push({ id: request.set.id, hadKey: engine.ai.ready(request.set) });
+        yield { op: 'summary', text: 'ready' };
+      };
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark', aiTransport });
+      engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      for (const one of engine.ai.list()) engine.ai.remove(one.id);
+      engine.ai.upsert({ id: 'one', label: 'One', transport: 'local', provider: 'openai-compatible', baseURL: 'http://127.0.0.1:9/v1', model: 'm1' });
+      await frames();
+
+      const overlay = () => document.querySelector('html-editor-overlay > heo-overlay')?.shadowRoot;
+      const root = () => overlay()?.querySelector('heo-ai-settings')?.shadowRoot;
+      const confirm = () => overlay()?.querySelector('heo-confirm-dialog')?.shadowRoot;
+      const button = (r, re) => Array.from(r?.querySelectorAll('button') ?? []).find((b) => re.test(flat(b)));
+      const fieldLabelled = (label) =>
+        Array.from(root()?.querySelectorAll('.field') ?? []).find((one) =>
+          (one.querySelector('span')?.textContent ?? '').trim().startsWith(label));
+      const change = async (control, value) => {
+        control.value = value;
+        control.dispatchEvent(new Event('change', { bubbles: true }));
+        await frames();
+      };
+      const open = async () => { engine.setAiSettings(true); await frames(); await frames(); };
+
+      await check('theFooterSavesAndCancels', async () => {
+        await open();
+        const footer = Array.from(root().querySelectorAll('footer button')).map((b) => ({
+          text: flat(b), primary: b.classList.contains('primary'),
+        }));
+        return {
+          footer,
+          noAddInTheFooter: !footer.some((b) => /add/i.test(b.text)),
+          addBesideTest: Boolean(root().querySelector('.body-rows .acts .add-acts')),
+        };
+      });
+
+      await check('editsStayInTheDraftUntilSaved', async () => {
+        await change(fieldLabelled('Model').querySelector('input'), 'm1-edited');
+        root().querySelector('.setting input').click();
+        await frames();
+        const meanwhile = {
+          model: engine.ai.get('one').model,
+          split: engine.settings.value.splitDoubleBreaks,
+          unsaved: flat(root().querySelector('footer .unsaved')),
+        };
+        button(root(), /^Cancel$/).click();
+        await frames();
+        const asked = flat(confirm()?.querySelector('h2, .title, header'));
+        button(confirm(), /Keep editing/).click();
+        await frames();
+        const stillOpen = Boolean(root()?.querySelector('.dialog'));
+        const keptEdit = fieldLabelled('Model').querySelector('input').value;
+        return { meanwhile, asked, stillOpen, keptEdit };
+      });
+
+      await check('discardingLeavesTheEditorAsItWas', async () => {
+        const esc = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true, cancelable: true });
+        root().querySelector('.dialog').dispatchEvent(esc);
+        await frames();
+        button(confirm(), /Discard changes/).click();
+        await frames();
+        const closed = !engine.store.value.aiSettingsOpen;
+        await open();
+        return {
+          closed,
+          model: engine.ai.get('one').model,
+          split: engine.settings.value.splitDoubleBreaks,
+          formShowsTheSaved: fieldLabelled('Model').querySelector('input').value,
+        };
+      });
+
+      await check('addRemoveAndPromoteAreSavedTogether', async () => {
+        button(root(), /Add another provider/).click();
+        await frames();
+        const tabs = () => Array.from(root().querySelectorAll('.tab')).map((t) => flat(t.querySelector('.name')));
+        const addBelowTabs = root().querySelector('.list')?.lastElementChild?.classList.contains('add-list');
+        await change(fieldLabelled('Name').querySelector('input'), 'Two');
+        await change(fieldLabelled('Model').querySelector('input'), 'm2');
+        button(root(), /Promote/).click();
+        await frames();
+        const draftOrder = tabs();
+        const engineMeanwhile = engine.ai.list().map((one) => one.label);
+        button(root(), /Save settings/).click();
+        await frames();
+        await frames();
+        return {
+          addBelowTabs,
+          draftOrder,
+          engineMeanwhile,
+          saved: engine.ai.list().map((one) => one.label),
+          toast: engine.store.value.toast?.message ?? null,
+        };
+      });
+
+      await check('anIncompleteProviderElsewhereIsOpenedOnSave', async () => {
+        await open();
+        // "Two" is first now; open "One" and break it, then go back to "Two" and save.
+        const tab = (name) => Array.from(root().querySelectorAll('.tab')).find((t) => flat(t.querySelector('.name')) === name);
+        tab('One').click();
+        await frames();
+        await change(fieldLabelled('Model').querySelector('input'), '');
+        tab('Two').click();
+        await frames();
+        button(root(), /Save settings/).click();
+        await frames();
+        await frames();
+        const model = fieldLabelled('Model').querySelector('input');
+        return {
+          stillOpen: engine.store.value.aiSettingsOpen,
+          showing: flat(root().querySelector('.head .name')),
+          error: flat(root().querySelector('.field-error')),
+          focused: root().activeElement === model,
+          notSaved: engine.ai.get('one').model === 'm1',
+        };
+      });
+
+      await check('removingIsADraftToo', async () => {
+        button(root(), /Delete/).click();
+        await frames();
+        const noConfirm = !confirm()?.querySelector('button');
+        const tabsLeft = root().querySelectorAll('.tab').length;
+        const engineStillHasIt = Boolean(engine.ai.get('one'));
+        button(root(), /^Cancel$/).click();
+        await frames();
+        button(confirm(), /Discard changes/)?.click();
+        await frames();
+        return { noConfirm, tabsLeft, engineStillHasIt, afterCancel: engine.ai.list().map((one) => one.label) };
+      });
+
+      await check('aKeyIsTestedFromTheDraftAndStoredOnlyOnSave', async () => {
+        engine.ai.upsert({ id: 'keyed', label: 'Keyed', transport: 'in-page', provider: 'openai', baseURL: 'https://api.openai.com/v1', model: 'gpt' });
+        await open();
+        Array.from(root().querySelectorAll('.tab')).find((t) => flat(t) .includes('Keyed')).click();
+        await frames();
+        const key = root().querySelector('input[type="password"]');
+        key.value = 'sk-draft-only';
+        key.dispatchEvent(new Event('input', { bubbles: true }));
+        await frames();
+        seen.length = 0;
+        button(root(), /^Test$/).click();
+        await new Promise((r) => setTimeout(r, 100));
+        await frames();
+        const tested = {
+          verdict: flat(root().querySelector('.verdict.ok')),
+          withTheTypedKey: seen[0]?.hadKey === true,
+          underAnotherId: seen[0]?.id !== 'keyed',
+          borrowedKeyGone: seen[0] ? !engine.ai.ready({ ...engine.ai.get('keyed'), id: seen[0].id }) : false,
+          realOneStillEmpty: !engine.ai.ready(engine.ai.get('keyed')),
+        };
+        button(root(), /Save settings/).click();
+        await new Promise((r) => setTimeout(r, 50));
+        await frames();
+        return { tested, storedOnSave: engine.ai.keyStatus('keyed').hint === 'only' };
+      });
+
+      await check('forgettingAKeyWaitsForSave', async () => {
+        await open();
+        Array.from(root().querySelectorAll('.tab')).find((t) => flat(t).includes('Keyed')).click();
+        await frames();
+        button(root(), /Forget key/).click();
+        await frames();
+        const staged = flat(root().querySelector('.acts .key-note'));
+        const stillHeld = engine.ai.ready(engine.ai.get('keyed'));
+        button(root(), /Save settings/).click();
+        await frames();
+        return { staged, stillHeld, forgotten: !engine.ai.ready(engine.ai.get('keyed')) };
+      });
+
+      await check('noProvidersOffersAddInTheSection', async () => {
+        for (const one of engine.ai.list()) engine.ai.remove(one.id);
+        await open();
+        const add = root().querySelector('.empty-acts .add-empty');
+        const result = { inTheSection: Boolean(add?.closest('.providers-card')), text: flat(add) };
+        engine.setAiSettings(false);
+        await frames();
+        return result;
+      });
+
+      results.__errors = errors;
+      document.getElementById('out').textContent = 'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent = 'RESULTS:{"__errors":["' + String(e && e.message) + '"]}:END';
+    });
+  </script>
+</body>
+</html>

@@ -9,6 +9,7 @@ import {
   type Declaration,
 } from './declaration-list.js';
 import { directText, labelFor, nearestSourceRef, selectorFor } from './dom.js';
+import { needsSeparator } from './group.js';
 import type { ElementAnchor } from './html-patch.js';
 import { nextChangeId, type Command } from './history.js';
 import { morphChildren } from './morph.js';
@@ -716,6 +717,31 @@ export function removeElement(el: HTMLElement): Command | null {
 }
 
 /**
+ * Delete several elements as one undo step.
+ *
+ * One `delete` record per element rather than one for the batch: each sits at its own place in
+ * the file, and a record carries a single anchor. No subject, because the subjects of the parts
+ * would reduce a batch to the net change of one of them (see `Command.extraRecords`).
+ */
+export function removeElements(els: readonly HTMLElement[]): Command | null {
+  const parts = els.map(removeElement);
+  if (!parts.length || parts.some((part) => !part)) return null;
+  const commands = parts as Command[];
+  return {
+    label: `Delete ${els.length} elements`,
+    record: commands[0].record,
+    extraRecords: commands.slice(1).map((part) => part.record),
+    domOnly: true,
+    apply: () => {
+      for (const part of commands) part.apply();
+    },
+    revert: () => {
+      for (const part of [...commands].reverse()) part.revert();
+    },
+  };
+}
+
+/**
  * A deep copy of an element that can stand somewhere else in the page.
  *
  * Shared by duplicate and by copy and paste, which make the same promise: a copy inherits
@@ -947,6 +973,62 @@ export function wrapElement(
 }
 
 /**
+ * Wrap several siblings in one new container, placed where the first of them is.
+ *
+ * Members are moved, never cloned, in the order given (the engine passes document order).
+ * Unselected siblings between them are not touched, so they stay in the parent, after the
+ * container, in their own order.
+ *
+ * An exported primitive, so it checks its own precondition rather than trusting the menu.
+ */
+export function wrapElements(
+  els: readonly HTMLElement[],
+  wrapperHTML: string,
+): { command: Command; wrapper: HTMLElement } | null {
+  if (els.length < 2 || new Set(els).size !== els.length) return null;
+  const parent = remember(els[0].parentNode);
+  if (!parent || els.some((el) => !el.isConnected || el.parentNode !== parent)) return null;
+  const fragment = sanitizeFragment(wrapperHTML);
+  const wrapper = fragment.firstElementChild;
+  if (!(wrapper instanceof HTMLElement)) return null;
+  wrapper.setAttribute(INSERTED_ATTR, '');
+
+  // The same mount point as the single wrap, so a preset with inner scaffolding nests alike.
+  let mountPoint: HTMLElement = wrapper;
+  while (mountPoint.children.length === 1 && mountPoint.firstElementChild instanceof HTMLElement) {
+    mountPoint = mountPoint.firstElementChild;
+  }
+
+  const origins = els.map((el) => ({ el, next: remember(el.nextSibling) }));
+  const tag = wrapper.tagName.toLowerCase();
+  const n = els.length;
+  const command: Command = {
+    label: `Wrap ${n} elements`,
+    subject: `node:${elementKey(wrapper)}`,
+    record: record(els[0], 'wrap', `Wrap ${n} elements in <${tag}>`, {
+      after: exact(cleanMarkup(wrapper)),
+      group: elementKey(wrapper),
+      detail: { wrapper: cleanMarkup(wrapper), members: els.map(selectorFor).join(', ') },
+    }),
+    domOnly: true,
+    apply: () => {
+      // In the document before any member moves, so the observer sees moves, as for one element.
+      placeNode(parent, live(wrapper), live(els[0]));
+      for (const el of els) {
+        // Each member changes parent; without this the file comparison reads it as page-built.
+        markRelocated(el);
+        live(mountPoint).appendChild(live(el));
+      }
+    },
+    revert: () => {
+      for (const { el, next } of [...origins].reverse()) placeNode(parent, live(el), next);
+      live(wrapper).remove();
+    },
+  };
+  return { command, wrapper };
+}
+
+/**
  * What an unwrap keeps, said in words rather than counted.
  *
  * Interpolating a `childNodes` count produced "keeping its 1 children" for a `<b>` holding one
@@ -1065,6 +1147,80 @@ export function splitAtBreaks(
     },
   };
   return { command, created };
+}
+
+/** True when some later member carries an attribute the first lacks or holds differently. */
+function dropsAttributes(first: HTMLElement, later: readonly HTMLElement[]): boolean {
+  return later.some((el) =>
+    Array.from(el.attributes).some(
+      (attr) => !attr.name.startsWith('data-heo-') && first.getAttribute(attr.name) !== attr.value,
+    ),
+  );
+}
+
+/**
+ * Fold the contents of several side-by-side elements into the first, as one undo step.
+ *
+ * The first keeps its tag and attributes; every later member's children move to its end, in
+ * order, and the emptied member leaves the page. The structural rules (same tag, side by side,
+ * not page-built) are the caller's, checked by `mergeEligibility` before this is built.
+ *
+ * Done once, by `apply`, as `splitAtBreaks` is: the journal `History` captures is what undo and
+ * redo replay, so `revert` has nothing to do.
+ */
+export function mergeElements(
+  els: readonly HTMLElement[],
+): { command: Command; element: HTMLElement; droppedAttributes: boolean } | null {
+  /*
+   * A repeated member is not a second element. Merging [m1, m1] moved m1's children into
+   * itself and then removed m1, so the "merge" deleted the paragraph.
+   */
+  if (els.length < 2 || new Set(els).size !== els.length) return null;
+  const first = els[0];
+  const later = els.slice(1);
+  const n = els.length;
+  const tag = first.localName;
+  const droppedAttributes = dropsAttributes(first, later);
+  const rec = record(first, 'replace', `Merge ${n} <${tag}> elements`, {
+    before: exact(els.map((el) => cleanMarkup(el)).join('\n')),
+    detail: { merged: later.map(selectorFor).join(', ') },
+  });
+  let done = false;
+  const command: Command = {
+    label: `Merge ${n} ${tag} elements`,
+    record: rec,
+    domOnly: true,
+    apply: () => {
+      if (done) return;
+      done = true;
+      for (const next of later) {
+        // The gap left between the two at this moment: earlier members are already gone, so
+        // this is what remains of it. Comments stay in the parent, after the merged element.
+        for (let node = first.nextSibling; node && node !== next;) {
+          const following: ChildNode | null = node.nextSibling;
+          if (node.nodeType === Node.TEXT_NODE && !(node.nodeValue ?? '').trim()) node.remove();
+          node = following;
+        }
+        // One space only where two words would otherwise touch: "Hello " + "world" needs none.
+        if (needsSeparator(first, next)) first.appendChild(document.createTextNode(' '));
+        // A snapshot, because appending a child removes it from the live list being walked.
+        for (const child of Array.from(next.childNodes)) {
+          if (child instanceof Element) markRelocated(child);
+          first.appendChild(child);
+        }
+        next.remove();
+      }
+      /*
+       * The merged element is the user's now: its content no longer matches the file, which the
+       * file comparison would otherwise read as the page's code having built it, as after a split.
+       */
+      markUserOwned(first);
+      rec.after = exact(cleanMarkup(first));
+      rec.detail = { ...rec.detail, html: cleanMarkup(first) };
+    },
+    revert: () => { /* the journal restores the exact nodes, as splitAtBreaks */ },
+  };
+  return { command, element: first, droppedAttributes };
 }
 
 /**

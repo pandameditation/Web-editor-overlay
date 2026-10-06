@@ -429,6 +429,41 @@ test('authored tokens are handed over as CSS, scanned ones are not', () => {
 });
 
 /* -------------------------------------------------------------------------- */
+/* Group actions                                                               */
+/* -------------------------------------------------------------------------- */
+
+// One record for several members: described as a single wrap, the agent wrapped only the first.
+test('a multi-element wrap names every member and says they move together', () => {
+  const text = prompt([
+    record({
+      kind: 'wrap',
+      target: '#a',
+      group: 'node:e9',
+      detail: { wrapper: '<div></div>', members: '#a, #b' },
+    }),
+  ]);
+  assert.ok(text.includes('#a') && text.includes('#b'), text);
+  assert.ok(text.includes('together'), text);
+});
+
+// Both fields on purpose: a merge record carries `html` too, and read as a bare replace it left
+// the merged elements in the file.
+test('a merge says which elements are folded in and removed', () => {
+  const text = prompt([
+    record({
+      kind: 'replace',
+      target: '#m1',
+      group: 'node:e10',
+      after: '<p id="m1">Hello world</p>',
+      detail: { html: '<p id="m1">Hello world</p>', merged: '#m2' },
+    }),
+  ]);
+  assert.ok(text.includes('#m2'), text);
+  assert.ok(/remove/i.test(text), text);
+  assert.ok(!text.includes('Replace with'), text);
+});
+
+/* -------------------------------------------------------------------------- */
 /* Empty                                                                       */
 /* -------------------------------------------------------------------------- */
 

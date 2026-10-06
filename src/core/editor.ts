@@ -109,6 +109,9 @@ import {
   moveCommandFromOrigin,
   moveElement,
   removeElement,
+  removeElements,
+  mergeElements,
+  wrapElements,
   inlineAuthoredValue,
   previewInline,
   replaceElement,
@@ -264,6 +267,15 @@ import {
   type EventFamily,
 } from './shield.js';
 import { ruleSelectorFor, safeSelector } from './selectors.js';
+import {
+  deleteEligibility,
+  inDocumentOrder,
+  mergeEligibility,
+  outermost,
+  saveBlockEligibility,
+  wrapEligibility,
+  type GroupActions,
+} from './group.js';
 import { Store } from './store.js';
 import { TokenRegistry } from './tokens.js';
 import type {
@@ -280,6 +292,11 @@ import type {
   SavePayload,
   PropSpec,
 } from './types.js';
+
+/** Same members in the same order. Both sides are document-ordered, so order is identity here. */
+function sameMembers(a: readonly HTMLElement[], b: readonly HTMLElement[]): boolean {
+  return a.length === b.length && a.every((el, i) => el === b[i]);
+}
 
 export interface ToastMessage {
   id: number;
@@ -409,6 +426,13 @@ export interface BlockExtraction {
   mode: 'block';
   /** The element it was captured from, or null when authored from scratch. */
   element: HTMLElement | null;
+  /**
+   * The elements it was captured from, when it was captured from several at once.
+   *
+   * Empty otherwise. More than one forces the block to be a component and leaves `element`
+   * null, so nothing is linked: see `beginGroupBlockExtraction`.
+   */
+  group: readonly HTMLElement[];
   /** The block being replaced, or null when this will be a new one. */
   id: string | null;
   name: string;
@@ -586,6 +610,7 @@ function emptyBlockDraft(): BlockExtraction {
   return {
     mode: 'block',
     element: null,
+    group: [],
     id: null,
     name: '',
     kind: 'component',
@@ -623,6 +648,16 @@ function blockStateSnapshot(block: LibraryBlock | undefined): string | undefined
 export interface EditorState {
   editing: boolean;
   selected: HTMLElement | null;
+  /**
+   * Every selected element, in document order. Empty, one element, or a multi-selection.
+   *
+   * `selected` is always the primary member of this list, or null when it is empty. The primary
+   * is kept apart because it is the first element *selected*, which the panels show, not the
+   * first in document order, which every group action works from.
+   */
+  selection: readonly HTMLElement[];
+  /** The member whose thumb opened the quick menu. Null means "the primary". */
+  quickMenuAnchor: HTMLElement | null;
   hovered: HTMLElement | null;
   textEditing: HTMLElement | null;
   dockOpen: boolean;
@@ -1056,6 +1091,8 @@ export class EditorEngine {
     this.store = new Store<EditorState>({
       editing: Boolean(options.startInEditMode),
       selected: null,
+      selection: [],
+      quickMenuAnchor: null,
       hovered: null,
       textEditing: null,
       dockOpen: false,
@@ -1440,7 +1477,11 @@ export class EditorEngine {
       editing,
       hovered: null,
       selected: editing ? this.store.value.selected : null,
+      // Leaving edit mode empties the whole set, not only the primary: outlines left on the
+      // other members would be chrome over a page that is no longer being edited.
+      selection: editing ? this.store.value.selection : [],
       quickMenuOpen: false,
+      quickMenuAnchor: null,
       insertAnchor: null,
       dockOpen: editing ? this.store.value.dockOpen : false,
     });
@@ -1492,9 +1533,21 @@ export class EditorEngine {
     return this.store.value.selected;
   }
 
+  /**
+   * Every selected element, in document order, as the rules see it.
+   *
+   * Read through `#members()`, so a primary written straight into the store by a fixture or an
+   * integrator still counts, even though it never went through the writer.
+   */
+  get selection(): readonly HTMLElement[] {
+    return this.#members();
+  }
+
   select(el: HTMLElement | null, options: { reveal?: boolean } = {}): void {
     const current = this.store.value.selected;
-    if (current === el) return;
+    // Selecting the primary of a multi-selection is how a group collapses to one element, so
+    // it is only a no-op when nothing else is selected alongside it.
+    if (current === el && this.store.value.selection.length <= 1) return;
     // Whatever was being previewed belonged to the old selection's panel, and its
     // fields are about to be replaced; nothing would ever put the page back.
     this.cancelPreview();
@@ -1502,20 +1555,122 @@ export class EditorEngine {
       this.endTextEdit(true);
     }
     if (el && !isSelectable(el)) return;
-    this.store.patch({
-      selected: el,
-      quickMenuOpen: false,
-      insertAnchor: null,
-      // The prompt was aimed at what *was* selected, so it does not survive a new selection.
-      aiMenuOpen: false,
-      aiOutcome: null,
-      revision: this.store.value.revision + 1,
-    });
+    /*
+     * Through the one writer, which also closes the menus: the prompt and the quick menu were
+     * aimed at what *was* selected, so they do not survive a new selection. A detached `el` now
+     * empties the selection instead of storing a node no renderer can draw and nothing can act on.
+     */
+    this.#setSelection(el, el ? [el] : []);
     if (el && options.reveal !== false) this.#revealIfNeeded(el);
-    this.#observeSelected(el);
     // The page may have rendered something since the last comparison; a stale answer about
     // the element just picked is the one that matters most.
     if (el && Date.now() - this.#sourceIndexAt > SOURCE_INDEX_MAX_AGE_MS) this.#scheduleSourceIndex(0);
+  }
+
+  /**
+   * Add an element to the selection, or take it out (Shift+click, and the engine API).
+   *
+   * The primary stays the element selected first; dropping it hands over to the first remaining
+   * member in document order.
+   */
+  toggleSelection(el: HTMLElement): void {
+    // The same silence as clicking something that cannot be selected.
+    if (!el.isConnected || !isSelectable(el) || !isMutable(el)) return;
+    /*
+     * A live edit is committed before the set changes. The pointer path has already done this on
+     * the press, but a direct call would otherwise leave [a, b] with a still being edited, and the
+     * page observer relies on a live edit meaning a set of one.
+     */
+    if (this.store.value.textEditing) this.endTextEdit(true);
+    const members = this.#members();
+    const { selected } = this.store.value;
+    if (members.length === 0) {
+      this.select(el);
+      return;
+    }
+    if (members.includes(el)) {
+      this.#setSelection(selected, members.filter((member) => member !== el));
+      return;
+    }
+    // A multi-selection never holds something that cannot change (the body, a patched <html>),
+    // so a click beside one starts a new selection instead of growing it.
+    if (members.length === 1 && !isMutable(members[0])) {
+      this.select(el);
+      return;
+    }
+    this.#setSelection(selected, [...members, el]);
+  }
+
+  /** Drop every member but the primary. A no-op for a selection of 0 or 1. */
+  collapseSelection(): void {
+    const { selected } = this.store.value;
+    if (selected && this.#members().length > 1) this.#setSelection(selected, [selected]);
+  }
+
+  /*
+   * The set as the rules see it.
+   *
+   * `selection` is written only by `#setSelection`, but `selected` can be patched straight into
+   * the store (three fixtures do). A patched primary is the whole set: when it is not one of the
+   * stored members it replaces them, because a set that no longer contains its own primary is
+   * stale and acting on it would act on elements the user did not pick last.
+   */
+  #members(): readonly HTMLElement[] {
+    const { selected, selection } = this.store.value;
+    if (!selected) return selection.length ? [] : selection;
+    return selection.includes(selected) ? selection : [selected];
+  }
+
+  /*
+   * The one writer of `selected` and `selection` in the engine.
+   *
+   * Holds the invariants together: members connected and in document order, the primary one of
+   * them (or the first remaining when it went), and `selected` null exactly when the set is
+   * empty. Any change of the set closes what was aimed at the old one: the quick menu and its
+   * anchor, the insert anchor and the AI menu.
+   */
+  #setSelection(primary: HTMLElement | null, members: readonly HTMLElement[]): void {
+    const ordered = inDocumentOrder(members.filter((el) => el.isConnected));
+    const next = primary && ordered.includes(primary) ? primary : (ordered[0] ?? null);
+    const current = this.store.value;
+    const primaryChanged = next !== current.selected;
+    /*
+     * Compared with the normalised view, not the raw field: a primary patched in by a fixture
+     * (selection still []) must not count as a change, or the first page mutation afterwards
+     * would patch the store and close the menus. A raw set that is non-empty and different is
+     * stale, though (a primary was patched over a multi-selection), and is rewritten, or the
+     * layer would keep drawing outlines on members the rules no longer count.
+     */
+    if (
+      !primaryChanged &&
+      sameMembers(ordered, this.#members()) &&
+      (current.selection.length === 0 || sameMembers(ordered, current.selection))
+    ) return;
+    if (primaryChanged) this.cancelPreview();
+    this.store.patch({
+      selected: next,
+      selection: next ? ordered : [],
+      quickMenuOpen: false,
+      quickMenuAnchor: null,
+      insertAnchor: null,
+      aiMenuOpen: false,
+      aiOutcome: null,
+      ...(primaryChanged ? { revision: current.revision + 1 } : {}),
+    });
+    this.#observeSelection(next ? ordered : []);
+  }
+
+  /*
+   * Let go of whatever the page or the history just removed.
+   *
+   * A command that swaps one node for another, or a framework re-render, leaves members pointing
+   * at detached nodes, and every panel then renders against something the user cannot see. The
+   * survivors stay selected; a lost primary hands over to the first remaining member, since a
+   * detached node has no document position from which to find a "next" one.
+   */
+  #pruneSelection(): void {
+    const { selected } = this.store.value;
+    this.#setSelection(selected?.isConnected ? selected : null, this.#members());
   }
 
   hover(el: HTMLElement | null): void {
@@ -1759,19 +1914,6 @@ export class EditorEngine {
    * so an exploration that went nowhere leaves no trace — not even an inline
    * property that did not exist before it started.
    */
-  /**
-   * Let go of a selection the history just removed from the page.
-   *
-   * A command that swaps one node for another leaves the selection pointing at the
-   * node that is now detached, and every panel then renders against something the
-   * user cannot see. Clearing it is the honest outcome; callers that know what took
-   * its place re-select deliberately.
-   */
-  #dropDetachedSelection(): void {
-    const selected = this.store.value.selected;
-    if (selected && !selected.isConnected) this.store.patch({ selected: null });
-  }
-
   cancelPreview(): void {
     this.#endPreview();
     this.#endRulePreview();
@@ -2675,7 +2817,49 @@ export class EditorEngine {
         html: formatHTML(cleanMarkup(el)),
         // Ship the classes the element relies on, so the block still looks right
         // in a project that does not have them yet.
-        css: this.#cssForSubtree(el),
+        css: this.#cssForSubtrees([el]),
+      },
+    });
+  }
+
+  /**
+   * Open the block dialog on several elements, captured as one block (FR-7, DP-9).
+   *
+   * Always a component and never linked: the instance model is one element per instance, and
+   * drift compares a single root, so a group has no element that could be "the" instance. The
+   * description says so, because the single capture does link and the user would expect it.
+   */
+  beginGroupBlockExtraction(arg?: readonly HTMLElement[]): void {
+    const members = inDocumentOrder([...new Set(arg ?? this.selection)].filter((el) => el.isConnected));
+    if (members.length === 0) return;
+    if (members.length === 1) {
+      this.beginBlockExtraction(members[0]);
+      return;
+    }
+    const roots = outermost(members);
+    if (roots.length === 1) {
+      this.beginBlockExtraction(roots[0]);
+      return;
+    }
+    const verdict = saveBlockEligibility(roots);
+    if (!verdict.ok) {
+      this.notify(verdict.reason, 'info');
+      return;
+    }
+    this.endTextEdit(true);
+    this.cancelPreview();
+    this.setQuickMenu(false);
+    this.store.patch({
+      extraction: {
+        ...emptyBlockDraft(),
+        element: null,
+        group: roots,
+        name: suggestBlockName(roots[0]),
+        kind: 'component',
+        category: 'Extracted',
+        description: `Captured from ${roots.length} elements: ${roots.map((el) => labelFor(el)).join(', ')}. Not linked to them: a block made of several elements does not track its copies.`,
+        html: roots.map((el) => formatHTML(cleanMarkup(el))).join('\n'),
+        css: this.#cssForSubtrees(roots),
       },
     });
   }
@@ -3111,7 +3295,12 @@ export class EditorEngine {
       const built = blockFromSource({
         id: pending.id ?? this.library.uniqueId(name),
         name,
-        kind: pending.kind,
+        /*
+         * A block made of several elements is a component whatever the draft says. The dialog
+         * disables the Container option, but `updateExtraction` can set any kind, and a container
+         * built from several roots has no one root for its slot to sit in.
+         */
+        kind: pending.group.length > 1 ? 'component' : pending.kind,
         category: pending.category,
         description: pending.description,
         html: applied.html,
@@ -3589,13 +3778,16 @@ export class EditorEngine {
    * CSS for the registry classes used anywhere in a subtree.
    *
    * Makes an extracted block portable: the markup references classes, and this is
-   * what those classes mean.
+   * what those classes mean. Several roots share one set of names, so a class two captured
+   * elements both use is emitted once rather than once per element.
    */
-  #cssForSubtree(el: HTMLElement): string {
+  #cssForSubtrees(els: readonly HTMLElement[]): string {
     const names = new Set<string>();
-    for (const node of [el, ...Array.from(el.querySelectorAll('*'))]) {
-      for (const name of Array.from(node.classList)) {
-        if (!name.startsWith('heo-') && this.classes.get(name)) names.add(name);
+    for (const el of els) {
+      for (const node of [el, ...Array.from(el.querySelectorAll('*'))]) {
+        for (const name of Array.from(node.classList)) {
+          if (!name.startsWith('heo-') && this.classes.get(name)) names.add(name);
+        }
       }
     }
     return [...names]
@@ -4197,6 +4389,123 @@ export class EditorEngine {
     this.history.commit(result.command);
     this.select(result.wrapper);
     this.notify('Wrapped in a new container.', 'success');
+  }
+
+  /*
+   * Group actions.
+   *
+   * Every one starts from the same member list: deduplicated, connected, in document order. The
+   * dedupe is not tidiness. A repeated element counted twice, so [t1, t1] read "Deleted 2
+   * elements" for one paragraph, and [m1, m1] moved m1's children into itself and then removed
+   * it. One member falls through to the single-element method with that element passed
+   * explicitly, because `wrap` and `remove` default a missing element to the primary, and none
+   * means nothing, never "whatever is selected".
+   */
+
+  /** What the members may do, for the menu to show and explain. The engine checks again. */
+  groupActions(arg?: readonly HTMLElement[]): GroupActions {
+    const members = inDocumentOrder([...new Set(arg ?? this.selection)].filter((el) => el.isConnected));
+    return {
+      wrap: wrapEligibility(members),
+      merge: mergeEligibility(members, (el) => this.#mayReshape(el)),
+      delete: deleteEligibility(members),
+      saveBlock: saveBlockEligibility(outermost(members)),
+    };
+  }
+
+  /** Wrap the members in one new container where the first of them is, and select it (DP-1c). */
+  wrapSelection(wrapperHTML: string, arg?: readonly HTMLElement[]): HTMLElement | null {
+    const members = inDocumentOrder([...new Set(arg ?? this.selection)].filter((el) => el.isConnected));
+    if (members.length === 0) return null;
+    if (members.length === 1) {
+      this.wrap(wrapperHTML, members[0]);
+      return this.store.value.selected;
+    }
+    const verdict = wrapEligibility(members);
+    if (!verdict.ok) {
+      this.notify(verdict.reason, 'info');
+      return null;
+    }
+    this.endTextEdit(true);
+    this.cancelPreview();
+    const result = wrapElements(members, wrapperHTML);
+    if (!result) {
+      this.notify('That wrapper markup could not be used.', 'error');
+      return null;
+    }
+    // A refusal has already put the page back and said why; the set was never touched.
+    if (!this.history.commit(result.command)) return null;
+    this.select(result.wrapper);
+    this.notify(`Wrapped ${members.length} elements in a new container.`, 'success');
+    return result.wrapper;
+  }
+
+  /** Fold the later members' contents into the first, remove them, and select the first. */
+  mergeSelection(arg?: readonly HTMLElement[]): HTMLElement | null {
+    const members = inDocumentOrder([...new Set(arg ?? this.selection)].filter((el) => el.isConnected));
+    // Nothing to merge with one member; the menu never offers it, so no toast either.
+    if (members.length < 2) return null;
+    const verdict = mergeEligibility(members, (el) => this.#mayReshape(el));
+    if (!verdict.ok) {
+      this.notify(verdict.reason, 'info');
+      return null;
+    }
+    this.endTextEdit(true);
+    this.cancelPreview();
+    const result = mergeElements(members);
+    if (!result) return null;
+    if (!this.history.commit(result.command)) return null;
+    this.select(result.element);
+    this.notify(
+      `Merged ${members.length} elements.${result.droppedAttributes ? " Kept the first element's attributes." : ''}`,
+      'success',
+      { label: 'Undo', run: () => this.undo() },
+    );
+    return result.element;
+  }
+
+  /** Delete the members as one undo step, then select the nearest survivor, as `remove` does. */
+  removeSelection(arg?: readonly HTMLElement[]): void {
+    const members = inDocumentOrder([...new Set(arg ?? this.selection)].filter((el) => el.isConnected));
+    if (members.length === 0) return;
+    if (members.length === 1) {
+      this.remove(members[0]);
+      return;
+    }
+    // A child goes with its parent, so [parent, child] is one deletion and reads as one (DP-8).
+    const roots = outermost(members);
+    if (roots.length === 1) {
+      this.remove(roots[0]);
+      return;
+    }
+    const verdict = deleteEligibility(roots);
+    if (!verdict.ok) {
+      this.notify(verdict.reason, 'info');
+      return;
+    }
+    this.endTextEdit(true);
+    this.cancelPreview();
+    /*
+     * The survivor is found before anything goes, by the single-delete rule walked past every
+     * member: the next sibling, else the previous one, else the container. Afterwards the
+     * siblings are gone and there is nothing left to measure from.
+     */
+    const gone = (el: HTMLElement): boolean => roots.some((r) => r === el || r.contains(el));
+    const last = roots.at(-1)!;
+    const walk = (step: (el: HTMLElement) => HTMLElement | null): HTMLElement | null => {
+      let r = step(last);
+      while (r && gone(r)) r = step(r);
+      return r;
+    };
+    const next = walk(nextSibling) ?? walk(previousSibling) ?? walk(selectableParent);
+    const command = removeElements(roots);
+    if (!command) return;
+    if (!this.history.commit(command)) return;
+    this.select(next);
+    this.notify(`Deleted ${roots.length} elements.`, 'info', {
+      label: 'Undo',
+      run: () => this.undo(),
+    });
   }
 
   unwrap(el = this.store.value.selected): void {
@@ -5329,8 +5638,12 @@ export class EditorEngine {
     return inserted;
   }
 
-  setQuickMenu(open: boolean): void {
-    this.store.patch({ quickMenuOpen: open });
+  /**
+   * Open or close the quick menu. `anchor` is the member whose thumb opened it, so the menu sits
+   * beside that thumb; without one it sits by the primary. Closing always forgets the anchor.
+   */
+  setQuickMenu(open: boolean, anchor?: HTMLElement): void {
+    this.store.patch({ quickMenuOpen: open, quickMenuAnchor: open ? (anchor ?? null) : null });
   }
 
   /* ---------------------------------------------------------------------- */
@@ -5445,6 +5758,9 @@ export class EditorEngine {
       unlisten(document, 'beforeinput', onBeforeInput, true);
       unlisten(document, 'input', onInput, true);
     };
+    // A text edit always collapses the set: the edit is of one element, and the page observer
+    // relies on a live edit meaning a set of one.
+    this.#setSelection(el, [el]);
     this.store.patch({ textEditing: el, selected: el });
 
     // Focus on the next frame so the attribute has taken effect before the
@@ -6973,7 +7289,7 @@ export class EditorEngine {
     if (this.#takeBackUnfinishedEdit()) return;
     const command = this.history.undo();
     if (!command) return;
-    this.#dropDetachedSelection();
+    this.#pruneSelection();
     this.notify(`Undid: ${command.label}`, 'info');
     this.#bumpGeometry();
     this.#bumpRevision();
@@ -6984,7 +7300,7 @@ export class EditorEngine {
     if (this.#takeBackUnfinishedEdit()) return;
     const command = this.history.redo();
     if (!command) return;
-    this.#dropDetachedSelection();
+    this.#pruneSelection();
     this.notify(`Redid: ${command.label}`, 'info');
     this.#bumpGeometry();
     this.#bumpRevision();
@@ -6992,17 +7308,15 @@ export class EditorEngine {
 
   resetAll(): void {
     this.endTextEdit(false);
-    const selected = this.store.value.selected;
     this.history.reset();
     // The ids they referred to are gone; keeping them would silently exclude a later
     // change that happened to reuse one.
     this.#excludedChanges.clear();
-    // Keep the selection if the element survived the revert; losing it after an
-    // undo-all is disorienting and there is no reason for it.
-    this.store.patch({
-      selected: selected?.isConnected ? selected : null,
-      hovered: null,
-    });
+    // Keep whatever survived the revert; losing the selection after an undo-all is
+    // disorienting and there is no reason for it. Hover is cleared so its outline cannot point
+    // at a node the revert removed.
+    this.#pruneSelection();
+    this.store.patch({ hovered: null });
     this.notify('All changes reverted.', 'info');
     this.#bumpGeometry();
   }
@@ -8640,7 +8954,21 @@ export class EditorEngine {
       const editing = this.store.value.textEditing;
       if (editing) {
         const path = event.composedPath();
-        if (!path.includes(editing) && !path.some(isTextEditChrome)) this.endTextEdit(true);
+        if (!path.includes(editing) && !path.some(isTextEditChrome)) {
+          this.endTextEdit(true);
+          /*
+           * The committed edit leaves a caret behind, and a Shift press would extend it into a
+           * highlight across the page. Measured with trusted input: cancelling the press is the
+           * only cancel that prevents it, and the click that toggles still fires.
+           */
+          if (
+            event.shiftKey &&
+            event.button === 0 &&
+            !isOverlayEvent(event) &&
+            !isNativeInputEvent(event) &&
+            selectableFromEvent(event)
+          ) event.preventDefault();
+        }
         // A press inside the live edit is the start of a sweep through its words.
         else if (path.includes(editing)) this.#pressBeganInTextEdit = true;
         return;
@@ -8666,7 +8994,19 @@ export class EditorEngine {
       if (event.button !== 0) return;
       if (isOverlayEvent(event) || isNativeInputEvent(event)) return;
       const el = selectableFromEvent(event);
+      /*
+       * A Shift press is a toggle, never a text edit or a move gesture. The toggle itself happens
+       * on click. The press is cancelled because that is the only cancel that stops the native
+       * highlight between the old caret and the pointer; click still fires after it.
+       */
+      if (event.shiftKey) {
+        if (el) event.preventDefault();
+        return;
+      }
       if (!el || el !== this.store.value.selected) return;
+      // A press on the primary of a multi-selection collapses the group on click; it neither
+      // edits nor moves, since neither has one unambiguous target until the group is gone.
+      if (this.store.value.selection.length > 1) return;
 
       /*
        * A positioned element is dragged, not swept.
@@ -8763,6 +9103,18 @@ export class EditorEngine {
         event.stopPropagation();
       }
 
+      // Shift+click adds to the selection or takes out. A page form field skips it and selects
+      // as before, because Shift+click inside a field is how text is extended there.
+      if (event.shiftKey && !native) {
+        this.toggleSelection(el);
+        return;
+      }
+      // A plain click with several selected collapses the group to the clicked element, and
+      // does not start an edit: that takes a second click, as it does from a fresh selection.
+      if (this.store.value.selection.length > 1) {
+        this.select(el);
+        return;
+      }
       if (this.store.value.selected === el && !native) {
         this.beginTextEdit(el, { x: event.clientX, y: event.clientY });
         return;
@@ -9052,9 +9404,15 @@ export class EditorEngine {
       const relevant = records.filter((entry) => !isSelfInflicted(entry));
       if (!relevant.length) return;
 
+      const had = this.store.value.selected;
+      this.#pruneSelection();
       const selected = this.store.value.selected;
-      if (selected && !selected.isConnected) {
-        this.store.patch({ selected: null, hovered: null, textEditing: null });
+      if (had && !selected) {
+        // Kept from before the selection became a set: when the selection has gone, so do hover
+        // and a live edit, and nothing is left to measure. Only when one existed and was lost:
+        // with nothing selected to begin with, a page mutation must leave the hover outline
+        // alone and still re-measure.
+        this.store.patch({ hovered: null, textEditing: null });
         return;
       }
       const touchesSelection =
@@ -9088,10 +9446,11 @@ export class EditorEngine {
 
   #selectionResize?: ResizeObserver;
 
-  #observeSelected(el: HTMLElement | null): void {
+  // Every member, so any one of them reflowing re-measures every outline.
+  #observeSelection(members: readonly HTMLElement[]): void {
     if (!this.#selectionResize) return;
     this.#selectionResize.disconnect();
-    if (el) this.#selectionResize.observe(el);
+    for (const el of members) this.#selectionResize.observe(el);
   }
 
   /** Coalesce geometry invalidation to one store write per frame. */
