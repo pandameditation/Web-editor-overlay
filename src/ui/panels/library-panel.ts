@@ -65,15 +65,6 @@ export class HeoLibraryPanel extends HeoElement {
       .search input:focus {
         outline: none;
       }
-      .target {
-        color: var(--heo-text-faint);
-        font-size: 10.5px;
-        line-height: 1.45;
-      }
-      .target code {
-        color: var(--heo-text-dim);
-        font-family: var(--heo-mono);
-      }
 
       .group {
         padding: 10px 12px 4px;
@@ -447,7 +438,7 @@ export class HeoLibraryPanel extends HeoElement {
 
   #renderTarget(selected: HTMLElement | null): TemplateResult {
     if (!selected) {
-      return html`<p class="target">
+      return html`<p class="hint target">
         Nothing selected, so blocks are appended to the end of <code>body</code>.
       </p>`;
     }
@@ -472,7 +463,7 @@ export class HeoLibraryPanel extends HeoElement {
         this.position = (event.detail.value || 'after') as InsertPosition;
       }}
       ></heo-segmented>
-      <p class="target">
+      <p class="hint target">
         ${this.position === 'replace'
         ? html`Replacing <code>${labelFor(selected)}</code> and everything inside it`
         : html`Inserting ${INSERT_POSITION_LABELS[this.position]}

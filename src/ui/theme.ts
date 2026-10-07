@@ -16,7 +16,9 @@ export const themeVariables = css`
     --heo-accent-line: color-mix(in oklab, var(--heo-accent) 55%, transparent);
 
     --heo-bg: oklch(19% 0.014 265);
-    --heo-bg-glass: oklch(19% 0.014 265 / 82%);
+    /* Three lightness points darker and a little more opaque than it was, same hue and blur:
+       the dim ink read 4.65:1 on this glass over a white page, now 5.8:1. */
+    --heo-bg-glass: oklch(16% 0.014 265 / 86%);
     --heo-raised: oklch(23.5% 0.016 265);
     --heo-sunken: oklch(16% 0.012 265);
     --heo-hover: oklch(28% 0.018 265);
@@ -24,7 +26,10 @@ export const themeVariables = css`
 
     --heo-text: oklch(96% 0.005 265);
     --heo-text-dim: oklch(74% 0.012 265);
-    --heo-text-faint: oklch(58% 0.014 265);
+    /* Was 58%, which read 2.5:1 on the glass over a white page; 68% clears 4.5:1 there. */
+    --heo-text-faint: oklch(68% 0.014 265);
+    /* Secondary explanatory text: the hint, lede and source-location labels share it. */
+    --heo-text-hint: var(--heo-text-faint);
     /*
      * The ink of a disabled control. It cannot be dimmer than text-dim and still reach 4.5:1 on
      * the glass, in either theme, so disabled is told apart by something other than colour: a
@@ -76,7 +81,9 @@ export const themeVariables = css`
 
   :host([data-theme='light']) {
     --heo-bg: oklch(99% 0.002 265);
-    --heo-bg-glass: oklch(99% 0.002 265 / 86%);
+    /* Darkening light glass would lower the contrast of its dark ink, so it gains opacity
+       instead: a black page shows through less. */
+    --heo-bg-glass: oklch(99% 0.002 265 / 92%);
     --heo-raised: oklch(100% 0 0);
     --heo-sunken: oklch(96.5% 0.004 265);
     --heo-hover: oklch(95% 0.006 265);
@@ -84,7 +91,8 @@ export const themeVariables = css`
 
     --heo-text: oklch(24% 0.014 265);
     --heo-text-dim: oklch(45% 0.014 265);
-    --heo-text-faint: oklch(62% 0.012 265);
+    /* Was 62%, which read 2.6:1 on the glass over a black page. */
+    --heo-text-faint: oklch(50% 0.012 265);
     --heo-text-disabled: oklch(45% 0.014 265);
 
     --heo-line: oklch(20% 0.02 265 / 11%);
@@ -263,14 +271,16 @@ export const baseStyles = css`
   .btn.ghost:hover:not(:disabled) {
     background: var(--heo-hover);
   }
+  /* The accent darkened a little: white on the plain default accent read 4.47:1. A light custom
+     accent can still fall short; the host owns that colour. */
   .btn.primary {
-    background: var(--heo-accent);
+    background: color-mix(in oklab, var(--heo-accent) 88%, black);
     border-color: transparent;
     color: var(--heo-accent-ink);
     font-weight: 550;
   }
   .btn.primary:hover:not(:disabled) {
-    background: color-mix(in oklab, var(--heo-accent) 88%, white);
+    background: color-mix(in oklab, var(--heo-accent) 78%, black);
     color: var(--heo-accent-ink);
   }
   .btn.danger {
@@ -388,10 +398,27 @@ export const baseStyles = css`
 
   /* ---- Structure ---- */
 
-  .hint {
-    color: var(--heo-text-faint);
+  /*
+   * Secondary explanatory text, one look everywhere: a p for a sentence, a span inline, the same
+   * class. The lede is the same role at the top of a form or panel, kept as an alias. They used to
+   * be separate local rules at 10, 10.5 and 11px in the faint ink, which read 2.5:1 on the glass.
+   */
+  .hint,
+  .lede {
+    color: var(--heo-text-hint);
     font-size: 11px;
     line-height: 1.5;
+  }
+  .hint code {
+    color: var(--heo-text-dim);
+    font-family: var(--heo-mono);
+  }
+  /* A source location (file and line): metadata rather than prose, so monospace. Truncation is
+     left to the call sites: the code panel's one wraps a whole sentence. */
+  .src {
+    color: var(--heo-text-hint);
+    font-family: var(--heo-mono);
+    font-size: 10px;
   }
   .empty {
     padding: 28px 16px;

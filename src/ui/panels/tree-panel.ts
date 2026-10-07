@@ -88,7 +88,8 @@ export class HeoTreePanel extends HeoElement {
         border: 0;
         border-radius: 5px;
         background: transparent;
-        color: var(--heo-text-faint);
+        /* Dim, not faint: faint read 2.5:1 on the glass over a white page. */
+        color: var(--heo-text-dim);
         font-family: var(--heo-mono);
         font-size: 10.5px;
         cursor: pointer;
@@ -140,6 +141,12 @@ export class HeoTreePanel extends HeoElement {
         box-shadow: inset 0 0 0 1px var(--heo-accent-line);
         color: var(--heo-text);
       }
+      /* Lifted with the row on hover and selection: dim on the selected row's accent tint read
+         4.9:1 on the glass over a white page. Still a step below the tag name. */
+      .row:hover .text,
+      .row[aria-selected='true'] .text {
+        color: color-mix(in oklab, var(--heo-text) 50%, var(--heo-text-dim));
+      }
       .row.hidden {
         opacity: 0.45;
       }
@@ -184,11 +191,11 @@ export class HeoTreePanel extends HeoElement {
         flex: 1 1 auto;
         min-width: 0;
         overflow: hidden;
-        color: var(--heo-text-faint);
+        /* Dim at full opacity: faint at 75% opacity read 2.0:1 on the glass over a white page. */
+        color: var(--heo-text-dim);
         font-family: var(--heo-font);
         font-size: 10.5px;
         text-overflow: ellipsis;
-        opacity: 0.75;
       }
       .marks {
         display: flex;

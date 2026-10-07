@@ -68,11 +68,6 @@ export class HeoCodePanel extends HeoElement {
       .meta .spacer {
         flex: 1 1 auto;
       }
-      .src {
-        color: var(--heo-text-faint);
-        font-family: var(--heo-mono);
-        font-size: 10px;
-      }
       /* A column, not a scroller: the editor inside does its own scrolling, and the
          action row below stays put. Two scrollbars for one document was the problem. */
       .body {

@@ -103,10 +103,8 @@ export class HeoPropsPanel extends HeoElement {
         flex: 1 1 auto;
         min-width: 0;
       }
+      /* The shared source label, on one line. */
       .src {
-        color: var(--heo-text-faint);
-        font-family: var(--heo-mono);
-        font-size: 10px;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;

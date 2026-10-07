@@ -576,6 +576,8 @@
           textarea.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
           await ui();
           await btnRows(applySpec, 'enabled');
+          // White on the primary fill, hovered: the hover used to mix towards white.
+          await measure([{ ...applySpec, name: 'code.apply.hover', control: 'code.apply.hover' }], 'hover');
           // Re-measured disabled after enabled, so the fill comparison has both.
         } else missing.push('code panel textarea');
         engine.setDock(false);
@@ -810,6 +812,95 @@
         while (engine.history.size > size) engine.undo();
       });
 
+      /*
+       * Secondary text that used the faint ink (2.5:1 on dark glass over a white page): source
+       * labels, ledes, hints, the library's target caption, tree row text and breadcrumbs. The
+       * hint-like ones now share one style, so their computed look is recorded per pass too.
+       */
+      const sharedHintLooks = [];
+      const glassValues = [];
+      scenario('secondaryText', async () => {
+        glassValues.push({ theme, value: getComputedStyle(overlayHost()).getPropertyValue('--heo-bg-glass').trim() });
+        const inPanel = (tag, selector) => () => deep((el) => el.matches?.(selector) && inside(tag)(el));
+        const look = (el) => el ? { color: getComputedStyle(el).color, fontSize: getComputedStyle(el).fontSize } : null;
+        const text = (name, file, host, min = 4.5) => ({ name, component: name.split('.')[0], file, cat: 'secondary', kind: 'text', min, host });
+
+        // Code panel with nothing selected: the whole-file source note.
+        await ui(() => { engine.select(null); engine.setDockTab('code'); });
+        await wait(150);
+        await ui();
+        await measure([text('code.src', 'src/ui/panels/code-panel.ts:216', inPanel('heo-code-panel', 'span.src'))], 'default');
+
+        // Props panel: the source location (no instrumentation here, so its fallback note).
+        await ui(() => { engine.select(byId('a')); engine.setDockTab('props'); });
+        await measure([text('props.src', 'src/ui/panels/props-panel.ts:306', inPanel('heo-props-panel', 'span.src'))], 'default');
+
+        // Styles panel: a hint. (Its old .rule .src rule matched no markup and was removed.)
+        await ui(() => { engine.select(byId('g-bw')); engine.setDockTab('styles'); });
+        await ui(() => {
+          for (const section of deepAll((el) => el.localName === 'heo-section' && inside('heo-styles-panel')(el))) section.open = true;
+        });
+        await measure([
+          text('styles.hint', 'src/ui/panels/styles-panel.ts:1001', inPanel('heo-styles-panel', 'p.hint')),
+        ], 'default');
+        const stylesHint = look(inPanel('heo-styles-panel', 'p.hint')());
+
+        // Library panel with nothing selected: the "appended to body" caption.
+        await ui(() => { engine.select(null); engine.setDockTab('library'); });
+        await measure([text('library.target', 'src/ui/panels/library-panel.ts:441', inPanel('heo-library-panel', 'p.target'))], 'default');
+        const libraryTarget = inPanel('heo-library-panel', 'p.target')();
+        const libraryLook = look(libraryTarget);
+        const libraryUsesHint = Boolean(libraryTarget?.classList.contains('hint'));
+
+        // SEO form: its lede, a field hint and a field label.
+        await ui(() => engine.setDockTab('seo'));
+        await measure([
+          text('seo.lede', 'src/ui/panels/seo-form.ts:284', inPanel('heo-seo-form', 'p.lede')),
+          text('seo.hint', 'src/ui/panels/seo-form.ts:363', inPanel('heo-seo-form', 'p.hint')),
+          text('seo.label', 'src/ui/panels/seo-form.ts:349', inPanel('heo-seo-form', '.label')),
+        ], 'default');
+        sharedHintLooks.push({
+          pass: `${theme}/${page}`, libraryUsesHint,
+          looks: { seoLede: look(inPanel('heo-seo-form', 'p.lede')()), seoHint: look(inPanel('heo-seo-form', 'p.hint')()), library: libraryLook, styles: stylesHint },
+        });
+
+        // Tree panel: row text, and the breadcrumb in default, hover, focus and current.
+        await ui(() => { engine.select(byId('a')); engine.setDockTab('tree'); });
+        const crumb = inPanel('heo-tree-panel', 'button.crumb:not(.current)');
+        const comfortable = 5;
+        // An unselected row with a text preview, in default and hover, and the selected row.
+        const rowHost = (selectedRow) => () => deep((el) => el.matches?.(`.row[aria-selected="${selectedRow}"]`) && el.querySelector('span.text')?.textContent.trim() && inside('heo-tree-panel')(el));
+        const rowSpec = (selectedRow) => ({ ...text('tree.rowText', 'src/ui/panels/tree-panel.ts:184', rowHost(selectedRow), comfortable), part: () => rowHost(selectedRow)()?.querySelector('span.text') ?? null });
+        await measure([rowSpec(false)], 'default');
+        await measure([rowSpec(false)], 'hover');
+        await measure([rowSpec(true)], 'selected');
+        const crumbSpec = text('tree.crumb', 'src/ui/panels/tree-panel.ts:84', crumb, comfortable);
+        await measure([crumbSpec], 'default');
+        await measure([crumbSpec], 'hover');
+        await measure([crumbSpec], 'focus');
+        await measure([{ ...crumbSpec, name: 'tree.crumb.ring', cat: 'focus', kind: 'focus', min: 3 }], 'focus');
+        await measure([text('tree.crumb', 'src/ui/panels/tree-panel.ts:100', inPanel('heo-tree-panel', 'button.crumb.current'), comfortable)], 'current');
+        // The filter's empty state.
+        const input = deep((el) => el.localName === 'input' && inside('heo-tree-panel')(el) && /Filter/.test(el.placeholder ?? ''));
+        if (input) {
+          input.value = 'zzzz-no-such-element';
+          input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+          await ui();
+          await measure([text('tree.empty', 'src/ui/panels/tree-panel.ts:298', inPanel('heo-tree-panel', '.empty'))], 'default');
+          input.value = '';
+          input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        } else missing.push('tree filter input for the empty state');
+        engine.setDock(false);
+
+        // A dialog's body text on the same glass as the menus.
+        await ui(() => engine.askToConfirm({ title: 'Delete this?', message: 'It goes.', confirmLabel: 'Delete', tone: 'danger', run: () => { } }));
+        await measure([
+          text('confirm.undoable', 'src/ui/chrome/confirm-dialog.ts:162', () => deep((el) => el.matches?.('p.undoable') && inside('heo-confirm-dialog')(el))),
+        ], 'default');
+        engine.cancelConfirm();
+        engine.select(null);
+      });
+
       // The AI menu's quick-action chips (disabled with no provider) and a scope switch.
       // A provider with no key: the menu renders its quick actions, disabled until a key is set.
       const TEST_SET = { id: 'heo-contrast-test', label: 'Contrast test', transport: 'in-page', provider: 'openai', model: 'test-model' };
@@ -1003,6 +1094,57 @@
       results.clearAndRemoveControlsMeetTheirThresholds = verdict(rows.filter((r) => r.cat === 'kill' && r.kind !== 'focus'));
       results.controlDisabledStatesMeetTheirThresholds = verdict(rows.filter((r) => r.cat === 'control-disabled'));
       results.menuHeadingsAndHintsMeetFourAndAHalf = verdict(menuRows('menu-heading'));
+
+      /*
+       * The contrast polish: the shared glass a little darker (dark) or more opaque (light), the
+       * faint ink lifted, secondary text on one shared hint style, tree text and crumbs on dim.
+       */
+      const secondary = (name, state) => rows.filter((r) => r.name === name && (!state || r.state === state));
+      const glassOf = (t) => glassValues.find((g) => g.theme === t)?.value ?? '';
+      const glassParts = (v) => (v.match(/oklch\(([\d.]+)%\s+[\d.]+\s+[\d.]+\s*\/\s*([\d.]+)%\)/) ?? []).slice(1).map(Number);
+      {
+        const [darkL, darkA] = glassParts(glassOf('dark'));
+        const [lightL, lightA] = glassParts(glassOf('light'));
+        results.theMenuSurface = {
+          // Was oklch(19% ... / 82%): darker and a touch more opaque, still translucent for the blur.
+          isDarkerInTheDarkTheme: darkL < 19 && darkA > 82 && darkA < 100,
+          // Was oklch(99% ... / 86%): darkening light glass would lower dark-ink contrast, so it is more opaque.
+          isMoreOpaqueInTheLightTheme: lightL >= 99 && lightA > 86 && lightA < 100,
+          values: glassValues,
+        };
+      }
+      results.menuItemTextOnTheSurfaceMeetsFourAndAHalf = verdict(rows.filter((r) => r.cat === 'menu-enabled' && r.kind === 'text'));
+      results.dialogBodyTextOnTheSurfaceMeetsFourAndAHalf = verdict(secondary('confirm.undoable'));
+      results.codeSourceLabelReadsAtTextContrast = verdict(secondary('code.src'));
+      results.propsSourceLabelReadsAtTextContrast = verdict(secondary('props.src'));
+      results.seoLedeReadsAtTextContrast = verdict(secondary('seo.lede'));
+      results.seoFieldHintReadsAtTextContrast = verdict(secondary('seo.hint'));
+      results.panelHintReadsAtTextContrast = verdict(secondary('styles.hint'));
+      results.libraryTargetCaptionReadsAtTextContrast = verdict(secondary('library.target'));
+      results.faintTextNowClearsTextContrast = verdict([...secondary('seo.label'), ...secondary('tree.empty')]);
+      results.treeRowTextClearsTextContrastComfortably = verdict(secondary('tree.rowText', 'default'));
+      results.treeRowTextOnHoverClears = verdict(secondary('tree.rowText', 'hover'));
+      results.treeRowTextOnTheSelectedRowClears = verdict(secondary('tree.rowText', 'selected'));
+      results.crumbClearsTextContrastComfortably = verdict(secondary('tree.crumb', 'default'));
+      results.crumbHoverClears = verdict(secondary('tree.crumb', 'hover'));
+      results.crumbFocusClears = verdict(secondary('tree.crumb', 'focus'));
+      results.crumbCurrentClears = verdict(secondary('tree.crumb', 'current'));
+      results.crumbFocusRingClears3to1 = verdict(secondary('tree.crumb.ring'));
+      results.whiteOnPrimaryClearsTextContrast = verdict(secondary('code.apply', 'enabled'));
+      results.primaryHoverClears = verdict(secondary('code.apply.hover', 'hover'));
+      {
+        // One shared style: the seo lede and hint, the library caption and a styles hint used to be
+        // four local rules at 10 to 11px. Same computed colour and size, per pass.
+        const same = (looks) => {
+          const all = Object.values(looks);
+          return all.every(Boolean) && all.every((l) => l.color === all[0].color && l.fontSize === all[0].fontSize);
+        };
+        results.theSharedHintStyle = {
+          libraryTargetUsesTheSharedHintStyle: sharedHintLooks.length === passes.length && sharedHintLooks.every((h) => h.libraryUsesHint),
+          hintAndLedeShareOneComputedStyle: sharedHintLooks.length === passes.length && sharedHintLooks.every((h) => same(h.looks)),
+          measured: sharedHintLooks,
+        };
+      }
       // The save dialog's settled export choice faded its whole label to 62% opacity, the
       // fade-by-opacity pattern this pass removes everywhere else. It keeps looking settled,
       // through the disabled ink on its name instead.

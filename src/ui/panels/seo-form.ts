@@ -58,11 +58,9 @@ export class HeoSeoForm extends HeoElement {
       :host {
         display: block;
       }
+      /* Colour and size come from the shared hint style; only the spacing is local. */
       .lede {
         margin: 0 0 10px;
-        color: var(--heo-text-faint);
-        font-size: 11px;
-        line-height: 1.55;
       }
 
       /* ---- Previews ---- */
@@ -246,9 +244,6 @@ export class HeoSeoForm extends HeoElement {
       }
       .hint {
         margin: 0;
-        color: var(--heo-text-faint);
-        font-size: 10px;
-        line-height: 1.45;
       }
       .note {
         margin: 0 0 8px;

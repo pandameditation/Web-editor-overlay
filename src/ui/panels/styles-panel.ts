@@ -577,11 +577,6 @@ export class HeoStylesPanel extends HeoElement {
         text-overflow: ellipsis;
         white-space: nowrap;
       }
-      .rule .src {
-        flex: 0 0 auto;
-        color: var(--heo-text-faint);
-        font-size: 9.5px;
-      }
       .rule .decls {
         padding: 6px 8px;
         display: grid;
