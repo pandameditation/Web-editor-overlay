@@ -79,6 +79,7 @@
     "check:bundle": "node scripts/browser-check.mjs test/bundle.html 45000",
     "check:bundle:strict": "HEO_FILE_ACCESS=strict node scripts/browser-check.mjs test/bundle.html 45000",
     "check:reveal": "node scripts/browser-check.mjs test/reveal.html 60000",
+    "check:arrownav": "node scripts/browser-check.mjs test/arrow-nav.html 30000",
     "check:links": "node scripts/browser-check.mjs test/links.html 45000",
     "check:newtab": "node scripts/browser-check.mjs test/link-newtab.html 45000",
     "check:textdrag": "node scripts/browser-check.mjs test/text-drag.html 45000",

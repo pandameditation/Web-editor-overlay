@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Left/Right arrows keep a return trail</title>
+  <style>
+    body { margin: 0; font-family: system-ui, sans-serif; }
+    section, div, article, p { padding: 6px; margin: 4px; }
+    pre { margin: 0; }
+  </style>
+</head>
+<body>
+  <!-- Every level has a first child that is not on the path, so "first child" and "where you
+       came from" are always different answers. -->
+  <section id="s">
+    <h2 id="sfirst">Section heading</h2>
+    <div id="d">
+      <h3 id="dfirst">Div heading</h3>
+      <article id="a">
+        <em id="afirst">Article lead</em>
+        <p id="p"><b id="pfirst">Bold</b> and <span id="leaf">the leaf</span></p>
+      </article>
+    </div>
+  </section>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const errors = [];
+      window.addEventListener('error', (e) => errors.push('error: ' + e.message));
+      window.addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+      const results = {};
+      const progress = (name) => { document.getElementById('progress').textContent = name; };
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const byId = (id) => document.getElementById(id);
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark' });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+
+      const press = (key, init = {}) =>
+        document.body.dispatchEvent(new KeyboardEvent('keydown', {
+          key, bubbles: true, composed: true, cancelable: true, ...init,
+        }));
+      const keys = async (...seq) => {
+        for (const k of seq) {
+          press(k === 'L' ? 'ArrowLeft' : k === 'R' ? 'ArrowRight' : k);
+          await frames();
+        }
+      };
+      const at = () => engine.store.value.selected?.id ?? null;
+      /** Start fresh from an element: a select is a non-arrow change, so the trail is empty. */
+      const from = async (id) => { api.select(null); await frames(); api.select(byId(id)); await frames(); };
+      // Re-queried every time: the panel re-renders on each selection change.
+      const treeButton = (label) => {
+        const dock = document.querySelector('html-editor-overlay > heo-overlay').shadowRoot.querySelector('heo-dock');
+        const panel = dock.shadowRoot.querySelector('heo-tree-panel');
+        return Array.from(panel.shadowRoot.querySelectorAll('.pad button'))
+          .find((b) => b.textContent.trim().startsWith(label));
+      };
+
+      progress('basics');
+      results.basics = {
+        // Without this every "returns" assertion could pass by landing on the first child.
+        firstChildIsNotTheCameFromElement: byId('a').firstElementChild !== byId('p'),
+      };
+
+      progress('trail');
+      const trail = {};
+      await from('p'); await keys('L', 'R');
+      // The reported bug: Right after Left went to the first child (#afirst), not back to #p.
+      trail.rightAfterLeftReturnsToTheElementYouCameFrom = at() === 'p';
+
+      await from('leaf'); await keys('L', 'L', 'L');
+      const top3 = at();
+      await keys('R'); const r1 = at();
+      await keys('R'); const r2 = at();
+      await keys('R'); const r3 = at();
+      // The user asked for this over several levels, retracing the exact path down.
+      trail.threeLeftsThenThreeRightsWalkBackTheSamePath =
+        top3 === 'd' && r1 === 'a' && r2 === 'p' && r3 === 'leaf';
+      trail.walkPath = [top3, r1, r2, r3].join('>');
+
+      await from('leaf'); await keys('L', 'L', 'R', 'L', 'R', 'R');
+      // Stack semantics: any run of only Left/Right pairs off, so this ends where it began.
+      trail.mixedLeftRightKeepsTheTrail = at() === 'leaf';
+
+      await from('a'); await keys('R');
+      // Today's behaviour when nothing was left first must survive.
+      trail.rightWithNoTrailStillSelectsTheFirstChild = at() === 'afirst';
+      results.trail = trail;
+
+      progress('clearing');
+      const clearing = {};
+      // Each of these is "another action" in the user's words, so Right falls back to first child.
+      await from('p'); await keys('L', 'ArrowUp', 'ArrowDown');
+      const backAtA = at();
+      await keys('R');
+      clearing.anUpOrDownArrowClearsTheTrail = backAtA === 'a' && at() === 'afirst';
+
+      await from('p'); await keys('L');
+      api.select(byId('a')); api.select(byId('d')); api.select(byId('a')); await frames();
+      await keys('R');
+      clearing.aClickClearsTheTrail = at() === 'afirst';
+
+      await from('p'); await keys('L');
+      engine.toggleSelection(byId('dfirst')); await frames();
+      engine.toggleSelection(byId('dfirst')); await frames();
+      await keys('R');
+      clearing.shiftClickClearsTheTrail = at() === 'afirst';
+
+      await from('p'); await keys('L');
+      engine.setStyle('color', 'rgb(1, 2, 3)', byId('a')); await frames();
+      await keys('R');
+      // An edit may have moved what the trail points at; the user asked that it end the walk.
+      clearing.anEditClearsTheTrail = at() === 'afirst';
+
+      await from('p'); await keys('L');
+      engine.undo(); await frames();
+      api.select(byId('a')); await frames();
+      await keys('R');
+      clearing.anUndoClearsTheTrail = at() === 'afirst' && byId('a').style.color === '';
+
+      await from('p'); await keys('L');
+      press('Escape'); await frames();
+      api.select(byId('a')); await frames();
+      await keys('R');
+      clearing.escapeClearsTheTrail = at() === 'afirst';
+      results.clearing = clearing;
+
+      progress('edges');
+      const edges = {};
+      // A came-from node the page removed must not be selected, nor throw.
+      const tmp = document.createElement('i');
+      tmp.id = 'tmpleaf'; tmp.textContent = 'temp';
+      byId('a').appendChild(tmp); await frames();
+      await from('tmpleaf'); await keys('L');
+      tmp.remove(); await frames();
+      await keys('R');
+      edges.aRemovedTrailElementFallsBackToTheFirstChild = at() === 'afirst';
+
+      // Lefts past the top push nothing, so one Right steps exactly one level back down.
+      await from('s');
+      let n = 0;
+      while (n < 8) { await keys('L'); n += 1; }
+      const topId = at();
+      const topEl = engine.store.value.selected;
+      await keys('R');
+      const after = engine.store.value.selected;
+      edges.leftAtTheTopDoesNotGrowTheTrail = topEl && topEl.contains(byId('s')) &&
+        after && after.parentElement === topEl && after.contains(byId('s'));
+      edges.topWas = topId;
+
+      // The trail starts from the primary of a multi-selection the arrow collapses.
+      await from('p');
+      engine.toggleSelection(byId('dfirst')); await frames();
+      await keys('L', 'R');
+      edges.aMultiSelectionStartsTheTrailFromThePrimary = at() === 'p' &&
+        engine.store.value.selection.length === 1;
+      results.edges = edges;
+
+      progress('tree');
+      api.openPanel('tree');
+      await new Promise((r) => setTimeout(r, 100));
+      const tree = {};
+      await from('p');
+      await keys('L');
+      treeButton('Child').click(); await frames();
+      const keyThenButton = at();
+      treeButton('Parent').click(); await frames();
+      await keys('R');
+      // Both surfaces call the same engine walk, so mixing them keeps one trail.
+      tree.theTreePanelArrowsShareTheTrail = keyThenButton === 'p' && at() === 'p';
+      results.tree = tree;
+
+      const failed = Object.entries(results)
+        .filter(([, group]) => group && typeof group === 'object')
+        .filter(([, group]) => Object.values(group).some((value) => value === false))
+        .map(([name]) => name);
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify({ ...results, errors, failed }, null, 2) + ':END';
+    })();
+  </script>
+</body>
+</html>

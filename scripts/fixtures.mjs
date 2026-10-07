@@ -44,6 +44,7 @@ export const FIXTURES = [
   { page: 'test/edge-scroll.html', budget: 150000, weight: 28500 },
   { page: 'test/popover-settle.html', budget: 60000, weight: 16800 },
   { page: 'test/reveal.html', budget: 60000, weight: 13800 },
+  { page: 'test/arrow-nav.html', budget: 30000 },
   { page: 'test/dimensional.html', budget: 60000, weight: 13200 },
   { page: 'test/search-field.html', budget: 60000, weight: 8800 },
 

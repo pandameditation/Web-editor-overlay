@@ -445,7 +445,7 @@ export class HeoTreePanel extends HeoElement {
           class="btn sm"
           type="button"
           ?disabled=${!has}
-          @click=${() => this.editor.navigate('parent')}
+          @click=${() => this.editor.navigate('parent', { trail: true })}
         >
           ${icon('arrowUp', 12)} Parent <kbd>←</kbd>
         </button>
@@ -453,7 +453,7 @@ export class HeoTreePanel extends HeoElement {
           class="btn sm"
           type="button"
           ?disabled=${!has}
-          @click=${() => this.editor.navigate('child')}
+          @click=${() => this.editor.navigate('child', { trail: true })}
         >
           ${icon('arrowDown', 12)} Child <kbd>→</kbd>
         </button>

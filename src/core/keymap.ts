@@ -322,14 +322,14 @@ export function handleKeyDown(engine: EditorEngine, event: KeyboardEvent): void 
       event.preventDefault();
       engine.collapseSelection();
       if (event.shiftKey) engine.move('out');
-      else engine.navigate('parent');
+      else engine.navigate('parent', { trail: true });
       return;
 
     case 'ArrowRight':
       event.preventDefault();
       engine.collapseSelection();
       if (event.shiftKey) engine.move('in');
-      else engine.navigate('child');
+      else engine.navigate('child', { trail: true });
       return;
 
     default:

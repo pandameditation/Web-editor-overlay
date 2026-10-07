@@ -1209,6 +1209,9 @@ export class EditorEngine {
 
     this.#listeners.push(
       this.history.onChange(() => {
+        // A commit, undo or redo may have moved or replaced what the trail points at, and the
+        // user asked that any edit end the Left/Right walk.
+        this.#navTrail = [];
         // First, so anything that renders off this change already knows the index predates it.
         this.#pageGeneration += 1;
         // Whether this change set can still be written as edits to the file, said out loud the
@@ -1671,6 +1674,9 @@ export class EditorEngine {
       (current.selection.length === 0 || sameMembers(ordered, current.selection))
     ) return;
     if (primaryChanged) this.cancelPreview();
+    // Any selection change not made by the Left/Right walk ends it: a Right after a click
+    // must go to the first child, not back to an element left before the click.
+    if (!this.#navigating) this.#navTrail = [];
     this.store.patch({
       selected: next,
       selection: next ? ordered : [],
@@ -1702,9 +1708,55 @@ export class EditorEngine {
     this.store.patch({ hovered: el });
   }
 
-  /** Move the selection along the tree. Used by keyboard nav and the tree panel. */
-  navigate(direction: 'parent' | 'child' | 'previous' | 'next' | 'up' | 'down'): void {
+  /*
+   * Elements left by a Left (parent) walk, most recent last. A Right that follows pops back to
+   * the element the user came from instead of the first child, over any number of levels.
+   * Only `navigate(..., { trail: true })` keeps it; every other selection change clears it.
+   */
+  #navTrail: HTMLElement[] = [];
+  #navigating = false;
+
+  #selectAlongTrail(target: HTMLElement): void {
+    this.#navigating = true;
+    try {
+      this.select(target);
+    } finally {
+      this.#navigating = false;
+    }
+  }
+
+  /**
+   * Move the selection along the tree. Used by keyboard nav and the tree panel.
+   * With `trail`, parent/child form a return trail: Right undoes a run of Lefts.
+   */
+  navigate(
+    direction: 'parent' | 'child' | 'previous' | 'next' | 'up' | 'down',
+    options: { trail?: boolean } = {},
+  ): void {
     const el = this.store.value.selected;
+    if (options.trail && el && (direction === 'parent' || direction === 'child')) {
+      if (direction === 'parent') {
+        const parent = selectableParent(el);
+        // No parent at the top: nothing pushed, so no phantom step for a later Right.
+        if (!parent) return;
+        this.#navTrail.push(el);
+        this.#selectAlongTrail(parent);
+        return;
+      }
+      const top = this.#navTrail.at(-1);
+      // Still in the page, still selectable and still inside: a deep descendant counts too.
+      if (top && top !== el && top.isConnected && isSelectable(top) && el.contains(top)) {
+        this.#navTrail.pop();
+        this.#selectAlongTrail(top);
+        return;
+      }
+      this.#navTrail = [];
+      const child = firstSelectableChild(el);
+      if (child) this.#selectAlongTrail(child);
+      return;
+    }
+    // Any other walk ends the trail even when it selects nothing.
+    this.#navTrail = [];
     if (!el) {
       const first = firstSelectableChild(document.body);
       if (first) this.select(first);
@@ -5907,6 +5959,8 @@ export class EditorEngine {
   ): void {
     if (!el || this.store.value.textEditing === el) return;
     if (!acceptsChildren(el)) return;
+    // Text editing is another action; a later Right must not jump back along an old walk.
+    this.#navTrail = [];
     /*
      * Warned, and allowed anyway.
      *
