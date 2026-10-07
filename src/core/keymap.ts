@@ -227,6 +227,20 @@ export function handleKeyDown(engine: EditorEngine, event: KeyboardEvent): void 
    * Enter started editing its text instead of picking a value, and Backspace deleted
    * it outright. The panel's own components handle their own keys.
    */
+  // Panel letters are not page actions, so a focused panel button (a tab just clicked, a
+  // section header) must not swallow them. Text fields, selects and the code editors keep
+  // their letters: isEditableTarget sees through the shadow root. A future typeahead
+  // component must stopPropagation in capture or be marked editable.
+  if (!event.altKey && !mod && !(event.shiftKey && fromOverlay(event)) && !isEditableTarget(event)) {
+    const tab = PANEL_KEYS[key.toLowerCase()];
+    if (tab) {
+      event.preventDefault();
+      // Pressing the same key again closes the dock, so a key is a toggle.
+      if (state.dockOpen && state.dockTab === tab) engine.setDock(false);
+      else engine.setDockTab(tab);
+      return;
+    }
+  }
   if (fromOverlay(event)) return;
 
   // Anything typed into a page field belongs to that field.
@@ -322,15 +336,6 @@ export function handleKeyDown(engine: EditorEngine, event: KeyboardEvent): void 
       break;
   }
 
-  if (!event.altKey && !mod) {
-    const tab = PANEL_KEYS[key.toLowerCase()];
-    if (tab) {
-      event.preventDefault();
-      // Pressing the same key again closes the dock, so a key is a toggle.
-      if (state.dockOpen && state.dockTab === tab) engine.setDock(false);
-      else engine.setDockTab(tab);
-    }
-  }
 }
 
 /** Single-key panel shortcuts, in dock tab order. */

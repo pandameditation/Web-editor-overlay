@@ -1446,9 +1446,14 @@
       press(panelChip(), 'Backspace');
       await frame();
       check('backspaceFromPanelDoesNotDelete', () => Boolean(document.getElementById('k1')));
-      press(panelChip(), 't');
+      /*
+       * A plain panel letter on a focused panel button now switches panels (pinned in
+       * test/panel-shortcuts.html); Shift+letter from the overlay still does not, so an upper
+       * case letter typed on a button never yanks the dock away.
+       */
+      press(panelChip(), 'T', { shiftKey: true });
       await frame();
-      check('letterFromPanelDoesNotSwitchTab', () => engine.store.value.dockTab);
+      check('shiftLetterFromPanelDoesNotSwitchTab', () => engine.store.value.dockTab === 'styles');
 
       /* The same keys from the page still do their job. */
       press(document.body, 'ArrowDown');

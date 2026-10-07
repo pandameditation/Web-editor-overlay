@@ -64,6 +64,7 @@ export const FIXTURES = [
   { page: 'test/link-newtab.html', budget: 45000, weight: 3000 },
   { page: 'test/element-clipboard.html', budget: 45000, weight: 2500 },
   { page: 'test/escape-commits.html', budget: 45000, weight: 2000 },
+  { page: 'test/panel-shortcuts.html', budget: 45000, weight: 2000 },
   { page: 'test/line-break-split.html', budget: 60000, weight: 3000 },
   { page: 'test/line-break-split-seed.html', budget: 45000, weight: 2000 },
   { page: 'test/block-props.html', budget: 45000, weight: 2000 },

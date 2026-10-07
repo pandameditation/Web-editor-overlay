@@ -61,6 +61,7 @@
     "check:journalreview": "node scripts/browser-check.mjs test/journal-review.html 60000",
     "check:multiselect": "node scripts/browser-check.mjs test/multi-select.html 60000",
     "check:multiclipboard": "node scripts/browser-check.mjs test/multi-clipboard.html 60000",
+    "check:panelshortcuts": "node scripts/browser-check.mjs test/panel-shortcuts.html 45000",
     "check:contrast": "node scripts/browser-check.mjs test/a11y-contrast.html 180000",
     "check:fuzz": "node scripts/browser-check.mjs test/journal-fuzz.html 180000",
     "check:fuzzarticle": "node scripts/browser-check.mjs test/journal-fuzz-article.html 300000",

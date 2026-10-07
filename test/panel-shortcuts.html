@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Panel shortcut letters reach the dock from a focused panel button</title>
+  <style>
+    body { margin: 0; padding: 24px; font-family: system-ui, sans-serif; }
+    pre { margin-top: 16px; }
+  </style>
+</head>
+<body>
+  <main id="page">
+    <p id="first">First paragraph.</p>
+    <p id="second">Second paragraph.</p>
+  </main>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const errors = [];
+      window.addEventListener('error', (e) => errors.push('error: ' + e.message));
+      window.addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+      const results = {};
+      const progress = document.getElementById('progress');
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark' });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+
+      const state = () => engine.store.value;
+      const press = (target, key, init = {}) => {
+        const event = new KeyboardEvent('keydown', {
+          key, bubbles: true, composed: true, cancelable: true, ...init,
+        });
+        target.dispatchEvent(event);
+        return event;
+      };
+      // Walks every open shadow root, so a test never depends on how deep a control is nested.
+      const deepAll = (selector, root = document) => {
+        const found = [];
+        const walk = (node) => {
+          found.push(...node.querySelectorAll(selector));
+          for (const el of node.querySelectorAll('*')) if (el.shadowRoot) walk(el.shadowRoot);
+        };
+        walk(root);
+        return found;
+      };
+      const dock = () => deepAll('heo-dock')[0];
+      const tabButton = (label) => Array.from(dock().shadowRoot.querySelectorAll('.tab'))
+        .find((b) => b.textContent.trim().toLowerCase() === label);
+      const deepActive = () => {
+        let n = document.activeElement;
+        while (n?.shadowRoot?.activeElement) n = n.shadowRoot.activeElement;
+        return n;
+      };
+      const reset = async (tab) => {
+        api.select(document.getElementById('first'));
+        api.openPanel(tab);
+        await frames();
+      };
+
+      /* ---------------------------------------------------------------- *
+       * Focused overlay buttons. The blanket "came from the overlay" guard returned before the
+       * panel letters, so a tab just clicked (or any panel button) swallowed S T E B P M C O.
+       * ---------------------------------------------------------------- */
+      progress.textContent = 'buttons';
+      await reset('styles');
+      const stylesTab = tabButton('styles');
+      stylesTab.click();
+      stylesTab.focus();
+      await frames();
+      const tabFocused = deepActive() === stylesTab;
+      // The reported bug: S opens Styles and focuses its tab, then B did nothing.
+      press(stylesTab, 'b');
+      await frames();
+      const libraryOpened = state().dockOpen && state().dockTab === 'library';
+      // The toggle must survive the hoist: the same letter on the now-active tab closes the dock.
+      const libraryTab = tabButton('library');
+      libraryTab.focus();
+      press(libraryTab, 'b');
+      await frames();
+      const closed = state().dockOpen === false;
+      // The focused tab is removed with the dock; focus must land somewhere live, not a detached node.
+      const after = deepActive();
+      const focusNotDetached = !after || after === document.body || after.isConnected;
+
+      // Any non-tab overlay button: a section header in the Styles panel.
+      await reset('styles');
+      const header = deepAll('[aria-expanded]', dock().shadowRoot)
+        .find((el) => el.tagName === 'BUTTON' || el.getAttribute('role') === 'button');
+      header?.focus();
+      press(header, 't');
+      await frames();
+      const headerSwitched = Boolean(header) && state().dockTab === 'tokens';
+
+      // Shift is refused for overlay-origin keys, so an upper case letter on a button stays put.
+      await reset('styles');
+      const tab2 = tabButton('styles');
+      tab2.focus();
+      press(tab2, 'B', { shiftKey: true });
+      await frames();
+      const shiftStayed = state().dockTab === 'styles' && state().dockOpen;
+
+      // The reason the overlay guard exists: arrows on a panel button never move the page selection.
+      await reset('styles');
+      const tab3 = tabButton('styles');
+      tab3.focus();
+      press(tab3, 'ArrowDown');
+      press(tab3, 'ArrowRight');
+      await frames();
+      const selectionKept = engine.selected?.id === 'first';
+
+      results.focusedButtons = {
+        theStylesTabReallyHasFocus: tabFocused,
+        aPanelShortcutStillWorksWhileATabButtonHasFocus: libraryOpened,
+        theSameLetterOnAFocusedTabStillClosesTheDock: closed,
+        andFocusIsNotLeftOnADetachedNode: focusNotDetached,
+        aPanelShortcutWorksFromAFocusedSectionHeader: headerSwitched,
+        shiftLetterOnAnOverlayButtonDoesNotSwitchPanels: shiftStayed,
+        arrowsOnAPanelButtonStillDoNotMoveTheSelection: selectionKept,
+      };
+
+      /* ---------------------------------------------------------------- *
+       * Fields keep their letters. isEditableTarget sees through the shadow root, so typing a
+       * B into a search box or the code editor must never switch panels.
+       * ---------------------------------------------------------------- */
+      progress.textContent = 'fields';
+      await reset('library');
+      const search = deepAll('input', dock().shadowRoot)[0];
+      search?.focus();
+      const searchEvent = search ? press(search, 's') : null;
+      await frames();
+      const searchKept = Boolean(search) && state().dockTab === 'library' && !searchEvent.defaultPrevented;
+
+      await reset('code');
+      await frames();
+      const textarea = deepAll('textarea', dock().shadowRoot)[0];
+      textarea?.focus();
+      const codeEvent = textarea ? press(textarea, 's') : null;
+      await frames();
+      const codeKept = Boolean(textarea) && state().dockTab === 'code' && !codeEvent.defaultPrevented;
+
+      results.fields = {
+        typingInAnOverlayFieldDoesNotSwitchPanels: searchKept,
+        typingInTheCodeEditorDoesNotSwitchPanels: codeKept,
+      };
+
+      /* ---------------------------------------------------------------- *
+       * Dialogs. The confirmation returns before every shortcut, so a letter on its button never
+       * switches the panel behind it.
+       * ---------------------------------------------------------------- */
+      progress.textContent = 'dialog';
+      await reset('styles');
+      engine.askToConfirm({
+        title: 'Delete it?', message: 'Probe.', confirmLabel: 'Delete', tone: 'danger', run: () => {},
+      });
+      await frames();
+      await frames();
+      const dialogButton = deepAll('heo-confirm-dialog')[0]
+        ? deepAll('button', deepAll('heo-confirm-dialog')[0].shadowRoot)[0]
+        : null;
+      dialogButton?.focus();
+      if (dialogButton) press(dialogButton, 'b');
+      await frames();
+      const dialogKept = Boolean(dialogButton) && state().dockTab === 'styles';
+      engine.store.patch({ confirm: null });
+      await frames();
+      results.dialog = { aLetterOnAConfirmDialogButtonDoesNotSwitchPanels: dialogKept };
+
+      /* ---------------------------------------------------------------- *
+       * The page path is unchanged: letters from the page switch and toggle, and page-origin
+       * Shift+S still toggles Styles as it did before (the key is compared lower-cased).
+       * ---------------------------------------------------------------- */
+      progress.textContent = 'page';
+      api.select(document.getElementById('first'));
+      engine.setDock(false);
+      await frames();
+      document.activeElement?.blur?.();
+      press(document.body, 's');
+      await frames();
+      const sOpens = state().dockOpen && state().dockTab === 'styles';
+      press(document.body, 'b');
+      await frames();
+      const bSwitches = state().dockOpen && state().dockTab === 'library';
+      engine.setDock(false);
+      await frames();
+      press(document.body, 'S', { shiftKey: true });
+      await frames();
+      const shiftSOpens = state().dockOpen && state().dockTab === 'styles';
+      results.page = {
+        thePageShortcutPathIsUnchanged: sOpens && bSwitches && shiftSOpens,
+        pageSOpensStyles: sOpens,
+        pageBThenSwitchesToLibrary: bSwitches,
+        pageShiftSStillOpensStyles: shiftSOpens,
+      };
+
+      const failed = Object.entries(results)
+        .filter(([, group]) => group && typeof group === 'object')
+        .filter(([, group]) => Object.values(group).some((value) => value !== true))
+        .map(([name]) => name);
+      progress.textContent = 'done';
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify({ ok: failed.length === 0 && errors.length === 0, failed, errors, results }, null, 2) + ':END';
+    })().catch((err) => {
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify({ ok: false, failed: ['THREW'], errors: [String(err && err.stack || err)] }) + ':END';
+    });
+  </script>
+</body>
+</html>
