@@ -211,7 +211,22 @@ it to a real assertion before finishing.
 1. `npm run typecheck`
 2. `npm run build` (or `build:lib` for a quick loop)
 3. The targeted fixture: `node scripts/browser-check.mjs test/<file>.html <ms>`
-4. The full suite: `npm run check` — ~7–8 minutes, so run it in a background process and poll.
+4. The full suite: `npm run check` — about 2 minutes (~105 s). See "Running the suite" below.
+
+**Running the suite.** `check-all.mjs` exits on its own: it prints `N fixtures in Xs, 6 at a time`
+followed by `all green` or `N failed:`, and exits non-zero on failure. So:
+
+- Run it in the **foreground** with an explicit timeout: `npm run check > /tmp/new.log 2>&1` with a
+  300 s tool timeout (600 s at most). Then read the exit code and `tail -5 /tmp/new.log`.
+- **Never** start it in the background and wait with `sleep N` or a polling loop. A fixed sleep costs
+  minutes per run for no information.
+- **Inner loops** (each implement / fix iteration): `npm run check:fast` plus the targeted fixture(s)
+  for what you changed. Do not run the full suite every iteration.
+- **The full `npm run check` runs once per task**, at the end, compared against the baseline.
+  Reviewers read that log instead of re-running the suite.
+- **Record a baseline only when the starting tree changed** since the last stored `baseline.log`
+  (new commits or new uncommitted work). Otherwise reuse the existing one and say which.
+- `npm run check` does not run `typecheck` yet, so run `npm run typecheck` alongside it.
 
 **Compare against a stored baseline.** This is the single most useful verification trick here. Keep a
 known-good log and diff the set of failing assertions:
