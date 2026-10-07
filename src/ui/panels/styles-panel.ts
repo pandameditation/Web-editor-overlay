@@ -627,7 +627,7 @@ export class HeoStylesPanel extends HeoElement {
       .property-adder .confirm:disabled {
         border-color: var(--heo-line);
         background: transparent;
-        color: var(--heo-text-faint);
+        color: var(--heo-text-disabled);
         cursor: not-allowed;
       }
       .decl .p {

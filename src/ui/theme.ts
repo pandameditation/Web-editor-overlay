@@ -25,12 +25,27 @@ export const themeVariables = css`
     --heo-text: oklch(96% 0.005 265);
     --heo-text-dim: oklch(74% 0.012 265);
     --heo-text-faint: oklch(58% 0.014 265);
+    /*
+     * The ink of a disabled control. It cannot be dimmer than text-dim and still reach 4.5:1 on
+     * the glass, in either theme, so disabled is told apart by something other than colour: a
+     * dashed border and no fill on buttons, the label dropping from text to this on menu items,
+     * and the reason. See the disabled .btn rule below.
+     */
+    --heo-text-disabled: oklch(74% 0.012 265);
 
     --heo-line: oklch(100% 0 0 / 9%);
     --heo-line-strong: oklch(100% 0 0 / 16%);
     --heo-inset: inset 0 1px 0 oklch(100% 0 0 / 6%);
+    /* Lifted towards white in the dark theme: the plain accent read 2.4:1 on dark glass over a
+       white page, under the 3:1 a focus indicator needs. */
+    --heo-focus-ring: color-mix(in oklab, var(--heo-accent) 60%, white);
 
-    --heo-danger: oklch(66% 0.19 22);
+    /*
+     * Per theme, measured against the glass over a white and a black page (test/a11y-contrast.html):
+     * the shared oklch(66% 0.19 22) read 3.1:1 on dark glass over a white page and 2.4:1 on light
+     * glass over a black one, under the 4.5:1 a Delete label needs.
+     */
+    --heo-danger: oklch(78% 0.14 22);
     --heo-success: oklch(74% 0.15 155);
     --heo-warn: oklch(80% 0.14 85);
 
@@ -70,10 +85,14 @@ export const themeVariables = css`
     --heo-text: oklch(24% 0.014 265);
     --heo-text-dim: oklch(45% 0.014 265);
     --heo-text-faint: oklch(62% 0.012 265);
+    --heo-text-disabled: oklch(45% 0.014 265);
 
     --heo-line: oklch(20% 0.02 265 / 11%);
     --heo-line-strong: oklch(20% 0.02 265 / 20%);
     --heo-inset: inset 0 1px 0 oklch(100% 0 0 / 80%);
+
+    --heo-danger: oklch(50% 0.2 25);
+    --heo-focus-ring: var(--heo-accent);
 
     --heo-shadow-sm: 0 1px 2px oklch(50% 0.03 265 / 12%);
     --heo-shadow-md: 0 8px 24px -6px oklch(50% 0.03 265 / 18%), 0 2px 6px oklch(50% 0.03 265 / 10%);
@@ -201,7 +220,7 @@ export const baseStyles = css`
   }
 
   :focus-visible {
-    outline: 2px solid var(--heo-accent);
+    outline: 2px solid var(--heo-focus-ring);
     outline-offset: 1px;
   }
 
@@ -236,10 +255,6 @@ export const baseStyles = css`
     transform: translateY(0.5px);
     background: var(--heo-active);
   }
-  .btn:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-  }
   .btn.ghost {
     background: transparent;
     border-color: transparent;
@@ -261,8 +276,9 @@ export const baseStyles = css`
   .btn.danger {
     color: var(--heo-danger);
   }
+  /* Opaque, over the hover colour, so the tint's contrast does not depend on the page below. */
   .btn.danger:hover:not(:disabled) {
-    background: color-mix(in oklab, var(--heo-danger) 16%, transparent);
+    background: color-mix(in oklab, var(--heo-danger) 14%, var(--heo-hover));
     color: var(--heo-danger);
   }
   .btn.icon {
@@ -278,6 +294,26 @@ export const baseStyles = css`
     background: var(--heo-accent-soft);
     border-color: var(--heo-accent-line);
     color: var(--heo-text);
+  }
+  /*
+   * Disabled, for every variant at once, and last of the .btn rules so nothing after it can undo it.
+   *
+   * It used to fade the whole button to 40%, which put its label at 2.0 to 2.4:1 on the glass. A
+   * readable disabled ink lands at text-dim, the ink of an enabled default button, so the cue is
+   * structural instead: a dashed border, no fill, no shadow. One combined rule because .btn.ghost
+   * comes after a plain .btn:disabled with the same specificity and sets a transparent border,
+   * which hid the dashed one on every ghost icon button. A disabled primary loses its accent fill
+   * too: its white ink was legible only against that fill (1.03:1 on light glass).
+   */
+  .btn:disabled,
+  .btn.ghost:disabled,
+  .btn.primary:disabled,
+  .btn.danger:disabled {
+    color: var(--heo-text-disabled);
+    background: transparent;
+    border: 1px dashed var(--heo-line-strong);
+    box-shadow: none;
+    cursor: not-allowed;
   }
 
   /* ---- Fields ---- */

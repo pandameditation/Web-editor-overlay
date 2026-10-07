@@ -37,6 +37,13 @@ const PATHS: Record<string, string> = {
   copy: 'M5.8 5.8h7.4v7.4H5.8zM10.4 5.8V2.8H2.8v7.6h3',
   clipboard:
     'M6 2.8h4v1.8H6zM4.4 3.8H3.2v9.4h9.6V3.8h-1.2M5.6 8h4.8M5.6 10.6h3.2',
+  // Two blades crossing above two finger loops: cut.
+  scissors:
+    'M4.6 13.4a1.8 1.8 0 100-3.6 1.8 1.8 0 000 3.6zM11.4 13.4a1.8 1.8 0 100-3.6 1.8 1.8 0 000 3.6zM5.8 10.2L11.6 2.6M10.2 10.2L4.4 2.6',
+  // A clipboard with a line dropping below it: paste after.
+  pasteBelow: 'M6 2.6h4v1.6H6zM4.4 3.4H3.2v7.2h9.6V3.4h-1.2M8 6v7.4M5.8 11.2L8 13.4l2.2-2.2',
+  // Two boxes trading places: replace one thing with another.
+  replace: 'M2.6 2.6h5v5h-5zM8.4 8.4h5v5h-5zM10 3.2h1.6a1.6 1.6 0 011.6 1.6v1.4M6 12.8H4.4a1.6 1.6 0 01-1.6-1.6V9.8',
   link: 'M6.6 9.4l2.8-2.8M6.9 4.6l1-1a2.7 2.7 0 013.8 3.8l-1 1M9.1 11.4l-1 1a2.7 2.7 0 01-3.8-3.8l1-1',
   folder: 'M2.6 12.8V3.6h3.9l1.4 1.9h5.5v7.3z',
   server: 'M2.6 3.4h10.8v3.6H2.6zM2.6 9h10.8v3.6H2.6zM5 5.2h.01M5 10.8h.01',

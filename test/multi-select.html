@@ -67,6 +67,10 @@
       <div id="d1"><span id="s1">first span</span></div>
       <div id="d2"><span id="s2">second span</span></div>
     </section>
+    <section id="merge-blocks"><div id="bd1"><p id="bp1">First block</p></div><div id="bd2"><p id="bp2">Second block</p></div></section>
+    <section id="merge-pre"><p id="pr1" style="white-space: pre-wrap">One</p><p id="pr2" style="white-space: pre-wrap">Two</p></section>
+    <section id="merge-mixed"><div id="mx1"><p id="mxp" style="margin: 0">Block</p></div><div id="mx2">loose text</div></section>
+    <section id="merge-br"><p id="bb1">One<br></p><p id="bb2">Two</p></section>
     <section id="mismatch">
       <p id="q1">A paragraph</p>
       <h2 id="q2">A heading</h2>
@@ -183,6 +187,32 @@
       const count = (selector) => layer()?.querySelectorAll(selector).length ?? 0;
       const ids = () => engine.selection.map((el) => el.id);
       const item = (id) => menu()?.querySelector(`[data-id="${id}"]`);
+      const menuItems = () => Array.from(menu()?.querySelectorAll('.item[data-id]') ?? []);
+      const headings = () => Array.from(menu()?.querySelectorAll('.group') ?? []).map((g) => g.textContent.trim());
+      /** The text aria-describedby points at, resolved inside the menu's shadow root. */
+      const describedBy = (el) => {
+        const id = el?.getAttribute('aria-describedby');
+        const target = id ? menu()?.getElementById(id) : null;
+        return target ? target.textContent.trim() : null;
+      };
+      /** The SELECTION items' hints, as the menu prints them. */
+      const selectionHintsShown = () => {
+        const want = {
+          duplicate: /^(⌘|Ctrl)\+D$/,
+          'copy-element': /^(⌘|Ctrl)\+C$/,
+          cut: /^(⌘|Ctrl)\+X$/,
+          'paste-below': /^(⌘|Ctrl)\+V$/,
+          'paste-replace': /^⇧(⌘|Ctrl)\+R$/,
+        };
+        return Object.entries(want).every(([id, re]) => re.test((item(id)?.querySelector('.hint')?.textContent ?? '').trim()));
+      };
+      /** Every disabled item has a tooltip, and it is the same text its description resolves to. */
+      const everyDisabledItemSaysWhy = () =>
+        menuItems()
+          .filter((el) => el.getAttribute('aria-disabled') === 'true')
+          .every((el) => Boolean(el.getAttribute('title')) && el.getAttribute('title') === describedBy(el));
+      const noEnabledItemCarriesAReason = () =>
+        menuItems().filter((el) => !el.hasAttribute('aria-disabled')).every((el) => !el.querySelector('.desc'));
       const thumbAt = (i) => layer()?.querySelector(`.thumb[data-index="${i}"]`);
       const thumb = () => layer()?.querySelector('.thumb');
       const centre = (el) => {
@@ -550,13 +580,17 @@
         // Exact, so a menu that merely drifted towards #far cannot pass the relative check alone.
         out.menuTopIsFarsClampedTop = menuTop === placed(farTop);
         out.theHeaderCountsTheGroup = (menu().querySelector('.head')?.textContent ?? '').trim() === '2 elements';
-        // Single-element items have no one target in a group, so none of them may be offered.
+        // Single-element items have no one target in a group, so none of them may be offered. The
+        // clipboard items are the exception: they have one meaning for every member.
         out.itOffersExactlyTheGroupItems = same(
-          Array.from(menu().querySelectorAll('.item[data-id]')).map((el) => el.dataset.id),
-          ['group-wrap', 'group-save-block', 'group-merge', 'group-delete', 'undo', 'redo'],
+          menuItems().map((el) => el.dataset.id),
+          ['group-wrap', 'group-save-block', 'group-merge', 'group-delete', 'duplicate', 'copy-element', 'cut', 'paste-below', 'paste-replace', 'undo', 'redo'],
         );
+        // The group actions sit under Structure, as in the single menu, and Selection follows it.
+        out.theGroupHeadingsAreStructureSelectionOther = same(headings(), ['Structure', 'Selection', 'Other']);
+        const groupHints = selectionHintsShown();
 
-        // The reason is text inside the item, not a tooltip, so it is read out with it.
+        // The reason is in a tooltip, in the description assistive technology reads, and on screen.
         engine.setQuickMenu(false);
         engine.select(a);
         engine.toggleSelection(c);
@@ -564,19 +598,65 @@
         clickThumb(1);
         await frames();
         const wrapItem = item('group-wrap');
+        const wrapReason = 'Selected elements are in different containers.';
         out.differentContainersDisableWrapAndSayWhy =
-          wrapItem?.disabled === true &&
-          (wrapItem.querySelector('.desc')?.textContent ?? '').trim() === 'Selected elements are in different containers.';
+          wrapItem?.getAttribute('aria-disabled') === 'true' &&
+          wrapItem.getAttribute('title') === wrapReason &&
+          (wrapItem.querySelector('.desc')?.textContent ?? '').trim() === wrapReason &&
+          describedBy(wrapItem) === wrapReason;
+        // aria-disabled rather than disabled: a natively disabled button is skipped by Tab, so
+        // assistive technology could never reach the reason.
+        const mergeItem = item('group-merge');
+        mergeItem?.focus();
+        out.aDisabledItemStaysFocusable = Boolean(mergeItem) && menu().activeElement === mergeItem;
+        const sizeBeforeClick = engine.history.size;
+        const mergedFrom = byId('row').innerHTML;
+        mergeItem?.click();
+        await frames();
+        out.aDisabledItemIgnoresClicks =
+          engine.history.size === sizeBeforeClick && byId('row').innerHTML === mergedFrom && c.isConnected;
+        // The reason is a description, not part of the name, so it is not read out twice.
+        out.theAccessibleNameIsTheLabelAlone = mergeItem?.getAttribute('aria-label') === 'Merge';
+        const groupReasons = everyDisabledItemSaysWhy();
+        const groupNoLeak = noEnabledItemCarriesAReason();
 
         engine.setQuickMenu(false);
         engine.select(a);
         await frames();
         clickThumb();
         await frames();
-        out.withOneElementTheItemsAreUnchanged = same(
-          Array.from(menu()?.querySelectorAll('.item[data-id]') ?? []).map((el) => el.dataset.id),
-          ['turn-into', 'text', 'html', 'props', 'styles', 'duplicate', 'wrap', 'unwrap', 'extract', 'save-block', 'up', 'down', 'out', 'in', 'undo', 'redo', 'copy', 'delete'],
+        out.theSingleMenuPutsClipboardItemsUnderSelection = same(
+          menuItems().map((el) => el.dataset.id),
+          ['turn-into', 'text', 'html', 'props', 'styles', 'wrap', 'unwrap', 'extract', 'save-block', 'duplicate', 'copy-element', 'cut', 'paste-below', 'paste-replace', 'up', 'down', 'out', 'in', 'undo', 'redo', 'copy', 'delete'],
         );
+        out.theSingleHeadingsPutSelectionRightAfterStructure =
+          same(headings(), ['Content', 'Structure', 'Selection', 'Position', 'Other']);
+        out.everySelectionItemShowsItsShortcut = groupHints && selectionHintsShown();
+        const singleReasons = everyDisabledItemSaysWhy();
+        const singleNoLeak = noEnabledItemCarriesAReason();
+
+        // The body, where most single items are disabled with a hidden reason.
+        engine.setQuickMenu(false);
+        engine.select(document.body);
+        engine.setQuickMenu(true);
+        await frames();
+        out.everyDisabledItemHasAReason = groupReasons && singleReasons && everyDisabledItemSaysWhy();
+        // A hidden reason rendered on an enabled item leaked into its text ("Turn intoNot available…").
+        out.anEnabledItemCarriesNoReason = groupNoLeak && singleNoLeak && noEnabledItemCarriesAReason();
+        // A component desc rule that won over the visually-hidden class would grow every row.
+        const deleteItem = item('delete');
+        const copyItem = item('copy');
+        const hiddenReason = deleteItem?.querySelector('.desc');
+        out.aHiddenReasonTakesNoSpace =
+          deleteItem?.getAttribute('aria-disabled') === 'true' &&
+          Boolean(hiddenReason) && hiddenReason.getBoundingClientRect().width <= 1 &&
+          Boolean(copyItem) && !copyItem.hasAttribute('aria-disabled') &&
+          Math.abs(deleteItem.getBoundingClientRect().height - copyItem.getBoundingClientRect().height) <= 1;
+        engine.setQuickMenu(false);
+        engine.select(a);
+        await frames();
+        clickThumb();
+        await frames();
         // The one change to the single menu: the wrap view gains a plain, style-free first row.
         item('wrap')?.click();
         await frames();
@@ -718,7 +798,22 @@
         const said = toast()?.message ?? '';
 
         out.oneParagraphIsLeft = holder.querySelectorAll('p').length === 1;
-        out.itReadsHelloWorld = m1.textContent === 'Hello world';
+        // A line break between the merged texts, and a source newline so the file reads well.
+        out.aLineBreakSeparatesTheMergedTexts = m1.innerHTML === 'Hello<br>\nworld';
+        /*
+         * The newline after the break must not show as an indent at the start of the second
+         * line: collapsible white space at a line start is dropped, so "world" starts where
+         * "Hello" does, one line down.
+         */
+        const rectOf = (node) => {
+          const range = document.createRange();
+          range.selectNodeContents(node);
+          return range.getBoundingClientRect();
+        };
+        const hello = rectOf(m1.firstChild);
+        const world = rectOf(m2Text);
+        out.theBreakAddsNoVisibleIndent =
+          world.top >= hello.bottom - 0.5 && Math.abs(world.left - hello.left) <= 0.5;
         out.theFirstIsTheSameNode = holder.firstElementChild === m1;
         out.theSecondIsGone = !m2.isConnected;
         out.theMergedOneIsSelected = engine.selected === m1 && same(ids(), ['m1']);
@@ -729,14 +824,14 @@
 
         const file = await planned();
         const fileParas = file.doc.getElementById('merge-p')?.querySelectorAll('p') ?? [];
-        out.theFileHasOneHelloWorldParagraph =
-          fileParas.length === 1 && fileParas[0].id === 'm1' && fileParas[0].textContent === 'Hello world';
+        out.theFileHoldsOneParagraphWithTheBreak =
+          fileParas.length === 1 && fileParas[0].id === 'm1' && /^Hello<br>\s*world$/.test(fileParas[0].innerHTML);
 
         engine.undo();
         await frames();
         out.oneUndoRestoresBothWithTheirOwnAttributes =
           m2.isConnected && m2.className === 'x' && m2.getAttribute('data-note') === 'n' &&
-          m2.firstChild === m2Text && m1.textContent === 'Hello';
+          m2.firstChild === m2Text && m1.innerHTML === 'Hello';
         out.noDetachedElementStaysSelectedAfterUndo = allConnected();
 
         // Discriminating for the note: two members with identical attributes drop nothing.
@@ -750,11 +845,11 @@
         engine.undo();
         await frames();
 
-        // "Hello " already ends in a space, so no separator is added.
+        // The author's trailing space stays where it was, before the break.
         engine.select(byId('sp1'));
         engine.toggleSelection(byId('sp2'));
         engine.mergeSelection();
-        out.noDoubleSpaceWhenOneIsThere = byId('sp1').textContent === 'Hello world';
+        out.aTrailingSpaceIsKeptBeforeTheBreak = byId('sp1').innerHTML === 'Hello <br>\nworld';
         engine.undo();
         await frames();
         return out;
@@ -770,9 +865,84 @@
         engine.toggleSelection(d2);
         engine.mergeSelection();
         await frames();
-        out.oneDivHoldsBothSpans = d1.children.length === 2 && d1.children[0] === s1;
-        out.theSecondSpanIsTheSameNode = d1.children[1] === s2;
+        // Two inline children would run on as one line, so a <br> goes between them.
+        out.inlineChildrenGetABreakBetweenThem =
+          same(Array.from(d1.children).map((el) => el.localName), ['span', 'br', 'span']) && d1.children[0] === s1;
+        out.theSecondSpanIsTheSameNode = d1.children[2] === s2;
         out.theSecondDivIsGone = !d2.isConnected;
+        return out;
+      });
+
+      /* ------------------------------------------------------------------ *
+       * Merge two divs whose children are blocks: the blocks already break the line, so only a
+       * source newline goes between them. A <br> beside a block is a blank line of its own.
+       * ------------------------------------------------------------------ */
+      await section('mergeBlockChildren', async () => {
+        const bd1 = byId('bd1'), bd2 = byId('bd2'), bp1 = byId('bp1'), bp2 = byId('bp2');
+        const out = {};
+        engine.select(bd1);
+        engine.toggleSelection(bd2);
+        engine.mergeSelection();
+        await frames();
+        out.blockChildrenGetNoBreak = bd1.children.length === 2 && bd1.children[0] === bp1 && bd1.children[1] === bp2;
+        out.butANewlineSeparatesThemInTheSource =
+          bp1.nextSibling?.nodeType === Node.TEXT_NODE && bp1.nextSibling.nodeValue === '\n';
+        const file = await planned();
+        out.theFileShowsThemOnSeparateLines = /<\/p>\n\s*<p id="bp2"/.test(file.after);
+        engine.undo();
+        await frames();
+        out.oneUndoRestoresBothDivs =
+          bd2.isConnected && bd1.children.length === 1 && bd2.firstElementChild === bp2 && bd1.innerHTML === '<p id="bp1">First block</p>';
+        return out;
+      });
+
+      /* ------------------------------------------------------------------ *
+       * Preformatted text renders a newline as a line, so it gets the <br> alone.
+       * ------------------------------------------------------------------ */
+      await section('mergePreformatted', async () => {
+        const out = {};
+        engine.select(byId('pr1'));
+        engine.toggleSelection(byId('pr2'));
+        engine.mergeSelection();
+        await frames();
+        out.preformattedTextGetsTheBreakWithoutANewline = byId('pr1').innerHTML === 'One<br>Two';
+        return out;
+      });
+
+      /* ------------------------------------------------------------------ *
+       * A block on one side and loose text on the other: the block breaks the line already.
+       * ------------------------------------------------------------------ */
+      await section('mergeMixed', async () => {
+        const mx1 = byId('mx1'), mx2 = byId('mx2'), mxp = byId('mxp');
+        const out = {};
+        // Checked first, so the assertions below are known to measure a merge that happened.
+        out.thePairIsMergeable = engine.groupActions([mx1, mx2]).merge.ok === true;
+        const loose = mx2.firstChild;
+        engine.select(mx1);
+        engine.toggleSelection(mx2);
+        engine.mergeSelection();
+        await frames();
+        out.theMergeHappened = !mx2.isConnected && loose.parentNode === mx1;
+        // A boundary walk that descended into the paragraph would find text on both sides.
+        out.aBlockBesideTextGetsNoBreak =
+          !mx1.querySelector('br') && mxp.nextSibling?.nodeType === Node.TEXT_NODE && mxp.nextSibling.nodeValue === '\n';
+        const range = document.createRange();
+        range.selectNodeContents(loose);
+        // A <br> here would add an empty 20px line between the paragraph and the text.
+        out.andAddsNoBlankLine = Math.abs(range.getBoundingClientRect().top - mxp.getBoundingClientRect().bottom) <= 1;
+        return out;
+      });
+
+      /* ------------------------------------------------------------------ *
+       * An existing <br> is not doubled: a <br><br> run is a split point for splitting a block.
+       * ------------------------------------------------------------------ */
+      await section('mergeExistingBreak', async () => {
+        const out = {};
+        engine.select(byId('bb1'));
+        engine.toggleSelection(byId('bb2'));
+        engine.mergeSelection();
+        await frames();
+        out.anExistingBreakIsNotDoubled = byId('bb1').innerHTML === 'One<br>\nTwo';
         return out;
       });
 
@@ -789,7 +959,7 @@
           clickThumb(thumbIndex);
           await frames();
           const merge = item('group-merge');
-          const reason = merge?.disabled === true ? (merge.querySelector('.desc')?.textContent ?? '').trim() : null;
+          const reason = merge?.getAttribute('aria-disabled') === 'true' ? merge.getAttribute('title') : null;
           engine.setQuickMenu(false);
           engine.select(null);
           await frames();
@@ -1014,7 +1184,8 @@
       });
 
       /* ------------------------------------------------------------------ *
-       * Shortcuts that act on one element collapse the group to its primary first.
+       * Shortcuts that act on one element collapse the group to its primary first. The
+       * clipboard shortcuts act on every member and keep the group.
        * ------------------------------------------------------------------ */
       await section('otherShortcutsCollapseFirst', async () => {
         const a = byId('a');
@@ -1035,7 +1206,10 @@
         pickAB();
         key('c', { ctrlKey: true });
         await frames();
-        out.modCCopiesThePrimaryAlone = same(ids(), ['a']) && engine.hasCopiedElement === true;
+        // Copy takes every member now, and keeps the group: the old collapse dropped b from the
+        // clipboard and closed the quick menu the shortcut was read from.
+        out.modCCopiesEveryMemberAndKeepsTheGroup =
+          same(ids(), ['a', 'b']) && engine.store.value.clipboardSize === 2;
 
         // Every plain Mod chord enters the copy/paste block, so a collapse at its head would
         // drop the group here. ctrlKey, because the keymap's Mod is meta or ctrl.

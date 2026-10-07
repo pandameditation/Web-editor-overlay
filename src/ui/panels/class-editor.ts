@@ -413,7 +413,7 @@ export const ClassEditor = {
       opacity: 1;
     }
     .family .promote:focus-visible {
-      outline: 2px solid var(--heo-accent);
+      outline: 2px solid var(--heo-focus-ring);
       outline-offset: 1px;
     }
     /* The losing side is not wrong, it is just not in effect. Dimmed like a cascade override
@@ -463,7 +463,7 @@ export const ClassEditor = {
     .cls .decl .confirm:disabled {
       border-color: var(--heo-line);
       background: transparent;
-      color: var(--heo-text-faint);
+      color: var(--heo-text-disabled);
       cursor: not-allowed;
     }
     .cls .apply {

@@ -196,7 +196,8 @@ export class HeoValueField extends LitElement {
         border: 0;
         border-radius: 5px;
         background: transparent;
-        color: var(--heo-text-faint);
+        /* Dim, not faint: these are icon controls, and faint read 2.5:1 on the glass. */
+        color: var(--heo-text-dim);
         cursor: pointer;
       }
       .mini:hover {
@@ -224,7 +225,8 @@ export class HeoValueField extends LitElement {
         color: var(--heo-accent-ink);
       }
       .action:disabled {
-        opacity: 0.35;
+        background: transparent;
+        color: var(--heo-text-disabled);
         cursor: not-allowed;
       }
 

@@ -105,11 +105,13 @@ import {
   splitAtBreaks,
   insertHTML,
   insertNodes,
+  insertNodeRuns,
   INSERT_POSITION_LABELS,
   moveCommandFromOrigin,
   moveElement,
   removeElement,
   removeElements,
+  replaceElements,
   mergeElements,
   wrapElements,
   inlineAuthoredValue,
@@ -292,6 +294,20 @@ import type {
   SavePayload,
   PropSpec,
 } from './types.js';
+
+/** One element on the editor's clipboard: a detached copy, and its block values if it is one. */
+type CopiedEntry = {
+  node: HTMLElement;
+  instance?: { blockId: string; values: Record<string, string>; css: string };
+};
+
+/*
+ * Refusal wording shared by the engine's toasts and the quick menu's reasons, so the two never
+ * describe one state in two ways.
+ */
+export const NOTHING_TO_PASTE = 'Nothing to paste yet. Select an element and copy it first.';
+export const CANNOT_BE_REPLACED = 'This element cannot be replaced.';
+export const NOT_ON_THE_BODY = 'Not available on the page body.';
 
 /** Same members in the same order. Both sides are document-ordered, so order is identity here. */
 function sameMembers(a: readonly HTMLElement[], b: readonly HTMLElement[]): boolean {
@@ -674,6 +690,13 @@ export interface EditorState {
   dockFloat: { x: number; y: number; height: number } | null;
   drag: DragState | null;
   quickMenuOpen: boolean;
+  /**
+   * How many elements the editor's clipboard holds, 0 when nothing has been copied.
+   *
+   * In the store so the menu can watch it: `hasCopiedElement` is a getter nothing observes, so a
+   * menu that was open while Mod+C was pressed kept its Paste items disabled.
+   */
+  clipboardSize: number;
   insertAnchor: InsertAnchor | null;
   /**
    * Whether the AI menu is open on the selected element.
@@ -1102,6 +1125,7 @@ export class EditorEngine {
       dockFloat: null,
       drag: null,
       quickMenuOpen: false,
+      clipboardSize: 0,
       insertAnchor: null,
       aiMenuOpen: false,
       aiSettingsOpen: false,
@@ -4122,62 +4146,259 @@ export class EditorEngine {
   }
 
   /**
-   * The element Mod+C took, held as a detached copy rather than a reference.
+   * Duplicate every selected element, one run of side-by-side members at a time (D8).
+   *
+   * A run is members that are each other's next element sibling; its copies go, in order, right
+   * after the run's last member. Every copy therefore stays in its original's container. Putting
+   * every copy after the last member moved the copy of a member in one container into another
+   * one, and one copy after each original interleaved a contiguous selection (a a' b b').
+   * One command for every run, so one undo step.
+   */
+  duplicateSelection(arg?: readonly HTMLElement[]): void {
+    const members = inDocumentOrder([...new Set(arg ?? this.selection)].filter((el) => el.isConnected));
+    const roots = outermost(members).filter((el) => isMutable(el));
+    if (roots.length === 0) return;
+    if (roots.length === 1) {
+      this.duplicate(roots[0]);
+      return;
+    }
+    const runs: HTMLElement[][] = [];
+    for (const root of roots) {
+      const run = runs.at(-1);
+      if (run && run.at(-1)!.nextElementSibling === root) run.push(root);
+      else runs.push([root]);
+    }
+    const copies = runs.map((run) => run.map((el) => copyOfElement(el)));
+    const command = insertNodeRuns(
+      runs.map((run, i) => ({ reference: run.at(-1)!, nodes: copies[i] })),
+      `Duplicate ${roots.length} elements`,
+    );
+    if (!command) return;
+    // A refusal has already put the page back and said why.
+    if (!this.history.commit(command)) return;
+    const clones = copies.flat();
+    roots.forEach((root, i) => this.#carryInstance(root, clones[i]));
+    this.#selectNodes(clones);
+    this.notify(`Duplicated ${roots.length} elements.`, 'success', {
+      label: 'Undo',
+      run: () => this.undo(),
+    });
+  }
+
+  /**
+   * What Mod+C or Mod+X last took, held as detached copies rather than references.
    *
    * Taken at the moment of copying, the way any clipboard works: editing or deleting the
-   * original afterwards does not change what the next paste puts down. Kept on the engine and
-   * not the system clipboard, so a paste rebuilds the element exactly — markup through the
+   * originals afterwards does not change what the next paste puts down. Kept on the engine and
+   * not the system clipboard, so a paste rebuilds the elements exactly — markup through the
    * system clipboard would be re-parsed and sanitised on the way back in, and would lose the
-   * block bookkeeping that `duplicate` carries across.
+   * block bookkeeping that `duplicate` carries across. In document order, one entry per copied
+   * element; a new copy replaces the whole list.
    */
-  #copied: {
-    node: HTMLElement;
-    instance?: { blockId: string; values: Record<string, string>; css: string };
-  } | null = null;
+  #copied: CopiedEntry[] | null = null;
 
   /** Whether an element is waiting to be pasted. */
   get hasCopiedElement(): boolean {
     return this.#copied !== null;
   }
 
+  /*
+   * Take the copies, and tell the store how many there are.
+   *
+   * The one writer of the clipboard. Copy and cut both come here, and the store field is what
+   * the menu watches: without it a menu open while Mod+C was pressed kept Paste disabled.
+   */
+  #snapshot(roots: readonly HTMLElement[]): void {
+    this.#copied = roots.map((el) => {
+      const instance = this.#instances.get(el);
+      return {
+        node: copyOfElement(el),
+        instance: instance && { ...instance, values: { ...instance.values } },
+      };
+    });
+    this.store.patch({ clipboardSize: roots.length });
+  }
+
+  /** A clone is a new node, so a configured block's values have to be carried across to it. */
+  #carryInstance(from: HTMLElement, to: HTMLElement): void {
+    const instance = this.#instances.get(from);
+    if (instance) this.#instances.set(to, { ...instance, values: { ...instance.values } });
+  }
+
+  /*
+   * Select what a paste or a duplicate just put down, all of it.
+   *
+   * Through `select` first, which ends a text edit and reveals the element, and then the whole
+   * set through the one writer. Only selectable, mutable nodes join a set of several, which is
+   * the selection's own invariant.
+   */
+  #selectNodes(nodes: readonly HTMLElement[]): void {
+    if (!nodes.length) return;
+    this.select(nodes[0]);
+    if (nodes.length > 1) {
+      this.#setSelection(
+        nodes[0],
+        nodes.filter((node) => isSelectable(node) && isMutable(node)),
+      );
+    }
+  }
+
   /** Copy an element so `pasteElement` can put it down after any other. */
   copyElement(el = this.store.value.selected): boolean {
     if (!el || !el.isConnected || el === document.body || el === document.documentElement) return false;
-    const instance = this.#instances.get(el);
-    this.#copied = {
-      node: copyOfElement(el),
-      instance: instance && { ...instance, values: { ...instance.values } },
-    };
+    this.#snapshot([el]);
     this.notify(`Copied ${labelFor(el)}.`, 'success');
     return true;
   }
 
   /**
-   * Put a fresh copy of the copied element right after `el`, and select it.
+   * Copy every selected element, outermost first, and keep the selection.
+   *
+   * A member inside another member travels with it, so it is not copied twice. The page itself
+   * is never copied. The selection stays as it was: copying changes nothing on the page, and a
+   * collapse here closed the menu the user had just used.
+   */
+  copySelection(arg?: readonly HTMLElement[]): boolean {
+    const members = inDocumentOrder([...new Set(arg ?? this.selection)].filter((el) => el.isConnected));
+    const roots = outermost(members).filter(
+      (el) => el !== document.body && el !== document.documentElement,
+    );
+    if (roots.length === 0) return false;
+    if (roots.length === 1) return this.copyElement(roots[0]);
+    this.#snapshot(roots);
+    this.notify(`Copied ${roots.length} elements.`, 'success');
+    return true;
+  }
+
+  /**
+   * Put fresh copies of the copied elements right after `el`, and select them.
    *
    * After, because that is where Mod+D puts a duplicate and where the next thing in reading
-   * order goes. `<body>` has no "after", so there it goes in last. Each paste is its own copy,
-   * so pasting twice gives two independent elements.
+   * order goes. `<body>` has no "after", so there they go in last. Each paste is its own copy,
+   * so pasting twice gives independent elements. Returns the first of them.
    */
   pasteElement(el = this.store.value.selected): HTMLElement | null {
     const copied = this.#copied;
     if (!copied) {
-      this.notify('Nothing to paste yet. Select an element and copy it first.', 'info');
+      this.notify(NOTHING_TO_PASTE, 'info');
       return null;
     }
     if (!el || !el.isConnected) return null;
-    const node = copied.node.cloneNode(true) as HTMLElement;
+    const nodes = copied.map((entry) => entry.node.cloneNode(true) as HTMLElement);
     const position = el === document.body || el === document.documentElement ? 'lastChild' : 'after';
     const reference = el === document.documentElement ? document.body : el;
-    const command = insertNodes(reference, position, [node], `Paste ${labelFor(node)}`);
-    // A refused commit has already said why, and taken the node back out.
+    const label = nodes.length === 1 ? `Paste ${labelFor(nodes[0])}` : `Paste ${nodes.length} elements`;
+    const command = insertNodes(reference, position, nodes, label);
+    // A refused commit has already said why, and taken the nodes back out.
     if (!command || !this.history.commit(command)) return null;
-    if (copied.instance) {
-      this.#instances.set(node, { ...copied.instance, values: { ...copied.instance.values } });
+    this.#restoreInstances(copied, nodes);
+    this.#selectNodes(nodes);
+    if (nodes.length === 1) this.notify(`Pasted ${labelFor(nodes[0])}.`, 'success');
+    else {
+      this.notify(`Pasted ${nodes.length} elements.`, 'success', {
+        label: 'Undo',
+        run: () => this.undo(),
+      });
     }
-    this.select(node);
-    this.notify(`Pasted ${labelFor(node)}.`, 'success');
-    return node;
+    return nodes[0];
+  }
+
+  #restoreInstances(
+    copied: readonly CopiedEntry[],
+    nodes: readonly HTMLElement[],
+  ): void {
+    copied.forEach((entry, i) => {
+      if (entry.instance) {
+        this.#instances.set(nodes[i], { ...entry.instance, values: { ...entry.instance.values } });
+      }
+    });
+  }
+
+  /**
+   * Paste after the selection (Mod+V, and the menu's Paste below).
+   *
+   * With several members the target is the last of the outermost ones in document order (D1):
+   * after a nested last member would land inside its parent, which is also selected.
+   */
+  pasteBelow(arg?: readonly HTMLElement[]): HTMLElement | null {
+    const members = inDocumentOrder([...new Set(arg ?? this.selection)].filter((el) => el.isConnected));
+    if (members.length === 0) return null;
+    return this.pasteElement(outermost(members).at(-1)!);
+  }
+
+  /**
+   * Replace the selection with fresh copies of the copied elements (Mod+Shift+R, as in Figma).
+   *
+   * The copies go in once, where the first outermost member was, and every outermost member is
+   * removed (D2): "replace each" would put down every copy at every member. One undo step, and
+   * the copies become the selection.
+   *
+   * The page-body refusal is checked before the clipboard, because copying something does not
+   * make the body replaceable, so that is the reason that lasts. The menu says the same.
+   */
+  pasteReplace(arg?: readonly HTMLElement[]): HTMLElement | null {
+    const members = inDocumentOrder([...new Set(arg ?? this.selection)].filter((el) => el.isConnected));
+    const roots = outermost(members);
+    if (roots.length === 0) return null;
+    if (roots.some((root) => !isMutable(root))) {
+      this.notify(CANNOT_BE_REPLACED, 'info');
+      return null;
+    }
+    const copied = this.#copied;
+    if (!copied) {
+      this.notify(NOTHING_TO_PASTE, 'info');
+      return null;
+    }
+    this.endTextEdit(true);
+    this.cancelPreview();
+    const nodes = copied.map((entry) => entry.node.cloneNode(true) as HTMLElement);
+    const command =
+      roots.length === 1
+        ? insertNodes(roots[0], 'replace', nodes, `Replace ${labelFor(roots[0])}`)
+        : replaceElements(roots, nodes, `Replace ${roots.length} elements`);
+    // A refused commit has already put the page back and said why.
+    if (!command || !this.history.commit(command)) return null;
+    this.#restoreInstances(copied, nodes);
+    this.#selectNodes(nodes);
+    this.notify(
+      roots.length === 1 ? `Replaced ${labelFor(roots[0])}.` : `Replaced ${roots.length} elements.`,
+      'success',
+      { label: 'Undo', run: () => this.undo() },
+    );
+    return nodes[0];
+  }
+
+  /**
+   * Copy the selection and delete it, as one undo step (Mod+X).
+   *
+   * Eligibility is checked first, so a refusal leaves the clipboard alone. The clipboard is not
+   * part of history, so the copy and the delete are one step, and the file sees a deletion,
+   * which is what the records say. A delete the history refuses puts the earlier clipboard back:
+   * a cut that removed nothing must not have replaced what the user copied before.
+   */
+  cutSelection(arg?: readonly HTMLElement[]): boolean {
+    const members = inDocumentOrder([...new Set(arg ?? this.selection)].filter((el) => el.isConnected));
+    const roots = outermost(members);
+    if (roots.length === 0) return false;
+    if (roots.length === 1) {
+      if (!isMutable(roots[0])) {
+        this.notify(NOT_ON_THE_BODY, 'info');
+        return false;
+      }
+    } else {
+      const verdict = deleteEligibility(roots);
+      if (!verdict.ok) {
+        this.notify(verdict.reason, 'info');
+        return false;
+      }
+    }
+    const previous = this.#copied;
+    const previousSize = this.store.value.clipboardSize;
+    this.#snapshot(roots);
+    if (this.#removeMembers(roots, 'Cut')) return true;
+    this.#copied = previous;
+    this.store.patch({ clipboardSize: previousSize });
+    return false;
   }
 
   /* ---------------------------------------------------------------------- */
@@ -4368,15 +4589,56 @@ export class EditorEngine {
 
   remove(el = this.store.value.selected): void {
     if (!isMutable(el)) return;
-    const next = nextSibling(el) ?? previousSibling(el) ?? selectableParent(el);
-    const command = removeElement(el);
-    if (!command) return;
-    this.history.commit(command);
+    this.#removeMembers([el], 'Delete');
+  }
+
+  /*
+   * Delete the roots as one undo step, select the survivor, and say so. Shared by delete and cut.
+   *
+   * One root is the single-element path: the next sibling, else the previous, else the
+   * container, and no text-edit or preview handling, as `remove` always had it. Several walk the
+   * survivor past every root first, because afterwards the siblings are gone and there is nothing
+   * left to measure from. A cut is the same deletion relabelled: the records stay `delete`
+   * records, because a deletion is what the file sees. The selection moves and the toast shows
+   * only when the history accepted the command: `remove` used to ignore a refusal, and still
+   * moved the selection and said "Deleted" for an element that was back on the page.
+   */
+  #removeMembers(roots: readonly HTMLElement[], verb: 'Delete' | 'Cut'): boolean {
+    const done = verb === 'Cut' ? 'Cut' : 'Deleted';
+    const relabel = (command: Command): Command =>
+      verb === 'Cut' ? { ...command, label: command.label.replace(/^Delete/, 'Cut') } : command;
+    if (roots.length === 1) {
+      const el = roots[0];
+      const next = nextSibling(el) ?? previousSibling(el) ?? selectableParent(el);
+      const command = removeElement(el);
+      if (!command) return false;
+      if (!this.history.commit(relabel(command))) return false;
+      this.select(next);
+      this.notify(`${done} ${labelFor(el)}.`, 'info', {
+        label: 'Undo',
+        run: () => this.undo(),
+      });
+      return true;
+    }
+    this.endTextEdit(true);
+    this.cancelPreview();
+    const gone = (el: HTMLElement): boolean => roots.some((r) => r === el || r.contains(el));
+    const last = roots.at(-1)!;
+    const walk = (step: (el: HTMLElement) => HTMLElement | null): HTMLElement | null => {
+      let r = step(last);
+      while (r && gone(r)) r = step(r);
+      return r;
+    };
+    const next = walk(nextSibling) ?? walk(previousSibling) ?? walk(selectableParent);
+    const command = removeElements(roots);
+    if (!command) return false;
+    if (!this.history.commit(relabel(command))) return false;
     this.select(next);
-    this.notify(`Deleted ${labelFor(el)}.`, 'info', {
+    this.notify(`${done} ${roots.length} elements.`, 'info', {
       label: 'Undo',
       run: () => this.undo(),
     });
+    return true;
   }
 
   wrap(wrapperHTML: string, el = this.store.value.selected): void {
@@ -4483,29 +4745,7 @@ export class EditorEngine {
       this.notify(verdict.reason, 'info');
       return;
     }
-    this.endTextEdit(true);
-    this.cancelPreview();
-    /*
-     * The survivor is found before anything goes, by the single-delete rule walked past every
-     * member: the next sibling, else the previous one, else the container. Afterwards the
-     * siblings are gone and there is nothing left to measure from.
-     */
-    const gone = (el: HTMLElement): boolean => roots.some((r) => r === el || r.contains(el));
-    const last = roots.at(-1)!;
-    const walk = (step: (el: HTMLElement) => HTMLElement | null): HTMLElement | null => {
-      let r = step(last);
-      while (r && gone(r)) r = step(r);
-      return r;
-    };
-    const next = walk(nextSibling) ?? walk(previousSibling) ?? walk(selectableParent);
-    const command = removeElements(roots);
-    if (!command) return;
-    if (!this.history.commit(command)) return;
-    this.select(next);
-    this.notify(`Deleted ${roots.length} elements.`, 'info', {
-      label: 'Undo',
-      run: () => this.undo(),
-    });
+    this.#removeMembers(roots, 'Delete');
   }
 
   unwrap(el = this.store.value.selected): void {

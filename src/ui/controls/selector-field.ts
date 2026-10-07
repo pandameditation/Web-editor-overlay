@@ -181,7 +181,8 @@ export class HeoSelectorField extends LitElement {
         border: 0;
         border-radius: 6px;
         background: transparent;
-        color: var(--heo-text-faint);
+        /* Dim, not faint: these are icon controls, and faint read 2.5:1 on the glass. */
+        color: var(--heo-text-dim);
         cursor: pointer;
         padding: 0;
       }
@@ -210,7 +211,7 @@ export class HeoSelectorField extends LitElement {
       }
       .go:disabled {
         background: transparent;
-        color: var(--heo-text-faint);
+        color: var(--heo-text-disabled);
         cursor: not-allowed;
       }
 
@@ -251,7 +252,9 @@ export class HeoSelectorField extends LitElement {
         color: var(--heo-text);
       }
       .combo:disabled {
-        opacity: 0.35;
+        border-style: dashed;
+        background: transparent;
+        color: var(--heo-text-disabled);
         cursor: not-allowed;
       }
       .combos .lead {

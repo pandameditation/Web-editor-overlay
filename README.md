@@ -798,8 +798,9 @@ of it is a real leak.
 | `Alt+↑` / `Alt+↓` | Parent / child |
 | `Shift+↑` / `Shift+↓` | Move the element up / down |
 | `Shift+←` / `Shift+→` | Move out of / into a container |
-| `Mod+D` | Duplicate |
-| `Mod+C` / `Mod+V` | Copy the element / paste it after the selected one |
+| `Mod+D` | Duplicate (every selected element) |
+| `Mod+C` / `Mod+X` / `Mod+V` | Copy / cut the selected elements / paste them after the selection |
+| `Shift+Mod+R` | Paste to replace the selection |
 | `Delete` | Delete |
 | `Mod+Z` / `Shift+Mod+Z` | Undo / redo |
 | `Mod+S` | Review and save changes |

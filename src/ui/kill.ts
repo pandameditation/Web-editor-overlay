@@ -10,9 +10,10 @@ import { icon } from './icons.js';
  * way out at all, while the token row's was always there. A control you have to discover by sweeping
  * the mouse is not a control.
  *
- * Always visible, in the faint text colour so it recedes without hiding, and reddening on hover
- * because removal is the one destructive thing in a row. One definition, so the next surface that
- * lists rows inherits the answer instead of picking one.
+ * Always visible, in the dim text colour, and reddening on hover because removal is the one
+ * destructive thing in a row. Dim rather than faint: it used to recede in the faint colour, which
+ * read 2.5:1 on the glass, under the 3:1 an icon control needs. One definition, so the next surface
+ * that lists rows inherits the answer instead of picking one.
  */
 export const killStyles = css`
   .kill {
@@ -25,7 +26,7 @@ export const killStyles = css`
     border: 1px solid transparent;
     border-radius: 5px;
     background: transparent;
-    color: var(--heo-text-faint);
+    color: var(--heo-text-dim);
     cursor: pointer;
   }
   .kill:hover {
@@ -33,7 +34,7 @@ export const killStyles = css`
     color: var(--heo-danger);
   }
   .kill:focus-visible {
-    outline: 2px solid var(--heo-accent);
+    outline: 2px solid var(--heo-focus-ring);
     outline-offset: 1px;
   }
   /* Narrow variant, for a grid that has already committed its column widths. */

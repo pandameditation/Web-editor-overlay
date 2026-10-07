@@ -78,9 +78,9 @@
       const unwrapButton = () => {
         const menu = overlayRoot()?.shadowRoot?.querySelector('heo-quick-menu');
         const buttons = Array.from(menu?.shadowRoot?.querySelectorAll('button.item') ?? []);
-        return buttons.find(
-          (b) => (b.querySelector('.text')?.textContent ?? '').trim() === 'Unwrap, keep children',
-        );
+        // By accessible name: a disabled item's text also holds its reason, so text alone no
+        // longer names it.
+        return buttons.find((b) => b.getAttribute('aria-label') === 'Unwrap, keep children');
       };
       /** Open the quick menu on an element and report what the unwrap item looks like. */
       const openMenuOn = async (el) => {
@@ -88,7 +88,8 @@
         engine.setQuickMenu(true);
         await frames();
         const button = unwrapButton();
-        return button ? (button.disabled ? 'disabled' : 'enabled') : 'missing';
+        // aria-disabled, because disabled items stay focusable so their reason can be reached.
+        return button ? (button.getAttribute('aria-disabled') === 'true' ? 'disabled' : 'enabled') : 'missing';
       };
 
       const page = decodeURIComponent(location.pathname).split('/').pop();

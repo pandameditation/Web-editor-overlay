@@ -258,8 +258,10 @@ export const DesignTransfer = {
     /* Nothing of this kind to send, so there is nothing to decide. Dimmed rather than dropped,
        because "no rules yet" and "rules left behind" are opposite facts and a missing row would
        read as either — the same argument the save dialog's file list makes for itself. */
-    .part.empty {
-      opacity: 0.5;
+    /* The disabled ink rather than half opacity, which read 2.1:1 on light glass over a black page. */
+    .part.empty,
+    .part.empty b {
+      color: var(--heo-text-disabled);
       cursor: default;
     }
     .part.empty:hover {

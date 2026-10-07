@@ -105,7 +105,7 @@ export class HeoCodeWorkspace extends HeoElement {
         color: #fff;
       }
       .tabs button:focus-visible {
-        outline: 2px solid var(--heo-accent);
+        outline: 2px solid var(--heo-focus-ring);
         outline-offset: 1px;
       }
 

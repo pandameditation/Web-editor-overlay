@@ -1,6 +1,8 @@
 import { css, html, nothing, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { isMutable, labelFor, selectorFor, visualBox } from '../../core/dom.js';
+import { CANNOT_BE_REPLACED, NOT_ON_THE_BODY, NOTHING_TO_PASTE } from '../../core/editor.js';
+import { deleteEligibility, outermost } from '../../core/group.js';
 import { modalOpen } from '../../core/modal.js';
 import { copyToClipboard } from '../../core/design-system.js';
 import { hasComponentProps } from '../../core/props.js';
@@ -11,17 +13,25 @@ import { icon } from '../icons.js';
 import { baseStyles, surfaceStyles } from '../theme.js';
 import { modLabel } from './toolbar.js';
 
-interface MenuItem {
+interface MenuItemBase {
   id: string;
   label: string;
   glyph: string;
   hint?: string;
   danger?: boolean;
-  disabled?: boolean;
-  /** Why it is disabled, shown as text inside the item so it is part of its accessible name. */
-  reason?: string;
   run: () => void;
 }
+
+/**
+ * An item that can be disabled has to say why, so the type asks for a reason with `disabled`.
+ *
+ * The reason reaches people three ways: the `title` tooltip on hover, `aria-describedby` for
+ * assistive technology, and the text itself. `reasonVisible: false` keeps that text visually
+ * hidden (still described, and shown while the item has keyboard focus) for reasons that are
+ * generic or already printed once elsewhere in the menu, so the single menu keeps its layout.
+ */
+type MenuItem = MenuItemBase &
+  ({ disabled?: undefined } | { disabled: boolean; reason: string; reasonVisible?: boolean });
 
 /**
  * The element menu, opened by clicking the drag thumb.
@@ -94,7 +104,7 @@ export class HeoQuickMenu extends HeoElement {
 
       .group {
         padding: 6px 7px 3px;
-        color: var(--heo-text-faint);
+        color: var(--heo-text-dim);
         font-size: 9.5px;
         font-weight: 600;
         letter-spacing: 0.06em;
@@ -115,24 +125,26 @@ export class HeoQuickMenu extends HeoElement {
         text-align: left;
         cursor: pointer;
       }
-      .item:hover:not(:disabled) {
+      .item:hover:not([aria-disabled='true']) {
         background: var(--heo-hover);
-      }
-      .item:disabled {
-        opacity: 0.38;
-        cursor: not-allowed;
       }
       .item.danger {
         color: var(--heo-danger);
       }
-      .item.danger:hover:not(:disabled) {
-        background: color-mix(in oklab, var(--heo-danger) 15%, transparent);
+      /* Opaque, over the hover colour, so the tint's contrast does not depend on the page below. */
+      .item.danger:hover:not([aria-disabled='true']) {
+        background: color-mix(in oklab, var(--heo-danger) 14%, var(--heo-hover));
       }
+      /*
+       * The glyph and the hint in the dim ink, not the faint one. Faint read 2.5:1 on the glass,
+       * under the 3:1 an icon needs, and a disabled glyph in the disabled ink would otherwise have
+       * been more prominent than an enabled one.
+       */
       .item .glyph {
         display: grid;
         place-items: center;
         width: 16px;
-        color: var(--heo-text-faint);
+        color: var(--heo-text-dim);
       }
       .item.danger .glyph {
         color: var(--heo-danger);
@@ -141,7 +153,7 @@ export class HeoQuickMenu extends HeoElement {
         flex: 1 1 auto;
       }
       .item .hint {
-        color: var(--heo-text-faint);
+        color: var(--heo-text-dim);
         font-family: var(--heo-mono);
         font-size: 10px;
       }
@@ -151,6 +163,36 @@ export class HeoQuickMenu extends HeoElement {
         font-size: 10.5px;
         line-height: 1.35;
       }
+      /*
+       * Disabled: readable, and told apart by the label leaving the full text ink, not by fading.
+       * The old 38% opacity put the label at 2.2 to 3.3:1 and the reason at 1.4 to 1.6:1. Danger
+       * items lose their red too, because a disabled Delete is not a threat.
+       */
+      .item[aria-disabled='true'],
+      .item.danger[aria-disabled='true'] {
+        color: var(--heo-text-disabled);
+        cursor: not-allowed;
+      }
+      .item[aria-disabled='true'] .glyph,
+      .item.danger[aria-disabled='true'] .glyph,
+      .item[aria-disabled='true'] .hint,
+      .item[aria-disabled='true'] .desc {
+        color: var(--heo-text-disabled);
+      }
+      /*
+       * A hidden reason shows while its disabled item has keyboard focus. The title tooltip
+       * appears on pointer hover only, so without this a sighted keyboard user who Tabs onto a
+       * disabled item would see no explanation at all. Undoes every property the sr class sets.
+       */
+      .item[aria-disabled='true']:focus-visible .desc.sr {
+        position: static;
+        width: auto;
+        height: auto;
+        margin: 0;
+        overflow: visible;
+        clip-path: none;
+        white-space: normal;
+      }
     `,
   ];
 
@@ -158,7 +200,16 @@ export class HeoQuickMenu extends HeoElement {
     this,
     this.editor.store,
     (s) =>
-      [s.quickMenuOpen, s.selected, s.geometry, s.canUndo, s.canRedo, s.selection, s.quickMenuAnchor] as const,
+      [
+        s.quickMenuOpen,
+        s.selected,
+        s.geometry,
+        s.canUndo,
+        s.canRedo,
+        s.selection,
+        s.quickMenuAnchor,
+        s.clipboardSize,
+      ] as const,
     shallowArrayEquals,
   );
 
@@ -216,12 +267,11 @@ export class HeoQuickMenu extends HeoElement {
   }
 
   #renderGroup(members: readonly HTMLElement[]): TemplateResult {
-    const state = this.state.value;
     const actions = this.editor.groupActions(members);
-    const reasonOf = (verdict: { ok: boolean; reason?: string }): string | undefined =>
-      verdict.ok ? undefined : verdict.reason;
+    const reasonOf = (verdict: { ok: true } | { ok: false; reason: string }): string =>
+      verdict.ok ? '' : verdict.reason;
 
-    const selection: MenuItem[] = [
+    const structure: MenuItem[] = [
       {
         id: 'group-wrap',
         label: 'Wrap in a container…',
@@ -269,13 +319,31 @@ export class HeoQuickMenu extends HeoElement {
       },
     ];
 
-    const rest: MenuItem[] = [
+    return html`
+      <div class="head">
+        ${icon('cursor', 11)}<span class="name">${members.length} elements</span>
+      </div>
+      <div class="group">Structure</div>
+      ${structure.map((item) => this.#renderItem(item))}
+      <div class="group">Selection</div>
+      ${this.#selectionItems(members).map((item) => this.#renderItem(item))}
+      <div class="group">Other</div>
+      ${this.#historyItems().map((item) => this.#renderItem(item))}
+    `;
+  }
+
+  /** Undo and Redo, the same in both views. */
+  #historyItems(): MenuItem[] {
+    const state = this.state.value;
+    return [
       {
         id: 'undo',
         label: 'Undo',
         glyph: 'undo',
         hint: `${modLabel()}+Z`,
         disabled: !state.canUndo,
+        reason: 'Nothing to undo.',
+        reasonVisible: false,
         run: () => this.editor.undo(),
       },
       {
@@ -284,23 +352,110 @@ export class HeoQuickMenu extends HeoElement {
         glyph: 'redo',
         hint: `⇧${modLabel()}+Z`,
         disabled: !state.canRedo,
+        reason: 'Nothing to redo.',
+        reasonVisible: false,
         run: () => this.editor.redo(),
       },
     ];
+  }
 
-    return html`
-      <div class="head">
-        ${icon('cursor', 11)}<span class="name">${members.length} elements</span>
-      </div>
-      <div class="group">Selection</div>
-      ${selection.map((item) => this.#renderItem(item))}
-      <div class="group">Other</div>
-      ${rest.map((item) => this.#renderItem(item))}
-    `;
+  /*
+   * The SELECTION section: Duplicate, Copy, Cut, Paste below and Paste to replace, one list for
+   * both views, with the same ids, so a fixture or a future change reads one place.
+   *
+   * One element passes itself explicitly to the engine and a group passes its members, never
+   * "whatever is selected". Every item closes the menu: copying changes nothing on the page, so
+   * without the explicit close the menu stayed open after Copy.
+   */
+  #selectionItems(target: HTMLElement | readonly HTMLElement[]): MenuItem[] {
+    const single = target instanceof HTMLElement;
+    const members: readonly HTMLElement[] = single ? [target] : target;
+    const roots = outermost(members);
+    const allMutable = roots.every((el) => isMutable(el));
+    const isPage = (el: HTMLElement): boolean =>
+      el === document.body || el === document.documentElement;
+    const nothingCopied = this.state.value.clipboardSize === 0;
+    const cut = single
+      ? { ok: isMutable(target), reason: NOT_ON_THE_BODY }
+      : (() => {
+        const verdict = deleteEligibility(roots);
+        return verdict.ok ? { ok: true, reason: '' } : { ok: false, reason: verdict.reason };
+      })();
+    const close = (): void => this.editor.setQuickMenu(false);
+    const mod = modLabel();
+    return [
+      {
+        id: 'duplicate',
+        label: 'Duplicate',
+        glyph: 'duplicate',
+        hint: `${mod}+D`,
+        disabled: !allMutable,
+        reason: single ? NOT_ON_THE_BODY : 'One of the selected elements cannot be duplicated.',
+        reasonVisible: !single,
+        run: () => {
+          if (single) this.editor.duplicate(target);
+          else this.editor.duplicateSelection(members);
+          close();
+        },
+      },
+      {
+        id: 'copy-element',
+        label: 'Copy',
+        glyph: 'copy',
+        hint: `${mod}+C`,
+        disabled: roots.every(isPage),
+        reason: 'The page itself cannot be copied.',
+        reasonVisible: false,
+        run: () => {
+          if (single) this.editor.copyElement(target);
+          else this.editor.copySelection(members);
+          close();
+        },
+      },
+      {
+        id: 'cut',
+        label: 'Cut',
+        glyph: 'scissors',
+        hint: `${mod}+X`,
+        disabled: !cut.ok,
+        reason: cut.reason,
+        reasonVisible: !single,
+        run: () => {
+          this.editor.cutSelection(members);
+          close();
+        },
+      },
+      {
+        id: 'paste-below',
+        label: 'Paste below',
+        glyph: 'pasteBelow',
+        hint: `${mod}+V`,
+        disabled: nothingCopied,
+        // Shown here, once; Paste to replace carries the same reason hidden.
+        reason: NOTHING_TO_PASTE,
+        run: () => {
+          this.editor.pasteBelow(members);
+          close();
+        },
+      },
+      {
+        id: 'paste-replace',
+        label: 'Paste to replace',
+        glyph: 'replace',
+        hint: `⇧${mod}+R`,
+        // The body refusal first, as the engine checks it: copying does not make it replaceable.
+        disabled: !allMutable || nothingCopied,
+        reason: !allMutable ? CANNOT_BE_REPLACED : NOTHING_TO_PASTE,
+        reasonVisible: false,
+        run: () => {
+          this.editor.pasteReplace(members);
+          close();
+        },
+      },
+    ];
   }
 
   #renderRoot(el: HTMLElement): TemplateResult {
-    const state = this.state.value;
     const mutable = isMutable(el);
     /*
      * Content the page renders gets a different first item, not a disabled one.
@@ -319,6 +474,8 @@ export class HeoQuickMenu extends HeoElement {
         glyph: 'blocks',
         hint: '›',
         disabled: !mutable,
+        reason: NOT_ON_THE_BODY,
+        reasonVisible: false,
         // The block picker, in a mode that carries this element's content into what is picked.
         run: () => {
           this.editor.setQuickMenu(false);
@@ -380,21 +537,12 @@ export class HeoQuickMenu extends HeoElement {
 
     const structure: MenuItem[] = [
       {
-        id: 'duplicate',
-        label: 'Duplicate',
-        glyph: 'duplicate',
-        hint: `${modLabel()}+D`,
-        disabled: !mutable,
-        run: () => {
-          this.editor.duplicate(el);
-          this.editor.setQuickMenu(false);
-        },
-      },
-      {
         id: 'wrap',
         label: 'Wrap in a container…',
         glyph: 'wrap',
         disabled: !mutable,
+        reason: NOT_ON_THE_BODY,
+        reasonVisible: false,
         run: () => {
           this.view = 'wrap';
         },
@@ -418,6 +566,8 @@ export class HeoQuickMenu extends HeoElement {
          * with an error toast.
          */
         disabled: !mutable || el.childNodes.length === 0,
+        reason: !mutable ? NOT_ON_THE_BODY : 'This element is empty, so there is nothing to keep.',
+        reasonVisible: false,
         run: () => {
           this.editor.unwrap(el);
           this.editor.setQuickMenu(false);
@@ -450,6 +600,8 @@ export class HeoQuickMenu extends HeoElement {
         glyph: 'arrowUp',
         hint: '⇧↑',
         disabled: !mutable,
+        reason: NOT_ON_THE_BODY,
+        reasonVisible: false,
         run: () => this.editor.move('up', el),
       },
       {
@@ -458,6 +610,8 @@ export class HeoQuickMenu extends HeoElement {
         glyph: 'arrowDown',
         hint: '⇧↓',
         disabled: !mutable,
+        reason: NOT_ON_THE_BODY,
+        reasonVisible: false,
         run: () => this.editor.move('down', el),
       },
       {
@@ -466,6 +620,8 @@ export class HeoQuickMenu extends HeoElement {
         glyph: 'moveOut',
         hint: '⇧←',
         disabled: !mutable,
+        reason: NOT_ON_THE_BODY,
+        reasonVisible: false,
         run: () => this.editor.move('out', el),
       },
       {
@@ -474,27 +630,14 @@ export class HeoQuickMenu extends HeoElement {
         glyph: 'moveIn',
         hint: '⇧→',
         disabled: !mutable,
+        reason: NOT_ON_THE_BODY,
+        reasonVisible: false,
         run: () => this.editor.move('in', el),
       },
     ];
 
     const rest: MenuItem[] = [
-      {
-        id: 'undo',
-        label: 'Undo',
-        glyph: 'undo',
-        hint: `${modLabel()}+Z`,
-        disabled: !state.canUndo,
-        run: () => this.editor.undo(),
-      },
-      {
-        id: 'redo',
-        label: 'Redo',
-        glyph: 'redo',
-        hint: `⇧${modLabel()}+Z`,
-        disabled: !state.canRedo,
-        run: () => this.editor.redo(),
-      },
+      ...this.#historyItems(),
       {
         id: 'copy',
         label: 'Copy CSS selector',
@@ -512,6 +655,8 @@ export class HeoQuickMenu extends HeoElement {
         hint: '⌫',
         danger: true,
         disabled: !mutable,
+        reason: NOT_ON_THE_BODY,
+        reasonVisible: false,
         run: () => {
           this.editor.remove(el);
           this.editor.setQuickMenu(false);
@@ -527,6 +672,8 @@ export class HeoQuickMenu extends HeoElement {
       ${content.map((item) => this.#renderItem(item))}
       <div class="group">Structure</div>
       ${structure.map((item) => this.#renderItem(item))}
+      <div class="group">Selection</div>
+      ${this.#selectionItems(el).map((item) => this.#renderItem(item))}
       <div class="group">Position</div>
       ${movement.map((item) => this.#renderItem(item))}
       <div class="group">Other</div>
@@ -602,18 +749,34 @@ export class HeoQuickMenu extends HeoElement {
     this.editor.setQuickMenu(false);
   }
 
+  /*
+   * A disabled item stays focusable: aria-disabled rather than the disabled attribute, which
+   * would drop it from the Tab order and leave assistive technology no way to reach the reason.
+   * Activation is ignored instead. The accessible name is the label alone (aria-label), and the
+   * reason is its description, so it is not read twice as part of the name.
+   *
+   * The reason span renders only while the item is disabled. Rendered hidden on enabled items,
+   * it leaked into the item's text, which other code reads ("Turn intoNot available…").
+   */
   #renderItem(item: MenuItem): TemplateResult {
+    const disabled = item.disabled === true;
+    const reasonId = `reason-${item.id}`;
+    const reason = disabled ? item.reason : '';
+    const hidden = disabled && item.reasonVisible === false;
     return html`<button
       class=${`item${item.danger ? ' danger' : ''}`}
       type="button"
       role="menuitem"
       data-id=${item.id}
-      ?disabled=${item.disabled}
-      @click=${item.run}
+      aria-label=${item.label}
+      aria-disabled=${disabled ? 'true' : nothing}
+      aria-describedby=${disabled ? reasonId : nothing}
+      title=${disabled ? reason : nothing}
+      @click=${disabled ? (event: Event) => event.preventDefault() : item.run}
     >
       <span class="glyph">${icon(item.glyph, 14)}</span>
-      <span class="text">${item.label}${item.disabled && item.reason
-        ? html`<span class="desc">${item.reason}</span>`
+      <span class="text">${item.label}${disabled
+        ? html`<span class=${hidden ? 'desc sr' : 'desc'} id=${reasonId}>${reason}</span>`
         : nothing}</span>
       ${item.hint ? html`<span class="hint">${item.hint}</span>` : nothing}
     </button>`;

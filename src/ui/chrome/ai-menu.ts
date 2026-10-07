@@ -177,7 +177,9 @@ export class HeoAiMenu extends HeoElement {
         color: var(--heo-text);
       }
       .chip:disabled {
-        opacity: 0.45;
+        border-style: dashed;
+        background: transparent;
+        color: var(--heo-text-disabled);
         cursor: not-allowed;
       }
 
@@ -217,7 +219,8 @@ export class HeoAiMenu extends HeoElement {
         color: var(--heo-text);
       }
       .scope:disabled {
-        opacity: 0.5;
+        border-style: dashed;
+        color: var(--heo-text-disabled);
         cursor: not-allowed;
       }
       .scope.on {

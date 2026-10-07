@@ -215,7 +215,7 @@ export class HeoPropsPanel extends HeoElement {
         opacity: 1;
         border-color: transparent;
         background: transparent;
-        color: var(--heo-text-faint);
+        color: var(--heo-text-disabled);
       }
     `,
   ];

@@ -469,7 +469,7 @@ export class HeoCodeEditor extends LitElement {
         color: #fff;
       }
       dialog.modal > header .tabs button:focus-visible {
-        outline: 2px solid var(--heo-accent);
+        outline: 2px solid var(--heo-focus-ring);
         outline-offset: 1px;
       }
       dialog.modal > .pane {

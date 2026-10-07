@@ -174,7 +174,63 @@ export function saveBlockEligibility(_els: readonly HTMLElement[]): Eligibility 
   return OK;
 }
 
-/** True when appending `next` to `into` would put two non-space characters side by side. */
-export function needsSeparator(into: Node, next: Node): boolean {
-  return /\S$/.test(into.textContent ?? '') && /^\S/.test(next.textContent ?? '');
+/*
+ * A child the merge boundary counts: not a comment, not blank text, not a script or template,
+ * and not an element the page hides. Those read as nothing, so the boundary looks past them.
+ */
+function meaningful(node: Node): boolean {
+  if (node.nodeType === Node.TEXT_NODE) return Boolean((node.nodeValue ?? '').trim());
+  if (!(node instanceof Element)) return false;
+  if (node.localName === 'script' || node.localName === 'template') return false;
+  return getComputedStyle(node).display !== 'none';
+}
+
+/** An element whose box breaks the line on its own: anything but inline-level, contents or ruby. */
+function blockLevel(node: Node): boolean {
+  if (!(node instanceof Element)) return false;
+  const display = getComputedStyle(node).display;
+  return !(
+    display.startsWith('inline') ||
+    display === 'contents' ||
+    display === 'none' ||
+    display.startsWith('ruby')
+  );
+}
+
+const isBreak = (node: Node): boolean => node instanceof Element && node.localName === 'br';
+
+/**
+ * What a merge puts between `into`'s current content and `next`'s, so the merged texts read as
+ * separate lines rather than running together.
+ *
+ * Decided on the boundary *children*, never descending: in a div holding a paragraph, the
+ * boundary is the paragraph, not its text, which would read as inline and get a break.
+ *
+ * - `'none'`: one side has nothing to separate.
+ * - `'newline'`: a line already breaks there, because one side is a `<br>` or a block-level
+ *   box. Only a source newline is added. A `<br>` beside a block makes a line of its own, a blank
+ *   one (measured: a div holding a margin-free paragraph, a `<br>` and text grew from 40px to
+ *   60px at a 20px line height), and a `<br>` beside an existing one makes a double break, which
+ *   the split-at-double-breaks feature treats as a paragraph boundary.
+ * - `'break'`: text or inline content on both sides, which would run on. A `<br>` goes between.
+ */
+export function mergeBoundary(into: Element, next: Element): 'break' | 'newline' | 'none' {
+  const last = Array.from(into.childNodes).reverse().find(meaningful);
+  const head = Array.from(next.childNodes).find(meaningful);
+  if (!last || !head) return 'none';
+  if (isBreak(last) || isBreak(head)) return 'newline';
+  if (blockLevel(last) || blockLevel(head)) return 'newline';
+  return 'break';
+}
+
+/**
+ * True when the element collapses white space, so a source newline in it is invisible.
+ *
+ * In pre and pre-wrap a newline renders as a line of its own, so there it is left out.
+ */
+export function collapsesWhiteSpace(el: Element): boolean {
+  const style = getComputedStyle(el);
+  const collapse = style.getPropertyValue('white-space-collapse');
+  if (collapse) return collapse === 'collapse';
+  return style.whiteSpace === 'normal' || style.whiteSpace === 'nowrap';
 }

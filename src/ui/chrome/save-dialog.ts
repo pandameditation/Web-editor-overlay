@@ -193,7 +193,7 @@ export class HeoSaveDialog extends HeoElement {
         border-color: var(--heo-accent);
       }
       .change .pick:focus-visible {
-        outline: 2px solid var(--heo-accent);
+        outline: 2px solid var(--heo-focus-ring);
         outline-offset: 1px;
       }
       /* The transfer step's own scroller wants the same padding the review body
@@ -382,7 +382,7 @@ export class HeoSaveDialog extends HeoElement {
         background: var(--heo-hover);
       }
       .cardhead select:focus-visible {
-        outline: 2px solid var(--heo-accent);
+        outline: 2px solid var(--heo-focus-ring);
         outline-offset: 1px;
       }
       /* The card's own explanation. Faint, because it describes the control above it. */
@@ -547,10 +547,14 @@ export class HeoSaveDialog extends HeoElement {
         pointer-events: none;
       }
       /* Nothing to decide: no assets of this kind, or none that can be read here. Dimmed
-         rather than dropped, because the absence is a fact about the page worth seeing. */
+         rather than dropped, because the absence is a fact about the page worth seeing.
+         Dimmed by the disabled ink on the name, as the design-transfer parts are, rather than
+         62% opacity over the whole row, which also faded the faint detail line under it. */
       .choice.settled {
         cursor: default;
-        opacity: 0.62;
+      }
+      .choice.settled .name {
+        color: var(--heo-text-disabled);
       }
       .choice.settled:hover {
         border-color: var(--heo-line);

@@ -1,0 +1,890 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Duplicate, copy, cut and paste for one or several selected elements</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 40px 60px;
+      font-family: system-ui, sans-serif;
+    }
+
+    p,
+    div {
+      margin: 0 0 8px;
+    }
+  </style>
+</head>
+
+<body>
+  <!--
+    The SELECTION section of the quick menu, and its shortcuts: Duplicate (Mod+D), Copy (Mod+C),
+    Cut (Mod+X), Paste below (Mod+V) and Paste to replace (Mod+Shift+R), for one element and for a
+    group.
+
+    Every section starts from nothing selected and undoes back to where it began. The editor's
+    clipboard is engine-global and survives a section, so the empty-clipboard section runs first,
+    and every later section copies what it needs itself.
+
+    #a and #x are adjacent siblings, #a and #b are not: duplicate works per contiguous run.
+  -->
+  <main id="page">
+    <div id="row">
+      <p id="a">A</p>
+      <p id="x">X</p>
+      <p id="b">B</p>
+    </div>
+    <div id="other">
+      <p id="c">C</p>
+    </div>
+    <section id="nest">
+      <div id="np">
+        <p id="nc">N</p>
+      </div>
+      <p id="nafter">After</p>
+    </section>
+    <p id="t">T</p>
+    <p id="host">Text with <span id="inl">a span</span> in it.</p>
+    <div id="blk">Block</div>
+    <input id="field" value="a page field">
+  </main>
+
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script>
+    /*
+     * Spies on the system clipboard, installed before the editor loads. Copy and cut keep the
+     * elements on the engine, never on the system clipboard, and the single-menu "Copy CSS
+     * selector" item, which does write it, sits next to "Copy": a click that reached the wrong
+     * item would show here.
+     */
+    window.__clip = { writeText: 0, write: 0, execCommand: 0 };
+    if (navigator.clipboard) {
+      const clip = navigator.clipboard;
+      const writeText = clip.writeText?.bind(clip);
+      const write = clip.write?.bind(clip);
+      try {
+        clip.writeText = (...args) => { window.__clip.writeText++; return writeText ? writeText(...args) : Promise.resolve(); };
+        clip.write = (...args) => { window.__clip.write++; return write ? write(...args) : Promise.resolve(); };
+      } catch { }
+    }
+    const execCommand = document.execCommand.bind(document);
+    document.execCommand = (...args) => { window.__clip.execCommand++; return execCommand(...args); };
+  </script>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const errors = [];
+      window.addEventListener('error', (e) => errors.push('error: ' + e.message));
+      window.addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+
+      const results = {};
+      const progress = document.getElementById('progress');
+      const step = (name) => { progress.textContent = name; };
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const byId = (id) => document.getElementById(id);
+      const same = (x, y) => JSON.stringify(x) === JSON.stringify(y);
+
+      const NOTHING_TO_PASTE = 'Nothing to paste yet. Select an element and copy it first.';
+      const CANNOT_BE_REPLACED = 'This element cannot be replaced.';
+      const NOT_ON_THE_BODY = 'Not available on the page body.';
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark' });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+
+      const directory = decodeURIComponent(location.pathname).replace(/[^/]*$/, '');
+      const disk = new Map();
+      const project = {
+        kind: 'directory',
+        label: 'memory',
+        resolve(url) {
+          const path = decodeURIComponent(new URL(url, location.href).pathname);
+          return path.startsWith(directory) ? path.slice(directory.length) : null;
+        },
+        read: async (path) => {
+          if (disk.has(path)) return disk.get(path);
+          try {
+            const text = await (await fetch('./' + path)).text();
+            disk.set(path, text);
+            return text;
+          } catch { return null; }
+        },
+        write: async (path, text) => { disk.set(path, text); },
+        ensureWritable: async () => true,
+        release: async () => { },
+      };
+      await engine.attachProject(project, { quiet: true });
+      await frames();
+
+      const planned = async () => {
+        const plan = await engine.previewWritePlan();
+        const write = (plan?.writes ?? []).find((w) => w.kind === 'document');
+        return {
+          reason: write?.reason ?? '',
+          warnings: write?.warnings ?? [],
+          after: write?.after ?? '',
+          doc: new DOMParser().parseFromString(write?.after ?? '', 'text/html'),
+        };
+      };
+      /** No id appears twice in a planned document: a copy wearing its original's id is the bug. */
+      const uniqueIds = (doc) => {
+        const all = Array.from(doc.querySelectorAll('[id]')).map((el) => el.id);
+        return all.length > 0 && new Set(all).size === all.length;
+      };
+
+      /*
+       * Helpers. Every query is re-run on use, never held: the layer and the menu re-render on
+       * every selection change, so a node taken before a press is stale after it.
+       */
+      const overlay = () => document.querySelector('html-editor-overlay > heo-overlay');
+      const layer = () => overlay().shadowRoot.querySelector('heo-selection-layer')?.shadowRoot;
+      const menu = () => overlay().shadowRoot.querySelector('heo-quick-menu')?.shadowRoot;
+      const ids = () => engine.selection.map((el) => el.id);
+      const item = (id) => menu()?.querySelector(`[data-id="${id}"]`);
+      const menuItems = () => Array.from(menu()?.querySelectorAll('.item[data-id]') ?? []);
+      /** By accessible name, the way a screen reader or a user finds it. */
+      const byLabel = (label) => menuItems().find((el) => el.getAttribute('aria-label') === label);
+      const describedBy = (el) => {
+        const id = el?.getAttribute('aria-describedby');
+        const target = id ? menu()?.getElementById(id) : null;
+        return target ? target.textContent.trim() : null;
+      };
+      const thumb = () => layer()?.querySelector('.thumb');
+      const centre = (el) => {
+        const r = el.getBoundingClientRect();
+        return { clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
+      };
+      const POINTER = { bubbles: true, composed: true, cancelable: true, button: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true };
+      /** The thumb toggles the menu on pointerup. */
+      const clickThumb = () => {
+        const target = thumb();
+        if (!target) return false;
+        const at = centre(target);
+        target.dispatchEvent(new PointerEvent('pointerdown', { ...POINTER, buttons: 1, ...at }));
+        target.dispatchEvent(new PointerEvent('pointerup', { ...POINTER, buttons: 0, ...at }));
+        return true;
+      };
+      /** A keydown as the page sees it; returns the event so its defaultPrevented can be read. */
+      const key = (k, mods = {}, target = document.body) => {
+        const event = new KeyboardEvent('keydown', { key: k, bubbles: true, composed: true, cancelable: true, ...mods });
+        target.dispatchEvent(event);
+        return event;
+      };
+      const pick = (...els) => {
+        engine.select(els[0]);
+        for (const el of els.slice(1)) engine.toggleSelection(el);
+      };
+      const texts = (id) => Array.from(byId(id).children).map((el) => el.textContent.trim()).join(' ');
+      const fileTexts = (doc, id) =>
+        Array.from(doc.getElementById(id)?.children ?? []).map((el) => el.textContent.trim()).join(' ');
+      const toast = () => engine.store.value.toast;
+      const clipboardSize = () => engine.store.value.clipboardSize;
+      const spies = () => window.__clip.writeText + window.__clip.write + window.__clip.execCommand;
+      /** Open the menu on the current selection through its thumb, and click one item in it. */
+      const clickItem = async (label) => {
+        engine.setQuickMenu(false);
+        await frames();
+        clickThumb();
+        await frames();
+        const found = byLabel(label);
+        found?.click();
+        await frames();
+        return Boolean(found);
+      };
+
+      /** The isolation rule: every section starts from nothing selected and ends where it began. */
+      const section = async (name, body) => {
+        step(name);
+        const entry = engine.history.size;
+        engine.select(null);
+        await frames();
+        try {
+          results[name] = await body();
+        } catch (error) {
+          results[name] = { threw: false, message: String(error && error.stack || error) };
+        }
+        if (engine.store.value.textEditing) engine.endTextEdit(true);
+        engine.setQuickMenu(false);
+        engine.select(null);
+        while (engine.history.size > entry) engine.undo();
+        await frames();
+      };
+
+      /* ------------------------------------------------------------------ *
+       * Paste needs something copied, and says so. First, while the clipboard is empty.
+       * ------------------------------------------------------------------ */
+      await section('pasteNeedsSomethingCopied', async () => {
+        const a = byId('a'), b = byId('b'), t = byId('t');
+        const out = {};
+        out.theClipboardStartsEmpty = clipboardSize() === 0 && engine.hasCopiedElement === false;
+
+        engine.select(t);
+        await frames();
+        clickThumb();
+        await frames();
+        const below = item('paste-below');
+        const replace = item('paste-replace');
+        // The reason in all three channels: tooltip, description, and on screen once.
+        out.pasteBelowIsDisabledWithAReasonWhenNothingIsCopied =
+          below?.getAttribute('aria-disabled') === 'true' &&
+          below.getAttribute('title') === NOTHING_TO_PASTE &&
+          describedBy(below) === NOTHING_TO_PASTE &&
+          !below.querySelector('.desc')?.classList.contains('sr');
+        // Hidden on screen, because Paste below already prints it; still a tooltip and described.
+        out.pasteToReplaceIsDisabledWithTheSameReason =
+          replace?.getAttribute('aria-disabled') === 'true' &&
+          replace.getAttribute('title') === NOTHING_TO_PASTE &&
+          describedBy(replace) === NOTHING_TO_PASTE &&
+          replace.querySelector('.desc')?.classList.contains('sr') === true;
+        const size = engine.history.size;
+        below?.click();
+        replace?.click();
+        await frames();
+        out.clickingADisabledPasteChangesNothing = engine.history.size === size && t.isConnected;
+
+        engine.setQuickMenu(false);
+        pick(a, b);
+        await frames();
+        clickThumb();
+        await frames();
+        out.andInTheGroupViewToo =
+          item('paste-below')?.getAttribute('title') === NOTHING_TO_PASTE &&
+          item('paste-below')?.getAttribute('aria-disabled') === 'true' &&
+          item('paste-replace')?.getAttribute('title') === NOTHING_TO_PASTE &&
+          item('paste-replace')?.getAttribute('aria-disabled') === 'true';
+
+        // The body refusal wins over the empty clipboard: copying would not make it replaceable.
+        engine.setQuickMenu(false);
+        engine.select(document.body);
+        engine.setQuickMenu(true);
+        await frames();
+        out.pasteToReplaceOnTheBodySaysItCannotBeReplaced =
+          item('paste-replace')?.getAttribute('title') === CANNOT_BE_REPLACED &&
+          describedBy(item('paste-replace')) === CANNOT_BE_REPLACED;
+        engine.setQuickMenu(false);
+
+        // Claimed even with nothing copied: in Chrome and Firefox the chord would hard-reload.
+        engine.select(t);
+        await frames();
+        const sizeR = engine.history.size;
+        const r = key('R', { shiftKey: true, metaKey: true });
+        out.modShiftRWithNothingCopiedIsStillClaimedAndSaysSo =
+          r.defaultPrevented === true && toast()?.message === NOTHING_TO_PASTE && engine.history.size === sizeR;
+        engine.select(document.body);
+        await frames();
+        const rb = key('R', { shiftKey: true, metaKey: true });
+        out.modShiftROnTheBodySaysItCannotBeReplaced =
+          rb.defaultPrevented === true && toast()?.message === CANNOT_BE_REPLACED && engine.history.size === sizeR;
+
+        /*
+         * The real path: focus stays on the page after a thumb click (measured with trusted
+         * input), so Mod+C arrives from the page with the menu open. The menu must enable Paste
+         * without being reopened, which needs the clipboard size in the store.
+         */
+        pick(a, b);
+        await frames();
+        clickThumb();
+        await frames();
+        key('c', { ctrlKey: true });
+        await frames();
+        out.theMenuEnablesPasteWhenSomethingIsCopiedWhileItIsOpen =
+          Boolean(item('paste-below')) && !item('paste-below').hasAttribute('aria-disabled') &&
+          Boolean(item('paste-replace')) && !item('paste-replace').hasAttribute('aria-disabled');
+        // A copy path that still collapsed or rewrote the selection would close the menu.
+        out.andModCWithTheMenuOpenKeepsTheGroupAndTheMenu =
+          same(ids(), ['a', 'b']) && engine.store.value.quickMenuOpen === true;
+        return out;
+      });
+
+      /* ------------------------------------------------------------------ *
+       * The menu items themselves. The other sections drive the keymap and the engine, so a
+       * wiring mistake here (group Copy calling copyElement, Cut calling remove, an item that
+       * leaves the menu open) would pass all of them.
+       * ------------------------------------------------------------------ */
+      await section('selectionMenuItemsAct', async () => {
+        const a = byId('a'), b = byId('b'), c = byId('c'), t = byId('t'), x = byId('x'), row = byId('row');
+        const out = {};
+        const closed = [];
+        const closedNow = () => closed.push(engine.store.value.quickMenuOpen === false);
+
+        pick(a, b);
+        await frames();
+        await clickItem('Copy');
+        closedNow();
+        out.theGroupCopyItemTakesEveryMember = clipboardSize() === 2 && engine.store.value.quickMenuOpen === false;
+
+        pick(a, b);
+        await frames();
+        let size = engine.history.size;
+        await clickItem('Cut');
+        closedNow();
+        out.theGroupCutItemRemovesEveryMemberInOneStep =
+          !a.isConnected && !b.isConnected && engine.history.size === size + 1 && clipboardSize() === 2;
+        engine.undo();
+        await frames();
+
+        pick(a, b);
+        await frames();
+        await clickItem('Paste below');
+        closedNow();
+        const p1 = b.nextElementSibling, p2 = p1?.nextElementSibling;
+        out.theGroupPasteBelowItemPutsTheCopiesAfterTheLastMember =
+          p1?.textContent === 'A' && p2?.textContent === 'B' && p1 !== a && p2 !== b;
+        engine.undo();
+        await frames();
+
+        pick(a, b);
+        await frames();
+        await clickItem('Paste to replace');
+        closedNow();
+        out.theGroupPasteToReplaceItemReplacesTheSet =
+          !a.isConnected && !b.isConnected && texts('row') === 'A B X' && row.children[2] === x;
+        engine.undo();
+        await frames();
+
+        pick(a, b);
+        await frames();
+        await clickItem('Duplicate');
+        closedNow();
+        const dupes = [row.children[1], row.children[4]];
+        out.theGroupDuplicateItemDuplicatesEveryMember =
+          texts('row') === 'A A X B B' && engine.selection.length === 2 &&
+          engine.selection[0] === dupes[0] && engine.selection[1] === dupes[1] &&
+          !engine.selection.includes(a) && !engine.selection.includes(b);
+        engine.undo();
+        await frames();
+
+        engine.select(c);
+        await frames();
+        await clickItem('Cut');
+        closedNow();
+        out.theSingleCutItemCuts =
+          !c.isConnected && clipboardSize() === 1 && (toast()?.message ?? '').startsWith('Cut');
+        engine.undo();
+        await frames();
+
+        engine.select(t);
+        await frames();
+        const parent = t.parentNode;
+        const index = Array.from(parent.children).indexOf(t);
+        await clickItem('Paste to replace');
+        closedNow();
+        out.theSinglePasteToReplaceItemReplaces =
+          !t.isConnected && parent.children[index]?.textContent === 'C' && parent.children[index] !== c;
+        engine.undo();
+        await frames();
+
+        // Two first, so a click that did nothing cannot pass by leaving the old size.
+        engine.copySelection([a, b]);
+        const before = spies();
+        engine.select(c);
+        await frames();
+        await clickItem('Copy');
+        closedNow();
+        await wait(20);
+        out.theSingleCopyItemCopiesTheElement = clipboardSize() === 1 && spies() === before && before === 0;
+
+        engine.select(t);
+        await frames();
+        await clickItem('Paste below');
+        closedNow();
+        out.theSinglePasteBelowItemPastesAfterIt =
+          t.nextElementSibling?.textContent === 'C' && t.nextElementSibling !== c;
+        engine.undo();
+        await frames();
+
+        engine.select(c);
+        await frames();
+        await clickItem('Duplicate');
+        closedNow();
+        const copy = c.nextElementSibling;
+        out.theSingleDuplicateItemDuplicates =
+          copy?.textContent === 'C' && copy !== c && engine.selected === copy;
+        engine.undo();
+        await frames();
+
+        out.everyItemClosesTheMenu = closed.length === 10 && closed.every(Boolean);
+        return out;
+      });
+
+      /* ------------------------------------------------------------------ *
+       * Copy several.
+       * ------------------------------------------------------------------ */
+      await section('copySeveral', async () => {
+        const a = byId('a'), b = byId('b'), t = byId('t');
+        const out = {};
+        const before = spies();
+        // b first, so the clipboard's order can only come from the document.
+        pick(b, a);
+        await frames();
+        const e = key('c', { ctrlKey: true });
+        await frames();
+        out.copyingSeveralHoldsEveryMember = clipboardSize() === 2;
+        out.copyKeepsTheGroupSelected = same(ids(), ['a', 'b']);
+        out.copyingSaysHowMany = toast()?.message === 'Copied 2 elements.';
+        out.modCIsClaimedOutsideTextEditing = e.defaultPrevented === true;
+
+        // A child goes with its parent, so it is not copied twice.
+        pick(byId('np'), byId('nc'));
+        await frames();
+        key('c', { ctrlKey: true });
+        out.aNestedMemberIsCopiedOnceWithItsParent = clipboardSize() === 1;
+
+        engine.select(t);
+        await frames();
+        key('c', { ctrlKey: true });
+        await wait(20);
+        out.copyNeverTouchesTheSystemClipboard = spies() === before && before === 0;
+        return out;
+      });
+
+      /* ------------------------------------------------------------------ *
+       * Paste below, with several copied.
+       * ------------------------------------------------------------------ */
+      await section('pasteBelowSeveral', async () => {
+        const a = byId('a'), b = byId('b'), c = byId('c'), t = byId('t'), host = byId('host');
+        const out = {};
+        pick(b, a);
+        engine.copySelection();
+        engine.select(t);
+        await frames();
+        const size = engine.history.size;
+        key('v', { ctrlKey: true });
+        await frames();
+        const p1 = t.nextElementSibling, p2 = p1?.nextElementSibling;
+        out.thePastedElementsSitRightAfterTheTarget =
+          Boolean(p1 && p2) && p1 !== a && p2 !== b && p1 !== host && p2 !== host && p2.nextElementSibling === host;
+        out.inTheOriginalDocumentOrder = p1?.textContent === 'A' && p2?.textContent === 'B';
+        out.pasteIsOneUndoStep = engine.history.size === size + 1;
+        out.thePastedElementsBecomeTheSelection =
+          engine.selection.length === 2 && engine.selection[0] === p1 && engine.selection[1] === p2 && engine.selected === p1;
+
+        const file = await planned();
+        const fileT = file.doc.getElementById('t');
+        out.thePasteReachesThePlannedWriteInOrder =
+          fileT?.nextElementSibling?.textContent.trim() === 'A' &&
+          fileT?.nextElementSibling?.nextElementSibling?.textContent.trim() === 'B' &&
+          fileT?.nextElementSibling?.nextElementSibling?.nextElementSibling?.id === 'host' &&
+          /patched in place/.test(file.reason) && uniqueIds(file.doc);
+
+        engine.undo();
+        await frames();
+        out.undoTakesBackExactlyThePastedNodes =
+          !p1?.isConnected && !p2?.isConnected && t.nextElementSibling === host && a.isConnected && b.isConnected;
+
+        // The target with a group is its last member, in document order: #t, not #c.
+        pick(t, c);
+        await frames();
+        key('v', { ctrlKey: true });
+        await frames();
+        out.withAGroupSelectedTheTargetIsItsLastMember =
+          t.nextElementSibling?.textContent === 'A' && c.nextElementSibling === null;
+        engine.undo();
+        await frames();
+
+        engine.select(t);
+        await frames();
+        engine.pasteBelow();
+        engine.pasteBelow();
+        await frames();
+        const four = [];
+        for (let n = t.nextElementSibling; n && n !== host; n = n.nextElementSibling) four.push(n);
+        out.pastingTwiceGivesIndependentNodes =
+          four.length === 4 && new Set(four).size === 4 && !four.some((n) => n === a || n === b) &&
+          same(four.map((n) => n.textContent), ['A', 'B', 'A', 'B']);
+        return out;
+      });
+
+      /* ------------------------------------------------------------------ *
+       * Cut one element. New: there was no cut at all before.
+       * ------------------------------------------------------------------ */
+      await section('cutSingle', async () => {
+        const a = byId('a'), b = byId('b'), t = byId('t'), x = byId('x');
+        const out = {};
+        engine.select(x);
+        await frames();
+        const size = engine.history.size;
+        const e = key('x', { ctrlKey: true });
+        await frames();
+        out.cutRemovesTheElement = !x.isConnected;
+        out.cutIsOneUndoStep = engine.history.size === size + 1;
+        // The delete rule: the next sibling.
+        out.cutSelectsTheSurvivorDeleteWouldPick = engine.selected === b;
+        out.theToastSaysCut = toast()?.message === 'Cut p#x.';
+        out.modXIsClaimedOutsideTextEditing = e.defaultPrevented === true;
+        out.theCutCopied = clipboardSize() === 1;
+
+        engine.undo();
+        await frames();
+        out.oneUndoRestoresTheSameNode = x.isConnected && a.nextElementSibling === x;
+
+        engine.select(a);
+        await frames();
+        engine.pasteBelow();
+        await frames();
+        out.pasteAfterCutPutsACopyBack = a.nextElementSibling?.textContent === 'X' && a.nextElementSibling !== x;
+        engine.undo();
+        await frames();
+
+        engine.select(t);
+        engine.beginTextEdit(t);
+        await frames();
+        const inEdit = key('x', { ctrlKey: true }, t);
+        out.modXInATextEditIsLeftAlone = engine.store.value.textEditing === t && inEdit.defaultPrevented === false && t.isConnected;
+        engine.endTextEdit(false);
+        await frames();
+
+        engine.select(t);
+        await frames();
+        const inField = key('x', { ctrlKey: true }, byId('field'));
+        out.modXInAPageFieldIsLeftAlone = inField.defaultPrevented === false && t.isConnected;
+
+        // Refused before anything is taken, so the clipboard keeps what was copied before.
+        engine.copyElement(t);
+        engine.select(document.body);
+        await frames();
+        const sizeBody = engine.history.size;
+        const refused = engine.cutSelection();
+        const said = toast()?.message;
+        engine.select(x);
+        await frames();
+        engine.pasteBelow();
+        await frames();
+        out.cutOnThePageBodyIsRefusedAndKeepsTheClipboard =
+          refused === false && said === NOT_ON_THE_BODY && clipboardSize() === 1 &&
+          engine.history.size === sizeBody + 1 && x.nextElementSibling?.textContent === 'T';
+        return out;
+      });
+
+      /* ------------------------------------------------------------------ *
+       * Cut several.
+       * ------------------------------------------------------------------ */
+      await section('cutSeveral', async () => {
+        const a = byId('a'), b = byId('b'), c = byId('c'), x = byId('x'), row = byId('row');
+        const out = {};
+        pick(a, b);
+        await frames();
+        const size = engine.history.size;
+        key('x', { ctrlKey: true });
+        await frames();
+        out.cuttingSeveralRemovesEveryMember = !a.isConnected && !b.isConnected && x.isConnected;
+        out.itIsOneUndoStep = engine.history.size === size + 1;
+        // Walked past every member: b has no next sibling, so the previous one, x.
+        out.theSurvivorIsSelected = engine.selected === x && engine.selection.length === 1;
+        out.theToastSaysCutTwo = toast()?.message === 'Cut 2 elements.';
+
+        const file = await planned();
+        out.theCutReachesThePlannedWriteAsDeletions =
+          !file.doc.getElementById('a') && !file.doc.getElementById('b') && Boolean(file.doc.getElementById('x')) &&
+          /patched in place/.test(file.reason);
+
+        engine.undo();
+        await frames();
+        out.oneUndoRestoresEveryMember =
+          row.children.length === 3 && row.children[0] === a && row.children[1] === x && row.children[2] === b;
+
+        engine.select(c);
+        await frames();
+        engine.pasteBelow();
+        await frames();
+        out.pastingAfterACutReinsertsThemInOrder = texts('other') === 'C A B';
+        return out;
+      });
+
+      /* ------------------------------------------------------------------ *
+       * Paste to replace one element.
+       * ------------------------------------------------------------------ */
+      await section('pasteReplaceSingle', async () => {
+        const c = byId('c'), t = byId('t');
+        const out = {};
+        engine.copyElement(c);
+        engine.select(t);
+        await frames();
+        const parent = t.parentNode;
+        const index = Array.from(parent.children).indexOf(t);
+        const size = engine.history.size;
+        const clone = engine.pasteReplace();
+        await frames();
+        out.theCopyTakesTheReplacedElementsPlace =
+          Boolean(clone) && parent.children[index] === clone && clone.textContent === 'C' && clone !== c;
+        out.theReplacedElementIsGone = !t.isConnected;
+        out.itIsOneUndoStep = engine.history.size === size + 1;
+        out.thePastedElementIsSelected = engine.selected === clone && engine.selection.length === 1;
+
+        const file = await planned();
+        const afterNest = file.doc.getElementById('nest')?.nextElementSibling;
+        out.theReplaceReachesThePlannedWrite =
+          !file.doc.getElementById('t') && afterNest?.textContent.trim() === 'C' && afterNest?.localName === 'p' &&
+          /patched in place/.test(file.reason) && uniqueIds(file.doc);
+
+        engine.undo();
+        await frames();
+        out.undoRestoresTheOriginalNodeInPlace =
+          t.isConnected && parent.children[index] === t && !clone?.isConnected;
+
+        const sizeBody = engine.history.size;
+        out.replacingThePageBodyIsRefused =
+          engine.pasteReplace([document.body]) === null && engine.history.size === sizeBody;
+        return out;
+      });
+
+      /* ------------------------------------------------------------------ *
+       * Paste to replace several: the copies go in once, where the first member was.
+       * ------------------------------------------------------------------ */
+      await section('pasteReplaceSeveral', async () => {
+        const a = byId('a'), b = byId('b'), c = byId('c'), t = byId('t'), x = byId('x'), row = byId('row');
+        const out = {};
+        engine.copySelection([c, t]);
+        pick(a, b);
+        await frames();
+        const size = engine.history.size;
+        engine.pasteReplace();
+        await frames();
+        out.theCopiesLandWhereTheFirstMemberWas = texts('row') === 'C T X' && row.children[2] === x;
+        out.everyMemberIsRemoved = !a.isConnected && !b.isConnected;
+        out.itIsOneUndoStep = engine.history.size === size + 1;
+        out.thePastedElementsBecomeTheSelection =
+          engine.selection.length === 2 && engine.selection[0] === row.children[0] && engine.selection[1] === row.children[1];
+        out.theToastSaysReplacedTwo = toast()?.message === 'Replaced 2 elements.';
+
+        // The one new record shape: a replace plus delete extraRecords.
+        let file = await planned();
+        out.theReplaceOfSeveralReachesThePlannedWrite =
+          !file.doc.getElementById('a') && !file.doc.getElementById('b') &&
+          fileTexts(file.doc, 'row') === 'C T X' && /patched in place/.test(file.reason) && uniqueIds(file.doc);
+
+        engine.undo();
+        await frames();
+        out.oneUndoRestoresEveryOriginalInPlace =
+          row.children.length === 3 && row.children[0] === a && row.children[1] === x && row.children[2] === b;
+
+        // Across containers: the member elsewhere is removed there, the copies go where #a was.
+        engine.pasteReplace([a, c]);
+        await frames();
+        out.aMemberInAnotherContainerIsRemovedThere =
+          !c.isConnected && byId('other').children.length === 0 && texts('row') === 'C T X B';
+        file = await planned();
+        out.andAcrossContainersTheOtherMemberIsGoneFromTheFile =
+          Boolean(file.doc.getElementById('other')) && file.doc.getElementById('other').children.length === 0 &&
+          fileTexts(file.doc, 'row') === 'C T X B' && /patched in place/.test(file.reason) && uniqueIds(file.doc);
+        return out;
+      });
+
+      /* ------------------------------------------------------------------ *
+       * Mod+Shift+R replaces.
+       *
+       * This pins that the keymap claims the chord and replaces. What the chord does in the
+       * browser: Chrome and Firefox reload ignoring cache, Safari shows Reader. Fixture events are
+       * synthetic, so they cannot show whether preventDefault really suppresses that browser
+       * action (plan probe 1: automated input never reached the accelerators on the dev host).
+       * ------------------------------------------------------------------ */
+      await section('modShiftRReplaces', async () => {
+        const a = byId('a'), b = byId('b'), c = byId('c'), t = byId('t');
+        const out = {};
+        engine.copyElement(c);
+        const replacedBy = async (mods, k = 'R', target = document.body) => {
+          engine.select(t);
+          await frames();
+          const e = key(k, { shiftKey: true, ...mods }, target);
+          await frames();
+          const replaced = !t.isConnected;
+          if (replaced) {
+            engine.undo();
+            await frames();
+          }
+          return e.defaultPrevented === true && replaced;
+        };
+        // Shift usually makes event.key upper case.
+        out.modShiftRIsClaimedWithMeta = await replacedBy({ metaKey: true });
+        out.andWithCtrl = await replacedBy({ ctrlKey: true });
+        // With Cmd held, a macOS browser can report the unshifted letter.
+        out.andWhenTheKeyArrivesLowerCase = await replacedBy({ metaKey: true }, 'r');
+        // The quick menu shows the shortcut, so focus may still be on the overlay chrome.
+        out.fromTheOverlayChromeItStillReplaces =
+          await replacedBy({ metaKey: true }, 'R', document.querySelector('html-editor-overlay'));
+
+        pick(a, b);
+        await frames();
+        key('R', { shiftKey: true, metaKey: true });
+        await frames();
+        out.modShiftRReplacesTheSelection = !a.isConnected && !b.isConnected && texts('row') === 'C X';
+        engine.undo();
+        await frames();
+
+        engine.select(null);
+        await frames();
+        out.withNothingSelectedItIsLeftToTheBrowser =
+          key('R', { shiftKey: true, metaKey: true }).defaultPrevented === false;
+
+        engine.select(t);
+        await frames();
+        const inField = key('R', { shiftKey: true, metaKey: true }, byId('field'));
+        out.inAPageFieldItIsLeftToTheBrowser = inField.defaultPrevented === false && t.isConnected;
+        return out;
+      });
+
+      /* ------------------------------------------------------------------ *
+       * Duplicate several, per contiguous run (D8).
+       * ------------------------------------------------------------------ */
+      await section('duplicateSeveral', async () => {
+        const a = byId('a'), b = byId('b'), c = byId('c'), x = byId('x'), row = byId('row'), other = byId('other');
+        const out = {};
+
+        pick(a, x);
+        await frames();
+        engine.duplicateSelection();
+        await frames();
+        out.adjacentMembersAreDuplicatedAfterTheirRun = texts('row') === 'A X A X B';
+        let file = await planned();
+        const fileX = file.doc.getElementById('x');
+        out.theDuplicatesReachThePlannedWriteInOrder =
+          fileX?.nextElementSibling?.textContent.trim() === 'A' &&
+          fileX?.nextElementSibling?.nextElementSibling?.textContent.trim() === 'X' &&
+          fileX?.nextElementSibling?.nextElementSibling?.nextElementSibling?.id === 'b' &&
+          /patched in place/.test(file.reason) && uniqueIds(file.doc);
+        engine.undo();
+        await frames();
+
+        pick(a, b);
+        await frames();
+        engine.duplicateSelection();
+        await frames();
+        out.separatedMembersAreEachDuplicatedInPlace = texts('row') === 'A A X B B';
+        engine.undo();
+        await frames();
+
+        // Every copy after the last member put the copy of #a inside #other.
+        pick(a, c);
+        await frames();
+        const size = engine.history.size;
+        engine.duplicateSelection();
+        await frames();
+        out.acrossContainersEachCopyStaysInItsOwnContainer = texts('row') === 'A A X B' && texts('other') === 'C C';
+        out.itIsOneUndoStep = engine.history.size === size + 1;
+        // Nodes, not ids: a copy has no id.
+        const clones = [row.children[1], other.children[1]];
+        out.theDuplicatesBecomeTheSelection =
+          engine.selection.length === 2 && engine.selection[0] === clones[0] && engine.selection[1] === clones[1] &&
+          !engine.selection.includes(a) && !engine.selection.includes(c);
+        out.theOriginalsAreUntouched =
+          row.children[0] === a && other.children[0] === c && a.textContent === 'A' && c.textContent === 'C';
+        file = await planned();
+        out.andAcrossContainersEachCopyIsWrittenInItsContainer =
+          fileTexts(file.doc, 'row') === 'A A X B' && fileTexts(file.doc, 'other') === 'C C' &&
+          /patched in place/.test(file.reason) && uniqueIds(file.doc);
+        engine.undo();
+        await frames();
+        out.oneUndoRemovesEveryCopy = texts('row') === 'A X B' && texts('other') === 'C' && !clones[0].isConnected;
+
+        pick(a, b);
+        await frames();
+        key('d', { ctrlKey: true });
+        await frames();
+        out.modDDuplicatesTheWholeGroup = texts('row') === 'A A X B B';
+        engine.undo();
+        await frames();
+
+        engine.select(c);
+        await frames();
+        key('d', { ctrlKey: true });
+        await frames();
+        const copy = c.nextElementSibling;
+        out.aSingleDuplicateIsUnchanged =
+          copy?.textContent === 'C' && copy !== c && engine.selected === copy &&
+          engine.records.some((record) => record.kind === 'duplicate');
+        return out;
+      });
+
+      /* ------------------------------------------------------------------ *
+       * A paste the file could not hold is taken back at once, and says why.
+       * ------------------------------------------------------------------ */
+      await section('aPasteThePageCannotHoldIsTakenBack', async () => {
+        const host = byId('host'), inl = byId('inl');
+        const out = {};
+        engine.copyElement(byId('blk'));
+        engine.select(inl);
+        await frames();
+        const before = host.innerHTML;
+        const size = engine.history.size;
+        // A <div> inside a <p> is a shape no HTML file can hold: the parser would close the <p>.
+        key('v', { ctrlKey: true });
+        await wait(20);
+        out.thePageIsUnchanged = host.innerHTML === before;
+        out.theUndoStackDidNotGrow = engine.history.size === size;
+        out.theSelectionIsUnchanged = same(ids(), ['inl']);
+        out.theToastSaysWhy = toast()?.tone === 'warn' && (toast()?.message ?? '').startsWith('Undone:');
+
+        engine.notify('marker', 'info');
+        const replaced = engine.pasteReplace([inl]);
+        await wait(20);
+        out.andAReplaceIsTakenBackToo =
+          replaced === null && host.innerHTML === before && engine.history.size === size &&
+          same(ids(), ['inl']) && inl.isConnected &&
+          toast()?.tone === 'warn' && (toast()?.message ?? '').startsWith('Undone:');
+        return out;
+      });
+
+      /* ------------------------------------------------------------------ *
+       * Refused deletes and cuts change nothing. LAST: it replaces the history's validator, and
+       * the real one cannot be put back, so no section may run after it.
+       * ------------------------------------------------------------------ */
+      await section('refusedDeletesAndCutsChangeNothing', async () => {
+        const a = byId('a'), b = byId('b'), c = byId('c'), t = byId('t'), x = byId('x');
+        const out = {};
+        let refuse = false;
+        engine.history.validateWith(
+          () => (refuse ? 'forced for the test' : null),
+          (reason) => engine.notify(`Undone: ${reason}.`, 'warn'),
+        );
+
+        // remove() used to ignore a refused commit: it moved the selection and said "Deleted".
+        engine.select(c);
+        await frames();
+        engine.notify('marker', 'info');
+        refuse = true;
+        engine.remove(c);
+        refuse = false;
+        await frames();
+        out.aRefusedDeleteKeepsTheSelection =
+          c.isConnected && engine.selected === c && !(toast()?.message ?? '').startsWith('Deleted');
+
+        engine.copyElement(t);
+        const copiedT = clipboardSize() === 1;
+        refuse = true;
+        const cut = engine.cutSelection([a, b]);
+        refuse = false;
+        await frames();
+        const kept = a.isConnected && b.isConnected && clipboardSize() === 1 && !(toast()?.message ?? '').startsWith('Cut');
+        engine.select(x);
+        await frames();
+        engine.pasteBelow();
+        await frames();
+        const pasted = x.nextElementSibling;
+        out.aRefusedCutKeepsTheElementAndTheEarlierClipboard =
+          copiedT && cut === false && kept && pasted?.localName === 'p' && pasted.textContent === 'T' && pasted !== t;
+        return out;
+      });
+
+      /* ------------------------------------------------------------------ */
+      const failed = Object.entries(results)
+        .filter(([, group]) => group && typeof group === 'object' && !Array.isArray(group))
+        .filter(([, group]) => Object.values(group).some((value) => value === false))
+        .map(([name]) => name);
+      results.failed = failed;
+      results.ok = failed.length === 0 && errors.length === 0;
+      results.__errors = errors;
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"ok":false,"__errors":["' + String(e && e.message) + '"]}:END';
+    });
+  </script>
+</body>
+</html>

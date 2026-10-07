@@ -133,7 +133,8 @@ export class HeoSearchField extends LitElement {
         border: 0;
         border-radius: 5px;
         background: transparent;
-        color: var(--heo-text-faint);
+        /* Dim, not faint: these are icon controls, and faint read 2.5:1 on the glass. */
+        color: var(--heo-text-dim);
         cursor: pointer;
       }
       .mini:hover {
@@ -166,7 +167,7 @@ export class HeoSearchField extends LitElement {
       }
       .go:disabled {
         background: transparent;
-        color: var(--heo-text-faint);
+        color: var(--heo-text-disabled);
         cursor: not-allowed;
       }
       .go.bare {

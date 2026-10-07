@@ -9,7 +9,7 @@ import {
   type Declaration,
 } from './declaration-list.js';
 import { directText, labelFor, nearestSourceRef, selectorFor } from './dom.js';
-import { needsSeparator } from './group.js';
+import { collapsesWhiteSpace, mergeBoundary } from './group.js';
 import type { ElementAnchor } from './html-patch.js';
 import { nextChangeId, type Command } from './history.js';
 import { morphChildren } from './morph.js';
@@ -742,6 +742,78 @@ export function removeElements(els: readonly HTMLElement[]): Command | null {
 }
 
 /**
+ * Replace several elements with one set of new nodes, as one undo step.
+ *
+ * The nodes go in once, where the first element was, and every other element is removed where
+ * it stands. "Replace each" would put a copy of every pasted node down at every element, which is
+ * almost never what "replace these with what I copied" means.
+ *
+ * The first part is a `replace` record and the rest are `delete` records, one per element, because
+ * each sits at its own place in the file. No subject, because the parts' subjects would reduce the
+ * batch to the net change of one of them (see `Command.extraRecords`). Revert runs in reverse
+ * because `removeElement` captures its `nextSibling` when it is built: restoring a later element
+ * first puts back the node an earlier one anchors on.
+ */
+export function replaceElements(
+  roots: readonly HTMLElement[],
+  nodes: HTMLElement[],
+  label: string,
+): Command | null {
+  if (!roots.length) return null;
+  const head = replaceWithNodes(roots[0], nodes, label);
+  const rest = roots.slice(1).map((root) => removeElement(root));
+  if (!head || rest.some((part) => !part)) return null;
+  const parts = [head, ...(rest as Command[])];
+  return {
+    label,
+    record: head.record,
+    extraRecords: parts.slice(1).map((part) => part.record),
+    domOnly: true,
+    apply: () => {
+      for (const part of parts) part.apply();
+    },
+    revert: () => {
+      for (const part of [...parts].reverse()) part.revert();
+    },
+  };
+}
+
+/**
+ * Insert several runs of nodes, each after its own reference, as one undo step.
+ *
+ * Used by duplicating a multi-selection: each contiguous run of selected siblings gets its copies
+ * right after the run, so a copy never lands in another member's container.
+ *
+ * One run is plain `insertNodes`, subject and all. Several have no subject, because the parts'
+ * subjects would reduce the batch to the net change of one of them (see `Command.extraRecords`).
+ * Each part resolves its anchor (`reference.nextSibling`) when it is built, and the runs are
+ * disjoint, so no part anchors on a node another part inserts. Revert runs in reverse, the mirror
+ * of apply.
+ */
+export function insertNodeRuns(
+  runs: ReadonlyArray<{ reference: HTMLElement; nodes: HTMLElement[] }>,
+  label: string,
+): Command | null {
+  if (!runs.length) return null;
+  if (runs.length === 1) return insertNodes(runs[0].reference, 'after', runs[0].nodes, label);
+  const parts = runs.map((run) => insertNodes(run.reference, 'after', run.nodes, label));
+  if (parts.some((part) => !part)) return null;
+  const commands = parts as Command[];
+  return {
+    label,
+    record: commands[0].record,
+    extraRecords: commands.slice(1).map((part) => part.record),
+    domOnly: true,
+    apply: () => {
+      for (const part of commands) part.apply();
+    },
+    revert: () => {
+      for (const part of [...commands].reverse()) part.revert();
+    },
+  };
+}
+
+/**
  * A deep copy of an element that can stand somewhere else in the page.
  *
  * Shared by duplicate and by copy and paste, which make the same promise: a copy inherits
@@ -1165,6 +1237,11 @@ function dropsAttributes(first: HTMLElement, later: readonly HTMLElement[]): boo
  * order, and the emptied member leaves the page. The structural rules (same tag, side by side,
  * not page-built) are the caller's, checked by `mergeEligibility` before this is built.
  *
+ * Between each member's content goes a line break, decided by `mergeBoundary`: two paragraphs
+ * "Hello" and "world" give "Hello<br>" and a newline before "world"; two divs each holding a
+ * paragraph give the two paragraphs on separate source lines and no `<br>`; preformatted text
+ * gets the `<br>` without the newline. The newline is in the record, so the file shows it too.
+ *
  * Done once, by `apply`, as `splitAtBreaks` is: the journal `History` captures is what undo and
  * redo replay, so `revert` has nothing to do.
  */
@@ -1201,8 +1278,17 @@ export function mergeElements(
           if (node.nodeType === Node.TEXT_NODE && !(node.nodeValue ?? '').trim()) node.remove();
           node = following;
         }
-        // One space only where two words would otherwise touch: "Hello " + "world" needs none.
-        if (needsSeparator(first, next)) first.appendChild(document.createTextNode(' '));
+        /*
+         * A line break between what each member held, so the merged texts stay separate lines:
+         * "Hello" + "world" becomes "Hello<br>\nworld". Beside a block child or an existing
+         * <br> only the source newline goes in (see mergeBoundary for the measured blank line),
+         * and the newline is left out where white space is preserved, as it would render.
+         */
+        const boundary = mergeBoundary(first, next);
+        if (boundary === 'break') first.appendChild(document.createElement('br'));
+        if (boundary !== 'none' && collapsesWhiteSpace(first)) {
+          first.appendChild(document.createTextNode('\n'));
+        }
         // A snapshot, because appending a child removes it from the live list being walked.
         for (const child of Array.from(next.childNodes)) {
           if (child instanceof Element) markRelocated(child);

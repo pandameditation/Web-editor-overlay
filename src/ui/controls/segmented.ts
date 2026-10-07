@@ -83,6 +83,8 @@ export class HeoSegmented extends LitElement {
       button.remove {
         flex: 0 0 22px;
         padding: 0;
+        /* Dim, not the segments' faint: an icon control needs 3:1, and faint read 2.5:1. */
+        color: var(--heo-text-dim);
       }
     `,
   ];

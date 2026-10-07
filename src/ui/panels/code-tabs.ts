@@ -72,7 +72,7 @@ export class HeoCodeTabs extends HeoElement {
         color: var(--heo-text);
       }
       .strip button:focus-visible {
-        outline: 2px solid var(--heo-accent);
+        outline: 2px solid var(--heo-focus-ring);
         outline-offset: 1px;
       }
       .pane {

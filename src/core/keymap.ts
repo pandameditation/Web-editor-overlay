@@ -128,9 +128,40 @@ export function handleKeyDown(engine: EditorEngine, event: KeyboardEvent): void 
   // is exactly the kind of leak between the two surfaces that has no good explanation.
   if (mod && key.toLowerCase() === 'd' && state.selected && !isEditableTarget(event)) {
     event.preventDefault();
-    // Element shortcuts act on one element, so a group collapses to its primary first.
-    engine.collapseSelection();
-    engine.duplicate();
+    // Every selected element, each copy right after its own run of members.
+    engine.duplicateSelection();
+    return;
+  }
+
+  /*
+   * Paste to replace (Mod+Shift+R, as in Figma).
+   *
+   * Decided up here, next to Mod+D and above the overlay guard, because the quick menu shows this
+   * shortcut and the user may press it while focus is still on the menu or the thumb. No overlay
+   * control binds the chord. Fields and text edits are left alone: hijacking a browser chord
+   * while the user is typing is overreach.
+   *
+   * The browser binds this chord too. Chrome and Firefox: reload ignoring cache. Safari: Show
+   * Reader. So inside the gate it is always claimed, even with nothing copied (the engine then
+   * says so), because the reload it would otherwise trigger throws the session away. Whether
+   * preventDefault really suppresses the browser's action was not measured: automated input
+   * could not reach browser accelerators on the dev host (renderer-level injection never does,
+   * and OS-level input needs an Accessibility permission the host did not have, re-checked
+   * 2026-10-07). The beforeunload guard still asks before a reload that gets through discards
+   * unsaved edits. Compared lower-cased, because Shift makes the key upper case in most browsers
+   * while a macOS browser can report the unshifted letter with Cmd held.
+   */
+  if (
+    mod &&
+    event.shiftKey &&
+    !event.altKey &&
+    key.toLowerCase() === 'r' &&
+    state.selected &&
+    !state.textEditing &&
+    !isEditableTarget(event)
+  ) {
+    event.preventDefault();
+    engine.pasteReplace();
     return;
   }
 
@@ -202,24 +233,29 @@ export function handleKeyDown(engine: EditorEngine, event: KeyboardEvent): void 
   if (isEditableTarget(event)) return;
 
   /*
-   * Copy and paste a whole element, after every guard above: only with an element selected and
-   * the page focused, never inside a text edit, a page field or the overlay's own controls,
-   * where Mod+C and Mod+V keep their usual meaning on text. Plain Mod only, so the browser's
-   * own variants such as Mod+Shift+V are left alone.
+   * Copy, cut and paste whole elements, after every guard above: only with an element selected
+   * and the page focused, never inside a text edit, a page field or the overlay's own controls,
+   * where Mod+C, Mod+X and Mod+V keep their usual meaning on text. Plain Mod only, so the
+   * browser's own variants such as Mod+Shift+V are left alone.
+   *
+   * Every selected element takes part, and the selection is kept: these used to collapse a group
+   * to its primary because they acted on one element, and the collapse also closed the quick
+   * menu the user had just read the shortcut from. Mod+V with nothing copied stays unclaimed.
    */
   if (mod && !event.shiftKey && !event.altKey && state.selected) {
-    // Collapsed inside the two branches that act, not at the head of this block: every plain
-    // Mod chord enters it (Mod+A, Mod+F, Mod+V with nothing copied), and those must keep a group.
     if (key.toLowerCase() === 'c') {
       event.preventDefault();
-      engine.collapseSelection();
-      engine.copyElement();
+      engine.copySelection();
+      return;
+    }
+    if (key.toLowerCase() === 'x') {
+      event.preventDefault();
+      engine.cutSelection();
       return;
     }
     if (key.toLowerCase() === 'v' && engine.hasCopiedElement) {
       event.preventDefault();
-      engine.collapseSelection();
-      engine.pasteElement();
+      engine.pasteBelow();
       return;
     }
   }
@@ -350,8 +386,12 @@ export const SHORTCUTS: Array<{ keys: string; action: string }> = [
   { keys: 'Alt+↑ / Alt+↓', action: 'Parent / child' },
   { keys: 'Shift+↑ / Shift+↓', action: 'Move the element up / down' },
   { keys: 'Shift+← / Shift+→', action: 'Move out of / into a container' },
-  { keys: 'Mod+D', action: 'Duplicate' },
-  { keys: 'Mod+C / Mod+V', action: 'Copy the element / paste it after the selected one' },
+  { keys: 'Mod+D', action: 'Duplicate (every selected element)' },
+  {
+    keys: 'Mod+C / Mod+X / Mod+V',
+    action: 'Copy / cut the selected elements / paste them after the selection',
+  },
+  { keys: 'Shift+Mod+R', action: 'Paste to replace the selection' },
   { keys: 'Delete', action: 'Delete (every selected element)' },
   { keys: 'Mod+Z / Shift+Mod+Z', action: 'Undo / redo' },
   { keys: 'Mod+S', action: 'Review and save changes' },
