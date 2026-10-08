@@ -257,6 +257,8 @@ export function handleKeyDown(engine: EditorEngine, event: KeyboardEvent): void 
    * menu the user had just read the shortcut from. Mod+V with nothing copied stays unclaimed.
    */
   if (mod && !event.shiftKey && !event.altKey && state.selected) {
+    // Highlighted words are what Mod+C and Mod+X mean, not the element behind them.
+    if ((key.toLowerCase() === 'c' || key.toLowerCase() === 'x') && hasUserTextSelection()) return;
     if (key.toLowerCase() === 'c') {
       event.preventDefault();
       engine.copySelection();
@@ -456,6 +458,26 @@ function holdsAnUncommittedEdit(event: KeyboardEvent): boolean {
   return event
     .composedPath()
     .some((node) => node instanceof Element && node.hasAttribute(DIRTY_ATTR));
+}
+
+/**
+ * True when the user has highlighted text that Mod+C or Mod+X should act on natively.
+ *
+ * The focus guards above cannot see this. Sweeping over static text, such as a hint in the
+ * insert menu, never moves focus, so the keydown still targets the page body and
+ * `fromOverlay` is false: Mod+C copied the selected element instead of the words, and Mod+X
+ * deleted it. So the selection itself is read. `document.getSelection()` is enough, measured
+ * in Chrome 154: a range inside nested shadow roots reports `isCollapsed: false` there and its
+ * `toString()` is the highlighted text; Firefox never retargeted selections to the host.
+ *
+ * Any non-collapsed range counts, page text included. Outside a text edit the page is
+ * `user-select: none` in edit mode, so such a range is one the user made on purpose. A stale
+ * overlay highlight cannot block element copy afterwards: a press on the page clears it
+ * (see the engine's pointerdown handler), and a collapsed caret never counts.
+ */
+function hasUserTextSelection(): boolean {
+  const selection = document.getSelection();
+  return Boolean(selection && selection.rangeCount > 0 && !selection.isCollapsed);
 }
 
 /** True when the keystroke belongs to a field the user is typing in. */

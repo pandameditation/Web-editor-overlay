@@ -831,6 +831,92 @@
       });
 
       /* ------------------------------------------------------------------ *
+       * Highlighted text wins Mod+C and Mod+X over the selected element.
+       * ------------------------------------------------------------------ */
+      await section('highlightedTextBeatsTheElementClipboard', async () => {
+        const a = byId('a'), b = byId('b'), t = byId('t');
+        const out = {};
+        /** The first non-blank text node in the overlay, however deep its shadow root. */
+        const overlayText = () => {
+          const roots = [overlay().shadowRoot];
+          while (roots.length) {
+            const root = roots.shift();
+            const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
+            for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+              if (node.nodeType === Node.TEXT_NODE && node.data.trim().length > 3) return node;
+              if (node.shadowRoot) roots.push(node.shadowRoot);
+            }
+          }
+          return null;
+        };
+        const highlight = (node) => {
+          const start = node.data.search(/\S/);
+          getSelection().setBaseAndExtent(node, start, node, start + 3);
+        };
+
+        engine.copyElement(t);
+        engine.select(a);
+        await frames();
+        const hint = overlayText();
+        out.theOverlayHasTextToHighlight = Boolean(hint);
+
+        // The reported bug: a sweep over panel text keeps focus on the page, so the keymap
+        // claimed Mod+C and the element went to the clipboard instead of the words.
+        highlight(hint);
+        const sizeBefore = clipboardSize();
+        const copy = key('c', { metaKey: true });
+        out.copyingSelectedOverlayTextLeavesTheElementClipboardAlone =
+          !getSelection().isCollapsed && !copy.defaultPrevented && clipboardSize() === sizeBefore;
+
+        // Worse with cut: Mod+X over hint text deleted the selected element.
+        const cut = key('x', { metaKey: true });
+        await frames();
+        out.cuttingSelectedOverlayTextDoesNotDeleteTheElement =
+          !cut.defaultPrevented && a.isConnected && clipboardSize() === sizeBefore;
+
+        // Page text the user managed to highlight outside a text edit is also theirs to copy.
+        getSelection().setBaseAndExtent(b.firstChild, 0, b.firstChild, 1);
+        const pageCopy = key('c', { metaKey: true });
+        out.copyingSelectedPageTextOutsideTextEditUsesNativeCopy =
+          !pageCopy.defaultPrevented && clipboardSize() === sizeBefore;
+
+        // A caret is not a highlight, so element copy keeps working beside one.
+        getSelection().collapse(hint, 0);
+        const collapsed = key('c', { metaKey: true });
+        out.copyWithACollapsedSelectionStillCopiesTheElement =
+          collapsed.defaultPrevented && clipboardSize() === 1 && engine.store.value.toast?.message?.startsWith('Copied');
+
+        // A highlight left over from before must not block it either: the press clears it,
+        // including a Shift press, which is cancelled and so would otherwise keep it.
+        highlight(hint);
+        engine.copyElement(t);
+        engine.select(null);
+        await frames();
+        const at = centre(b);
+        b.dispatchEvent(new PointerEvent('pointerdown', { ...POINTER, buttons: 1, ...at }));
+        b.dispatchEvent(new PointerEvent('pointerup', { ...POINTER, buttons: 0, ...at }));
+        b.click();
+        await frames();
+        const afterPress = getSelection().isCollapsed;
+        const afterClick = key('c', { metaKey: true });
+        highlight(hint);
+        b.dispatchEvent(new PointerEvent('pointerdown', { ...POINTER, shiftKey: true, buttons: 1, ...at }));
+        const afterShiftPress = getSelection().isCollapsed;
+        out.copyRightAfterClickingAnElementStillCopiesTheElement =
+          same(ids(), ['b']) && afterPress && afterClick.defaultPrevented && afterShiftPress;
+
+        // Mod+V is unchanged: a highlight does not stop it pasting the copied element.
+        highlight(hint);
+        const count = byId('b').parentElement.children.length;
+        const paste = key('v', { metaKey: true });
+        await frames();
+        out.pasteBehaviourIsUnchanged =
+          paste.defaultPrevented && byId('b').parentElement.children.length === count + 1;
+        getSelection().removeAllRanges();
+        return out;
+      });
+
+      /* ------------------------------------------------------------------ *
        * Refused deletes and cuts change nothing. LAST: it replaces the history's validator, and
        * the real one cannot be put back, so no section may run after it.
        * ------------------------------------------------------------------ */
@@ -887,4 +973,5 @@
     });
   </script>
 </body>
+
 </html>

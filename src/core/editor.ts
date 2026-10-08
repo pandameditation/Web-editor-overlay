@@ -9287,6 +9287,14 @@ export class EditorEngine {
        */
       if (event.button !== 0) return;
       if (isOverlayEvent(event) || isNativeInputEvent(event)) return;
+      /*
+       * A press on the page dismisses words highlighted in the panels. The keymap lets Mod+C and
+       * Mod+X copy a highlight natively instead of the selected element, so one left over from
+       * before this press — a Shift press below is cancelled, which keeps the old highlight
+       * alive — would have made the next Mod+C copy hint text instead of the element just picked.
+       */
+      const highlight = document.getSelection();
+      if (highlight && !highlight.isCollapsed) highlight.removeAllRanges();
       const el = selectableFromEvent(event);
       /*
        * A Shift press is a toggle, never a text edit or a move gesture. The toggle itself happens
