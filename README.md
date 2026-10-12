@@ -235,26 +235,43 @@ how to turn it off.
 ```ts
 // vite.config.ts
 import { defineConfig } from 'vite';
-import editorOverlay from 'html-editor-overlay/vite';
 
-export default defineConfig({
-  plugins: [
-    editorOverlay({
-      accent: '#4f46e5',
-      // apply defaults to 'serve', so nothing ships to production
-    }),
-  ],
+export default defineConfig(async ({ command }) => {
+  const plugins = [];
+
+  // HEO is a dev-time editor: only load it when Vite is serving.
+  if (command === 'serve') {
+    const { default: editorOverlay } = await import('html-editor-overlay/vite');
+    plugins.push(editorOverlay({ accent: '#4f46e5' }));
+  }
+
+  return { plugins };
 });
 ```
 
-That is the whole setup. The plugin injects and mounts the overlay in every HTML
+That is the whole setup.
+
+**Keep it out of builds.** The plugin itself defaults to `apply: 'serve'`, so it never runs
+during `vite build`. But Vite evaluates the config file for every command, so a static
+`import editorOverlay from 'html-editor-overlay/vite'` at the top must still resolve at
+build time. Where HEO is not installed (CI with `--omit=dev`, a hosting platform, a
+teammate without it), the build then fails with *failed to load config … cannot find
+package 'html-editor-overlay'*. The dynamic `import()` behind `command === 'serve'` above
+avoids that: builds never touch the package. To let dev start without HEO too, wrap the
+`import()` in `try`/`catch` and skip the plugin.
+
+Do the same for page code that talks to the overlay (`window.HtmlEditorOverlay`, or
+`import { mount } from 'html-editor-overlay'`): guard it with `import.meta.env.DEV`, and
+use a dynamic `import()`, so it is tree-shaken out of production bundles. The plugin injects and mounts the overlay in every HTML
 entry point. Options needing a function — `onSave` in particular — cannot travel
 through plugin config, so add them from the page:
 
 ```ts
-window.HtmlEditorOverlay.configure({
-  onSave: (payload) => fetch('/__apply-edits', { method: 'POST', body: payload.prompt }),
-});
+if (import.meta.env.DEV) {
+  window.HtmlEditorOverlay?.configure({
+    onSave: (payload) => fetch('/__apply-edits', { method: 'POST', body: payload.prompt }),
+  });
+}
 ```
 
 `demo/` in this repository is a working fixture for this path, and
