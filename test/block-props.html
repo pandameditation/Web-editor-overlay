@@ -114,19 +114,9 @@
         await frames();
         const afterSecond = { shown: errors(), focus: focusedField() };
 
-        // A problem on another tab opens that tab. Clear the HTML problem, then make one in JS.
-        engine.updateExtraction({ name: 'Widget', html: '<p>x</p>', script: 'export {}', tag: '' });
-        await frames();
-        button('Continue')?.click();
-        await frames();
-        const onAnotherTab = {
-          shown: errors(),
-          focus: focusedField(),
-          jsTabOpen: Boolean(dialog()?.querySelector('[role="tab"][aria-selected="true"]')?.textContent.includes('JS')),
-        };
         engine.cancelExtraction();
         await frames();
-        return { labels, afterFirst, afterLeaving, afterSecond, onAnotherTab };
+        return { labels, afterFirst, afterLeaving, afterSecond };
       });
 
       await check('stepOneSaysWhatPropsAreBeforeThereAreAny', async () => {

@@ -3,7 +3,7 @@ import { isMutable } from './dom.js';
 import type { BlockExtraction, ClassExtraction, HtmlPaste, SourceEdit } from './editor.js';
 import { previewMarkup } from './sanitize.js';
 import { selectorProblem } from './selectors.js';
-import { normalizeCustomElementTag, propNameProblem, suggestPropName, type BlockPropRow } from './library.js';
+import { propNameProblem, suggestPropName, type BlockPropRow } from './library.js';
 
 /**
  * What is wrong with a form's values, field by field.
@@ -39,30 +39,11 @@ export function classExtractionIssues(pending: ClassExtraction): FieldIssue[] {
 /** The first step of a block: what it is called and what it is made of. */
 export function blockSourceIssues(pending: BlockExtraction): FieldIssue[] {
   const issues: FieldIssue[] = [];
-  const tag = normalizeCustomElementTag(pending.tag);
-  const hasScript = Boolean(pending.script.trim());
   if (!pending.name.trim()) {
     issues.push({ field: 'block-name', message: 'Type a name for this block. It is how you will find it in the Library.' });
   }
-  if (!hasScript && !pending.html.trim()) {
+  if (!pending.html.trim()) {
     issues.push({ field: 'block-html', message: 'Write the markup the block inserts.' });
-  }
-  if (hasScript && !tag) {
-    issues.push({
-      field: 'block-tag',
-      message: 'A component with a module needs a custom element tag: lowercase letters, numbers and at least one hyphen.',
-    });
-  }
-  if (tag && !hasScript) {
-    issues.push({
-      field: 'block-script',
-      message: `Add the module that defines <${tag}>, or clear the tag to save plain markup.`,
-    });
-  } else if (hasScript && tag && !pending.script.includes('customElements.define')) {
-    issues.push({
-      field: 'block-script',
-      message: `The module has to call customElements.define('${tag}', …) for the tag to exist.`,
-    });
   }
   return issues;
 }

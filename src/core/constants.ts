@@ -88,6 +88,14 @@ export const INSERTED_ATTR = 'data-heo-inserted';
  * names its attributes one at a time, so this one is named there too.
  */
 export const BLOCK_ATTR = 'data-heo-block';
+/**
+ * The block id on an instance's second and later top-level elements.
+ *
+ * `BLOCK_ATTR` stays on the first one and remains the instance identity; this attribute is
+ * styling only, so a multi-root block's CSS reaches every root. Kept and stripped wherever
+ * `BLOCK_ATTR` is.
+ */
+export const BLOCK_PART_ATTR = 'data-heo-block-part';
 
 /**
  * Set on the element being dragged, so the page stylesheet can render it as a

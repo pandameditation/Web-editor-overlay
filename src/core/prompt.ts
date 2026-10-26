@@ -43,8 +43,6 @@ export interface PromptInput {
   classCSS: string;
   cssRuleCSS: string;
   pageURL: string;
-  /** Blocks whose custom elements were injected during the session. */
-  injectedElements?: string[];
 }
 
 /** A payload too big for a sentence, given a number the steps can point at. */
@@ -110,8 +108,6 @@ export function buildPrompt(input: PromptInput): string {
 
   if (blocks.length) sections.push(blockSection(blocks));
 
-  const components = componentSection(input);
-  if (components) sections.push(components);
 
   sections.push(checklist(records));
   return sections.join('\n\n');
@@ -577,24 +573,6 @@ function designSection(
   return [`**${label}:** ${note}`, '', '```css', css.trim(), '```'].join('\n');
 }
 
-function componentSection(input: PromptInput): string | null {
-  const injected = input.injectedElements ?? [];
-  const used = input.blocks.filter(
-    (item) => item.element?.tag && injected.includes(item.element.tag),
-  );
-  if (!used.length) return null;
-
-  const lines = [
-    '**New components:** add each as a real component file and import it where it is used.',
-  ];
-  for (const item of used) {
-    const tag = item.element!.tag;
-    lines.push('', `\`<${tag}>\` — ${item.name}`, '', '```js');
-    lines.push((item.element!.module ?? item.element!.script ?? '').trim(), '```');
-    if (item.css) lines.push('', '```css', item.css.trim(), '```');
-  }
-  return lines.join('\n');
-}
 
 /* -------------------------------------------------------------------------- */
 /* Check                                                                       */

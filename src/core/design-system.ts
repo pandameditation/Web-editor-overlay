@@ -1,5 +1,7 @@
 import {
   BLOCK_ATTR,
+  BLOCK_PART_ATTR,
+  BLOCK_STYLE_ID,
   EDITING_ATTR,
   HOST_TAG,
   INJECTED_ATTR,
@@ -726,8 +728,14 @@ export interface ExportOptions {
    * to leave an existing seed alone, so removal has to be asked for separately.
    */
   removeBlockLibrary?: boolean;
+  /**
+   * Blocks some CSS the page carries refers to, through `data-heo-block` or `data-heo-block-part`.
+   *
+   * When no seed is written, an instance link is kept only for these: stripping it would leave
+   * that CSS with nothing to match. Absent means none.
+   */
+  styledBlockIds?: ReadonlySet<string>;
 }
-
 export function exportHTML(
   styleEdits: readonly InlineStyleReconciliation[] = [],
   options: ExportOptions = {},
@@ -833,7 +841,15 @@ export function exportHTML(
       }
     }
     generated.removeAttribute('data-heo-generated');
-    generated.removeAttribute('id');
+    /*
+     * The block style keeps its id when the seed travels with it: the next load then claims it
+     * and regenerates it in place instead of stacking a stale copy beside a fresh one. Without a
+     * seed it has to stay anonymous page CSS, or the next session's first block write would adopt
+     * and overwrite rules for blocks that session does not have.
+     */
+    const keepBlockStyleId =
+      generated.id === BLOCK_STYLE_ID && Boolean(options.seedScript?.trim()) && !options.removeBlockLibrary;
+    if (!keepBlockStyleId) generated.removeAttribute('id');
   }
 
   for (const el of Array.from(clone.querySelectorAll(`[${SOURCE_ATTR}]`))) {
@@ -845,21 +861,23 @@ export function exportHTML(
   }
 
   /*
-   * Which library block an element came from, kept only when the library is coming too.
+   * Which library block an element came from: kept while anything still needs it.
    *
-   * This used to go unconditionally, on the reasoning that the link means nothing once the
-   * editor is off the page. That was right while the library could not travel: an attribute
-   * naming a template nothing has a copy of is a dangling reference in someone's markup.
-   *
-   * Writing the library into the page as a seed changes the answer, because now the template
-   * *is* in the file. Stripping the link then produced the confusing half-restore the seed was
-   * supposed to prevent — the blocks came back on the next load, and not one element in the page
-   * knew it was an instance of any of them, so the Components section was gone from things that
-   * plainly were components. The two halves are one feature and they travel together.
+   * - Removing the library takes every link (and part hook) out, with the seed and the block CSS:
+   *   the halves of one feature go together.
+   * - A written seed keeps them all: the template is in the file, and stripping the links would
+   *   bring the blocks back on the next load with not one element knowing it was an instance.
+   * - Otherwise a link is a dangling reference, unless CSS the page carries targets it. Block CSS
+   *   is scoped through these attributes, so stripping them would write that CSS dead.
    */
-  if (!options.seedScript?.trim()) {
-    for (const el of Array.from(clone.querySelectorAll(`[${BLOCK_ATTR}]`))) {
-      el.removeAttribute(BLOCK_ATTR);
+  const styled = options.styledBlockIds;
+  if (options.removeBlockLibrary || !options.seedScript?.trim()) {
+    for (const name of [BLOCK_ATTR, BLOCK_PART_ATTR]) {
+      for (const el of Array.from(clone.querySelectorAll(`[${name}]`))) {
+        const id = el.getAttribute(name) ?? '';
+        if (!options.removeBlockLibrary && styled?.has(id)) continue;
+        el.removeAttribute(name);
+      }
     }
   }
 
@@ -867,8 +885,7 @@ export function exportHTML(
    * Removing the library takes out what the page was already carrying.
    *
    * Distinct from writing no seed, which leaves a seed already in the markup where it is. The
-   * links are handled just above — an empty `seedScript` strips them — so this only has to deal
-   * with the tag itself, which the serializer would otherwise copy across like any other markup.
+   * links are handled just above, so this only has to deal with the tag itself, which the serializer would otherwise copy across like any other markup.
    */
   if (options.removeBlockLibrary) {
     for (const tag of Array.from(clone.querySelectorAll(SEED_SCRIPT_SELECTOR))) tag.remove();

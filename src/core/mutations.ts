@@ -599,7 +599,7 @@ function resolveAnchor(
   }
 }
 
-/** Insert already-constructed nodes. Used when a block registers a custom element. */
+/** Insert already-constructed nodes: built block instances, pasted runs, wrapped selections. */
 export function insertNodes(
   reference: HTMLElement,
   position: InsertPosition,

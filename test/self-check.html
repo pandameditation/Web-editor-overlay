@@ -1273,12 +1273,6 @@
       api.openPanel('styles');
       await frame();
 
-      /* Custom element names are corrected rather than rejected late. */
-      check('tagCorrections', () =>
-        ['myfooter', 'my@footer', 'MyFooter', '2cool', 'ui@card', 'my-widget']
-          .map((raw) => `${raw}=${window.HtmlEditorOverlay.normalizeCustomElementTag(raw)}`)
-          .join(' '),
-      );
 
       /* ------------------------------------------------------------------ *
        * A row shows the value that wins the cascade, as authored.

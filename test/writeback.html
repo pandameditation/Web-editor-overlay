@@ -210,7 +210,9 @@
         const generated = engine.library.css;
         return {
           ok: Boolean(insertedBlock) && generated.includes(blockMarker) &&
-            generated.includes(blockSelectorPrefix) && generated.includes(rawBlockCSS.replace('p.writeback-block-copy', `${blockSelectorPrefix} p.writeback-block-copy`)),
+            generated.includes(blockSelectorPrefix) &&
+            // Constrained on the subject, so the rule can match the block's own root too.
+            generated.includes(`/* block: ${blockId} */\np.writeback-block-copy:is(`),
           generated,
           blockId,
         };
@@ -327,7 +329,9 @@
       }));
       check('theSeedRestoredBlockCSSReachesTheExternalStylesheet', () => ({
         ok: Boolean(stylesheetWrite) && stylesheetWrite.after.includes(restoredMarker) &&
-          stylesheetWrite.after.includes('.restored-writeback { border: 2px solid rebeccapurple; }'),
+          // Scoped like every other block rule now, class-rooted selectors included.
+          stylesheetWrite.after.includes('.restored-writeback:is(') &&
+          stylesheetWrite.after.includes('border: 2px solid rebeccapurple;'),
         marker: restoredMarker,
         css: stylesheetWrite?.after ?? null,
       }));

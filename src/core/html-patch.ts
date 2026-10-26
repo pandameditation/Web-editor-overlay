@@ -396,8 +396,8 @@ export const SEED_BLOCK_END = '<!-- heo:blocks end -->';
  * Write the block library into the file as a seed script.
  *
  * The one shape a block can travel in. Tokens, classes and rules become CSS, and CSS is
- * something any file can hold — but a block is markup plus prop declarations plus, sometimes, a
- * module that defines a custom element, and no stylesheet can carry that. The seed format
+ * something any file can hold — but a block is markup plus prop declarations plus its CSS, and
+ * no stylesheet can carry the first two. The seed format
  * already exists for exactly this payload and the script-tag integration already reads
  * `<script type="application/heo-seed">` back at mount, so writing one here closes a loop that
  * was otherwise open: a library authored in a session lived only in that session.
@@ -440,7 +440,128 @@ export function upsertSeedBlock(html: string, seed: string, remove = false): str
  * it literally is safe in a way that parsing attributes generally is not.
  */
 export function dropBlockLinks(html: string): string {
-  return html.replace(/\s+data-heo-block="[^"]*"/g, '');
+  return html.replace(/\s+data-heo-block(?:-part)?="[^"]*"/g, '');
+}
+
+/*
+ * The block styles, as their own managed region.
+ *
+ * Block CSS is regenerated from the seed on every load, so unlike the design-system region it
+ * never becomes page-owned: emptying it removes the region, and the `<style>` inside carries the
+ * id the next load claims (`ManagedStyleSheet.claimExisting`) instead of stacking a fresh copy
+ * beside a stale one.
+ */
+export const BLOCK_STYLE_START = '<!-- heo:block-styles start — managed by html-editor-overlay -->';
+export const BLOCK_STYLE_END = '<!-- heo:block-styles end -->';
+
+/** A `<style>` carrying the block style id, wherever it sits. */
+const BLOCK_STYLE_ELEMENT = /<style\b[^>]*\bid=(["'])heo-block-styles\1[^>]*>[\s\S]*?<\/style\s*>/gi;
+
+/**
+ * Write the scoped block CSS into its region, or drop the region when there is none.
+ *
+ * Unmarked `<style id="heo-block-styles">` copies (from an `exportHTML` download) are cleaned up
+ * whether or not the markers exist: with markers, every one outside the region goes; without, the
+ * first is replaced in place by the region and the rest go. Either way the file ends with at most
+ * one element carrying the id, so the next load never claims a stale copy. Matches inside HTML
+ * comments and script bodies are left alone.
+ */
+export function upsertBlockStyleBlock(html: string, css: string): string {
+  const body = css.trim();
+  const render = (indent: string): string => blockStyleBlock(body, indent);
+  const strays = (text: string): Array<{ start: number; end: number }> => {
+    // A comment or a script body can hold the text of a tag without holding a tag.
+    const comments = [...commentRanges(text), ...scriptRanges(text)];
+    const regionStart = text.indexOf(BLOCK_STYLE_START);
+    const regionEnd = text.indexOf(BLOCK_STYLE_END);
+    const inRegion = (at: number): boolean => regionStart !== -1 && regionEnd > regionStart && at > regionStart && at < regionEnd;
+    return Array.from(text.matchAll(BLOCK_STYLE_ELEMENT))
+      .map((match) => ({ start: match.index!, end: match.index! + match[0].length }))
+      .filter(({ start }) => !inRegion(start) && !comments.some(([a, b]) => start > a && start < b));
+  };
+
+  let out = html;
+  const hasRegion = (): boolean => {
+    const start = out.indexOf(BLOCK_STYLE_START);
+    return start !== -1 && out.indexOf(BLOCK_STYLE_END) > start;
+  };
+  if (!hasRegion()) {
+    const found = strays(out);
+    if (found.length) {
+      // Last first, so earlier offsets stay valid; the first copy becomes the region.
+      for (const stray of found.slice(1).reverse()) out = removeSpan(out, stray.start, stray.end);
+      const first = found[0];
+      return body
+        ? `${out.slice(0, first.start)}${render(lineIndentAt(out, first.start))}${out.slice(first.end)}`
+        : removeSpan(out, first.start, first.end);
+    }
+    return body ? upsertManagedBlock(out, BLOCK_STYLE_START, BLOCK_STYLE_END, render) : out;
+  }
+  for (const stray of strays(out).reverse()) out = removeSpan(out, stray.start, stray.end);
+  return body
+    ? upsertManagedBlock(out, BLOCK_STYLE_START, BLOCK_STYLE_END, render)
+    : dropManagedBlock(out, BLOCK_STYLE_START, BLOCK_STYLE_END);
+}
+
+/**
+ * Take block CSS out of the design-system region.
+ *
+ * A save without the library put the block CSS there, after the tokens, classes and rules (it is
+ * always the last part of the joined text, and every chunk starts with a `/* block: <id> *\/`
+ * comment). Once the library travels again the block CSS has its own region, so the stale copy
+ * is cut from the first chunk comment to the end of that `<style>`. A region left holding only
+ * whitespace is dropped.
+ */
+export function stripBlockChunksFromDesignSystemRegion(html: string): string {
+  const start = html.indexOf(STYLE_BLOCK_START);
+  const end = html.indexOf(STYLE_BLOCK_END);
+  if (start === -1 || end <= start) return html;
+  const region = html.slice(start, end);
+  const style = /<style\b[^>]*>([\s\S]*?)<\/style\s*>/i.exec(region);
+  if (!style) return html;
+  const textStart = start + style.index + style[0].indexOf('>') + 1;
+  const text = style[1];
+  const cut = text.indexOf('/* block: ');
+  if (cut === -1) return html;
+  const kept = text.slice(0, cut).replace(/\s+$/, '');
+  if (!kept.trim()) return dropManagedBlock(html, STYLE_BLOCK_START, STYLE_BLOCK_END);
+  const closing = /\n[ \t]*$/.exec(text)?.[0] ?? '\n';
+  return `${html.slice(0, textStart)}${kept}${closing}${html.slice(textStart + text.length)}`;
+}
+
+/** The block style region, marker to marker. */
+function blockStyleBlock(css: string, indent: string): string {
+  const inner = css
+    .split('\n')
+    .map((line) => (line.trim() ? `${indent}  ${line}` : ''))
+    .join('\n');
+  return [
+    BLOCK_STYLE_START,
+    `${indent}<style id="heo-block-styles">`,
+    inner,
+    `${indent}</style>`,
+    `${indent}${BLOCK_STYLE_END}`,
+  ].join('\n');
+}
+
+function commentRanges(html: string): Array<[number, number]> {
+  return Array.from(html.matchAll(/<!--[\s\S]*?-->/g)).map((match) => [match.index!, match.index! + match[0].length]);
+}
+
+function scriptRanges(html: string): Array<[number, number]> {
+  return Array.from(html.matchAll(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi)).map((match) => [match.index!, match.index! + match[0].length]);
+}
+
+/** Remove a span, and the line it sat on when nothing else was on that line. */
+function removeSpan(html: string, start: number, end: number): string {
+  const lineStart = html.lastIndexOf('\n', Math.max(0, start - 1)) + 1;
+  const lineEnd = html.indexOf('\n', end);
+  const before = html.slice(lineStart, start);
+  const after = html.slice(end, lineEnd === -1 ? html.length : lineEnd);
+  if (!before.trim() && !after.trim()) {
+    return `${html.slice(0, lineStart)}${html.slice(lineEnd === -1 ? html.length : lineEnd + 1)}`;
+  }
+  return `${html.slice(0, start)}${html.slice(end)}`;
 }
 
 /** Delete a marked region and close the gap, leaving a file with no region untouched. */

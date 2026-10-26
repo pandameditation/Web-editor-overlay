@@ -105,12 +105,8 @@ export interface PropSpec {
 export type BlockKind = 'container' | 'component';
 
 /**
- * A reusable block. `html` is a template; `{{prop}}` placeholders are replaced
- * with sanitized prop values at insert time.
- *
- * A block may additionally register a real custom element: supply `element`
- * with a tag name plus the source to evaluate. That is how a Lit/JS component
- * gets injected as `<my-widget>` into the page.
+ * A reusable block: an HTML template plus optional CSS. `{{prop}}` placeholders in
+ * `html` are replaced with sanitized prop values at insert time.
  */
 export interface LibraryBlock {
   id: string;
@@ -125,14 +121,6 @@ export interface LibraryBlock {
   css?: string;
   /** Inline SVG or emoji used as the card preview. */
   icon?: string;
-  /** Register a custom element so the block can inject a real web component. */
-  element?: {
-    tag: string;
-    /** ES module source. Evaluated once, in a blob module, at first insert. */
-    module?: string;
-    /** Bare class source for a non-Lit custom element. Ignored if `module` set. */
-    script?: string;
-  };
 
   /** Blocks that accept children get `+` affordances inside them. */
   slots?: boolean;

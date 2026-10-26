@@ -439,7 +439,6 @@ export class HeoPropsPanel extends HeoElement {
     specs: Record<string, PropSpec>,
   ): TemplateResult {
     const drifted = this.editor.blockDrift(el);
-    const isElement = Boolean(instance.block.element?.tag);
 
     return html`<div class="block">
       <div class="sub">
@@ -463,9 +462,7 @@ export class HeoPropsPanel extends HeoElement {
         ${drifted
         ? html`The block has changed in the library. Updating brings its latest markup and styles
             across while keeping the text written here.`
-        : isElement
-          ? 'Values are written as attributes, so the component re-renders itself.'
-          : 'Changing a value re-renders the block from its template, replacing this element.'}
+        : 'Changing a value re-renders the block from its template, replacing this element.'}
       </p>
       ${PropForm.render(specs, instance.values, (name, value) => {
             void this.editor.setBlockProp(el, name, value);

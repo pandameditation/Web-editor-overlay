@@ -581,7 +581,7 @@ export class HeoCssPasteDialog extends HeoElement {
         {
           value: 'block-rule',
           label: 'As scoped CSS Rules',
-          title: 'Keep the selectors readable and scope non-class rules to this block when it is used',
+          title: 'Keep the selectors readable and scope every rule to this block when it is used',
         },
       ]}
         .value=${open.destination}
@@ -591,8 +591,8 @@ export class HeoCssPasteDialog extends HeoElement {
         })}
       ></heo-segmented>
       <p class="note warn">
-        ${icon('lock', 11)} CSS rules are scoped to this block's root when it is used. Class-rooted
-        selectors such as <code>.pouet</code> stay global so design-system classes remain reusable.
+        ${icon('lock', 11)} CSS rules are scoped to this block when it is used, class selectors such
+        as <code>.pouet</code> included. Choose “As a global Class” for a class reusable across the page.
       </p>
       ${open.destination === 'block-inline'
         ? parsed.rules.length > 1
@@ -694,7 +694,7 @@ export class HeoCssPasteDialog extends HeoElement {
         ? parsed.rules.length > 1
           ? html`<div class="target field full">
               ${icon('code', 12)} Stores ${parsed.rules.length} selectors in the block CSS source.
-              Element and structural selectors are scoped to the block; class-rooted selectors remain global.
+              Every selector is scoped to the block; “As a global Class” makes a reusable class.
             </div>`
           : html`<div class="fields">
               <div class="field full">
@@ -716,7 +716,7 @@ export class HeoCssPasteDialog extends HeoElement {
               <div class="target field full">
                 ${icon('code', 12)}
                 ${parsed.rules.length
-              ? html`Stores the pasted selector in the block CSS source. Element and structural selectors are scoped to the block; class-rooted selectors remain global.`
+              ? html`Stores the pasted selector in the block CSS source, scoped to the block; “As a global Class” makes a reusable class.`
               : blockMatches
                 ? html`Adds the declarations to <code>${blockSelector === ':scope' ? 'the block root' : blockSelector}</code>
                     (${blockMatches} matching element${blockMatches === 1 ? '' : 's'}) as a scoped block rule.`

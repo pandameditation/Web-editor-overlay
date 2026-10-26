@@ -1,5 +1,6 @@
 import {
   BLOCK_ATTR,
+  BLOCK_PART_ATTR,
   HOST_TAG,
   IGNORE_ATTR,
   INJECTED_ATTR,
@@ -79,7 +80,7 @@ export function isEditorOwned(node: Node): boolean {
 
 /** Attributes the editor writes for itself. Their history is not the page's history. */
 export function isBookkeepingAttribute(name: string): boolean {
-  return name.startsWith('data-heo-') && name !== BLOCK_ATTR;
+  return name.startsWith('data-heo-') && name !== BLOCK_ATTR && name !== BLOCK_PART_ATTR;
 }
 
 /** Which records belong to an operation running across several tasks. */

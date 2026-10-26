@@ -443,47 +443,6 @@ export const COMPONENT_PRESETS: LibraryBlock[] = [
   <span style="flex:1;border-top:{{thickness}} {{lineStyle}} currentColor;-webkit-mask:${FADE_OUT};mask:${FADE_OUT}"></span>
 </div>`,
   },
-  {
-    id: 'counter-webcomponent',
-    name: 'Counter (Lit)',
-    kind: 'component',
-    category: 'Web components',
-    icon: 'component',
-    description:
-      'A real Lit web component with reactive props. Shows how custom elements get registered and injected.',
-    origin: 'preset',
-    props: {
-      label: { type: 'text', label: 'Label', default: 'Clicks' },
-      start: { type: 'number', label: 'Start value', default: 0 },
-    },
-    html: `<heo-demo-counter label="{{label}}" start="{{start}}"></heo-demo-counter>`,
-    element: {
-      tag: 'heo-demo-counter',
-      module: `import { LitElement, html, css } from 'lit';
-
-class HeoDemoCounter extends LitElement {
-  static properties = { label: { type: String }, start: { type: Number }, count: { type: Number, state: true } };
-  static styles = css\`
-    :host { display: inline-flex; align-items: center; gap: 10px; padding: 10px 14px;
-            border: 1px solid var(--border-color, #e2e8f0); border-radius: var(--radius-md, 12px);
-            background: var(--surface, #fff); font: inherit; }
-    button { min-width: 32px; height: 32px; border: 0; border-radius: 8px; cursor: pointer;
-             background: var(--accent, #3b5bfd); color: #fff; font-size: 16px; }
-    strong { min-width: 2ch; text-align: center; font-variant-numeric: tabular-nums; }
-    span { color: var(--muted, #667085); font-size: 13px; }
-  \`;
-  constructor() { super(); this.label = 'Clicks'; this.start = 0; this.count = 0; }
-  firstUpdated() { this.count = Number(this.start) || 0; }
-  render() {
-    return html\`<button @click=\${() => this.count -= 1} aria-label="Decrease">-</button>
-      <strong>\${this.count}</strong>
-      <button @click=\${() => this.count += 1} aria-label="Increase">+</button>
-      <span>\${this.label}</span>\`;
-  }
-}
-customElements.define('heo-demo-counter', HeoDemoCounter);`,
-    },
-  },
 ];
 
 export function allPresets(): LibraryBlock[] {

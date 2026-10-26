@@ -1,5 +1,4 @@
 import { BLOCK_STYLE_ID } from './constants.js';
-import { evaluateModule } from './lit-bridge.js';
 import { scopeBlockCSS } from './block-css.js';
 import { allPresets } from './presets.js';
 import { renameTemplateProps, renderBlockTemplate, sanitizeFragment, templatePropNames } from './sanitize.js';
@@ -9,17 +8,17 @@ import type { BlockKind, LibraryBlock, PropSpec } from './types.js';
 /**
  * The block library.
  *
- * Holds containers and components, instantiates them with prop values, and — for
- * blocks that ship a custom element — registers that element before inserting
- * its tag. Block CSS accumulates in one managed stylesheet, written once per
- * block rather than per instance.
+ * Holds containers and components and instantiates them with prop values. A block is
+ * an HTML template plus optional CSS. Block CSS accumulates in one managed stylesheet,
+ * written once per block rather than per instance.
  */
 export class BlockLibrary {
   #blocks = new Map<string, LibraryBlock>();
   #sheet = new ManagedStyleSheet(BLOCK_STYLE_ID);
   #injectedCSS = new Map<string, string>();
-  #registered = new Set<string>();
   #listeners = new Set<() => void>();
+  /** Names of legacy web component blocks skipped by `import`, until `takeDroppedLegacy`. */
+  #droppedLegacy: string[] = [];
 
   constructor(options: { presets?: boolean } = {}) {
     if (options.presets !== false) {
@@ -73,6 +72,7 @@ export class BlockLibrary {
   }
 
   upsert(block: LibraryBlock): LibraryBlock {
+    if (isLegacyElementBlock(block)) throw new Error(LEGACY_BLOCK_MESSAGE);
     const id = slugify(block.id || block.name);
     if (!id) throw new Error('A block needs an id or a name.');
     const next: LibraryBlock = { ...block, id, origin: block.origin ?? 'user' };
@@ -99,6 +99,12 @@ export class BlockLibrary {
   import(blocks: LibraryBlock[], options: { overwrite?: boolean } = {}): number {
     let count = 0;
     for (const block of blocks) {
+      // Web component blocks are gone. An old seed or import may still carry one; it is
+      // skipped rather than kept as an entry that would insert an empty unknown element.
+      if (isLegacyElementBlock(block)) {
+        this.#droppedLegacy.push(String(block.name || block.id || 'unnamed block'));
+        continue;
+      }
       const id = slugify(block.id || block.name);
       if (!id) continue;
       if (!options.overwrite && this.#blocks.has(id)) continue;
@@ -107,6 +113,13 @@ export class BlockLibrary {
     }
     this.#notify();
     return count;
+  }
+
+  /** Names of the legacy blocks `import` skipped since the last call, de-duplicated. */
+  takeDroppedLegacy(): string[] {
+    const names = [...new Set(this.#droppedLegacy)];
+    this.#droppedLegacy = [];
+    return names;
   }
 
   /** Only blocks worth carrying between projects: presets are rebuilt anyway. */
@@ -126,15 +139,13 @@ export class BlockLibrary {
   /**
    * Build the nodes for a block.
    *
-   * Registering the custom element is awaited before the markup is parsed, so
-   * the element upgrades immediately rather than rendering as an unknown tag and
-   * flashing empty.
+   * Async for its callers' sake: they await it, and keeping the signature avoids touching
+   * every one of them now that nothing here has to wait.
    */
   async instantiate(
     block: LibraryBlock,
     props: Record<string, unknown> = {},
   ): Promise<{ nodes: HTMLElement[]; html: string }> {
-    if (block.element) await this.registerElement(block);
     this.#applyCSS(block);
 
     const values = { ...this.defaultProps(block), ...props };
@@ -159,12 +170,11 @@ export class BlockLibrary {
   /**
    * The markup this block would produce for these values, without producing it.
    *
-   * `instantiate` is what builds an instance, and it has side effects by design — it defines
-   * custom elements and writes CSS into the page. That makes it the wrong tool for the one
-   * question a caller asks far more often than "give me one of these": *is the element on the
-   * page still what this block says?* Answering that by instantiating would register elements
-   * and inject stylesheets as a side effect of looking, and it would have to be awaited, which
-   * a render pass cannot do.
+   * `instantiate` is what builds an instance, and it has a side effect by design — it writes
+   * CSS into the page. That makes it the wrong tool for the one question a caller asks far
+   * more often than "give me one of these": *is the element on the page still what this block
+   * says?* Answering that by instantiating would inject stylesheets as a side effect of
+   * looking, and it would have to be awaited, which a render pass cannot do.
    *
    * So this is the same substitution with nothing else attached: synchronous, inert, and
    * comparable against `cleanMarkup` of a live element once both have been through a DOM
@@ -175,48 +185,19 @@ export class BlockLibrary {
     return renderBlockTemplate(block.html, values, block.props ?? {});
   }
 
-  /** Define the block's custom element, once per tag per page. */
-  async registerElement(block: LibraryBlock): Promise<void> {
-    const element = block.element;
-    if (!element?.tag) return;
-    // Normalising here as well as at authoring time means a block that arrived
-    // through an import or a config object cannot smuggle in an invalid tag.
-    const tag = normalizeCustomElementTag(element.tag);
-    if (!tag) {
-      throw new Error(
-        `"${element.tag}" cannot be used as a custom element name. Use lowercase letters, ` +
-        'numbers and at least one hyphen, for example my-widget.',
-      );
-    }
-    if (this.#registered.has(tag) || customElements.get(tag)) {
-      this.#registered.add(tag);
-      return;
-    }
-
-    const raw = element.tag.trim();
-    let source = element.module ?? element.script;
-    if (!source) return;
-    // The tag was corrected; the module still names the original. Carry the
-    // correction into the source so `define` agrees with the tag being inserted.
-    if (raw && raw !== tag) source = retagSource(source, raw, tag);
-
-    try {
-      await evaluateModule(source);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`<${tag}> could not be registered: ${message}`);
-    }
-    if (!customElements.get(tag)) {
-      throw new Error(
-        `The module ran but did not define <${tag}>. Check that it calls customElements.define('${tag}', ...).`,
-      );
-    }
-    this.#registered.add(tag);
-  }
-
   onChange(listener: () => void): () => void {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
+  }
+
+  /**
+   * Take over a saved `#heo-block-styles` element before the page's CSS is scanned.
+   *
+   * Only meaningful when the page carries a seed: then every block whose CSS that element
+   * holds is about to be loaded, and the library's first write regenerates it in place.
+   */
+  claimSavedStyle(): void {
+    this.#sheet.claimExisting();
   }
 
   /** The CSS the library has injected so far, for the save prompt. */
@@ -234,8 +215,11 @@ export class BlockLibrary {
     if (this.#injectedCSS.has(block.id)) return;
     // Keep an empty slot too: a block first used without CSS can gain styles later,
     // and the next upsert must then have a managed slot to rewrite.
-    this.#injectedCSS.set(block.id, block.css ?? '');
-    this.#writeCSS();
+    const css = block.css ?? '';
+    this.#injectedCSS.set(block.id, css);
+    // An empty slot changes nothing in the joined sheet. Writing anyway would turn the first
+    // CSS-less instance met during hydration into write(''), removing the claimed saved style.
+    if (css.trim()) this.#writeCSS();
   }
 
   #writeCSS(): void {
@@ -408,13 +392,6 @@ export function slugify(value: string): string {
 }
 
 /**
- * Build a block definition from raw user input in the library panel.
- *
- * The four inputs map onto one block: HTML becomes the template, CSS is injected
- * once, and a JS/Lit module plus tag name turns the block into a real custom
- * element whose tag is what actually gets inserted.
- */
-/**
  * One `{{placeholder}}` in a block's markup, and what the author decided about it.
  *
  * Lives here rather than in the panel that renders it because two entry points now
@@ -572,13 +549,16 @@ export function humanisePropName(name: string): string {
   return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }
 
+/**
+ * Build a block definition from raw user input in the block dialog.
+ *
+ * HTML becomes the template and CSS is injected once, scoped to the block's instances.
+ */
 export function blockFromSource(input: {
   name: string;
   kind: BlockKind;
   html?: string;
   css?: string;
-  script?: string;
-  tag?: string;
   description?: string;
   category?: string;
   /** Supply to update an existing block instead of deriving a new id. */
@@ -586,12 +566,7 @@ export function blockFromSource(input: {
 }): LibraryBlock {
   const id = input.id ?? slugify(input.name) ?? '';
   const resolvedId = id || `block-${Date.now().toString(36)}`;
-  const tag = normalizeCustomElementTag(input.tag ?? '');
-  const hasElement = Boolean(tag && input.script?.trim());
-
-  const html = hasElement
-    ? `<${tag}></${tag}>`
-    : (input.html?.trim() ?? '<div>New block</div>');
+  const html = input.html?.trim() || '<div>New block</div>';
 
   return {
     id: resolvedId,
@@ -603,90 +578,20 @@ export function blockFromSource(input: {
     css: input.css?.trim() || undefined,
     slots: input.kind === 'container',
     origin: 'user',
-    element: hasElement ? { tag, module: input.script!.trim() } : undefined,
   };
 }
 
-/**
- * Coerce anything the user types into a valid custom element name.
- *
- * The spec's `PotentialCustomElementName` is far more permissive than people
- * expect — `my-foo@ter` is legal — which means an accidental character sails past
- * `customElements.define` and only fails later, somewhere unrelated, with a
- * message about an illegal character. Restricting to a conservative subset makes
- * such a name impossible to create in the first place.
- *
- * Two corrections are applied: illegal characters are dropped, and a name with no
- * hyphen gets one, splitting on a camelCase boundary or a common prefix so
- * `myFooter` and `myfooter` both become `my-footer`.
- */
-export function normalizeCustomElementTag(input: string): string {
-  const raw = String(input ?? '').trim();
-  if (!raw) return '';
-
-  // Split camelCase before lowercasing, while the boundary is still visible.
-  let name = raw
-    .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
-    .toLowerCase()
-    .replace(/[^a-z0-9-]+/g, '-')
-    .replace(/-{2,}/g, '-')
-    .replace(/^-+|-+$/g, '');
-
-  // A custom element name must start with an ASCII lowercase letter.
-  name = name.replace(/^[^a-z]+/, '');
-  if (!name) return '';
-
-  if (!name.includes('-')) {
-    const prefix = COMMON_PREFIXES.find(
-      (candidate) => name.startsWith(candidate) && name.length > candidate.length,
-    );
-    name = prefix ? `${prefix}-${name.slice(prefix.length)}` : `${name}-block`;
-  }
-
-  if (RESERVED_TAGS.has(name)) name = `${name}-block`;
-  return /^[a-z][a-z0-9]*(?:-[a-z0-9]+)+$/.test(name) ? name : '';
-}
+/** What legacy blocks are refused with: blocks are HTML and CSS only now. */
+export const LEGACY_BLOCK_MESSAGE =
+  'Web component blocks are no longer supported; this block has an element definition.';
 
 /**
- * Rename a tag inside module source.
+ * A block from an earlier version that defined a custom element.
  *
- * Only quoted occurrences and actual tag usages are touched, so a variable or a
- * comment that happens to contain the same letters is left alone.
+ * Read off the untyped record: `LibraryBlock` no longer declares `element`, but stored data may.
  */
-function retagSource(source: string, from: string, to: string): string {
-  const escaped = from.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return source
-    .replace(new RegExp(`(['"\`])${escaped}\\1`, 'g'), `$1${to}$1`)
-    .replace(new RegExp(`</?${escaped}(?=[\\s/>])`, 'g'), (match) =>
-      match.replace(from, to),
-    );
+export function isLegacyElementBlock(block: unknown): boolean {
+  return block != null && (block as { element?: unknown }).element != null;
 }
-
-/** Prefixes people actually use, so `myfooter` splits where they meant it to. */
-const COMMON_PREFIXES = [
-  'my',
-  'app',
-  'site',
-  'page',
-  'ui',
-  'the',
-  'our',
-  'web',
-  'heo',
-  'demo',
-  'custom',
-];
-
-/** Names the HTML spec reserves and `customElements.define` rejects. */
-const RESERVED_TAGS = new Set([
-  'annotation-xml',
-  'color-profile',
-  'font-face',
-  'font-face-src',
-  'font-face-uri',
-  'font-face-format',
-  'font-face-name',
-  'missing-glyph',
-]);
 
 export { BLOCK_STYLE_ID };

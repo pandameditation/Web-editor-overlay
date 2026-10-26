@@ -10,6 +10,7 @@ import {
 } from './classes.js';
 import {
   BLOCK_ATTR,
+  BLOCK_PART_ATTR,
   BLOCK_STYLE_ID,
   CLASS_STYLE_ID,
   DRAGGING_ATTR,
@@ -26,7 +27,7 @@ import {
   VERSION,
 } from './constants.js';
 import { appliedRules, cascadedDeclarations, inlineDeclarations } from './css.js';
-import { addClassToBlockElements, applyBlockInlineRules } from './block-css.js';
+import { addClassToBlockElements, applyBlockInlineRules, blockIdsReferencedByCSS } from './block-css.js';
 import {
   parsePastedCSS,
   pastedDeclarationCount,
@@ -91,8 +92,9 @@ import {
   BlockLibrary,
   blockFromSource,
   blockPropRows,
+  isLegacyElementBlock,
+  LEGACY_BLOCK_MESSAGE,
   mergeInstanceText,
-  normalizeCustomElementTag,
   type BlockPropRow,
 } from './library.js';
 import {
@@ -459,10 +461,6 @@ export interface BlockExtraction {
   css: string;
   /** Global classes staged by the block CSS destination until the block is saved. */
   globalClasses: Record<string, Record<string, string>>;
-  /** ES module source for a block that registers a custom element. */
-  script: string;
-  /** Custom element tag that `script` defines. */
-  tag: string;
   /**
    * Which pane of the dialog is showing.
    *
@@ -644,8 +642,6 @@ function emptyBlockDraft(): BlockExtraction {
     html: '',
     css: '',
     globalClasses: {},
-    script: '',
-    tag: '',
     step: 'source',
     props: [],
     applyToInstances: false,
@@ -665,7 +661,6 @@ function blockStateSnapshot(block: LibraryBlock | undefined): string | undefined
     html: block.html,
     css: block.css ?? '',
     props: block.props ?? null,
-    element: block.element ?? null,
     icon: block.icon ?? '',
     slots: Boolean(block.slots),
   });
@@ -1030,7 +1025,6 @@ export class EditorEngine {
    * paragraph means dragging past its edge.
    */
   #pressBeganInTextEdit = false;
-  #injectedElements = new Set<string>();
   #destroyed = false;
   /** Which export build is the current one, so an overtaken one stays quiet. */
   #bundleRun = 0;
@@ -1200,6 +1194,12 @@ export class EditorEngine {
   /* ---------------------------------------------------------------------- */
 
   start(): void {
+    /*
+     * Before the scans, not at the library's first write: the scans skip editor-owned sheets, and
+     * a saved `#heo-block-styles` read as page CSS here would put the block selectors into the
+     * rules registry (probe R7). Only with a seed, the one case in which a save keeps that id.
+     */
+    if (document.querySelector(SEED_SCRIPT_SELECTOR)) this.library.claimSavedStyle();
     this.tokens.scanDocument();
     this.classes.scanDocument();
     this.rules.scanDocument();
@@ -1241,12 +1241,15 @@ export class EditorEngine {
       this.rules.onChange(() => this.#bumpRegistry()),
       this.library.onChange(() => {
         this.#hydrateBlockInstances();
+        // Async (deflate) seeds land here, after `start` has returned.
+        this.#reportDroppedLegacyBlocks();
         this.#bumpRegistry();
       }),
     );
     // Seeds are imported before listeners are attached, so hydrate the page once after the
     // initial registries exist. Later imports and upserts flow through the listener above.
     this.#hydrateBlockInstances();
+    this.#reportDroppedLegacyBlocks();
 
     /*
      * Providers, then credentials, and providers from three places that must not erase each other.
@@ -2990,8 +2993,6 @@ export class EditorEngine {
         html: block.html,
         css: block.css ?? '',
         globalClasses: {},
-        script: block.element?.module ?? block.element?.script ?? '',
-        tag: block.element?.tag ?? '',
       },
     });
   }
@@ -3357,7 +3358,6 @@ export class EditorEngine {
     }
 
     const name = pending.name.trim();
-    const tag = normalizeCustomElementTag(pending.tag);
     const sourceRefused = blockSourceIssues(pending)[0];
     if (sourceRefused) {
       this.updateExtraction({ error: sourceRefused.message });
@@ -3404,8 +3404,6 @@ export class EditorEngine {
         description: pending.description,
         html: applied.html,
         css: pending.css,
-        script: pending.script,
-        tag,
       });
       // Props replace rather than merge: the review step is the whole truth about
       // them, so one deleted from the markup has to disappear with it.
@@ -3524,12 +3522,14 @@ export class EditorEngine {
     block: LibraryBlock,
     options: { globalClasses?: Record<string, Record<string, string>> } = {},
   ): LibraryBlock {
+    // Checked before any record exists, so a refused block never leaves a half-applied command.
+    if (isLegacyElementBlock(block)) throw new Error(LEGACY_BLOCK_MESSAGE);
     const id = block.id;
     /*
      * Deep enough to put back.
      *
-     * `props` and `element` are nested objects, and `upsert` replaces the map slot while sharing
-     * them — so a snapshot holding the references would be mutated by the very edit it exists to
+     * `props` is a nested object, and `upsert` replaces the map slot while sharing
+     * it — so a snapshot holding the references would be mutated by the very edit it exists to
      * undo. The same care `setClassDeclaration` takes over one class's declarations.
      */
     const live = id ? this.library.get(id) : undefined;
@@ -3537,7 +3537,6 @@ export class EditorEngine {
       ? {
         ...live,
         props: live.props ? { ...live.props } : undefined,
-        element: live.element ? { ...live.element } : undefined,
       }
       : undefined;
     const classEntries = Object.entries(options.globalClasses ?? {}).filter(
@@ -3614,7 +3613,6 @@ export class EditorEngine {
           html: next.html,
           css: next.css ?? '',
           ...(next.props ? { props: Object.keys(next.props).join(', ') } : {}),
-          ...(next.element?.tag ? { tag: next.element.tag } : {}),
           ...(classEntries.length ? { classes: classEntries.map(([name]) => name).join(', ') } : {}),
         },
         at: Date.now(),
@@ -3663,7 +3661,6 @@ export class EditorEngine {
     const snapshot: LibraryBlock = {
       ...live,
       props: live.props ? { ...live.props } : undefined,
-      element: live.element ? { ...live.element } : undefined,
     };
 
     this.history.commit({
@@ -3752,8 +3749,39 @@ export class EditorEngine {
       this.store.value.saveBlockLibrary &&
       this.blockLibrarySize() === 0 &&
       this.settings.isDefault &&
-      this.blockLibraryInPage()
+      // The seed alone: links kept for styling (an unticked save keeps them while CSS targets
+      // them) are not a library to remove.
+      Boolean(document.querySelector(SEED_SCRIPT_SELECTOR))
     );
+  }
+  /**
+   * The design-system parts a save writes: the live ones, minus the block CSS when the library is
+   * being removed. The links and the block CSS go together, or the CSS would be written dead.
+   */
+  #savedDesignSystemParts(): DesignSystemParts {
+    const parts = this.designSystemParts();
+    return this.#removingLibrary() ? { ...parts, blockCSS: '' } : parts;
+  }
+  /**
+   * Blocks some CSS the page carries refers to: what this save writes for blocks, and the page's
+   * own CSS, which after an unticked save and a reload holds the earlier session's block CSS.
+   */
+  #styledBlockIds(): Set<string> {
+    const texts = [this.#savedDesignSystemParts().blockCSS];
+    for (const sheet of Array.from(document.styleSheets)) {
+      const owner = sheet.ownerNode;
+      if (owner instanceof Element && owner.matches('[data-heo-generated], [data-heo-internal]')) continue;
+      let rules: CSSRuleList;
+      try {
+        rules = sheet.cssRules;
+      } catch {
+        // Cross-origin: unreadable, and not something an editor save wrote.
+        continue;
+      }
+      // A grouping or nested rule's text includes its children, so the top level is enough.
+      for (const rule of Array.from(rules)) texts.push(rule.cssText);
+    }
+    return blockIdsReferencedByCSS(texts);
   }
 
   /** Whether the page is carrying a library that could be taken out of it. */
@@ -3782,13 +3810,19 @@ export class EditorEngine {
     const links = Array.from(document.querySelectorAll(`[${BLOCK_ATTR}]`)).filter(
       (node): node is HTMLElement => node instanceof HTMLElement && !node.closest(`[${IGNORE_ATTR}]`),
     );
+    const parts = Array.from(document.querySelectorAll(`[${BLOCK_PART_ATTR}]`)).filter(
+      (node): node is HTMLElement => node instanceof HTMLElement && !node.closest(`[${IGNORE_ATTR}]`),
+    );
     const seeds = Array.from(document.querySelectorAll(SEED_SCRIPT_SELECTOR));
-    if (!links.length && !seeds.length) {
+    if (!links.length && !parts.length && !seeds.length) {
       this.notify('This page is not carrying a block library.', 'info');
       return 0;
     }
 
-    const commands = links.map((el) => setAttribute(el, BLOCK_ATTR, null));
+    const commands = [
+      ...links.map((el) => setAttribute(el, BLOCK_ATTR, null)),
+      ...parts.map((el) => setAttribute(el, BLOCK_PART_ATTR, null)),
+    ];
     /*
      * The seed tag is put back by `revert` rather than recorded as a deletion.
      *
@@ -4988,6 +5022,8 @@ export class EditorEngine {
     cssBefore: string,
     words: { label: string; message: string },
   ): HTMLElement | null {
+    // Before the insertion, like `BLOCK_ATTR`: a fresh insertion is serialized whole.
+    this.#markParts(nodes, block);
     const command = insertNodes(target.reference, target.position, nodes, words.label);
     if (!command) return null;
 
@@ -5013,7 +5049,6 @@ export class EditorEngine {
     }
     // A refused change has already said why and put the page back.
     if (!this.history.commit(command)) return null;
-    if (block.element?.tag) this.#injectedElements.add(block.element.tag);
     // Remember what the block was configured with, so the props panel can offer
     // the same form again instead of leaving the values write-once — and so this
     // element can be found again when the template it came from changes.
@@ -5095,6 +5130,18 @@ export class EditorEngine {
    * rebuilding markup: the page already owns these nodes and their text.
    */
   #hydrateBlockInstances(): void {
+    /*
+     * Part hooks too. A part is styling, not an instance, so it adds no `#instances` entry — but a
+     * part whose first root was deleted still needs its block's CSS, or the next library write
+     * would regenerate the sheet without it. `ensureCSS` is idempotent per block.
+     */
+    for (const node of Array.from(document.querySelectorAll(`[${BLOCK_PART_ATTR}]`))) {
+      if (!(node instanceof HTMLElement) || !node.isConnected || node.closest(`[${IGNORE_ATTR}]`)) {
+        continue;
+      }
+      const block = this.library.get(node.getAttribute(BLOCK_PART_ATTR) ?? '');
+      if (block) this.library.ensureCSS(block);
+    }
     for (const node of Array.from(document.querySelectorAll(`[${BLOCK_ATTR}]`))) {
       if (!(node instanceof HTMLElement) || !node.isConnected || node.closest(`[${IGNORE_ATTR}]`)) {
         continue;
@@ -5114,6 +5161,31 @@ export class EditorEngine {
     }
   }
 
+  /**
+   * Tell the user, once, about web component blocks an earlier version stored.
+   *
+   * They are dropped by the library on load; their page markup is left alone.
+   */
+  #reportDroppedLegacyBlocks(): void {
+    const names = this.library.takeDroppedLegacy();
+    if (!names.length) return;
+    const n = names.length;
+    console.warn('[html-editor-overlay] dropped web component blocks', names);
+    this.notify(
+      `${n} web component block${n === 1 ? '' : 's'} from an earlier version ${n === 1 ? 'was' : 'were'} not loaded (${names.join(', ')}). Blocks are HTML and CSS only now.`,
+      'info',
+    );
+  }
+  /**
+   * Hook an instance's second and later top-level elements to its block, before they enter the
+   * page, so the block's CSS reaches every root. The first keeps `BLOCK_ATTR`, the identity.
+   */
+  #markParts(nodes: readonly HTMLElement[], block: LibraryBlock): void {
+    nodes.forEach((node, index) => {
+      if (index === 0) node.removeAttribute(BLOCK_PART_ATTR);
+      else node.setAttribute(BLOCK_PART_ATTR, block.id);
+    });
+  }
   #linkInstance(
     el: HTMLElement,
     block: LibraryBlock,
@@ -5226,12 +5298,8 @@ export class EditorEngine {
    * So the comparison is against the merge, not against the template. If the two are the same
    * there is nothing to bring across, and the control says so instead.
    *
-   * The two mechanics `setBlockProp` splits on split here too. A template block *is* its
-   * markup, so markup is compared, both sides through the same clone-and-strip so attribute
-   * order and quoting cannot manufacture a difference. A block that registers a custom element
-   * is not its markup — the tag renders itself — so its tag and prop attributes are what is
-   * compared; serializing an upgraded element would compare against whatever it rendered into
-   * itself and report every one of them as stale.
+   * A block *is* its markup, so markup is compared, both sides through the same
+   * clone-and-strip so attribute order and quoting cannot manufacture a difference.
    */
   /** Whether the live markup would change if this instance were rebuilt. */
   #blockMarkupDrift(
@@ -5239,13 +5307,6 @@ export class EditorEngine {
     block: LibraryBlock,
     values: Record<string, string>,
   ): boolean {
-    const tag = block.element?.tag;
-    if (tag) {
-      if (el.tagName.toLowerCase() !== tag) return true;
-      return Object.entries(values).some(
-        ([name, value]) => (el.getAttribute(name) ?? '') !== value,
-      );
-    }
 
     const merged = this.#mergedInstance(el, block, values);
     // Nothing to compare against. Reported as "nothing to do" rather than as stale, because
@@ -5376,33 +5437,23 @@ export class EditorEngine {
       // no longer anything this operation is about.
       if (!nodes[0] || !el.isConnected) continue;
 
-      if (block.element?.tag) {
-        /*
-         * An element block's props are attributes rather than substitutions, so they go onto
-         * the fresh tag the way `setBlockProp` puts them onto a live one. Without this the
-         * update would hand back a bare tag and read as "it cleared all my values".
-         */
-        for (const [name, value] of Object.entries(instance.values)) {
-          if (value) nodes[0].setAttribute(name, value);
-        }
-      } else {
-        /*
-         * The template's markup, this copy's words.
-         *
-         * Instantiating gives the template as the library now holds it, which is the structure
-         * that has to arrive — and, on its own, the placeholder text that has to not. The merge
-         * is what separates those: tags, classes and newly added elements come from the
-         * template, while everything written into this copy stays written.
-         *
-         * `instantiate` rather than `expand` even though the merge only needs markup, because
-         * it is also what injects the block's CSS and registers its element. A structural
-         * update that arrived without the stylesheet it depends on would look like a broken one.
-         */
-        nodes[0] = mergeInstanceText(nodes[0], el);
-      }
+      /*
+       * The template's markup, this copy's words.
+       *
+       * Instantiating gives the template as the library now holds it, which is the structure
+       * that has to arrive — and, on its own, the placeholder text that has to not. The merge
+       * is what separates those: tags, classes and newly added elements come from the
+       * template, while everything written into this copy stays written.
+       *
+       * `instantiate` rather than `expand` even though the merge only needs markup, because
+       * it is also what injects the block's CSS. A structural update that arrived without the
+       * stylesheet it depends on would look like a broken one.
+       */
+      nodes[0] = mergeInstanceText(nodes[0], el);
 
       const root = nodes[0];
       root.setAttribute(BLOCK_ATTR, block.id);
+      this.#markParts(nodes, block);
       // After the merge, so the insertion marker lands on the node that is actually going in.
       const command = insertNodes(el, 'replace', nodes, `Update ${block.name}`);
       if (!command) continue;
@@ -5477,7 +5528,6 @@ export class EditorEngine {
         css: block.css ?? '',
       });
     }
-    if (block.element?.tag) this.#injectedElements.add(block.element.tag);
     if (reselect) this.select(reselect);
     this.#bumpRevision();
 
@@ -5488,33 +5538,19 @@ export class EditorEngine {
     return updated;
   }
 
-  /**
-   * What a sync actually did, and the one thing it could not do.
-   *
-   * A custom element can be defined once per page and no more, so a block whose module
-   * changed has a new template and an old class, and the markup swap this just performed
-   * cannot bridge that. Saying so is the difference between a feature with a documented
-   * limit and one that appears to work.
-   */
+  /** What a sync did, for its toast. */
   #syncToast(block: LibraryBlock, count: number): string {
     const what = count === 1 ? `1 ${block.name}` : `${count} × ${block.name}`;
-    const tag = block.element?.tag;
-    if (tag && this.#injectedElements.has(tag)) {
-      return `Updated ${what}. <${tag}> is already registered, so a changed module only takes effect after a reload.`;
-    }
     return `Updated ${what} from the library.`;
   }
 
   /**
    * Change a prop on an inserted block.
    *
-   * Two very different mechanics behind one call. A block that registers a custom
-   * element carries its props as attributes, so the element re-renders itself and
-   * nothing structural happens. A template block has no such machinery: its props
-   * were substituted into markup at insert time, so the only honest way to change
-   * one is to re-render the template and swap the element out — which is why this
-   * goes through the same replace command the code panel uses, and why the new node
-   * inherits the instance record.
+   * A block's props were substituted into markup at insert time, so the only honest
+   * way to change one is to re-render the template and swap the element out — which is
+   * why this goes through the same replace command the code panel uses, and why the new
+   * node inherits the instance record.
    */
   async setBlockProp(el: HTMLElement, name: string, value: string): Promise<void> {
     const instance = this.blockInstance(el);
@@ -5522,18 +5558,6 @@ export class EditorEngine {
     const { block } = instance;
     const values = { ...instance.values, [name]: value };
 
-    if (block.element?.tag) {
-      // Written back through the link rather than onto a map entry that may not exist: an
-      // element whose node was replaced under it resolves through the attribute, and reaching
-      // for `#instances.get` there found nothing and silently dropped the edit.
-      this.#instances.set(el, {
-        blockId: block.id,
-        values,
-        css: this.#instances.get(el)?.css ?? block.css ?? '',
-      });
-      this.setAttribute(name, value || null, el);
-      return;
-    }
 
     try {
       const { nodes } = await this.library.instantiate(block, values);
@@ -8205,7 +8229,8 @@ export class EditorEngine {
       // Handed over as four parts rather than one block: the plan uses them to say
       // which kinds a file is about to receive, and joining them is its decision because
       // the join order is the cascade order.
-      designSystemCSS: this.designSystemParts(),
+      designSystemCSS: this.#savedDesignSystemParts(),
+      designSystemScope: this.store.value.designSystemScope,
       designSystemTarget: target,
       blockLibrarySeed: this.blockLibrarySeed(),
       removeBlockLibrary: this.#removingLibrary(),
@@ -8724,7 +8749,6 @@ export class EditorEngine {
       classCSS: this.classes.toCSS(),
       cssRuleCSS: this.rules.toCSS(),
       pageURL: location.href,
-      injectedElements: [...this.#injectedElements],
     });
   }
 
@@ -8782,6 +8806,7 @@ export class EditorEngine {
       // its own: the seed describes the library, and the library is not in the DOM.
       seedScript: this.blockLibrarySeed(),
       removeBlockLibrary: this.#removingLibrary(),
+      styledBlockIds: this.#styledBlockIds(),
     });
   }
 
@@ -8795,13 +8820,17 @@ export class EditorEngine {
    */
   #designSystemBlocks(): Record<string, string> | undefined {
     const scope = this.store.value.designSystemScope;
-    if (scope === 'all') return undefined;
+    // Removing the library drops its block CSS; for `all` that is the only substitution, so the
+    // token, class and rule blocks stay byte-identical.
+    const removal = this.#removingLibrary() ? { [BLOCK_STYLE_ID]: '' } : undefined;
+    if (scope === 'all') return removal;
     const parts = this.designSystemParts();
     return {
       [TOKEN_STYLE_ID]: parts.tokens,
       [CLASS_STYLE_ID]: parts.classes,
       [RULE_STYLE_ID]: parts.rules,
       [BLOCK_STYLE_ID]: parts.blockCSS,
+      ...removal,
     };
   }
 

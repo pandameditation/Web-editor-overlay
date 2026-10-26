@@ -1,5 +1,4 @@
 import { DRAGGING_ATTR, HOST_TAG, IGNORE_ATTR, VERSION, Z_BASE } from './core/constants.js';
-import { normalizeCustomElementTag } from './core/library.js';
 import { EditorEngine, type ProjectInfo } from './core/editor.js';
 import type { FileHost } from './core/file-host.js';
 import type { BundleOptions, BundlePlan } from './core/bundle.js';
@@ -9,7 +8,6 @@ import { releaseModals } from './core/modal.js';
 import { installProvenance, registerOriginResolver } from './core/provenance.js';
 import { installEventShield, shieldOverlayEvents } from './core/shield.js';
 import { ManagedStyleSheet } from './core/stylesheet.js';
-import { publishLit } from './core/lit-bridge.js';
 import { autoMountFromScriptTag } from './integrations/script-tag.js';
 import { setEngine } from './ui/context.js';
 import './ui/overlay-root.js';
@@ -48,14 +46,6 @@ export type {
 export type { FileHost, PlannedWrite, ProjectInfo, WritePlan, WriteResult };
 export { VERSION };
 
-/**
- * Coerce a string into a valid custom element name.
- *
- * Exported because anyone assembling blocks in configuration needs the same
- * correction the authoring form applies, rather than discovering the problem when
- * the element fails to register.
- */
-export { normalizeCustomElementTag };
 
 /**
  * Teach the editor where elements are rendered from.
@@ -102,9 +92,15 @@ html[data-heo-edit] [data-heo-editing] {
   -webkit-user-select: text;
   user-select: text;
 }
+/* !important because block CSS carries an ID weight (1,1,x) and would otherwise beat these
+   (0,2,1) rules on its own elements: a block rule with user-select: none would stop the caret. */
 html[data-heo-edit] [data-heo-editing] {
-  outline: none;
-  cursor: text;
+  outline: none !important;
+  cursor: text !important;
+}
+html[data-heo-edit] [data-heo-editing] {
+  -webkit-user-select: text !important;
+  user-select: text !important;
 }
 html[data-heo-edit] ${HOST_TAG} {
   all: initial;
@@ -248,7 +244,6 @@ export function mount(options: MountOptions = {}): OverlayAPI {
     throw new Error('The editor overlay needs a browser document.');
   }
 
-  publishLit();
 
   const container = options.container ?? document.body ?? document.documentElement;
   const host = document.createElement(HOST_TAG);
@@ -430,7 +425,6 @@ export interface HtmlEditorOverlayGlobal {
   unmount: typeof unmount;
   configure: typeof configure;
   getInstance: typeof getInstance;
-  normalizeCustomElementTag: typeof normalizeCustomElementTag;
   registerOriginResolver: typeof registerOriginResolver;
 }
 
@@ -440,7 +434,6 @@ const globalAPI: HtmlEditorOverlayGlobal = {
   unmount,
   configure,
   getInstance,
-  normalizeCustomElementTag,
   registerOriginResolver,
 };
 

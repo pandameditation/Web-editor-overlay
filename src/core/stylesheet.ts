@@ -9,6 +9,13 @@
 export class ManagedStyleSheet {
   #id: string;
   #element: HTMLStyleElement | null = null;
+  /**
+   * The element `claimExisting` took over from the page, while it is still `#element`.
+   *
+   * An element rather than a flag, so it can never describe a style the editor created later:
+   * `destroy` releases only this one and removes every other.
+   */
+  #claimed: HTMLStyleElement | null = null;
   #css = '';
   #internal: boolean;
 
@@ -36,11 +43,29 @@ export class ManagedStyleSheet {
     return this.#css.trim().length === 0;
   }
 
+  /**
+   * Take over a saved element with this id, before anything scans the page's CSS.
+   *
+   * Marking it generated keeps it out of the token, class and rule registries, which skip
+   * editor-owned sheets. Its text is left alone, so the page keeps showing the saved rules until
+   * the first write replaces them. Returns whether an element was claimed.
+   */
+  claimExisting(): boolean {
+    if (this.#element) return false;
+    const existing = document.getElementById(this.#id);
+    if (!(existing instanceof HTMLStyleElement) || existing.hasAttribute('data-heo-generated')) return false;
+    this.#mark(existing);
+    this.#element = existing;
+    this.#claimed = existing;
+    return true;
+  }
+
   write(css: string): void {
     this.#css = css;
     if (!css.trim()) {
       this.#element?.remove();
       this.#element = null;
+      this.#claimed = null;
       return;
     }
     this.#element ??= this.#create();
@@ -51,18 +76,34 @@ export class ManagedStyleSheet {
 
   #create(): HTMLStyleElement {
     const existing = document.getElementById(this.#id);
-    if (existing instanceof HTMLStyleElement) return existing;
+    if (existing instanceof HTMLStyleElement) {
+      // Adopted from hand-written markup: it is overwritten from now on, so it is the editor's.
+      this.#mark(existing);
+      return existing;
+    }
     const style = document.createElement('style');
     style.id = this.#id;
-    style.setAttribute('data-heo-generated', '');
-    if (this.#internal) style.setAttribute('data-heo-internal', '');
+    this.#mark(style);
     document.head.appendChild(style);
     return style;
   }
 
+  #mark(style: HTMLStyleElement): void {
+    style.setAttribute('data-heo-generated', '');
+    if (this.#internal) style.setAttribute('data-heo-internal', '');
+  }
+
   destroy(): void {
-    this.#element?.remove();
+    if (this.#element !== null && this.#element === this.#claimed) {
+      // It came from the file: removing it on unmount would leave the page's block
+      // instances unstyled once the editor closes. Hand it back as plain page CSS.
+      this.#element.removeAttribute('data-heo-generated');
+      this.#element.removeAttribute('data-heo-internal');
+    } else {
+      this.#element?.remove();
+    }
     this.#element = null;
+    this.#claimed = null;
     this.#css = '';
   }
 }

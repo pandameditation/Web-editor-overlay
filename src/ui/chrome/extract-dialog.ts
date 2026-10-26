@@ -4,7 +4,6 @@ import { repeat } from 'lit/directives/repeat.js';
 import { normalizeClassName, planClassMerge, type ClassMergePlan } from '../../core/classes.js';
 import { labelFor } from '../../core/dom.js';
 import {
-  normalizeCustomElementTag,
   propNameProblem,
   PROP_TYPES,
   type BlockPropRow,
@@ -65,28 +64,20 @@ const SOURCE_TABS = {
     field: 'css' as const,
     placeholder: '.my-block { display: grid; gap: var(--space-md, 16px); }',
   },
-  js: {
-    label: 'JS / Lit',
-    language: 'js' as const,
-    heading: 'Component module',
-    field: 'script' as const,
-    placeholder:
-      "import { LitElement, html, css } from 'lit';\n\nclass MyWidget extends LitElement { … }\ncustomElements.define('my-widget', MyWidget);",
-  },
 } satisfies Record<
   string,
   {
     label: string;
     language: CodeLanguage;
     heading: string;
-    field: 'html' | 'css' | 'script';
+    field: 'html' | 'css';
     placeholder: string;
   }
 >;
 
 type SourceTab = keyof typeof SOURCE_TABS;
 
-const SOURCE_TAB_ORDER = ['html', 'css', 'js'] as const satisfies readonly SourceTab[];
+const SOURCE_TAB_ORDER = ['html', 'css'] as const satisfies readonly SourceTab[];
 
 @customElement('heo-extract-dialog')
 export class HeoExtractDialog extends HeoElement {
@@ -714,7 +705,6 @@ export class HeoExtractDialog extends HeoElement {
     // The block's buffers share one editor behind tabs, so a problem in one has to open its tab.
     show: (name) => {
       if (name === 'block-html') this.sourceTab = 'html';
-      else if (name === 'block-tag' || name === 'block-script') this.sourceTab = 'js';
     },
   });
 
@@ -1287,9 +1277,6 @@ export class HeoExtractDialog extends HeoElement {
     const onProps = pending.step === 'props';
     const captured = pending.element;
     const group = pending.group;
-    const tag = normalizeCustomElementTag(pending.tag);
-    const tagCorrected = Boolean(pending.tag.trim()) && tag !== pending.tag.trim();
-
     return html`
       <header>
         <div class="body">
@@ -1302,8 +1289,7 @@ export class HeoExtractDialog extends HeoElement {
         : captured
         ? html`Captures <code class="mono">${labelFor(captured)}</code> and the classes it uses, so
                 it can be inserted again from the Library.`
-        : html`Markup, styles and — for a real web component — a module, saved to the Library
-                for reuse.`}
+        : html`Markup and styles, saved to the Library for reuse.`}
           </p>
         </div>
         ${this.#closeButton()}
@@ -1330,24 +1316,18 @@ export class HeoExtractDialog extends HeoElement {
       </nav>
 
       <div class="body-scroll">
-        ${onProps ? this.#renderBlockProps(pending) : this.#renderBlockSource(pending, tag, tagCorrected)}
+        ${onProps ? this.#renderBlockProps(pending) : this.#renderBlockSource(pending)}
       </div>
       ${this.#blockFooter(pending)}
     `;
   }
 
-  /** Step one: what the block is, and the three buffers it is made of. */
-  #renderBlockSource(
-    pending: BlockExtraction,
-    tag: string,
-    tagCorrected: boolean,
-  ): TemplateResult {
+  /** Step one: what the block is, and the two buffers it is made of. */
+  #renderBlockSource(pending: BlockExtraction): TemplateResult {
     const active = SOURCE_TABS[this.sourceTab];
-    const isElement = Boolean(tag && pending.script.trim());
-    const hasScript = Boolean(pending.script.trim());
-    // One editor shows three buffers, so its field name follows the tab it is showing.
-    const bufferField = this.sourceTab === 'html' ? 'block-html' : this.sourceTab === 'js' ? 'block-script' : 'block-css';
-    const bufferRequired = this.sourceTab === 'html' ? !hasScript : this.sourceTab === 'js' ? Boolean(tag) : false;
+    // One editor shows both buffers, so its field name follows the tab it is showing.
+    const bufferField = this.sourceTab === 'html' ? 'block-html' : 'block-css';
+    const bufferRequired = this.sourceTab === 'html';
     // A container has one slot in one root; several roots have no single place for it. The
     // engine forces the kind on commit as well, so this only keeps the dialog honest.
     const severalRoots = pending.group.length > 1;
@@ -1443,57 +1423,28 @@ export class HeoExtractDialog extends HeoElement {
         )}
       </div>
 
-      ${this.sourceTab === 'js'
-        ? html`<div class="field">
-              ${fieldLabel('Custom element tag', { required: hasScript })}
-              <input
-                ${field(this.form, 'block-tag', { required: hasScript })}
-                class="input mono"
-                type="text"
-                placeholder="my-widget"
-                .value=${pending.tag}
-                aria-label="Custom element tag"
-                @input=${(event: Event) =>
-            this.editor.updateExtraction({ tag: (event.target as HTMLInputElement).value })}
-                @blur=${() => this.editor.updateExtraction({ tag })}
-              />
-              ${tagCorrected
-            ? html`<p class="note">
-                    ${icon('sparkle', 11)} Will be used as
-                    <code class="mono">${tag || '(unusable — needs a letter)'}</code>. Custom
-                    element names are lowercase and need a hyphen.
-                  </p>`
-            : nothing}
-              ${this.form.error('block-tag')}
-            </div>`
-        : nothing}
-
       <div class="field">
         <div class="label-row">
           ${fieldLabel(active.heading, { required: bufferRequired })}
-          ${this.sourceTab === 'html' || this.sourceTab === 'css'
-        ? html`<button
-                class="paste"
-                type="button"
-                title="Paste CSS and choose how it should be added to this block"
-                @click=${() => this.editor.beginCssPaste({ context: 'block' })}
-              >
-                ${icon('clipboard', 11)} Paste CSS…
-              </button>`
-        : nothing}
+          <button
+            class="paste"
+            type="button"
+            title="Paste CSS and choose how it should be added to this block"
+            @click=${() => this.editor.beginCssPaste({ context: 'block' })}
+          >
+            ${icon('clipboard', 11)} Paste CSS…
+          </button>
         </div>
         <heo-code-editor
           ${field(this.form, bufferField, { required: bufferRequired })}
           .error=${this.form.message(bufferField) ?? ''}
           language=${active.language}
-          rows=${this.sourceTab === 'js' ? 12 : 9}
+          rows=9
           heading=${active.heading}
           .value=${pending[active.field]}
           .tabs=${SOURCE_TAB_ORDER.map((id) => ({ id, label: SOURCE_TABS[id].label }))}
           activeTab=${this.sourceTab}
-          placeholder=${this.sourceTab === 'html' && isElement
-        ? 'Ignored: this block inserts its custom element tag instead.'
-        : active.placeholder}
+          placeholder=${active.placeholder}
           @tab-change=${(event: CustomEvent<{ id: string }>) => {
         this.sourceTab = event.detail.id as SourceTab;
       }}
@@ -1501,19 +1452,13 @@ export class HeoExtractDialog extends HeoElement {
         this.editor.updateExtraction({ [active.field]: event.detail.value })}
         ></heo-code-editor>
         ${this.form.error(bufferField)}
-        ${this.sourceTab === 'html' && !isElement ? this.#renderPropsHelp(pending) : nothing}
+        ${this.sourceTab === 'html' ? this.#renderPropsHelp(pending) : nothing}
         ${this.sourceTab === 'css'
         ? html`<p class="note">
-              ${icon('lock', 11)} Selectors in this block CSS are scoped to the block root when it is
-              used. Class-rooted selectors such as <code class="mono">.pouet</code> stay global
-              so classes remain reusable across the page.
-            </p>`
-        : nothing}
-        ${this.sourceTab === 'js'
-        ? html`<p class="note">
-              Imports of <code class="mono">lit</code> resolve to the copy the overlay already
-              loads, so a component pasted here runs without a build step. The module has to call
-              <code class="mono">customElements.define</code> with the tag above.
+              ${icon('lock', 11)} Rules apply only inside this block: a selector such as
+              <code class="mono">p</code> matches the block's own top-level element and everything
+              in it. Declarations written without a selector are defaults for the top-level
+              element; a rule that targets the same element wins.
             </p>`
         : nothing}
       </div>

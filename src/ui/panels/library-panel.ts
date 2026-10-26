@@ -24,10 +24,7 @@ import '../controls/search-field.js';
  * block with props opens a form first so what lands on the page is already
  * configured.
  *
- * The author form is the interesting half. Paste HTML for a static block, or give
- * a tag name plus a module and the block registers a real custom element and
- * inserts that tag — which is how a Lit component gets into a page that has no
- * build step.
+ * A block is static HTML plus optional CSS, scoped to its instances.
  */
 @customElement('heo-library-panel')
 export class HeoLibraryPanel extends HeoElement {
@@ -176,8 +173,8 @@ export class HeoLibraryPanel extends HeoElement {
       /*
        * Two spellings of the kind, and the card picks whichever fits.
        *
-       * "web component" beside three action buttons does not fit a 150px card, and an
-       * ellipsised "web compo…" tells you less than "wc" does. The short forms are the ones the
+       * "container" beside three action buttons does not fit a narrow card, and an
+       * ellipsised "contai…" tells you less than "box" does. The short forms are the ones the
        * insert menu already uses, so the two surfaces agree on the vocabulary.
        *
        * Three breakpoints rather than one, because the label is not what runs out of room — the
@@ -193,8 +190,9 @@ export class HeoLibraryPanel extends HeoElement {
        * easy mistake here and it silently abbreviates everything, since every threshold ends up
        * about twenty pixels too generous.
        *
-       * Each is the longest label plus the buttons beside it: roughly 80px for "web component",
-       * and 23px per action for an 18px button and its gap.
+       * Each is the longest label plus the buttons beside it: "container" and "component" are
+       * the longest remaining labels (the thresholds were sized for a longer one, so they err on
+       * the side of spelling out), and 23px per action for an 18px button and its gap.
        */
       .card .kind .short {
         display: none;
@@ -732,7 +730,6 @@ export class HeoLibraryPanel extends HeoElement {
  * for the same distinction.
  */
 function kindOf(block: LibraryBlock): { long: string; short: string } {
-  if (block.element) return { long: 'web component', short: 'wc' };
   return block.kind === 'container'
     ? { long: 'container', short: 'box' }
     : { long: 'component', short: 'cmp' };

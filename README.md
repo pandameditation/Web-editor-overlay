@@ -386,8 +386,7 @@ version:
   the end. A fenced block indented inside a numbered list item is the most reliably
   mangled construct in a Markdown document, and truncating instead is worse.
 
-New tokens, new classes and any injected web components follow the edits as CSS and JS to
-add. `npm run prompt` prints a sample if you want to read the current output.
+New tokens, new classes and new block CSS follow the edits as CSS to add. `npm run prompt` prints a sample if you want to read the current output.
 
 ---
 
@@ -886,14 +885,12 @@ want but not where it is.
 
 **Library** — containers (flex row, stack, flex grid, CSS grid, masonry, centered
 page, sidebar, cluster) and components (card, button, callout, image, stat,
-heading, divider, ornamental divider, list, and a working Lit counter). Blocks
+heading, divider, ornamental divider, list). Blocks
 with props open a form first,
 so what lands on the page is already configured. The author form at the bottom
-takes HTML, CSS, or a JS/Lit module plus a tag name, and every block — presets
-included — can be opened back into that form to be renamed, inspected and changed.
-Invalid custom element names are corrected rather than rejected late: `myfooter`
-and `my@footer` both become `my-footer`, in the tag field and in the module
-source.
+takes HTML and CSS — a block is static markup plus optional styles — and every block,
+presets included, can be opened back into that form to be renamed, inspected and changed.
+See [Block CSS](#block-css) for how a block's styles are scoped.
 
 The `+` affordances on a selected element open the same catalogue plus the HTML
 primitives — see [Inserting HTML elements](#inserting-html-elements).
@@ -1020,8 +1017,6 @@ await api.exportSeed();            // the same thing as one string: 'heo1z.…'
 await api.importDesignSystem(x);   // a seed, a document, or either as text
 await api.whenReady();             // once a seed given at mount time has landed
 
-// Correct a string into a valid custom element name, as the authoring form does.
-HtmlEditorOverlay.normalizeCustomElementTag('myFooter'); // 'my-footer'
 
 api.configure({ accent: '#e11d48' });
 api.unmount();
@@ -1404,36 +1399,31 @@ feel native anywhere. When the host page defines a matching token the block
 adopts the project's design language on insert; when it does not, the fallback
 keeps the block looking right. Follow it in your own blocks.
 
-### Web components
+### Block CSS
 
-Give a block an `element` and it registers a real custom element, then inserts
-that tag:
+A block's CSS applies only inside its instances. A selector such as `p` matches the block's
+own top-level element(s) and everything in them, and class selectors are scoped too; use the
+Paste CSS **global class** destination for a class meant for the whole page.
 
-```ts
-{
-  id: 'rating',
-  name: 'Star rating',
-  kind: 'component',
-  html: '<my-rating value="4"></my-rating>',
-  element: {
-    tag: 'my-rating',
-    module: `import { LitElement, html, css } from 'lit';
-      class MyRating extends LitElement {
-        static properties = { value: { type: Number } };
-        render() { return html\`\${'★'.repeat(this.value)}\`; }
-      }
-      customElements.define('my-rating', MyRating);`,
-  },
-}
-```
+Declarations written without a selector (`background-color: blue;`) are defaults for the
+block's top-level element(s), every one of them in a block with several; a rule that targets
+the same element wins.
 
-Bare `lit` imports are rewritten to a shim over the copy the overlay already
-bundles, so a pasted component runs with no build step. The module must call
-`customElements.define` with the declared tag. Every injected component is listed
-in the save prompt with its source, so it can become a real component file.
+Block CSS outranks page and design-system rules up to one ID; to override it on one instance
+use the Styles panel (inline), across all instances edit the block's CSS.
 
-This needs blob-URL module evaluation; a strict `script-src` CSP will block it,
-and the overlay reports that rather than failing silently.
+A block's rules reach the outer element of a block placed inside it, never what is inside that
+block. An instance of the same block nested inside a foreign block inside it is not styled (a
+limitation of selector-only scoping).
+
+`@media`, `@supports`, `@container` and `@layer` are scoped; `@keyframes` and `@font-face`
+names are global; block CSS inside `@layer` loses to unlayered page CSS. `@import`,
+`@namespace` and `@charset` are dropped — put imports in the page's own stylesheet.
+
+When the design system is saved to a linked stylesheet, removing a declaration from a block
+shows only after the next save and reload.
+
+The id `heo-block-scope` is reserved: an element carrying it would not receive block styles.
 
 ### Security
 

@@ -57,6 +57,7 @@ export const FIXTURES = [
   { page: 'test/advisory.html', budget: 45000, weight: 3200 },
   { page: 'test/paste-html.html', budget: 45000, weight: 3000 },
   { page: 'test/plus-create-block.html', budget: 45000, weight: 2500, fast: true },
+  { page: 'test/block-css-scope.html', budget: 90000, weight: 6000, fast: true },
   { page: 'test/multi-select.html', budget: 60000, weight: 3000 },
   { page: 'test/multi-clipboard.html', budget: 60000, weight: 3000 },
   /* About 50 s alone: some 540 rows, each settled, over two themes and two page colours. */

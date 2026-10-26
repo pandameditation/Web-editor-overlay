@@ -1,4 +1,4 @@
-import { BLOCK_ATTR } from './constants.js';
+import { BLOCK_ATTR, BLOCK_PART_ATTR } from './constants.js';
 import {
   mergeIntoRules,
   patchCSS,
@@ -11,8 +11,10 @@ import { isEditorOwned, type DomOp } from './dom-journal.js';
 import type { JournalEntry } from './history.js';
 import {
   dropBlockLinks,
+  stripBlockChunksFromDesignSystemRegion,
   STYLE_BLOCK_END,
   STYLE_BLOCK_START,
+  upsertBlockStyleBlock,
   upsertSeedBlock,
   upsertStyleBlock,
 } from './html-patch.js';
@@ -21,6 +23,7 @@ import { patchSourceFromJournal } from './source-patch.js';
 import type { FileHost } from './file-host.js';
 import { DOCUMENT_TARGET, styleElementById } from './sheets.js';
 import type { ChangeRecord } from './types.js';
+import type { DesignSystemScope } from './design-system.js';
 
 /**
  * A session, as a set of files to write.
@@ -198,6 +201,11 @@ export interface WriteSubject {
    * So it is a choice with a sensible default rather than a rule.
    */
   designSystemTarget: string;
+  /**
+   * The extent the design system is saved at. `none` leaves an existing block-styles region in the
+   * file untouched, the way it leaves the design-system region: "do not add mine".
+   */
+  designSystemScope?: DesignSystemScope;
   /**
    * The block library, encoded as a seed, when the user asked for it to travel with the page.
    *
@@ -918,7 +926,9 @@ function tryPatchDocument(
     return null;
   }
 
-  const keepAttributes = blockSeed ? [BLOCK_ATTR] : [];
+  // Symmetry only: neither link attribute is bookkeeping (`isBookkeepingAttribute`), so the journal
+  // records them and the patcher writes them whatever `keep` holds. That exemption is the mechanism.
+  const keepAttributes = blockSeed ? [BLOCK_ATTR, BLOCK_PART_ATTR] : [];
   const styleEdits = inlineStyleTransforms(records, why);
   const result = patchSourceFromJournal({
     source: html,
@@ -946,16 +956,32 @@ function tryPatchDocument(
    * other byte-identical. Removal of the library is the third state and happens last of all,
    * taking the instance links with it.
    */
+  /*
+   * When the library travels into this file, block CSS gets its own region holding the adoptable
+   * `<style id="heo-block-styles">`, and the design-system text is recomputed here without it — so
+   * the caller's `designSystemCSS` is ignored in that case. Otherwise (no seed, removal, or a
+   * stylesheet target) the region is emptied, which drops one an earlier save left: the same CSS
+   * now goes with the design system, and a second copy must not stay.
+   */
+  const blockRegion =
+    subject.designSystemTarget === DOCUMENT_TARGET && Boolean(blockSeed) && !removeBlockLibrary;
+  const pageCSS = blockRegion
+    ? designSystemCSSText({ ...subject.designSystemCSS, blockCSS: '' })
+    : designSystemCSS;
+  const blockStyleCSS = blockRegion ? subject.designSystemCSS.blockCSS ?? '' : '';
+  const writesBlockStyles = subject.designSystemScope !== 'none';
+  // An earlier save without the library left its block CSS in the design-system region.
+  const source = blockRegion && writesBlockStyles
+    ? stripBlockChunksFromDesignSystemRegion(result.html)
+    : result.html;
   const placedInPage = mergeIntoPageStyles(
-    result.html,
-    designSystemCSS,
+    source,
+    pageCSS,
     subject.placements?.get(documentPath) ?? [],
   );
-  const withBlocks = upsertSeedBlock(
-    upsertStyleBlock(placedInPage.html, placedInPage.rest),
-    blockSeed,
-    removeBlockLibrary,
-  );
+  const withStyles = upsertStyleBlock(placedInPage.html, placedInPage.rest);
+  const withBlockStyles = writesBlockStyles ? upsertBlockStyleBlock(withStyles, blockStyleCSS) : withStyles;
+  const withBlocks = upsertSeedBlock(withBlockStyles, blockSeed, removeBlockLibrary);
   return {
     html: removeBlockLibrary ? dropBlockLinks(withBlocks) : withBlocks,
     placements: placedInPage.placed,
@@ -988,6 +1014,8 @@ function mergeIntoPageStyles(
     const at = match.index!;
     if (managedStart !== -1 && managedEnd > managedStart && at > managedStart && at < managedEnd) continue;
     if (insideComment(at) || /data-heo-/i.test(match[1])) continue;
+    // The adoptable block style is regenerated from the seed; nothing else is merged into it.
+    if (/\bid=(["']?)heo-block-styles\1/i.test(match[1])) continue;
     const start = at + match[0].indexOf('>') + 1;
     blocks.push({ start, end: start + match[2].length });
   }

@@ -109,13 +109,6 @@ export function compactDesignSystem(doc: DesignSystemDocument): DesignSystemDocu
     if (block.css) next.css = block.css;
     if (block.icon) next.icon = block.icon;
     if (block.slots) next.slots = block.slots;
-    if (block.element?.tag) {
-      next.element = {
-        tag: block.element.tag,
-        ...(block.element.module ? { module: block.element.module } : {}),
-        ...(!block.element.module && block.element.script ? { script: block.element.script } : {}),
-      };
-    }
     return next;
   });
 

@@ -855,7 +855,8 @@ color: rebeccapurple;`;
         const text = dialogRoot()?.querySelector('.destination .note.warn')?.textContent
           ?.replace(/\s+/g, ' ').trim() ?? '';
         return {
-          ok: /scoped to this block/.test(text) && /pouet/.test(text),
+          ok: /scoped to this block/.test(text) && /pouet/.test(text) && /global Class/.test(text) &&
+            !/stay global/.test(text),
           text,
         };
       });
@@ -950,19 +951,25 @@ color: rebeccapurple;`;
         : null;
       await frames();
       const scopedPrefix = `[data-heo-block="${blockId}"]`;
-      check('usingTheBlockScopesElementRulesButLeavesClassRulesGlobal', () => {
+      /*
+       * Every rule is scoped now, class-rooted ones included: a block's `.pouet` used to stay
+       * global and restyle the page's own `.pouet`, which contradicts "scoped to the block". A
+       * page-wide class is what the global-class destination is for.
+       */
+      check('usingTheBlockScopesEveryRuleIncludingClassRules', () => {
         const generated = engine.library.css;
         const paragraph = insertedBlock?.querySelector('p');
         return {
           ok: Boolean(insertedBlock) &&
-            generated.includes(`${scopedPrefix} p`) &&
-            generated.includes('.pouet') &&
-            !generated.includes(`${scopedPrefix} .pouet`) &&
+            generated.includes(`data-heo-block="${blockId}"`) &&
+            generated.includes('p:is(') &&
+            generated.includes('.pouet:is(') &&
+            !/\.pouet\s*\{/.test(generated) &&
             generated.includes('@media (min-width: 1px)') &&
             getComputedStyle(paragraph).color === 'rgb(12, 34, 56)' &&
             getComputedStyle(outsideParagraph).color !== 'rgb(12, 34, 56)' &&
             getComputedStyle(insertedBlock).backgroundColor === 'rgb(78, 90, 12)' &&
-            getComputedStyle(outsidePouet).backgroundColor === 'rgb(78, 90, 12)' &&
+            getComputedStyle(outsidePouet).backgroundColor !== 'rgb(78, 90, 12)' &&
             getComputedStyle(paragraph).outlineWidth === '3px',
           blockId,
           generated,

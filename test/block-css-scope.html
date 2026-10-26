@@ -1,0 +1,760 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Block CSS: scoped, visible, and static</title>
+  <!--
+    Blocks are HTML plus CSS only, and their CSS has to show.
+
+    It did not: block CSS was scoped with a descendant prefix, `[data-heo-block="id"] p`, which can
+    never match the block's own top-level element, so `p { background-color: blue }` in a block
+    whose markup is `<p>` matched nothing. Bare declarations were dropped, the second root of a
+    multi-root block had no hook, qualified page rules out-ranked the prefix, and class-rooted
+    selectors leaked to the whole page. Saving without the library stripped the links the CSS
+    needed, and a reload stacked a stale copy of the block style beside a fresh one.
+
+    The JS / Lit block path is gone: the dialog shows HTML and CSS only, and a stored web
+    component block is dropped on load with one message.
+
+    Run `npm run build:lib` first.
+  -->
+  <style>
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: system-ui, sans-serif;
+    }
+    p {
+      background-color: rgb(255, 255, 0);
+    }
+  </style>
+</head>
+<body>
+  <main id="wrap">
+    <p id="pageP">Page paragraph.</p>
+    <div class="prose"><p id="proseAnchor">Prose paragraph.</p></div>
+    <div id="host"><p id="hostAnchor">Host paragraph.</p></div>
+    <p id="classTwin" class="twin">Page element sharing a block class.</p>
+    <p id="anchor">Anchor.</p>
+    <div id="siblings"><div id="afterBlock">A page div after a block.</div></div>
+  </main>
+  <!-- After <head>, so these page rules come later in the document than the block sheet. -->
+  <style>
+    body .prose p {
+      color: rgb(255, 255, 0);
+    }
+    #host p {
+      background-color: rgb(255, 165, 0);
+    }
+  </style>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const results = {};
+      const errors = [];
+      addEventListener('error', (e) => errors.push('error: ' + e.message));
+      addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + String(e.reason)));
+      const progress = document.getElementById('progress');
+      const step = (name) => { progress.textContent = name; };
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const byId = (id) => document.getElementById(id);
+      const safe = (fn) => {
+        try { return fn(); } catch (err) { return 'THREW: ' + (err && err.message ? err.message : String(err)); }
+      };
+      const bg = (el) => (el ? getComputedStyle(el).backgroundColor : null);
+      const color = (el) => (el ? getComputedStyle(el).color : null);
+      const BLUE = 'rgb(0, 0, 255)';
+      const YELLOW = 'rgb(255, 255, 0)';
+      const ORANGE = 'rgb(255, 165, 0)';
+      const GREEN = 'rgb(0, 128, 0)';
+      const RED = 'rgb(255, 0, 0)';
+      function deepQuery(selector, root = document) {
+        const found = root.querySelector?.(selector);
+        if (found) return found;
+        for (const el of root.querySelectorAll?.('*') ?? []) {
+          if (!el.shadowRoot) continue;
+          const hit = deepQuery(selector, el.shadowRoot);
+          if (hit) return hit;
+        }
+        return null;
+      }
+
+      // Captured before anything changes, so a reset puts back exactly what the file holds.
+      const FILE_NAME = 'block-css-scope.html';
+      const ORIGINAL_MAIN = document.querySelector('main').innerHTML;
+      const fileText = await fetch(location.href).then((r) => r.text());
+
+      // Every console.warn, so the "told once" and "dropped with a warning" claims can be counted.
+      const warns = [];
+      const realWarn = console.warn.bind(console);
+      console.warn = (...args) => { warns.push(args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ')); realWarn(...args); };
+
+      let api = null;
+      let engine = null;
+      const mount = () => {
+        api = window.HtmlEditorOverlay.mount({ theme: 'dark', detectScriptContent: false, fileName: FILE_NAME });
+        engine = api.engine;
+        api.setEditing(true);
+      };
+      const unmount = async () => {
+        if (!api) return;
+        api.unmount();
+        api = null;
+        engine = null;
+        await frames();
+      };
+
+      /*
+       * Nodes a reload brought in, tracked here rather than marked with an attribute so exports
+       * are not affected by the bookkeeping.
+       */
+      const imported = new Set();
+      const clearSaved = () => {
+        for (const node of imported) node.remove();
+        imported.clear();
+        for (const node of Array.from(document.querySelectorAll('#heo-block-styles, script[type="application/heo-seed"]'))) {
+          node.remove();
+        }
+      };
+      /** Back to the page as the file holds it, with a fresh editor. */
+      const resetPage = async () => {
+        await unmount();
+        clearSaved();
+        document.querySelector('main').innerHTML = ORIGINAL_MAIN;
+        mount();
+        await engine.whenReady();
+        await frames();
+      };
+      /**
+       * Rebuild the page from saved HTML and remount, as a browser loading that file would.
+       *
+       * Imports, at the end of `<head>` and in order, every comment naming a managed region, every
+       * `<style>` holding block CSS (attributes and id included) and, with `seed`, the seed script;
+       * then the saved `<main>`. Returns before `whenReady()` so the state at mount can be read.
+       */
+      const reloadFrom = async (savedHTML, { seed = false, seedText = null } = {}) => {
+        await unmount();
+        clearSaved();
+        const doc = new DOMParser().parseFromString(savedHTML, 'text/html');
+        let style = null;
+        for (const node of Array.from(doc.head.childNodes)) {
+          const keep =
+            (node.nodeType === Node.COMMENT_NODE && node.data.includes('heo:')) ||
+            (node.nodeName === 'STYLE' && node.textContent.includes('data-heo-block')) ||
+            (seed && node.nodeName === 'SCRIPT' && node.getAttribute('type') === 'application/heo-seed');
+          if (!keep) continue;
+          const copy = document.importNode(node, true);
+          if (copy.nodeName === 'SCRIPT' && seedText) copy.textContent = seedText;
+          if (copy.nodeName === 'STYLE' && copy.id === 'heo-block-styles') style = copy;
+          document.head.append(copy);
+          imported.add(copy);
+        }
+        document.querySelector('main').replaceWith(document.importNode(doc.querySelector('main'), true));
+        mount();
+        return { style };
+      };
+
+      const dialog = () => deepQuery('heo-extract-dialog');
+      const dialogRoot = () => dialog()?.shadowRoot;
+      const primary = () => dialogRoot()?.querySelector('footer .btn.primary');
+      const tabLabels = () => Array.from(dialogRoot()?.querySelectorAll('.tabs [role="tab"]') ?? [])
+        .map((tab) => tab.textContent.trim());
+      const commitDialog = async () => {
+        primary()?.click();
+        await wait(250);
+        await frames();
+      };
+      /** Author a block through the real dialog, from the `+` route, and return it with its instance. */
+      const author = async (name, html, css, reference, position = 'after') => {
+        const before = new Set(engine.library.list().map((b) => b.id));
+        engine.beginBlockDraft(name, 'component', { reference, position });
+        await frames();
+        engine.updateExtraction({ html, css });
+        await frames();
+        await commitDialog();
+        const block = engine.library.list().find((b) => !before.has(b.id) && b.name === name);
+        const root = block ? document.querySelector(`[data-heo-block="${block.id}"]`) : null;
+        return { block, root };
+      };
+      /** Edit a block's CSS through the dialog, as a person would. */
+      const editCSS = async (id, css) => {
+        engine.beginBlockEdit(id);
+        await frames();
+        engine.updateExtraction({ css });
+        await frames();
+        await commitDialog();
+      };
+      const blockStylesIn = (root) => Array.from(root.querySelectorAll('style'))
+        .filter((s) => s.textContent.includes('data-heo-block'));
+      const parse = (html) => new DOMParser().parseFromString(html, 'text/html');
+      // This page's own script spells out markers and a stray style tag, so file text is read
+      // with script bodies taken out.
+      const outsideScripts = (text) => text.replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, '');
+      const count = (text, needle) => outsideScripts(text).split(needle).length - 1;
+      const region = (html, start, end) => {
+        const text = outsideScripts(html);
+        const a = text.indexOf(start);
+        const b = text.indexOf(end);
+        return a === -1 || b < a ? null : text.slice(a, b + end.length);
+      };
+      const BLOCK_REGION = ['<!-- heo:block-styles start', '<!-- heo:block-styles end -->'];
+      const DS_REGION = ['<!-- heo:design-system start', '<!-- heo:design-system end -->'];
+
+      mount();
+      await engine.whenReady();
+      await frames();
+
+      /* ------------------------------------------------------------------ *
+       * 1. The dialog: HTML and CSS, nothing else.
+       * ------------------------------------------------------------------ */
+      step('dialog');
+      results.dialog = {};
+      engine.beginBlockDraft('Tabs probe', 'component');
+      await frames();
+      // The bug being removed: a third "JS / Lit" tab that evaluated a module as a custom element.
+      results.dialog.theDialogOffersOnlyHtmlAndCssTabs = safe(() =>
+        JSON.stringify(tabLabels()) === JSON.stringify(['HTML', 'CSS']));
+      results.dialog.theCodeEditorStripMatches = safe(() =>
+        JSON.stringify((dialogRoot().querySelector('heo-code-editor')?.tabs ?? []).map((t) => t.id)) ===
+        JSON.stringify(['html', 'css']));
+      results.dialog.thereIsNoCustomElementTagField = safe(() =>
+        Boolean(dialogRoot()?.querySelector('heo-code-editor')) &&
+        !dialogRoot().querySelector('[aria-label="Custom element tag"]'));
+      results.dialog.theHeaderNoLongerMentionsWebComponents = safe(() => {
+        const text = dialogRoot().querySelector('header')?.textContent ?? '';
+        return /Markup and styles/.test(text) && !/web component|module/i.test(text);
+      });
+      engine.cancelExtraction();
+      await frames();
+      engine.beginBlockEdit(engine.library.list()[0].id);
+      await frames();
+      results.dialog.editingAnExistingBlockShowsTheSameTwoTabs = safe(() =>
+        engine.store.value.extraction?.id === engine.library.list()[0].id &&
+        JSON.stringify(tabLabels()) === JSON.stringify(['HTML', 'CSS']));
+      engine.cancelExtraction();
+      await frames();
+      engine.beginBlockDraft('Plus probe', 'component', { reference: byId('anchor'), position: 'after' });
+      await frames();
+      results.dialog.thePlusPickerDialogShowsTheSameTwoTabs = safe(() =>
+        Boolean(engine.store.value.extraction?.insertAt) &&
+        JSON.stringify(tabLabels()) === JSON.stringify(['HTML', 'CSS']));
+      engine.cancelExtraction();
+      await frames();
+
+      step('library');
+      results.library = {
+        thereIsNoWebComponentPreset: engine.library.get('counter-webcomponent') === undefined &&
+          !engine.library.grouped().some((group) => group.category === 'Web components') &&
+          engine.library.list().length > 0,
+        theGlobalTagHelperIsGone: window.HtmlEditorOverlay.normalizeCustomElementTag === undefined &&
+          typeof window.HtmlEditorOverlay.mount === 'function',
+      };
+
+      /* ------------------------------------------------------------------ *
+       * 2. Scoping: applies to the block, wins against page rules, leaks nowhere.
+       * ------------------------------------------------------------------ */
+      step('scope');
+      results.scope = {};
+      const blue = await author('Blue para', '<p>hello</p>', 'p { background-color: blue; }', byId('anchor'));
+      // The reported bug: the rule matched nothing because the prefix could not reach the root p.
+      results.scope.aBlockPIsBlueDespiteTheGlobalPRule = bg(blue.root) === BLUE && blue.root?.tagName === 'P';
+      results.scope.theRuleDoesNotLeakToAPageP = bg(byId('pageP')) === YELLOW;
+      const other = await author('Other para', '<p>other</p>', '', byId('anchor'));
+      results.scope.norToAnotherBlocksP = Boolean(other.root) && bg(other.root) === YELLOW;
+
+      // Container A holds an instance of block B, authored into it through the dialog.
+      const row = await author(
+        'Row',
+        '<div class="row"></div>',
+        '.row { display: flex; } .row > * { flex-grow: 1; } p { background-color: blue; }',
+        byId('anchor'),
+      );
+      const inner = row.root
+        ? await author('Inner', '<div><p>inner b</p></div>', '', row.root, 'lastChild')
+        : { root: null };
+      results.scope.norIntoAForeignBlockNestedInside = safe(() =>
+        inner.root?.parentElement === row.root &&
+        getComputedStyle(row.root).display === 'flex' &&
+        bg(inner.root.querySelector('p')) === YELLOW);
+      // A container lays out its children, a nested block's root among them.
+      results.scope.aContainerChildRuleReachesANestedBlockRoot = safe(() =>
+        getComputedStyle(inner.root).flexGrow === '1');
+
+      const prose = await author('Prose para', '<p>prose block</p>', 'p { color: rgb(0, 0, 255); }', byId('proseAnchor'));
+      // `body .prose p` is (0,1,2): it beat the old (0,1,1) prefix.
+      results.scope.itWinsAgainstAQualifiedPageRule = color(prose.root) === BLUE && color(byId('proseAnchor')) === YELLOW;
+      const inHost = blue.block
+        ? await engine.insertBlock(blue.block, {}, { reference: byId('hostAnchor'), position: 'after' })
+        : null;
+      await frames();
+      // `#host p` is (1,0,1) and comes later in the document; the scoped rule is (1,1,1).
+      results.scope.andAgainstALaterIdRule = bg(inHost) === BLUE && bg(byId('hostAnchor')) === ORANGE;
+      const wrapped = await author('Wrapped', '<div class="w"><p>wrapped</p></div>', 'p { background-color: blue; }', byId('anchor'));
+      results.scope.aWrappedBlockStillStylesItsDescendants = bg(wrapped.root?.querySelector('p')) === BLUE;
+      const twin = await author('Twin', '<div class="twin">twin block</div>', '.twin { background-color: rgb(0, 128, 0); }', byId('anchor'));
+      // Class-rooted selectors used to be left global, and turned the page's .twin green.
+      results.scope.classRootedRulesAreScopedToo = bg(twin.root) === GREEN && bg(byId('classTwin')) === YELLOW;
+
+      const caret = await author('Caret', '<p>caret</p>', 'p { cursor: pointer; user-select: none; }', byId('anchor'));
+      const caretBefore = caret.root ? getComputedStyle(caret.root).cursor : null;
+      caret.root?.setAttribute('data-heo-editing', '');
+      // The block rule now carries an ID weight; the edit-mode rules must still win while typing.
+      results.scope.inlineEditingStillShowsATextCaret = safe(() =>
+        caretBefore === 'pointer' &&
+        document.documentElement.hasAttribute('data-heo-edit') &&
+        getComputedStyle(caret.root).cursor === 'text' &&
+        getComputedStyle(caret.root).userSelect === 'text');
+      caret.root?.removeAttribute('data-heo-editing');
+
+      /* ------------------------------------------------------------------ *
+       * 3. Declarations without a selector, and blocks with several roots.
+       * ------------------------------------------------------------------ */
+      step('bare');
+      results.bare = {};
+      const bare = await author('Bare', '<div>hello</div>', 'background-color: blue;', byId('anchor'));
+      // The user's case: no selector, one element. The declarations used to be dropped.
+      results.bare.bareDeclarationsColorTheOnlyElement = bg(bare.root) === BLUE && bare.root?.tagName === 'DIV';
+      const mix = await author('Mix', '<div><p>m</p></div>', 'color: rgb(0, 128, 0); p { background-color: blue; }', byId('anchor'));
+      results.bare.bareDeclarationsMixWithRules = color(mix.root) === GREEN && bg(mix.root?.querySelector('p')) === BLUE;
+      const override = await author('Override', '<div>hello</div>', 'color: rgb(255, 0, 0); div { color: rgb(0, 0, 255); }', byId('anchor'));
+      // A bare declaration is a default: written first and with the lowest weight, it loses.
+      results.bare.anAuthoredRuleOverridesABareDeclarationForTheSameProperty = color(override.root) === BLUE;
+      const multi = await author(
+        'Multi',
+        '<p class="m1">a</p><p class="m2">b</p>',
+        'background-color: rgb(0, 128, 0); p { color: rgb(0, 0, 255); }',
+        byId('anchor'),
+      );
+      const m2 = multi.root?.nextElementSibling;
+      results.bare.everyTopLevelElementOfAMultiRootBlockIsStyled = safe(() =>
+        m2?.classList.contains('m2') &&
+        [multi.root, m2].every((el) => bg(el) === GREEN && color(el) === BLUE));
+      results.bare.theSecondRootCarriesThePartHook = safe(() =>
+        m2.getAttribute('data-heo-block-part') === multi.block.id && !m2.hasAttribute('data-heo-block') &&
+        !multi.root.hasAttribute('data-heo-block-part'));
+      results.bare.aMultiRootInsertionCountsAsOneInstance = safe(() => engine.blockUsage().get(multi.block.id) === 1);
+
+      /* ------------------------------------------------------------------ *
+       * 4. At-rules, nesting, and CSS the block cannot carry.
+       * ------------------------------------------------------------------ */
+      step('atRules');
+      results.atRules = {};
+      const media = await author('Media', '<p>m</p>', '@media (min-width: 1px) { p { background-color: blue; } }', byId('anchor'));
+      results.atRules.mediaRulesAreScopedInside = bg(media.root) === BLUE && bg(byId('pageP')) === YELLOW &&
+        /@media[^{]*\{\s*p:is\(/.test(engine.library.css);
+      const spin = await author(
+        'Pulse',
+        '<p>k</p>',
+        '@keyframes heo-test-pulse { from { opacity: 0.5; } to { opacity: 1; } } p { animation: heo-test-pulse 100s linear infinite; }',
+        byId('anchor'),
+      );
+      // An animation only exists when its keyframes resolve by name.
+      results.atRules.keyframesPassThroughUnchanged = safe(() =>
+        spin.root.getAnimations().some((a) => a.animationName === 'heo-test-pulse') &&
+        engine.library.css.includes('@keyframes heo-test-pulse'));
+      const nest = await author('Nest', '<p>a <b>bold</b></p>', 'p { & b { color: rgb(0, 128, 0); } }', byId('anchor'));
+      results.atRules.nestedRulesAreKept = color(nest.root?.querySelector('b')) === GREEN;
+      const sibling = await author('Sibling', '<p>a</p>', 'p { & + div { color: rgb(255, 0, 0); } }', byId('afterBlock'), 'before');
+      // Copied verbatim, the nested rule would have styled the page div right after the block.
+      results.atRules.aNestedSiblingRuleDoesNotLeakOutOfTheBlock = safe(() =>
+        sibling.root?.nextElementSibling === byId('afterBlock') && color(byId('afterBlock')) !== RED);
+      const warnsBefore = warns.length;
+      const imp = await author('Imp', '<p>i</p>', '@charset "utf-8"; @import url(heo-missing.css); p { color: rgb(255, 0, 0); }', byId('anchor'));
+      const impChunk = engine.library.css.split('/* block: ').find((chunk) => chunk.startsWith(`${imp.block?.id} */`)) ?? '';
+      results.atRules.importIsDroppedWithAWarning = safe(() =>
+        !/@import|@charset/.test(impChunk) && impChunk.includes('p:is(') && color(imp.root) === RED &&
+        warns.slice(warnsBefore).filter((w) => w.includes('@import/@namespace/@charset') && w.includes(imp.block.id)).length === 1);
+      const garbage = await author('Garbage', '<p>g</p>', '<<< not css >>> ;; } p { background-color: rgb(255, 0, 0) } {{', byId('anchor'));
+      results.atRules.unparseableCssInjectsNothingGlobal = safe(() =>
+        Boolean(garbage.block) && bg(byId('pageP')) === YELLOW && bg(byId('anchor')) === YELLOW);
+
+      // Every style rule the library wrote, at the top level or inside a grouping rule, is scoped.
+      results.scope.theGeneratedSheetHasNoUnscopedSelector = safe(() => {
+        const sheet = new CSSStyleSheet();
+        sheet.replaceSync(engine.library.css);
+        const selectors = [];
+        const walk = (rules) => {
+          for (const rule of Array.from(rules)) {
+            if (rule instanceof CSSStyleRule) selectors.push(rule.selectorText);
+            else if (rule.cssRules && !(rule instanceof CSSKeyframesRule)) walk(rule.cssRules);
+          }
+        };
+        walk(sheet.cssRules);
+        return selectors.length > 10 && selectors.every((s) => s.includes('data-heo-block'));
+      });
+
+      /* ------------------------------------------------------------------ *
+       * 5. Editing restyles what is already placed.
+       * ------------------------------------------------------------------ */
+      step('edit');
+      results.edit = {};
+      await editCSS(blue.block.id, 'p { background-color: rgb(0, 128, 0); }');
+      results.edit.editingTheCssRestylesThePlacedInstance =
+        engine.library.get(blue.block.id)?.css === 'p { background-color: rgb(0, 128, 0); }' &&
+        bg(blue.root) === GREEN && bg(inHost) === GREEN;
+
+      /* ------------------------------------------------------------------ *
+       * 6. Save, reload, edit: the export path.
+       * ------------------------------------------------------------------ */
+      step('reload: author');
+      results.reload = {};
+      await resetPage();
+      // A CSS-less instance first, so hydration meets an empty slot before a styled one.
+      const plain = await author('Plain', '<p class="plain">plain</p>', '', byId('anchor'));
+      const saved = await author('Saved para', '<p class="saved">saved</p>', 'p { background-color: blue; }', plain.root);
+      await editCSS(saved.block.id, 'p { background-color: rgb(0, 128, 0); }');
+      const pair = await author('Pair', '<p class="r0">r0</p><p class="r1">r1</p>', 'p { color: rgb(0, 128, 0); }', saved.root);
+      engine.remove(pair.root);
+      await frames();
+      const exp1 = engine.exportHTML();
+      const doc1 = parse(exp1);
+      results.reload.theSavedHtmlCarriesTheScopedCssAndTheLinks = safe(() => {
+        const style = doc1.getElementById('heo-block-styles');
+        return Boolean(style) && !style.hasAttribute('data-heo-generated') &&
+          style.textContent.includes(`data-heo-block="${saved.block.id}"`) &&
+          blockStylesIn(doc1).length === 1 &&
+          Boolean(doc1.querySelector(`main [data-heo-block="${saved.block.id}"]`)) &&
+          Boolean(doc1.querySelector(`main [data-heo-block-part="${pair.block.id}"]`)) &&
+          Boolean(doc1.querySelector('script[type="application/heo-seed"]'));
+      });
+
+      step('reload: plain seed');
+      const first = await reloadFrom(exp1, { seed: true });
+      const rulesFromBlocks = () => engine.rules.list().filter((r) => r.selector.includes('data-heo-block')).length;
+      const atMount = { rules: rulesFromBlocks(), marked: first.style?.hasAttribute('data-heo-generated') };
+      await engine.whenReady();
+      await frames();
+      const liveStyles = () => Array.from(document.querySelectorAll('#heo-block-styles'));
+      results.reload.theSavedBlockStyleIsNotScannedAsPageCSS =
+        atMount.rules === 0 && atMount.marked === true && rulesFromBlocks() === 0;
+      results.reload.adoptingTheSavedBlockStyleRecordsNoChange =
+        engine.records.length === 0 && liveStyles().length === 1 && liveStyles()[0] === first.style &&
+        first.style.hasAttribute('data-heo-generated');
+      results.reload.afterReloadTheBlockPKeepsTheEditedColor = bg(document.querySelector('.saved')) === GREEN;
+      results.reload.afterReloadThePagePKeepsItsOwn = bg(byId('pageP')) === YELLOW;
+      // R4-2: the CSS-less Plain instance comes first in the page and must not empty the sheet.
+      const plainFirst = Boolean(document.querySelector('.plain')?.compareDocumentPosition(document.querySelector('.saved')) & Node.DOCUMENT_POSITION_FOLLOWING);
+      const claimedAfterReady = document.getElementById('heo-block-styles') === first.style;
+
+      await editCSS(saved.block.id, 'p { color: rgb(255, 0, 0); }');
+      results.reload.editingAfterReloadDropsARemovedDeclaration =
+        bg(document.querySelector('.saved')) === YELLOW && color(document.querySelector('.saved')) === RED &&
+        liveStyles().length === 1;
+
+      // A library write that regenerates the sheet: the orphaned part must keep its block's CSS.
+      await author('Later', '<div class="later">later</div>', '.later { outline: 1px solid red; }', byId('anchor'));
+      results.bare.aPartWithoutItsFirstRootKeepsItsCssAfterReload = safe(() =>
+        !document.querySelector('.r0') &&
+        color(document.querySelector('.r1')) === GREEN &&
+        document.querySelector('.r1').getAttribute('data-heo-block-part') === pair.block.id &&
+        !engine.blockUsage().get(pair.block.id));
+      const exp2 = engine.exportHTML();
+      results.reload.aSecondExportCarriesExactlyOneBlockStyle = safe(() => {
+        const doc = parse(exp2);
+        // One style, the regenerated one: the saved block's old green background is gone from it.
+        return blockStylesIn(doc).length === 1 && doc.querySelectorAll('#heo-block-styles').length === 1 &&
+          !doc.getElementById('heo-block-styles').textContent.includes('background-color: rgb(0, 128, 0)');
+      });
+      const deflated = await engine.designSystemSeed();
+      await unmount();
+      results.reload.unmountLeavesTheSavedBlockStyleInThePage = safe(() =>
+        liveStyles().length === 1 && liveStyles()[0] === first.style &&
+        !first.style.hasAttribute('data-heo-generated') &&
+        color(document.querySelector('.saved')) === RED);
+      results.reload.aCssLessInstanceBeforeAStyledOneKeepsTheClaimedStyle =
+        plainFirst && claimedAfterReady && liveStyles()[0] === first.style;
+
+      step('reload: deflate seed');
+      const second = await reloadFrom(exp2, { seed: true, seedText: deflated });
+      const deflateAtMount = {
+        rules: rulesFromBlocks(),
+        marked: second.style?.hasAttribute('data-heo-generated'),
+        library: Boolean(engine.library.get(saved.block.id)),
+      };
+      await engine.whenReady();
+      await frames();
+      results.reload.adoptionAlsoHoldsWithACompressedSeed = safe(() =>
+        deflated.length > 0 && deflated !== parse(exp2).querySelector('script[type="application/heo-seed"]').textContent.trim() &&
+        deflateAtMount.rules === 0 && deflateAtMount.marked === true && deflateAtMount.library === false &&
+        Boolean(engine.library.get(saved.block.id)) && rulesFromBlocks() === 0 &&
+        liveStyles().length === 1 && liveStyles()[0] === second.style &&
+        color(document.querySelector('.saved')) === RED);
+      // Emptying every slot removes the claimed element; a later write makes the editor's own.
+      for (const block of engine.library.export()) engine.library.upsert({ ...block, css: '' });
+      await frames();
+      const goneAfterEmptying = liveStyles().length === 0;
+      engine.library.upsert({ ...engine.library.get(saved.block.id), css: 'p { outline: 1px solid red; }' });
+      const recreated = liveStyles().length === 1 && liveStyles()[0] !== second.style;
+      await unmount();
+      results.reload.unmountRemovesAStyleTheEditorRecreated = goneAfterEmptying && recreated && liveStyles().length === 0;
+
+      step('reload: unused saved style');
+      await resetPage();
+      const goneBlock = await author('Gone', '<p class="gone">gone</p>', 'p { background-color: blue; }', byId('anchor'));
+      engine.remove(goneBlock.root);
+      await frames();
+      const exp3 = engine.exportHTML();
+      const third = await reloadFrom(exp3, { seed: true });
+      await engine.whenReady();
+      await frames();
+      const savedStyleWasThere = Boolean(third.style) && liveStyles()[0] === third.style;
+      const noCss = engine.upsertBlock({ id: 'no-css', name: 'No CSS', kind: 'component', html: '<p class="nocss">n</p>', origin: 'user' });
+      await engine.insertBlock(noCss, {}, { reference: byId('anchor'), position: 'after' });
+      await frames();
+      const lastOps = engine.history.journal.applied.at(-1)?.ops ?? [];
+      const touchesHead = (node) => node instanceof Element && (node.nodeName === 'STYLE' || node.nodeName === 'HEAD');
+      results.reload.anUnusedSavedBlockStyleIsClearedWithoutAChange = safe(() =>
+        savedStyleWasThere && Boolean(document.querySelector('.nocss')) && liveStyles().length === 0 &&
+        !lastOps.some((op) => touchesHead(op.target) || (op.added ?? []).some(touchesHead) || (op.removed ?? []).some(touchesHead)));
+
+      step('reload: removal');
+      const doomed = await author('Doomed', '<p class="doomed">d</p>', 'p { background-color: blue; }', byId('anchor'));
+      const pairAgain = await author('Pair two', '<p>a</p><p>b</p>', 'p { color: rgb(0, 128, 0); }', byId('anchor'));
+      engine.removeBlockLibraryFromPage();
+      await frames();
+      const removed = parse(engine.exportHTML());
+      results.reload.removingTheLibraryAlsoDropsItsBlockCSS = safe(() =>
+        Boolean(doomed.root) && Boolean(pairAgain.root) &&
+        !removed.querySelector('[data-heo-block]') && !removed.querySelector('[data-heo-block-part]') &&
+        blockStylesIn(removed).length === 0 && !removed.querySelector('script[type="application/heo-seed"]'));
+
+      step('reload: unticked');
+      await resetPage();
+      const linked = await author('Linked', '<p class="linked">linked</p>', 'p { background-color: rgb(0, 128, 0); }', byId('anchor'));
+      const unstyled = await author('Unstyled', '<p class="unstyled">u</p>', '', byId('anchor'));
+      engine.setSaveBlockLibrary(false);
+      const unticked = engine.exportHTML();
+      const docU = parse(unticked);
+      // Stripping the links used to leave this CSS with nothing to match.
+      results.reload.savingWithoutTheLibraryKeepsLinksForStyledBlocks = safe(() =>
+        blockStylesIn(docU).length === 1 && !blockStylesIn(docU)[0].id &&
+        Boolean(docU.querySelector(`main [data-heo-block="${linked.block.id}"]`)) &&
+        Boolean(docU.querySelector('main .unstyled')) &&
+        !docU.querySelector(`main [data-heo-block="${unstyled.block.id}"]`) &&
+        !docU.querySelector('script[type="application/heo-seed"]'));
+      await reloadFrom(unticked, { seed: false });
+      await engine.whenReady();
+      await frames();
+      results.reload.aLinkOnlyPageIsNotAnImpliedRemoval = safe(() =>
+        !engine.library.get(linked.block.id) &&
+        engine.designSystemPersistence().find((p) => p.part === 'library')?.state !== 'removing' &&
+        Boolean(parse(engine.exportHTML()).querySelector(`main [data-heo-block="${linked.block.id}"]`)));
+      api.select(byId('pageP'));
+      engine.setStyle('outline', '1px dashed rgb(0, 0, 0)', byId('pageP'));
+      engine.setSaveBlockLibrary(false);
+      const secondUnticked = parse(engine.exportHTML());
+      results.reload.aSecondSaveAfterReloadStillCarriesTheLinks = safe(() =>
+        engine.records.length > 0 &&
+        Boolean(secondUnticked.querySelector(`main [data-heo-block="${linked.block.id}"]`)) &&
+        blockStylesIn(secondUnticked).length === 1 &&
+        bg(document.querySelector('.linked')) === GREEN);
+
+      /* ------------------------------------------------------------------ *
+       * 7. Save, reload, edit: the patch path, against an in-memory project.
+       * ------------------------------------------------------------------ */
+      step('patch: first save');
+      results.patch = {};
+      const directory = decodeURIComponent(location.pathname).replace(/[^/]*$/, '');
+      const files = new Map([[FILE_NAME, fileText]]);
+      const project = {
+        kind: 'directory',
+        label: 'memory',
+        resolve(url) {
+          const parsed = new URL(url, location.href);
+          if (parsed.origin !== location.origin && parsed.protocol !== 'file:') return null;
+          const path = decodeURIComponent(parsed.pathname);
+          return path.startsWith(directory) ? path.slice(directory.length) : null;
+        },
+        read: async (path) => (files.has(path) ? files.get(path) : null),
+        write: async (path, text) => { files.set(path, text); },
+        ensureWritable: async () => true,
+        release: async () => { },
+      };
+      const attach = async () => {
+        await engine.attachProject(project, { quiet: true });
+        engine.setDesignSystemTarget(engine.styleTargets()[0].value);
+      };
+      // A page edit, so each save has a document change to write. A new property each time, so
+      // no edit merges into one an earlier save already wrote.
+      const touch = (property) => {
+        api.select(byId('pageP'));
+        engine.setStyle(property, '1px', byId('pageP'));
+      };
+      await resetPage();
+      await attach();
+      const patched = await author('Patched', '<div class="pw"><p>patched</p></div>', 'p { background-color: rgb(0, 128, 0); }', byId('anchor'));
+      const download = engine.exportPatchedHTML(files.get(FILE_NAME), { designSystemInDocument: true });
+      const save1 = await engine.writeToProject();
+      const written1 = files.get(FILE_NAME);
+      results.patch.theWrittenFileHasOneMarkedBlockStyle = safe(() => {
+        const blockRegion = region(written1, ...BLOCK_REGION);
+        const dsRegion = region(written1, ...DS_REGION);
+        return (save1?.written?.length ?? 0) > 0 && count(written1, BLOCK_REGION[0]) === 1 &&
+          count(written1, 'id="heo-block-styles"') === 1 && blockRegion.includes('<style id="heo-block-styles">') &&
+          blockRegion.includes('data-heo-block="patched"') &&
+          (dsRegion === null || !dsRegion.includes('data-heo-block'));
+      });
+      // The download and the live warning run the same patch the save does (review finding 1).
+      results.patch.theDownloadPatchMatchesTheSave = safe(() => {
+        const dsRegion = region(download.html, ...DS_REGION);
+        return download.patched === true && Boolean(region(written1, ...BLOCK_REGION)) &&
+          region(download.html, ...BLOCK_REGION) === region(written1, ...BLOCK_REGION) &&
+          (dsRegion === null || !dsRegion.includes('data-heo-block'));
+      });
+
+      step('patch: reload and edit');
+      await reloadFrom(written1, { seed: true });
+      await engine.whenReady();
+      await frames();
+      await attach();
+      await editCSS('patched', 'p { color: rgb(255, 0, 0); }');
+      results.patch.afterAPatchReloadARemovedDeclarationIsGone =
+        liveStyles().length === 1 &&
+        bg(document.querySelector('.pw p')) === YELLOW && color(document.querySelector('.pw p')) === RED;
+      touch('margin-left');
+      await engine.writeToProject();
+      const written2 = files.get(FILE_NAME);
+      results.patch.theNextPatchRewritesTheRegionOnly = safe(() => {
+        const blockRegion = region(written2, ...BLOCK_REGION);
+        return written2 !== written1 && count(written2, BLOCK_REGION[0]) === 1 &&
+          count(written2, 'id="heo-block-styles"') === 1 &&
+          blockRegion.includes('color: rgb(255, 0, 0)') && !blockRegion.includes('rgb(0, 128, 0)') &&
+          written2.includes('data-heo-block="patched"');
+      });
+
+      step('patch: stray copies');
+      // Case 1: an exportHTML download as the file, so its block style has the id and no markers.
+      touch('margin-right');
+      const fromExport = engine.exportPatchedHTML(engine.exportHTML(), { designSystemInDocument: true });
+      // Case 2: the marked region plus a stray unmarked copy at the end of <head>.
+      const withStray = written2.replace('</head>', '  <style id="heo-block-styles">/* heo-stray-copy */</style>\n</head>');
+      const fromStray = engine.exportPatchedHTML(withStray, { designSystemInDocument: true });
+      const oneInsideTheRegion = (html) => {
+        const blockRegion = region(html, ...BLOCK_REGION);
+        return count(html, 'id="heo-block-styles"') === 1 && Boolean(blockRegion) &&
+          blockRegion.includes('id="heo-block-styles"') && !outsideScripts(html).includes('heo-stray-copy');
+      };
+      results.patch.anExportedBlockStyleIsReplacedNotDuplicated = safe(() =>
+        count(engine.exportHTML(), 'id="heo-block-styles"') === 1 && count(withStray, 'id="heo-block-styles"') === 2 &&
+        fromExport.patched && oneInsideTheRegion(fromExport.html) &&
+        fromStray.patched && oneInsideTheRegion(fromStray.html));
+
+      step('patch: unticked parts');
+      const duo = await author('Duo', '<p class="d0">d0</p><p class="d1">d1</p>', '', byId('anchor'));
+      engine.setSaveBlockLibrary(false);
+      await engine.writeToProject();
+      const written3 = files.get(FILE_NAME);
+      results.patch.anUntickedPatchSaveKeepsThePartHooks = safe(() => {
+        const doc = parse(written3);
+        return Boolean(duo.block) &&
+          doc.querySelector('main .d0')?.getAttribute('data-heo-block') === duo.block.id &&
+          doc.querySelector('main .d1')?.getAttribute('data-heo-block-part') === duo.block.id;
+      });
+
+      step('patch: re-tick');
+      // An unticked save puts block CSS into the design-system region...
+      engine.upsertBlock({ ...engine.library.get('patched'), css: 'p { outline: 2px solid rgb(0, 0, 255); }' });
+      touch('padding-left');
+      await engine.writeToProject();
+      const written4 = files.get(FILE_NAME);
+      const untickedRegion = region(written4, ...DS_REGION);
+      // ...and re-ticking must clear it rather than leave a stale copy beside the new region.
+      engine.setSaveBlockLibrary(true);
+      touch('padding-right');
+      await engine.writeToProject();
+      const written5 = files.get(FILE_NAME);
+      results.patch.reTickingClearsBlockCssAnUntickedSaveLeftInTheDesignSystemRegion = safe(() => {
+        const dsRegion = region(written5, ...DS_REGION);
+        return Boolean(untickedRegion) && untickedRegion.includes('/* block: patched */') &&
+          count(written4, BLOCK_REGION[0]) === 0 &&
+          (dsRegion === null || !dsRegion.includes('data-heo-block')) &&
+          count(written5, BLOCK_REGION[0]) === 1 && count(written5, 'id="heo-block-styles"') === 1 &&
+          region(written5, ...BLOCK_REGION).includes('outline: rgb(0, 0, 255) solid 2px');
+      });
+
+      step('patch: emptying');
+      engine.upsertBlock({ ...engine.library.get('patched'), css: '' });
+      touch('margin-bottom');
+      await engine.writeToProject();
+      const written6 = files.get(FILE_NAME);
+      // The design-system region never removes itself; this one does, or a removed rule lives on.
+      results.patch.emptyingTheCssRemovesTheRegion = safe(() =>
+        count(written6, BLOCK_REGION[0]) === 0 && blockStylesIn(parse(written6)).length === 0 &&
+        parse(written6).querySelector('main .pw')?.getAttribute('data-heo-block') === 'patched');
+
+      /* ------------------------------------------------------------------ *
+       * 8. A web component block stored by an earlier version.
+       * ------------------------------------------------------------------ */
+      step('legacy');
+      results.legacy = {};
+      await unmount();
+      clearSaved();
+      document.querySelector('main').innerHTML =
+        '<p id="anchor">Anchor.</p><legacy-counter id="legacyInstance" data-heo-block="legacy-counter"></legacy-counter>';
+      const seed = document.createElement('script');
+      seed.type = 'application/heo-seed';
+      seed.textContent = JSON.stringify({
+        name: 'Old library',
+        tokens: [{ name: 'legacy-space', value: '12px', group: 'spacing' }],
+        blocks: [
+          {
+            id: 'legacy-counter', name: 'Legacy counter', kind: 'component',
+            html: '<legacy-counter></legacy-counter>',
+            element: { tag: 'legacy-counter', module: "customElements.define('legacy-counter', class extends HTMLElement {});" },
+          },
+          { id: 'still-here', name: 'Still here', kind: 'component', html: '<p>still</p>', css: 'p { color: blue; }' },
+        ],
+      });
+      document.head.append(seed);
+      imported.add(seed);
+      const legacyWarnsBefore = warns.length;
+      mount();
+      await engine.whenReady();
+      await frames();
+      const toastAtReady = engine.store.value.toast?.message ?? '';
+      results.legacy.aLegacyWebComponentBlockInTheSeedIsNotLoaded =
+        engine.library.get('legacy-counter') === undefined && !customElements.get('legacy-counter');
+      results.legacy.theRestOfTheSeedStillLoads =
+        Boolean(engine.library.get('still-here')) && Boolean(engine.tokens.get('legacy-space'));
+      results.legacy.itsPageInstanceIsLeftAloneWithoutAComponentSection = safe(() =>
+        byId('legacyInstance')?.isConnected && byId('legacyInstance').getAttribute('data-heo-block') === 'legacy-counter' &&
+        engine.blockInstance(byId('legacyInstance')) === null);
+      results.legacy.theUserIsToldOnce = safe(() =>
+        /web component block from an earlier version was not loaded \(Legacy counter\)/.test(toastAtReady) &&
+        warns.slice(legacyWarnsBefore).filter((w) => w.includes('dropped web component blocks')).length === 1);
+      const legacyRecord = {
+        id: 'legacy-later', name: 'Legacy later', kind: 'component', html: '<x-later></x-later>',
+        element: { tag: 'x-later', module: '' },
+      };
+      results.legacy.importingOneLaterIsSkipped =
+        engine.library.import([legacyRecord]) === 0 && engine.library.get('legacy-later') === undefined;
+      const historyBefore = engine.history.records.length;
+      let threw = false;
+      try {
+        engine.upsertBlock(legacyRecord);
+      } catch (error) {
+        threw = /no longer supported/.test(String(error && error.message));
+      }
+      results.legacy.upsertingOneThrowsBeforeAnyHistoryEntry =
+        threw && engine.history.records.length === historyBefore && engine.library.get('legacy-later') === undefined;
+      await frames();
+      results.legacy.noPageErrors = errors.length === 0;
+
+      results.__errors = errors;
+      results.failed = Object.entries(results)
+        .filter(([name, group]) => !name.startsWith('__') && group && typeof group === 'object' && !Array.isArray(group))
+        .filter(([, group]) => Object.values(group).some((value) => value !== true))
+        .map(([name]) => name);
+      results.ok = results.failed.length === 0;
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify({ __fatal: String((e && e.stack) || e), ok: false }, null, 1) + ':END';
+    });
+  </script>
+</body>
+</html>
