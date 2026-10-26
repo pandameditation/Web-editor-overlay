@@ -5,6 +5,7 @@ import { acceptsChildren, isMutable, labelFor } from '../../core/dom.js';
 import { INSERT_POSITION_LABELS, type InsertPosition } from '../../core/mutations.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import type { BlockKind, LibraryBlock } from '../../core/types.js';
+import { CREATE_BLOCK_ICON, CREATE_BLOCK_TITLE, createBlockLabel } from '../block-create.js';
 import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
 import { baseStyles } from '../theme.js';
@@ -382,7 +383,7 @@ export class HeoLibraryPanel extends HeoElement {
           .value=${this.query}
           .count=${blocks.length}
           action=${this.#createLabel()}
-          action-icon="plus"
+          action-icon=${CREATE_BLOCK_ICON}
           action-compact
           @search-input=${(event: CustomEvent<{ value: string }>) => {
         this.query = event.detail.value;
@@ -623,12 +624,10 @@ export class HeoLibraryPanel extends HeoElement {
    * What creating would make, given what has been typed.
    *
    * Shared by the field's action and the buttons below the list so the three cannot describe the
-   * same act differently. Seeded from the query because "Create" and `Create "hero banner"` are
-   * different promises, and the second one is the reason somebody is still reading.
+   * same act differently, and with the `+` picker's create row through `createBlockLabel`.
    */
   #createLabel(): string {
-    const seed = this.query.trim();
-    return seed ? `Create "${seed}"` : 'Create a block';
+    return createBlockLabel(this.query);
   }
 
   #create(): void {
@@ -642,10 +641,10 @@ export class HeoLibraryPanel extends HeoElement {
     return html`<button
       class="btn sm"
       type="button"
-      title="Author a new block"
+      title=${CREATE_BLOCK_TITLE}
       @click=${() => this.#create()}
     >
-      ${icon('plus', 12)} ${this.#createLabel()}
+      ${icon(CREATE_BLOCK_ICON, 12)} ${this.#createLabel()}
     </button>`;
   }
 

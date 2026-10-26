@@ -1260,6 +1260,12 @@ A switch at the top narrows to one or the other:
 | **Blocks** | Only the Library. |
 | **HTML** | Only the primitives, grouped: Text, Structure, Lists, Media, Interactive, Forms, Code & data, Old web. |
 
+In **All** and **Blocks** the list also offers `Create "<query>"` (or `Create a block`
+with nothing typed), the same offer the Library search makes, and it leads when nothing
+matched, so Enter creates. It opens the New block dialog seeded with the query, and the
+saved block is inserted at the `+` position; Cancel inserts nothing. It is not offered
+in the HTML scope or when turning an element into a block.
+
 Search spans both halves and ranks by how directly you named the thing: an exact
 tag wins outright, then a tag that starts with what you typed, then labels, then
 anything mentioning it. That ordering is what makes typing `p` insert a paragraph

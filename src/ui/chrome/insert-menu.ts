@@ -14,6 +14,7 @@ import { modalOpen } from '../../core/modal.js';
 import { listen, unlisten } from '../../core/shield.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import type { LibraryBlock } from '../../core/types.js';
+import { CREATE_BLOCK_ICON, CREATE_BLOCK_TITLE, createBlockLabel } from '../block-create.js';
 import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
 import { baseStyles, surfaceStyles } from '../theme.js';
@@ -32,6 +33,10 @@ import '../controls/segmented.js';
  * marquee. The library is a set of assembled patterns, which is the right vocabulary
  * most of the time and the wrong one when what you want is a `<p>`; both live in one
  * list so one search and one set of arrow keys reach either.
+ *
+ * The list also offers to create a block from the query, worded exactly as the Library
+ * search words it (`block-create.ts`). It opens the New block dialog seeded with the query
+ * and, once saved, inserts the block at this `+` position.
  */
 
 /**
@@ -46,7 +51,9 @@ type InsertEntry =
   | { id: string; kind: 'element'; spec: HtmlElementSpec }
   | { id: string; kind: 'more'; hidden: number }
   /** Write or paste markup directly, for everything the other two cannot express. */
-  | { id: string; kind: 'paste' };
+  | { id: string; kind: 'paste' }
+  /** Author a new block from the query, the same offer the Library search makes. */
+  | { id: string; kind: 'create' };
 @customElement('heo-insert-menu')
 export class HeoInsertMenu extends HeoElement {
   static override styles = [
@@ -354,7 +361,16 @@ export class HeoInsertMenu extends HeoElement {
           .search(this.query)
           .map((block) => ({ id: `b:${block.id}`, kind: 'block', block }));
 
-    if (this.scope === 'blocks') return blocks;
+    /*
+     * Creating a block is on offer wherever blocks are, as it is in the Library search.
+     *
+     * Without it a search that found nothing here was a dead end that pointed at another
+     * panel, while the same search in that panel was one Enter from a new block. Not when
+     * turning: the turn carries content into an existing block's props, and a block that does
+     * not exist yet has none. Not in the HTML scope either, which is plain elements only.
+     */
+    const create: InsertEntry = { id: 'create', kind: 'create' };
+    if (this.scope === 'blocks') return this.#turning ? blocks : [...blocks, create];
 
     // Browsing the primitives deliberately means wanting all of them; the short
     // list exists to stop them crowding the blocks, which is not a concern here.
@@ -393,7 +409,12 @@ export class HeoInsertMenu extends HeoElement {
     // Writing markup by hand has no content to carry, so turning offers only blocks and elements.
     if (this.#turning) return ordered;
     const paste: InsertEntry = { id: 'paste', kind: 'paste' };
-    return ordered.length ? [...ordered, paste] : [paste];
+    if (this.scope === 'html') return ordered.length ? [...ordered, paste] : [paste];
+    // Create sits just before paste, so paste stays last. With nothing matched, create leads
+    // so Enter creates, as Enter does in the Library search; unless the query looks like
+    // markup, where paste (which seeds itself from it) is the better first answer.
+    if (ordered.length) return [...ordered, create, paste];
+    return this.query.includes('<') ? [paste, create] : [create, paste];
   }
 
   override render(): TemplateResult | typeof nothing {
@@ -427,17 +448,27 @@ export class HeoInsertMenu extends HeoElement {
       const name =
         entry.kind === 'paste'
           ? 'Your own markup'
-          : entry.kind === 'block'
-            ? entry.block.category ?? (entry.block.kind === 'container' ? 'Layout' : 'Components')
-            : entry.kind === 'element' && this.scope === 'html'
-              ? entry.spec.group
-              : 'HTML elements';
+          : entry.kind === 'create'
+            ? 'New block'
+            : entry.kind === 'block'
+              ? entry.block.category ?? (entry.block.kind === 'container' ? 'Layout' : 'Components')
+              : entry.kind === 'element' && this.scope === 'html'
+                ? entry.spec.group
+                : 'HTML elements';
       const existing = groups.find((group) => group.name === name);
       if (existing) existing.entries.push(entry);
       else groups.push({ name, entries: [entry] });
     }
 
-    let index = -1;
+    /*
+     * Each row's position in entries, which is what highlight and Enter index.
+     *
+     * Not counted while rendering. The rows of a group are built when the outer keyed repeat
+     * commits that group, and it commits in its own diff order, not list order, whenever the
+     * groups change. A running counter then numbered the rows wrongly: with the list cut down
+     * to the create offer and Paste, Paste was drawn highlighted while Enter picked create.
+     */
+    const positions = new Map(entries.map((entry, at) => [entry, at] as const));
     return html`
       <div class="top">
         ${icon('search', 13)}
@@ -485,10 +516,7 @@ export class HeoInsertMenu extends HeoElement {
                 ${repeat(
             group.entries,
             (entry) => entry.id,
-            (entry) => {
-              index += 1;
-              return this.#renderRow(entry, index);
-            },
+            (entry) => this.#renderRow(entry, positions.get(entry) ?? -1),
           )}
               `,
         )}
@@ -534,6 +562,24 @@ export class HeoInsertMenu extends HeoElement {
         <span class="body">
           <span class="name">Paste HTML…</span>
           <span class="desc">Any markup you have, placed right here.</span>
+        </span>
+      </button>`;
+    }
+
+    if (entry.kind === 'create') {
+      return html`<button
+        class="row"
+        type="button"
+        role="option"
+        aria-selected=${selected}
+        title=${CREATE_BLOCK_TITLE}
+        @pointerenter=${onEnter}
+        @click=${() => this.#pick(entry)}
+      >
+        <span class="glyph">${icon(CREATE_BLOCK_ICON, 14)}</span>
+        <span class="body">
+          <span class="name">${createBlockLabel(this.query)}</span>
+          <span class="desc">Author it, then insert it here.</span>
         </span>
       </button>`;
     }
@@ -706,6 +752,12 @@ export class HeoInsertMenu extends HeoElement {
       const typed = this.query.trim();
       const seed = typed.includes('<') ? typed : '';
       this.editor.beginHtmlPaste(this.state.value.insertAnchor ?? undefined, seed);
+      return;
+    }
+    // Same draft the Library search opens, plus the `+` position so saving inserts it here.
+    // The editor closes this menu on the way, as it does for the paste route above.
+    if (entry.kind === 'create') {
+      this.editor.beginBlockDraft(this.query.trim(), 'component', this.state.value.insertAnchor ?? null);
       return;
     }
     if (entry.kind === 'more') {

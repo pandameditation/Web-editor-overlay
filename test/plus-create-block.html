@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Creating a block from the + picker</title>
+  <!--
+    The Library search offers to create a block when nothing matches. The `+` picker, reached
+    from the plus button beside a selected element, did not: a search that found nothing there
+    only offered Paste HTML, or pointed at the Library panel. The two now make the same offer,
+    worded by the same helper, and the picker's version inserts the new block where the `+` was.
+  -->
+  <style>
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: system-ui, sans-serif;
+    }
+
+    #wrap p {
+      padding: 8px;
+      border: 1px solid #ccd;
+    }
+  </style>
+</head>
+
+<body>
+  <main id="wrap">
+    <h1 id="title">Plus create</h1>
+    <p id="anchor">Anchor.</p>
+    <p id="tail">Tail.</p>
+  </main>
+
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const results = {};
+      const errors = [];
+      addEventListener('error', (e) => errors.push('error: ' + e.message));
+      addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+
+      const progress = document.getElementById('progress');
+      const step = (name) => { progress.textContent = name; };
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const byId = (id) => document.getElementById(id);
+      const safe = (fn) => {
+        try { return fn(); } catch (err) { return 'THREW: ' + (err && err.message ? err.message : String(err)); }
+      };
+
+      function deepQuery(selector, root = document) {
+        const found = root.querySelector?.(selector);
+        if (found) return found;
+        for (const el of root.querySelectorAll?.('*') ?? []) {
+          if (!el.shadowRoot) continue;
+          const hit = deepQuery(selector, el.shadowRoot);
+          if (hit) return hit;
+        }
+        return null;
+      }
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark', fileName: 'plus-create.html' });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+
+      // Re-queried every time: the menu re-renders on every keystroke, so a held row goes stale.
+      const menu = () => deepQuery('heo-insert-menu');
+      const rows = () =>
+        Array.from(menu()?.shadowRoot?.querySelectorAll('.row') ?? []).map((el) => ({
+          el,
+          name: el.querySelector('.name')?.textContent?.trim() ?? '',
+          selected: el.getAttribute('aria-selected') === 'true',
+        }));
+      const names = () => rows().map((row) => row.name);
+      const search = () => menu()?.shadowRoot?.querySelector('.top input');
+      const type = async (text) => {
+        const field = search();
+        field.value = text;
+        field.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        await menu().updateComplete;
+        await frames();
+      };
+      const key = async (k) => {
+        search().dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, composed: true, cancelable: true }));
+        await frames();
+        await frames();
+      };
+      const scopeButton = (label) =>
+        Array.from(menu().shadowRoot.querySelector('.scope heo-segmented')
+          .shadowRoot.querySelectorAll('button')).find((b) => b.textContent.trim() === label);
+      const setScope = async (label) => {
+        scopeButton(label).click();
+        await frames();
+      };
+      const plusButton = (side) =>
+        deepQuery('heo-selection-layer')?.shadowRoot?.querySelector(
+          `button.insert[aria-label="Insert ${side} this element"]`,
+        );
+      /** Select an element and open the picker through its real plus button. */
+      const openPlus = async (el, side) => {
+        api.select(el);
+        await frames();
+        await frames();
+        const button = plusButton(side);
+        button?.click();
+        await frames();
+        await frames();
+        return Boolean(button);
+      };
+      const dialog = () => deepQuery('heo-extract-dialog');
+      const dialogButton = (text) =>
+        Array.from(dialog()?.shadowRoot?.querySelectorAll('footer button') ?? [])
+          .find((b) => b.textContent.trim().includes(text));
+      const draft = () => engine.store.value.extraction;
+      const QUERY = 'zzq hero banner';
+
+      /* ------------------------------------------------------------------ *
+       * 1. The picker offers to create, worded as the Library words it.
+       * ------------------------------------------------------------------ */
+      step('picker');
+      const clicked = await openPlus(byId('anchor'), 'after');
+      results.picker = {};
+      // The real button, not setInsertAnchor: the report was about the plus beside an element.
+      results.picker.theRealPlusButtonOpensThePicker = safe(() =>
+        clicked &&
+        engine.store.value.insertAnchor?.reference === byId('anchor') &&
+        engine.store.value.insertAnchor?.position === 'after' &&
+        Boolean(menu()?.shadowRoot?.querySelector('.pop')));
+
+      await type(QUERY);
+      // The bug: with no match the picker had no create route at all.
+      results.picker.aQueryWithNoResultOffersCreate = names().includes(`Create "${QUERY}"`);
+      // Leading, so Enter creates, as Enter does in the Library search. Also the only row drawn
+      // as selected: the list shrinks here from many groups to two, which used to make the row
+      // numbering follow Lit's commit order and draw Paste highlighted while Enter picked create.
+      results.picker.andItLeadsSoEnterReachesIt = safe(() =>
+        rows()[0].name === `Create "${QUERY}"` && rows()[0].selected &&
+        rows().filter((row) => row.selected).length === 1);
+      results.picker.pasteHtmlIsStillOffered = safe(() => /^Paste HTML/.test(names().at(-1)));
+
+      // Discriminating: the Library field's own action label, not a look-alike typed here.
+      step('libraryLabel');
+      engine.setDockTab('library');
+      await frames();
+      const libPanel = deepQuery('heo-library-panel');
+      const libField = () => libPanel.shadowRoot.querySelector('heo-search-field');
+      const typeLibrary = async (text) => {
+        const input = libField().shadowRoot.querySelector('input');
+        input.value = text;
+        input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        await libField().updateComplete;
+        await libPanel.updateComplete;
+        await frames();
+      };
+      await typeLibrary(QUERY);
+      const libraryAction = libField().getAttribute('action');
+      results.picker.itReadsExactlyLikeTheLibrary = safe(() =>
+        libraryAction === `Create "${QUERY}"` && names()[0] === libraryAction);
+      await typeLibrary('');
+
+      // The picker may have lost focus to the Library field; reopen to keep the test honest.
+      engine.setInsertAnchor(null);
+      await frames();
+      await openPlus(byId('anchor'), 'after');
+      await type('');
+      results.picker.anEmptyQueryOffersCreateABlockBeforePaste = safe(() => {
+        const list = names();
+        return list.at(-2) === 'Create a block' && /^Paste HTML/.test(list.at(-1));
+      });
+
+      // With results, the end of the list is reachable by wrapping, and create is one step up.
+      await key('ArrowUp');
+      const wrappedToPaste = safe(() => rows().at(-1).selected);
+      await key('ArrowUp');
+      results.picker.arrowsReachIt = safe(() =>
+        wrappedToPaste === true && rows().at(-2).selected && rows().at(-2).name === 'Create a block');
+
+      await setScope('Blocks');
+      await type(QUERY);
+      results.picker.theBlocksScopeOffersItToo = safe(() => {
+        const list = names();
+        return list.length === 1 && list[0] === `Create "${QUERY}"`;
+      });
+
+      await setScope('HTML');
+      await type('');
+      // The HTML scope is plain elements only.
+      results.picker.theHtmlScopeDoesNot = !names().some((n) => /^Create/.test(n));
+      await type(QUERY);
+      results.picker.evenWithNoResult = !names().some((n) => /^Create/.test(n));
+      await setScope('All');
+
+      // Markup-like queries are what Paste HTML seeds itself from, so it stays first.
+      await type('<figure class="q"');
+      results.picker.markupLikeQueriesKeepPasteFirst = safe(() => {
+        const list = names();
+        return list.length === 2 && /^Paste HTML/.test(list[0]) && /^Create /.test(list[1]);
+      });
+
+      // Turning carries content into an existing block's props; a new block has none.
+      engine.setInsertAnchor({ reference: byId('anchor'), position: 'replace', mode: 'turn' });
+      await frames();
+      await frames();
+      await type(QUERY);
+      results.picker.turningDoesNotOffer = !names().some((n) => /^Create/.test(n));
+      await type('');
+      results.picker.turningDoesNotOfferEvenUnfiltered = !names().some((n) => /^Create/.test(n));
+      engine.setInsertAnchor(null);
+      await frames();
+
+      /* ------------------------------------------------------------------ *
+       * 2. Enter opens the same New block dialog the Library opens.
+       * ------------------------------------------------------------------ */
+      step('flow');
+      await openPlus(byId('anchor'), 'after');
+      await type(QUERY);
+      await key('Enter');
+      await frames();
+      results.flow = {
+        enterOpensTheNewBlockDialog: safe(() =>
+          draft()?.mode === 'block' &&
+          dialog()?.shadowRoot?.querySelector('h2')?.textContent.trim() === 'New block'),
+        seededWithTheTypedName: draft()?.name === QUERY,
+        itRemembersThePlusPosition: safe(() =>
+          draft().insertAt?.reference === byId('anchor') && draft().insertAt?.position === 'after'),
+        // Without this the picker re-focuses its search box under the modal dialog.
+        thePickerClosedSoItCannotStealFocus:
+          engine.store.value.insertAnchor === null && !menu()?.shadowRoot?.querySelector('.pop'),
+      };
+
+      /* ------------------------------------------------------------------ *
+       * 3. Saving inserts it at the + position.
+       * ------------------------------------------------------------------ */
+      step('insert');
+      engine.updateExtraction({ html: '<section class="made-here">Made here</section>' });
+      await frames();
+      const continueLabel = dialog()?.shadowRoot?.querySelector('footer .btn.primary')?.textContent.trim();
+      dialog()?.shadowRoot?.querySelector('footer .btn.primary')?.click();
+      await wait(250);
+      await frames();
+      const made = engine.library.search(QUERY).find((b) => b.name === QUERY);
+      const placed = byId('anchor').nextElementSibling;
+      results.insert = {
+        theBlockIsSavedToTheLibrary: Boolean(made),
+        andLandsAtThePlusPosition: Boolean(placed?.matches('.made-here')),
+        andIsSelected: Boolean(placed) && engine.selected === placed,
+        andCountsAsAnInstance: Boolean(made) && engine.blockUsage().get(made.id) === 1,
+        // The same dialog the Library opens, whose primary action is Continue.
+        theDialogsPrimaryActionWasContinue: continueLabel === 'Continue',
+        theDialogClosed: draft() === null && !dialog()?.shadowRoot?.querySelector('h2'),
+      };
+
+      // The other plus, with a second name.
+      step('before');
+      const BEFORE = 'zzq before banner';
+      await openPlus(byId('anchor'), 'before');
+      await type(BEFORE);
+      await key('Enter');
+      engine.updateExtraction({ html: '<section class="made-before">Before</section>' });
+      await frames();
+      dialog()?.shadowRoot?.querySelector('footer .btn.primary')?.click();
+      await wait(250);
+      await frames();
+      results.insert.beforeWorksToo = Boolean(byId('anchor').previousElementSibling?.matches('.made-before'));
+
+      /* ------------------------------------------------------------------ *
+       * 4. Cancel inserts nothing and saves nothing.
+       * ------------------------------------------------------------------ */
+      step('cancel');
+      const NEVER = 'zzq never block';
+      const childrenBefore = byId('wrap').children.length;
+      await openPlus(byId('anchor'), 'after');
+      await type(NEVER);
+      await key('Enter');
+      const cancelOpened = draft()?.name === NEVER;
+      dialogButton('Cancel')?.click();
+      await wait(100);
+      await frames();
+      results.cancel = {
+        theDialogWasOpen: cancelOpened,
+        cancellingSavesNothing: !engine.library.search(NEVER).some((b) => b.name === NEVER),
+        andInsertsNothing:
+          byId('wrap').children.length === childrenBefore &&
+          draft() === null &&
+          engine.store.value.insertAnchor === null,
+      };
+
+      /* ------------------------------------------------------------------ *
+       * 5. The element beside the + went away while the dialog was open.
+       * ------------------------------------------------------------------ */
+      step('gone');
+      const GONE = 'zzq gone block';
+      await openPlus(byId('tail'), 'after');
+      await type(GONE);
+      await key('Enter');
+      const goneOpened = draft()?.insertAt?.reference === byId('tail');
+      const tail = byId('tail');
+      tail.remove();
+      engine.updateExtraction({ html: '<section class="made-gone">Gone</section>' });
+      await frames();
+      dialog()?.shadowRoot?.querySelector('footer .btn.primary')?.click();
+      await wait(250);
+      await frames();
+      results.gone = {
+        theDialogWasOpenForTheTail: goneOpened,
+        theBlockIsStillSaved: engine.library.search(GONE).some((b) => b.name === GONE),
+        butNothingIsInserted: document.querySelectorAll('.made-gone').length === 0,
+        andTheDialogClosed: draft() === null,
+      };
+      byId('wrap').append(tail);
+
+      /* ------------------------------------------------------------------ *
+       * 6. The Library is unchanged: same labels, saves only.
+       * ------------------------------------------------------------------ */
+      step('library');
+      const LIB = 'zzq lib only';
+      engine.setDockTab('library');
+      await frames();
+      await typeLibrary('');
+      const emptyAction = libField().getAttribute('action');
+      await typeLibrary(LIB);
+      const libAction = libField().getAttribute('action');
+      const libButtons = Array.from(libPanel.shadowRoot.querySelectorAll('.empty button, .makerow button'))
+        .map((b) => b.textContent.trim());
+      libField().shadowRoot.querySelector('input').dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, composed: true, cancelable: true }),
+      );
+      await frames();
+      await frames();
+      const libDraft = draft();
+      const sectionsBefore = document.querySelectorAll('section').length;
+      engine.updateExtraction({ html: '<section class="lib-only">Lib</section>' });
+      await frames();
+      dialog()?.shadowRoot?.querySelector('footer .btn.primary')?.click();
+      await wait(250);
+      await frames();
+      const libBlock = engine.library.search(LIB).find((b) => b.name === LIB);
+      results.library = {
+        libraryDraftsHaveNoPlusPosition: libDraft?.name === LIB && libDraft?.insertAt === null,
+        libraryCreateSavesToTheLibrary: Boolean(libBlock),
+        andDoesNotInsertAnything:
+          document.querySelectorAll('.lib-only').length === 0 &&
+          document.querySelectorAll('section').length === sectionsBefore &&
+          Boolean(libBlock) && (engine.blockUsage().get(libBlock.id) ?? 0) === 0,
+        itsLabelsAreUnchanged:
+          emptyAction === 'Create a block' &&
+          libAction === `Create "${LIB}"` &&
+          libButtons.includes(`Create "${LIB}"`),
+      };
+
+      results.__errors = errors;
+      results.failed = Object.entries(results)
+        .filter(([, group]) => group && typeof group === 'object' && !Array.isArray(group))
+        .filter(([, group]) => Object.values(group).some((value) => value !== true))
+        .map(([name]) => name);
+      if (errors.length) results.failed.push('__errors');
+      results.ok = results.failed.length === 0;
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    })().catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify({ __fatal: String((e && e.stack) || e), ok: false }, null, 1) + ':END';
+    });
+  </script>
+</body>
+
+</html>
+</content>

@@ -486,6 +486,15 @@ export interface BlockExtraction {
    * time has nothing in the page to apply to.
    */
   applyToInstances: boolean;
+  /**
+   * Where the new block goes once it is saved, when it was started from the `+` picker.
+   *
+   * The picker used to have no way to make a block at all: with nothing matching, the user was
+   * sent off to the Library panel, and what they made there only became a card they then had to
+   * insert by hand. A draft started from the picker remembers the `+` position so saving puts the
+   * block where they asked for one. Null for every other entry point, which only saves.
+   */
+  insertAt: InsertAnchor | null;
   error: string;
 }
 
@@ -640,6 +649,7 @@ function emptyBlockDraft(): BlockExtraction {
     step: 'source',
     props: [],
     applyToInstances: false,
+    insertAt: null,
     error: '',
   };
 }
@@ -2945,8 +2955,21 @@ export class EditorEngine {
    *
    * `seed` is whatever the user was searching for when they gave up and decided to
    * build it, which is the best available guess at the name.
+   *
+   * `insertAt` is the `+` position when the draft comes from the insert picker: saving then
+   * inserts the new block there. Like `beginHtmlPaste`, it closes the picker, because the picker
+   * re-focuses its search box while `insertAnchor` is set and would steal focus from the dialog.
    */
-  beginBlockDraft(seed = '', kind: BlockKind = 'component'): void {
+  beginBlockDraft(seed = '', kind: BlockKind = 'component', insertAt: InsertAnchor | null = null): void {
+    if (insertAt) {
+      this.endTextEdit(true);
+      this.store.patch({
+        extraction: { ...emptyBlockDraft(), name: seed.trim(), kind, insertAt },
+        insertAnchor: null,
+        quickMenuOpen: false,
+      });
+      return;
+    }
     this.store.patch({
       extraction: { ...emptyBlockDraft(), name: seed.trim(), kind },
     });
@@ -3415,7 +3438,18 @@ export class EditorEngine {
       // Counted rather than checked for drift: an instance count is a selector, while drift is
       // a markup comparison per element, and this runs on the way out of a dialog.
       const placed = pending.id ? this.blockInstances(block.id).length : 0;
-      if (!pending.id) {
+      if (!pending.id && pending.insertAt) {
+        // Started from the `+` picker: put it where the user asked. The insert's own toast
+        // ("Inserted …", with Undo) takes the single toast slot instead of "Saved …".
+        if (pending.insertAt.reference.isConnected) {
+          void this.insertBlock(block, this.library.defaultProps(block), pending.insertAt);
+        } else {
+          this.notify(
+            `Saved ${block.name} to the library. The element it was going next to is no longer in the page, so it was not inserted.`,
+            'info',
+          );
+        }
+      } else if (!pending.id) {
         this.notify(`Saved ${block.name} to the library.`, 'success');
       } else if (!placed) {
         this.notify(`Updated ${block.name}.`, 'success');

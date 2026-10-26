@@ -117,7 +117,10 @@
         const list = rows();
         return {
           rows: list.map((row) => row.name),
-          asExpected: list.length === 1 && /^Paste HTML/.test(list[0].name),
+          // Paste still leads for a markup-like query; the create-a-block offer sits beside it
+          // (see plus-create-block.html), as it does in the Library search.
+          asExpected:
+            list.length === 2 && /^Paste HTML/.test(list[0].name) && /^Create /.test(list[1].name),
         };
       });
 
