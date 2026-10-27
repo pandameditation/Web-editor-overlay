@@ -104,7 +104,7 @@ export class HeoToolbar extends HeoElement {
       }
       .toggle[aria-pressed='true'] .led {
         opacity: 1;
-        animation: pulse 2.4s var(--heo-ease) infinite;
+        animation: pulse 2.4s var(--heo-ease) 3;
       }
       @keyframes pulse {
         50% {
