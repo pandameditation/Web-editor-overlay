@@ -1,0 +1,3082 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PROTOTYPE — Styles panel: Effective styles + Sources + viewport preview</title>
+  <!--
+  PROTOTYPE — throwaway, not part of the overlay build. Delete or move to a prototype branch once a
+  direction is picked.
+
+  Variant I (this round):
+    - One "+ Add property" button after every block: the element, each size, each state, each
+      pseudo-element, in Effective styles and in every card. It opens one shape: property · ✓ · ×,
+      and under it "in <where> · <reach>". Where it is obvious (a card block) that line is text;
+      where it is a choice (a size or a state in Effective styles) it is a button with a menu.
+    - Editing a value that comes from a rule, or while a size is picked, asks where to save:
+      this element at this size (a new class of its own), this element at every size (inline),
+      or the rule itself — each with how many elements it changes and whether it will win.
+    - Size pickers follow the preview bar: Actual shows All sizes, a previewed size opens its own.
+    - The promote toggle is always visible, in the theme's dim ink, on every declaration.
+    - "Just this element…" is now "Detach styles from class".
+
+  Variants (?variant=, the bottom bar, or ← →): 0 = today · I = this round
+-->
+  <style id="site-css"></style>
+  <style>
+    :root {
+      /* src/ui/theme.ts, dark theme */
+      --glass: oklch(16% 0.014 265);
+      --bg: oklch(19% 0.014 265);
+      --raised: oklch(23.5% 0.016 265);
+      --sunken: oklch(16% 0.012 265);
+      --hover: oklch(28% 0.018 265);
+      --text: oklch(96% 0.005 265);
+      --dim: oklch(74% 0.012 265);
+      --faint: oklch(68% 0.014 265);
+      --line: oklch(100% 0 0 / 9%);
+      --line2: oklch(100% 0 0 / 16%);
+      --inset: inset 0 1px 0 oklch(100% 0 0 / 6%);
+      --accent: #6366f1;
+      --accent-soft: color-mix(in oklab, var(--accent) 18%, transparent);
+      --accent-line: color-mix(in oklab, var(--accent) 55%, transparent);
+      --focus: color-mix(in oklab, var(--accent) 60%, white);
+      --warn: oklch(80% 0.14 85);
+      --danger: oklch(78% 0.14 22);
+      --success: oklch(74% 0.15 155);
+      --r-sm: 7px;
+      --font: Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+      --mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      height: 100%;
+    }
+
+    body {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 340px;
+      font-family: var(--font);
+      background: #e9ecf2;
+    }
+
+    html.shot,
+    html.shot body {
+      height: auto;
+    }
+
+    /* ------------------------------------------------------------ page side (not part of the design) */
+    .stage {
+      overflow: auto;
+      padding: 28px 32px 90px;
+      min-width: 0;
+    }
+
+    html.shot .stage {
+      overflow: visible;
+    }
+
+    .stage-h {
+      font: 600 11px/1 var(--font);
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: #64748b;
+      margin: 0 0 10px;
+    }
+
+    #frame {
+      position: relative;
+    }
+
+    #site {
+      container: site / inline-size;
+      position: absolute;
+      left: 0;
+      top: 0;
+      transform-origin: 0 0;
+      background: #f8fafc;
+      border-radius: 14px;
+      color: #111827;
+      font: 15px/1.5 system-ui, sans-serif;
+      box-shadow: 0 1px 2px rgb(0 0 0 / 6%), 0 8px 30px -12px rgb(15 23 42 / 25%);
+    }
+
+    #site .pad {
+      padding: 28px;
+    }
+
+    #site h2 {
+      margin: 0 0 14px;
+      font: 650 20px/1.2 system-ui;
+    }
+
+    #site .cards {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+      align-items: start;
+    }
+
+    @container site (max-width: 767px) {
+      #site .cards {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    #site .plain {
+      margin-top: 22px;
+    }
+
+    #sel-box {
+      position: absolute;
+      pointer-events: none;
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+      border-radius: 6px;
+    }
+
+    #sel-tag {
+      position: absolute;
+      transform: translateY(-100%);
+      margin-top: -6px;
+      pointer-events: none;
+      background: var(--accent);
+      color: white;
+      font: 600 10.5px/1 var(--mono);
+      padding: 4px 6px;
+      border-radius: 5px 5px 5px 0;
+      white-space: nowrap;
+    }
+
+    .width-note {
+      margin: 8px 0 0;
+      font: 11px var(--mono);
+      color: #64748b;
+    }
+
+    .inspector {
+      margin-top: 22px;
+      display: grid;
+      grid-template-columns: 1.3fr 1fr;
+      gap: 16px;
+    }
+
+    .ins {
+      background: #0f172a;
+      color: #cbd5e1;
+      border-radius: 12px;
+      padding: 14px 16px;
+      font: 11.5px/1.6 var(--mono);
+      min-width: 0;
+    }
+
+    .ins h3 {
+      margin: 0 0 8px;
+      font: 600 10.5px/1 var(--font);
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: #94a3b8;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .ins pre {
+      margin: 0;
+      white-space: pre-wrap;
+    }
+
+    .ins mark {
+      background: color-mix(in oklab, #facc15 30%, transparent);
+      color: #fef9c3;
+      border-radius: 3px;
+      padding: 0 2px;
+    }
+
+    .ins .k {
+      color: #93c5fd;
+    }
+
+    .ins .imp {
+      color: #fca5a5;
+    }
+
+    .ins .c {
+      color: #64748b;
+    }
+
+    .ins .truth {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 2px 14px;
+      margin-top: 10px;
+    }
+
+    .ins .truth span:nth-child(odd) {
+      color: #94a3b8;
+    }
+
+    .ins .last {
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid #1e293b;
+      color: #e2e8f0;
+      font-family: var(--font);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .ins button {
+      margin-left: auto;
+      font: 500 11px var(--font);
+      background: #1e293b;
+      color: #e2e8f0;
+      border: 1px solid #334155;
+      border-radius: 6px;
+      padding: 3px 8px;
+      cursor: pointer;
+    }
+
+    .swatch {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 3px;
+      vertical-align: -1px;
+      margin-right: 5px;
+      border: 1px solid rgb(255 255 255 / 25%);
+    }
+
+    /* ------------------------------------------------------------ the panel — today's visual language */
+    #panel {
+      position: relative;
+      --ring: var(--glass);
+      background: var(--glass);
+      color: var(--text);
+      font: 12.5px/1.45 var(--font);
+      overflow: auto;
+      border-left: 1px solid oklch(0% 0 0 / 40%);
+      padding-bottom: 80px;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    html.shot #panel {
+      overflow: visible;
+    }
+
+    #panel button,
+    #panel select {
+      font: inherit;
+      color: inherit;
+    }
+
+    #panel :focus-visible {
+      outline: 2px solid var(--focus);
+      outline-offset: 1px;
+    }
+
+    .top {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .el-chip {
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      height: 24px;
+      padding: 0 9px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      border: 1px solid var(--accent-line);
+      font: 11px var(--mono);
+      color: var(--text);
+    }
+
+    .search {
+      flex: 1;
+      min-width: 0;
+      height: 26px;
+      border-radius: 7px;
+      border: 1px solid var(--line2);
+      background: var(--sunken);
+      color: var(--text);
+      padding: 0 9px;
+      font: 12px var(--font);
+    }
+
+    .search::placeholder {
+      color: var(--faint);
+    }
+
+    .o-sec {
+      border-bottom: 1px solid var(--line);
+    }
+
+    .o-head {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      width: 100%;
+      padding: 9px 12px;
+      border: 0;
+      background: none;
+      color: var(--dim) !important;
+      cursor: pointer;
+      text-align: left;
+    }
+
+    .o-head:hover {
+      color: var(--text) !important;
+    }
+
+    .o-head .chev {
+      display: grid;
+      place-items: center;
+      color: var(--faint);
+      transition: transform 200ms;
+    }
+
+    .o-head[aria-expanded='true'] .chev {
+      transform: rotate(90deg);
+    }
+
+    .o-head .glyph {
+      display: grid;
+      place-items: center;
+      color: var(--dim);
+    }
+
+    .o-head .title {
+      flex: 1;
+      font-size: 11px !important;
+      font-weight: 600;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
+
+    .o-head .count {
+      font: 10px var(--mono) !important;
+      color: var(--faint);
+    }
+
+    .o-body {
+      padding: 0 12px 12px;
+    }
+
+    .hint {
+      color: var(--faint);
+      font-size: 10.5px;
+      line-height: 1.5;
+      margin: 0 0 9px;
+    }
+
+    .hint code,
+    .hint b {
+      font: 400 10.5px var(--mono);
+      color: var(--dim);
+    }
+
+    .rows {
+      display: grid;
+      gap: 6px;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      margin-top: 9px;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      height: 24px;
+      padding: 0 7px;
+      font-size: 11.5px !important;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--raised);
+      box-shadow: var(--inset);
+      color: var(--dim) !important;
+      white-space: nowrap;
+      cursor: pointer;
+    }
+
+    .btn:hover:not(:disabled) {
+      background: var(--hover);
+      color: var(--text) !important;
+      border-color: var(--line2);
+    }
+
+    .btn:disabled {
+      background: transparent;
+      border-style: dashed;
+      box-shadow: none;
+      cursor: default;
+    }
+
+    .btn.primary {
+      background: color-mix(in oklab, var(--accent) 88%, black);
+      border-color: transparent;
+      color: white !important;
+    }
+
+    .link {
+      padding: 0;
+      border: 0;
+      background: none;
+      cursor: pointer;
+      color: var(--focus) !important;
+      font-size: 11px !important;
+    }
+
+    .link:hover {
+      text-decoration: underline;
+    }
+
+    .link[aria-expanded='true'] {
+      color: var(--text) !important;
+    }
+
+    .spacer {
+      flex: 1;
+    }
+
+    .input {
+      width: 100%;
+      height: 26px;
+      padding: 0 8px;
+      border: 1px solid var(--line);
+      border-radius: var(--r-sm);
+      background: var(--sunken);
+      color: var(--text);
+      font: 11px var(--font);
+    }
+
+    .input.mono {
+      font-family: var(--mono);
+    }
+
+    .input:hover {
+      border-color: var(--line2);
+    }
+
+    .input:focus {
+      outline: none;
+      border-color: var(--accent-line);
+      background: var(--bg);
+    }
+
+    .input::placeholder {
+      color: var(--faint);
+    }
+
+    .input[aria-invalid='true'] {
+      border-color: var(--danger);
+      box-shadow: 0 0 0 3px color-mix(in oklab, var(--danger) 22%, transparent);
+    }
+
+    .field-error {
+      margin: 4px 0 0;
+      color: var(--danger);
+      font-size: 10.5px;
+    }
+
+    .o-row {
+      display: grid;
+      grid-template-columns: 96px minmax(0, 1fr) auto;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .idea .o-row {
+      grid-template-columns: 112px minmax(0, 1fr) auto;
+    }
+
+    .o-name {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      min-width: 0;
+      overflow: hidden;
+      margin-left: -3px;
+      padding-left: 3px;
+      font: 10.5px var(--mono);
+      color: var(--dim);
+      white-space: nowrap;
+    }
+
+    .o-name .pn {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      flex: 0 1 auto;
+      min-width: 0;
+    }
+
+    .idea .o-name .pn {
+      flex-shrink: 0;
+      max-width: 100%;
+    }
+
+    .o-row.set .o-name {
+      color: var(--text);
+    }
+
+    .o-dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 99px;
+      background: var(--accent);
+      opacity: 0;
+      flex: 0 0 auto;
+    }
+
+    .o-row.set .o-dot {
+      opacity: 1;
+    }
+
+    .o-from {
+      flex: 0 1 auto;
+      min-width: 2ch;
+      color: var(--accent);
+      font-size: 9.5px;
+      opacity: .85;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* Icon buttons in the theme's accessible inks: dim at rest (faint read 2.5:1 on the glass). */
+    .reset,
+    .mini,
+    .kill,
+    .promote {
+      display: grid;
+      place-items: center;
+      padding: 0;
+      border: 1px solid transparent;
+      border-radius: 5px;
+      background: transparent;
+      color: var(--dim) !important;
+      cursor: pointer;
+    }
+
+    .reset {
+      width: 20px;
+      height: 20px;
+    }
+
+    .reset:hover {
+      background: var(--hover);
+      color: var(--accent) !important;
+    }
+
+    .mini {
+      width: 20px;
+      height: 20px;
+    }
+
+    .mini:hover {
+      background: var(--hover);
+      color: var(--text) !important;
+    }
+
+    .kill {
+      width: 18px;
+      height: 20px;
+      flex: 0 0 auto;
+    }
+
+    .kill:hover {
+      border-color: var(--line);
+      color: var(--danger) !important;
+    }
+
+    /* !important: the shorthand control's arrow, as a toggle. Always shown; pressed is the accent plus a filled tint. */
+    .promote {
+      width: 18px;
+      height: 20px;
+      flex: 0 0 auto;
+    }
+
+    .promote:hover {
+      background: var(--hover);
+      color: var(--text) !important;
+    }
+
+    .promote[aria-pressed='true'] {
+      color: var(--focus) !important;
+      background: var(--accent-soft);
+      border-color: var(--accent-line);
+    }
+
+    .vf {
+      display: flex;
+      align-items: stretch;
+      min-width: 0;
+      height: 26px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--sunken);
+    }
+
+    .vf:hover {
+      border-color: var(--line2);
+    }
+
+    .vf:focus-within {
+      border-color: var(--accent-line);
+      background: var(--bg);
+    }
+
+    .vf.pending {
+      border-color: var(--accent-line);
+      background: var(--bg);
+    }
+
+    .vf input {
+      flex: 1 1 auto;
+      min-width: 0;
+      padding: 0 6px;
+      border: 0;
+      background: transparent;
+      color: var(--text);
+      font: 11px var(--mono);
+    }
+
+    .vf input:focus {
+      outline: none;
+    }
+
+    .vf input::placeholder {
+      color: var(--faint);
+      font-style: italic;
+    }
+
+    .vf .sigil {
+      display: grid;
+      place-items: center;
+      width: 24px;
+      flex: 0 0 auto;
+      color: var(--faint);
+    }
+
+    .vf .tag {
+      align-self: center;
+      flex: 0 0 auto;
+      padding-left: 2px;
+      font: 9.5px var(--mono);
+      color: var(--focus);
+    }
+
+    .vf .trail {
+      display: flex;
+      align-items: center;
+      gap: 1px;
+      padding: 0 2px;
+    }
+
+    .vf.lead {
+      height: 28px;
+    }
+
+    .menu {
+      position: absolute;
+      z-index: 8;
+      min-width: 180px;
+      padding: 4px;
+      border: 1px solid var(--line2);
+      border-radius: 9px;
+      background: var(--raised);
+      box-shadow: 0 12px 30px -8px oklch(0% 0 0 / 55%);
+      display: grid;
+    }
+
+    .menu button {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      padding: 5px 8px;
+      border: 0;
+      border-radius: 6px;
+      background: none;
+      text-align: left;
+      cursor: pointer;
+      font: 11px var(--mono) !important;
+      color: var(--text) !important;
+    }
+
+    .menu button:hover,
+    .menu button[aria-checked='true'] {
+      background: var(--hover);
+    }
+
+    .menu button .l {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+      white-space: nowrap;
+    }
+
+    .menu button .l svg {
+      color: var(--dim);
+      flex: 0 0 auto;
+    }
+
+    .menu button small {
+      font: 10px var(--font);
+      color: var(--dim);
+      white-space: nowrap;
+    }
+
+    .menu hr {
+      width: 100%;
+      margin: 3px 0;
+      border: 0;
+      border-top: 1px solid var(--line);
+    }
+
+    .menu .cap {
+      padding: 4px 8px 2px;
+      font-size: 10px;
+      color: var(--dim);
+    }
+
+    /* the dot, and overridden declarations as crescents */
+    .dots {
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      width: 20px;
+      height: 18px;
+      padding: 0 3px;
+      margin: 0 -1px 0 -3px;
+      border: 0;
+      border-radius: 5px;
+      background: none;
+      cursor: pointer;
+    }
+
+    .dots:hover,
+    .dots[aria-expanded='true'] {
+      --ring: var(--hover);
+      background: var(--hover);
+    }
+
+    .dot {
+      position: relative;
+      z-index: 4;
+      width: 6px;
+      height: 6px;
+      border-radius: 99px;
+      background: var(--accent);
+      box-shadow: 0 0 0 1.5px var(--ring);
+      flex: 0 0 auto;
+    }
+
+    .dot.off {
+      background: transparent;
+      box-shadow: inset 0 0 0 1.5px var(--accent);
+    }
+
+    .dot.none {
+      background: transparent;
+      box-shadow: inset 0 0 0 1px var(--faint);
+      opacity: 0;
+      transition: opacity 120ms;
+    }
+
+    .wrap:hover .dot.none,
+    .dots:focus-visible .dot.none,
+    .dots[aria-expanded='true'] .dot.none {
+      opacity: 1;
+    }
+
+    .dot.idle {
+      background: transparent;
+      box-shadow: inset 0 0 0 1px var(--dim);
+    }
+
+    .moon {
+      position: relative;
+      width: 6px;
+      height: 6px;
+      margin-left: -3.5px;
+      border-radius: 99px;
+      background: var(--accent);
+      box-shadow: 0 0 0 1.5px var(--ring);
+      flex: 0 0 auto;
+    }
+
+    .moon:nth-child(2) {
+      z-index: 3;
+      opacity: .6;
+    }
+
+    .moon:nth-child(3) {
+      z-index: 2;
+      opacity: .4;
+    }
+
+    .moon:nth-child(4) {
+      z-index: 1;
+      opacity: .25;
+    }
+
+    .where {
+      display: none;
+      grid-column: 2 / -1;
+      color: var(--faint);
+      font-size: 10px;
+      line-height: 1.4;
+    }
+
+    .wrap:focus-within .where {
+      display: block;
+    }
+
+    .where b {
+      font: 400 10px var(--mono);
+      color: var(--dim);
+    }
+
+    /* Effective styles: the element, then a group per size, state or pseudo-element */
+    .egroup {
+      margin-top: 12px;
+      padding-top: 10px;
+      border-top: 1px solid var(--line);
+    }
+
+    .egroup-h {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin: 0 0 7px;
+      color: var(--dim);
+    }
+
+    .egroup-h .sel {
+      font: 500 11px var(--mono);
+      color: var(--text);
+    }
+
+    .egroup-h .kind {
+      font-size: 10px;
+      color: var(--faint);
+    }
+
+    .egroup-h .note {
+      margin-left: auto;
+      font-size: 10px;
+      color: var(--faint);
+    }
+
+    /* the cascade popover */
+    .pop {
+      position: absolute;
+      z-index: 5;
+      left: 12px;
+      right: 12px;
+      padding: 8px 10px 9px;
+      border: 1px solid var(--line2);
+      border-radius: 10px;
+      --ring: var(--raised);
+      background: var(--raised);
+      box-shadow: 0 12px 30px -8px oklch(0% 0 0 / 55%);
+      display: grid;
+      gap: 5px;
+    }
+
+    .pop .cap {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      color: var(--faint);
+      font-size: 10px;
+      margin-bottom: 1px;
+    }
+
+    .pop .cap b {
+      font: 400 10.5px var(--mono);
+      color: var(--text);
+    }
+
+    .pop .sub {
+      margin: 4px 0 0;
+      padding-top: 6px;
+      border-top: 1px solid var(--line);
+      color: var(--faint);
+      font-size: 10px;
+    }
+
+    .pop .none {
+      margin: 0;
+      color: var(--dim);
+      font-size: 10.5px;
+      line-height: 1.5;
+    }
+
+    .pop .none code {
+      font: 10.5px var(--mono);
+      color: var(--text);
+    }
+
+    .pop .vf:not(:hover):not(:focus-within) .trail {
+      display: none;
+    }
+
+    .c-line {
+      display: grid;
+      grid-template-columns: 6px minmax(0, 1fr) minmax(0, 1.45fr) 18px;
+      gap: 3px 7px;
+      align-items: center;
+    }
+
+    .c-line .src {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      min-width: 0;
+      border: 0;
+      background: none;
+      padding: 0;
+      text-align: left;
+      font: 10.5px var(--mono) !important;
+      color: var(--dim) !important;
+      white-space: nowrap;
+    }
+
+    .c-line .src span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .c-line button.src {
+      cursor: pointer;
+    }
+
+    .c-line button.src:hover {
+      color: var(--text) !important;
+    }
+
+    .c-line.lost .vf input {
+      color: var(--faint);
+      text-decoration: line-through;
+      text-decoration-color: color-mix(in oklab, var(--faint) 70%, transparent);
+    }
+
+    .c-line.lost .src,
+    .c-line.idle .src {
+      color: var(--faint) !important;
+    }
+
+    .c-line.idle .vf input {
+      color: var(--faint);
+      font-style: italic;
+    }
+
+    .moved,
+    .flash {
+      animation: moved 1.3s ease-out;
+      border-radius: 6px;
+    }
+
+    @keyframes moved {
+
+      0%,
+      35% {
+        background: color-mix(in oklab, var(--accent) 22%, transparent);
+      }
+
+      100% {
+        background: transparent;
+      }
+    }
+
+    /* header: the element and its classes */
+    .ident {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      display: grid;
+      gap: 8px;
+    }
+
+    .ident .line {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 5px;
+      min-width: 0;
+    }
+
+    .cchip {
+      display: inline-flex;
+      align-items: center;
+      height: 24px;
+      border: 1px solid var(--line2);
+      border-radius: 999px;
+      background: transparent;
+    }
+
+    .cchip:hover {
+      border-color: var(--accent-line);
+    }
+
+    .cchip .name {
+      display: inline-flex;
+      align-items: center;
+      height: 100%;
+      padding: 0 3px 0 9px;
+      border: 0;
+      border-radius: 999px 0 0 999px;
+      background: none;
+      cursor: pointer;
+      font: 11px var(--mono) !important;
+      color: var(--text) !important;
+    }
+
+    .cchip .x {
+      display: grid;
+      place-items: center;
+      width: 16px;
+      height: 16px;
+      margin-right: 4px;
+      padding: 0;
+      border: 0;
+      border-radius: 999px;
+      background: none;
+      cursor: pointer;
+      color: var(--dim) !important;
+    }
+
+    .cchip .x:hover {
+      background: var(--line2);
+      color: var(--text) !important;
+    }
+
+    .cchip.add {
+      width: 24px;
+      justify-content: center;
+      cursor: pointer;
+      color: var(--dim) !important;
+    }
+
+    .cchip.add[aria-expanded='true'] {
+      border-color: var(--accent-line);
+      color: var(--text) !important;
+    }
+
+    .ident .finder {
+      display: grid;
+      gap: 5px;
+    }
+
+    .ident .finder .hint {
+      margin: 0;
+    }
+
+    /* preview sizes, and the size strips */
+    .sizes {
+      padding: 8px 12px 9px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .seg {
+      display: inline-flex;
+      padding: 2px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--sunken);
+    }
+
+    .seg button {
+      height: 22px;
+      padding: 0 10px;
+      border: 0;
+      border-radius: 6px;
+      background: none;
+      cursor: pointer;
+      font-size: 11px !important;
+      color: var(--dim) !important;
+    }
+
+    .seg button:hover {
+      color: var(--text) !important;
+    }
+
+    .seg button[aria-pressed='true'] {
+      background: var(--raised);
+      color: var(--text) !important;
+      box-shadow: var(--inset), 0 1px 2px oklch(0% 0 0 / 30%);
+    }
+
+    .sizes .seg {
+      display: flex;
+      width: 100%;
+    }
+
+    .sizes .seg button {
+      flex: 1 1 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      height: 26px;
+      padding: 0 3px;
+      font: 10.5px var(--mono) !important;
+      min-width: 0;
+    }
+
+    .sizes .seg button.actual {
+      flex: 1.25 1 0;
+      font-family: var(--font) !important;
+    }
+
+    .sizes .seg button.more {
+      flex: 0 0 24px;
+    }
+
+    .sizes .bp {
+      margin: 7px 0 0;
+      color: var(--faint);
+      font-size: 10.5px;
+      line-height: 1.5;
+    }
+
+    .sizes .bp b {
+      font: 400 10.5px var(--mono);
+      color: var(--dim);
+    }
+
+    .slots {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      margin: 0 0 8px;
+      padding: 2px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--sunken);
+    }
+
+    .slots button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 3px;
+      height: 22px;
+      padding: 0 6px;
+      border: 0;
+      border-radius: 6px;
+      background: none;
+      cursor: pointer;
+      font: 10px var(--mono) !important;
+      color: var(--dim) !important;
+      white-space: nowrap;
+    }
+
+    .slots button:hover {
+      background: var(--hover);
+      color: var(--text) !important;
+    }
+
+    .slots button[aria-pressed='true'] {
+      background: var(--raised);
+      color: var(--text) !important;
+      box-shadow: var(--inset), 0 1px 2px oklch(0% 0 0 / 30%);
+    }
+
+    .slots button.base {
+      font-family: var(--font) !important;
+      font-size: 10.5px !important;
+    }
+
+    .slots .c {
+      color: var(--focus);
+    }
+
+    .slots button.empty .c {
+      color: var(--dim);
+    }
+
+    .slots button.notnow:not([aria-pressed='true']) svg {
+      opacity: .7;
+    }
+
+    .slots .more {
+      margin-left: auto;
+      width: 24px;
+      padding: 0;
+    }
+
+    .badge {
+      font-size: 9px;
+      color: var(--focus);
+      margin-left: -2px;
+    }
+
+    /* sources */
+    .src-tabs {
+      display: flex;
+      width: 100%;
+      margin: 0 0 4px;
+    }
+
+    .src-tabs button {
+      flex: 1 1 0;
+      padding: 0 4px;
+    }
+
+    .src-tabs button .c {
+      margin-left: 4px;
+      font: 10px var(--mono);
+      color: var(--dim);
+    }
+
+    .src-h {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin: 14px 0 7px;
+      font-size: 10.5px;
+      font-weight: 600;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      color: var(--dim);
+    }
+
+    .src-h .c {
+      font: 10px var(--mono);
+      color: var(--faint);
+      font-weight: 400;
+    }
+
+    .src-h .rule-line {
+      flex: 1;
+      height: 1px;
+      background: var(--line);
+    }
+
+    .cls {
+      border: 1px solid var(--line);
+      border-radius: var(--r-sm);
+      margin-bottom: 6px;
+      overflow: hidden;
+    }
+
+    .cls>header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 8px;
+      background: var(--sunken);
+      cursor: pointer;
+      color: var(--dim);
+    }
+
+    .cls>header:hover {
+      background: var(--hover);
+    }
+
+    .cls>header>svg {
+      flex: 0 0 auto;
+    }
+
+    .cls .n {
+      flex: 1 1 auto;
+      min-width: 0;
+      overflow: hidden;
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--text);
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .cls .n.plain {
+      font-family: var(--font);
+    }
+
+    .cls .meta {
+      flex: 0 0 auto;
+      color: var(--faint);
+      font-size: 9.5px;
+      white-space: nowrap;
+    }
+
+    .cls .file {
+      display: none;
+      flex: 0 0 auto;
+      color: var(--faint);
+      font-size: 9.5px;
+    }
+
+    .cls>header:hover .file {
+      display: inline;
+    }
+
+    .cls .body {
+      padding: 8px;
+    }
+
+    .decls {
+      display: grid;
+      gap: 5px;
+    }
+
+    .decl {
+      display: grid;
+      grid-template-columns: 88px minmax(0, 1fr) 18px 18px;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .decl .p {
+      overflow: hidden;
+      color: var(--dim);
+      font-family: var(--mono);
+      font-size: 10.5px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .block+.block,
+    .block+.add-wrap {
+      margin-top: 9px;
+      padding-top: 8px;
+      border-top: 1px dashed var(--line2);
+    }
+
+    .blabel {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin: 0 0 6px;
+      font: 10.5px var(--mono);
+      color: var(--dim);
+    }
+
+    .blabel .kindtxt {
+      font: 10px var(--font);
+      color: var(--faint);
+    }
+
+    .blabel .kill {
+      margin-left: auto;
+    }
+
+    /* ---- the one Add property, everywhere ----
+     Collapsed: a quiet text button after the block it adds to. Open: today's adder row (field + accent ✓),
+     plus × to back out, and a line saying where the declaration will be written and how far it reaches. */
+    .add-wrap {
+      margin-top: 4px;
+    }
+
+    .add-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      height: 24px;
+      padding: 0 6px;
+      margin-left: -6px;
+      border: 0;
+      border-radius: 6px;
+      background: none;
+      cursor: pointer;
+      font-size: 11px !important;
+      color: var(--dim) !important;
+    }
+
+    .add-btn:hover {
+      background: var(--hover);
+      color: var(--text) !important;
+    }
+
+    .adder {
+      display: grid;
+      gap: 5px;
+      padding: 7px;
+      margin-top: 2px;
+      border: 1px solid var(--accent-line);
+      border-radius: 8px;
+      background: color-mix(in oklab, var(--accent) 6%, var(--sunken));
+    }
+
+    .adder .pair {
+      display: flex;
+      gap: 4px;
+      min-width: 0;
+    }
+
+    .adder .pair .input {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+
+    .confirm {
+      display: grid;
+      place-items: center;
+      flex: 0 0 auto;
+      width: 28px;
+      border: 1px solid var(--accent-line);
+      border-radius: var(--r-sm);
+      background: var(--accent-soft);
+      color: var(--focus) !important;
+      cursor: pointer;
+      padding: 0;
+    }
+
+    .confirm:hover {
+      background: var(--accent);
+      color: white !important;
+    }
+
+    .adder .cancel {
+      width: 26px;
+      height: 26px;
+    }
+
+    .dest {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 4px 6px;
+      font-size: 10.5px;
+      color: var(--dim);
+    }
+
+    .dest .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      height: 20px;
+      padding: 0 4px 0 7px;
+      border: 1px solid var(--line2);
+      border-radius: 999px;
+      background: var(--raised);
+      cursor: pointer;
+      font: 10.5px var(--mono) !important;
+      color: var(--text) !important;
+    }
+
+    .dest .chip:hover {
+      border-color: var(--accent-line);
+    }
+
+    .dest .chip.fixed {
+      cursor: default;
+      padding-right: 7px;
+      background: transparent;
+    }
+
+    .dest .reach {
+      color: var(--faint);
+    }
+
+    /* ---- where to save an edit ---- */
+    .savebox {
+      grid-column: 1 / -1;
+      margin: 5px 0 3px;
+      padding: 8px;
+      border: 1px solid var(--accent-line);
+      border-radius: 8px;
+      background: color-mix(in oklab, var(--accent) 6%, var(--sunken));
+      display: grid;
+      gap: 4px;
+    }
+
+    .savebox .q {
+      margin: 0 0 2px;
+      font-size: 11px;
+      color: var(--dim);
+    }
+
+    .savebox .q b {
+      font: 400 11px var(--mono);
+      color: var(--text);
+    }
+
+    .opt {
+      display: grid;
+      grid-template-columns: 14px minmax(0, 1fr) auto;
+      gap: 2px 8px;
+      align-items: start;
+      width: 100%;
+      padding: 6px 7px;
+      border: 1px solid transparent;
+      border-radius: 7px;
+      background: transparent;
+      cursor: pointer;
+      text-align: left;
+      color: var(--text) !important;
+      font-size: 11.5px !important;
+    }
+
+    .opt:hover {
+      background: var(--hover);
+    }
+
+    .opt[aria-checked='true'] {
+      background: var(--raised);
+      border-color: var(--line2);
+    }
+
+    .opt .radio {
+      width: 12px;
+      height: 12px;
+      margin-top: 2px;
+      border-radius: 99px;
+      box-shadow: inset 0 0 0 1.5px var(--dim);
+    }
+
+    .opt[aria-checked='true'] .radio {
+      box-shadow: inset 0 0 0 1.5px var(--accent), inset 0 0 0 4px var(--glass), inset 0 0 0 6px var(--accent);
+    }
+
+    .opt .t b {
+      font: 400 11px var(--mono);
+    }
+
+    .opt .s {
+      grid-column: 2 / -1;
+      font-size: 10.5px;
+      color: var(--dim);
+      line-height: 1.45;
+    }
+
+    .opt .s code {
+      font: 10.5px var(--mono);
+      color: var(--dim);
+    }
+
+    .opt .r {
+      font-size: 10.5px;
+      color: var(--dim);
+      white-space: nowrap;
+    }
+
+    .opt .r b {
+      font: 600 11px var(--mono);
+      color: var(--text);
+    }
+
+    .opt .lose {
+      color: var(--warn);
+    }
+
+    .opt .win {
+      color: var(--success);
+    }
+
+    .opt input {
+      grid-column: 2 / -1;
+      height: 22px;
+      margin-top: 3px;
+    }
+
+    .savebox .foot {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 3px;
+    }
+
+    .savebox .foot .hint {
+      margin: 0;
+      font-size: 10px;
+    }
+
+    /* "Detach styles from class" */
+    .detach {
+      margin-top: 9px;
+      padding: 9px 10px;
+      border: 1px solid var(--line2);
+      border-radius: 8px;
+      background: var(--sunken);
+      display: grid;
+      gap: 10px;
+    }
+
+    .detach .lede {
+      margin: 0;
+      color: var(--dim);
+      font-size: 11px;
+      line-height: 1.5;
+    }
+
+    .detach .choice {
+      display: grid;
+      gap: 5px;
+    }
+
+    .detach .choice+.choice {
+      padding-top: 9px;
+      border-top: 1px solid var(--line);
+    }
+
+    .detach .head {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11.5px;
+      color: var(--text);
+    }
+
+    .detach p {
+      margin: 0;
+      color: var(--faint);
+      font-size: 10.5px;
+      line-height: 1.5;
+    }
+
+    .detach p code {
+      font: 10.5px var(--mono);
+      color: var(--dim);
+    }
+
+    .detach .row {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .detach .warn {
+      color: var(--warn);
+    }
+
+    /* ------------------------------------------------------------ switcher (not part of the design) */
+    .switcher {
+      position: fixed;
+      left: 50%;
+      bottom: 18px;
+      transform: translateX(-50%);
+      z-index: 50;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      background: #fde047;
+      color: #111;
+      border-radius: 999px;
+      padding: 5px;
+      box-shadow: 0 10px 30px -8px rgb(0 0 0 / 50%), 0 0 0 1px rgb(0 0 0 / 20%);
+      font: 600 12.5px/1 system-ui, sans-serif;
+    }
+
+    .switcher button {
+      width: 30px;
+      height: 30px;
+      border-radius: 999px;
+      border: 0;
+      background: #111;
+      color: #fde047;
+      cursor: pointer;
+      font-size: 14px;
+    }
+
+    .switcher .lab {
+      padding: 0 12px;
+      min-width: 280px;
+      text-align: center;
+    }
+
+    .switcher .lab small {
+      display: block;
+      font-weight: 500;
+      font-size: 10.5px;
+      opacity: .7;
+      margin-top: 3px;
+    }
+
+    html.shot .switcher {
+      display: none;
+    }
+
+    #out {
+      display: none;
+    }
+  </style>
+</head>
+
+<body>
+  <main class="stage" id="stage">
+    <p class="stage-h">Sample page — real CSS, generated from the model the panel edits</p>
+    <div id="frame">
+      <div id="site">
+        <div class="pad">
+          <section class="promo">
+            <h2>Plans</h2>
+            <div class="cards">
+              <p class="card">Starter — for side projects and quick experiments.</p>
+              <p class="card featured" id="target">Pro — everything a growing team needs, billed monthly.</p>
+              <p class="card">Team — shared workspaces, roles and SSO.</p>
+            </div>
+          </section>
+          <section class="plain">
+            <p class="card">Need help choosing? Our support team answers within a day.</p>
+          </section>
+        </div>
+      </div>
+      <div id="sel-box"></div>
+      <div id="sel-tag"></div>
+    </div>
+    <p class="width-note" id="width-note"></p>
+    <div class="inspector">
+      <div class="ins">
+        <h3>Stylesheet <span class="c">site.css · base.css</span></h3>
+        <pre id="ins-css"></pre>
+      </div>
+      <div class="ins">
+        <h3>Selected element <button type="button" id="reset">Reset sample</button></h3>
+        <pre id="ins-attr"></pre>
+        <div class="truth" id="ins-truth"></div>
+        <div class="last" id="ins-last"></div>
+      </div>
+    </div>
+  </main>
+  <aside id="panel" aria-label="Styles panel (prototype)"></aside>
+  <div class="switcher" role="group" aria-label="Prototype variant switcher">
+    <button type="button" id="prev" aria-label="Previous variant">←</button>
+    <div class="lab" id="vlabel"></div>
+    <button type="button" id="next" aria-label="Next variant">→</button>
+  </div>
+  <div id="out"></div>
+
+  <datalist id="css-props">
+    <option value="color"></option>
+    <option value="background-color"></option>
+    <option value="border"></option>
+    <option value="border-color"></option>
+    <option value="border-radius"></option>
+    <option value="box-shadow"></option>
+    <option value="content"></option>
+    <option value="display"></option>
+    <option value="font-family"></option>
+    <option value="font-size"></option>
+    <option value="font-weight"></option>
+    <option value="letter-spacing"></option>
+    <option value="line-height"></option>
+    <option value="margin"></option>
+    <option value="opacity"></option>
+    <option value="outline"></option>
+    <option value="padding"></option>
+    <option value="text-align"></option>
+    <option value="text-decoration"></option>
+    <option value="text-transform"></option>
+    <option value="transform"></option>
+    <option value="transition"></option>
+    <option value="width"></option>
+    <option value="max-width"></option>
+  </datalist>
+  <datalist id="css-states">
+    <option value=":hover">state</option>
+    <option value=":focus">state</option>
+    <option value=":focus-visible">state</option>
+    <option value=":focus-within">state</option>
+    <option value=":active">state</option>
+    <option value=":disabled">state</option>
+    <option value="::before">pseudo-element</option>
+    <option value="::after">pseudo-element</option>
+    <option value="::placeholder">pseudo-element</option>
+    <option value="::marker">pseudo-element</option>
+    <option value="::selection">pseudo-element</option>
+  </datalist>
+
+  <script>
+    /* ============================================================================ model */
+    const d = (p, v, imp = false) => ({ p, v, imp });
+    const START = {
+      rules: [
+        { id: 'card', selector: '.card', source: 'site.css', decls: [d('padding', '16px 20px'), d('border-radius', '12px'), d('background-color', '#ffffff'), d('color', '#1f2937'), d('font-size', '15px'), d('border', '1px solid #e5e7eb')] },
+        { id: 'featured', selector: '.featured', source: 'site.css', decls: [d('box-shadow', '0 6px 20px -8px rgb(79 70 229 / 45%)')] },
+        { id: 'muted', selector: '.muted', source: 'site.css', decls: [d('color', '#6b7280'), d('font-size', '14px')] },
+        { id: 'cardFeatured', selector: '.card.featured', source: 'site.css', decls: [d('background-color', '#eef2ff'), d('border', '1px solid #a5b4fc')] },
+        { id: 'promoCard', selector: '.promo .card', source: 'site.css', decls: [d('color', '#3730a3', true), d('font-weight', '600')] },
+        { id: 'sectionP', selector: 'section p', source: 'base.css', decls: [d('line-height', '1.6'), d('margin', '0 0 12px')] },
+        { id: 'cardWide', selector: '.card', media: '(min-width: 768px)', source: 'site.css', decls: [d('padding', '20px 24px')] },
+        { id: 'cardNarrow', selector: '.card', media: '(max-width: 767px)', source: 'site.css', decls: [d('padding', '12px 16px'), d('border-radius', '8px')] },
+        { id: 'sectionNarrow', selector: 'section p', media: '(max-width: 767px)', source: 'base.css', decls: [d('margin', '0 0 8px')] },
+        { id: 'cardPrint', selector: '.card', media: 'print', source: 'site.css', decls: [d('border-color', '#000000')] },
+        { id: 'promo', selector: '.promo', source: 'site.css', decls: [d('font-family', 'Georgia, serif')] },
+        { id: 'cardHover', selector: '.card:hover', state: ':hover', source: 'site.css', decls: [d('border-color', '#6366f1')] },
+        { id: 'cardHoverWide', selector: '.card:hover', state: ':hover', media: '(min-width: 768px)', source: 'site.css', decls: [d('box-shadow', '0 8px 24px -10px rgb(15 23 42 / 30%)')] },
+        { id: 'featuredFocus', selector: '.featured:focus-within', state: ':focus-within', source: 'site.css', decls: [d('box-shadow', '0 0 0 3px rgb(99 102 241 / 40%)')] },
+        { id: 'featuredBadge', selector: '.featured::before', state: '::before', source: 'site.css', decls: [d('content', '"Most popular"'), d('display', 'block'), d('font-size', '11px'), d('font-weight', '700'), d('letter-spacing', '0.06em'), d('text-transform', 'uppercase'), d('color', '#4f46e5')] },
+      ],
+      // The case from the brief: an inline colour that loses to `.promo .card { color … !important }`.
+      inline: [d('color', '#b91c1c'), d('font-size', '16px')],
+      classes: ['card', 'featured'],
+    };
+    let rules, inline;
+    let lastWrite = null;
+    const target = document.getElementById('target');
+    function load() {
+      rules = structuredClone(START.rules);
+      inline = structuredClone(START.inline);
+      target.className = START.classes.join(' ');
+      lastWrite = null;
+    }
+    load();
+    const BASE = new Map();
+    for (const r of START.rules) for (const x of r.decls) BASE.set(`${r.id}|${x.p}`, x);
+    for (const x of START.inline) BASE.set(`inline|${x.p}`, x);
+
+    const iconForWidth = (w) => (w < 600 ? 'phone' : w < 1000 ? 'tablet' : w < 1300 ? 'laptop' : 'desktop');
+    let PRESETS = [
+      { w: 320, icon: 'phone', name: 'Phone' },
+      { w: 768, icon: 'tablet', name: 'Tablet' },
+      { w: 1024, icon: 'laptop', name: 'Laptop' },
+      { w: 1440, icon: 'desktop', name: 'Desktop' },
+    ];
+    let SLOTS = [
+      { k: 'phone', icon: 'phone', media: '(max-width: 767px)', min: false, w: 767, name: 'Phone, up to 767px', at: 320 },
+      { k: 'tablet', icon: 'tablet', media: '(min-width: 768px)', min: true, w: 768, name: 'Tablet and up, from 768px', at: 768 },
+      { k: 'laptop', icon: 'laptop', media: '(min-width: 1024px)', min: true, w: 1024, name: 'Laptop and up, from 1024px', at: 1024 },
+      { k: 'desktop', icon: 'desktop', media: '(min-width: 1440px)', min: true, w: 1440, name: 'Desktop, from 1440px', at: 1440 },
+    ];
+    const STATES = [':hover', ':focus', ':focus-visible', ':focus-within', ':active', ':disabled', '::before', '::after', '::placeholder', '::marker', '::selection'];
+    const isPseudoEl = (s) => s?.startsWith('::');
+    const CATS = [
+      { id: 'typography', label: 'Typography', glyph: 'text', props: ['color', 'font-family', 'font-size', 'font-weight', 'line-height', 'letter-spacing', 'text-align'] },
+      { id: 'spacing', label: 'Spacing', glyph: 'wrap', props: ['margin', 'padding'] },
+      { id: 'surface', label: 'Background & border', glyph: 'droplet', props: ['background-color', 'border', 'border-color', 'border-radius', 'box-shadow'] },
+    ];
+    const INHERITED = new Set(['color', 'font-family', 'font-size', 'font-weight', 'line-height', 'letter-spacing', 'text-align']);
+    const SUGGEST = {
+      color: ['var(--brand)', 'var(--ink)', '#3730a3', 'currentColor'],
+      'background-color': ['var(--surface)', '#ffffff', '#eef2ff', 'transparent'],
+      'font-size': ['14px', '15px', '16px', '1rem', '1.125rem'],
+      'font-weight': ['400', '500', '600', '700'],
+      'line-height': ['1.4', '1.5', '1.6'],
+      padding: ['12px 16px', '16px 20px', '20px 24px'],
+      margin: ['0', '0 0 12px', '0 0 16px'],
+      border: ['0', '1px solid #e5e7eb', '1px solid #a5b4fc'],
+      'border-radius': ['8px', '12px', '16px'],
+    };
+    /* The overlay's icon paths (src/ui/icons.ts), plus new ones drawn on the same 16px grid and stroke. */
+    const PATHS = {
+      close: 'M4 4l8 8M12 4l-8 8', chevronDown: 'M4 6l4 4 4-4', chevronRight: 'M6 4l4 4-4 4', check: 'M3.5 8.5l3 3 6-7',
+      undo: 'M2.8 6.5h6.4a3.4 3.4 0 110 6.8H6M2.8 6.5L5.6 3.7M2.8 6.5l2.8 2.8',
+      trash: 'M2.8 4.5h10.4M6 4.5V2.8h4v1.7M4.4 4.5l.6 8.7h6l.6-8.7M6.6 7v4M9.4 7v4',
+      clipboard: 'M6 2.8h4v1.8H6zM4.4 3.8H3.2v9.4h9.6V3.8h-1.2M5.6 8h4.8M5.6 10.6h3.2',
+      droplet: 'M8 2.2S3.8 6.4 3.8 9.2a4.2 4.2 0 008.4 0C12.2 6.4 8 2.2 8 2.2z',
+      plus: 'M8 3.5v9M3.5 8h9', search: 'M7 12a5 5 0 100-10 5 5 0 000 10zM10.6 10.6L14 14',
+      arrowUp: 'M8 13V3M4 7l4-4 4 4', arrowRight: 'M3 8h10M9 4l4 4-4 4',
+      sparkle: 'M8 2v3M8 11v3M3.5 8h3M9.5 8h3M4.8 4.8l2 2M9.2 9.2l2 2M11.2 4.8l-2 2M6.8 9.2l-2 2',
+      text: 'M3.4 4.2V3h9.2v1.2M8 3v10M6 13h4',
+      wrap: 'M2.6 2.6h10.8v10.8H2.6zM5.4 5.4h5.2v5.2H5.4z',
+      cursor: 'M3 2.5l4.2 11 1.7-4.3 4.3-1.7z',
+      dots: 'M8 4h.01M8 8h.01M8 12h.01',
+      duplicate: 'M5.5 5.5h7.7v7.7H5.5zM10.2 5.5V2.8H2.8v7.4h2.7',
+      unlink: 'M6.5 9.5l3-3M9 4.2l.8-.8a2.6 2.6 0 013.7 3.7l-.8.8M7 11.8l-.8.8a2.6 2.6 0 01-3.7-3.7l.8-.8M2.5 2.5l1.5 1.5M12 12l1.5 1.5',
+      layers: 'M8 2.6l5.6 3L8 8.6 2.4 5.6zM2.4 8.2L8 11.2l5.6-3M2.4 10.8L8 13.8l5.6-3',
+      window: 'M2.4 3.2h11.2v9.6H2.4zM2.4 5.8h11.2',
+      phone: 'M5.2 2h5.6v12H5.2zM7.4 12h1.2',
+      tablet: 'M3.6 2.4h8.8v11.2H3.6zM7.4 11.6h1.2',
+      laptop: 'M3.6 3.8h8.8v6.6H3.6zM1.8 12.4h12.4',
+      desktop: 'M2.2 2.8h11.6v7.8H2.2zM8 10.6v2.6M5.6 13.2h4.8',
+      pseudo: 'M7 4.2h6.2v7.6H7zM2.8 6.2h2.6v3.6H2.8z',
+      print: 'M4.5 6V2.8h7V6M4.5 11H3V6h10v5h-1.5M4.5 9.2h7v4h-7z',
+    };
+    const ic = (n, size = 12) => `<svg viewBox="0 0 16 16" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="${n === 'dots' ? 2.2 : 1.5}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${PATHS[n]}"/></svg>`;
+
+    const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    const ruleById = (id) => rules.find((r) => r.id === id);
+    const baseSel = (r) => (r.state ? r.selector.replace(r.state, '') : r.selector);
+    const isClassSel = (sel) => /^\.[\w-]+$/.test(sel);
+    const isClassRule = (r) => isClassSel(r.selector) && !r.media && !r.state;
+    const classRule = (n) => rules.find((r) => r.selector === '.' + n && isClassRule(r));
+    function specificity(sel) {
+      const s = sel.replace(/::[\w-]+/g, ' x');
+      const ids = (s.match(/#[\w-]+/g) || []).length;
+      const cls = (s.match(/\.[\w-]+|\[[^\]]+\]|:(?!:)[\w-]+/g) || []).length;
+      const els = (s.match(/(?:^|[\s>+~])[a-zA-Z][\w-]*/g) || []).length;
+      return ids * 10000 + cls * 100 + els;
+    }
+  </script>
+  <script>
+    /* ============================================================================ width: previewed, or as it is */
+    const params = new URLSearchParams(location.search);
+    const VARIANTS = [
+      { k: '0', label: 'Now — today (simulated)', note: 'One dot; edits always write inline' },
+      { k: 'I', label: 'I — one Add property, ask where to save', note: 'Sizes follow the preview; promote always shown' },
+    ];
+    let variant = VARIANTS.some((v) => v.k === params.get('variant')) ? params.get('variant') : 'I';
+    let vw = PRESETS.some((x) => x.w === +params.get('vw')) ? +params.get('vw') : null;
+    const stageEl = document.getElementById('stage');
+    const naturalWidth = () => Math.max(320, Math.round(stageEl.clientWidth - 64));
+    const curW = () => vw ?? naturalWidth();
+    const previewing = () => variant === 'I' && vw !== null;
+    const widthQuery = (m) => m?.match(/(min|max)-width:\s*(\d+)px/);
+    function matchesAt(m, w) {
+      if (!m) return true;
+      const x = widthQuery(m);
+      if (x) return x[1] === 'min' ? w >= +x[2] : w <= +x[2];
+      try { return matchMedia(m).matches; } catch { return false; }
+    }
+    const mediaShort = (m) => { const x = widthQuery(m); return x ? (x[1] === 'min' ? `≥${x[2]}px` : `≤${x[2]}px`) : m.replace(/[()]/g, ''); };
+    const mediaIcon = (m) => { const x = widthQuery(m); if (!x) return /print/.test(m) ? 'print' : 'window'; return iconForWidth(x[1] === 'max' ? Math.min(+x[2], 599) : +x[2]); };
+    const visibleNow = (r) => !previewing() || matchesAt(r.media, vw);
+    const idleWhy = (r) => (r.state ? (isPseudoEl(r.state) ? `on ${r.state}` : `only on ${r.state}`) : `only at ${mediaShort(r.media)}`);
+
+    const reachSel = (sel) => document.querySelectorAll('#site ' + sel).length;
+    const scopeOf = (src) => (src === 'inline' ? 1 : reachSel(baseSel(ruleById(src))));
+    const srcLabel = (src) => (src === 'inline' ? 'inline style' : ruleById(src).selector + (ruleById(src).media ? ` @media ${ruleById(src).media}` : ''));
+    const shortLabel = (src) => (src === 'inline' ? 'inline style' : ruleById(src).selector + (ruleById(src).media ? ' ' + mediaShort(ruleById(src).media) : ''));
+    const nEls = (n) => `${n} element${n === 1 ? '' : 's'}`;
+    const reach = (src) => (src === 'inline' ? 'this element only' : nEls(scopeOf(src)));
+    const tagOf = (el) => el.tagName.toLowerCase() + [...el.classList].map((c) => '.' + c).join('');
+
+    /* ============================================================================ cascade, at a width */
+    function contributions(el, w = curW()) {
+      const out = [];
+      rules.forEach((r, order) => {
+        if (!el.matches('#site ' + baseSel(r))) return;
+        const active = !r.state && matchesAt(r.media, w);
+        for (const x of r.decls) out.push({ src: r.id, inline: false, p: x.p, v: x.v, imp: x.imp, spec: specificity(r.selector), order, active });
+      });
+      if (el === target) inline.forEach((x, i) => out.push({ src: 'inline', inline: true, p: x.p, v: x.v, imp: x.imp, spec: 0, order: 1000 + i, active: true }));
+      return out;
+    }
+    function cmp(a, b) {
+      if (a.imp !== b.imp) return a.imp ? -1 : 1;
+      if (a.inline !== b.inline) return a.inline ? -1 : 1;
+      if (a.spec !== b.spec) return b.spec - a.spec;
+      return b.order - a.order;
+    }
+    const cascadeAt = (p, w) => contributions(target, w).filter((c) => c.active && c.p === p).sort(cmp);
+    const cascade = (p) => cascadeAt(p, curW());
+    const idle = (p) => contributions(target).filter((c) => !c.active && c.p === p).sort(cmp);
+    const appliedProps = () => [...new Set(contributions(target).filter((c) => c.active).map((c) => c.p))].sort();
+    const reaching = () => rules.filter((r) => target.matches('#site ' + baseSel(r)));
+    function inheritedFrom(p) {
+      if (!INHERITED.has(p)) return null;
+      for (let a = target.parentElement; a && a.id !== 'site'; a = a.parentElement) {
+        const w = contributions(a).filter((c) => c.active && c.p === p).sort(cmp)[0];
+        if (w) return { el: a, src: w.src };
+      }
+      return null;
+    }
+    function breakpoints() {
+      const out = new Set();
+      for (const r of reaching()) { const x = widthQuery(r.media); if (x) out.add(x[1] === 'min' ? +x[2] : +x[2] + 1); }
+      return [...out].sort((a, b) => a - b);
+    }
+
+    /* ============================================================================ states, pseudo-elements, sizes */
+    const stateRulesNow = (s) => reaching().filter((r) => r.state === s && matchesAt(r.media, curW()));
+    const statesNow = () => STATES.filter((s) => stateRulesNow(s).length);
+    const asContribution = (r, x) => ({ src: r.id, inline: false, p: x.p, v: x.v, imp: x.imp, spec: specificity(r.selector), order: rules.indexOf(r), active: true });
+    function stateCascade(s, p) {
+      const own = stateRulesNow(s).flatMap((r) => r.decls.filter((x) => x.p === p).map((x) => asContribution(r, x)));
+      const base = isPseudoEl(s) ? [] : contributions(target).filter((c) => c.active && c.p === p);
+      return [...own, ...base].sort(cmp);
+    }
+    const stateProps = (s) => [...new Set(stateRulesNow(s).flatMap((r) => r.decls.map((x) => x.p)))].sort();
+
+    function slotOf(r) {
+      if (!r.media) return 'base';
+      const x = widthQuery(r.media);
+      if (x) { const s = SLOTS.find((y) => y.min === (x[1] === 'min') && y.w === +x[2]); if (s) return s.k; }
+      return 'other:' + r.media;
+    }
+    const slotMedia = (s) => (s === 'base' ? '' : s.startsWith('other:') ? s.slice(6) : SLOTS.find((x) => x.k === s).media);
+    const slotShown = (s) => s === 'base' || !previewing() || matchesAt(slotMedia(s), vw);
+    function slotWidth(s) {
+      const slot = SLOTS.find((x) => x.k === s);
+      if (slot) return slot.at;
+      const x = widthQuery(slotMedia(s));
+      return x ? +x[2] : curW();
+    }
+    const slotName = (s) => (s.startsWith('other:') ? `@media ${slotMedia(s)}` : mediaShort(slotMedia(s)));
+    const sizeRules = (s) => reaching().filter((r) => !r.state && slotOf(r) === s);
+    const sizeProps = (s) => [...new Set(sizeRules(s).flatMap((r) => r.decls.map((x) => x.p)))].sort();
+    const sizeCascade = (s, p) => cascadeAt(p, slotWidth(s)).concat(
+      s.startsWith('other:') ? sizeRules(s).flatMap((r) => r.decls.filter((x) => x.p === p).map((x) => asContribution(r, x))) : [],
+    ).filter((c, i, a) => a.findIndex((y) => y.src === c.src) === i).sort(cmp);
+    function listFor(scope, p) {
+      if (scope.startsWith('st:')) return stateCascade(scope.slice(3), p);
+      if (scope.startsWith('vp:')) return sizeCascade(scope.slice(3), p);
+      return cascade(p);
+    }
+    /** The size a previewed width belongs to: its own breakpoint, or the narrowest one that holds it. */
+    function previewSlot() {
+      if (!previewing()) return 'base';
+      const own = SLOTS.find((x) => x.at === vw);
+      if (own) return own.k;
+      const fits = SLOTS.filter((x) => matchesAt(x.media, vw));
+      return fits.length ? fits[fits.length - 1].k : 'base';
+    }
+
+    function families() {
+      const map = new Map();
+      for (const r of reaching()) {
+        const key = baseSel(r);
+        if (!map.has(key)) map.set(key, []);
+        map.get(key).push(r);
+      }
+      const list = [...map].map(([key, members]) => ({ key, members, isClass: isClassSel(key), first: Math.min(...members.map((m) => rules.indexOf(m))) }));
+      const order = [...target.classList];
+      return {
+        classes: list.filter((f) => f.isClass).sort((a, b) => order.indexOf(a.key.slice(1)) - order.indexOf(b.key.slice(1))),
+        others: list.filter((f) => !f.isClass).sort((a, b) => a.first - b.first),
+      };
+    }
+    const famLead = (fam) => fam.members.find((m) => !m.media && !m.state) ?? fam.members[0];
+    function famByKey(key) { const f = families(); return [...f.classes, ...f.others].find((x) => x.key === key); }
+
+    /* ============================================================================ writes */
+    const listOf = (src) => (src === 'inline' ? inline : ruleById(src).decls);
+    function write(src, p, v, imp, batch) {
+      const list = listOf(src);
+      const i = list.findIndex((x) => x.p === p);
+      if (!v) { if (i > -1) list.splice(i, 1); }
+      else if (i > -1) { list[i].v = v; if (imp !== undefined) list[i].imp = imp; }
+      else list.push(d(p, v, !!imp));
+      lastWrite = { src, p, v, imp: list.find((x) => x.p === p)?.imp, removed: !v };
+      if (!batch) commit();
+    }
+    const overrideNeedsImportant = (p) => cascade(p).some((c) => !c.inline && c.imp);
+    function overrideWrite(p, v, batch) {
+      if (!v) return write('inline', p, '', undefined, batch);
+      write('inline', p, v, inline.find((x) => x.p === p)?.imp || overrideNeedsImportant(p), batch);
+    }
+    function changed(src, p) {
+      const now = listOf(src).find((x) => x.p === p);
+      const was = BASE.get(`${src}|${p}`);
+      return (now?.v ?? '') !== (was?.v ?? '') || !!now?.imp !== !!was?.imp;
+    }
+    function resetDecl(src, p) { const was = BASE.get(`${src}|${p}`); write(src, p, was?.v ?? '', !!was?.imp); }
+    function parseCss(text) {
+      return text.split(';').map((s) => s.match(/^\s*([\w-]+)\s*:\s*(.+?)\s*$/)).filter(Boolean)
+        .map((m) => ({ p: m[1].toLowerCase(), v: m[2].replace(/!\s*important$/i, '').trim(), imp: /!\s*important$/i.test(m[2]) }));
+    }
+    function ensureClass(n) {
+      if (!target.classList.contains(n)) target.classList.add(n);
+      if (!classRule(n)) rules.push({ id: 'c' + Date.now() + Math.random().toString(36).slice(2, 5), selector: '.' + n, source: 'site.css', decls: [] });
+      return classRule(n).id;
+    }
+    function ensureRule(sel, state, media) {
+      let r = rules.find((x) => baseSel(x) === sel && (x.state ?? '') === (state ?? '') && (x.media ?? '') === (media ?? ''));
+      if (!r) {
+        r = { id: 'n' + Date.now() + Math.random().toString(36).slice(2, 5), selector: sel + (state ?? ''), source: 'site.css', decls: [] };
+        if (state) r.state = state;
+        if (media) r.media = media;
+        rules.push(r);
+      }
+      return r;
+    }
+    /** A class of this element's own, for a change that should reach no other element. */
+    function soloName(hint) {
+      const stem = `${target.classList[0] ?? target.tagName.toLowerCase()}-${hint}`;
+      let n = stem, i = 2;
+      while (rules.some((r) => baseSel(r) === '.' + n)) n = `${stem}-${i++}`;
+      return n;
+    }
+    function seedValue(p, state) {
+      if (p === 'content') return '""';
+      if (isPseudoEl(state)) return 'initial';
+      return getComputedStyle(target).getPropertyValue(p).trim() || 'initial';
+    }
+    /** Try a change on a throwaway copy of the model and report what `check` says about it. */
+    function simulate(change, check) {
+      const saved = structuredClone({ rules, inline });
+      const cls = target.className;
+      const last = lastWrite;
+      change();
+      const out = check();
+      rules = saved.rules; inline = saved.inline; target.className = cls; lastWrite = last;
+      return out;
+    }
+
+    /* ============================================================================ page + inspector */
+    function cssText(prefix) {
+      return rules.map((r) => {
+        const body = r.decls.map((x) => `  ${x.p}: ${x.v}${x.imp ? ' !important' : ''};`).join('\n');
+        const rule = `${prefix}${r.selector} {\n${body}\n}`;
+        if (!r.media) return rule;
+        return `${widthQuery(r.media) ? '@container site' : '@media'} ${r.media} {\n${rule}\n}`;
+      }).join('\n');
+    }
+    const frameEl = document.getElementById('frame');
+    const siteEl = document.getElementById('site');
+    function layoutStage() {
+      const w = curW();
+      const s = Math.min(1, naturalWidth() / w);
+      siteEl.style.width = w + 'px';
+      siteEl.style.transform = `scale(${s})`;
+      frameEl.style.width = w * s + 'px';
+      frameEl.style.height = siteEl.offsetHeight * s + 'px';
+      document.getElementById('width-note').textContent = previewing() ? `Previewing ${vw}px${s < 1 ? `, shown at ${Math.round(s * 100)}%` : ''}` : `As it is: ${w}px wide`;
+      positionSel();
+    }
+    function applyCss() {
+      let css = cssText('#site ');
+      let text = inline.map((x) => `${x.p}: ${x.v}${x.imp ? ' !important' : ''}`).join('; ');
+      target.removeAttribute('data-heo-preview');
+      // While "where to save" is open, the page shows the highlighted choice, without committing it.
+      // The automatic class is not on the element yet, so its preview targets an attribute of the same
+      // specificity as a class: what the page shows is what Save will give.
+      if (typeof pending !== 'undefined' && pending) {
+        const o = pending;
+        const opt = o.opts.find((x) => x.k === o.sel);
+        simulate(() => applyOption(opt, o.p, o.v, true, o.name), () => {
+          css = cssText('#site ').replaceAll(`#site .${o.name}`, '#site [data-heo-preview]');
+          text = inline.map((x) => `${x.p}: ${x.v}${x.imp ? ' !important' : ''}`).join('; ');
+        });
+        if (opt.k === 'solo') target.setAttribute('data-heo-preview', '');
+      }
+      document.getElementById('site-css').textContent = css;
+      if (text) target.setAttribute('style', text); else target.removeAttribute('style');
+      document.getElementById('sel-tag').textContent = tagOf(target);
+      layoutStage();
+      renderInspector();
+    }
+    function positionSel() {
+      const f = frameEl.getBoundingClientRect();
+      const r = target.getBoundingClientRect();
+      Object.assign(document.getElementById('sel-box').style, { left: r.left - f.left + 'px', top: r.top - f.top + 'px', width: r.width + 'px', height: r.height + 'px' });
+      Object.assign(document.getElementById('sel-tag').style, { left: r.left - f.left - 2 + 'px', top: r.top - f.top - 2 + 'px' });
+    }
+    function renderInspector() {
+      const mark = (src, p, t) => (lastWrite && lastWrite.src === src && lastWrite.p === p ? `<mark>${t}</mark>` : t);
+      document.getElementById('ins-css').innerHTML = rules.map((r) => {
+        const body = r.decls.map((x) => mark(r.id, x.p, `  <span class="k">${esc(x.p)}</span>: ${esc(x.v)}${x.imp ? ' <span class="imp">!important</span>' : ''};`)).join('\n');
+        return `${r.media ? `@media ${esc(r.media)} { ` : ''}${esc(r.selector)} {\n${body}\n}${r.media ? ' }' : ''}${r.source === 'base.css' ? '  <span class="c">/* base.css */</span>' : ''}`;
+      }).join('\n');
+      const attr = inline.map((x) => mark('inline', x.p, `${esc(x.p)}: ${esc(x.v)}${x.imp ? ' <span class="imp">!important</span>' : ''}`)).join('; ');
+      document.getElementById('ins-attr').innerHTML = `&lt;p class="${esc(target.className)}"${inline.length ? `\n   style="${attr}"` : ''}&gt;`;
+      const cs = getComputedStyle(target);
+      document.getElementById('ins-truth').innerHTML = `<span>rendered at</span><span>${curW()}px</span>` + ['color', 'font-size', 'padding', 'border-radius', 'background-color'].map((p) => {
+        const v = cs.getPropertyValue(p);
+        return `<span>${p}</span><span>${p.includes('color') ? `<i class="swatch" style="background:${v}"></i>` : ''}${esc(v)}</span>`;
+      }).join('');
+      const w = lastWrite?.p && cascade(lastWrite.p)[0];
+      const r = lastWrite?.src && lastWrite.src !== 'inline' ? ruleById(lastWrite.src) : null;
+      document.getElementById('ins-last').innerHTML = lastWrite?.note ? esc(lastWrite.note)
+        : lastWrite
+          ? `Last write: <b>${esc(lastWrite.p)}${lastWrite.removed ? ' removed' : `: ${esc(lastWrite.v)}${lastWrite.imp ? ' !important' : ''}`}</b> → <code>${esc(srcLabel(lastWrite.src))}</code>, ${reach(lastWrite.src)}.`
+          + (lastWrite.removed || r?.state || (r?.media && !matchesAt(r.media, curW())) ? '' : w?.src === lastWrite.src ? ' <span style="color:#86efac">It applies.</span>' : ` <span style="color:#fca5a5">It does not apply at ${curW()}px — ${esc(srcLabel(w?.src ?? lastWrite.src))} wins.</span>`)
+          : 'No edits yet. Change a value in the panel and watch where it lands.';
+    }
+
+    /* ============================================================================ panel state */
+    let q = params.get('q') || '';
+    const sectionState = new Map();
+    let openId = params.get('open') || null;
+    let menuKey = params.get('menu') || null;
+    let moreKey = params.get('more') || null;
+    let pvMenu = params.has('pvmenu');
+    let destMenu = params.get('destmenu') || null; // the adder whose "in …" menu is open
+    let finding = params.has('find');
+    let tab = ['all', 'inline', 'classes', 'rules'].includes(params.get('tab')) ? params.get('tab') : 'all';
+    const closedCards = new Set((params.get('closed') ?? '').split(',').filter(Boolean));
+    /** Sizes the user picked by hand. Empty means "follow the preview bar"; changing the preview resets them. */
+    const cardPick = new Map((params.get('slot') ?? '').split(',').filter(Boolean).map((x) => x.split('=')));
+    let effPick = params.get('eslot') || null;
+    const effSlotNow = () => { const s = effPick ?? previewSlot(); return slotShown(s) ? s : 'base'; };
+    const cardSlotNow = (key) => { const s = cardPick.get(key) ?? previewSlot(); return slotShown(s) ? s : 'base'; };
+    let detachOpen = params.get('detach') || null;
+    let forkDraft = '';
+    let addOpen = params.get('add') || null; // the one Add property that is open
+    const addDest = new Map(); // adder id → destination key picked in its menu
+    const adderDests = new Map(); // adder id → its destinations, filled while rendering
+    const drafts = new Map();
+    const errors = new Map();
+    let pending = null; // an edit waiting for "where to save"
+    let moved = null;
+    let focusReq = null;
+    let classDraft = '';
+    const hit = (...t) => !q || t.some((s) => String(s ?? '').toLowerCase().includes(q.toLowerCase()));
+
+    function section(id, title, count, body, openByDefault = true, glyph = '', lede = '') {
+      const isOpen = q ? true : sectionState.get(id) ?? openByDefault;
+      return `<div class="o-sec" data-sec="${id}"><button class="o-head" type="button" data-act="sec" data-id="${id}" data-default="${openByDefault}" aria-expanded="${isOpen}">
+      <span class="chev">${ic('chevronRight', 11)}</span>${glyph ? `<span class="glyph">${ic(glyph, 13)}</span>` : ''}<span class="title">${title}</span><span class="count">${count || ''}</span></button>
+    ${isOpen ? `<div class="o-body">${lede ? `<p class="hint">${lede}</p>` : ''}${body}</div>` : ''}</div>`;
+    }
+    const searchBox = (ph = 'Search in element…') => `<input class="search" id="q" placeholder="${ph}" value="${esc(q)}" aria-label="Search in element" />`;
+
+    function field({ key, src, p, value, imp, placeholder = '', label, mode = '', scope = '', clearable = !!value, isPending = false }) {
+      return `<span class="vf${isPending ? ' pending' : ''}" data-key="${esc(key)}">
+    <input value="${esc(value)}" placeholder="${esc(placeholder)}" data-src="${src}" data-p="${p}" data-mode="${mode}" data-scope="${esc(scope)}" aria-label="${esc(label ?? p)}" spellcheck="false" autocomplete="off" />
+    ${imp ? '<span class="tag">!important</span>' : ''}
+    <span class="trail">
+      ${clearable ? `<button class="mini" type="button" tabindex="-1" data-act="clear" data-src="${src}" data-p="${p}" title="Clear" aria-label="Clear ${esc(p)}">${ic('close', 11)}</button>` : ''}
+      <button class="mini" type="button" tabindex="-1" data-act="menu" data-key="${esc(key)}" title="Show tokens and values" aria-label="Show tokens and values">${ic('chevronDown', 12)}</button>
+    </span></span>`;
+    }
+    function resetButton(src, p) {
+      if (!src || !changed(src, p)) return '<span></span>';
+      const was = BASE.get(`${src}|${p}`);
+      return `<button class="reset" type="button" data-act="reset" data-src="${src}" data-p="${p}" aria-label="Reset ${esc(p)}"
+    title="${was ? `Back to ${esc(was.v)}${was.imp ? ' !important' : ''}, its value before this session` : 'Remove this declaration, as it was before this session'}">${ic('undo', 11)}</button>`;
+    }
+    /** The promote toggle: the shorthand control's arrow, pressed while the declaration is !important. */
+    const promote = (src, p, imp, where) => `<button class="promote" type="button" data-act="promote" data-src="${src}" data-p="${esc(p)}" aria-pressed="${!!imp}"
+  aria-label="!important on ${esc(p)}${where ? ' in ' + esc(where) : ''}" title="${imp ? 'Remove !important' : 'Add !important'}">${ic('arrowUp', 10)}</button>`;
+    /** A class or rule's declarations: name, value, !important, trash. */
+    function declList(src, filter, emptyText) {
+      const list = src ? listOf(src).filter((x) => !filter || hit(x.p, x.v)) : [];
+      const rowsHtml = list.map((x) => `<div class="decl"><span class="p" title="${esc(x.p)}">${esc(x.p)}</span>
+      ${field({ key: `${src}|${x.p}`, src, p: x.p, value: x.v, imp: x.imp })}
+      ${promote(src, x.p, x.imp, srcLabel(src))}
+      <button class="kill" type="button" data-act="kill" data-src="${src}" data-p="${esc(x.p)}" aria-label="Remove ${esc(x.p)} from ${esc(srcLabel(src))}" title="Remove ${esc(x.p)}">${ic('trash', 11)}</button></div>`).join('');
+      const empty = !list.length ? `<p class="hint" style="margin:0">${emptyText ?? 'No declarations yet.'}</p>` : '';
+      return `<div class="decls" data-decls="${src ?? ''}">${rowsHtml}${empty}</div>`;
+    }
+    const classFinder = () => `<span class="vf lead">
+    <span class="sigil">${ic('search', 13)}</span>
+    <input id="class-add" list="known-classes" value="${esc(classDraft)}" placeholder="find or create a class" aria-label="Find or create a class" spellcheck="false" autocomplete="off" />
+    <span class="trail"><button class="mini" type="button" data-act="add-class" title="Add class" aria-label="Add class">${ic('plus', 12)}</button></span>
+  </span>
+  <datalist id="known-classes">${rules.filter(isClassRule).map((r) => r.selector.slice(1)).filter((n) => !target.classList.contains(n)).map((n) => `<option value="${n}">`).join('')}</datalist>`;
+
+    /* ============================================================================ the one Add property */
+    /**
+     * After every block. Collapsed it is a quiet "+ Add property". Open, it is the adder row everyone
+     * already knows (field + accent ✓) with × to back out, and one line under it: "in <where> · <reach>".
+     * `dests` lists where it can write. One destination shows as text; several make it a button.
+     */
+    function addBlock(id, dests, kind = 'prop') {
+      if (q) return '';
+      adderDests.set(id, dests);
+      const label = kind === 'state' ? 'Add state or pseudo-element' : 'Add property';
+      if (addOpen !== id) return `<div class="add-wrap"><button class="add-btn" type="button" data-act="add-open" data-adder="${esc(id)}">${ic('plus', 12)} ${label}</button></div>`;
+      const dest = dests.find((x) => x.key === addDest.get(id)) ?? dests[0];
+      const err = errors.get(id);
+      const chip = dests.length > 1
+        ? `<button class="chip" type="button" data-act="dest" data-adder="${esc(id)}" aria-haspopup="menu" aria-expanded="${destMenu === id}" title="Choose where to write it">${esc(dest.label)}${ic('chevronDown', 10)}</button>`
+        : `<span class="chip fixed">${esc(dest.label)}</span>`;
+      return `<div class="add-wrap"><div class="adder" data-adder="${esc(id)}">
+      <div class="pair">
+        <input class="input mono" type="text" list="${kind === 'state' ? 'css-states' : 'css-props'}" placeholder="${kind === 'state' ? ':hover, ::before…' : 'property'}" value="${esc(drafts.get(id) ?? '')}"
+          spellcheck="false" autocomplete="off" data-adder-input="${esc(id)}" data-kind="${kind}" aria-label="${label}" ${err ? 'aria-invalid="true"' : ''} />
+        <button class="confirm" type="button" data-act="adder-ok" data-adder="${esc(id)}" title="${label}" aria-label="${label}">${ic('check', 12)}</button>
+        <button class="mini cancel" type="button" data-act="add-close" title="Cancel" aria-label="Cancel">${ic('close', 11)}</button>
+      </div>
+      <div class="dest">in ${chip}<span class="reach">· ${esc(dest.reach)}</span></div>
+      ${err ? `<p class="field-error">${esc(err)}</p>` : ''}
+    </div></div>`;
+    }
+    const classesOf = () => [...target.classList];
+    const allFamKeys = () => { const f = families(); return [...f.classes, ...f.others].map((x) => x.key); };
+    const elementDests = () => [
+      { key: 'inline', label: 'inline style', reach: 'this element only, every size', to: { src: 'inline' } },
+      ...classesOf().map((c) => ({ key: '.' + c, label: '.' + c, reach: `${nEls(reachSel('.' + c))}, every size`, to: { sel: '.' + c } })),
+      { key: 'new', label: 'a new class', reach: 'this element only', to: { solo: 'own' } },
+    ];
+    const sizeDests = (s) => [
+      ...allFamKeys().map((k) => ({ key: k, label: `${k} ${slotName(s)}`, reach: nEls(reachSel(k)), to: { sel: k, media: slotMedia(s) } })),
+      { key: 'new', label: `a new class ${slotName(s)}`, reach: 'this element only', to: { solo: s.startsWith('other:') ? 'media' : s, media: slotMedia(s) } },
+    ];
+    function stateDests(s) {
+      const keys = allFamKeys();
+      const have = keys.filter((k) => rules.some((r) => baseSel(r) === k && r.state === s));
+      return [
+        ...[...have, ...keys.filter((k) => !have.includes(k))].map((k) => ({ key: k, label: k + s, reach: nEls(reachSel(k)), to: { sel: k, state: s } })),
+        { key: 'new', label: `a new class${s}`, reach: 'this element only', to: { solo: s.replace(/:/g, ''), state: s } },
+      ];
+    }
+    /** Where a destination writes: an existing rule, one made on first use, or a new class of the element's own. */
+    function resolveDest(to) {
+      if (to.src) return to.src;
+      if (to.solo) { const n = soloName(to.solo); ensureClass(n); return ensureRule('.' + n, to.state ?? '', to.media ?? '').id; }
+      return ensureRule(to.sel, to.state ?? '', to.media ?? '').id;
+    }
+    function commitAdder(id) {
+      const input = panel.querySelector(`[data-adder-input="${CSS.escape(id)}"]`);
+      if (!input) return;
+      const raw = input.value.trim();
+      const kind = input.dataset.kind;
+      const dests = adderDests.get(id);
+      const dest = dests.find((x) => x.key === addDest.get(id)) ?? dests[0];
+      errors.delete(id);
+      if (!raw) { errors.set(id, kind === 'state' ? 'Type a state like :hover or a pseudo-element like ::before.' : 'Type the property to add.'); return render(); }
+      if (kind === 'state') {
+        const s = raw.startsWith(':') ? raw : ':' + raw;
+        if (!STATES.includes(s)) { errors.set(id, `${s} is not a state or pseudo-element the editor knows.`); drafts.set(id, raw); return render(); }
+        drafts.delete(id); addOpen = null;
+        const r = ensureRule(dest.to.sel, s, dest.to.media ?? '');
+        // A pseudo-element draws nothing without content, so it starts with one; a state opens its own Add property.
+        if (isPseudoEl(s) && !r.decls.length) { write(r.id, 'content', '""', false, true); focusReq = { src: r.id, p: 'content', select: true }; }
+        else { addOpen = `c:${r.id}`; focusReq = { adder: addOpen }; }
+        lastWrite = { note: `Added ${r.selector}${r.media ? ` at ${mediaShort(r.media)}` : ''}.` };
+        return commit();
+      }
+      const p = raw.toLowerCase();
+      if (!/^-?[a-z][a-z-]*$/.test(p) || !CSS.supports(p, 'initial')) { errors.set(id, `${raw} is not a property this browser knows.`); drafts.set(id, raw); return render(); }
+      const src = resolveDest(dest.to);
+      drafts.delete(id); addOpen = null;
+      if (!listOf(src).some((x) => x.p === p)) write(src, p, seedValue(p, src === 'inline' ? '' : ruleById(src).state), false, true);
+      // Focus the new value where the user was: the Effective styles row if added there, else the card's row.
+      focusReq = id.startsWith('a:') ? { anchor: id === 'a:el' ? `applied|${p}` : id.startsWith('a:size') ? `vp:${effSlotNow()}|${p}` : `st:${id.slice(5)}|${p}`, select: true, fallback: { src, p } } : { src, p, select: true };
+      commit();
+    }
+
+    /* ============================================================================ where to save an edit */
+    /**
+     * The choices for a value that is not simply this element's own. Each says what it changes and how far,
+     * and is tried on a copy of the page first, so an option that would not win says so before it is picked.
+     */
+    function saveOptions(scope, p, v) {
+      const state = scope.startsWith('st:') ? scope.slice(3) : '';
+      let size = scope.startsWith('vp:') ? scope.slice(3) : '';
+      const list = listFor(scope, p);
+      const w = list[0];
+      if (!size && !state) {
+        if (previewing() && previewSlot() !== 'base') size = previewSlot();
+        else if (w && !w.inline && ruleById(w.src).media) size = slotOf(ruleById(w.src));
+      }
+      const media = size ? slotMedia(size) : '';
+      const where = [state && `on ${state}`, size && `at ${slotName(size)}`].filter(Boolean).join(' ');
+      const opts = [];
+      // Named for the user, not by them: a class only this element wears, made the moment it is needed.
+      const name = soloName(state ? state.replace(/:/g, '') : size.startsWith('other:') ? 'media' : size || 'own');
+      if (state || size) opts.push({ k: 'solo', title: `This element only, ${where}`, sub: `adds an automatic class, .${name}, to this element`, n: 1, to: { solo: 'auto', state, media } });
+      if (!state) opts.push({ k: 'inline', title: size ? 'This element, at every size' : 'This element only', sub: `inline style${overrideNeedsImportant(p) ? ', with !important to beat a rule that has it' : ''}`, n: 1, to: { src: 'inline' } });
+      let ruleSrc = null;
+      if (state || size) ruleSrc = list.find((c) => !c.inline && (state ? ruleById(c.src).state === state : slotOf(ruleById(c.src)) === size && !ruleById(c.src).state))?.src;
+      else if (w && !w.inline) ruleSrc = w.src;
+      if (ruleSrc) {
+        const r = ruleById(ruleSrc);
+        opts.push({ k: 'rule', title: `The rule ${shortLabel(ruleSrc)}`, sub: isClassSel(baseSel(r)) ? `the class itself${r.media ? ', at that size' : ''}` : 'the stylesheet rule', n: scopeOf(ruleSrc), to: { src: ruleSrc } });
+      } else if ((state || size) && classesOf().length) {
+        const c = '.' + classesOf()[0];
+        opts.push({ k: 'rule', title: `The class ${c}${state} ${size ? slotName(size) : ''}`.trim(), sub: 'added to the class, for every element that has it', n: reachSel(c), to: { sel: c, state, media } });
+      }
+      for (const o of opts) {
+        o.verdict = verdictFor(o, scope, size, state, p, v, name);
+        // The automatic class exists only to hold this override, so it may take !important to win — as
+        // the inline choice does — and says so. A shared rule is never promoted on the user's behalf.
+        if (o.k === 'solo' && !o.verdict.win) {
+          o.imp = true;
+          const strong = verdictFor(o, scope, size, state, p, v, name);
+          if (strong.win) { o.sub = `adds an automatic class, .${name}, with !important to beat ${o.verdict.by}`; o.verdict = strong; }
+          else o.imp = false;
+        }
+      }
+      return { opts, size, state, name };
+    }
+    /**
+     * Whether an edit to this row depends on the viewport: the value comes from a media rule, a size
+     * is being previewed, or the row is in a size group. Those ask where to save, once the value is in.
+     * Everything else keeps today's default: an inline override on this element.
+     */
+    function viewportDependent(scope, p) {
+      if (scope.startsWith('vp:')) return true;
+      if (scope.startsWith('st:')) return false;
+      if (previewing() && previewSlot() !== 'base') return true;
+      const w = listFor(scope, p)[0];
+      return !!(w && !w.inline && ruleById(w.src).media);
+    }
+    /** Who would win `p` in this context after the save. */
+    function winnerAfter(scope, size, state, p) {
+      if (state) return stateCascade(state, p)[0];
+      if (size) return sizeCascade(size, p)[0];
+      return cascade(p)[0];
+    }
+    function verdictFor(o, scope, size, state, p, v, name) {
+      return simulate(() => applyOption(o, p, v, true, name), () => {
+        const w = winnerAfter(scope, size, state, p);
+        return w && w.v === v ? { win: true } : { win: false, by: w ? shortLabel(w.src) + (w.imp ? ' !important' : '') : '' };
+      });
+    }
+    function applyOption(o, p, v, batch, name) {
+      if (o.k === 'inline') return overrideWrite(p, v, batch);
+      const to = o.to.solo && name ? { ...o.to, solo: null, sel: '.' + name, newName: name } : o.to;
+      if (to.newName) ensureClass(to.newName);
+      write(resolveDest(to), p, v, o.imp || undefined, batch);
+    }
+    function saveBox() {
+      const o = pending;
+      return `<div class="savebox" role="group" aria-label="Where to save ${esc(o.p)}">
+    <p class="q">Save <b>${esc(o.p)}: ${esc(o.v)}</b> to…</p>
+    <div role="radiogroup" aria-label="Where to save" style="display:grid;gap:2px">
+      ${o.opts.map((x) => `<button class="opt" type="button" role="radio" aria-checked="${o.sel === x.k}" data-act="save-pick" data-k="${x.k}">
+          <span class="radio"></span><span class="t">${esc(x.title).replace(/(\.[\w-]+(?::[\w-]+)*(?: [≤≥]\d+px)?)/, '<b>$1</b>')}</span><span class="r"><b>${x.n}</b> ${x.n === 1 ? 'element' : 'elements'}</span>
+          <span class="s">${esc(x.sub)} · ${x.verdict.win ? '<span class="win">applies</span>' : `<span class="lose">won't show: ${esc(x.verdict.by)} wins</span>`}</span>
+        </button>`).join('')}
+    </div>
+    <div class="foot"><button class="btn primary" type="button" data-act="save-ok">Save</button><button class="btn" type="button" data-act="save-cancel">Cancel</button>
+      <span class="spacer"></span><span class="hint">Enter saves · Esc cancels</span></div>
+  </div>`;
+    }
+    /**
+     * A value entered in Effective styles or in a property section (Typography, Spacing…): the same rows,
+     * so the same path. Plain cases write at once. A viewport-dependent one is written as a preview and
+     * then asks where it should stay — the question comes after the value, never before it.
+     */
+    function handleEdit(id, scope, p, v, imp) {
+      const list = listFor(scope, p);
+      const w = list[0];
+      if (scope.startsWith('st:')) {
+        // A state cannot be inline: the edit goes to the state's own rule, as it does in its card.
+        const own = list.find((c) => !c.inline && ruleById(c.src).state === scope.slice(3));
+        return write(own.src, p, v, imp || undefined);
+      }
+      const elementRow = !scope.startsWith('vp:');
+      if (!v) { if (elementRow) return overrideWrite(p, ''); return; }
+      if (w && w.v === v && !imp) return;
+      if (!viewportDependent(scope, p)) return imp ? write('inline', p, v, true) : overrideWrite(p, v);
+      const so = saveOptions(scope, p, v);
+      pending = { id, scope, p, v, ...so, sel: so.opts[0].k };
+      focusReq = { save: true };
+      commit(); // repaints the page with the default choice previewed
+    }
+    function savePending() {
+      const o = pending;
+      const opt = o.opts.find((x) => x.k === o.sel);
+      const name = o.sel === 'solo' ? o.name : null;
+      pending = null;
+      applyOption(opt, o.p, o.v, true, name);
+      lastWrite = { ...lastWrite, note: opt.k === 'solo' ? `Saved ${o.p}: ${o.v} in a new class .${name}${opt.to.media ? ` at ${mediaShort(opt.to.media)}` : ''}${opt.to.state ? ` on ${opt.to.state}` : ''}, added to this element only.` : null };
+      if (!lastWrite.note) delete lastWrite.note;
+      commit();
+    }
+  </script>
+  <script>
+    /* ============================================================================ size strip */
+    function sizeStrip(ownerKey, slot, count, otherSlots, baseTitle) {
+      const notNow = (s) => s !== 'base' && !matchesAt(slotMedia(s), curW());
+      const base = `<button type="button" class="base" data-act="slot" data-owner="${esc(ownerKey)}" data-slot="base" aria-pressed="${slot === 'base'}" title="${baseTitle}">All sizes <span class="c">${count('base')}</span></button>`;
+      const devices = SLOTS.filter((s) => slotShown(s.k)).map((s) => {
+        const c = count(s.k);
+        return `<button type="button" class="${c ? '' : 'empty'}${notNow(s.k) ? ' notnow' : ''}" data-act="slot" data-owner="${esc(ownerKey)}" data-slot="${s.k}" aria-pressed="${slot === s.k}"
+      title="${s.name}${c ? ` — ${c} declaration${c === 1 ? '' : 's'} at this size` : ' — none yet, click to add'}${notNow(s.k) ? ` · not in effect at ${curW()}px` : ''}" aria-label="${s.name}, ${c} declarations">${ic(s.icon, 12)}<span class="c">${c ? '+' + c : '+'}</span></button>`;
+      }).join('');
+      const others = otherSlots.filter(slotShown);
+      const more = `<button type="button" class="more" data-act="more" data-owner="${esc(ownerKey)}" aria-pressed="${slot.startsWith('other:')}" aria-expanded="${moreKey === ownerKey}" aria-haspopup="menu"
+      title="Other media queries${others.length ? ` (${others.length})` : ''}" aria-label="Other media queries">${ic('dots', 13)}${others.length ? `<span class="badge">${others.length}</span>` : ''}</button>`;
+      return `<div class="slots" role="group" aria-label="Sizes" data-strip="${esc(ownerKey)}">${base}${devices}${more}</div>`;
+    }
+
+    /* ============================================================================ effective styles */
+    function mainRow(scope, p) {
+      const state = scope.startsWith('st:') ? scope.slice(3) : null;
+      const size = scope.startsWith('vp:') ? scope.slice(3) : null;
+      const list = listFor(scope, p);
+      const w = list[0];
+      const id = `${scope}|${p}`;
+      const others = Math.max(0, list.length - 1);
+      const label = w ? `${p} from ${srcLabel(w.src)}${others ? `, ${others} overridden` : ''}. Show cascade` : `${p} is not declared for this element. Show cascade`;
+      const dots = `<button class="dots" type="button" data-act="cascade" data-id="${esc(id)}" aria-haspopup="dialog" aria-expanded="${openId === id}" aria-label="${esc(label)}" title="${esc(label)}">
+      <i class="dot${w ? '' : ' none'}"></i>${Array.from({ length: Math.min(others, 3) }, () => '<i class="moon"></i>').join('')}</button>`;
+      const isPending = pending?.id === id;
+      const ownInline = inline.find((x) => x.p === p);
+      const value = isPending ? pending.v : state || size
+        ? (list.find((c) => !c.inline && (state ? ruleById(c.src).state === state : slotOf(ruleById(c.src)) === size && !ruleById(c.src).state)) ?? w)?.v ?? ''
+        : w?.v ?? '';
+      const asks = viewportDependent(scope, p);
+      const stateSrc = state ? list.find((c) => !c.inline && ruleById(c.src).state === state)?.src : null;
+      const where = stateSrc ? `Edits <b>${esc(shortLabel(stateSrc))}</b> · ${reach(stateSrc)}`
+        : asks ? 'Depends on the viewport: after Enter, choose where it stays'
+          : w && !w.inline ? `Overrides in the <b>inline style</b> · this element only · ${esc(shortLabel(w.src))} stays as is`
+            : w ? 'Edits the <b>inline style</b> · this element only, at every size' : 'Adds it to the <b>inline style</b> · this element only, at every size';
+      const fieldHtml = field({
+        key: id, src: 'inline', p, value, imp: !isPending && w?.imp, scope, mode: 'ask', isPending,
+        placeholder: getComputedStyle(target).getPropertyValue(p).trim(), clearable: !state && !size && !!ownInline, label: `${p}${state ? ' on ' + state : size ? ' at ' + slotName(size) : ''}`
+      });
+      const fromLbl = w && !w.inline ? shortLabel(w.src) : '';
+      return `<div class="wrap" data-anchor="${esc(id)}"><div class="o-row ${w ? 'set' : ''}">
+      <span class="o-name">${dots}<span class="pn" title="${esc(p)}">${esc(p)}</span>${fromLbl ? `<span class="o-from" title="From ${esc(srcLabel(w.src))}">${esc(fromLbl)}</span>` : ''}</span>
+      ${fieldHtml}${!state && !size ? resetButton('inline', p) : '<span></span>'}
+      ${isPending ? saveBox() : `<span class="where">${where}</span>`}</div></div>`;
+    }
+    const effCount = (s) => (s === 'base' ? appliedProps().length : sizeRules(s).reduce((a, r) => a + r.decls.length, 0));
+    const effOtherSlots = () => [...new Set(reaching().filter((r) => !r.state).map(slotOf).filter((s) => s.startsWith('other:')))];
+    function sizeGroup(s) {
+      const media = slotMedia(s);
+      const now = matchesAt(media, curW());
+      const ps = sizeProps(s).filter((p) => hit(p, s));
+      return `<div class="egroup" data-egroup="${esc(s)}">
+    <div class="egroup-h">${ic(mediaIcon(media), 12)}<span class="sel">${esc(slotName(s))}</span><span class="kind">size</span>
+      <span class="note">${now ? `in effect at ${curW()}px` : `not at ${curW()}px`}</span></div>
+    <div class="rows">${ps.map((p) => mainRow('vp:' + s, p)).join('') || '<p class="hint" style="margin:0">Nothing changes at this size yet.</p>'}</div>
+    ${addBlock('a:size', sizeDests(s))}
+  </div>`;
+    }
+    function effectiveBody() {
+      const slot = effSlotNow();
+      const own = appliedProps().filter((p) => hit(p, cascade(p)[0]?.v, ...cascade(p).map((c) => shortLabel(c.src))));
+      let html = sizeStrip('eff', slot, effCount, effOtherSlots(), 'What the element renders with now, every size included');
+      html += `<div class="rows">${own.map((p) => mainRow('applied', p)).join('') || '<p class="hint" style="margin:0">No property matches.</p>'}</div>`;
+      html += addBlock('a:el', elementDests());
+      if (slot !== 'base') html += sizeGroup(slot);
+      for (const s of statesNow()) {
+        const ps = stateProps(s).filter((p) => hit(p, s, stateCascade(s, p)[0]?.v));
+        if (!ps.length) continue;
+        const pseudo = isPseudoEl(s);
+        html += `<div class="egroup" data-egroup="${esc(s)}">
+      <div class="egroup-h">${ic(pseudo ? 'pseudo' : 'cursor', 12)}<span class="sel">${esc(s)}</span><span class="kind">${pseudo ? 'pseudo-element' : 'state'}</span>
+        <span class="note">${pseudo ? 'its own box' : 'when it applies, over the above'}</span></div>
+      <div class="rows">${ps.map((p) => mainRow('st:' + s, p)).join('')}</div>
+      ${addBlock('a:st:' + s, stateDests(s))}</div>`;
+      }
+      if (!q) html += `<div class="actions"><button class="btn" type="button" data-act="paste" data-to="inline" title="Paste CSS and choose whether it belongs inline, in a class, or in a rule">${ic('clipboard', 12)} Paste CSS…</button></div>`;
+      return html;
+    }
+    const categories = () => CATS.map((c) => {
+      const ps = c.props.filter((p) => hit(p, cascade(p)[0]?.v));
+      if (q && !ps.length) return '';
+      return section(c.id, c.label, c.props.filter((p) => cascade(p).length).length, `<div class="rows">${ps.map((p) => mainRow(c.id, p)).join('')}</div>`, true, c.glyph);
+    }).join('');
+
+    function cascadeLine(p, c, kind) {
+      const r = c.inline ? null : ruleById(c.src);
+      const src = c.inline
+        ? `<span class="src"><span>inline style</span></span>`
+        : `<button class="src" type="button" data-act="goto" data-src="${c.src}" data-p="${p}" title="Edit ${esc(srcLabel(c.src))}${kind === 'idle' ? ` (${idleWhy(r)})` : ''}"><span>${esc(shortLabel(c.src))}</span>${ic('arrowRight', 10)}</button>`;
+      return `<div class="wrap" role="listitem"><div class="c-line ${kind} ${moved === `${p}|${c.src}` ? 'moved' : ''}">
+      <i class="dot${kind === 'lost' ? ' off' : kind === 'idle' ? ' idle' : ''}" title="${kind === 'lost' ? 'Overridden' : kind === 'idle' ? idleWhy(r) : 'Applies'}"></i>
+      ${src}
+      ${field({ key: `pop|${p}|${c.src}`, src: c.src, p, value: c.v, imp: c.imp, label: `${p} in ${srcLabel(c.src)}` })}
+      ${promote(c.src, p, c.imp, srcLabel(c.src))}
+      <span class="where">Edits <b>${esc(srcLabel(c.src))}</b> · ${reach(c.src)}${r?.media ? `, at ${mediaShort(r.media)}` : ''}</span></div></div>`;
+    }
+    function popoverBody(scope, p) {
+      const act = listFor(scope, p);
+      const off = scope === 'applied' || CATS.some((c) => c.id === scope) ? idle(p).filter((c) => visibleNow(ruleById(c.src)) && !isPseudoEl(ruleById(c.src).state)) : [];
+      let html = act.map((c, i) => cascadeLine(p, c, i ? 'lost' : 'win')).join('');
+      if (!act.length) {
+        const from = inheritedFrom(p);
+        const value = getComputedStyle(target).getPropertyValue(p).trim();
+        html += `<p class="none">Nothing declares it for this element${previewing() ? ` at ${vw}px` : ''}. It resolves to <code>${esc(value)}</code>, ${from ? `inherited from <code>${esc(tagOf(from.el))}</code> (${esc(shortLabel(from.src))})` : "the browser's default"}. Typing a value adds it inline.</p>`;
+      }
+      if (off.length) html += `<p class="sub">${previewing() ? 'In other states' : 'At other sizes or states'}</p>` + off.map((c) => cascadeLine(p, c, 'idle')).join('');
+      return html;
+    }
+
+    /* ============================================================================ sources */
+    const meta = (n, uses, file) => `${file ? `<span class="file">${esc(file)}</span>` : ''}<span class="meta">${n} ${n === 1 ? 'rule' : 'rules'}${uses ? ` · ${uses}×` : ''}</span>`;
+    function inlineCard() {
+      if (q && !inline.some((x) => hit(x.p, x.v)) && !hit('inline style')) return '';
+      const open = q ? true : !closedCards.has('inline');
+      return `<div class="cls" data-card="inline"><header role="button" tabindex="0" data-act="card" data-key="inline" aria-expanded="${open}">
+      ${ic(open ? 'chevronDown' : 'chevronRight', 11)}<span class="n plain">Inline style</span>${meta(inline.length, 0, '')}</header>
+    ${open ? `<div class="body">
+      <p class="hint" style="margin:0 0 7px">On this element only, at every size. Wins over every rule unless one is <code>!important</code>.</p>
+      ${declList('inline', true)}
+      ${addBlock('c:inline', [{ key: 'inline', label: 'inline style', reach: 'this element only, every size', to: { src: 'inline' } }])}
+      ${q ? '' : `<div class="actions"><button class="btn" type="button" data-act="extract" ${inline.length ? '' : 'disabled'} title="Move these declarations into a reusable class">${ic('droplet', 12)} Extract ${inline.length || ''} into a class</button></div>`}
+    </div>` : ''}
+  </div>`;
+    }
+    const famCount = (fam) => (s) => fam.members.filter((r) => slotOf(r) === s).reduce((a, r) => a + r.decls.length, 0);
+    /** One block of a card: the selector at this size, or one of its states. Its Add property follows it. */
+    function block(fam, slot, r, state, filter) {
+      const media = slotMedia(slot);
+      const label = `${fam.key}${state ?? ''}${media ? ' ' + slotName(slot) : ''}`;
+      const dest = r ? { key: r.id, label, reach: nEls(scopeOf(r.id)), to: { src: r.id } } : { key: 'new', label, reach: nEls(reachSel(fam.key)), to: { sel: fam.key, state: state ?? '', media } };
+      const adder = addBlock(`c:${r?.id ?? fam.key + '|' + slot}`, [dest]);
+      const rows = declList(r?.id, filter, slot === 'base' ? 'No declarations yet.' : 'Nothing at this size yet.');
+      if (!state) return `<div class="block" data-group="${r?.id ?? ''}">${rows}${adder}</div>`;
+      const pseudo = isPseudoEl(state);
+      return `<div class="block" data-group="${r.id}"><div class="blabel">${ic(pseudo ? 'pseudo' : 'cursor', 12)}<span>${esc(state)}</span><span class="kindtxt">${pseudo ? 'pseudo-element' : 'state'}</span>
+      <button class="kill" type="button" data-act="kill-rule" data-src="${r.id}" aria-label="Remove ${esc(r.selector)}" title="Remove ${esc(r.selector)} and its declarations">${ic('trash', 11)}</button></div>
+    ${rows}${adder}</div>`;
+    }
+    function slotHint(fam, slot) {
+      if (slot === 'base') return '';
+      const n = scopeOf(famLead(fam).id);
+      const media = slotMedia(slot);
+      const now = matchesAt(media, curW());
+      return `<p class="hint" style="margin:0 0 7px">Only at <b>${esc(slotName(slot))}</b> — ${now ? `in effect at ${curW()}px` : `not at ${curW()}px`}. Adds to or overrides “All sizes” there${n > 1 ? `, for all ${n} elements` : ''}.</p>`;
+    }
+    function detachPanel(fam) {
+      const n = fam.key.slice(1);
+      const uses = scopeOf(famLead(fam).id);
+      const others = uses - 1;
+      const count = fam.members.reduce((a, r) => a + r.decls.length, 0);
+      const suggestion = `${n}-pro`;
+      const dropped = fam.members.filter((r) => r.media || r.state);
+      const elsewhere = rules.filter((r) => !fam.members.includes(r) && new RegExp(`\\.${n}(?![\\w-])`).test(r.selector) && target.matches('#site ' + baseSel(r)));
+      return `<div class="detach">
+    <p class="lede">${others ? `<code>.${esc(n)}</code> is on ${uses} elements. Both options leave the other ${others} alone.` : `Only this element uses <code>.${esc(n)}</code>.`}</p>
+    <div class="choice">
+      <div class="head">${ic('duplicate', 12)} <b>Copy it for this element</b></div>
+      <p>Makes a new class with the same ${count} declaration${count === 1 ? '' : 's'}, its states and sizes included, and swaps it in here.${elsewhere.length ? ` <span class="warn">Rules written for <code>.${esc(n)}</code> elsewhere (${elsewhere.map((r) => `<code>${esc(r.selector)}</code>`).join(', ')}) stop applying here.</span>` : ''}</p>
+      <div class="row"><input id="fork-name" class="input mono" value="${esc(forkDraft)}" placeholder="${esc(suggestion)}" aria-label="Name for the copy" spellcheck="false" />
+        <button class="btn primary" type="button" data-act="fork" data-fam="${esc(fam.key)}" data-suggest="${esc(suggestion)}">${ic('duplicate', 12)} Copy</button></div>
+    </div>
+    <div class="choice">
+      <div class="head">${ic('unlink', 12)} <b>Move the styles onto the element</b></div>
+      <p>Its ${famLead(fam).decls.length} declaration${famLead(fam).decls.length === 1 ? '' : 's'} become this element's inline style and <code>.${esc(n)}</code> comes off it.${dropped.length ? ` <span class="warn">Its ${[...new Set(dropped.map((r) => r.state ?? mediaShort(r.media)))].join(', ')} rules can't be written inline, so this element loses them.</span>` : ''}</p>
+      <div class="row"><span class="spacer"></span><button class="btn" type="button" data-act="to-inline" data-fam="${esc(fam.key)}">${ic('unlink', 12)} Move to this element</button></div>
+    </div>
+  </div>`;
+    }
+    function familyCard(fam) {
+      const key = fam.key;
+      const famHit = hit(key);
+      const visible = fam.members.filter(visibleNow);
+      if (q && !famHit && !visible.some((r) => r.decls.some((x) => hit(x.p, x.v)))) return '';
+      let slot = cardSlotNow(key);
+      if (q && !famHit) {
+        const matchSlots = [...new Set(visible.filter((r) => r.decls.some((x) => hit(x.p, x.v))).map(slotOf))];
+        if (matchSlots.length && !matchSlots.includes(slot)) slot = matchSlots[0];
+      }
+      const open = q ? true : !closedCards.has(key);
+      const lead = famLead(fam);
+      const uses = scopeOf(lead.id);
+      const decls = visible.reduce((a, r) => a + r.decls.length, 0);
+      const inSlot = fam.members.filter((r) => slotOf(r) === slot);
+      const baseRule = inSlot.find((r) => !r.state);
+      const states = inSlot.filter((r) => r.state).sort((a, b) => STATES.indexOf(a.state) - STATES.indexOf(b.state));
+      const otherSlots = [...new Set(fam.members.map(slotOf).filter((s) => s.startsWith('other:')))];
+      const stateDest = [{ key: 'here', label: `${key}${slot !== 'base' ? ' ' + slotName(slot) : ''}`, reach: nEls(uses), to: { sel: key, media: slotMedia(slot) } }];
+      const body = `
+    ${sizeStrip(key, slot, famCount(fam), otherSlots, 'Without a media query: at every size')}
+    ${slotHint(fam, slot)}
+    ${block(fam, slot, baseRule, null, !famHit)}
+    ${states.map((r) => block(fam, slot, r, r.state, !famHit)).join('')}
+    ${addBlock(`cs:${key}|${slot}`, stateDest, 'state')}
+    ${!q && fam.isClass && target.classList.contains(key.slice(1)) ? `<div class="actions"><span class="spacer"></span><button class="link" type="button" data-act="detach" data-fam="${esc(key)}" aria-expanded="${detachOpen === key}">${detachOpen === key ? 'Never mind' : 'Detach styles from class'}</button></div>
+      ${detachOpen === key ? detachPanel(fam) : ''}` : ''}`;
+      return `<div class="cls" data-card="${esc(key)}"><header role="button" tabindex="0" data-act="card" data-key="${esc(key)}" aria-expanded="${open}">
+      ${ic(open ? 'chevronDown' : 'chevronRight', 11)}<span class="n" title="${esc(key)}">${esc(key)}</span>${meta(decls, uses, lead.source)}</header>
+    ${open ? `<div class="body">${body}</div>` : ''}
+  </div>`;
+    }
+    function sourcesBody() {
+      const { classes, others } = families();
+      const tabs = `<div class="seg src-tabs" role="tablist" aria-label="Show sources">
+      ${[['all', 'All', ''], ['inline', 'Inline', inline.length ? 1 : 0], ['classes', 'Classes', classes.length], ['rules', 'Rules', others.length]]
+          .map(([k, l, c]) => `<button type="button" role="tab" data-act="tab" data-tab="${k}" aria-selected="${tab === k}" aria-pressed="${tab === k}">${l}${c !== '' ? `<span class="c">${c}</span>` : ''}</button>`).join('')}
+    </div>`;
+      const head = (label, count) => `<p class="src-h">${label} <span class="c">${count}</span><span class="rule-line"></span></p>`;
+      let html = '';
+      if (tab === 'all' || tab === 'inline') { const c = inlineCard(); if (c) html += head('Inline style', inline.length ? 1 : 0) + c; }
+      if (tab === 'all' || tab === 'classes') {
+        const cards = classes.map(familyCard).filter(Boolean).join('');
+        if (cards || !q) html += head('Classes', classes.length) + (cards || '<p class="hint">No classes yet. Add one with + at the top.</p>');
+      }
+      if (tab === 'all' || tab === 'rules') {
+        const cards = others.map(familyCard).filter(Boolean).join('');
+        if (cards || !q) html += head('Other rules', others.length) + cards;
+      }
+      return tabs + (html || '<p class="hint" style="margin:10px 0 0">Nothing here matches.</p>')
+        + (q ? '' : `<div class="actions"><button class="btn" type="button" data-act="paste" data-to="ask" title="Paste CSS and choose where it goes: inline, a class, a rule, a size">${ic('clipboard', 12)} Paste CSS…</button></div>`);
+    }
+
+    /* ============================================================================ variants */
+    function render0() {
+      const shown = (p) => {
+        const i = inline.find((x) => x.p === p);
+        if (i) return { v: i.v + (i.imp ? ' !important' : ''), from: null };
+        const w = cascade(p).find((x) => !x.inline);
+        return w ? { v: w.v, from: ruleById(w.src).selector } : { v: '', computed: getComputedStyle(target).getPropertyValue(p) };
+      };
+      const row = (p) => {
+        const s = shown(p);
+        return `<div class="o-row ${s.v ? 'set' : ''}"><span class="o-name"><span class="o-dot"></span><span class="pn">${p}</span>${s.from ? `<span class="o-from">${esc(s.from)}</span>` : ''}</span>
+      ${field({ key: `0|${p}`, src: 'inline', p, value: s.v, placeholder: s.computed ?? '' })}${resetButton('inline', p)}</div>`;
+      };
+      const item = (r) => `<div style="display:flex;gap:6px;padding:6px 8px;border:1px solid var(--line);border-radius:8px;margin-bottom:5px;font:11px var(--mono)">▸ ${esc(r.selector)}${r.media ? ' @media' : ''}<span style="margin-left:auto;color:var(--faint);font:10px var(--font)">${r.decls.length} rules · ${r.source}</span></div>`;
+      const others = reaching().filter((r) => !isClassRule(r));
+      return `<div class="top"><span class="el-chip">${esc(tagOf(target))}</span>${searchBox()}</div>`
+        + section('0set', 'Set on this element', inline.length, `<p class="hint">On the element itself, as authored — highest priority in the cascade.</p><div class="rows">${inline.map((x) => row(x.p)).join('')}</div>`)
+        + section('0cls', 'Classes', target.classList.length, [...target.classList].map((n) => classRule(n)).filter(Boolean).map(item).join('') + classFinder())
+        + section('0rules', 'CSS rules', others.length, others.map(item).join(''), false)
+        + CATS.map((c) => section('0' + c.id, c.label, c.props.filter((p) => shown(p).v).length, `<div class="rows">${c.props.filter((p) => hit(p)).map(row).join('')}</div>`)).join('');
+    }
+    function renderI() {
+      adderDests.clear();
+      const header = `<div class="ident">
+      <div class="line">
+        <span class="el-chip" title="The selected element">${esc(target.tagName.toLowerCase())}</span>
+        ${[...target.classList].map((n) => `<span class="cchip">
+            <button class="name" type="button" data-act="goto-class" data-name="${esc(n)}" title="Edit .${esc(n)} in Sources">.${esc(n)}</button>
+            <button class="x" type="button" data-act="remove-class" data-name="${esc(n)}" aria-label="Remove class ${esc(n)}" title="Remove .${esc(n)} from this element">${ic('close', 9)}</button>
+          </span>`).join('')}
+        <button class="cchip add" type="button" data-act="find" aria-expanded="${finding}" aria-label="Add a class" title="Add a class">${ic('plus', 11)}</button>
+      </div>
+      ${finding ? `<div class="finder">${classFinder()}<p class="hint">Search the project's classes or type a new name, then press Enter.</p></div>` : ''}
+    </div>`;
+      const bps = breakpoints();
+      const sizes = `<div class="sizes">
+      <div class="seg" role="group" aria-label="Preview size" data-pvbar>
+        <button type="button" class="actual" data-act="vw" data-w="" aria-pressed="${vw === null}" title="The page as it is on this screen">${ic('window', 13)} Actual</button>
+        ${PRESETS.map((x) => `<button type="button" data-act="vw" data-w="${x.w}" aria-pressed="${vw === x.w}" title="${x.name}, ${x.w}px" aria-label="${x.name}, ${x.w}px">${ic(x.icon, 13)}${x.w}</button>`).join('')}
+        <button type="button" class="more" data-act="pvmenu" aria-expanded="${pvMenu}" aria-haspopup="menu" title="Media queries on this page, and viewport sizes" aria-label="Media queries and viewport sizes">${ic('dots', 13)}</button>
+      </div>
+      <p class="bp">${vw === null
+          ? `As it is: <b>${curW()}px</b>. Every size and state is shown.`
+          : `Previewing <b>${vw}px</b>. Only what applies at this width is shown, and edits offer to stay at this size.`}${bps.length ? ` Styles change at ${bps.map((b) => `<b>${b}px</b>`).join(', ')}.` : ''}</p>
+    </div>
+    <div class="top">${searchBox('Search properties, values, selectors…')}</div>`;
+      const { classes, others } = families();
+      const effective = section('applied', 'Effective styles', appliedProps().length, effectiveBody(), true, 'sparkle',
+        `What this element renders with${previewing() ? ` at ${vw}px` : ''}, after the cascade. Pick a size to see what changes there. Click a dot to see what else declares it.`);
+      const sources = section('sources', 'Sources', (inline.length ? 1 : 0) + classes.length + others.length, sourcesBody(), true, 'layers',
+        'Where those styles are written. Editing here changes the class or rule itself.');
+      return header + sizes + effective + sources + categories();
+    }
+
+    /* ============================================================================ overlays */
+    function offsetIn(el) {
+      const a = el.getBoundingClientRect(), b = panel.getBoundingClientRect();
+      return { top: a.top - b.top + panel.scrollTop, left: a.left - b.left + panel.scrollLeft };
+    }
+    function placePopover() {
+      if (variant === '0' || !openId) return;
+      const anchor = panel.querySelector(`[data-anchor="${CSS.escape(openId)}"]`);
+      if (!anchor) { openId = null; return; }
+      const scope = openId.slice(0, openId.lastIndexOf('|'));
+      const p = openId.slice(openId.lastIndexOf('|') + 1);
+      const ctx = scope.startsWith('st:') ? scope.slice(3) : scope.startsWith('vp:') ? slotName(scope.slice(3)) : '';
+      const pop = document.createElement('div');
+      pop.className = 'pop';
+      pop.setAttribute('role', 'dialog');
+      pop.setAttribute('aria-label', `Cascade for ${p}${ctx ? ' ' + ctx : ''}`);
+      pop.innerHTML = `<div class="cap"><b>${esc(p)}${ctx ? ` <span style="color:var(--dim)">${esc(ctx)}</span>` : ''}</b><span>winner first${scope.startsWith('vp:') ? ` · at ${slotWidth(scope.slice(3))}px` : previewing() ? ` · at ${vw}px` : ''}</span></div><div role="list" style="display:grid;gap:5px">${popoverBody(scope, p)}</div>`;
+      pop.style.top = offsetIn(anchor).top + anchor.offsetHeight + 4 + 'px';
+      panel.appendChild(pop);
+    }
+    function floatMenu(anchor, html, width = 240, align = 'right') {
+      const menu = document.createElement('div');
+      menu.className = 'menu';
+      menu.setAttribute('role', 'menu');
+      menu.innerHTML = html;
+      const at = offsetIn(anchor);
+      const left = align === 'left' ? at.left : at.left + anchor.offsetWidth - width;
+      Object.assign(menu.style, { top: at.top + anchor.offsetHeight + 3 + 'px', left: Math.max(8, Math.min(left, panel.clientWidth - width - 8)) + 'px', width: width + 'px' });
+      panel.appendChild(menu);
+    }
+    function placeMenu() {
+      if (!menuKey) return;
+      const anchor = panel.querySelector(`.vf[data-key="${CSS.escape(menuKey)}"]`);
+      if (!anchor) { menuKey = null; return; }
+      const input = anchor.querySelector('input');
+      const { src, p, mode, scope } = input.dataset;
+      const resolved = getComputedStyle(target).getPropertyValue(p).trim();
+      const values = [...new Set([...(SUGGEST[p] ?? []), 'inherit', 'initial'])];
+      const opt = (v, note) => `<button type="button" role="option" data-act="pick" data-src="${src}" data-p="${p}" data-mode="${mode}" data-scope="${esc(scope)}" data-key="${esc(menuKey)}" data-v="${esc(v)}">${esc(v)}${note ? `<small>${note}</small>` : ''}</button>`;
+      floatMenu(anchor, opt(resolved, 'resolved') + values.map((v) => opt(v, v.startsWith('var(') ? 'token' : '')).join(''), anchor.offsetWidth, 'left');
+    }
+    function placeMoreMenu() {
+      if (!moreKey) return;
+      const strip = panel.querySelector(`[data-strip="${CSS.escape(moreKey)}"]`);
+      if (!strip) { moreKey = null; return; }
+      const isEff = moreKey === 'eff';
+      const fam = isEff ? null : famByKey(moreKey);
+      const others = (isEff ? effOtherSlots() : [...new Set(fam.members.map(slotOf).filter((s) => s.startsWith('other:')))]).filter(slotShown);
+      const count = isEff ? effCount : famCount(fam);
+      floatMenu(strip, `<div class="cap">Other media queries</div>`
+        + (others.length ? others.map((s) => `<button type="button" role="menuitem" data-act="slot" data-owner="${esc(moreKey)}" data-slot="${esc(s)}"><span class="l">${ic(mediaIcon(slotMedia(s)), 12)}@media ${esc(slotMedia(s))}</span><small>${count(s)} decl.${matchesAt(slotMedia(s), curW()) ? '' : ' · not now'}</small></button>`).join('') : `<div class="cap" style="padding-top:0">None yet.</div>`)
+        + `<hr /><button type="button" role="menuitem" data-act="add-media" data-owner="${esc(moreKey)}"><span class="l">${ic('plus', 12)}Add a media query…</span><small>print, prefers-…</small></button>`, 236);
+    }
+    const mediaOrderOf = (m) => { const x = widthQuery(m); if (!x) return 1e6; return x[1] === 'max' ? +x[2] - 0.5 : +x[2]; };
+    function previewWidthFor(m) {
+      const x = widthQuery(m);
+      if (!x) return null;
+      const fit = PRESETS.map((p) => p.w).filter((w) => matchesAt(m, w));
+      return x[1] === 'max' ? (fit.length ? Math.max(...fit) : +x[2]) : (fit.length ? Math.min(...fit) : +x[2]);
+    }
+    function placePvMenu() {
+      if (!pvMenu) return;
+      const bar = panel.querySelector('[data-pvbar]');
+      if (!bar) return;
+      const used = new Map();
+      for (const r of rules) if (r.media) used.set(r.media, (used.get(r.media) ?? 0) + 1);
+      const sorted = [...used].sort((a, b) => mediaOrderOf(a[0]) - mediaOrderOf(b[0]));
+      floatMenu(bar, `<div class="cap">Media queries on this page</div>`
+        + sorted.map(([m, n]) => {
+          const w = previewWidthFor(m);
+          return `<button type="button" role="menuitem" data-act="pv-media" data-w="${w ?? ''}" ${w ? `title="Preview at ${w}px"` : 'title="Not a width: shown at Actual"'}>
+        <span class="l">${ic(mediaIcon(m), 12)}${esc(mediaShort(m))}</span><small>${n} rule${n === 1 ? '' : 's'}${w ? ` · preview ${w}` : ''}</small></button>`;
+        }).join('')
+        + `<hr /><div class="cap">Viewport sizes</div>`
+        + PRESETS.map((x) => `<button type="button" role="menuitem" data-act="vw" data-w="${x.w}"><span class="l">${ic(x.icon, 12)}${x.w}px</span><small>${esc(x.name)}${SLOTS.some((s) => s.at === x.w) ? ` · ${esc(mediaShort(SLOTS.find((s) => s.at === x.w).media))}` : ''}</small></button>`).join('')
+        + `<button type="button" role="menuitem" data-act="add-size"><span class="l">${ic('plus', 12)}Add a viewport size…</span><small>preview + breakpoint</small></button>`, 316);
+    }
+    /** An adder's "in …" menu: every place it can write, with how far each reaches. */
+    function placeDestMenu() {
+      if (!destMenu) return;
+      const chip = panel.querySelector(`[data-act="dest"][data-adder="${CSS.escape(destMenu)}"]`);
+      if (!chip) { destMenu = null; return; }
+      const dests = adderDests.get(destMenu);
+      const cur = (dests.find((x) => x.key === addDest.get(destMenu)) ?? dests[0]).key;
+      floatMenu(chip, `<div class="cap">Write it in</div>` + dests.map((x) => `<button type="button" role="menuitemradio" aria-checked="${x.key === cur}" data-act="dest-pick" data-adder="${esc(destMenu)}" data-key="${esc(x.key)}">
+      <span class="l">${x.key === cur ? ic('check', 12) : '<span style="width:12px"></span>'}${esc(x.label)}</span><small>${esc(x.reach)}</small></button>`).join(''), 270, 'left');
+    }
+
+    /* ============================================================================ render + events */
+    const panel = document.getElementById('panel');
+    function render() {
+      panel.innerHTML = variant === '0' ? render0() : renderI();
+      panel.classList.toggle('idea', variant !== '0');
+      placePopover(); placeMenu(); placeMoreMenu(); placePvMenu(); placeDestMenu();
+      moved = null;
+      const v = VARIANTS.find((x) => x.k === variant);
+      document.getElementById('vlabel').innerHTML = `${esc(v.label)}<small>${esc(v.note)}</small>`;
+      if (focusReq) {
+        if (focusReq.save) { panel.querySelector('.savebox .opt[aria-checked="true"]')?.focus(); focusReq = null; return; }
+        let input = null;
+        if (focusReq.adder) input = panel.querySelector(`[data-adder-input="${CSS.escape(focusReq.adder)}"]`);
+        else if (focusReq.anchor) input = panel.querySelector(`[data-anchor="${CSS.escape(focusReq.anchor)}"] input`);
+        const fb = focusReq.fallback ?? focusReq;
+        if (!input && fb.src && fb.p) input = panel.querySelector(`[data-decls="${CSS.escape(fb.src)}"] input[data-p="${CSS.escape(fb.p)}"]`);
+        const el = input?.closest('.decl, .o-row, .adder') ?? panel.querySelector(`[data-card="${CSS.escape(focusReq.card ?? '')}"]`);
+        if (el) { el.scrollIntoView({ block: 'center' }); el.classList.add('flash'); input?.focus(); if (focusReq.select) input?.select(); }
+        focusReq = null;
+      }
+    }
+    function commit() { applyCss(); render(); }
+    function closeMenus() { menuKey = null; moreKey = null; pvMenu = false; destMenu = null; }
+    function setVariant(k) {
+      variant = k; openId = null; closeMenus();
+      const u = new URL(location.href); u.searchParams.set('variant', k); history.replaceState(null, '', u);
+      commit();
+    }
+    const cycle = (step) => setVariant(VARIANTS[(VARIANTS.findIndex((v) => v.k === variant) + step + VARIANTS.length) % VARIANTS.length].k);
+    /** A new preview width: every size picker goes back to following it. */
+    function setPreview(w) { vw = w; effPick = null; cardPick.clear(); pending = null; closeMenus(); commit(); }
+    function goTo(src, p) {
+      if (!src) return;
+      openId = null; closeMenus();
+      sectionState.set('sources', true);
+      if (src === 'inline') {
+        if (tab !== 'all' && tab !== 'inline') tab = 'all';
+        closedCards.delete('inline');
+        focusReq = { src, p, card: 'inline' };
+      } else {
+        const r = ruleById(src);
+        const key = baseSel(r);
+        if (tab === 'inline' || (tab === 'classes' && !isClassSel(key)) || (tab === 'rules' && isClassSel(key))) tab = 'all';
+        closedCards.delete(key);
+        cardPick.set(key, slotOf(r));
+        if (previewing() && !visibleNow(r)) { vw = null; effPick = null; }
+        focusReq = { src, p, card: key };
+      }
+      commit();
+    }
+    function addClass(raw) {
+      const n = raw.trim().replace(/^\./, '');
+      if (!/^[a-zA-Z_][\w-]*$/.test(n)) return;
+      classDraft = ''; finding = false;
+      ensureClass(n);
+      lastWrite = { note: `Added .${n} to the element.` };
+      commit();
+    }
+    function extractClass() {
+      if (!inline.length) return;
+      const n = (prompt('Name for the new class', 'card-pro') || '').replace(/^\./, '');
+      if (!n) return;
+      const src = ensureClass(n);
+      for (const x of inline) write(src, x.p, x.v, x.imp, true);
+      inline = [];
+      lastWrite = { note: `Moved the inline styles into .${n} and added it to the element.` };
+      commit();
+    }
+    function pasteCss(to) {
+      let src = to;
+      if (to === 'ask') {
+        const sel = prompt('Where should it go? "inline", a class like ".card", or a selector', '.card');
+        if (!sel) return;
+        src = sel.trim() === 'inline' ? 'inline' : ensureRule(sel.trim(), '', '').id;
+      }
+      const text = prompt(`Paste CSS into ${srcLabel(src)}`, 'letter-spacing: 0.01em; text-align: left;');
+      if (!text) return;
+      for (const x of parseCss(text)) write(src, x.p, x.v, x.imp, true);
+      goTo(src);
+    }
+    function forkClass(key, raw) {
+      const fam = famByKey(key);
+      const n = raw.trim().replace(/^\./, '');
+      if (!/^[a-zA-Z_][\w-]*$/.test(n) || rules.some((r) => baseSel(r) === '.' + n)) { alert(`Pick a class name that is not taken.`); return; }
+      for (const r of fam.members) {
+        const copy = { ...structuredClone(r), id: 'f' + Date.now() + Math.random().toString(36).slice(2, 5), selector: '.' + n + (r.state ?? '') };
+        rules.splice(rules.indexOf(r) + 1, 0, copy);
+      }
+      target.classList.replace(key.slice(1), n);
+      detachOpen = null; forkDraft = '';
+      lastWrite = { note: `Copied ${key} into .${n} and swapped it in on this element. The other elements keep ${key}.` };
+      closedCards.delete('.' + n);
+      focusReq = { card: '.' + n };
+      commit();
+    }
+    function classToInline(key) {
+      const fam = famByKey(key);
+      for (const x of famLead(fam).decls) if (!inline.some((y) => y.p === x.p)) inline.push({ ...x });
+      target.classList.remove(key.slice(1));
+      detachOpen = null;
+      lastWrite = { note: `Moved ${key}'s declarations onto the element and removed the class from it.` };
+      focusReq = { card: 'inline' };
+      commit();
+    }
+    function addSize() {
+      const raw = prompt('Viewport width in px (adds a preview size and a “from this width” breakpoint)', '1280');
+      const w = Math.round(+raw);
+      if (!w || w < 200 || w > 4000) return;
+      const icon = iconForWidth(w);
+      if (!PRESETS.some((x) => x.w === w)) PRESETS = [...PRESETS, { w, icon, name: 'Custom' }].sort((a, b) => a.w - b.w);
+      if (!SLOTS.some((s) => s.min && s.w === w)) SLOTS = [...SLOTS, { k: 'w' + w, icon, media: `(min-width: ${w}px)`, min: true, w, name: `From ${w}px`, at: w }].sort((a, b) => a.at - b.at);
+      lastWrite = { note: `Added ${w}px: a preview size, and a “≥${w}px” size in every strip.` };
+      pvMenu = false;
+      commit();
+    }
+    function setOwnerSlot(owner, slot) {
+      if (owner === 'eff') effPick = effSlotNow() === slot && slot !== 'base' ? 'base' : slot;
+      else cardPick.set(owner, slot);
+    }
+
+    panel.addEventListener('change', (e) => {
+      const el = e.target;
+      if (el.matches('.vf input[data-src]')) {
+        const raw = el.value.trim();
+        const imp = /!\s*important$/i.test(raw);
+        const v = raw.replace(/!\s*important$/i, '').trim();
+        if (el.dataset.mode === 'ask') handleEdit(el.closest('[data-anchor]').dataset.anchor, el.dataset.scope, el.dataset.p, v, imp);
+        else write(el.dataset.src, el.dataset.p, v, imp || undefined);
+      }
+      if (el.id === 'fork-name') forkDraft = el.value;
+      if (el.id === 'solo-name' && pending) pending.name = el.value.trim().replace(/^\./, '') || pending.name;
+    });
+    panel.addEventListener('keydown', (e) => {
+      if (pending && e.key === 'Enter' && e.target.closest('.savebox')) { e.preventDefault(); return savePending(); }
+      if (e.key === 'Enter' && e.target.id === 'class-add') { e.preventDefault(); addClass(e.target.value); return; }
+      if (e.key === 'Enter' && e.target.dataset.adderInput) { e.preventDefault(); commitAdder(e.target.dataset.adderInput); return; }
+      if (e.key === 'Enter' && e.target.id === 'fork-name') { e.preventDefault(); panel.querySelector('[data-act="fork"]')?.click(); return; }
+      if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('header[data-act]')) { e.preventDefault(); e.target.click(); return; }
+      // Arrow keys move between the save choices, as in any radio group.
+      if (pending && (e.key === 'ArrowDown' || e.key === 'ArrowUp') && e.target.matches('.opt')) {
+        e.preventDefault();
+        const ks = pending.opts.map((x) => x.k);
+        pending.sel = ks[(ks.indexOf(pending.sel) + (e.key === 'ArrowDown' ? 1 : -1) + ks.length) % ks.length];
+        focusReq = { save: true }; commit(); return;
+      }
+      if (e.key === 'Enter' && e.target.matches('input:not(#q)')) e.target.blur();
+    });
+    panel.addEventListener('input', (e) => {
+      if (e.target.id === 'class-add') { classDraft = e.target.value; return; }
+      if (e.target.id === 'fork-name') { forkDraft = e.target.value; return; }
+      if (e.target.id === 'solo-name' && pending) { pending.name = e.target.value.trim().replace(/^\./, ''); return; }
+      if (e.target.dataset.adderInput) { drafts.set(e.target.dataset.adderInput, e.target.value); return; }
+      if (e.target.id !== 'q') return;
+      q = e.target.value; const pos = e.target.selectionStart; render();
+      const s = document.getElementById('q'); s.focus(); s.setSelectionRange(pos, pos);
+    });
+    panel.addEventListener('mousedown', (e) => { if (e.target.closest('.src, .promote, .dots, .mini, .reset, .confirm, .menu button, .opt, .chip')) e.preventDefault(); });
+    panel.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-act]');
+      if (!b) return;
+      const { act, id, src, p } = b.dataset;
+      if (act === 'sec') { sectionState.set(id, !(sectionState.get(id) ?? b.dataset.default === 'true')); render(); }
+      if (act === 'cascade') { openId = openId === id ? null : id; closeMenus(); render(); }
+      if (act === 'promote') { const x = listOf(src).find((y) => y.p === p); moved = `${p}|${src}`; write(src, p, x.v, !x.imp); }
+      if (act === 'goto') goTo(src, p);
+      if (act === 'goto-class') { const r = classRule(b.dataset.name); if (r) goTo(r.id); }
+      if (act === 'find') { finding = !finding; render(); if (finding) document.getElementById('class-add')?.focus(); }
+      if (act === 'tab') { tab = b.dataset.tab; render(); }
+      if (act === 'card') { const k = b.dataset.key; closedCards.has(k) ? closedCards.delete(k) : closedCards.add(k); render(); }
+      if (act === 'slot') { setOwnerSlot(b.dataset.owner, b.dataset.slot); moreKey = null; render(); }
+      if (act === 'more') { const o = b.dataset.owner; const was = moreKey === o; closeMenus(); moreKey = was ? null : o; render(); }
+      if (act === 'pvmenu') { const was = pvMenu; closeMenus(); pvMenu = !was; render(); }
+      if (act === 'pv-media') setPreview(b.dataset.w ? +b.dataset.w : null);
+      if (act === 'add-size') addSize();
+      if (act === 'add-media') {
+        const m = prompt('Media query', '(prefers-color-scheme: dark)');
+        const owner = b.dataset.owner;
+        moreKey = null;
+        if (m) setOwnerSlot(owner, 'other:' + m.trim());
+        render();
+      }
+      if (act === 'add-open') { addOpen = b.dataset.adder; errors.delete(addOpen); closeMenus(); focusReq = { adder: addOpen }; render(); }
+      if (act === 'add-close') { drafts.delete(addOpen); errors.delete(addOpen); addOpen = null; destMenu = null; render(); }
+      if (act === 'adder-ok') commitAdder(b.dataset.adder);
+      if (act === 'dest') { const a = b.dataset.adder; const was = destMenu === a; closeMenus(); destMenu = was ? null : a; render(); }
+      if (act === 'dest-pick') { addDest.set(b.dataset.adder, b.dataset.key); destMenu = null; focusReq = { adder: b.dataset.adder }; render(); }
+      if (act === 'save-pick') { pending.sel = b.dataset.k; focusReq = { save: true }; commit(); }
+      if (act === 'save-ok') savePending();
+      if (act === 'save-cancel') { pending = null; commit(); }
+      if (act === 'kill') write(src, p, '');
+      if (act === 'kill-rule') { const r = ruleById(src); rules.splice(rules.indexOf(r), 1); lastWrite = { note: `Removed ${r.selector}${r.media ? ` at ${mediaShort(r.media)}` : ''}.` }; commit(); }
+      if (act === 'detach') { detachOpen = detachOpen === b.dataset.fam ? null : b.dataset.fam; forkDraft = ''; render(); }
+      if (act === 'fork') forkClass(b.dataset.fam, document.getElementById('fork-name').value.trim() || b.dataset.suggest);
+      if (act === 'to-inline') classToInline(b.dataset.fam);
+      if (act === 'vw') setPreview(b.dataset.w ? +b.dataset.w : null);
+      if (act === 'clear') write(src, p, '');
+      if (act === 'reset') resetDecl(src, p);
+      if (act === 'menu') { const k = b.dataset.key; const was = menuKey === k; closeMenus(); menuKey = was ? null : k; render(); }
+      if (act === 'pick') {
+        menuKey = null;
+        if (b.dataset.mode === 'ask') {
+          const anchor = panel.querySelector(`.vf[data-key="${CSS.escape(b.dataset.key)}"]`)?.closest('[data-anchor]')?.dataset.anchor;
+          handleEdit(anchor, b.dataset.scope, p, b.dataset.v, false);
+        } else write(src, p, b.dataset.v, listOf(src).find((y) => y.p === p)?.imp);
+      }
+      if (act === 'remove-class') { target.classList.remove(b.dataset.name); lastWrite = { note: `Removed .${b.dataset.name} from the element.` }; commit(); }
+      if (act === 'add-class') addClass(document.getElementById('class-add').value);
+      if (act === 'extract') extractClass();
+      if (act === 'paste') pasteCss(b.dataset.to);
+    });
+    document.addEventListener('pointerdown', (e) => {
+      if ((menuKey || moreKey || pvMenu || destMenu) && !e.target.closest('.menu, [data-act="menu"], [data-act="more"], [data-act="pvmenu"], [data-act="dest"]')) { closeMenus(); render(); }
+      if (openId && !e.target.closest('.pop, .dots')) { openId = null; render(); }
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        if (menuKey || openId || moreKey || pvMenu || destMenu) { const oid = openId; closeMenus(); openId = null; render(); if (oid) panel.querySelector(`[data-id="${CSS.escape(oid)}"]`)?.focus(); return; }
+        if (pending) { pending = null; commit(); return; }
+        if (addOpen) { addOpen = null; render(); return; }
+        if (finding) { finding = false; render(); return; }
+      }
+      if (e.target.closest('input, textarea, select, [contenteditable]')) return;
+      if (e.key === 'ArrowLeft') cycle(-1);
+      if (e.key === 'ArrowRight') cycle(1);
+    });
+    document.getElementById('prev').addEventListener('click', () => cycle(-1));
+    document.getElementById('next').addEventListener('click', () => cycle(1));
+    document.getElementById('reset').addEventListener('click', () => { load(); pending = null; commit(); });
+    addEventListener('resize', () => { if (vw === null) commit(); else layoutStage(); });
+
+    if (params.has('shot')) document.documentElement.classList.add('shot');
+    if (params.get('typed')) { const [k, v] = params.get('typed').split('='); drafts.set(k, v); }
+    commit();
+    // Screenshot helper: ?edit=<anchor id>=<value> makes an Effective styles edit, as if typed and Entered.
+    if (params.get('edit')) {
+      const [anchor, v] = params.get('edit').split('=');
+      const scope = anchor.slice(0, anchor.lastIndexOf('|'));
+      handleEdit(anchor, scope, anchor.slice(anchor.lastIndexOf('|') + 1), v, false);
+    }
+    // ?selftest: walk the save paths and report what landed where (prototype check, not a design surface).
+    if (params.has('selftest')) {
+      const out = [];
+      const cs = (p) => getComputedStyle(target).getPropertyValue(p);
+      // 1. Spacing row at Actual: padding comes from `.card ≥768px`, so it asks; Save keeps the default.
+      handleEdit('spacing|padding', 'spacing', 'padding', '14px 18px', false);
+      out.push(`spacing asks: ${!!pending} default=${pending?.sel} preview=${cs('padding')} opts=${pending?.opts.map((o) => o.k + (o.verdict.win ? '+' : '-')).join(',')}`);
+      savePending();
+      out.push(`after save: class=${target.className} padding=${cs('padding')} other card=${getComputedStyle(document.querySelector('.cards .card')).padding}`);
+      // 2. Background row at Actual: from `.card.featured`, not viewport-dependent, writes inline at once.
+      handleEdit('surface|background-color', 'surface', 'background-color', '#fff7ed', false);
+      out.push(`surface asks: ${!!pending} inline=${target.getAttribute('style')}`);
+      // 3. Typography while previewing 320: asks, and says honestly what wins.
+      setPreview(320);
+      handleEdit('typography|font-size', 'typography', 'font-size', '18px', false);
+      out.push(`typography@320 asks: ${!!pending} opts=${pending?.opts.map((o) => o.k + (o.verdict.win ? '+' : '-' + o.verdict.by)).join(',')}`);
+      pending = null; commit();
+      out.push(`cancel restores font-size=${cs('font-size')}`);
+      document.getElementById('out').textContent = 'RESULTS:' + out.join('\n') + ':END';
+    } else document.getElementById('out').textContent = 'RESULTS:ok:END';
+  </script>
+</body>
+
+</html>
