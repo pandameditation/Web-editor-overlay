@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Sources, cards and the controls they share with Tokens</title>
+  <!--
+    The shared sample (design §8): the prototype's model, as real CSS. Plus the §15 L3 list, so a
+    class card has an li to add ::marker to.
+  -->
+  <style id="site">
+    .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .card {
+      padding: 12px 16px;
+      margin: 0 0 12px;
+      color: #1f2937;
+      background-color: #ffffff;
+      border-radius: 8px;
+      font-size: 15px;
+      font-weight: 600;
+      text-transform: none;
+      text-align: left;
+      opacity: 1;
+      display: block;
+    }
+    .featured { border: 1px solid #a5b4fc; }
+    .card.featured { background-color: #eef2ff; }
+    .promo .card { color: #3730a3 !important; }
+    section p { letter-spacing: 0.01em; }
+    @media (max-width: 767px) {
+      .cards { grid-template-columns: 1fr; }
+      .card { padding: 10px 12px; }
+    }
+    @media (min-width: 768px) {
+      .card { padding: 20px 28px; }
+    }
+    @media print {
+      .card { color: #000000; }
+    }
+    .card:hover { background-color: #f9fafb; }
+    @media (min-width: 768px) {
+      .card:hover { box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1); }
+    }
+    .featured:focus-within { outline: 2px solid #6366f1; }
+    .featured::before { content: "★"; color: #f59e0b; }
+    .item { padding-left: 4px; color: #374151; }
+  </style>
+</head>
+<body>
+  <section class="promo">
+    <div class="cards">
+      <p id="target" class="card featured" style="color: #b91c1c; font-size: 16px">The selected card</p>
+      <p class="card">Second</p>
+      <p class="card">Third</p>
+      <p class="card">Fourth</p>
+    </div>
+  </section>
+  <ul class="list"><li id="item" class="item">An item</li></ul>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const results = {};
+      const errors = [];
+      addEventListener('error', (event) => errors.push('error: ' + event.message));
+      addEventListener('unhandledrejection', (event) => errors.push('rejection: ' + String(event.reason)));
+      const progress = document.getElementById('progress');
+      const frames = () => new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const deep = (selector, root = document) => {
+        const direct = root.querySelector?.(selector);
+        if (direct) return direct;
+        for (const el of root.querySelectorAll?.('*') ?? []) {
+          if (!el.shadowRoot) continue;
+          const found = deep(selector, el.shadowRoot);
+          if (found) return found;
+        }
+        return null;
+      };
+      const settle = async (ms = 250) => {
+        await frames();
+        await wait(ms);
+      };
+      try {
+        const api = window.HtmlEditorOverlay.mount({
+          theme: 'dark',
+          presets: false,
+          detectScriptContent: false,
+        });
+        const engine = api.engine;
+        api.setEditing(true);
+        await engine.whenReady();
+        await frames();
+        const target = document.getElementById('target');
+        const item = document.getElementById('item');
+        const siteRule = (selector) =>
+          Array.from(document.getElementById('site').sheet.cssRules)
+            .find((rule) => rule instanceof CSSStyleRule && rule.selectorText === selector);
+        const glyphOf = (button) => button?.querySelector('svg path')?.getAttribute('d') ?? null;
+        const ARROW_UP = 'M8 13V3M4 7l4-4 4 4';
+        const ARROW_DOWN = 'M8 3v10M4 9l4 4 4-4';
+
+        /* Tokens, re-queried after every render: the panel re-renders on every change. */
+        const tokensRoot = () => deep('heo-tokens-panel')?.shadowRoot ?? null;
+        const classesSection = () =>
+          Array.from(tokensRoot()?.querySelectorAll('heo-section') ?? [])
+            .find((section) => section.heading === 'Reusable classes');
+        const cardFor = (name) =>
+          Array.from(classesSection()?.querySelectorAll('.cls') ?? [])
+            .find((card) => card.querySelector(':scope > header .n')?.textContent.trim() === name);
+        const openCard = async (name) => {
+          if (classesSection() && !classesSection().open) {
+            classesSection().shadowRoot.querySelector('.head')?.click();
+            await settle(150);
+          }
+          const header = cardFor(name)?.querySelector(':scope > header');
+          if (header && header.getAttribute('aria-expanded') !== 'true') header.click();
+          await settle();
+          return cardFor(name);
+        };
+        const rowFor = (card, property) =>
+          Array.from(card?.querySelectorAll('.decl:not(.property-adder)') ?? [])
+            .find((row) => row.querySelector('.p')?.textContent.trim() === property);
+        const commitIn = (row, value) => row?.querySelector('heo-value-field')?.dispatchEvent(
+          new CustomEvent('value-change', { detail: { value }, bubbles: true, composed: true }),
+        );
+
+        api.select(target);
+        engine.setDockTab('tokens');
+        await settle(400);
+
+        /* ------------------------------------------------------------------ *
+         * Tokens' class card, now built from the shared header, row and adder.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'tokens';
+        results.tokens = {};
+        {
+          const historyBefore = engine.history.size;
+          let card = await openCard('.card');
+          commitIn(rowFor(card, 'font-weight'), '700');
+          await settle();
+          const edited = getComputedStyle(target).fontWeight === '700';
+          // Apply from the card puts the class on an element that does not wear it yet.
+          api.select(item);
+          await settle(400);
+          card = await openCard('.card');
+          const apply = Array.from(card?.querySelectorAll('.apply button') ?? [])
+            .find((button) => /Apply to selection/.test(button.textContent));
+          apply?.click();
+          await settle();
+          const applied = item.classList.contains('card') && getComputedStyle(item).fontWeight === '700';
+          card = cardFor('.card');
+          /*
+           * The class card keeps editing the class and applying it after the refactor that moved its
+           * header, rows and adder into shared pieces (design §6.1): a value typed in a row reaches
+           * the page, and Apply still wears the class. The adder is the shared one.
+           */
+          results.tokens.classCardStillEditsAndApplies =
+            edited &&
+            applied &&
+            Boolean(card?.querySelector('.property-adder[data-heo-part="adder"] input[aria-label="New property"]')) &&
+            engine.history.size === historyBefore + 2;
+          while (engine.history.size > historyBefore) engine.undo();
+          await settle();
+          results.tokens.undoRestoredThePage =
+            getComputedStyle(target).fontWeight === '600' && !item.classList.contains('card');
+
+          /*
+           * Every declaration row on a Tokens card has the !important toggle (Q8), named after the
+           * property and the class, and pressing it changes importance in place: the page rule takes
+           * the priority, the toggle reads pressed and the field shows the tag.
+           */
+          api.select(target);
+          await settle(400);
+          card = await openCard('.card');
+          const rows = Array.from(card?.querySelectorAll('.decl:not(.property-adder)') ?? []);
+          const everyRowHasOne = rows.length > 3 && rows.every((row) => {
+            const toggles = row.querySelectorAll('button.promote[data-heo-part="promote"]');
+            const property = row.querySelector('.p')?.textContent.trim();
+            return toggles.length === 1 &&
+              ['true', 'false'].includes(toggles[0].getAttribute('aria-pressed')) &&
+              toggles[0].getAttribute('aria-label') === `!important on ${property} in .card` &&
+              glyphOf(toggles[0]) === ARROW_UP;
+          });
+          const opacityBefore = rowFor(card, 'opacity')?.querySelector('.promote')?.getAttribute('aria-pressed');
+          rowFor(card, 'opacity')?.querySelector('.promote')?.click();
+          await settle();
+          card = cardFor('.card');
+          const opacityRow = rowFor(card, 'opacity');
+          const field = opacityRow?.querySelector('heo-value-field');
+          results.tokens.tokensRowsHaveThePromoteToggle =
+            everyRowHasOne &&
+            opacityBefore === 'false' &&
+            opacityRow?.querySelector('.promote')?.getAttribute('aria-pressed') === 'true' &&
+            siteRule('.card')?.style.getPropertyPriority('opacity') === 'important' &&
+            field?.important === true &&
+            field?.value === '1' &&
+            Boolean(field?.shadowRoot?.querySelector('button.imp'));
+          // And the tag removes it again, from the same row: the write target is that declaration.
+          field?.shadowRoot?.querySelector('button.imp')?.click();
+          await settle();
+          card = cardFor('.card');
+          results.tokens.tagRemovesWhatTheToggleAdded =
+            siteRule('.card')?.style.getPropertyPriority('opacity') === '' &&
+            rowFor(card, 'opacity')?.querySelector('.promote')?.getAttribute('aria-pressed') === 'false';
+          while (engine.history.size > historyBefore) engine.undo();
+          await settle();
+        }
+
+        /* ------------------------------------------------------------------ *
+         * The shorthand side control is not the !important toggle (D6, M8).
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'promote';
+        results.promote = {};
+        {
+          engine.classes.upsert({
+            name: 'pair',
+            declarations: { padding: '4px', 'padding-left': '0px' },
+            origin: 'user',
+          });
+          await settle();
+          const card = await openCard('.pair');
+          const family = () => cardFor('.pair')?.querySelector('.family');
+          const sides = Array.from(family()?.querySelectorAll('.side-win') ?? []);
+          const toggles = Array.from(card?.querySelectorAll('.promote') ?? []);
+          const pressedBefore = sides.findIndex((side) => side.getAttribute('aria-pressed') === 'true');
+          // Pressing the side that loses makes it win, and touches no declaration's importance.
+          family()?.querySelector('.side-win:not(.on)')?.click();
+          await settle();
+          const after = Array.from(family()?.querySelectorAll('.side-win') ?? []);
+          const pressedAfter = after.findIndex((side) => side.getAttribute('aria-pressed') === 'true');
+          const declarations = engine.classes.get('pair')?.declarations ?? {};
+          /*
+           * Two controls, two glyphs, two jobs: the side control points down ("move last, so it
+           * wins") and is never marked as the promote part; the up-arrow toggle sits on each
+           * declaration row only; pressing a side flips the winner and adds no !important.
+           */
+          results.promote.sideControlIsNotThePromoteToggle =
+            sides.length === 2 &&
+            sides.every((side) =>
+              glyphOf(side) === ARROW_DOWN &&
+              !side.matches('.promote, [data-heo-part="promote"]') &&
+              !side.closest('.decl')) &&
+            toggles.length === 2 &&
+            toggles.every((toggle) =>
+              glyphOf(toggle) === ARROW_UP &&
+              Boolean(toggle.closest('.decl')) &&
+              toggle.getAttribute('aria-pressed') === 'false') &&
+            pressedBefore !== -1 &&
+            pressedAfter !== -1 &&
+            pressedAfter !== pressedBefore &&
+            Object.values(declarations).every((value) => !/!\s*important/i.test(value));
+          engine.undo();
+          engine.classes.remove('pair');
+          await settle();
+        }
+
+        const failed = Object.entries(results)
+          .filter(([, group]) => group && typeof group === 'object')
+          .filter(([, group]) => Object.values(group).some((value) => value === false))
+          .map(([name]) => name);
+        document.getElementById('out').textContent =
+          'RESULTS:' + JSON.stringify({ ...results, errors, failed }, null, 2) + ':END';
+      } catch (e) {
+        document.getElementById('out').textContent =
+          'RESULTS:' +
+          JSON.stringify({ threw: String((e && e.stack) || e), errors, failed: ['threw'] }, null, 2) +
+          ':END';
+      }
+    })();
+  </script>
+</body>
+</html>

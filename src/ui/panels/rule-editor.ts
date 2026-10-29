@@ -1,9 +1,10 @@
 import { css, html, nothing, type CSSResult, type TemplateResult } from 'lit';
 import { mediaShort } from '../../core/breakpoints.js';
+import { splitImportant } from '../../core/declaration-list.js';
 import { designRuleKey, summarizeRule } from '../../core/rules.js';
 import type { DesignRule } from '../../core/types.js';
 import { icon } from '../icons.js';
-import { ClassEditor, type ClassEditorHost } from './class-editor.js';
+import { ClassEditor, initialValueFor, type ClassEditorHost } from './class-editor.js';
 import '../controls/selector-field.js';
 import { safeSelector } from '../../core/selectors.js';
 import { selectorIssues } from '../../core/validation.js';
@@ -426,6 +427,11 @@ export const RuleEditor = {
         preview: (property, value) => engine.previewDesignRuleDeclaration(key, property, value),
         commit: (property, value) => engine.setDesignRuleDeclaration(key, property, value),
         remove: (property) => engine.removeDesignRuleDeclaration(key, property),
+        // The registry keeps importance inside the value text, as it does for a class.
+        important: (property) => splitImportant(declarations[property] ?? '').important === true,
+        setImportance: (property, important) =>
+          engine.setImportance({ kind: 'design-rule', key }, property, important),
+        seed: initialValueFor,
         // No paste on a media rule: the paste dialog writes unconditional rules only (D12), so it
         // would put the pasted CSS on every size while the card says ≥768px.
         paste: entry.media

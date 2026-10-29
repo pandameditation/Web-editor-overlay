@@ -205,13 +205,12 @@ export class HeoValueField extends LitElement {
         color: var(--heo-text);
       }
 
-      /* The !important tag. The focus-ring ink is the accent's readable tint in the dark theme and
-         the accent itself in the light one, so one token reads at 4.5:1 in both. */
+      /* The !important tag, in the accent's text ink: readable as text in both themes. */
       .imp {
         flex: 0 0 auto;
         align-self: center;
         padding: 0 3px;
-        color: var(--heo-focus-ring);
+        color: var(--heo-accent-text);
         font-family: var(--heo-mono);
         font-size: 9.5px;
         line-height: 18px;

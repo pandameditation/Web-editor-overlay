@@ -608,6 +608,26 @@
           { name: 'styles.adder.confirm', component: C, file: `${F}:627`, cat: 'control-disabled', kind: 'icon', min: 3, host: () => deep((el) => el.localName === 'button' && el.classList.contains('confirm') && inside('heo-styles-panel')(el)) },
           { name: 'searchField.go', component: 'search-field', file: 'src/ui/controls/search-field.ts:167', cat: 'control-disabled', kind: 'icon', min: 3, host: () => deep((el) => el.localName === 'button' && el.classList.contains('go') && inside('heo-search-field')(el) && inside('heo-styles-panel')(el)) },
         ]);
+        /*
+         * The shorthand side control and the value field's !important tag, on a class card (M8).
+         * The class gets a shorthand with one of its sides, so the card shows a family, and an
+         * important colour, so its row shows the tag as the button that removes it.
+         */
+        engine.classes.upsert({ name: 'card', declarations: { padding: '4px', 'padding-left': '0px', color: 'rgb(1, 2, 3) !important' }, origin: 'user' });
+        await ui(() => {
+          const chip = deep((el) => el.localName === 'button' && el.classList.contains('name') && el.textContent.trim() === 'card' && inside('heo-styles-panel')(el));
+          if (chip && chip.getAttribute('aria-expanded') !== 'true') chip.click();
+        });
+        const inStyles = (test) => () => deep((el) => el.localName === 'button' && test(el) && inside('heo-styles-panel')(el));
+        await measureInteractive([
+          { name: 'styles.sideWin', component: 'class-editor', file: 'src/ui/panels/class-editor.ts', cat: 'styles', kind: 'icon', min: 3, host: inStyles((el) => el.matches('.side-win:not(.on)')) },
+          { name: 'styles.importantTag', component: 'value-field', file: 'src/ui/controls/value-field.ts', cat: 'styles', kind: 'text', min: 4.5, host: inStyles((el) => el.classList.contains('imp') && inside('heo-value-field')(el)) },
+        ]);
+        // Pressed is disabled (pressing the winner again would mean nothing), so it has no hover.
+        await measure([
+          { name: 'styles.sideWinOn', component: 'class-editor', file: 'src/ui/panels/class-editor.ts', cat: 'styles', kind: 'icon', min: 3, host: inStyles((el) => el.matches('.side-win.on')) },
+        ], 'default');
+        engine.classes.remove('card');
         engine.setDock(false);
         engine.select(null);
       });
@@ -1094,6 +1114,23 @@
       results.clearAndRemoveControlsMeetTheirThresholds = verdict(rows.filter((r) => r.cat === 'kill' && r.kind !== 'focus'));
       results.controlDisabledStatesMeetTheirThresholds = verdict(rows.filter((r) => r.cat === 'control-disabled'));
       results.menuHeadingsAndHintsMeetFourAndAHalf = verdict(menuRows('menu-heading'));
+      {
+        // The Styles panel's own controls, each in every state measured, in dark and in light.
+        const inBothThemes = (name) => {
+          const selected = rows.filter((r) => r.name === name);
+          const v = verdict(selected);
+          return { pass: v.pass && ['dark', 'light'].every((t) => selected.some((r) => r.theme === t)), failing: v.failing };
+        };
+        const sideWin = inBothThemes('styles.sideWin');
+        const sideWinOn = inBothThemes('styles.sideWinOn');
+        const importantTag = inBothThemes('styles.importantTag');
+        results.styles = {
+          sideWin: sideWin.pass,
+          sideWinOn: sideWinOn.pass,
+          importantTag: importantTag.pass,
+          failing: [...sideWin.failing, ...sideWinOn.failing, ...importantTag.failing],
+        };
+      }
 
       /*
        * The contrast polish: the shared glass a little darker (dark) or more opaque (light), the
@@ -1180,7 +1217,8 @@
         'panels/code-panel.ts:306 → row: code.undoApply',
         'panels/css-panel.ts:264 → covered: code.apply (primary .btn, same dock backdrop)',
         'panels/css-panel.ts:388 → covered: code.undoApply (default .btn, same dock backdrop)',
-        'panels/class-editor.ts:150 → exempt: .promote is disabled exactly while .on, so its disabled state is the pressed state, announced by aria-pressed',
+        'panels/class-editor.ts:163 → exempt: .side-win is disabled exactly while .on, so its disabled state is the pressed state, announced by aria-pressed (row: styles.sideWinOn)',
+        'panels/styles/promote.ts:32 → exempt: .promote is disabled only for a read-only target, and its title gives the reason',
         'panels/js-panel.ts:285 → covered: tree.parent (default .btn)',
         'panels/js-panel.ts:293 → covered: code.apply (primary .btn)',
         'panels/js-panel.ts:411 → covered: code.undoApply (default .btn)',

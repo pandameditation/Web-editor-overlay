@@ -1,20 +1,22 @@
 import { css, html, nothing, type CSSResult, type TemplateResult } from 'lit';
 import { repeat } from 'lit/directives/repeat.js';
-import { propertyMeta, resolveValue, searchProperties } from '../../core/css.js';
+import { propertyMeta, resolveValue } from '../../core/css.js';
 import {
   displayOrder,
   fromRecord,
   shorthandGroups,
+  splitImportant,
   type DisplayEntry,
 } from '../../core/declaration-list.js';
-import { checkDeclaration } from '../../core/declarations.js';
 import type { EditorEngine } from '../../core/editor.js';
 import type { DesignClass } from '../../core/types.js';
 import { icon } from '../icons.js';
 import { killStyles, renderKill } from '../kill.js';
 import { buildSuggestions, valueKindFor } from '../suggestions.js';
 import '../controls/value-field.js';
-import { field, type FormErrors } from '../form-errors.js';
+import type { FormErrors } from '../form-errors.js';
+import { adderRowStyles, renderAdder } from './styles/property-adder.js';
+import { promoteStyles, renderPromote } from './styles/promote.js';
 
 /**
  * The reusable-class editor.
@@ -48,6 +50,14 @@ export interface DeclarationTarget {
   remove(property: string): void;
   /** Open the shared paste dialog with this target preselected. */
   paste?: () => void;
+  /** Whether the declaration is `!important`: shown as the field's tag and the pressed toggle. */
+  important(property: string): boolean;
+  /** Add or remove `!important`, keeping the value: the promote toggle and the tag. */
+  setImportance(property: string, important: boolean): void;
+  /** The value a newly added property starts with. */
+  seed(property: string): string;
+  /** Why this target cannot be written, when it cannot. Disables the promote toggle with it. */
+  readonly?: string;
   /** True when something more specific wins this property on the selected element. */
   overridden?(property: string): boolean;
   /** The property's tooltip, when there is more to say than its name. */
@@ -126,12 +136,15 @@ export function focusDeclaration(root: ParentNode, property: string, scope?: str
  * get the same answer to it. Only the row itself differs — an element's row has a reset button and a
  * cascade origin, a class's has neither — and that is what `renderRow` is for.
  *
- * The promote control is both a state and an action, because in CSS they are the same fact: the
- * declaration that wins is the one written last, so "promoted" is not a flag stored anywhere, it is
+ * The side control is both a state and an action, because in CSS they are the same fact: the
+ * declaration that wins is the one written last, so "winning" is not a flag stored anywhere, it is
  * a position. The pressed one is the side currently last in the block; pressing the other moves it
- * there. Promotion is expressed as re-asserting the declaration, because that is all it is — every
+ * there. That is expressed as re-asserting the declaration, because that is all it is — every
  * write goes through the shared model, which moves the touched side last. No separate command
  * exists, so there is nothing here to keep in step.
+ *
+ * Its glyph points down, "move last": the up arrow is the `!important` toggle's, and the two used to
+ * share it a few pixels apart while meaning different things.
  */
 export function renderFamilies(
   entries: readonly DisplayEntry[],
@@ -140,7 +153,7 @@ export function renderFamilies(
   label: string,
 ): TemplateResult {
   const control = (property: string, active: boolean, what: string): TemplateResult => html`<button
-    class=${`promote${active ? ' on' : ''}`}
+    class=${`side-win${active ? ' on' : ''}`}
     type="button"
     aria-pressed=${active}
     aria-label=${active ? `${what} wins in ${label}` : `Make ${what} win in ${label}`}
@@ -150,7 +163,7 @@ export function renderFamilies(
     ?disabled=${active}
     @click=${() => promote(property)}
   >
-    ${icon('arrowUp', 10)}
+    ${icon('arrowDown', 10)}
   </button>`;
 
   return html`${repeat(
@@ -180,114 +193,110 @@ export function renderFamilies(
   )}`;
 }
 
-export interface PropertyAdderTarget {
-  /** Unique among the property adders rendered in one shadow root. */
-  id: string;
-  /** How to refer to the declaration owner in validation messages. */
-  label: string;
-  /** Declarations already owned by the target, used to reject duplicates. */
-  existing: Record<string, string>;
-  /** Write the seeded value through the target's normal mutation path. */
-  commit(property: string, value: string): void;
+/**
+ * A card's collapsible header: chevron, session dot, name, file and counts.
+ *
+ * Shared by the Tokens class card and the Styles panel's source cards, so a class looks the same
+ * wherever it is met. The file is there to answer "where is this written", which matters on demand
+ * rather than at a glance, so it shows while the header is hovered or focused and the counts keep
+ * the room otherwise.
+ */
+export function renderCardHeader(spec: {
+  name: string;
+  meta: string;
+  file?: string;
+  expanded: boolean;
+  onToggle: () => void;
+  /** The class was defined in this session rather than read from a stylesheet. */
+  sessionDot: boolean;
+}): TemplateResult {
+  return html`<header
+    role="button"
+    tabindex="0"
+    aria-expanded=${spec.expanded}
+    @click=${spec.onToggle}
+    @keydown=${(event: KeyboardEvent) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      spec.onToggle();
+    }}
+  >
+    ${icon(spec.expanded ? 'chevronDown' : 'chevronRight', 11)}
+    ${spec.sessionDot ? html`<span class="dot" title="Defined in this session"></span>` : nothing}
+    <span class="n">${spec.name}</span>
+    ${spec.file ? html`<span class="file">${spec.file}</span>` : nothing}
+    <span class="meta">${spec.meta}</span>
+  </header>`;
 }
 
 /**
- * The shared property-name line used by classes, rules, and element styles.
+ * One declaration row: name, value (with its `!important` tag), the `!important` toggle, trash.
  *
- * Naming a property is the same interaction everywhere: validate it, seed a useful value,
- * commit through the host's normal mutation path, then put focus in the new value field.
- * Keeping that sequence here prevents the three editors from disagreeing about what can be added.
+ * Keyed on the property by the caller, because these rows are not interchangeable. Rendered
+ * positionally, a change in the order of the declarations re-labels every row from that point on
+ * rather than moving it: the field the caret was in became a different property's field mid-edit,
+ * and the next keystroke edited that one instead.
+ *
+ * The tag is a button here, because the row writes the very declaration it shows; removing the flag
+ * from it is the same act as un-pressing the toggle beside it.
  */
-export function renderPropertyAdder(
-  target: PropertyAdderTarget,
+export function renderDeclarationRow(
+  target: DeclarationTarget,
+  property: string,
   host: ClassEditorHost,
+  options: { promote: boolean },
 ): TemplateResult {
-  const { engine } = host;
-  const listId = `heo-props-${target.id}`;
-  const name = `prop-add-${target.id}`;
-
-  /**
-   * Add the property. `left` is a commit made by leaving the field, which reports a problem without
-   * pulling focus back into it; Enter and the button do take the user there.
-   */
-  const commitProperty = (left = false): void => {
-    if (!host.newProperty.trim()) {
-      if (!left) host.form.fail(name, 'Type the property to add.');
-      return;
-    }
-    const verdict = checkDeclaration({
-      property: host.newProperty,
-      existing: target.existing,
-      label: target.label,
-    });
-    if (verdict.refusal || !verdict.property) {
-      // Kept in the field, so the name can be corrected rather than retyped.
-      host.form.fail(name, verdict.refusal ?? 'That is not a property name.', { focus: !left });
-      return;
-    }
-    host.onNewProperty('');
-    if (verdict.advice) engine.notify(verdict.advice, 'warn');
-    target.commit(verdict.property, initialValueFor(verdict.property));
-    // The new field appears on the render scheduled by the commit, in this list rather than in
-    // whichever other list on screen happens to declare the same property.
-    host.onFocus?.(verdict.property, target.id);
-  };
-
-  return html`
-    <div class="decl property-adder">
-      <span class="p">add</span>
-      <div class="pair">
-        <input
-          ${field(host.form, name)}
-          class="input mono"
-          type="text"
-          list=${listId}
-          placeholder="property"
-          .value=${host.newProperty}
-          spellcheck="false"
-          aria-label="New property"
-          @input=${(event: Event) =>
-      host.onNewProperty((event.target as HTMLInputElement).value)}
-          @keydown=${(event: KeyboardEvent) => {
-      if (event.key === 'Enter') {
-        event.preventDefault();
-        commitProperty();
-        return;
-      }
-      // Tab means "done here", so confirm on the way out rather than discarding the draft.
-      if (event.key === 'Tab' && !event.shiftKey && host.newProperty.trim()) {
-        event.preventDefault();
-        commitProperty();
-      }
-    }}
-          @blur=${() => {
-      if (host.newProperty.trim()) commitProperty(true);
-    }}
-        />
-        <button
-          class="confirm"
-          type="button"
-          title="Add this property"
-          aria-label="Add this property"
-          @pointerdown=${(event: Event) => event.preventDefault()}
-          @click=${() => commitProperty()}
-        >
-          ${icon('check', 12)}
-        </button>
-      </div>
-      ${host.form.error(name)}
-      <datalist id=${listId}>
-        ${searchProperties(host.newProperty, 20).map(
-      (meta) => html`<option value=${meta.name}></option>`,
-    )}
-      </datalist>
-    </div>
-  `;
+  const { engine, element } = host;
+  // Shown without the flag, which the tag carries. Typed into the field, `!important` still arrives
+  // with the value and is written; retyping a value without it keeps what the declaration had.
+  const value = splitImportant(target.declarations[property] ?? '').value;
+  const important = target.important(property);
+  return html`<div
+    class=${`decl${options.promote ? ' promotable' : ''}${target.overridden?.(property) ? ' overridden' : ''}`}
+  >
+    <span class="p" title=${target.describe?.(property) ?? property}>${property}</span>
+    <heo-value-field
+      data-property=${property}
+      .computed=${target.resolve?.(property) ?? resolvedValue(value, element)}
+      .value=${value}
+      .kind=${valueKindFor(property)}
+      .property=${property}
+      .suggestions=${buildSuggestions(engine, property, element)}
+      .important=${important}
+      .importantRemovable=${!target.readonly}
+      .importantTitle=${target.readonly ?? ''}
+      clearable
+      @value-input=${(event: CustomEvent<{ value: string }>) =>
+      target.preview(property, event.detail.value)}
+      @value-revert=${() => engine.cancelPreview()}
+      @value-change=${(event: CustomEvent<{ value: string }>) =>
+      target.commit(property, event.detail.value)}
+      @important-change=${(event: CustomEvent<{ important: boolean }>) =>
+      target.setImportance(property, event.detail.important)}
+    ></heo-value-field>
+    ${options.promote
+      ? renderPromote({
+        property,
+        source: target.label,
+        important,
+        onToggle: (next) => target.setImportance(property, next),
+        disabled: target.readonly,
+      })
+      : nothing}
+    ${renderKill({
+        label: `Remove ${property} from ${target.label}`,
+        tight: true,
+        size: 11,
+        onClick: () => target.remove(property),
+      })}
+  </div>`;
 }
 
 export const ClassEditor = {
   styles: [
     killStyles,
+    adderRowStyles,
+    promoteStyles,
     css`
     .cls {
       border: 1px solid var(--heo-line);
@@ -327,6 +336,22 @@ export const ClassEditor = {
       color: var(--heo-text-faint);
       font-size: 9.5px;
     }
+    /* Where the card is written: on demand, while the header is hovered or focused. */
+    .cls > header .file {
+      display: none;
+      flex: 0 1 auto;
+      min-width: 0;
+      overflow: hidden;
+      color: var(--heo-text-dim);
+      font-family: var(--heo-mono);
+      font-size: 9.5px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .cls > header:hover .file,
+    .cls > header:focus-within .file {
+      display: inline;
+    }
     .cls .decls {
       display: grid;
       gap: 5px;
@@ -352,6 +377,10 @@ export const ClassEditor = {
       align-items: center;
       gap: 6px;
     }
+    /* A fourth column for the !important toggle, between the value and the trash. */
+    .cls .decl.promotable {
+      grid-template-columns: 92px minmax(0, 1fr) 18px 18px;
+    }
     /* A declaration something more specific beats. Dimmed rather than hidden: that
        it is being overridden is usually the answer to "why did nothing happen". */
     .cls .decl.overridden .p,
@@ -361,7 +390,7 @@ export const ClassEditor = {
     /* A shorthand and its own sides, shown as one thing.
 
        The grouping is the explanation: these rows compete, and CSS settles it by which comes
-       last. Two columns — a narrow gutter for the promote control, and the rows themselves —
+       last. Two columns — a narrow gutter for the side control, and the rows themselves —
        so one control can sit beside a whole group of sides rather than repeating per row. */
     .family {
       display: grid;
@@ -374,10 +403,13 @@ export const ClassEditor = {
       border-radius: var(--heo-r-sm);
       background: color-mix(in oklab, var(--heo-sunken) 55%, transparent);
     }
+    /* Both groups reserve the same rule width, so nothing shifts when the winner changes. */
     .family .fam-rows {
       display: grid;
       gap: 5px;
       min-width: 0;
+      padding-left: 3px;
+      border-left: 2px solid transparent;
     }
     /* Indented and ruled, so the sides read as belonging under the shorthand above them. */
     .family .fam-rows.sides {
@@ -385,8 +417,12 @@ export const ClassEditor = {
       border-left: 2px solid var(--heo-line);
     }
     /* The one control that says which side is in charge. Pressed means "this one wins"; the
-       other is the button you can press. Aligned to the first row of its group. */
-    .family .promote {
+       other is the button you can press. Aligned to the first row of its group.
+
+       Full contrast at every state. It used to rest in the faint ink at 55% opacity until the
+       family was hovered, which read well under 3:1, and the losing side's rows were faded the
+       same way, so the declarations a user had to read were the hardest ones to read. */
+    .family .side-win {
       display: grid;
       place-items: center;
       width: 16px;
@@ -395,32 +431,27 @@ export const ClassEditor = {
       border: 0;
       border-radius: 4px;
       background: transparent;
-      color: var(--heo-text-faint);
+      color: var(--heo-text-dim);
       cursor: pointer;
-      opacity: 0.55;
-      transition: opacity var(--heo-fast), color var(--heo-fast);
     }
-    .family:hover .promote {
-      opacity: 1;
-    }
-    .family .promote:hover {
+    .family .side-win:hover:not(:disabled) {
       background: var(--heo-hover);
       color: var(--heo-text);
     }
-    .family .promote.on {
-      color: var(--heo-accent);
+    /* The focus-ring ink is the accent's readable tint in dark and the accent in light. */
+    .family .side-win.on {
+      color: var(--heo-focus-ring);
       cursor: default;
-      opacity: 1;
     }
-    .family .promote:focus-visible {
+    .family .side-win:focus-visible {
       outline: 2px solid var(--heo-focus-ring);
       outline-offset: 1px;
     }
-    /* The losing side is not wrong, it is just not in effect. Dimmed like a cascade override
-       rather than struck through: the fix is one click, and it may well be intentional. */
-    .family .promote:not(.on) + .fam-rows .decl .p,
-    .family .promote:not(.on) + .fam-rows heo-value-field {
-      opacity: 0.55;
+    /* The losing side, marked by a dashed rule rather than a fade: it is not wrong, just not in
+       effect, and its text stays as readable as the winner's. The title says what beats it. */
+    .family .side-win:not(.on) + .fam-rows {
+      border-left-style: dashed;
+      border-left-color: var(--heo-line-strong);
     }
     .cls .decl .p {
       overflow: hidden;
@@ -431,41 +462,6 @@ export const ClassEditor = {
       white-space: nowrap;
     }
 
-    /* Property name plus its confirm button, sharing one field's worth of width. */
-    .cls .decl .pair {
-      display: flex;
-      gap: 4px;
-      min-width: 0;
-    }
-    .cls .decl .pair .input {
-      flex: 1 1 auto;
-      min-width: 0;
-    }
-    .cls .decl .confirm {
-      display: grid;
-      place-items: center;
-      flex: 0 0 auto;
-      width: 28px;
-      border: 1px solid var(--heo-accent-line);
-      border-radius: var(--heo-r-sm);
-      background: var(--heo-accent-soft);
-      color: var(--heo-accent);
-      cursor: pointer;
-      padding: 0;
-      transition:
-        background var(--heo-fast),
-        color var(--heo-fast);
-    }
-    .cls .decl .confirm:hover:not(:disabled) {
-      background: var(--heo-accent);
-      color: var(--heo-accent-ink);
-    }
-    .cls .decl .confirm:disabled {
-      border-color: var(--heo-line);
-      background: transparent;
-      color: var(--heo-text-disabled);
-      cursor: not-allowed;
-    }
     .cls .apply {
       display: flex;
       flex-wrap: wrap;
@@ -498,24 +494,13 @@ export const ClassEditor = {
     return html`<div class="cls">
       ${options.bare
         ? nothing
-        : html`<header
-            role="button"
-            tabindex="0"
-            aria-expanded=${expanded}
-            @click=${onToggle}
-            @keydown=${(event: KeyboardEvent) => {
-            if (event.key !== 'Enter' && event.key !== ' ') return;
-            event.preventDefault();
-            onToggle();
-          }}
-          >
-            ${icon(expanded ? 'chevronDown' : 'chevronRight', 11)}
-            ${entry.origin !== 'stylesheet'
-            ? html`<span class="dot" title="Defined in this session"></span>`
-            : nothing}
-            <span class="n">.${entry.name}</span>
-            <span class="meta">${properties.length} rules${uses ? ` · ${uses}×` : ''}</span>
-          </header>`}
+        : renderCardHeader({
+          name: `.${entry.name}`,
+          meta: `${properties.length} rules${uses ? ` · ${uses}×` : ''}`,
+          expanded,
+          onToggle,
+          sessionDot: entry.origin !== 'stylesheet',
+        })}
       ${expanded ? ClassEditor.renderBody(entry, host) : nothing}
     </div>`;
   },
@@ -543,6 +528,11 @@ export const ClassEditor = {
           engine.previewClassDeclaration(entry.name, property, value),
         commit: (property, value) => engine.setClassDeclaration(entry.name, property, value),
         remove: (property) => engine.removeClassDeclaration(entry.name, property),
+        // The registry keeps importance inside the value text.
+        important: (property) => splitImportant(declarations[property] ?? '').important === true,
+        setImportance: (property, important) =>
+          engine.setImportance({ kind: 'class', name: entry.name }, property, important),
+        seed: initialValueFor,
         paste: () =>
           engine.beginCssPaste({
             context: 'class',
@@ -595,45 +585,9 @@ export const ClassEditor = {
    * user touches is identical.
    */
   renderDeclarations(target: DeclarationTarget, host: ClassEditorHost): TemplateResult {
-    const { engine, element } = host;
     const list = fromRecord(target.declarations);
     const groups = shorthandGroups(list);
     const rows = displayOrder(list, groups);
-
-    /**
-     * One declaration row.
-     *
-     * Keyed on the property by the caller, because these rows are not interchangeable. Rendered
-     * positionally, a change in the order of the declarations re-labels every row from that point
-     * on rather than moving it: the field the caret was in became a different property's field
-     * mid-edit, and the next keystroke edited that one instead.
-     */
-    const row = (property: string): TemplateResult => html`<div
-      class=${`decl${target.overridden?.(property) ? ' overridden' : ''}`}
-    >
-      <span class="p" title=${target.describe?.(property) ?? property}>${property}</span>
-      <heo-value-field
-        data-property=${property}
-        .computed=${target.resolve?.(property) ??
-      resolvedValue(target.declarations[property], element)}
-        .value=${target.declarations[property]}
-        .kind=${valueKindFor(property)}
-        .property=${property}
-        .suggestions=${buildSuggestions(engine, property, element)}
-        clearable
-        @value-input=${(event: CustomEvent<{ value: string }>) =>
-        target.preview(property, event.detail.value)}
-        @value-revert=${() => engine.cancelPreview()}
-        @value-change=${(event: CustomEvent<{ value: string }>) =>
-        target.commit(property, event.detail.value)}
-      ></heo-value-field>
-      ${renderKill({
-      label: `Remove ${property} from ${target.label}`,
-      tight: true,
-      size: 11,
-      onClick: () => target.remove(property),
-    })}
-    </div>`;
 
     return html`
       <!-- Named so the focus helper can tell this list's rows from an identically named row in
@@ -652,14 +606,29 @@ export const ClassEditor = {
             </div>`
         : nothing}
         ${rows.length === 0 ? html`<p class="hint" style="margin:0">${target.empty}</p>` : nothing}
-        ${renderFamilies(rows, row, (property) =>
-        target.commit(property, target.declarations[property] ?? ''), target.label)}
-        ${renderPropertyAdder(
+        ${renderFamilies(
+          rows,
+          (property) => renderDeclarationRow(target, property, host, { promote: true }),
+          (property) => target.commit(property, target.declarations[property] ?? ''),
+          target.label,
+        )}
+        ${renderAdder(
           {
             id: target.id,
-            label: target.label,
-            existing: target.declarations,
-            commit: target.commit,
+            mode: 'property',
+            // Always open, with no destination line: the card it sits in is the destination.
+            disclosure: false,
+            destinations: [
+              {
+                key: target.id,
+                label: target.label,
+                reach: '',
+                existing: target.declarations,
+                ownerLabel: target.label,
+              },
+            ],
+            seed: (property) => target.seed(property),
+            commit: (property, value) => target.commit(property, value),
           },
           host,
         )}

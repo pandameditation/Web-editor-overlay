@@ -49,9 +49,9 @@ import {
   focusDeclaration,
   renderFamilies,
   initialValueFor,
-  renderPropertyAdder,
   type DeclarationTarget,
 } from './class-editor.js';
+import { renderAdder } from './styles/property-adder.js';
 import type { HeoValueField } from '../controls/value-field.js';
 import '../controls/value-field.js';
 import '../controls/search-field.js';
@@ -1122,16 +1122,26 @@ export class HeoStylesPanel extends HeoElement {
                 </button>`
             : nothing}`}
       ${!filtering
-        ? renderPropertyAdder(
+        ? renderAdder(
           {
             id: INLINE_ADDER_ID,
-            label: 'This element',
-            existing: inline,
+            mode: 'property',
+            // Today's always-visible row, until Effective styles brings the "+ Add property" one.
+            disclosure: false,
+            destinations: [
+              {
+                key: INLINE_ADDER_ID,
+                label: 'This element',
+                reach: '',
+                existing: inline,
+                ownerLabel: 'This element',
+              },
+            ],
+            seed: initialValueFor,
             commit: (property, value) => this.editor.setStyle(property, value, el),
           },
           {
             engine: this.editor,
-            element: el,
             form: this.propertyForm,
             newProperty: this.inlineProperty,
             onNewProperty: (value: string) => {
@@ -1305,6 +1315,13 @@ export class HeoStylesPanel extends HeoElement {
       remove: (property) => {
         if (live) this.editor.setRuleDeclaration(live, property, '');
       },
+      // Read off the rule's declarations, which carry importance as a flag rather than in the text.
+      important: (property) =>
+        source.some((one) => one.property === property && one.important),
+      setImportance: (property, important) => {
+        if (live) this.editor.setImportance({ kind: 'live', rule: live }, property, important);
+      },
+      seed: initialValueFor,
       paste: () => {
         if (live) {
           this.editor.beginCssPaste({

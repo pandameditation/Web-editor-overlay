@@ -44,6 +44,9 @@ export const themeVariables = css`
     /* Lifted towards white in the dark theme: the plain accent read 2.4:1 on dark glass over a
        white page, under the 3:1 a focus indicator needs. */
     --heo-focus-ring: color-mix(in oklab, var(--heo-accent) 60%, white);
+    /* The accent as small text, such as a value's !important tag: the focus-ring tint reads 8.5:1
+       here, and text needs 4.5:1. */
+    --heo-accent-text: var(--heo-focus-ring);
 
     /*
      * Per theme, measured against the glass over a white and a black page (test/a11y-contrast.html):
@@ -101,6 +104,8 @@ export const themeVariables = css`
 
     --heo-danger: oklch(50% 0.2 25);
     --heo-focus-ring: var(--heo-accent);
+    /* Darkened a little: the plain default accent read 4.0:1 as text on the sunken field. */
+    --heo-accent-text: color-mix(in oklab, var(--heo-accent) 80%, black);
 
     --heo-shadow-sm: 0 1px 2px oklch(50% 0.03 265 / 12%);
     --heo-shadow-md: 0 8px 24px -6px oklch(50% 0.03 265 / 18%), 0 2px 6px oklch(50% 0.03 265 / 10%);
