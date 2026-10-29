@@ -1785,12 +1785,13 @@ export class EditorEngine {
   }
 
   select(el: HTMLElement | null, options: { reveal?: boolean } = {}): void {
-    // A save box belongs to the element it was opened for.
-    this.#endSavePreview();
     const current = this.store.value.selected;
     // Selecting the primary of a multi-selection is how a group collapses to one element, so
-    // it is only a no-op when nothing else is selected alongside it.
+    // it is only a no-op when nothing else is selected alongside it. The panel keeps its save box
+    // open then, so its preview stays too.
     if (current === el && this.store.value.selection.length <= 1) return;
+    // A save box belongs to the element it was opened for.
+    this.#endSavePreview();
     // Whatever was being previewed belonged to the old selection's panel, and its
     // fields are about to be replaced; nothing would ever put the page back.
     this.cancelPreview();
