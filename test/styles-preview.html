@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Previewing a viewport width in place</title>
+  <!--
+    The shared sample (design §8). The suite's window is 756px wide, so Actual is in the phone
+    range; every preview assertion is made at 320 and at 1024 so it cannot pass by matching the
+    window.
+  -->
+  <style id="site">
+    .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .card { padding: 12px 16px; margin: 0 0 12px; color: #1f2937; background-color: #ffffff; }
+    .featured { border: 1px solid #a5b4fc; }
+    .card.featured { background-color: #eef2ff; }
+    .promo .card { color: #3730a3 !important; }
+    section p { letter-spacing: 0.01em; }
+    @media (max-width: 767px) {
+      .cards { grid-template-columns: 1fr; }
+      .card { padding: 10px 12px; }
+      section p { word-spacing: 1px; }
+    }
+    @media (min-width: 768px) {
+      .card { padding: 20px 28px; }
+      section p { word-spacing: 4px; }
+    }
+    @media print {
+      .card { color: #000000; }
+    }
+    .card:hover { background-color: #f9fafb; }
+    .featured::before { content: "★"; color: #f59e0b; }
+  </style>
+  <!-- A sheet gated by its own media attribute: the attribute must never change. -->
+  <style id="gated" media="(max-width: 767px)">
+    #target { outline-offset: 3px; }
+  </style>
+</head>
+<body>
+  <section class="promo">
+    <div class="cards">
+      <p id="target" class="card featured" style="color: #b91c1c; font-size: 16px">The selected card</p>
+      <p id="second" class="card">Second</p>
+      <p class="card">Third</p>
+      <p class="card">Fourth</p>
+    </div>
+  </section>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const results = {};
+      const errors = [];
+      addEventListener('error', (event) => errors.push('error: ' + event.message));
+      addEventListener('unhandledrejection', (event) => errors.push('rejection: ' + String(event.reason)));
+      const progress = document.getElementById('progress');
+      const frames = () => new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const deep = (selector, root = document) => {
+        const direct = root.querySelector?.(selector);
+        if (direct) return direct;
+        for (const el of root.querySelectorAll?.('*') ?? []) {
+          if (!el.shadowRoot) continue;
+          const found = deep(selector, el.shadowRoot);
+          if (found) return found;
+        }
+        return null;
+      };
+      const ruleFor = (selector, media = null) => {
+        const walk = (list, inside) => {
+          for (const rule of Array.from(list)) {
+            if (rule instanceof CSSStyleRule) {
+              if (rule.selectorText === selector && inside === media) return rule;
+            } else if (rule instanceof CSSMediaRule) {
+              const found = walk(rule.cssRules, rule.conditionText);
+              if (found) return found;
+            }
+          }
+          return null;
+        };
+        return walk(document.getElementById('site').sheet.cssRules, null);
+      };
+      /** The `@media` rule whose authored condition this is, read before any preview. */
+      const mediaRuleOf = (text) => Array.from(document.getElementById('site').sheet.cssRules)
+        .find((rule) => rule instanceof CSSMediaRule && rule.media.mediaText === text);
+      try {
+        /*
+         * A linked sheet whose file cannot be fetched again: a blob URL revoked once it loaded. The
+         * CSS panel then has only the CSSOM's reassembly of it, which is the reader that would
+         * show `@media not all` while previewing.
+         */
+        const blobUrl = URL.createObjectURL(new Blob(
+          ['@media (max-width: 767px) { .linked { margin: 1px; } }'],
+          { type: 'text/css' },
+        ));
+        const link = document.createElement('link');
+        link.rel = 'stylesheet';
+        link.href = blobUrl;
+        const loaded = new Promise((resolve) => { link.onload = resolve; link.onerror = resolve; });
+        document.head.prepend(link);
+        await loaded;
+        URL.revokeObjectURL(blobUrl);
+
+        const asked = [];
+        const api = window.HtmlEditorOverlay.mount({
+          theme: 'dark',
+          presets: false,
+          detectScriptContent: false,
+          aiTransport: (request) => {
+            asked.push(request.context);
+            return (async function* () {
+              yield { op: 'summary', text: 'Looked, changed nothing.' };
+            })();
+          },
+        });
+        const engine = api.engine;
+        api.setEditing(true);
+        await engine.whenReady();
+        await frames();
+        const target = document.getElementById('target');
+        const second = document.getElementById('second');
+        const padding = () => getComputedStyle(target).padding;
+        const rect = (el) => el.getBoundingClientRect();
+
+        results.context = {
+          innerWidth,
+          // Recorded so a run in a wider window says why Actual's expectations moved.
+          actualIsBelow768: matchMedia('(max-width: 767px)').matches === innerWidth < 768,
+        };
+
+        /* ------------------------------------------------------------------ *
+         * The preview itself.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'preview';
+        const actualPadding = padding();
+        const actualTarget = rect(target);
+        const actualSecond = rect(second);
+        const phoneRule = mediaRuleOf('(max-width: 767px)');
+        const phoneCssText = phoneRule.cssText.slice(0, phoneRule.cssText.indexOf('{'));
+        const gated = document.getElementById('gated');
+        const exportBefore = engine.exportHTML();
+        const promptBefore = engine.buildSavePrompt();
+        const historyBefore = engine.history.size;
+        const recordsBefore = engine.records.length;
+        const print = mediaRuleOf('print');
+        // Held from before the preview: `conditionText` reads `all` / `not all` while it is on.
+        const phoneCard = ruleFor('.card', '(max-width: 767px)');
+
+        engine.setPreviewWidth(320);
+        const at320 = {
+          padding: padding(),
+          evaluator: engine.viewport.evaluatorWidth,
+          stacked: rect(second).top > rect(target).top,
+          printUntouched: print.media.mediaText === 'print',
+        };
+        engine.setPreviewWidth(1024);
+        await frames();
+        const at1024 = {
+          padding: padding(),
+          evaluator: engine.viewport.evaluatorWidth,
+          sideBySide: rect(second).top === rect(target).top && rect(second).left > rect(target).left,
+          printUntouched: print.media.mediaText === 'print',
+          host: deep('html-editor-overlay')?.getBoundingClientRect().width ?? -1,
+          exported: engine.exportHTML(),
+          prompt: engine.buildSavePrompt(),
+        };
+
+        // The legacy readers, through the context an AI request is sent.
+        engine.ai.upsert({
+          id: 'styles-preview-probe',
+          label: 'Styles preview probe',
+          transport: 'local',
+          provider: 'openai-compatible',
+          baseURL: 'http://127.0.0.1:9/v1',
+          model: 'm',
+        });
+        engine.ai.activate('styles-preview-probe');
+        await engine.promptAi('Look at this card.', target);
+        await wait(100);
+        const bundle = asked.length ? JSON.parse(asked.at(-1)) : null;
+        // `declared` is `declaredMap` over `appliedRules`: which media rules it took is the question.
+        const declaredOf = (property) =>
+          bundle?.declared?.find((one) => one.property === property);
+
+        // A rule location captured while previewing names the authored condition, never `not all`.
+        engine.setDeclaration({ kind: 'live', rule: phoneCard }, 'margin', '0 0 9px');
+        const located = engine.history.records.at(-1)?.detail?.ruleContext ?? '';
+        engine.undo();
+
+        // The CSS panel's draft of a linked sheet is the CSSOM's reassembly of it.
+        engine.openCode('css');
+        await frames();
+        await wait(250);
+        const draft = deep('heo-css-panel')?.draft ?? '';
+
+        // A managed sheet write re-parses, and its new rules must come back previewed at once.
+        engine.rules.upsert({
+          selector: '.card',
+          media: '(min-width: 768px)',
+          declarations: { 'letter-spacing': '3px' },
+          origin: 'user',
+        });
+        engine.setDesignRuleDeclaration('@media (min-width: 768px) .card', 'letter-spacing', '5px');
+        const reapplied = getComputedStyle(target).letterSpacing;
+        engine.undo();
+        engine.rules.remove('@media (min-width: 768px) .card');
+
+        // The frame moves with the dock: centred in what the docked panel leaves.
+        engine.setPreviewWidth(320);
+        engine.setDock(true, 'styles');
+        await frames();
+        const leftDocked = rect(document.documentElement).left;
+        const frameDocked = engine.viewport.frameLeft;
+        engine.setDock(false);
+        await frames();
+        const leftUndocked = rect(document.documentElement).left;
+        const frameUndocked = engine.viewport.frameLeft;
+        await frames();
+        const frameEl = deep('heo-viewport-frame');
+        const shades = Array.from(frameEl?.shadowRoot?.querySelectorAll('.shade') ?? [])
+          .map((one) => one.getBoundingClientRect());
+
+        results.preview = {
+          // Discriminating in a 756 window: one of the two widths is never the window's answer.
+          mediaQueriesEvaluateAtThePreviewWidth:
+            at320.padding === '10px 12px' && at1024.padding === '20px 28px',
+          evaluatorReportsThePreviewWidth: at320.evaluator === 320 && at1024.evaluator === 1024,
+          legacyReadersFollowThePreview:
+            declaredOf('padding')?.value === '20px 28px' &&
+            declaredOf('word-spacing')?.value === '4px' &&
+            declaredOf('word-spacing')?.from === 'section p',
+          frameFollowsTheDock:
+            leftDocked !== leftUndocked &&
+            leftDocked === frameDocked &&
+            leftUndocked === frameUndocked,
+          layoutReflows: at320.stacked && at1024.sideBySide,
+          ruleLocationsSurvive:
+            located.includes('@media (max-width: 767px)') && !located.includes('not all'),
+          cssTextReadsAuthoredWhilePreviewing:
+            draft.includes('max-width: 767px') && !draft.includes('not all'),
+          reappliesAfterAManagedSheetWrite: reapplied === '5px',
+          onlyWidthQueriesAreRewritten: at320.printUntouched && at1024.printUntouched,
+          overlayHostIsNotNarrowed: at1024.host === innerWidth,
+          frameShadesOutsideTheFrame:
+            shades.length === 2 &&
+            Math.round(shades[0].left) === 0 &&
+            Math.round(shades[0].width) === frameUndocked &&
+            Math.round(shades[1].left) === frameUndocked + 320,
+        };
+
+        // The label's button is the way back.
+        const back = Array.from(frameEl?.shadowRoot?.querySelectorAll('button') ?? [])
+          .find((one) => /Back to actual/.test(one.textContent));
+        back?.click();
+        await frames();
+        const afterBack = engine.store.value.previewWidth === null && !deep('heo-viewport-frame');
+
+        await frames();
+        results.preview.actualRestoresThePage =
+          padding() === actualPadding &&
+          JSON.stringify(rect(target)) === JSON.stringify(actualTarget) &&
+          JSON.stringify(rect(second)) === JSON.stringify(actualSecond) &&
+          phoneRule.cssText.slice(0, phoneRule.cssText.indexOf('{')) === phoneCssText &&
+          gated.getAttribute('media') === '(max-width: 767px)' &&
+          gated.sheet.media.mediaText === '(max-width: 767px)' &&
+          !document.getElementById('heo-viewport-frame');
+        results.preview.leavesNoTraceInExport =
+          at1024.exported === exportBefore &&
+          at1024.prompt === promptBefore &&
+          engine.exportHTML() === exportBefore;
+        results.preview.leavesNoHistoryEntry =
+          engine.history.size === historyBefore && engine.records.length === recordsBefore;
+        results.preview.backToActualFromTheFrameLabel = Boolean(back) && afterBack;
+
+        // Leaving edit mode shows the page as it is.
+        engine.setPreviewWidth(320);
+        api.setEditing(false);
+        await frames();
+        results.preview.endsWhenEditingStops =
+          engine.store.value.previewWidth === null &&
+          !document.getElementById('heo-viewport-frame') &&
+          padding() === actualPadding;
+        api.setEditing(true);
+        await frames();
+
+        /* ------------------------------------------------------------------ *
+         * The user's own viewport sizes.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'menu';
+        const sizeBefore = engine.history.size;
+        const refusedPreset = engine.addViewportSize(320) === false;
+        const refusedRange = engine.addViewportSize(50) === false;
+        const refusedNothing = engine.history.size === sizeBefore;
+        const added = engine.addViewportSize(992);
+        const grew = engine.history.size - sizeBefore;
+        const exported = engine.settings.export();
+        // The seed is plain base64url JSON behind a short prefix (`encodeSeedSync`).
+        const seed = engine.blockLibrarySeed();
+        const body = seed.slice(seed.indexOf('.') + 1).replace(/-/g, '+').replace(/_/g, '/');
+        const decoded = seed ? JSON.parse(new TextDecoder().decode(
+          Uint8Array.from(atob(body + '='.repeat((4 - (body.length % 4)) % 4)), (c) => c.charCodeAt(0)),
+        )) : null;
+        engine.undo();
+        const undone = engine.settings.value.viewportSizes.length === 0;
+        engine.redo();
+        results.menu = {
+          customSizeTravelsInSettings:
+            JSON.stringify(exported.viewportSizes) === '[992]' &&
+            JSON.stringify(decoded?.settings?.viewportSizes) === '[992]',
+          addViewportSizeIsOneUndoEntry:
+            added && grew === 1 && refusedPreset && refusedRange && refusedNothing && undone &&
+            JSON.stringify(engine.settings.value.viewportSizes) === '[992]',
+        };
+
+        const failed = Object.entries(results)
+          .filter(([, group]) => group && typeof group === 'object')
+          .filter(([, group]) => Object.values(group).some((value) => value === false))
+          .map(([name]) => name);
+        document.getElementById('out').textContent =
+          'RESULTS:' + JSON.stringify({ ...results, errors, failed }, null, 2) + ':END';
+      } catch (e) {
+        document.getElementById('out').textContent =
+          'RESULTS:' +
+          JSON.stringify({ threw: String((e && e.stack) || e), errors, failed: ['threw'] }, null, 2) +
+          ':END';
+      }
+    })();
+  </script>
+</body>
+</html>

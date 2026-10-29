@@ -9,6 +9,12 @@ import {
   styleMirrorFor,
   styleMirrorOfNode,
 } from './mirror.js';
+import {
+  authoredMediaText,
+  authoredPrelude,
+  noteSheetsChanged,
+  withAuthoredMedia,
+} from './viewport.js';
 
 /**
  * The page's stylesheets, as editable sources.
@@ -196,7 +202,8 @@ function describe(
     kind,
     label,
     href: extra.href,
-    media: sheet.media?.mediaText || undefined,
+    // Authored: a viewport preview rewrites the list to `all` / `not all` while it is on.
+    media: (sheet.media ? authoredMediaText(sheet.media) : '') || undefined,
     rules,
     readOnly,
     unpreviewable,
@@ -221,13 +228,17 @@ export function readStyleSource(source: StyleSource): string {
   if (source.element) return source.element.textContent ?? '';
   const sheet = source.sheet;
   if (!sheet) return '';
-  try {
-    return Array.from(sheet.cssRules)
-      .map((rule) => rule.cssText)
-      .join('\n\n');
-  } catch {
-    return '';
-  }
+  // `cssText` reads `@media not all` while a viewport preview is on, so the rewrite is taken off
+  // for the length of the read: this text becomes the panel's draft and a write's `before`.
+  return withAuthoredMedia(() => {
+    try {
+      return Array.from(sheet.cssRules)
+        .map((rule) => rule.cssText)
+        .join('\n\n');
+    } catch {
+      return '';
+    }
+  });
 }
 
 /**
@@ -376,7 +387,9 @@ export function describeRule(rule: CSSRule): RuleLocation | null {
     const index = indexOfRule(list, current);
     if (index === -1) return null;
     path.unshift(index);
-    if (parent) context.unshift(preludeOf(parent));
+    // Authored, through any viewport preview: a preview's `@media not all` would otherwise reach
+    // every rule location's context, and from there a save patch.
+    if (parent) context.unshift(authoredPrelude(parent));
     current = parent;
   }
 
@@ -659,16 +672,6 @@ function indexOfRule(list: CSSRuleList, rule: CSSRule): number {
 }
 
 /** An at-rule's prelude: everything before its opening brace. */
-function preludeOf(rule: CSSRule): string {
-  let text = '';
-  try {
-    text = rule.cssText ?? '';
-  } catch {
-    return '';
-  }
-  const brace = text.indexOf('{');
-  return (brace === -1 ? text : text.slice(0, brace)).trim();
-}
 
 /**
  * Replace a sheet's contents, reversibly.
@@ -710,20 +713,17 @@ export function writeStyleSource(source: StyleSource, css: string): Command | nu
   const paint = (css: string): void => {
     rememberStyleText(source.id, css);
     const mirror = styleMirrorFor(sheet);
-    if (mirror) {
-      paintStyleMirror(mirror, css);
-      return;
+    if (mirror) paintStyleMirror(mirror, css);
+    else if (element) element.textContent = css;
+    else if (sheet) {
+      try {
+        replaceRules(sheet, css);
+      } catch {
+        /* Unreadable sheet. The change lives in the record and reaches the file. */
+      }
     }
-    if (element) {
-      element.textContent = css;
-      return;
-    }
-    if (!sheet) return;
-    try {
-      replaceRules(sheet, css);
-    } catch {
-      /* Unreadable sheet. The change lives in the record and reaches the file. */
-    }
+    // Text and CSSOM branches alike bring back rules with their real media.
+    noteSheetsChanged();
   };
   const apply = (): void => paint(after);
   const revert = (): void => paint(before);

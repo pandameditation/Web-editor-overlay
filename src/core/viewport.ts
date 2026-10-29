@@ -12,6 +12,10 @@
  * preview is on.
  */
 
+import { isWidthQuery, MAX_VIEWPORT, MIN_VIEWPORT, widthBound } from './breakpoints.js';
+import { listen, unlisten } from './shield.js';
+import { ManagedStyleSheet } from './stylesheet.js';
+
 const WARNING = '[html-editor-overlay] viewport preview unavailable';
 
 /** The top window's answer, for when no other width is being asked about. */
@@ -237,16 +241,367 @@ export function authoredPrelude(rule: CSSRule): string {
 }
 
 /**
- * Run a synchronous `fn` with every rewritten `MediaList` back to its authored text.
+ * Run a synchronous `fn` with every rewritten `MediaList` back to its authored text, then re-apply.
  *
- * Synchronous only: an async function would run its awaited half with the rewrite back on. With
- * no preview there is nothing to restore, so this is `fn()`.
+ * Synchronous only (L9): an async function would run its awaited half with the rewrite back on.
+ * Its one caller is `readStyleSource`, which reassembles a linked sheet from `rule.cssText`, and
+ * `cssText` reads `@media not all` while a preview is on. With no preview this is `fn()`.
  */
 export function withAuthoredMedia<T>(fn: () => T): T {
-  return fn();
+  return active ? active.withAuthored(fn) : fn();
 }
 
 /** Called by every path that re-parses a stylesheet, so a preview can re-apply. No-op without one. */
 export function noteSheetsChanged(): void {
-  // Nothing is previewed yet, so a re-parse has nothing to undo.
+  active?.reconcile();
+}
+
+/* -------------------------------------------------------------------------- */
+/* The preview                                                                 */
+/* -------------------------------------------------------------------------- */
+
+/** The preview that is on, if any: what the module-level hooks above talk to. */
+let active: ViewportPreview | null = null;
+
+export interface ViewportPreviewOptions {
+  /** After every apply, relayout and restore: the engine re-measures its chrome. */
+  onChange: () => void;
+  /** The dock's footprint, read fresh on every layout. */
+  dock: () => { open: boolean; width: number; floating: boolean };
+}
+
+/** What the internal frame sheet is called. Skipped by the rewrite walk, like every internal sheet. */
+const FRAME_SHEET_ID = 'heo-viewport-frame';
+
+/** The gap the docked panel keeps from the window edge, which the frame also leaves free. */
+const DOCK_GUTTER = 28;
+
+/**
+ * Preview the page at a width the window is not.
+ *
+ * Every width-dependent `MediaList` in the page's sheets is evaluated at the preview width by the
+ * evaluator, then rewritten in place to `all` or `not all`; the root is narrowed to the width by an
+ * internal sheet. Rule objects keep their identity and index, so live edits, rule locations and the
+ * registries' origin maps keep working, and nothing is written to the DOM text, the files, history
+ * or the change set. "Actual" puts every list back and removes the sheet.
+ *
+ * A re-parse (a managed sheet write, a `<style>` edit, a mirror repaint) brings back new rule
+ * objects with their real media, so the engine's own writers call `noteSheetsChanged()` and a
+ * `MutationObserver` plus a capture-phase `load` listener catch the rest. Measured limits (vw units,
+ * page scripts, fixed elements, cross-origin sheets) are the menu's to state.
+ */
+export class ViewportPreview {
+  readonly #evaluator: MediaEvaluator;
+  readonly #options: ViewportPreviewOptions;
+  #width: number | null = null;
+  /** Strong references to every list rewritten in the last walk, so Actual can put each back. */
+  #touched: MediaList[] = [];
+  #frame: ManagedStyleSheet | null = null;
+  #observer: MutationObserver | null = null;
+  #height = 0;
+  /** Re-entrancy guard: writing the frame sheet is itself a sheet change. */
+  #busy = false;
+  #frameLeft = 0;
+  #unreadable = 0;
+  readonly #onLoad = (event: Event): void => {
+    if (event.target instanceof HTMLLinkElement) this.reconcile();
+  };
+
+  constructor(evaluator: MediaEvaluator, options: ViewportPreviewOptions) {
+    this.#evaluator = evaluator;
+    this.#options = options;
+  }
+
+  /** The previewed width, or null at Actual. */
+  get width(): number | null {
+    return this.#width;
+  }
+
+  /** The frame's left edge in CSS px; 0 at Actual. */
+  get frameLeft(): number {
+    return this.#frameLeft;
+  }
+
+  /** The evaluator iframe's own `innerWidth`, for the fixtures. */
+  get evaluatorWidth(): number | null {
+    return this.#evaluator.frameWidth;
+  }
+
+  /** Cross-origin sheets the last walk could not rewrite, for the menu. */
+  get unreadableSheets(): number {
+    return this.#unreadable;
+  }
+
+  /** False when the page refuses an evaluator. */
+  get available(): boolean {
+    return this.#evaluator.available;
+  }
+
+  /**
+   * Preview `width`, or go back to Actual with null.
+   *
+   * False when the preview is unavailable or the width is out of range; a no-op when unchanged.
+   */
+  set(width: number | null): boolean {
+    if (width === this.#width) return true;
+    if (width === null) {
+      this.#restore();
+      this.#options.onChange();
+      return true;
+    }
+    if (!Number.isInteger(width) || width < MIN_VIEWPORT || width > MAX_VIEWPORT) return false;
+    // Sized once for the whole pass: resizing per query is what costs (§1.1).
+    this.#evaluator.beginPass();
+    this.#evaluator.matches('(min-width: 0px)', width);
+    if (!this.#evaluator.available) return false;
+    this.#width = width;
+    active = this;
+    this.#walk();
+    this.#writeFrame();
+    this.#connect();
+    this.#options.onChange();
+    return true;
+  }
+
+  /** Re-apply after a sheet change; one walk, and lists already at their verdict are left alone. */
+  reconcile(): void {
+    if (this.#width === null || this.#busy) return;
+    this.#walk();
+  }
+
+  /** Recompute the frame's position and rewrite only the frame sheet. No media walk. */
+  relayout(): void {
+    if (this.#width === null) return;
+    this.#writeFrame();
+    this.#options.onChange();
+  }
+
+  /**
+   * The engine's window `resize` handler.
+   *
+   * Height and orientation queries depend on the window's height, so a height change re-walks;
+   * the frame depends on the width and the dock, so it is always relaid out. At Actual this is the
+   * geometry bump the handler always was.
+   */
+  onWindowResize(): void {
+    this.#evaluator.beginPass();
+    if (this.#width === null) {
+      this.#options.onChange();
+      return;
+    }
+    if (innerHeight !== this.#height) this.reconcile();
+    this.relayout();
+  }
+
+  /** Run `fn` with every rewritten list at its authored text, then re-apply. */
+  withAuthored<T>(fn: () => T): T {
+    if (this.#width === null) return fn();
+    this.#busy = true;
+    try {
+      for (const list of this.#touched) setMedia(list, authored.get(list) ?? list.mediaText);
+      return fn();
+    } finally {
+      this.#busy = false;
+      this.#walk();
+    }
+  }
+
+  destroy(): void {
+    this.#restore();
+    this.#frame?.destroy();
+    this.#frame = null;
+  }
+
+  /* ---------------------------------------------------------------------- */
+
+  #walk(): void {
+    const width = this.#width;
+    if (width === null) return;
+    this.#busy = true;
+    this.#height = innerHeight;
+    this.#unreadable = 0;
+    const touched: MediaList[] = [];
+    const rewrite = (list: MediaList | null | undefined): void => {
+      if (!list) return;
+      const text = authored.get(list) ?? list.mediaText;
+      if (!text.trim() || !isWidthQuery(text)) return;
+      authored.set(list, text);
+      touched.push(list);
+      setMedia(list, this.#evaluator.matches(text, width) ? 'all' : 'not all');
+    };
+    const visit = (container: CSSStyleSheet | CSSGroupingRule): void => {
+      let rules: CSSRuleList;
+      try {
+        rules = container.cssRules;
+      } catch {
+        if (container instanceof CSSStyleSheet) this.#unreadable += 1;
+        return;
+      }
+      for (const rule of Array.from(rules)) {
+        if (rule instanceof CSSImportRule) {
+          rewrite(rule.media);
+          if (rule.styleSheet) visit(rule.styleSheet);
+        } else if (rule instanceof CSSMediaRule) {
+          rewrite(rule.media);
+          visit(rule);
+        } else if (rule instanceof CSSGroupingRule) {
+          // `@supports`, `@layer`, `@container`, and a style rule's nested rules.
+          visit(rule);
+        }
+      }
+    };
+    try {
+      for (const sheet of pageSheets()) {
+        rewrite(sheet.media);
+        visit(sheet);
+      }
+    } finally {
+      this.#touched = touched;
+      this.#busy = false;
+    }
+  }
+
+  #writeFrame(): void {
+    const width = this.#width;
+    if (width === null) return;
+    const dock = this.#options.dock();
+    const available = innerWidth - (dock.open && !dock.floating ? dock.width + DOCK_GUTTER : 0);
+    // Centred in the space the docked panel leaves; flush left when the frame is wider than that.
+    this.#frameLeft = Math.max(0, Math.floor((available - width) / 2));
+    this.#frame ??= new ManagedStyleSheet(FRAME_SHEET_ID, { internal: true });
+    this.#busy = true;
+    try {
+      this.#frame.write(
+        `html { width: ${width}px !important; min-width: 0 !important; max-width: none !important; ` +
+        `margin-left: ${this.#frameLeft}px !important; margin-right: 0 !important; ` +
+        'box-sizing: border-box !important; }',
+      );
+    } finally {
+      this.#busy = false;
+    }
+  }
+
+  #connect(): void {
+    if (this.#observer) return;
+    this.#observer = new MutationObserver((records) => {
+      if (records.some(touchesPageCss)) this.reconcile();
+    });
+    this.#observer.observe(document, { childList: true, subtree: true, characterData: true });
+    listen(document, 'load', this.#onLoad, true);
+  }
+
+  #restore(): void {
+    this.#observer?.disconnect();
+    this.#observer = null;
+    unlisten(document, 'load', this.#onLoad, true);
+    // A list from a sheet re-parsed since is detached, and writing it back is harmless.
+    for (const list of this.#touched) {
+      const text = authored.get(list);
+      if (text !== undefined) setMedia(list, text);
+      authored.delete(list);
+    }
+    this.#touched = [];
+    this.#frame?.write('');
+    this.#frameLeft = 0;
+    this.#width = null;
+    if (active === this) active = null;
+  }
+}
+
+/** Set a list's text when it differs; a setter that throws leaves that list as it was. */
+function setMedia(list: MediaList, text: string): void {
+  if (list.mediaText === text) return;
+  try {
+    list.mediaText = text;
+  } catch {
+    // Counted as nothing: the list keeps the value it had.
+  }
+}
+
+/** The page's sheets in cascade order, the editor's internal ones left out. */
+function pageSheets(): CSSStyleSheet[] {
+  return [...Array.from(document.styleSheets), ...(document.adoptedStyleSheets ?? [])].filter(
+    (sheet) => !(sheet.ownerNode instanceof Element && sheet.ownerNode.hasAttribute('data-heo-internal')),
+  );
+}
+
+/** A mutation that can change which page CSS exists: a `<style>`/stylesheet `<link>`, or a `<style>`'s text. */
+function touchesPageCss(record: MutationRecord): boolean {
+  const isSheet = (node: Node): boolean =>
+    node instanceof HTMLStyleElement ||
+    (node instanceof HTMLLinkElement && /\bstylesheet\b/i.test(node.rel));
+  const ours = (node: Node): boolean =>
+    node instanceof Element &&
+    (node.hasAttribute('data-heo-internal') || node.hasAttribute('data-heo-generated'));
+  if (record.type === 'characterData') {
+    const parent = record.target.parentNode;
+    return parent instanceof HTMLStyleElement && !ours(parent);
+  }
+  if (record.target instanceof HTMLStyleElement) return !ours(record.target);
+  return [...Array.from(record.addedNodes), ...Array.from(record.removedNodes)].some(
+    (node) => isSheet(node) && !ours(node),
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* The page's media queries                                                    */
+/* -------------------------------------------------------------------------- */
+
+export interface PageMedia {
+  /** The condition as authored. */
+  media: string;
+  /** Style rules under it, nested ones included. */
+  rules: number;
+}
+
+/**
+ * Every distinct media condition in the page's readable sheets, ordered by breakpoint.
+ *
+ * A max bound sorts just below its width (`max-width: 767px` before `min-width: 768px`), and
+ * conditions that are not a single width bound go last, in the order they were first seen.
+ */
+export function collectPageMedia(): PageMedia[] {
+  const counts = new Map<string, number>();
+  const styleRules = (container: CSSStyleSheet | CSSGroupingRule): number => {
+    let rules: CSSRuleList;
+    try {
+      rules = container.cssRules;
+    } catch {
+      return 0;
+    }
+    let count = 0;
+    for (const rule of Array.from(rules)) {
+      if (rule instanceof CSSStyleRule) count += 1;
+      if (rule instanceof CSSGroupingRule) count += styleRules(rule);
+    }
+    return count;
+  };
+  const note = (media: string, rules: number): void => {
+    const text = media.trim();
+    if (text) counts.set(text, (counts.get(text) ?? 0) + rules);
+  };
+  const visit = (container: CSSStyleSheet | CSSGroupingRule): void => {
+    let rules: CSSRuleList;
+    try {
+      rules = container.cssRules;
+    } catch {
+      return;
+    }
+    for (const rule of Array.from(rules)) {
+      if (rule instanceof CSSMediaRule) note(authoredMediaText(rule.media), styleRules(rule));
+      if (rule instanceof CSSGroupingRule && !(rule instanceof CSSStyleRule)) visit(rule);
+    }
+  };
+  for (const sheet of pageSheets()) {
+    if (sheet.media?.length) note(authoredMediaText(sheet.media), styleRules(sheet));
+    visit(sheet);
+  }
+  const rank = (media: string): number => {
+    const bound = widthBound(media);
+    if (!bound) return Number.POSITIVE_INFINITY;
+    return bound.side === 'max' ? bound.px + 0.5 : bound.px;
+  };
+  return [...counts.entries()]
+    .map(([media, rules]) => ({ media, rules }))
+    .sort((a, b) => rank(a.media) - rank(b.media));
 }

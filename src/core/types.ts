@@ -199,6 +199,11 @@ export interface EditorSettings {
    * sibling elements, as soon as one appears and across the page when it is switched on.
    */
   splitDoubleBreaks: boolean;
+  /**
+   * The user's own viewport sizes, beside the four presets: integers 200–4000, unique, ascending,
+   * at most `MAX_CUSTOM_SIZES`. Each adds a preview size and a `from-W` slot.
+   */
+  viewportSizes: readonly number[];
 }
 
 /** The subset of settings a document carries: only the ones that differ from the defaults. */

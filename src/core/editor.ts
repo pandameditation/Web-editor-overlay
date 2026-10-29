@@ -33,7 +33,13 @@ import {
   type ElementModel,
   type WriteTarget,
 } from './cascade.js';
-import { authoredPrelude, bindViewport, MediaEvaluator, unbindViewport } from './viewport.js';
+import {
+  authoredPrelude,
+  bindViewport,
+  MediaEvaluator,
+  unbindViewport,
+  ViewportPreview,
+} from './viewport.js';
 import { addClassToBlockElements, applyBlockInlineRules, blockIdsReferencedByCSS } from './block-css.js';
 import {
   parsePastedCSS,
@@ -93,7 +99,8 @@ import {
   htmlPasteIssues,
   sourceEditIssues,
 } from './validation.js';
-import { SettingsRegistry } from './settings.js';
+import { MAX_CUSTOM_SIZES, MAX_VIEWPORT, MIN_VIEWPORT } from './breakpoints.js';
+import { DEFAULT_SETTINGS, SettingsRegistry, viewportSizesOf } from './settings.js';
 import {
   applyBlockProps,
   BlockLibrary,
@@ -788,6 +795,13 @@ export interface EditorState {
    * so the chrome re-renders when it changes; the registry is the authority.
    */
   splitDoubleBreaks: boolean;
+  /** The user's own viewport sizes, mirrored from `engine.settings` like `splitDoubleBreaks`. */
+  viewportSizes: readonly number[];
+  /**
+   * The width the page is previewed at, or null for Actual: the page as it renders in this window.
+   * Owned by `engine.viewport`; set through `setPreviewWidth`.
+   */
+  previewWidth: number | null;
   extraction: Extraction | null;
   /** A single class or rule opened for editing on its own, when one is. */
   styleEdit: StyleEdit | null;
@@ -1023,6 +1037,18 @@ export class EditorEngine {
    * tree; created lazily, on the first question about a width other than the window's.
    */
   readonly #media = new MediaEvaluator(() => document.querySelector(HOST_TAG));
+  /**
+   * The viewport preview: page media queries evaluated at a chosen width and rewritten in place.
+   * Survives panel renders and selection changes; ends with editing, or with `destroy()`.
+   */
+  readonly viewport = new ViewportPreview(this.#media, {
+    onChange: () => this.#bumpGeometry(),
+    dock: () => ({
+      open: this.store.value.dockOpen,
+      width: this.store.value.dockWidth,
+      floating: this.store.value.dockFloat !== null,
+    }),
+  });
 
   #listeners: Array<() => void> = [];
   #observers: Array<MutationObserver | ResizeObserver | IntersectionObserver> = [];
@@ -1161,8 +1187,8 @@ export class EditorEngine {
 
   constructor(options: MountOptions = {}) {
     this.options = options;
-    // Nothing previews a width yet, so the page renders at the window's own.
-    bindViewport(this.#media, () => null);
+    // `null` width means the width the page renders at: the preview's, else the window's.
+    bindViewport(this.#media, () => this.viewport.width);
     this.#sourceAccess = { endpoint: options.sourceEndpoint, token: options.sourceToken };
     // A change to something inside a shadow tree is journaled from inside that tree.
     this.history.observeRootsWith((record) => shadowRootsOf(elementOfRecord(record)));
@@ -1215,6 +1241,8 @@ export class EditorEngine {
       saveBlockLibrary: true,
       removeBlockLibrary: false,
       splitDoubleBreaks: false,
+      viewportSizes: DEFAULT_SETTINGS.viewportSizes,
+      previewWidth: null,
       extraction: null,
       styleEdit: null,
       confirm: null,
@@ -1332,11 +1360,27 @@ export class EditorEngine {
     this.#listeners.push(keyVault.onChange(() => this.#bumpRegistry()));
     // The seed may already have set some, synchronously above, or may set them a tick from now.
     const syncSettings = (): void => {
-      this.store.patch({ splitDoubleBreaks: this.settings.value.splitDoubleBreaks });
+      this.store.patch({
+        splitDoubleBreaks: this.settings.value.splitDoubleBreaks,
+        viewportSizes: this.settings.value.viewportSizes,
+      });
       this.#replanSave();
     };
     syncSettings();
     this.#listeners.push(this.settings.onChange(syncSettings));
+    /*
+     * The preview frame is centred in the space the docked panel leaves, so it moves with the dock.
+     * Only the frame sheet is rewritten; the media verdicts do not depend on the dock.
+     */
+    let dockTuple = '';
+    this.#listeners.push(
+      this.store.subscribe((state) => {
+        const next = `${state.dockOpen}|${state.dockWidth}|${state.dockFloat !== null}`;
+        if (next === dockTuple) return;
+        dockTuple = next;
+        if (this.viewport.width !== null) this.viewport.relayout();
+      }),
+    );
     if (this.store.value.editing) void this.#sweepOnLoad();
 
     this.#bindPageEvents();
@@ -1440,6 +1484,8 @@ export class EditorEngine {
     this.rules.destroy();
     this.library.destroy();
     this.ai.destroy();
+    // Before the evaluator goes: putting the page back needs nothing from it, but the order reads.
+    this.viewport.destroy();
     unbindViewport(this.#media);
     this.#media.destroy();
     // Every `<link>` the editor stood in for goes back to loading its own file. A page
@@ -1573,6 +1619,8 @@ export class EditorEngine {
     if (!editing) {
       this.endTextEdit(true);
       this.cancelDrag();
+      // A preview is an editing view of the page; leaving edit mode shows the page as it is.
+      this.setPreviewWidth(null);
     }
     this.store.patch({
       editing,
@@ -4972,6 +5020,70 @@ export class EditorEngine {
    * setting is a promise about the page, and it should be true the moment it is made. Undo takes
    * the splits back and the setting with them.
    */
+  /**
+   * Preview the page at `width` CSS px, or at the window's own with null ("Actual").
+   *
+   * Null or an integer in 200–4000; anything else returns false and changes nothing, as does a page
+   * that refuses the evaluator. Touches no history, change set or revision: a preview is a view.
+   */
+  setPreviewWidth(width: number | null): boolean {
+    if (width !== null && (!Number.isInteger(width) || width < MIN_VIEWPORT || width > MAX_VIEWPORT)) {
+      return false;
+    }
+    if (!this.viewport.set(width)) return false;
+    this.store.patch({ previewWidth: this.viewport.width });
+    return true;
+  }
+
+  /**
+   * Add a viewport size of the user's own, as one undoable change that travels in the seed.
+   *
+   * The `setSplitDoubleBreaks` pattern: a `block` record for the settings, so the page counts as
+   * changed and the save writes it. False for an invalid width, a preset's width, one already
+   * listed, or a full list.
+   */
+  addViewportSize(width: number): boolean {
+    const current = this.settings.value.viewportSizes;
+    if (current.length >= MAX_CUSTOM_SIZES || current.includes(width)) return false;
+    const next = viewportSizesOf([...current, width]);
+    if (!next?.includes(width)) return false;
+    this.#commitViewportSizes(next, `Add the ${width}px viewport size`);
+    return true;
+  }
+
+  /** Remove one of the user's viewport sizes, as one undoable change. */
+  removeViewportSize(width: number): boolean {
+    const current = this.settings.value.viewportSizes;
+    if (!current.includes(width)) return false;
+    this.#commitViewportSizes(
+      current.filter((one) => one !== width),
+      `Remove the ${width}px viewport size`,
+    );
+    return true;
+  }
+
+  #commitViewportSizes(next: readonly number[], label: string): void {
+    const previous = this.settings.value.viewportSizes;
+    this.history.commit({
+      label,
+      record: {
+        id: nextChangeId(),
+        kind: 'block',
+        summary: label,
+        target: 'settings',
+        detail: { block: 'settings', setting: 'viewportSizes', value: JSON.stringify(next) },
+        at: Date.now(),
+      },
+      apply: () => {
+        this.settings.set({ viewportSizes: next });
+      },
+      revert: () => {
+        this.settings.set({ viewportSizes: previous });
+      },
+    });
+    this.#bumpRevision();
+  }
+
   setSplitDoubleBreaks(on: boolean): void {
     const previous = this.settings.value.splitDoubleBreaks;
     if (previous === on) return;
@@ -10016,7 +10128,9 @@ export class EditorEngine {
 
     const geometry = (): void => this.#bumpGeometry();
     on(window, 'scroll', geometry as (event: Event) => void);
-    on(window, 'resize', geometry as (event: Event) => void);
+    // Through the preview, which keeps its frame centred and re-reads height queries; at Actual
+    // it is the same geometry bump as scrolling.
+    on(window, 'resize', () => this.viewport.onWindowResize());
 
     const beforeUnload = (event: BeforeUnloadEvent): void => {
       if (!this.history.netSize) return;

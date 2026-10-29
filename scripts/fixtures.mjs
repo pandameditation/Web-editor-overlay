@@ -80,6 +80,7 @@ export const FIXTURES = [
   { page: 'test/css-rules.html', budget: 45000, weight: 2400, fast: true },
   { page: 'test/styles-cascade.html', budget: 60000, fast: true },
   { page: 'test/styles-save.html', budget: 90000 },
+  { page: 'test/styles-preview.html', budget: 60000 },
   { page: 'test/box-sides.html', budget: 60000, weight: 5800, fast: true },
   { page: 'test/rule-authoring.html', budget: 90000, weight: 9000, fast: true },
   { page: 'test/style-dialog.html', budget: 45000, weight: 2400, fast: true },

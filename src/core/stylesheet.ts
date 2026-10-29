@@ -1,3 +1,5 @@
+import { noteSheetsChanged } from './viewport.js';
+
 /**
  * A managed `<style>` element.
  *
@@ -72,6 +74,13 @@ export class ManagedStyleSheet {
     if (this.#element.textContent !== css) this.#element.textContent = css;
     // Keep it last in <head> so it wins ties against the page's own sheets.
     if (this.#element.parentElement !== document.head) document.head.appendChild(this.#element);
+    /*
+     * A text write re-parses the sheet, and the new rules come back with their real media. A
+     * viewport preview re-applies now, synchronously, so a value read straight after this write
+     * (the next render) already sees the previewed width; the preview's observer would only catch
+     * up before the next frame.
+     */
+    noteSheetsChanged();
   }
 
   #create(): HTMLStyleElement {

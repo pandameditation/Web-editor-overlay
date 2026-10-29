@@ -24,6 +24,7 @@ import './chrome/css-paste-dialog.js';
 import './chrome/style-dialog.js';
 import './chrome/source-dialog.js';
 import './chrome/dock.js';
+import './chrome/viewport-frame.js';
 
 /**
  * The overlay root.
@@ -88,6 +89,7 @@ export class HeoOverlay extends HeoElement {
         s.confirm,
         s.theme,
         s.accent,
+        s.previewWidth,
       ] as const,
     shallowArrayEquals,
   );
@@ -112,6 +114,10 @@ export class HeoOverlay extends HeoElement {
     else document.documentElement.style.removeProperty('--heo-drag-accent');
 
     return html`
+      <!-- First, so the shade sits under the selection outlines and every piece of chrome. -->
+      ${state.editing && state.previewWidth !== null
+        ? html`<heo-viewport-frame></heo-viewport-frame>`
+        : nothing}
       ${state.editing ? html`<heo-selection-layer></heo-selection-layer>` : nothing}
       <heo-toolbar></heo-toolbar>
       ${state.editing && state.dockOpen ? html`<heo-dock></heo-dock>` : nothing}

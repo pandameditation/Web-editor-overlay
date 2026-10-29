@@ -1,5 +1,6 @@
 import { HOST_TAG, MIRROR_ATTR } from './constants.js';
 import { absolutizeCssUrls } from './css-urls.js';
+import { noteSheetsChanged } from './viewport.js';
 
 /**
  * Stand-ins for stylesheets the browser refuses to expose.
@@ -161,6 +162,8 @@ export function installStyleMirror(link: HTMLLinkElement, css: string): StyleMir
   byElement.set(element, mirror);
   if (element.sheet) bySheet.set(element.sheet, mirror);
   installed.add(mirror);
+  // A new sheet with real media: a viewport preview re-applies at once.
+  noteSheetsChanged();
   return mirror;
 }
 
@@ -178,6 +181,7 @@ export function paintStyleMirror(mirror: StyleMirror, css: string): void {
   // Reparsing produces a new `CSSStyleSheet`, so the lookup table has to follow it.
   const sheet = mirror.element.sheet;
   if (sheet) bySheet.set(sheet, mirror);
+  noteSheetsChanged();
 }
 
 /**

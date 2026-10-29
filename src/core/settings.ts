@@ -1,3 +1,4 @@
+import { MAX_CUSTOM_SIZES, MAX_VIEWPORT, MIN_VIEWPORT, VIEWPORT_PRESETS } from './breakpoints.js';
 import type { EditorSettings, PortableSettings } from './types.js';
 
 /**
@@ -10,7 +11,36 @@ import type { EditorSettings, PortableSettings } from './types.js';
  */
 export const DEFAULT_SETTINGS: Readonly<EditorSettings> = Object.freeze({
   splitDoubleBreaks: false,
+  viewportSizes: Object.freeze([]) as readonly number[],
 });
+
+/**
+ * Two setting values are the same: arrays element by element, anything else by identity.
+ *
+ * Without it an array is never equal to a copy of itself, so `viewportSizes: []` would count as
+ * changed on every `set` and as different from the default on every export (L2).
+ */
+export function sameSetting(a: unknown, b: unknown): boolean {
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((value, index) => value === b[index]);
+  }
+  return a === b;
+}
+
+/**
+ * Viewport sizes fit to keep: integers in range, not a preset's width, unique, ascending, at most
+ * `MAX_CUSTOM_SIZES`. Anything else is dropped silently, as other settings are.
+ */
+export function viewportSizesOf(input: unknown): readonly number[] | null {
+  if (!Array.isArray(input)) return null;
+  const presets = new Set(VIEWPORT_PRESETS.map((preset) => preset.width));
+  const sizes = [...new Set(input)]
+    .filter((value): value is number =>
+      Number.isInteger(value) && value >= MIN_VIEWPORT && value <= MAX_VIEWPORT && !presets.has(value))
+    .sort((a, b) => a - b)
+    .slice(0, MAX_CUSTOM_SIZES);
+  return Object.freeze(sizes);
+}
 
 /**
  * The settings an untrusted document may set, rebuilt from an allow-list.
@@ -24,6 +54,8 @@ export function portableSettings(input: unknown): PortableSettings | null {
   const raw = input as Record<string, unknown>;
   const next: PortableSettings = {};
   if (typeof raw.splitDoubleBreaks === 'boolean') next.splitDoubleBreaks = raw.splitDoubleBreaks;
+  const sizes = viewportSizesOf(raw.viewportSizes);
+  if (sizes) next.viewportSizes = sizes;
   return Object.keys(next).length ? next : null;
 }
 
@@ -46,8 +78,9 @@ export class SettingsRegistry {
     const next = { ...this.#value };
     for (const key of Object.keys(patch) as Array<keyof EditorSettings>) {
       const value = patch[key];
-      if (value === undefined || next[key] === value) continue;
-      next[key] = value;
+      if (value === undefined || sameSetting(next[key], value)) continue;
+      // A frozen copy of an array, so a caller cannot change the registry's value behind its back.
+      (next as Record<string, unknown>)[key] = Array.isArray(value) ? Object.freeze([...value]) : value;
       changed = true;
     }
     if (!changed) return false;
@@ -60,7 +93,9 @@ export class SettingsRegistry {
   export(): PortableSettings {
     const out: PortableSettings = {};
     for (const key of Object.keys(DEFAULT_SETTINGS) as Array<keyof EditorSettings>) {
-      if (this.#value[key] !== DEFAULT_SETTINGS[key]) out[key] = this.#value[key];
+      if (!sameSetting(this.#value[key], DEFAULT_SETTINGS[key])) {
+        (out as Record<string, unknown>)[key] = this.#value[key];
+      }
     }
     return out;
   }
