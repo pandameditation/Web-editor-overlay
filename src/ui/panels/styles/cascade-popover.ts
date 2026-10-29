@@ -69,9 +69,6 @@ export function renderCascadePopover(
     all.some((one) => one.source.kind === 'rule' && one.source.entry.layered)
       ? 'In a cascade layer: order may differ.'
       : '',
-    host.previewWidth !== null && all.some((one) => /\dvw\b/.test(one.value))
-      ? 'Values in vw follow the real window, not the preview.'
-      : '',
   ].filter(Boolean);
 
   return html`<div

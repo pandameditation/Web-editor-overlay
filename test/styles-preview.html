@@ -39,6 +39,21 @@
       .featured { text-indent: 2px; }
     }
   </style>
+  <!--
+    Width units. A preview narrows the root, but vw would still resolve against the 756 window, so
+    a fluid heading looked desktop-sized in a phone preview. Each rule pins one way a restatement
+    could go wrong: a later plain rule must keep winning, an important rule must keep beating an
+    inline value, and custom properties, var() shorthands and nesting must follow.
+  -->
+  <style id="fluid">
+    .fluid-title { font-size: clamp(12px, 5vw, 60px); }
+    .fluid-box { width: 50vw; padding: 0 2vw; }
+    .fluid-box.fixed { width: 100px; }
+    .fluid-gap { --gutter: 10vw; margin-left: var(--gutter); }
+    .fluid-pending { padding: var(--missing, 3vw) 1px; }
+    .fluid-strong { height: 7px !important; }
+    .fluid-nest { & .fluid-inner { width: 25vw; } }
+  </style>
   <!-- A sheet gated by its own media attribute: the attribute must never change. -->
   <style id="gated" media="(max-width: 767px)">
     #target { outline-offset: 3px; }
@@ -53,6 +68,16 @@
       <p class="card">Fourth</p>
     </div>
   </section>
+  <div id="fluid-zone">
+    <h2 id="fluid-title" class="fluid-title">Fluid</h2>
+    <div id="fluid-box" class="fluid-box">box</div>
+    <div id="fluid-fixed" class="fluid-box fixed">fixed</div>
+    <div id="fluid-gap" class="fluid-gap">gap</div>
+    <div id="fluid-pending" class="fluid-pending">pending</div>
+    <div id="fluid-inline" style="width: 20vw">inline</div>
+    <div id="fluid-strong" class="fluid-strong" style="height: 5vw">strong</div>
+    <div class="fluid-nest"><div id="fluid-inner" class="fluid-inner">inner</div></div>
+  </div>
   <pre id="progress">start</pre>
   <pre id="out">pending</pre>
   <script src="../dist/html-editor-overlay.iife.js"></script>
@@ -294,6 +319,78 @@
         await frames();
 
         /* ------------------------------------------------------------------ *
+         * Width units follow the previewed width.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'units';
+        const fluid = (id) => getComputedStyle(document.getElementById(id));
+        const fluidRule = (selector) => Array.from(document.getElementById('fluid').sheet.cssRules)
+          .find((rule) => rule instanceof CSSStyleRule && rule.selectorText === selector);
+        const fluidExportBefore = engine.exportHTML();
+        const unitsHistoryBefore = engine.history.size;
+        const actualTitle = fluid('fluid-title').fontSize;
+        const actualBox = fluid('fluid-box').width;
+        engine.setPreviewWidth(320);
+        await frames();
+        const u320 = {
+          title: fluid('fluid-title').fontSize,
+          box: fluid('fluid-box').width,
+          boxPadding: fluid('fluid-box').paddingLeft,
+          fixed: fluid('fluid-fixed').width,
+          gap: fluid('fluid-gap').marginLeft,
+          pending: fluid('fluid-pending').paddingTop,
+          inline: fluid('fluid-inline').width,
+          strong: fluid('fluid-strong').height,
+          inner: fluid('fluid-inner').width,
+          // Read now: a removed `<style>`'s sheet loses its owner.
+          internal: ['data-heo-internal', 'data-heo-generated']
+            .every((name) => engine.viewport.unitsSheet?.ownerNode?.hasAttribute(name) === true),
+          last: document.styleSheets[document.styleSheets.length - 1] === engine.viewport.unitsSheet,
+        };
+        // A live rule edit fires no mutation; the restatement has to read the rule again.
+        engine.setDeclaration({ kind: 'live', rule: fluidRule('.fluid-box') }, 'width', '25vw');
+        const liveEdit = fluid('fluid-box').width;
+        engine.undo();
+        const liveUndo = fluid('fluid-box').width;
+        // An inline value typed while previewing reaches the observer.
+        document.getElementById('fluid-inline').style.width = '30vw';
+        await frames();
+        const inlineEdit = fluid('fluid-inline').width;
+        // Put back as written, so the export below compares like with like.
+        document.getElementById('fluid-inline').setAttribute('style', 'width: 20vw');
+        engine.setPreviewWidth(1024);
+        await frames();
+        const u1024 = { title: fluid('fluid-title').fontSize, box: fluid('fluid-box').width };
+        const exportedWithUnits = engine.exportHTML();
+        engine.setPreviewWidth(null);
+        await frames();
+        results.units = {
+          // The window is 756 wide: at 320, 5vw is 16px, where the window would say 37.8px.
+          aFluidClampFollowsThePreview: u320.title === '16px' && u1024.title === '51.2px' && actualTitle !== '16px',
+          vwLengthsFollowThePreview: u320.box === '160px' && u320.boxPadding === '6.4px' && u1024.box === '512px',
+          aLaterPlainRuleStillWins: u320.fixed === '100px',
+          customPropertiesFollow: u320.gap === '32px',
+          aVarShorthandFollows: u320.pending === '9.6px',
+          nestedRulesFollow: u320.inner === '80px',
+          inlineValuesFollow: u320.inline === '64px',
+          anImportantRuleStillBeatsInline: u320.strong === '7px',
+          aLiveRuleEditIsRestatedAtOnce: liveEdit === '80px' && liveUndo === '160px',
+          anInlineEditIsRestated: inlineEdit === '96px',
+          // The restatement is the editor's: every registry and the cascade inspector skip these
+          // two markers, so no twin can show up as a rule to edit or a value to save.
+          theSheetIsInternalAndLast: u320.internal && u320.last,
+          actualRestoresTheUnits:
+            fluid('fluid-title').fontSize === actualTitle &&
+            fluid('fluid-box').width === actualBox &&
+            !document.getElementById('heo-viewport-units') &&
+            engine.viewport.unitsSheet === null,
+          leavesNoTrace:
+            exportedWithUnits === fluidExportBefore &&
+            // The element's markup, assembled so this script's own text cannot match it.
+            !exportedWithUnits.includes(['<style id="heo', 'viewport', 'units"'].join('-')) &&
+            engine.history.size === unitsHistoryBefore,
+        };
+
+        /* ------------------------------------------------------------------ *
          * The user's own viewport sizes.
          * ------------------------------------------------------------------ */
         progress.textContent = 'menu';
@@ -411,7 +508,7 @@
         await openMenu();
         results.menu.statesItsLimits =
           Array.from(menu()?.querySelectorAll('.cap') ?? []).some((cap) => cap.textContent.trim() === "What a preview can't change") &&
-          /vw and vh follow the real window/.test(menu()?.textContent ?? '');
+          /@keyframes\) keep vw/.test(menu()?.textContent ?? '');
         menu()?.querySelector('.mi')?.focus();
         menu()?.querySelector('.mi')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true, cancelable: true }));
         await settle();

@@ -182,7 +182,7 @@ function renderPreviewMenu(spec: PreviewBarSpec, presets: readonly ViewportPrese
         caption: "What a preview can't change",
         items: [],
         after: html`<ul class="limits">
-          <li>Values in vw and vh follow the real window.</li>
+          <li>Animations (@keyframes) keep vw at the real window's width.</li>
           <li>Page scripts see the real window: matchMedia, innerWidth, resize.</li>
           <li>Fixed elements still span the whole window.</li>
           <li>Print and preference queries can't be previewed.</li>

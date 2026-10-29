@@ -13,8 +13,17 @@
  */
 
 import { breakpointOf, isWidthQuery, MAX_VIEWPORT, MIN_VIEWPORT, widthBound } from './breakpoints.js';
+import { isEditorOwned } from './dom-journal.js';
 import { listen, unlisten } from './shield.js';
 import { ManagedStyleSheet } from './stylesheet.js';
+import {
+  collectBlocks,
+  collectInline,
+  rereadBlock,
+  UNITS_SHEET_ID,
+  unitsCss,
+  type BlockIndex,
+} from './viewport-units.js';
 
 const WARNING = '[html-editor-overlay] viewport preview unavailable';
 
@@ -256,6 +265,14 @@ export function noteSheetsChanged(): void {
   active?.reconcile();
 }
 
+/**
+ * Called after a live CSSOM write to a rule's declarations, which re-parses nothing and fires no
+ * mutation: a preview restating viewport units reads that rule again. No-op without a preview.
+ */
+export function noteRuleEdited(rule: CSSRule): void {
+  active?.refreshRule(rule);
+}
+
 /* -------------------------------------------------------------------------- */
 /* The preview                                                                 */
 /* -------------------------------------------------------------------------- */
@@ -287,8 +304,13 @@ const DOCK_GUTTER = 28;
  *
  * A re-parse (a managed sheet write, a `<style>` edit, a mirror repaint) brings back new rule
  * objects with their real media, so the engine's own writers call `noteSheetsChanged()` and a
- * `MutationObserver` plus a capture-phase `load` listener catch the rest. Measured limits (vw units,
- * page scripts, fixed elements, cross-origin sheets) are the menu's to state.
+ * `MutationObserver` plus a capture-phase `load` listener catch the rest.
+ *
+ * Width units (`vw`, `vmin`, `clamp(…, 5vw, …)`) would still follow the real window, so every walk
+ * also restates them at the preview width in one more internal sheet (`viewport-units.ts`). Live
+ * rule writes, which fire no mutation, call `noteRuleEdited()`; inline `style` changes reach the
+ * observer. Measured limits (page scripts, fixed elements, cross-origin sheets, `@keyframes`) are
+ * the menu's to state.
  */
 export class ViewportPreview {
   readonly #evaluator: MediaEvaluator;
@@ -303,6 +325,11 @@ export class ViewportPreview {
   #busy = false;
   #frameLeft = 0;
   #unreadable = 0;
+  /** The sheet restating width units, last in the document; null when nothing uses one. */
+  #units: HTMLStyleElement | null = null;
+  #blocks: ReturnType<typeof collectBlocks> = [];
+  #inline: ReturnType<typeof collectInline> = [];
+  readonly #index: BlockIndex = new Map();
   readonly #onLoad = (event: Event): void => {
     if (event.target instanceof HTMLLinkElement) this.reconcile();
   };
@@ -393,6 +420,18 @@ export class ViewportPreview {
     this.relayout();
   }
 
+  /** The sheet restating width units, for the fixtures; null at Actual or when nothing needs it. */
+  get unitsSheet(): CSSStyleSheet | null {
+    return this.#units?.sheet ?? null;
+  }
+
+  /** Read one live-edited rule again and restate the units; a full read when it is unknown. */
+  refreshRule(rule: CSSRule): void {
+    if (this.#width === null) return;
+    if (!rereadBlock(rule, this.#index)) this.#blocks = collectBlocks(this.#unitSheets(), this.#index);
+    this.#writeUnits();
+  }
+
   /** Run `fn` with every rewritten list at its authored text, then re-apply. */
   withAuthored<T>(fn: () => T): T {
     if (this.#width === null) return fn();
@@ -459,6 +498,42 @@ export class ViewportPreview {
       this.#touched = touched;
       this.#busy = false;
     }
+    // After the media rewrite, so the restatement reads which conditions apply at this width.
+    this.#blocks = collectBlocks(this.#unitSheets(), this.#index);
+    this.#inline = collectInline();
+    this.#writeUnits();
+  }
+
+  /**
+   * Every document sheet in cascade order, the editor's internal ones included.
+   *
+   * Included because they style the page too: a save-preview rule has to keep beating the rule it
+   * would override. Adopted sheets are left out: they cascade after the units sheet whatever it says.
+   */
+  #unitSheets(): CSSStyleSheet[] {
+    return Array.from(document.styleSheets).filter((sheet) => sheet.ownerNode !== this.#units);
+  }
+
+  /** Write the units sheet, or remove it when nothing uses a width unit. */
+  #writeUnits(): void {
+    const width = this.#width;
+    const css = width === null ? '' : unitsCss(this.#blocks, this.#inline, width);
+    if (!css) {
+      this.#units?.remove();
+      this.#units = null;
+      return;
+    }
+    if (!this.#units) {
+      const style = document.createElement('style');
+      style.id = UNITS_SHEET_ID;
+      style.setAttribute('data-heo-generated', '');
+      style.setAttribute('data-heo-internal', '');
+      this.#units = style;
+    }
+    if (this.#units.textContent !== css) this.#units.textContent = css;
+    // Last in the document, after any `<style>` in the body, so the twins come after what they restate.
+    const root = document.documentElement;
+    if (root.lastElementChild !== this.#units) root.appendChild(this.#units);
   }
 
   #writeFrame(): void {
@@ -485,8 +560,19 @@ export class ViewportPreview {
     if (this.#observer) return;
     this.#observer = new MutationObserver((records) => {
       if (records.some(touchesPageCss)) this.reconcile();
+      // An inline value, or an element moved: inline twins are keyed by position.
+      else if (this.#width !== null && records.some((record) => !isEditorOwned(record.target))) {
+        this.#inline = collectInline();
+        this.#writeUnits();
+      }
     });
-    this.#observer.observe(document, { childList: true, subtree: true, characterData: true });
+    this.#observer.observe(document, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+      attributes: true,
+      attributeFilter: ['style'],
+    });
     listen(document, 'load', this.#onLoad, true);
   }
 
@@ -501,6 +587,11 @@ export class ViewportPreview {
       authored.delete(list);
     }
     this.#touched = [];
+    this.#units?.remove();
+    this.#units = null;
+    this.#blocks = [];
+    this.#inline = [];
+    this.#index.clear();
     this.#frame?.write('');
     this.#frameLeft = 0;
     this.#width = null;

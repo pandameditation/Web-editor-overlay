@@ -43,6 +43,7 @@ import {
 import { labelFor } from '../dom.js';
 import { describeRule } from '../sheets.js';
 import { splitCssPriority } from '../css-paste.js';
+import { noteRuleEdited } from '../viewport.js';
 import type { ChangeRecord } from '../types.js';
 import type { PlannedOperation } from './broker.js';
 import type { AiScopeClass } from './types.js';
@@ -426,12 +427,14 @@ export class AiRun {
           if (entry.value) rule.style.setProperty(entry.property, entry.value, entry.priority);
           else rule.style.removeProperty(entry.property);
         }
+        noteRuleEdited(rule);
       },
       revert: () => {
         for (const old of before) {
           if (old.value) rule.style.setProperty(old.property, old.value, old.priority);
           else rule.style.removeProperty(old.property);
         }
+        noteRuleEdited(rule);
       },
     };
   }

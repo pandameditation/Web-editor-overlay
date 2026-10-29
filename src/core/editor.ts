@@ -53,6 +53,7 @@ import {
   authoredMediaText,
   authoredPrelude,
   bindViewport,
+  noteRuleEdited,
   MediaEvaluator,
   unbindViewport,
   ViewportPreview,
@@ -3017,6 +3018,7 @@ export class EditorEngine {
     const { value: next, important: typed } = splitImportant(value);
     if (next) rule.style.setProperty(property, next, typed ? 'important' : this.#rulePreview.priority);
     else rule.style.removeProperty(property);
+    noteRuleEdited(rule);
   }
 
   #endRulePreview(): void {
@@ -3028,6 +3030,7 @@ export class EditorEngine {
     } else {
       preview.rule.style.removeProperty(preview.property);
     }
+    noteRuleEdited(preview.rule);
   }
 
   setRuleDeclaration(
@@ -3896,6 +3899,8 @@ export class EditorEngine {
    * selector — would be a third copy of a rule those two already share.
    */
   #resyncRegistries(rule: CSSStyleRule, property: string): void {
+    // A live CSSOM write fires no mutation: a viewport preview restating units reads the rule again.
+    noteRuleEdited(rule);
     if (property.startsWith('--')) {
       this.tokens.scanDocument();
       /*
