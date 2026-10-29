@@ -695,8 +695,9 @@
         /*
          * The row in the Size section, not the first one found.
          *
-         * Setting a property also lists it under "Set on this element", deliberately -- the same
-         * declaration is editable in two places. Clearing it there destroys that row, so a reference
+         * Setting a property also lists it under Effective styles and in the Inline style card,
+         * deliberately -- the same declaration is editable in several places. Clearing it in the
+         * inline card destroys that row, so a reference
          * to it goes stale and reopening its list would be pointless anyway. The section row is the
          * one that survives, and the one where offering the alternatives is the point.
          */

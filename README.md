@@ -837,14 +837,20 @@ strip of the field opens the list.
 
 One dock, eight tabs, resizable by its left edge.
 
-**Styles** — opens with **Modified**: everything the element itself declares via
-its `style` attribute, in one list, each row resettable to the value it had before
-the session. Below that is a task-oriented form, and below that a cascade inspector
-that includes the style attribute alongside the matched rules so the priority order
-is visible. Declared values render solid, inherited ones dimmed, so it is always
-clear what this element actually sets. The matched-rules list shows which rule wins and lets
-you edit **that rule**, which updates every element using it — the difference
-between fixing a shared class and patching one element inline. Spacing uses a box
+**Styles** — the header lists the element's classes (× takes one off, `+` finds or
+creates one), and a preview bar re-evaluates the page's media queries at a phone,
+tablet, laptop or desktop width without resizing the window; **Actual** shows the page
+as it is on this screen, every size and state included. **Effective styles** lists what
+the element renders with after the cascade, one row per property, with a dot that opens
+the full cascade (winner first, losers struck through, other sizes and states below).
+States, pseudo-elements and the picked size each get their own group. **Sources**
+comes next: the inline style, each class (with its states, pseudo-elements and media
+variants under a size strip) and every other rule reaching the element, as cards you
+edit in place — editing a card changes the class or rule itself, for every element
+using it. An edit made on the element whose value depends on the viewport asks, after
+you enter it, where it should stay: this element at this size (an automatic class),
+this element at every size (inline), or the rule or class at that size. Below that is
+the task-oriented form (Layout, Typography, Spacing, …), on the same rows. Spacing uses a box
 diagram where every side scrubs, and a double-click on a side opens the same
 token-aware field used elsewhere so a side can take `var(--space-lg)` or a
 different unit. Edits write the individual longhand, never a shorthand that would
@@ -869,11 +875,11 @@ survives, the incoming values win where they clash — and the dialog names ever
 value the merge would move, on every element wearing the class, before you commit.
 Replace is the other answer, chosen deliberately rather than by accident.
 
-Both operations run in reverse. In **Styles → Classes**, opening a class offers
-"Just this element", which either copies the class under a new name and swaps it in
-here alone, or moves its declarations onto the element as inline styles and takes
-the class off — the exact inverse of extracting it, dropping the rule too when
-nothing else was using it.
+Both operations run in reverse. In **Styles → Sources**, a class card offers
+"Detach styles from class", which either copies the class under a new name (its states
+and sizes included) and swaps it in here alone, or moves its base declarations onto the
+element as inline styles and takes the class off — the exact inverse of extracting it,
+dropping the rule too when nothing else was using it.
 
 The dock is docked to the right edge by default and can be dragged anywhere by its
 header; the button beside the close button sends it back to the edge.
