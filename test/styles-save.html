@@ -85,6 +85,14 @@
       content: "★";
       color: #f59e0b;
     }
+    /* A page class that looks automatic but is not the editor's, for the namer's collision pin. */
+    .card-phone {
+      outline-color: red;
+    }
+    /* An important rule of class specificity, which only an important automatic class beats. */
+    .card {
+      outline-style: dotted !important;
+    }
     /* A page rule and its phone variant, for the registry-resync pins (design §5.4 item 8). */
     @media (max-width: 767px) {
       section p {
@@ -98,8 +106,8 @@
   <section class="promo">
     <div class="cards">
       <p id="target" class="card featured" style="color: #b91c1c; font-size: 16px">The selected card</p>
-      <p class="card">Second</p>
-      <p class="card">Third</p>
+      <p id="second" class="card">Second</p>
+      <p id="third" class="card">Third</p>
       <p class="card">Fourth</p>
     </div>
   </section>
@@ -299,13 +307,154 @@
         const seed = await engine.designSystemSeed();
         engine.rules.remove(`@media ${MEDIA} .card`);
         const goneBeforeImport = !engine.rules.has(`@media ${MEDIA} .card`);
-        await engine.importDesignSystemText(seed, true);
+        // Without overwrite: an overwriting import takes every page rule and class over as the
+        // editor's, which would leave later groups measuring re-emitted copies.
+        await engine.importDesignSystemText(seed, false);
         const back = engine.rules.get(`@media ${MEDIA} .card`);
         results.persist.seedCarriesMedia =
           goneBeforeImport &&
           back?.media === MEDIA &&
           back?.declarations['letter-spacing'] === '1px' &&
           engine.rules.get('.card')?.declarations?.['letter-spacing'] !== '1px';
+
+        /* ------------------------------------------------------------------ *
+         * Saving a viewport-dependent edit: the options, their verdicts, automatic classes.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'options';
+        const third = document.getElementById('third');
+        const secondCard = document.getElementById('second');
+        const ctxFor = (declarations, slot, width) => ({ element: third, declarations, slot, width });
+        const optionOf = (plan, kind) => plan.options.find((one) => one.kind === kind);
+        const allPlans = [];
+        const planFor = (ctx) => {
+          const plan = engine.planViewportSave(ctx);
+          allPlans.push(plan);
+          return plan;
+        };
+        results.options = {};
+
+        // No rule at ≥1024px in the winner's family: the class option creates one.
+        engine.setPreviewWidth(1024);
+        const laptopCtx = ctxFor({ padding: '15px 19px' }, 'laptop', 1024);
+        const laptopPlan = planFor(laptopCtx);
+        const laptopRule = optionOf(laptopPlan, 'rule');
+        engine.saveViewportEdit(laptopCtx, laptopRule);
+        results.options.classOptionCreatesTheMediaRule =
+          laptopRule?.apply.kind === 'new-rule' &&
+          laptopRule.apply.selector === '.card' &&
+          laptopRule.apply.media === '(min-width: 1024px)' &&
+          /The class \.card ≥1024px/.test(laptopRule.title) &&
+          /@media \(min-width: 1024px\)\s*\{\s*\.card\s*\{[^}]*padding:\s*15px 19px/.test(managedText()) &&
+          getComputedStyle(third).padding === '15px 19px';
+        engine.undo();
+
+        // At a preview of 768 the default is this element at this size, and the rule option names
+        // the rule that sets the value there.
+        engine.setPreviewWidth(768);
+        const tabletCtx = ctxFor({ padding: '14px 18px' }, 'tablet', 768);
+        const tabletPlan = planFor(tabletCtx);
+        const tabletRule = optionOf(tabletPlan, 'rule');
+        results.options.defaultIsThisElementAtThisSize =
+          tabletPlan.options[0]?.kind === 'solo' &&
+          /≥768px/.test(tabletPlan.options[0].title) &&
+          tabletPlan.autoName === 'card-tablet';
+        results.options.ruleOptionNamesTheExistingRule =
+          tabletRule?.apply.kind === 'replace' &&
+          tabletRule.apply.target.kind === 'live' &&
+          tabletRule.apply.target.rule === tabletCard &&
+          /\.card ≥768px/.test(tabletRule.title) &&
+          tabletRule.reach === 4;
+
+        // Every option, saved and undone: the page must show the value exactly when the verdict
+        // says it wins. Colour at 320 is the discriminating case: `.promo .card` is important.
+        const verdictsHold = (ctx, plan) => plan.options.every((option) => {
+          const [[property, value]] = Object.entries(ctx.declarations);
+          engine.saveViewportEdit(ctx, option);
+          const shown = getComputedStyle(third).getPropertyValue(property) === value;
+          engine.undo();
+          return shown === option.verdict.wins;
+        });
+        const at768 = verdictsHold(tabletCtx, tabletPlan);
+        engine.setPreviewWidth(320);
+        const phonePaddingCtx = ctxFor({ padding: '7px 9px' }, 'phone', 320);
+        const phoneColourCtx = ctxFor({ color: 'rgb(1, 1, 1)' }, 'phone', 320);
+        const phonePaddingPlan = planFor(phonePaddingCtx);
+        const phoneColourPlan = planFor(phoneColourCtx);
+        const at320 =
+          verdictsHold(phonePaddingCtx, phonePaddingPlan) && verdictsHold(phoneColourCtx, phoneColourPlan);
+        results.options.verdictsMatchThePageAfterSave =
+          at768 && at320 && phoneColourPlan.options.some((one) => !one.verdict.wins);
+
+        // A page class already called `.card-phone` is not the editor's, so the name moves on.
+        results.options.automaticClassNameAvoidsCollisions = phonePaddingPlan.autoName === 'card-phone-2';
+
+        // A shared rule is never made important to win: the colour's rule option loses instead.
+        const colourRule = optionOf(phoneColourPlan, 'rule');
+        engine.saveViewportEdit(phoneColourCtx, colourRule);
+        const colourWritten = managedText();
+        results.edit.neverPromotesASharedRule =
+          allPlans.every((plan) => plan.options.filter((one) => one.kind === 'rule')
+            .every((one) => one.important === false)) &&
+          colourRule?.verdict.wins === false &&
+          /\.card\s*\{[^}]*color:\s*rgb\(1, 1, 1\)/.test(colourWritten) &&
+          !/color:\s*rgb\(1, 1, 1\)\s*!important/.test(colourWritten);
+        engine.undo();
+
+        // The automatic class, added to this element and named after its own class.
+        engine.setPreviewWidth(768);
+        // Read at the same width the saves below are made at.
+        const secondPadding = getComputedStyle(secondCard).padding;
+        const solo = tabletPlan.options[0];
+        engine.saveViewportEdit(tabletCtx, solo);
+        results.options.automaticClassIsAddedAndNamed =
+          third.classList.contains('card-tablet') &&
+          engine.isAutomaticClass('card-tablet', third) &&
+          /@media \(min-width: 768px\)\s*\{\s*\.card-tablet\s*\{[^}]*padding:\s*14px 18px/.test(managedText()) &&
+          getComputedStyle(third).padding === '14px 18px';
+
+        // A second edit at the same size goes into the same class.
+        const marginPlan = planFor(ctxFor({ margin: '0 0 20px' }, 'tablet', 768));
+        engine.saveViewportEdit(ctxFor({ margin: '0 0 20px' }, 'tablet', 768), marginPlan.options[0]);
+        results.options.automaticClassReusedForTheSameSize =
+          marginPlan.autoName === 'card-tablet' &&
+          marginPlan.options[0].apply.reuse === true &&
+          !Array.from(third.classList).some((one) => /^card-tablet-\d+$/.test(one)) &&
+          /\.card-tablet\s*\{[^}]*padding:\s*14px 18px;[^}]*margin:\s*0 0 20px/.test(managedText());
+
+        // Important only when a rule needs beating: `.card { outline-style: dotted !important }`.
+        const outlinePlan = planFor(ctxFor({ 'outline-style': 'solid' }, 'tablet', 768));
+        engine.saveViewportEdit(ctxFor({ 'outline-style': 'solid' }, 'tablet', 768), outlinePlan.options[0]);
+        results.options.automaticClassTakesImportantOnlyWhenNeeded =
+          solo.important === false &&
+          outlinePlan.options[0].important === true &&
+          /outline-style:\s*solid\s*!important/.test(managedText()) &&
+          getComputedStyle(third).outlineStyle === 'solid';
+
+        // Neither the automatic class nor an inline save reaches another card.
+        const inlineOption = optionOf(marginPlan, 'inline');
+        engine.saveViewportEdit(ctxFor({ 'word-spacing': '6px' }, 'tablet', 768), inlineOption);
+        results.options.otherElementsUnchangedBySoloOrInline =
+          getComputedStyle(secondCard).padding === secondPadding &&
+          !secondCard.classList.contains('card-tablet') &&
+          !secondCard.hasAttribute('style');
+
+        /* ---- the automatic class persists, and undoes as one ---- */
+        const exportedPage = engine.exportHTML();
+        results.persist.automaticClassIsExported =
+          /class="card card-tablet"/.test(exportedPage) &&
+          /\.card-tablet\s*\{[^}]*padding:\s*14px 18px/.test(exportedPage);
+        engine.setPreviewWidth(1440);
+        const desktopPlan = planFor(ctxFor({ 'letter-spacing': '2px' }, 'desktop', 1440));
+        const desktopKey = `@media (min-width: 1440px) .${desktopPlan.autoName}`;
+        engine.saveViewportEdit(ctxFor({ 'letter-spacing': '2px' }, 'desktop', 1440), desktopPlan.options[0]);
+        const savedBoth = third.classList.contains(desktopPlan.autoName) && engine.rules.has(desktopKey);
+        engine.undo();
+        results.persist.undoRemovesClassAndRule =
+          savedBoth && !third.classList.contains(desktopPlan.autoName) && !engine.rules.has(desktopKey);
+        engine.redo();
+        results.persist.redoRestoresBoth =
+          third.classList.contains(desktopPlan.autoName) && engine.rules.has(desktopKey);
+        engine.setPreviewWidth(null);
 
         const failed = Object.entries(results)
           .filter(([, group]) => group && typeof group === 'object')

@@ -814,7 +814,7 @@ export function resolveValue(el: HTMLElement, value: string): string {
   return out;
 }
 
-function escapeRegExp(value: string): string {
+export function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 

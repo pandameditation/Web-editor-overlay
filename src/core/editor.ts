@@ -3,6 +3,7 @@ import {
   normalizeClassName,
   planClassMerge,
   prettifyClassName,
+  simpleClassName,
   suggestClassName,
   type ClassCollision,
   type ClassMergePlan,
@@ -29,11 +30,26 @@ import {
   appliedRules,
   buildElementModel,
   cascadedDeclarations,
+  classFamily,
   inlineDeclarations,
+  peelPseudos,
+  splitSelectorList,
+  targetFor,
   type ElementModel,
   type WriteTarget,
 } from './cascade.js';
+import { escapeRegExp } from './css.js';
 import {
+  contributionLabel,
+  planViewportSave as planSave,
+  type AddDestination,
+  type SaveContext,
+  type SaveOption,
+  type SavePlan,
+} from './save-plan.js';
+import { ManagedStyleSheet } from './stylesheet.js';
+import {
+  authoredMediaText,
   authoredPrelude,
   bindViewport,
   MediaEvaluator,
@@ -99,7 +115,17 @@ import {
   htmlPasteIssues,
   sourceEditIssues,
 } from './validation.js';
-import { MAX_CUSTOM_SIZES, MAX_VIEWPORT, MIN_VIEWPORT } from './breakpoints.js';
+import {
+  EDITABLE_STATES,
+  MAX_CUSTOM_SIZES,
+  MAX_VIEWPORT,
+  mediaShort,
+  MIN_VIEWPORT,
+  needsGeneratedContent,
+  slotForMedia,
+  slotsWith,
+  type SizeSlot,
+} from './breakpoints.js';
 import { DEFAULT_SETTINGS, SettingsRegistry, viewportSizesOf } from './settings.js';
 import {
   applyBlockProps,
@@ -226,6 +252,7 @@ import {
   longhandsOf,
   sameOrder,
   splitImportant,
+  toRecord,
   valueOf,
   withPromotedSide,
   withValue,
@@ -269,7 +296,7 @@ import {
   type BundleSubject,
   type BundleSurvey,
 } from './bundle.js';
-import { designRuleKey, RuleRegistry } from './rules.js';
+import { designRuleKey, normalizeMedia, RuleRegistry } from './rules.js';
 import {
   decodeSeed,
   decodeSeedSync,
@@ -986,6 +1013,71 @@ function mediaDetail(rule: Pick<DesignRule, 'media'>): { media?: string } {
   return rule.media ? { media: rule.media } : {};
 }
 
+/** The bookkeeping attribute a solo save option is previewed through (the journal skips `data-heo-*`). */
+const SAVE_PREVIEW_ATTR = 'data-heo-save-preview';
+
+function plural(count: number, word: string): string {
+  return `${count} ${word}${count === 1 ? '' : 's'}`;
+}
+
+/** Whether a selector names `.name` as a class token. */
+function mentionsClass(selector: string, name: string): boolean {
+  return new RegExp(`\\.${escapeRegExp(CSS.escape(name))}(?![\\w-])`).test(selector);
+}
+
+/** Every readable style rule in the document's sheets, with its innermost media condition. */
+function eachStyleRule(
+  visit: (rule: CSSStyleRule, media: string | null) => boolean | void,
+  options: { pageOnly?: boolean } = {},
+): void {
+  const walk = (container: CSSStyleSheet | CSSGroupingRule, media: string | null): boolean => {
+    let rules: CSSRuleList;
+    try {
+      rules = container.cssRules;
+    } catch {
+      return false;
+    }
+    for (const rule of Array.from(rules)) {
+      if (rule instanceof CSSStyleRule && visit(rule, media) === true) return true;
+      if (rule instanceof CSSGroupingRule && !(rule instanceof CSSStyleRule)) {
+        if (walk(rule, rule instanceof CSSMediaRule ? authoredMediaText(rule.media) : media)) return true;
+      }
+    }
+    return false;
+  };
+  for (const sheet of Array.from(document.styleSheets)) {
+    const owner = sheet.ownerNode;
+    if (owner instanceof Element && owner.hasAttribute('data-heo-internal')) continue;
+    if (options.pageOnly && owner instanceof Element && owner.hasAttribute('data-heo-generated')) continue;
+    if (walk(sheet, null)) return;
+  }
+}
+
+/** Whether any readable selector names `.name`, so an automatic class never collides with one. */
+function selectorsMention(name: string): boolean {
+  let found = false;
+  eachStyleRule((rule) => {
+    found = mentionsClass(rule.selectorText, name);
+    return found;
+  });
+  return found;
+}
+
+/** A page rule (not the editor's) with exactly this selector in its list, at this media condition. */
+function findPageRule(selector: string, media: string | null): CSSStyleRule | null {
+  const tidy = (text: string): string => text.replace(/\s+/g, ' ').trim();
+  const wanted = tidy(selector);
+  const condition = media ? normalizeMedia(media) : null;
+  let found: CSSStyleRule | null = null;
+  eachStyleRule((rule, at) => {
+    if ((at ? normalizeMedia(at) : null) !== condition) return false;
+    if (!splitSelectorList(rule.selectorText).some((part) => tidy(part) === wanted)) return false;
+    found = rule;
+    return true;
+  }, { pageOnly: true });
+  return found;
+}
+
 /** How long after a change the page is compared with its file again. */
 const SOURCE_INDEX_DELAY_MS = 250;
 /** How old a comparison may be before selecting an element asks for a fresh one. */
@@ -1484,6 +1576,8 @@ export class EditorEngine {
     this.rules.destroy();
     this.library.destroy();
     this.ai.destroy();
+    this.#endSavePreview();
+    this.#savePreviewSheet.destroy();
     // Before the evaluator goes: putting the page back needs nothing from it, but the order reads.
     this.viewport.destroy();
     unbindViewport(this.#media);
@@ -1693,6 +1787,8 @@ export class EditorEngine {
   }
 
   select(el: HTMLElement | null, options: { reveal?: boolean } = {}): void {
+    // A save box belongs to the element it was opened for.
+    this.#endSavePreview();
     const current = this.store.value.selected;
     // Selecting the primary of a multi-selection is how a group collapses to one element, so
     // it is only a no-op when nothing else is selected alongside it.
@@ -2519,6 +2615,7 @@ export class EditorEngine {
    */
   elementModel(el: HTMLElement): ElementModel {
     return buildElementModel(el, {
+      sizes: this.settings.value.viewportSizes,
       previews: {
         inline: this.previewTarget,
         rule: this.rulePreviewTarget,
@@ -3183,6 +3280,521 @@ export class EditorEngine {
         return splitImportant(this.rules.get(target.key)?.declarations[property] ?? '').value;
       case 'readonly':
         return '';
+    }
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Saving a viewport-dependent edit                                       */
+  /* ---------------------------------------------------------------------- */
+
+  /**
+   * The save option being previewed, if any.
+   *
+   * `attribute` says the element carries `data-heo-save-preview` (a bookkeeping attribute, so the
+   * journal ignores it); `previews` says the paint went through the ordinary previews, which
+   * `cancelPreview` puts back.
+   */
+  #savePreview: { element: HTMLElement; attribute: boolean; previews: boolean } | null = null;
+  /** Where a save option that writes a rule is painted while it is only being looked at. */
+  readonly #savePreviewSheet = new ManagedStyleSheet('heo-save-preview', { internal: true });
+
+  /**
+   * Whether a class is one of the editor's automatic classes on this element (L6).
+   *
+   * Both halves are needed. The registries own it (a class, or a rule whose first compound is the
+   * class), so a page class that merely looks like `card-tablet` never qualifies; and it is named
+   * after one of the element's other classes or its tag, the way the namer names them.
+   */
+  isAutomaticClass(name: string, el: HTMLElement): boolean {
+    const cls = this.classes.get(name);
+    const owned =
+      (cls !== undefined && cls.origin !== 'stylesheet') ||
+      this.rules.list().some((rule) =>
+        rule.origin !== 'stylesheet' && simpleClassName(peelPseudos(rule.selector).base) === name);
+    if (!owned) return false;
+    const stems = [...Array.from(el.classList).filter((one) => one !== name), el.localName];
+    return stems.some((stem) =>
+      new RegExp(
+        `^${escapeRegExp(stem)}-(?:phone|tablet|laptop|desktop|from-\\d+|media|own|[a-z]+(?:-[a-z]+)*)(?:-\\d+)?$`,
+      ).test(name));
+  }
+
+  /** The element's first own class that is not an automatic one: what automatic names start from. */
+  #stemClass(el: HTMLElement): string | null {
+    return (
+      Array.from(el.classList).find((one) => !one.startsWith('heo-') && !this.isAutomaticClass(one, el)) ??
+      null
+    );
+  }
+
+  /**
+   * The automatic class for this element at `suffix`: the one it already wears, else a free name.
+   *
+   * Reused first, so a second edit at the same size goes into the same class rather than a
+   * `card-tablet-2`. Only a registry-owned class worn by this element alone is reused; anything
+   * else would change another element. A new name avoids every class the registries hold, every
+   * class token in a readable selector and every class an element wears.
+   */
+  #autoClass(el: HTMLElement, suffix: string): { name: string; reuse: boolean } {
+    const stem = this.#stemClass(el) ?? el.localName;
+    const base = normalizeClassName(`${stem}-${suffix}`) || `style-${suffix}`;
+    const numbered = new RegExp(`^${escapeRegExp(base)}(?:-\\d+)?$`);
+    const worn = Array.from(el.classList).find((one) =>
+      numbered.test(one) &&
+      this.isAutomaticClass(one, el) &&
+      document.querySelectorAll(`.${CSS.escape(one)}`).length === 1);
+    if (worn) return { name: worn, reuse: true };
+    const taken = (name: string): boolean =>
+      this.classes.get(name) !== undefined ||
+      this.rules.list().some((rule) => mentionsClass(rule.selector, name)) ||
+      document.querySelector(`.${CSS.escape(name)}`) !== null ||
+      selectorsMention(name);
+    if (!taken(base)) return { name: base, reuse: false };
+    for (let n = 2; n < 1000; n += 1) {
+      const candidate = `${base}-${n}`;
+      if (!taken(candidate)) return { name: candidate, reuse: false };
+    }
+    return { name: `${base}-${Date.now().toString(36)}`, reuse: false };
+  }
+
+  /** Where a viewport-dependent edit could be saved, with a verdict for each option. */
+  planViewportSave(ctx: SaveContext): SavePlan {
+    return planSave(this.elementModel(ctx.element), ctx, {
+      autoClass: (el, suffix) => this.#autoClass(el, suffix),
+      inlineImportant: (el, property, value) =>
+        splitImportant(this.#inlineText(el, property, value)).important === true,
+      stemClass: (el) => this.#stemClass(el),
+    });
+  }
+
+  /**
+   * Show what saving with `option` would look like, without committing. Null clears.
+   *
+   * One property inline or into its existing rule goes through the ordinary previews. Anything
+   * else (an automatic class, a new rule, a batch) is one rule in an internal sheet: an automatic
+   * class as `[data-heo-save-preview]` on the element, which has a class's specificity, so the page
+   * shows what Save gives (I21). An option whose condition does not apply now paints nothing.
+   */
+  previewSaveOption(ctx: SaveContext, option: SaveOption | null): void {
+    this.#endSavePreview();
+    // The row's typing preview first, so the option is shown over the committed state.
+    this.cancelPreview();
+    if (!option) return;
+    const el = ctx.element;
+    const entries = Object.entries(ctx.declarations);
+    const apply = option.apply;
+    if (entries.length === 1 && (apply.kind === 'inline' || apply.kind === 'replace')) {
+      const [property, value] = entries[0];
+      if (apply.kind === 'inline') {
+        this.previewStyle(property, this.#inlineText(el, property, value, apply.important), el);
+      } else {
+        this.previewDeclaration(apply.target, property, value);
+      }
+      this.#savePreview = { element: el, attribute: false, previews: true };
+      return;
+    }
+    this.#savePreview = { element: el, attribute: false, previews: false };
+    if (!option.visibleNow) return;
+    let selector: string;
+    let important = false;
+    if (apply.kind === 'auto-class' || apply.kind === 'inline') {
+      el.setAttribute(SAVE_PREVIEW_ATTR, '');
+      this.#savePreview.attribute = true;
+      selector = `[${SAVE_PREVIEW_ATTR}]`;
+      // A batch shown inline: important stands in for the inline origin it cannot have here.
+      important = apply.kind === 'inline' ? true : apply.important;
+    } else if (apply.kind === 'new-rule') {
+      selector = apply.selector;
+    } else {
+      const target = apply.target;
+      selector =
+        target.kind === 'live'
+          ? target.rule.selectorText
+          : target.kind === 'class'
+            ? `.${CSS.escape(target.name)}`
+            : target.kind === 'design-rule'
+              ? (this.rules.get(target.key)?.selector ?? '')
+              : '';
+      if (!selector) return;
+    }
+    const body = entries
+      .map(([property, raw]) => {
+        const { value, important: typed } = splitImportant(raw);
+        return `${property}: ${value}${important || typed ? ' !important' : ''};`;
+      })
+      .join(' ');
+    this.#savePreviewSheet.write(`${selector} { ${body} }`);
+  }
+
+  /** Put back whatever a save option's preview painted. Called before anything is saved or exported. */
+  #endSavePreview(): void {
+    const preview = this.#savePreview;
+    this.#savePreview = null;
+    if (!preview) return;
+    if (preview.attribute) preview.element.removeAttribute(SAVE_PREVIEW_ATTR);
+    this.#savePreviewSheet.write('');
+    if (preview.previews) this.cancelPreview();
+  }
+
+  /** Save a viewport-dependent edit with the chosen option: one undo entry, and a notice that says where. */
+  saveViewportEdit(ctx: SaveContext, option: SaveOption): void {
+    this.#endSavePreview();
+    const el = ctx.element;
+    const entries = Object.entries(ctx.declarations);
+    if (!entries.length) return;
+    const apply = option.apply;
+    const what = entries.map(([property, value]) => `${property}: ${value}`).join('; ');
+    const label = `Save ${entries.length === 1 ? entries[0][0] : 'styles'}`;
+    let notice: string;
+    switch (apply.kind) {
+      case 'inline': {
+        if (entries.length === 1) {
+          this.overrideStyle(entries[0][0], entries[0][1], el, { important: apply.important });
+        } else {
+          this.setStyles(
+            Object.fromEntries(entries.map(([property, value]) =>
+              [property, this.#inlineText(el, property, value, apply.important)])),
+            label,
+            el,
+          );
+        }
+        notice = `Saved ${what} on this element, at every size.`;
+        break;
+      }
+      case 'replace': {
+        // Importance kept: the dispatcher's keep rule, never a promotion (§5.5).
+        this.#asOneEntry(label, () => {
+          for (const [property, value] of entries) this.setDeclaration(apply.target, property, value);
+        });
+        notice = `Saved ${what} in ${option.title.replace(/^The /, 'the ')}, for ${plural(option.reach, 'element')}.`;
+        break;
+      }
+      case 'new-rule': {
+        const command = upsertRuleCommand(this, apply.selector, ctx.declarations, {
+          media: apply.media,
+          verb: 'Set',
+        });
+        if (command) {
+          this.history.commit({ ...command, label });
+          this.#bumpRevision();
+        }
+        notice =
+          `Saved ${what} in ${apply.selector}${apply.media ? ` at ${mediaShort(apply.media)}` : ''}, ` +
+          'for every element that has it.';
+        break;
+      }
+      case 'auto-class': {
+        const declarations = Object.fromEntries(entries.map(([property, raw]) => {
+          const { value, important: typed } = splitImportant(raw);
+          return [property, apply.important || typed ? `${value} !important` : value];
+        }));
+        const command = this.#autoClassCommand(el, apply.name, '', apply.media, declarations, label);
+        if (command) {
+          this.history.commit(command);
+          this.#bumpRevision();
+        }
+        notice =
+          `Saved ${what} in ${apply.reuse ? 'the automatic class' : 'a new class'} .${apply.name}` +
+          `${apply.media ? ` at ${mediaShort(apply.media)}` : ''}, added to this element only.`;
+        break;
+      }
+    }
+    this.notify(notice, 'success', { label: 'Undo', run: () => this.undo() });
+  }
+
+  /**
+   * An automatic class on one element, with its declarations, as one command.
+   *
+   * With a media condition or a state it is a managed rule (`.card-tablet` in `@media …`), since a
+   * reusable class models unconditional declarations only; with neither it is a reusable class.
+   * The class attribute change rides in the same command, so one undo takes both.
+   */
+  #autoClassCommand(
+    el: HTMLElement,
+    name: string,
+    state: string,
+    media: string | null,
+    declarations: Record<string, string>,
+    label: string,
+  ): Command | null {
+    if (!media && !state) {
+      const command = upsertClassCommand(this, name, declarations, el, true, { verb: 'Set' });
+      return command ? { ...command, label } : null;
+    }
+    const rule = upsertRuleCommand(this, `.${CSS.escape(name)}${state}`, declarations, {
+      media,
+      verb: 'Set',
+    });
+    if (!rule) return null;
+    if (el.classList.contains(name)) return { ...rule, label };
+    const worn = setClassList(el, [...Array.from(el.classList), name]);
+    return {
+      label,
+      record: worn.record,
+      extraRecords: [rule.record, ...(rule.extraRecords ?? [])],
+      apply: () => {
+        worn.apply();
+        rule.apply();
+      },
+      revert: () => {
+        rule.revert();
+        worn.revert();
+      },
+    };
+  }
+
+  /**
+   * Run several engine writes as one undo entry.
+   *
+   * Each write still builds its own command, from the state the previous one left, so a batch on
+   * one rule composes the way the same edits typed one by one would. They are applied as they are
+   * built, then wound back, and committed as one command that replays them in order.
+   */
+  #asOneEntry(label: string, run: () => void): void {
+    const commands: Command[] = [];
+    const history = this.history;
+    const commit = (command: Command): boolean => {
+      command.apply();
+      commands.push(command);
+      return true;
+    };
+    Object.defineProperty(history, 'commit', { value: commit, configurable: true, writable: true });
+    try {
+      run();
+    } finally {
+      Reflect.deleteProperty(history, 'commit');
+    }
+    if (!commands.length) return;
+    for (const command of [...commands].reverse()) command.revert();
+    if (commands.length === 1) {
+      history.commit({ ...commands[0], label });
+    } else {
+      history.commit({
+        label,
+        record: commands[0].record,
+        extraRecords: commands.flatMap((command, index) => [
+          ...(index ? [command.record] : []),
+          ...(command.extraRecords ?? []),
+        ]),
+        apply: () => {
+          for (const command of commands) command.apply();
+        },
+        revert: () => {
+          for (const command of [...commands].reverse()) command.revert();
+        },
+      });
+    }
+    this.#bumpRevision();
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Adding declarations, states and pseudo-elements                        */
+  /* ---------------------------------------------------------------------- */
+
+  /**
+   * Add one declaration where an adder says, creating the rule when needed: one undo entry.
+   *
+   * A new `::before`/`::after` has no box until it has `content`, so its first other property is
+   * written with `content: ""` (§15 M1) — unless the destination already declares something, or an
+   * element the rule reaches already renders that pseudo-element from another rule, in which case
+   * adding `content` would replace what it shows. Then only the property is written, and `hint`
+   * says why there was no `content`.
+   */
+  addDeclaration(dest: AddDestination, property: string, value: string): { hint: string | null } {
+    const name = property.trim();
+    if (!name || !value.trim()) return { hint: null };
+    const state = this.#stateOf(dest);
+    const seed = this.#contentSeed(dest, state, name);
+    const declarations: Record<string, string> =
+      seed.write ? { content: '""', [name]: value } : { [name]: value };
+    const label = `Add ${name}`;
+    switch (dest.kind) {
+      case 'target':
+        if (seed.write) {
+          this.#asOneEntry(label, () => {
+            for (const [one, text] of Object.entries(declarations)) this.setDeclaration(dest.target, one, text);
+          });
+        } else {
+          this.setDeclaration(dest.target, name, value);
+        }
+        break;
+      case 'new-rule': {
+        const command = upsertRuleCommand(this, dest.selector, declarations, {
+          media: dest.media,
+          verb: 'Add',
+        });
+        if (command) {
+          this.history.commit({ ...command, label });
+          this.#bumpRevision();
+        }
+        break;
+      }
+      case 'auto-class': {
+        const { name: cls } = this.#autoClass(dest.element, this.#suffixFor(dest.media, dest.state));
+        const command = this.#autoClassCommand(dest.element, cls, dest.state, dest.media, declarations, label);
+        if (command) {
+          this.history.commit(command);
+          this.#bumpRevision();
+        }
+        break;
+      }
+    }
+    return { hint: seed.hint };
+  }
+
+  /** An automatic class's suffix: its size, else `media`, else its state, else `own`. */
+  #suffixFor(media: string | null, state: string): string {
+    if (media) {
+      return slotForMedia(media, slotsWith(this.settings.value.viewportSizes))?.key ?? 'media';
+    }
+    const bare = state.replace(/^:+/, '').replace(/[^\w-]+/g, '-').replace(/-+$/, '');
+    return bare || 'own';
+  }
+
+  /** The state or pseudo-element a destination writes into. */
+  #stateOf(dest: AddDestination): string {
+    switch (dest.kind) {
+      case 'new-rule':
+        return peelPseudos(dest.selector).pseudo;
+      case 'auto-class':
+        return dest.state;
+      case 'target': {
+        const target = dest.target;
+        if (target.kind === 'live') return peelPseudos(target.rule.selectorText).pseudo;
+        if (target.kind === 'design-rule') return peelPseudos(this.rules.get(target.key)?.selector ?? '').pseudo;
+        return '';
+      }
+    }
+  }
+
+  /** Whether `content: ""` goes in with this first property (§15 M1), and the hint when it does not. */
+  #contentSeed(dest: AddDestination, state: string, property: string): { write: boolean; hint: string | null } {
+    const none = { write: false, hint: null };
+    if (!needsGeneratedContent(state) || property.toLowerCase() === 'content') return none;
+    // An existing rule's declarations are never added to behind the author's back.
+    if (this.#destinationDeclares(dest, state)) return none;
+    const reached =
+      dest.kind === 'auto-class'
+        ? [dest.element]
+        : (() => {
+          const base = dest.kind === 'new-rule'
+            ? peelPseudos(dest.selector).base
+            : dest.target.kind === 'live'
+              ? peelPseudos(dest.target.rule.selectorText).base
+              : dest.target.kind === 'design-rule'
+                ? peelPseudos(this.rules.get(dest.target.key)?.selector ?? '').base
+                : '';
+          try {
+            return base.trim() ? Array.from(document.querySelectorAll<HTMLElement>(base)) : [];
+          } catch {
+            return [];
+          }
+        })();
+    const renders = (el: HTMLElement): boolean => {
+      const content = getComputedStyle(el, state).content;
+      return content !== 'none' && content !== 'normal';
+    };
+    const renderer = reached.find(renders);
+    if (!renderer) return { write: true, hint: null };
+    const selected = dest.kind === 'auto-class' ? dest.element : this.store.value.selected;
+    const winner = selected === renderer
+      ? this.elementModel(renderer).cascade('content', { width: null, state }).applying[0]
+      : undefined;
+    return {
+      write: false,
+      hint: `Not adding content: this element already has a ${state}${winner ? ` from ${contributionLabel(winner)}` : ''}.`,
+    };
+  }
+
+  /** Whether the rule a destination writes into already has a non-empty declaration. */
+  #destinationDeclares(dest: AddDestination, state: string): boolean {
+    const nonEmpty = (record: Record<string, string> | undefined): boolean =>
+      Object.values(record ?? {}).some((value) => value.trim());
+    switch (dest.kind) {
+      case 'new-rule':
+        return nonEmpty(this.rules.get(designRuleKey(dest.selector, dest.media))?.declarations);
+      case 'auto-class': {
+        const { name, reuse } = this.#autoClass(dest.element, this.#suffixFor(dest.media, state));
+        return reuse && nonEmpty(this.rules.get(designRuleKey(`.${CSS.escape(name)}${state}`, dest.media))?.declarations);
+      }
+      case 'target': {
+        const target = dest.target;
+        if (target.kind === 'live') return ruleDeclarations(target.rule).some((one) => one.value.trim());
+        if (target.kind === 'design-rule') return nonEmpty(this.rules.get(target.key)?.declarations);
+        if (target.kind === 'class') return nonEmpty(this.classes.get(target.name)?.declarations);
+        return true;
+      }
+    }
+  }
+
+  /**
+   * Resolve "add this state or pseudo-element to the family at this size". Never writes anything.
+   *
+   * An empty rule never reaches the page (the registry drops it), and a seed declaration would
+   * change the page before the user asked for anything visible (§1.4), so a new block is pending
+   * UI state until its first property. An existing non-empty rule is opened instead; an emptied one
+   * is reused, so the first property lands in it rather than in a duplicate selector.
+   */
+  addStateRule(
+    family: string,
+    state: string,
+    slot: SizeSlot | null,
+  ):
+    | { kind: 'existing'; target: WriteTarget }
+    | { kind: 'pending'; dest: AddDestination }
+    | { kind: 'refused'; message: string } {
+    const typed = state.trim();
+    const bare = typed.replace(/^:+/, '');
+    const known = EDITABLE_STATES.find((one) =>
+      one.name === typed || one.name === `:${bare}` || one.name === `::${bare}`);
+    if (!bare || !known) {
+      return { kind: 'refused', message: `${typed || 'That'} is not a state or pseudo-element the editor knows.` };
+    }
+    const selector = `${family}${known.name}`;
+    const media = slot?.media ?? null;
+    const page = findPageRule(selector, media);
+    if (page) {
+      return ruleDeclarations(page).some((one) => one.value.trim())
+        ? { kind: 'existing', target: targetFor(page) }
+        : { kind: 'pending', dest: { kind: 'target', target: { kind: 'live', rule: page } } };
+    }
+    const key = designRuleKey(selector, media);
+    const managed = this.rules.get(key);
+    if (managed) {
+      return Object.values(managed.declarations).some((value) => value.trim())
+        ? { kind: 'existing', target: { kind: 'design-rule', key } }
+        : { kind: 'pending', dest: { kind: 'target', target: { kind: 'design-rule', key } } };
+    }
+    return { kind: 'pending', dest: { kind: 'new-rule', selector, media } };
+  }
+
+  /**
+   * Remove a state or pseudo-element block: a managed rule is deleted, a page rule is emptied.
+   *
+   * Emptied rather than deleted, because nothing can take a rule out of a file: the save patches
+   * declarations, never rules. One undo entry either way.
+   */
+  removeRule(target: WriteTarget): void {
+    switch (target.kind) {
+      case 'design-rule':
+        this.removeDesignRule(target.key);
+        return;
+      case 'live': {
+        const rule = target.rule;
+        const declarations = ruleDeclarations(rule);
+        if (!declarations.length) return;
+        this.#asOneEntry(`Remove the declarations of ${rule.selectorText}`, () => {
+          for (const one of declarations) this.setRuleDeclaration(rule, one.property, '');
+        });
+        return;
+      }
+      case 'class':
+        this.removeClass(target.name);
+        return;
+      case 'readonly':
+        this.notify(target.reason, 'info');
+        return;
+      case 'inline':
     }
   }
 
@@ -4539,13 +5151,21 @@ export class EditorEngine {
     }
 
     const className = entry.name;
-    const count = Object.keys(entry.declarations).length;
+    /*
+     * The class's unconditional declarations only, read from its rules rather than from the
+     * registry's record, which merges every media variant into one (F4) and would have written the
+     * phone padding inline at every size. Its sizes and states cannot be written inline; the panel
+     * says so before this runs.
+     */
+    const family = classFamily(className);
+    const declarations = family.base.length ? toRecord(family.base) : { ...entry.declarations };
+    const count = Object.keys(declarations).length;
     const previousClass = el.getAttribute('class');
     const previousStyle = el.getAttribute('style');
     const nextClass = Array.from(el.classList)
       .filter((item) => item !== className)
       .join(' ');
-    const merged = { ...entry.declarations, ...inlineDeclarations(el) };
+    const merged = { ...declarations, ...inlineDeclarations(el) };
     const nextStyle = Object.entries(merged)
       .filter(([, value]) => value.trim() !== '')
       .map(([property, value]) => `${property}: ${value}`)
@@ -4566,7 +5186,7 @@ export class EditorEngine {
         target: selectorFor(el),
         source: nearestSourceRef(el),
         before: className,
-        detail: Object.fromEntries(Object.entries(entry.declarations)),
+        detail: { ...declarations },
         at: Date.now(),
       },
       apply: () => {
@@ -4639,18 +5259,54 @@ export class EditorEngine {
     const nextClass = Array.from(el.classList)
       .map((item) => (item === className ? forkName : item))
       .join(' ');
+    /*
+     * The class as its rules write it: the unconditional base, plus one rule per state and media
+     * variant. The registry's record merges the variants into one (F4), so a copy made from it put
+     * the phone padding on every size and lost every `:hover`.
+     */
+    const family = classFamily(className);
     const copy: DesignClass = {
       name: forkName,
-      declarations: { ...entry.declarations },
+      declarations: family.base.length ? toRecord(family.base) : { ...entry.declarations },
       label: prettifyClassName(forkName),
       description: entry.description,
       origin: 'user',
     };
+    const variants = new Map<string, DesignRule>();
+    for (const member of family.members) {
+      const rule: DesignRule = {
+        selector: `.${forkName}${member.state}`,
+        declarations: toRecord(member.declarations),
+        origin: 'user',
+        ...(member.media ? { media: normalizeMedia(member.media) } : {}),
+      };
+      const key = designRuleKey(rule);
+      const known = variants.get(key);
+      variants.set(key, known
+        ? { ...known, declarations: { ...known.declarations, ...rule.declarations } }
+        : rule);
+    }
+    const variantRecords: ChangeRecord[] = [...variants.values()].map((rule) => ({
+      id: nextChangeId(),
+      kind: 'token-rule',
+      summary: `Copy ${ruleName({ selector: rule.selector.replace(forkName, className), media: rule.media })} to ${ruleName(rule)}`,
+      target: rule.selector,
+      after: Object.entries(rule.declarations).map(([property, value]) => `${property}: ${value}`).join('; '),
+      detail: { selector: rule.selector, ...mediaDetail(rule) },
+      at: Date.now(),
+    }));
+    // Rules written for the class in combination stop reaching the element once it wears the copy.
+    const elsewhere = [...new Set(
+      this.elementModel(el).entries
+        .map((one) => one.family)
+        .filter((one) => one !== `.${className}` && mentionsClass(one, className)),
+    )];
     const others = Math.max(0, (this.classes.usage().get(className) ?? 1) - 1);
 
     this.history.commit({
       label: `Fork .${className} as .${forkName}`,
-      subject: `class-fork:${forkName}`,
+      // A subject reduces a run to its net change, which is meaningless beside extra records.
+      ...(variantRecords.length ? {} : { subject: `class-fork:${forkName}` }),
       record: {
         id: nextChangeId(),
         kind: 'token-class',
@@ -4662,22 +5318,28 @@ export class EditorEngine {
         detail: Object.fromEntries(Object.entries(copy.declarations)),
         at: Date.now(),
       },
+      ...(variantRecords.length ? { extraRecords: variantRecords } : {}),
       apply: () => {
         this.classes.upsert(copy);
+        for (const rule of variants.values()) this.rules.upsert(rule);
         el.setAttribute('class', nextClass);
       },
       revert: () => {
+        for (const key of variants.keys()) this.rules.remove(key);
         this.classes.remove(forkName);
         if (previousClass === null) el.removeAttribute('class');
         else el.setAttribute('class', previousClass);
       },
     });
     this.#bumpRevision();
+    const done = others
+      ? `Now on .${forkName}. Editing it no longer touches the ${others} other element${others === 1 ? '' : 's'} using .${className}.`
+      : `Now on .${forkName}, a copy of .${className}.`;
     this.notify(
-      others
-        ? `Now on .${forkName}. Editing it no longer touches the ${others} other element${others === 1 ? '' : 's'} using .${className}.`
-        : `Now on .${forkName}, a copy of .${className}.`,
-      'success',
+      elsewhere.length
+        ? `${done} Rules written for .${className} elsewhere (${elsewhere.join(', ')}) stop applying here.`
+        : done,
+      elsewhere.length ? 'warn' : 'success',
       { label: 'Undo', run: () => this.undo() },
     );
     return forkName;
@@ -5030,6 +5692,8 @@ export class EditorEngine {
     if (width !== null && (!Number.isInteger(width) || width < MIN_VIEWPORT || width > MAX_VIEWPORT)) {
       return false;
     }
+    // A save box was opened for the old width's question (R27).
+    this.#endSavePreview();
     if (!this.viewport.set(width)) return false;
     this.store.patch({ previewWidth: this.viewport.width });
     return true;
@@ -8676,6 +9340,8 @@ export class EditorEngine {
    * the size of each change while it is still a proposal.
    */
   async previewWritePlan(): Promise<WritePlan | null> {
+    // A save option's preview is paint; it must never reach a file, an export or a prompt.
+    this.#endSavePreview();
     const host = this.#project;
     if (!host) return null;
     /*
@@ -9044,6 +9710,8 @@ export class EditorEngine {
    * enough to be worth a progress state.
    */
   async previewBundle(): Promise<BundlePlan | null> {
+    // A save option's preview is paint; it must never reach a file, an export or a prompt.
+    this.#endSavePreview();
     /*
      * Only the newest build gets to speak.
      *
@@ -9104,6 +9772,8 @@ export class EditorEngine {
    * That is the whole point of this route existing: a download is not a lesser save.
    */
   async writeBundle(): Promise<BundlePlan | null> {
+    // A save option's preview is paint; it must never reach a file, an export or a prompt.
+    this.#endSavePreview();
     const target = this.store.value.exportPrompt
       ? await pickSaveTarget(bundleName(this.exportFileName, this.bundleShape()))
       : ({ kind: 'unavailable' } as const);
@@ -9239,6 +9909,8 @@ export class EditorEngine {
   /* ---------------------------------------------------------------------- */
 
   buildSavePrompt(): string {
+    // A save option's preview is paint; it must never reach a file, an export or a prompt.
+    this.#endSavePreview();
     return buildPrompt({
       records: this.handoffRecords,
       tokens: this.tokens.export(),
@@ -9295,6 +9967,8 @@ export class EditorEngine {
    *   the HTML is the only place the design system can travel.
    */
   exportHTML(options: { designSystemInDocument?: boolean } = {}): string {
+    // A save option's preview is paint; it must never reach a file, an export or a prompt.
+    this.#endSavePreview();
     return exportHTML(inlineStyleEdits(this.history.appliedRecords), {
       generated: this.#generatedRegions(),
       // The one thing the target decides: whether the tokens and classes live in this file
@@ -9335,6 +10009,8 @@ export class EditorEngine {
   }
 
   async save(): Promise<boolean> {
+    // A save option's preview is paint; it must never reach a file, an export or a prompt.
+    this.#endSavePreview();
     const handoff = this.handoffRecords;
     if (!handoff.length) {
       this.notify(

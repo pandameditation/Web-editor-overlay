@@ -214,7 +214,7 @@ const PSEUDO_ELEMENTS = new Set([
 ]);
 
 /** Split a selector list on top-level commas, so `:is(a, b)` survives intact. */
-function splitSelectorList(selectorText: string): string[] {
+export function splitSelectorList(selectorText: string): string[] {
   const parts: string[] = [];
   let depth = 0;
   let current = '';
@@ -239,7 +239,7 @@ function splitSelectorList(selectorText: string): string[] {
  * was removed, in source order — so `a:hover::before` reports `:hover::before` and
  * leaves `a` to match against.
  */
-function peelPseudos(part: string): { base: string; pseudo: string } {
+export function peelPseudos(part: string): { base: string; pseudo: string } {
   let base = '';
   let pseudo = '';
   let index = 0;
