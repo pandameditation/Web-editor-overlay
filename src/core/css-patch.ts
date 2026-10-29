@@ -354,7 +354,7 @@ export function readRuleDeclarations(
   source: string,
   locator: RuleLocator,
 ): Declaration[] | null {
-  const blocks = scanBlocks(source, 0, source.length);
+  const blocks = blocksOf(source);
   const rule = locate(blocks, locator);
   if (!rule || rule.bodyStart === -1) return null;
   return parseDeclarations(source, rule.bodyStart, rule.bodyEnd).map((entry) => ({
@@ -844,6 +844,21 @@ interface Block {
  * them out would shift every index after them and quietly break the position
  * locator on any file that starts with an `@import`.
  */
+/** The last sheet text read and its blocks; the scan is a pure function of the text. */
+let lastScan: { source: string; blocks: Block[] } | null = null;
+
+/**
+ * A whole sheet's blocks, rescanned only when the text differs from the last one read.
+ *
+ * The Styles panel reads every matching rule of a sheet in turn, and each read scanned the whole
+ * file again: on a 1000-rule page that was most of a model build. Only for readers; the blocks are
+ * shared, so nothing may change them.
+ */
+function blocksOf(source: string): Block[] {
+  if (lastScan?.source !== source) lastScan = { source, blocks: scanBlocks(source, 0, source.length) };
+  return lastScan.blocks;
+}
+
 function scanBlocks(source: string, from: number, to: number): Block[] {
   const blocks: Block[] = [];
   let i = from;

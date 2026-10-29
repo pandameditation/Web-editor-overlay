@@ -394,8 +394,32 @@ function supportsCondition(condition: string): boolean {
  * contradict with an override. A style rule is not descended into: a nested rule is not a rule
  * that stands on its own.
  */
+/** The walks of the current read pass, by element; null outside a pass. */
+let walkPass: Map<HTMLElement, WalkedRule[]> | null = null;
+
+/**
+ * Run `read` with every rule walk it makes remembered per element, for its duration only.
+ *
+ * For one synchronous render that only reads. The Styles panel asks the same element's rules
+ * dozens of times per render (each value field's token suggestions call `appliedRules`), and on a
+ * 1000-rule page each walk matched every selector again: about 70 ms a render, measured. Nothing
+ * may write a stylesheet inside `read`; the pass ends, and the memory with it, when `read` returns.
+ */
+export function rulesPass<T>(read: () => T): T {
+  if (walkPass) return read();
+  walkPass = new Map();
+  try {
+    return read();
+  } finally {
+    walkPass = null;
+  }
+}
+
 function walkRules(el: HTMLElement): WalkedRule[] {
+  const remembered = walkPass?.get(el);
+  if (remembered) return remembered;
   const out: WalkedRule[] = [];
+  walkPass?.set(el, out);
   collectSheets(el).forEach(({ sheet, label }, sheetIndex) => {
     const counter = { n: 0 };
     const visit = (container: CSSStyleSheet | CSSGroupingRule, scope: WalkScope): void => {
@@ -815,9 +839,9 @@ export interface Hypothetical {
   value: string;
   important: boolean;
   as:
-    | { kind: 'inline' }
-    | { kind: 'replace'; entry: RuleEntry }
-    | { kind: 'new-rule'; selector: string; media: string | null; state: string; sheetOrder: number };
+  | { kind: 'inline' }
+  | { kind: 'replace'; entry: RuleEntry }
+  | { kind: 'new-rule'; selector: string; media: string | null; state: string; sheetOrder: number };
 }
 
 /**

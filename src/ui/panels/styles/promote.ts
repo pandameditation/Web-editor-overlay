@@ -54,11 +54,13 @@ export const promoteStyles: CSSResult = css`
     background: var(--heo-hover);
     color: var(--heo-text);
   }
-  /* Pressed: the focus-ring ink is the accent's readable tint in dark and the accent in light. */
+  /* Pressed: the accent's readable ink. The plain accent read 2.95:1 on the accent tint in the
+     light theme over a black page (a11y-contrast styles.promotePressed); this is the same
+     focus-ring tint in dark and a slightly darker accent in light. */
   .promote[aria-pressed='true'] {
     border-color: var(--heo-accent-line);
     background: var(--heo-accent-soft);
-    color: var(--heo-focus-ring);
+    color: var(--heo-accent-text);
   }
   .promote:disabled {
     cursor: not-allowed;

@@ -332,9 +332,10 @@ export const ClassEditor = {
     .cls .n.plain {
       font-family: var(--heo-font);
     }
+    /* Dim, not faint: the reach is what a card is read for (R31). */
     .cls .meta {
       flex: 0 0 auto;
-      color: var(--heo-text-faint);
+      color: var(--heo-text-dim);
       font-size: 9.5px;
     }
     /* Where the card is written: on demand, while the header is hovered or focused. */

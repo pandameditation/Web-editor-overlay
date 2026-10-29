@@ -56,6 +56,10 @@ export const themeVariables = css`
     --heo-danger: oklch(78% 0.14 22);
     --heo-success: oklch(74% 0.15 155);
     --heo-warn: oklch(80% 0.14 85);
+    /* The two as small text, such as the save box's verdicts. The plain inks are bright enough on
+       dark glass but read about 2.2:1 on light glass, so the light theme darkens them. */
+    --heo-success-text: var(--heo-success);
+    --heo-warn-text: var(--heo-warn);
 
     --heo-r-sm: 7px;
     --heo-r-md: 10px;
@@ -106,6 +110,8 @@ export const themeVariables = css`
     --heo-focus-ring: var(--heo-accent);
     /* Darkened a little: the plain default accent read 4.0:1 as text on the sunken field. */
     --heo-accent-text: color-mix(in oklab, var(--heo-accent) 80%, black);
+    --heo-success-text: oklch(48% 0.13 155);
+    --heo-warn-text: oklch(52% 0.12 70);
 
     --heo-shadow-sm: 0 1px 2px oklch(50% 0.03 265 / 12%);
     --heo-shadow-md: 0 8px 24px -6px oklch(50% 0.03 265 / 18%), 0 2px 6px oklch(50% 0.03 265 / 10%);

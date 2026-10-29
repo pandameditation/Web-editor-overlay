@@ -243,14 +243,14 @@ export const saveBoxStyles: CSSResult = css`
     line-height: 1.45;
   }
   .savebox .win {
-    color: var(--heo-success);
+    color: var(--heo-success-text);
   }
   .savebox .lose {
-    color: var(--heo-warn);
+    color: var(--heo-warn-text);
   }
   .savebox .notnow {
     margin: 0;
-    color: var(--heo-warn);
+    color: var(--heo-warn-text);
     font-size: 10.5px;
   }
   .savebox .foot {

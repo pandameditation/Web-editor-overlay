@@ -1,7 +1,7 @@
-import { css, html, nothing, type TemplateResult } from 'lit';
+import { css, html, nothing, type PropertyValues, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { mediaIcon, mediaShort } from '../../core/breakpoints.js';
-import { type ElementModel, type RuleEntry, type WriteTarget } from '../../core/cascade.js';
+import { rulesPass, type ElementModel, type RuleEntry, type WriteTarget } from '../../core/cascade.js';
 import {
   parentLayoutProperties,
   PROPERTY_GROUP_LABELS,
@@ -591,6 +591,14 @@ export class HeoStylesPanel extends HeoElement {
     };
   }
 
+  /**
+   * A render only reads, and asks the same element's rules many times over (every value field's
+   * token suggestions do), so the rule walks are shared for the length of one update. The update
+   * and not just render: a repeat() directive builds its rows while the template commits.
+   */
+  protected override update(changed: PropertyValues): void {
+    rulesPass(() => super.update(changed));
+  }
   override render(): TemplateResult {
     const el = this.editor.selected;
     if (!el || !el.isConnected) {
