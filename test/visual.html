@@ -181,8 +181,8 @@
         const dockNode = document.querySelector('html-editor-overlay > heo-overlay')
           .shadowRoot.querySelector('heo-dock');
         const panel = dockNode.shadowRoot.querySelector('heo-styles-panel');
-        const chip = Array.from(panel.shadowRoot.querySelectorAll('.chip .name'))
-          .find((b) => b.textContent.trim() === 'card');
+        const chip = Array.from(panel.shadowRoot.querySelectorAll('.cchip .name'))
+          .find((b) => b.textContent.trim() === '.card');
         chip?.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
         await wait(160);
         const link = Array.from(panel.shadowRoot.querySelectorAll('.link'))

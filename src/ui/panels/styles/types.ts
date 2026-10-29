@@ -48,6 +48,19 @@ export interface StylesUiState {
   adder: { id: string; draft: string; dest: string } | null;
   /** The one save box. */
   pending: PendingSave | null;
+  /** Effective styles' hand-picked size; null follows the preview (R13). */
+  effPick: string | null;
+  /** The header's "find or create a class" field is showing. */
+  finderOpen: boolean;
+  /** The preview menu's "Add a viewport size…" field, or null while it is closed. */
+  sizeDraft: string | null;
+  /** A strip menu's "Add a media query…" field, for one strip at a time. */
+  mediaDraft: { owner: string; text: string } | null;
+  /**
+   * Media queries added to a strip with nothing written at them yet, by strip owner. Held here
+   * until a declaration lands, so nothing empty is ever stored to show a size.
+   */
+  otherSlots: ReadonlyMap<string, readonly string[]>;
 }
 
 export interface StylesHost extends AdderHost {

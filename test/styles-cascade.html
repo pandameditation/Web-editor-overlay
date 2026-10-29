@@ -489,6 +489,46 @@
             Boolean(rowIn('typography', 'color')?.querySelector('button.dots')),
         };
 
+        /* ---- the picked size, as a group ---- */
+        const effStrip = () => root().querySelector('[data-strip="effective"]');
+        const pickSize = async (key) => {
+          effStrip()?.querySelector(`[data-slot="${key}"]`)?.click();
+          await settle();
+        };
+        const sizeGroup = (key) => root().querySelector(`[data-egroup="size:${key}"]`);
+        const otherSlot = below768 ? 'tablet' : 'phone';
+        const nowSlot = below768 ? 'phone' : 'tablet';
+        await pickSize(otherSlot);
+        const otherProps = Array.from(sizeGroup(otherSlot)?.querySelectorAll('.row') ?? []).map((row) => row.dataset.property);
+        const otherPadding = sizeGroup(otherSlot)?.querySelector('.row[data-property="padding"] heo-value-field')?.value;
+        const otherNote = sizeGroup(otherSlot)?.querySelector('.note')?.textContent.trim();
+        sizeGroup(otherSlot)?.querySelector('.row[data-property="padding"] .dots')?.click();
+        await settle();
+        const sizeCaption = pop()?.querySelector('.cap')?.textContent.replace(/\s+/g, ' ') ?? '';
+        await closePop();
+        const sizeAdderButton = sizeGroup(otherSlot)?.querySelector(`[data-heo-part="adder"][data-adder="size-${otherSlot}"]`);
+        sizeAdderButton?.click();
+        await settle();
+        const sizeAdder = sizeGroup(otherSlot)?.querySelector('.property-adder');
+        const chip = sizeAdder?.querySelector('.dest button.chip');
+        const chipText = chip?.textContent.replace(/\s+/g, ' ').trim();
+        sizeAdder?.querySelector('.cancel')?.click();
+        await settle();
+        await pickSize(nowSlot);
+        const nowNote = sizeGroup(nowSlot)?.querySelector('.note')?.textContent.trim();
+        await pickSize(nowSlot); // the pressed size again: back to All sizes
+        results.sizeGroup = {
+          // The value at that size, read at that size's width, even though the page is not there.
+          listsWhatWinsAtThatSize:
+            otherProps.includes('padding') &&
+            otherPadding === (below768 ? '20px 28px' : '10px 12px') &&
+            sizeCaption.includes(`at ${below768 ? 768 : 320}px`),
+          saysInEffectOrNot: otherNote === `not at ${innerWidth}px` && nowNote === `in effect at ${innerWidth}px`,
+          hasItsOwnAddProperty:
+            Boolean(sizeAdderButton) && chip?.getAttribute('aria-haspopup') === 'menu' &&
+            chipText === `.card ${below768 ? '≥768px' : '≤767px'}`,
+        };
+
         const failed = Object.entries(results)
           .filter(([, group]) => group && typeof group === 'object')
           .filter(([, group]) => Object.values(group).some((value) => value === false))

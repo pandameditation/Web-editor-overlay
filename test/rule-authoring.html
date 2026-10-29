@@ -397,7 +397,8 @@
           if (classes && !classes.open) classes.shadowRoot.querySelector('.head')?.click();
           await frames();
           await wait(200);
-          const chip = Array.from(classes?.querySelectorAll('button[aria-expanded]') ?? []).find(
+          // The class chips are in the element header now.
+          const chip = Array.from(panelRoot().querySelectorAll('.ident .cchip .name')).find(
             (c) => c.textContent.includes('promoted'),
           );
           if (chip?.getAttribute('aria-expanded') !== 'true') chip?.click();

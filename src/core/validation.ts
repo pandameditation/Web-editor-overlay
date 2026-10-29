@@ -1,9 +1,11 @@
+import { MAX_VIEWPORT, MIN_VIEWPORT } from './breakpoints.js';
 import { normalizeClassName } from './classes.js';
 import { isMutable } from './dom.js';
 import type { BlockExtraction, ClassExtraction, HtmlPaste, SourceEdit } from './editor.js';
 import { previewMarkup } from './sanitize.js';
 import { selectorProblem } from './selectors.js';
 import { propNameProblem, suggestPropName, type BlockPropRow } from './library.js';
+import { normalizeMedia } from './rules.js';
 
 /**
  * What is wrong with a form's values, field by field.
@@ -135,5 +137,31 @@ export function forkNameIssues(
   if (!name) return [{ field, message: 'A class name starts with a letter and uses only letters, numbers, - or _.' }];
   if (name === original) return [{ field, message: 'The copy needs a name of its own.' }];
   if (exists(name)) return [{ field, message: `.${name} already exists. Choose another name.` }];
+  return [];
+}
+
+/**
+ * A viewport width typed into the preview menu: a whole number of pixels in the range a preview
+ * can take, and not a size the list already has.
+ */
+export function viewportSizeIssues(field: string, raw: string, existing: readonly number[]): FieldIssue[] {
+  const text = raw.trim().replace(/px$/i, '').trim();
+  const width = Number(text);
+  if (!text || !Number.isInteger(width) || width < MIN_VIEWPORT || width > MAX_VIEWPORT) {
+    return [{ field, message: `Type a width between ${MIN_VIEWPORT} and ${MAX_VIEWPORT} pixels.` }];
+  }
+  return existing.includes(width) ? [{ field, message: 'That size is already in the list.' }] : [];
+}
+
+/**
+ * A media query typed into a size strip: one this browser can read. The browser serialises a query
+ * it cannot parse as `not all`, which is the test, unless that is literally what was typed.
+ */
+export function mediaQueryIssues(field: string, raw: string): FieldIssue[] {
+  const text = raw.trim().replace(/^@media\s+/i, '');
+  if (!text) return [{ field, message: 'Type a media query, like print or (prefers-color-scheme: dark).' }];
+  if (text.length > 300 || (normalizeMedia(text) === 'not all' && text.toLowerCase() !== 'not all')) {
+    return [{ field, message: "That isn't a media query this browser understands." }];
+  }
   return [];
 }

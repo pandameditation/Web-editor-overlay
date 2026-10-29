@@ -12,7 +12,7 @@
  * preview is on.
  */
 
-import { isWidthQuery, MAX_VIEWPORT, MIN_VIEWPORT, widthBound } from './breakpoints.js';
+import { breakpointOf, isWidthQuery, MAX_VIEWPORT, MIN_VIEWPORT, widthBound } from './breakpoints.js';
 import { listen, unlisten } from './shield.js';
 import { ManagedStyleSheet } from './stylesheet.js';
 
@@ -596,10 +596,13 @@ export function collectPageMedia(): PageMedia[] {
     if (sheet.media?.length) note(authoredMediaText(sheet.media), styleRules(sheet));
     visit(sheet);
   }
+  // By breakpoint, an upper bound just before the lower bound that starts there: `767.98px` and
+  // `767px` both sort as 767.5, ahead of `min-width: 768px`. The raw bound put 767.98 after 768.
   const rank = (media: string): number => {
     const bound = widthBound(media);
-    if (!bound) return Number.POSITIVE_INFINITY;
-    return bound.side === 'max' ? bound.px + 0.5 : bound.px;
+    const at = breakpointOf(media);
+    if (!bound || at === null) return Number.POSITIVE_INFINITY;
+    return bound.side === 'max' ? at - 0.5 : at;
   };
   return [...counts.entries()]
     .map(([media, rules]) => ({ media, rules }))

@@ -7,7 +7,7 @@ import type { AddDestination } from '../../../core/save-plan.js';
 import { field } from '../../form-errors.js';
 import { icon } from '../../icons.js';
 import type { ClassEditorHost } from '../class-editor.js';
-import { renderMenu } from './menu.js';
+import { focusWhenOpened, renderMenu } from './menu.js';
 
 /**
  * The one "add a property" control.
@@ -104,14 +104,6 @@ function knownState(text: string): string | null {
   const name = text.trim().startsWith(':') ? text.trim() : `:${text.trim()}`;
   return EDITABLE_STATES.some((state) => state.name === name) ? name : null;
 }
-
-/*
- * Focus the field the moment a disclosure adder opens. A stable function, so Lit calls it once per
- * new input rather than on every render, which would pull focus back from the destination chip.
- */
-const focusWhenOpened = (input?: Element): void => {
-  if (input instanceof HTMLInputElement) requestAnimationFrame(() => input.focus());
-};
 
 export function renderAdder(spec: AdderSpec, host: AdderHost): TemplateResult {
   const state = spec.mode === 'state';

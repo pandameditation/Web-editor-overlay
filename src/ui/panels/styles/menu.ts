@@ -14,6 +14,15 @@ import { anchoredStyle } from '../../place.js';
  * descendants and carries a backdrop filter, so anything painted in place is cut off by the panel.
  */
 
+/*
+ * Focus a field the moment it appears (an adder opening, a menu's inline field). A stable
+ * function, so Lit calls it once per new input rather than on every render, which would pull focus
+ * back from wherever the user moved it.
+ */
+export const focusWhenOpened = (input?: Element): void => {
+  if (input instanceof HTMLInputElement) requestAnimationFrame(() => input.focus());
+};
+
 export interface MenuItem {
   key: string;
   label: string;
@@ -25,6 +34,8 @@ export interface MenuItem {
   title?: string;
   disabled?: boolean;
   onSelect(): void;
+  /** A × beside the item that takes it out of the list (a custom viewport size). */
+  remove?: { label: string; onRemove(): void };
 }
 
 export interface MenuGroup {
@@ -56,7 +67,15 @@ export function renderMenu(spec: MenuSpec): TemplateResult {
     (group, index) => html`${index ? html`<hr />` : nothing}
         ${group.caption ? html`<p class="cap" aria-hidden="true">${group.caption}</p>` : nothing}
         ${group.items.map(
-      (item) => html`<button
+      (item) => renderItem(item, radio),
+    )}
+        ${group.after ?? nothing}`,
+  )}
+  </div>`;
+}
+
+function renderItem(item: MenuItem, radio: boolean): TemplateResult {
+  const button = html`<button
             class="mi"
             type="button"
             role=${radio ? 'menuitemradio' : 'menuitem'}
@@ -73,10 +92,22 @@ export function renderMenu(spec: MenuSpec): TemplateResult {
               <span class="lbl">${item.label}</span>
             </span>
             ${item.note ? html`<small>${item.note}</small>` : nothing}
-          </button>`,
-    )}
-        ${group.after ?? nothing}`,
-  )}
+          </button>`;
+  if (!item.remove) return button;
+  const remove = item.remove;
+  return html`<div class="mrow">
+    ${button}
+    <button
+      class="mi mx"
+      type="button"
+      role="menuitem"
+      aria-label=${remove.label}
+      title=${remove.label}
+      @pointerdown=${(event: Event) => event.preventDefault()}
+      @click=${() => remove.onRemove()}
+    >
+      ${icon('close', 10)}
+    </button>
   </div>`;
 }
 
@@ -155,6 +186,7 @@ export const menuStyles: CSSResult = css`
     gap: 1px;
     min-width: 200px;
     max-height: 70vh;
+    overflow-x: hidden;
     overflow-y: auto;
     padding: 4px;
     border: 1px solid var(--heo-line-strong);
@@ -218,10 +250,29 @@ export const menuStyles: CSSResult = css`
     width: 12px;
   }
   .menu .mi small {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
     color: var(--heo-text-dim);
     font-family: var(--heo-font);
     font-size: 10px;
     white-space: nowrap;
+  }
+  .menu .mrow {
+    display: flex;
+    align-items: stretch;
+    gap: 1px;
+  }
+  .menu .mrow > .mi:first-child {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .menu .mx {
+    justify-content: center;
+    width: 24px;
+    padding: 0;
+    color: var(--heo-text-dim);
   }
   .menu .mi:focus-visible {
     outline: 2px solid var(--heo-focus-ring);

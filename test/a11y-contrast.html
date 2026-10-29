@@ -615,7 +615,7 @@
          */
         engine.classes.upsert({ name: 'card', declarations: { padding: '4px', 'padding-left': '0px', color: 'rgb(1, 2, 3) !important' }, origin: 'user' });
         await ui(() => {
-          const chip = deep((el) => el.localName === 'button' && el.classList.contains('name') && el.textContent.trim() === 'card' && inside('heo-styles-panel')(el));
+          const chip = deep((el) => el.localName === 'button' && el.classList.contains('name') && el.textContent.trim() === '.card' && inside('heo-styles-panel')(el));
           if (chip && chip.getAttribute('aria-expanded') !== 'true') chip.click();
         });
         const inStyles = (test) => () => deep((el) => el.localName === 'button' && test(el) && inside('heo-styles-panel')(el));

@@ -1,7 +1,7 @@
 import { css, html, nothing, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
-import { isPseudoElement, needsGeneratedContent } from '../../core/breakpoints.js';
+import { isPseudoElement, mediaIcon, mediaShort, needsGeneratedContent } from '../../core/breakpoints.js';
 import {
   appliedRules,
   cascadedDeclarations,
@@ -40,6 +40,9 @@ import {
   type DeclarationTarget,
 } from './class-editor.js';
 import { renderCascadePopover, popoverStyles } from './styles/cascade-popover.js';
+import { headerStyles, renderElementHeader } from './styles/header.js';
+import { previewBarStyles, previewPresets, renderPreviewBar, SIZE_FIELD } from './styles/preview-bar.js';
+import { renderSizeStrip, sizeStripStyles, stripMediaIssues, type StripOther, type StripSlot } from './styles/size-strip.js';
 import { menuStyles, placeLayer } from './styles/menu.js';
 import {
   renderAdder,
@@ -48,6 +51,7 @@ import {
 } from './styles/property-adder.js';
 import {
   isViewportDependent,
+  previewSlot,
   propertyRowStyles,
   renderPropertyRow,
   saveContextFor,
@@ -63,7 +67,8 @@ import '../controls/search-field.js';
 import '../controls/box-editor.js';
 import '../controls/segmented.js';
 import '../controls/section.js';
-import { classNameIssues, forkNameIssues } from '../../core/validation.js';
+import { classNameIssues, forkNameIssues, viewportSizeIssues } from '../../core/validation.js';
+import { mediaApplies } from '../../core/viewport.js';
 import { field, FormErrors } from '../form-errors.js';
 
 interface SectionSpec {
@@ -245,10 +250,15 @@ function sectionOpen(id: string, fallback: boolean): boolean {
 
 const EMPTY_UI: StylesUiState = {
   filter: '',
+  effPick: null,
   popover: null,
   menu: null,
   adder: null,
   pending: null,
+  finderOpen: false,
+  sizeDraft: null,
+  mediaDraft: null,
+  otherSlots: new Map(),
 };
 
 /**
@@ -271,6 +281,9 @@ export class HeoStylesPanel extends HeoElement {
     popoverStyles,
     saveBoxStyles,
     menuStyles,
+    headerStyles,
+    previewBarStyles,
+    sizeStripStyles,
     css`
       :host {
         display: block;
@@ -283,6 +296,10 @@ export class HeoStylesPanel extends HeoElement {
         gap: 6px;
         padding: 10px 12px;
         border-bottom: 1px solid var(--heo-line);
+      }
+      .top heo-search-field {
+        flex: 1 1 auto;
+        min-width: 0;
       }
 
       /* Effective styles: the element, then a group per state or pseudo-element. */
@@ -327,63 +344,6 @@ export class HeoStylesPanel extends HeoElement {
       /* The cap notice keeps its own two-column row: a name and the owner's value. */
       .capped .row {
         grid-template-columns: 96px minmax(0, 1fr);
-      }
-
-      /* Classes */
-      .chips {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 5px;
-        margin-bottom: 8px;
-      }
-      /* Two targets in one chip: the name opens the definition, the cross takes the
-         class off this element. Separating them matters because the two actions are
-         not comparable — one edits a shared rule, the other edits one element. */
-      .chip {
-        padding: 0;
-        gap: 0;
-      }
-      .chip .name {
-        display: inline-flex;
-        align-items: center;
-        gap: 3px;
-        height: 100%;
-        padding: 0 3px 0 7px;
-        border: 0;
-        border-radius: 999px 0 0 999px;
-        background: transparent;
-        color: inherit;
-        font-size: 11px;
-        cursor: pointer;
-      }
-      .chip .name:hover {
-        color: var(--heo-text);
-      }
-      .chip .kill {
-        display: grid;
-        place-items: center;
-        width: 15px;
-        height: 15px;
-        margin-right: 4px;
-        border: 0;
-        border-radius: 999px;
-        background: transparent;
-        color: var(--heo-text-faint);
-        cursor: pointer;
-        padding: 0;
-      }
-      .chip .kill:hover {
-        background: var(--heo-line-strong);
-        color: var(--heo-text);
-      }
-      .chip.known {
-        border-color: var(--heo-accent-line);
-        color: var(--heo-text);
-      }
-      .chip.open {
-        background: var(--heo-accent-soft);
-        border-color: var(--heo-accent-line);
-        color: var(--heo-text);
       }
 
       /* A cap somewhere above. Warm rather than red: it is an explanation, not a
@@ -640,6 +600,17 @@ export class HeoStylesPanel extends HeoElement {
   });
   /** The one open adder's errors; checks run on commit, through `form.fail`. */
   protected adderForm = new FormErrors(this, () => []);
+  /** "Add a viewport size…" in the preview menu: a width the list does not have yet. */
+  protected sizeForm = new FormErrors(this, () =>
+    this.ui.sizeDraft === null
+      ? []
+      : viewportSizeIssues(
+        SIZE_FIELD,
+        this.ui.sizeDraft,
+        previewPresets(this.editor.settings.value.viewportSizes).map((preset) => preset.width),
+      ));
+  /** "Add a media query…" in a strip's menu. */
+  protected mediaForm = new FormErrors(this, () => stripMediaIssues(this.ui.mediaDraft?.text ?? null));
   /** The element whose size cap has already auto-opened the parent section. */
   #capsShownFor: HTMLElement | null = null;
   @state() private sectionsVersion = 0;
@@ -695,9 +666,20 @@ export class HeoStylesPanel extends HeoElement {
     // What was open belonged to the old selection or the old width's question. The engine has
     // already put the page back (select and setPreviewWidth end a save preview).
     if (element !== seen.element) {
-      this.ui = { ...this.ui, popover: null, menu: null, adder: null, pending: null };
-    } else if (width !== seen.width) {
-      this.ui = { ...this.ui, popover: null, menu: null, pending: null };
+      this.ui = {
+        ...this.ui,
+        popover: null,
+        menu: null,
+        adder: null,
+        pending: null,
+        finderOpen: false,
+        mediaDraft: null,
+        otherSlots: new Map(),
+      };
+    }
+    // A new width: every size picker follows it again (R13), and what was asked at the old one goes.
+    if (width !== seen.width) {
+      this.ui = { ...this.ui, effPick: null, popover: null, menu: null, pending: null, sizeDraft: null };
     }
   }
 
@@ -722,8 +704,11 @@ export class HeoStylesPanel extends HeoElement {
     const menu = this.ui.menu;
     if (menu) {
       const anchor = root.querySelector(`[data-menu-anchor="${CSS.escape(menu.id)}"]`);
+      // Placed against the whole bar or strip when it names one, so a menu opened from a small ⋮
+      // gets the bar's width rather than spilling past the panel's edge.
+      const place = root.querySelector(`[data-menu-place="${CSS.escape(menu.id)}"]`) ?? anchor;
       if (!anchor) this.ui = { ...this.ui, menu: null };
-      else placeLayer(root.querySelector<HTMLElement>(`.menu[data-menu="${CSS.escape(menu.id)}"]`), anchor);
+      else placeLayer(root.querySelector<HTMLElement>(`.menu[data-menu="${CSS.escape(menu.id)}"]`), place, { minWidth: 260 });
     }
   }
 
@@ -794,8 +779,32 @@ export class HeoStylesPanel extends HeoElement {
 
     return html`
       ${selectionNotice(this.editor.selection.length, el)}
+      ${renderElementHeader({
+        element: el,
+        openClass: this.openClass,
+        finderOpen: this.ui.finderOpen,
+        onToggleFinder: (open) => {
+          this.classForm.reset();
+          this.#patch({ finderOpen: open });
+          this.#focusSelector(open ? '.ident .finder heo-value-field' : '.ident .cchip.add');
+        },
+        onOpenClass: (name) => this.#openSource(el, { selector: `.${name}`, family: `.${name}`, isClass: true }),
+        onRemoveClass: (name) => this.editor.toggleClass(name, el),
+        finder: this.#renderFinder(el),
+      })}
+      ${renderPreviewBar({
+        engine: this.editor,
+        previewWidth: host.previewWidth,
+        breakpoints: model.breakpoints(),
+        customSizes: this.editor.settings.value.viewportSizes,
+        menuOpen: this.ui.menu?.id === 'preview',
+        onMenu: (open) => this.#toggleMenu('preview', open),
+        sizeDraft: this.ui.sizeDraft,
+        sizeForm: this.sizeForm,
+        onSizeDraft: (text) => this.#patch({ sizeDraft: text }),
+        inShadowRoot: el.getRootNode() instanceof ShadowRoot,
+      })}
       <div class="top">
-        <span class="chip">${icon('cursor', 11)} ${labelFor(el)}</span>
         <heo-search-field
           label="Search styles"
           placeholder="Search properties, values, selectors…"
@@ -876,6 +885,7 @@ export class HeoStylesPanel extends HeoElement {
         What this element renders with${at !== null ? ` at ${at}px` : ''}, after the cascade. Pick a
         size to see what changes there. Click a dot to see what else declares it.
       </p>
+      ${this.#renderEffectiveStrip(model, host)}
       <div class="rows" data-declarations=${EFFECTIVE_LIST_ID}>
         ${own.map((property) =>
       renderPropertyRow({ property, scope: { kind: 'element' }, element: el, model, listId: EFFECTIVE_LIST_ID }, host))}
@@ -884,6 +894,7 @@ export class HeoStylesPanel extends HeoElement {
         ${filtering ? 'No property matches.' : 'Nothing declares anything for this element yet.'}
       </p>`}
       ${this.#renderBlockAdder(host, EFFECTIVE_LIST_ID, this.#elementDestinations(el, model), '')}
+      ${this.#renderSizeGroup(el, model, host)}
       ${groups.map((group) => {
         const scope: RowScope = { kind: 'state', state: group.state };
         const listId = `state-${group.state}`;
@@ -915,6 +926,159 @@ export class HeoStylesPanel extends HeoElement {
             </button>
           </div>`}
     </heo-section>`;
+  }
+
+  /** Open or close one of the panel's menus; closing hands focus back to what opened it. */
+  #toggleMenu(id: string, open: boolean): void {
+    this.sizeForm.reset();
+    this.mediaForm.reset();
+    this.#patch({ menu: open ? { id } : null, popover: null, sizeDraft: null, mediaDraft: null });
+    this.#focusSelector(
+      open ? `.menu[data-menu="${CSS.escape(id)}"] .mi` : `[data-menu-anchor="${CSS.escape(id)}"]`,
+      open,
+    );
+  }
+
+  /** The size Effective styles shows a group for: the hand pick, else the preview's slot. */
+  #effectiveSlot(model: ElementModel, previewWidth: number | null, available: readonly string[]): string {
+    const wanted = this.ui.effPick ?? previewSlot(model, previewWidth);
+    return wanted === 'base' || available.includes(wanted) ? wanted : 'base';
+  }
+
+  /** Effective styles' sizes: what changes at each, counted from the rules reaching the element. */
+  #effectiveSizes(model: ElementModel, previewWidth: number | null): { slots: StripSlot[]; others: StripOther[] } {
+    const visible = (media: string): boolean => previewWidth === null || mediaApplies(media, previewWidth);
+    const base = model.entries.filter((entry) => entry.state === '');
+    const count = (key: string): number =>
+      base.filter((entry) => model.slotOf(entry) === key)
+        .reduce((sum, entry) => sum + entry.declarations.length, 0);
+    const slots = model.slots().filter((slot) => visible(slot.media)).map((slot) => {
+      const n = count(slot.key);
+      const notNow = !mediaApplies(slot.media, null);
+      return {
+        key: slot.key,
+        icon: slot.icon,
+        name: slot.name,
+        count: n,
+        notNow,
+        title: `${slot.name}${n ? ` — ${n} declaration${n === 1 ? '' : 's'} at this size` : ' — none yet, click to add'}${notNow ? ` · not in effect at ${model.width}px` : ''}`,
+      };
+    });
+    const media = new Set<string>();
+    for (const entry of base) {
+      const key = model.slotOf(entry);
+      if (key.startsWith('other:')) media.add(key.slice('other:'.length));
+    }
+    for (const one of this.ui.otherSlots.get(EFFECTIVE_LIST_ID) ?? []) media.add(one);
+    const others = [...media].filter(visible).map((one) => ({
+      key: `other:${one}`,
+      media: one,
+      count: count(`other:${one}`),
+      notNow: !mediaApplies(one, null),
+    }));
+    return { slots, others };
+  }
+
+  #renderEffectiveStrip(model: ElementModel, host: StylesHost): TemplateResult {
+    const { slots, others } = this.#effectiveSizes(model, host.previewWidth);
+    const picked = this.#effectiveSlot(model, host.previewWidth, [...slots, ...others].map((one) => one.key));
+    const menuId = `strip-${EFFECTIVE_LIST_ID}`;
+    return renderSizeStrip({
+      owner: EFFECTIVE_LIST_ID,
+      picked,
+      baseCount: model.appliedProperties().length,
+      baseTitle: 'What the element renders with now, every size included',
+      slots,
+      others,
+      width: model.width,
+      menuOpen: this.ui.menu?.id === menuId,
+      mediaDraft: this.ui.mediaDraft?.owner === EFFECTIVE_LIST_ID ? this.ui.mediaDraft.text : null,
+      mediaForm: this.mediaForm,
+      // Picking the size already shown goes back to All sizes, so a size is a toggle here.
+      onPick: (key) => this.#patch({ effPick: key === picked && key !== 'base' ? 'base' : key }),
+      onMenu: (open) => this.#toggleMenu(menuId, open),
+      onMediaDraft: (text) =>
+        this.#patch({ mediaDraft: text === null ? null : { owner: EFFECTIVE_LIST_ID, text } }),
+      onAddMedia: (media) => {
+        // Only remembered here until a declaration is written at it: nothing empty is stored.
+        const next = new Map(this.ui.otherSlots);
+        next.set(EFFECTIVE_LIST_ID, [...new Set([...(next.get(EFFECTIVE_LIST_ID) ?? []), media])]);
+        this.#patch({ otherSlots: next, effPick: `other:${media}` });
+      },
+    });
+  }
+
+  /**
+   * The picked size, as a group under the element's rows: what the rules at that size declare,
+   * read at that size's own width, and an adder that writes at it.
+   */
+  #renderSizeGroup(el: HTMLElement, model: ElementModel, host: StylesHost): TemplateResult | typeof nothing {
+    const { slots, others } = this.#effectiveSizes(model, host.previewWidth);
+    const picked = this.#effectiveSlot(model, host.previewWidth, [...slots, ...others].map((one) => one.key));
+    if (picked === 'base') return nothing;
+    const slot = model.slots().find((one) => one.key === picked) ?? null;
+    const media = slot ? slot.media : picked.slice('other:'.length);
+    const short = slot ? mediaShort(media) : `@media ${media}`;
+    const scope: RowScope = { kind: 'size', slot: picked };
+    const listId = `size-${picked}`;
+    const names = new Set<string>();
+    for (const entry of model.entries) {
+      if (entry.state !== '' || model.slotOf(entry) !== picked) continue;
+      for (const one of entry.declarations) names.add(one.property.toLowerCase());
+    }
+    const properties = [...names].sort().filter((property) => this.#hit(property, picked, short));
+    const now = mediaApplies(media, null);
+    return html`<div class="egroup" data-egroup=${`size:${picked}`}>
+      <div class="egroup-h">
+        ${icon(mediaIcon(media), 12)}
+        <span class="sel">${short}</span>
+        <span class="kind">size</span>
+        <span class="note">${now ? `in effect at ${model.width}px` : `not at ${model.width}px`}</span>
+      </div>
+      <div class="rows" data-declarations=${listId}>
+        ${properties.map((property) =>
+          renderPropertyRow({ property, scope, element: el, model, listId }, host))}
+      </div>
+      ${properties.length
+        ? nothing
+        : html`<p class="hint" style="margin:0">Nothing changes at this size yet.</p>`}
+      ${this.#renderBlockAdder(host, listId, this.#sizeDestinations(el, model, picked, media, short), '')}
+    </div>`;
+  }
+
+  /** Where a size group's adder writes: every family at that size, then a new class of its own. */
+  #sizeDestinations(
+    el: HTMLElement,
+    model: ElementModel,
+    slot: string,
+    media: string,
+    short: string,
+  ): AdderDestination[] {
+    const { classes, others } = model.families();
+    return [
+      ...[...classes, ...others].map((family) => {
+        const entry = model.entries.find((one) =>
+          one.family === family.key &&
+          one.state === '' &&
+          model.slotOf(one) === slot &&
+          one.target.kind !== 'readonly');
+        const reach = model.reach(family.key);
+        return stylesDestination(
+          `${family.key} ${short}`,
+          `${reach} ${reach === 1 ? 'element' : 'elements'}`,
+          entry ? { kind: 'target', target: entry.target } : { kind: 'new-rule', selector: family.key, media },
+          entry ? toRecord(entry.declarations) : {},
+          `${family.key} ${short}`,
+        );
+      }),
+      stylesDestination(
+        `a new class ${short}`,
+        'this element only',
+        { kind: 'auto-class', element: el, media, state: '' },
+        {},
+        `a new class ${short}`,
+      ),
+    ];
   }
 
   /** "+ Add property" under a block, with the places it can write. Hidden while searching. */
@@ -1056,7 +1220,7 @@ export class HeoStylesPanel extends HeoElement {
   #openEffectiveAdder(seed = ''): void {
     const property = normalizeProperty(seed);
     this.#clearFilter();
-    userToggled.set('effective', true);
+    if (userToggled.get('effective') === false) userToggled.delete('effective');
     this.adderForm.reset();
     this.#patch({ adder: { id: EFFECTIVE_LIST_ID, draft: property, dest: '' }, menu: null, popover: null });
     this.#focusSelector(`.property-adder[data-adder="${EFFECTIVE_LIST_ID}"] input`);
@@ -1196,10 +1360,11 @@ export class HeoStylesPanel extends HeoElement {
     let heading: string;
     if (name && el.classList.contains(name)) {
       this.openClass = name;
-      userToggled.set('classes', true);
+      // Opened by following a link, not by hand: a hand-shut section gives way, nothing is recorded.
+      if (userToggled.get('classes') === false) userToggled.delete('classes');
       heading = 'Classes';
     } else {
-      userToggled.set('cssrules', true);
+      if (userToggled.get('cssrules') === false) userToggled.delete('cssrules');
       const rule = this.#matchingRules(el, appliedRules(el)).find((one) => one.selector === target.selector);
       if (rule) this.openRules.set(this.#ruleKey(rule), this.openRules.get(this.#ruleKey(rule)) ?? '');
       this.sectionsVersion += 1;
@@ -1665,11 +1830,11 @@ export class HeoStylesPanel extends HeoElement {
   }
 
   /**
-   * The element's classes, and the way to add one.
+   * The class opened from the header, edited where it is written.
    *
-   * Searchable by name and by what the class declares, so `1px solid` finds the class that sets
-   * it. Hiding this section while filtering — which is what it used to do — meant a search could
-   * not answer the question a class is most often the answer to: where is this value coming from.
+   * The chips and the class finder moved to the header, where the element is named; this section
+   * holds the open class's definition until Sources gives every class its own card. Searchable by
+   * name and by what the class declares, so `1px solid` finds the class that sets it.
    */
   #renderClasses(el: HTMLElement): TemplateResult | typeof nothing {
     const classes = Array.from(el.classList).filter((name) => !name.startsWith('heo-'));
@@ -1677,6 +1842,7 @@ export class HeoStylesPanel extends HeoElement {
     const shown = filtering ? this.#matchingClasses(el) : classes;
     // Nothing here matches, and while filtering the affordances below are not what was asked for.
     if (filtering && !shown.length) return nothing;
+    const open = this.openClass && shown.includes(this.openClass) ? this.openClass : null;
     return html`<heo-section
       heading="Classes"
       glyph="blocks"
@@ -1685,9 +1851,7 @@ export class HeoStylesPanel extends HeoElement {
       @section-toggle=${(event: CustomEvent<{ open: boolean }>) =>
         this.#remember('classes', event.detail.open)}
     >
-      <!-- Moved off the panel's first line. Making a class out of what is set here is a thing
-           about classes, so it belongs with them. Withheld while filtering: a search asks what is
-           already here, and this makes something new. -->
+      <!-- Withheld while filtering: a search asks what is already here, and these make something new. -->
       ${filtering
         ? nothing
         : html`<button
@@ -1708,82 +1872,38 @@ export class HeoStylesPanel extends HeoElement {
           >
             ${icon('clipboard', 12)} Paste CSS…
           </button>`}
-      ${shown.length
-        ? html`<div class="chips">
-            ${repeat(
-          shown,
-          (name) => name,
-          (name) => {
-            const defined = this.editor.classes.get(name);
-            const open = this.openClass === name;
-            return html`<span
-                class=${`chip${defined ? ' known' : ''}${open ? ' open' : ''}`}
-                title=${defined
-                ? `${Object.keys(defined.declarations).length} declarations — click to edit them`
-                : 'Click to see where this class comes from'}
-                >
-                <button
-                  class="name"
-                  type="button"
-                  aria-expanded=${open}
-                  @click=${() => {
-                this.openClass = open ? null : name;
-                // Whatever was half-answered about the last class does not carry
-                // over to this one.
-                this.detachOpen = null;
-                this.forkDraft = '';
-              }}
-                >
-                  ${icon(open ? 'chevronDown' : 'chevronRight', 8)} ${name}
-                </button>
-                <button
-                  class="kill"
-                  type="button"
-                  aria-label=${`Remove class ${name}`}
-                  title=${`Remove .${name} from this element`}
-                  @click=${() => this.editor.toggleClass(name, el)}
-                >
-                  ${icon('close', 9)}
-                </button>
-              </span>`;
-          },
-        )}
-          </div>`
-        : html`<p class="hint" style="margin:0 0 8px">
-            No classes yet. Adding one keeps styling reusable instead of inline.
+      ${open
+        ? this.#renderOpenClass(open, el)
+        : html`<p class="hint" style="margin:0">
+            ${classes.length
+          ? 'Pick a class in the header to edit it here.'
+          : 'No classes yet. Adding one keeps styling reusable instead of inline.'}
           </p>`}
-
-      ${this.openClass && shown.includes(this.openClass)
-        ? this.#renderOpenClass(this.openClass, el)
-        : nothing}
-
-      ${filtering
-        ? nothing
-        : html`<heo-value-field
-              ${field(this.classForm, 'class-add')}
-              leading-icon="search"
-              clearable
-              action="Add class"
-              action-icon="plus"
-              .suggestions=${classSuggestions(this.editor, this.classDraft)}
-              placeholder="find or create a class"
-              @value-input=${(event: CustomEvent<{ value: string }>) => {
-            this.classDraft = event.detail.value;
-          }}
-              @value-change=${(event: CustomEvent<{ value: string }>) => {
-            this.classDraft = event.detail.value;
-          }}
-              @value-submit=${(event: CustomEvent<{ value: string }>) => {
-            this.classDraft = event.detail.value;
-            if (this.classForm.submit()) this.#addClass(el, event.detail.value, event.target as HeoValueField);
-          }}
-            ></heo-value-field>
-            ${this.classForm.error('class-add')}
-            <p class="hint" style="margin:6px 0 0">
-              Search the project's classes or type a new name, then press Enter or the add
-              button.
-            </p>`}
     </heo-section>`;
+  }
+
+  /** The header's "find or create a class" field: today's finder, with its form and suggestions. */
+  #renderFinder(el: HTMLElement): TemplateResult {
+    return html`<heo-value-field
+        ${field(this.classForm, 'class-add')}
+        leading-icon="search"
+        clearable
+        action="Add class"
+        action-icon="plus"
+        .suggestions=${classSuggestions(this.editor, this.classDraft)}
+        placeholder="find or create a class"
+        @value-input=${(event: CustomEvent<{ value: string }>) => {
+      this.classDraft = event.detail.value;
+    }}
+        @value-change=${(event: CustomEvent<{ value: string }>) => {
+      this.classDraft = event.detail.value;
+    }}
+        @value-submit=${(event: CustomEvent<{ value: string }>) => {
+      this.classDraft = event.detail.value;
+      if (this.classForm.submit()) this.#addClass(el, event.detail.value, event.target as HeoValueField);
+    }}
+      ></heo-value-field>
+      ${this.classForm.error('class-add')}`;
   }
 
   /**

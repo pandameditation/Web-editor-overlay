@@ -256,6 +256,50 @@
           await settle();
         }
 
+        /* ------------------------------------------------------------------ *
+         * The Styles panel's header: the element and its classes, nothing else (R3).
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'header';
+        {
+          api.select(target);
+          engine.setDockTab('styles');
+          await settle(300);
+          const sroot = () => deep('heo-styles-panel').shadowRoot;
+          const ident = () => sroot().querySelector('.ident');
+          const chips = () => Array.from(ident()?.querySelectorAll('.cchip[data-class]') ?? []);
+          const own = Array.from(target.classList).filter((name) => !name.startsWith('heo-'));
+          results.header = {
+            // Tag chip, one chip per class in class-list order, and "+": nothing else on the line.
+            listsClassesOnly:
+              chips().map((chip) => chip.dataset.class).join(',') === own.join(',') &&
+              ident()?.querySelector('.line').children.length === own.length + 2 &&
+              ident()?.querySelector('.el-chip')?.textContent.trim() === 'p#target',
+            noStyleAttributeOrMediaChip: !/style=|@media|[≤≥]/.test(ident()?.textContent ?? ''),
+          };
+          const before = engine.history.size;
+          chips().find((chip) => chip.dataset.class === 'featured')?.querySelector('.kill')?.click();
+          await settle(120);
+          results.header.crossRemovesThatClass =
+            !target.classList.contains('featured') && target.classList.contains('card') &&
+            engine.history.size === before + 1 &&
+            chips().every((chip) => chip.dataset.class !== 'featured');
+          engine.undo();
+          await settle(120);
+          const plus = () => ident()?.querySelector('.cchip.add');
+          plus()?.click();
+          await settle(150);
+          const finder = () => ident()?.querySelector('.finder heo-value-field');
+          const opened =
+            plus()?.getAttribute('aria-expanded') === 'true' && Boolean(finder()) &&
+            sroot().activeElement === finder() &&
+            /Search the project's classes or type a new name, then press Enter\./.test(ident()?.textContent ?? '');
+          finder()?.shadowRoot.querySelector('input')?.dispatchEvent(
+            new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true, cancelable: true }));
+          await settle(120);
+          results.header.plusRevealsTheFinder =
+            opened && !finder() && plus()?.getAttribute('aria-expanded') === 'false' &&
+            target.classList.contains('featured');
+        }
         const failed = Object.entries(results)
           .filter(([, group]) => group && typeof group === 'object')
           .filter(([, group]) => Object.values(group).some((value) => value === false))

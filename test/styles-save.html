@@ -663,6 +663,33 @@
         engine.undo();
         await settle();
 
+        /* ---- asking: while previewing, and in a size group ---- */
+        api.select(second);
+        await settle();
+        engine.setPreviewWidth(320);
+        await settle();
+        // `.card`'s font-size is the same at every size, so only the preview makes this ask.
+        fieldIn('effective', 'font-size')?.focusInput();
+        await send(fieldIn('effective', 'font-size'), 'value-change', '19px');
+        results.ask.whenPreviewingASize = Boolean(boxUnder('effective', 'font-size'));
+        await key(anyBox(), 'Escape');
+        engine.setPreviewWidth(null);
+        await settle();
+        root().querySelector('[data-strip="effective"] [data-slot="tablet"]')?.click();
+        await settle();
+        fieldIn('size-tablet', 'padding')?.focusInput();
+        await send(fieldIn('size-tablet', 'padding'), 'value-change', '21px 29px');
+        const sizeBox = boxUnder('size-tablet', 'padding');
+        results.ask.whenInASizeGroup =
+          Boolean(sizeBox) && /≥768px/.test(sizeBox?.querySelector('[role="radio"][aria-checked="true"]')?.textContent ?? '');
+        // Saved at ≥768px from a 756px window: the page will not show it here, and the box says so.
+        results.box.saysWhenNotVisibleAtThisWidth =
+          (sizeBox?.querySelector('.notnow')?.textContent.replace(/\s+/g, ' ').trim() ?? '') ===
+          (innerWidth < 768 ? `Not visible at ${innerWidth}px. Preview 768 to see it.` : '');
+        await key(anyBox(), 'Escape');
+        root().querySelector('[data-strip="effective"] [data-slot="tablet"]')?.click();
+        await settle();
+
         const failed = Object.entries(results)
           .filter(([, group]) => group && typeof group === 'object')
           .filter(([, group]) => Object.values(group).some((value) => value === false))

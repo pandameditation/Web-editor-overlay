@@ -30,6 +30,12 @@
     .card:hover { background-color: #f9fafb; }
     .featured::before { content: "★"; color: #f59e0b; }
   </style>
+  <!-- Bootstrap spells the phone bound 767.98px: it is still the phone slot. -->
+  <style id="fraction">
+    @media (max-width: 767.98px) {
+      .featured { text-indent: 2px; }
+    }
+  </style>
   <!-- A sheet gated by its own media attribute: the attribute must never change. -->
   <style id="gated" media="(max-width: 767px)">
     #target { outline-offset: 3px; }
@@ -311,6 +317,172 @@
           addViewportSizeIsOneUndoEntry:
             added && grew === 1 && refusedPreset && refusedRange && refusedNothing && undone &&
             JSON.stringify(engine.settings.value.viewportSizes) === '[992]',
+        };
+
+        /* ------------------------------------------------------------------ *
+         * The panel's preview bar, its menu, and the strips that follow it.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'bar';
+        engine.setPreviewWidth(null);
+        api.select(target);
+        engine.setDockTab('styles');
+        await frames();
+        await wait(250);
+        const panel = () => deep('heo-styles-panel');
+        const root = () => panel().shadowRoot;
+        const settle = async () => {
+          await panel().updateComplete;
+          await frames();
+        };
+        const bar = () => root().querySelector('.sizes heo-segmented');
+        const segs = () => Array.from(bar()?.shadowRoot.querySelectorAll('button') ?? []);
+        const seg = (label) => segs().find((b) => b.textContent.trim() === label);
+        const pressedSegs = () =>
+          segs().filter((b) => b.getAttribute('aria-pressed') === 'true').map((b) => b.textContent.trim());
+        const line = () => root().querySelector('.sizes .bp')?.textContent.replace(/\s+/g, ' ').trim() ?? '';
+        results.bar = {
+          actualIsPressedByDefault: pressedSegs().join(',') === 'Actual',
+          lineSaysAsItIs: line().startsWith(`As it is: ${innerWidth}px. Every size and state is shown.`),
+          // Every rule reaching the card changes at one width, whatever spelling it uses.
+          listsTheElementsBreakpoints: line().endsWith('Styles change at 768px.'),
+        };
+        seg('320')?.click();
+        await settle();
+        results.bar.lineSaysPreviewing =
+          engine.store.value.previewWidth === 320 && pressedSegs().join(',') === '320' &&
+          line().startsWith(
+            'Previewing 320px. Only what applies at this width is shown, and edits offer to stay at this size.');
+        const padField = () =>
+          root().querySelector('[data-declarations="effective"] .row[data-property="padding"] heo-value-field');
+        padField()?.focusInput();
+        padField()?.dispatchEvent(new CustomEvent('value-change', { detail: { value: '7px 8px' }, bubbles: true, composed: true }));
+        await settle();
+        const hadBox = Boolean(root().querySelector('.savebox'));
+        seg('Actual')?.click();
+        await settle();
+        results.bar.changingPreviewCancelsAPendingSave =
+          hadBox && !root().querySelector('.savebox') && engine.store.value.previewWidth === null &&
+          !target.hasAttribute('data-heo-save-preview') && padding() === actualPadding;
+
+        /* ---- the ⋮ menu ---- */
+        progress.textContent = 'barMenu';
+        const more = () => root().querySelector('.sizes .more');
+        const menu = () => root().querySelector('.menu[data-menu="preview"]');
+        const openMenu = async () => {
+          if (!menu()) more()?.click();
+          await settle();
+          await frames();
+        };
+        /** The menu's items under one caption. */
+        const itemsUnder = (caption) => {
+          const out = [];
+          let on = false;
+          for (const node of Array.from(menu()?.children ?? [])) {
+            if (node.matches('.cap')) on = node.textContent.trim() === caption;
+            else if (node.localName === 'hr') on = false;
+            else if (on) {
+              const item = node.matches('.mi') ? node : node.querySelector('.mi');
+              if (item) out.push(item);
+            }
+          }
+          return out;
+        };
+        const labelOf = (item) => item.querySelector('.lbl')?.textContent.trim();
+        await openMenu();
+        const mediaItems = itemsUnder('Media queries on this page');
+        const labels = mediaItems.map(labelOf);
+        results.menu.listsPageMediaQueriesInWidthOrder =
+          menu()?.matches(':popover-open') === true &&
+          labels.join(',') === '≤767px,≤767px,≥768px,print' &&
+          /preview 320/.test(mediaItems[0]?.textContent) && /preview 768/.test(mediaItems[2]?.textContent);
+        mediaItems.find((item) => labelOf(item) === '≥768px')?.click();
+        await settle();
+        results.menu.clickingAWidthPreviewsIt = engine.store.value.previewWidth === 768 && !menu();
+        await openMenu();
+        const printItem = itemsUnder('Media queries on this page').find((item) => labelOf(item) === 'print');
+        const printTitle = printItem?.getAttribute('title');
+        printItem?.click();
+        await settle();
+        results.menu.printCannotBePreviewed =
+          printTitle === 'Not a width: shown at Actual' && engine.store.value.previewWidth === null;
+        await openMenu();
+        results.menu.statesItsLimits =
+          Array.from(menu()?.querySelectorAll('.cap') ?? []).some((cap) => cap.textContent.trim() === "What a preview can't change") &&
+          /vw and vh follow the real window/.test(menu()?.textContent ?? '');
+        menu()?.querySelector('.mi')?.focus();
+        menu()?.querySelector('.mi')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true, cancelable: true }));
+        await settle();
+        await frames();
+        results.menu.escapeClosesAndRefocuses = !menu() && root().activeElement === more();
+
+        const sizeField = () => menu()?.querySelector('.mfield input');
+        const typeSize = async (text) => {
+          await openMenu();
+          if (!sizeField()) {
+            itemsUnder('Viewport sizes').find((item) => labelOf(item) === 'Add a viewport size…')?.click();
+            await settle();
+          }
+          const input = sizeField();
+          input.value = text;
+          input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+          await settle();
+          sizeField()?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, composed: true, cancelable: true }));
+          await settle();
+          await frames();
+        };
+        const sizesBefore = JSON.stringify(engine.settings.value.viewportSizes);
+        await typeSize('50');
+        results.menu.rejectsOutOfRangeWidth =
+          /Type a width between 200 and 4000 pixels\./.test(menu()?.querySelector('.field-error')?.textContent ?? '') &&
+          JSON.stringify(engine.settings.value.viewportSizes) === sizesBefore;
+        await typeSize('1280');
+        results.menu.addViewportSizeAddsPresetAndSlot =
+          engine.settings.value.viewportSizes.includes(1280) &&
+          engine.store.value.previewWidth === 1280 &&
+          pressedSegs().join(',') === '1280' &&
+          Boolean(root().querySelector('[data-strip="effective"] [data-slot="from-1280"]'));
+
+        /* ---- the strips follow the preview ---- */
+        progress.textContent = 'follow';
+        engine.setPreviewWidth(null);
+        await settle();
+        const strip = () => root().querySelector('[data-strip="effective"]');
+        const pressedSlot = () =>
+          strip()?.querySelector('.base[aria-pressed="true"]')
+            ? 'base'
+            : strip()?.querySelector('[data-slot][aria-pressed="true"]')?.dataset.slot ?? null;
+        results.follow = { actualPicksAllSizes: pressedSlot() === 'base' };
+        strip()?.querySelector('[data-slot="tablet"]')?.click();
+        await settle();
+        const picked = pressedSlot() === 'tablet' && Boolean(root().querySelector('[data-egroup="size:tablet"]'));
+        api.select(second);
+        await settle();
+        api.select(target);
+        await settle();
+        const held = pressedSlot() === 'tablet';
+        engine.setPreviewWidth(320);
+        await settle();
+        results.follow.handPickHoldsUntilPreviewChanges = picked && held && pressedSlot() === 'phone';
+        engine.setPreviewWidth(null);
+        await settle();
+
+        strip()?.querySelector('[data-slot="phone"]')?.click();
+        await settle();
+        const onPhone = pressedSlot() === 'phone';
+        strip()?.querySelector('[data-slot="phone"]')?.click();
+        await settle();
+        const fresh = engine.elementModel(target);
+        const fraction = fresh.entries.find((entry) => entry.media === '(max-width: 767.98px)');
+        const phoneCount = fresh.entries
+          .filter((entry) => entry.state === '' && fresh.slotOf(entry) === 'phone')
+          .reduce((sum, entry) => sum + entry.declarations.length, 0);
+        results.strip = {
+          effectiveTogglesBackToAllSizes: onPhone && pressedSlot() === 'base',
+          // Bootstrap's 767.98px is the phone breakpoint, not "another media query".
+          toleratesFractionalBreakpoints:
+            Boolean(fraction) && fresh.slotOf(fraction) === 'phone' &&
+            strip()?.querySelector('[data-slot="phone"]')?.getAttribute('aria-label') ===
+              `Phone, up to 767px, ${phoneCount} declarations`,
         };
 
         const failed = Object.entries(results)

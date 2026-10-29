@@ -73,7 +73,11 @@ export class HeoSegmented extends LitElement {
           background var(--heo-fast),
           color var(--heo-fast);
       }
-      button:hover {
+      button:disabled {
+        color: var(--heo-text-disabled);
+        cursor: not-allowed;
+      }
+      button:hover:not(:disabled) {
         background: var(--heo-hover);
         color: var(--heo-text);
       }
@@ -103,6 +107,8 @@ export class HeoSegmented extends LitElement {
   @property({ type: String }) label = '';
   /** Show a ✕ that clears the value. For a value that is set, rather than inherited or computed. */
   @property({ type: Boolean }) removable = false;
+  /** Every segment off, for a choice the page cannot offer right now; the host's title says why. */
+  @property({ type: Boolean, reflect: true }) disabled = false;
 
   override render(): TemplateResult {
     return html`<div class="bar" role="group" aria-label=${this.label || 'Options'}>
@@ -114,6 +120,7 @@ export class HeoSegmented extends LitElement {
           class=${this.accent ? 'accent' : ''}
           title=${option.title ?? option.label ?? option.value}
           aria-label=${option.ariaLabel ?? nothing}
+          ?disabled=${this.disabled}
           @click=${() => this.#pick(option, active)}
         >
           ${option.icon ? icon(option.icon, 13) : nothing}

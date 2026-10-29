@@ -518,7 +518,8 @@
           await openSection('Classes');
           // Expand .boxy, which declares margin-left, so two lists on screen can answer to the
           // same property name. That is the whole precondition for the focus bug.
-          Array.from(sectionNamed('Classes')?.querySelectorAll('button[aria-expanded]') ?? [])
+          // The class chips are in the element header now.
+          Array.from(panel.shadowRoot.querySelectorAll('.ident .cchip .name'))
             .find((c) => c.textContent.includes('boxy'))
             ?.click();
           await frames();
