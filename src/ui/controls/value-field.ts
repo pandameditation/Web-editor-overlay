@@ -205,6 +205,39 @@ export class HeoValueField extends LitElement {
         color: var(--heo-text);
       }
 
+      /* The !important tag. The focus-ring ink is the accent's readable tint in the dark theme and
+         the accent itself in the light one, so one token reads at 4.5:1 in both. */
+      .imp {
+        flex: 0 0 auto;
+        align-self: center;
+        padding: 0 3px;
+        color: var(--heo-focus-ring);
+        font-family: var(--heo-mono);
+        font-size: 9.5px;
+        line-height: 18px;
+        white-space: nowrap;
+      }
+      button.imp {
+        height: 18px;
+        border: 0;
+        border-radius: 4px;
+        background: transparent;
+        cursor: pointer;
+      }
+      button.imp:hover {
+        background: var(--heo-hover);
+        color: var(--heo-text);
+      }
+      button.imp:focus-visible {
+        outline: 2px solid var(--heo-focus-ring);
+        outline-offset: 1px;
+      }
+      /* An edit waiting for "where to save": held in the engaged look until it is answered. */
+      :host([pending]) .wrap {
+        border-color: var(--heo-accent-line);
+        background: var(--heo-bg);
+      }
+
       /* Submit affordance, shown only when the field is used as an "add" control. */
       .action {
         display: grid;
@@ -544,6 +577,27 @@ export class HeoValueField extends LitElement {
    */
   @property({ type: String }) action = '';
   @property({ type: String, attribute: 'action-icon' }) actionIcon = 'plus';
+  /**
+   * The declaration this field shows is `!important`.
+   *
+   * The value itself is passed without the flag, so the tag is the one place it shows. It used to
+   * be nowhere: a rule's `!important` beat the element's own value while the panel showed the
+   * losing one, with nothing on screen to say why.
+   */
+  @property({ type: Boolean, reflect: true }) important = false;
+  /**
+   * The tag is a button that removes the flag, rather than a label.
+   *
+   * Only where the field writes the very declaration it shows (a card row, a popover line, an
+   * inline winner). A row showing a rule's importance does not write that rule, so its tag stays
+   * text and its title says where to change it.
+   */
+  @property({ type: Boolean, reflect: true, attribute: 'important-removable' })
+  importantRemovable = false;
+  /** The tag's title when it is text: where the `!important` lives and how to change it. */
+  @property({ type: String, reflect: true, attribute: 'important-title' }) importantTitle = '';
+  /** An edit waiting for "where to save": drawn engaged until it is saved or reverted. */
+  @property({ type: Boolean, reflect: true }) pending = false;
 
   @state() private draft = '';
   @state() private open = false;
@@ -984,6 +1038,7 @@ export class HeoValueField extends LitElement {
           @pointerdown=${this.#onTrailingDown}
           @click=${this.#onTrailingClick}
         >
+          ${this.#renderImportant()}
           ${showUnit
         ? html`<button
                 class="unit"
@@ -1037,6 +1092,52 @@ export class HeoValueField extends LitElement {
       </div>
       ${this.open ? this.#renderPopup() : nothing}
     `;
+  }
+
+  /**
+   * The `!important` tag, at the start of the trailing strip.
+   *
+   * A button only where the host says this field owns the declaration. It reports the change
+   * rather than making it, like every other edit here: the host knows which declaration to write.
+   */
+  #renderImportant(): TemplateResult | typeof nothing {
+    if (!this.important) return nothing;
+    if (!this.importantRemovable) {
+      return html`<span class="imp" title=${this.importantTitle || '!important'}>!important</span>`;
+    }
+    return html`<button
+      class="imp"
+      type="button"
+      aria-pressed="true"
+      aria-label="Remove !important"
+      title="Remove !important"
+      @pointerdown=${(event: Event) => event.preventDefault()}
+      @click=${this.#removeImportant}
+    >
+      !important
+    </button>`;
+  }
+
+  #removeImportant(event: Event): void {
+    this.dispatchEvent(
+      new CustomEvent('important-change', {
+        detail: { important: false },
+        bubbles: true,
+        composed: true,
+      }),
+    );
+    /*
+     * Keep focus in the field, like the clear button does.
+     *
+     * The tag goes away on the render the change triggers, and a focused element that disappears
+     * drops focus to the document, where the next key press reaches the global keymap instead of
+     * this row. Pressed from the keyboard, the caret moves to the value instead; the list stays shut,
+     * since asking to drop a flag is not asking for a different value.
+     */
+    if (this.shadowRoot?.activeElement === event.currentTarget) {
+      this.textInput?.focus();
+      this.closePopup();
+    }
   }
 
   /**

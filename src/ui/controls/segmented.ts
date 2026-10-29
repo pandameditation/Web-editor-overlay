@@ -9,6 +9,13 @@ export interface SegmentOption {
   /** Icon name from the overlay icon set. */
   icon?: string;
   title?: string;
+  /**
+   * The accessible name, when the visible label is not enough.
+   *
+   * An icon-only option ("Phone") or a short one ("320") reads as nothing or as a bare number to a
+   * screen reader; the preview bar says "Phone, 320px".
+   */
+  ariaLabel?: string;
 }
 
 /**
@@ -106,6 +113,7 @@ export class HeoSegmented extends LitElement {
           aria-pressed=${active}
           class=${this.accent ? 'accent' : ''}
           title=${option.title ?? option.label ?? option.value}
+          aria-label=${option.ariaLabel ?? nothing}
           @click=${() => this.#pick(option, active)}
         >
           ${option.icon ? icon(option.icon, 13) : nothing}

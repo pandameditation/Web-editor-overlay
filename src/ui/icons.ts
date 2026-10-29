@@ -104,6 +104,19 @@ const PATHS: Record<string, string> = {
   /* A rule interrupted by a diamond: the plain divider's sibling, told apart at a glance. */
   ornament: 'M2.6 8h2.6M10.8 8h2.6M8 5.6 10.4 8 8 10.4 5.6 8Z',
   panel: 'M2.6 3.4h10.8v9.2H2.6zM10 3.4v9.2',
+
+  // Viewports and where styles come from, copied from the Styles panel prototype (variant I).
+  /* The window as it is, with no width imposed: the preview bar's "Actual". */
+  window: 'M2.4 3.2h11.2v9.6H2.4zM2.4 5.8h11.2',
+  phone: 'M5.2 2h5.6v12H5.2zM7.4 12h1.2',
+  tablet: 'M3.6 2.4h8.8v11.2H3.6zM7.4 11.6h1.2',
+  laptop: 'M3.6 3.8h8.8v6.6H3.6zM1.8 12.4h12.4',
+  desktop: 'M2.2 2.8h11.6v7.8H2.2zM8 10.6v2.6M5.6 13.2h4.8',
+  print: 'M4.5 6V2.8h7V6M4.5 11H3V6h10v5h-1.5M4.5 9.2h7v4h-7z',
+  /* Stacked sheets: the rules an element's styles are layered from (Sources). */
+  layers: 'M8 2.6l5.6 3L8 8.6 2.4 5.6zM2.4 8.2L8 11.2l5.6-3M2.4 10.8L8 13.8l5.6-3',
+  /* A small box beside its element: a pseudo-element. */
+  pseudo: 'M7 4.2h6.2v7.6H7zM2.8 6.2h2.6v3.6H2.8z',
 };
 
 const FILLED = new Set(['dots', 'grip']);
