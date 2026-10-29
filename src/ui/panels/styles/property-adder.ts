@@ -176,9 +176,16 @@ export function renderAdder(spec: AdderSpec, host: AdderHost): TemplateResult {
   };
 
   const several = spec.destinations.length > 1;
+  // Opened from "+ Add property", the adder is its own framed box with the field across it, the
+  // same under an Effective group as inside a card. The "add" label only fills a card's name
+  // column in the always-open Tokens row; outside a card it rendered as a stray line of text.
   return html`
-    <div class="decl property-adder" data-heo-part="adder" data-adder=${spec.id}>
-      <span class="p">add</span>
+    <div
+      class="decl property-adder ${spec.disclosure ? 'framed' : ''}"
+      data-heo-part="adder"
+      data-adder=${spec.id}
+    >
+      ${spec.disclosure ? nothing : html`<span class="p">add</span>`}
       <div class="pair">
         <input
           ${field(host.form, name)}
@@ -312,6 +319,21 @@ export const adderRowStyles: CSSResult = css`
   }
   .property-adder .field-error,
   .property-adder .dest {
+    grid-column: 1 / -1;
+  }
+  /* Opened from "+ Add property": one column in a framed box, wherever it sits. Three classes so
+     it wins over a card's name-and-value row grid. */
+  .decl.property-adder.framed {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 5px;
+    margin-top: 2px;
+    padding: 7px;
+    border: 1px solid var(--heo-accent-line);
+    border-radius: var(--heo-r-md);
+    background: color-mix(in oklab, var(--heo-accent) 6%, var(--heo-sunken));
+  }
+  .property-adder.framed .pair {
     grid-column: 1 / -1;
   }
   .property-adder .confirm {

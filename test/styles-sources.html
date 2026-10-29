@@ -582,6 +582,24 @@
           addButton(block('.card', 'base'))?.click();
           await settle(200);
           const cardAdder = () => block('.card', 'base')?.querySelector('.property-adder');
+          // How an open adder looks, measured: Effective's used to show a stray "add" line above
+          // its field, because only a card's row grid styled that label.
+          const adderLook = (adder) => {
+            const input = adder?.querySelector('input');
+            if (!adder || !input) return null;
+            const box = adder.getBoundingClientRect();
+            const field = input.getBoundingClientRect();
+            const cs = getComputedStyle(adder);
+            return {
+              label: Boolean(adder.querySelector(':scope > .p')),
+              padding: cs.padding,
+              border: `${cs.borderTopStyle} ${cs.borderTopColor}`,
+              background: cs.backgroundColor,
+              inputTop: Math.round(field.top - box.top),
+              inputLeft: Math.round(field.left - box.left),
+            };
+          };
+          const cardLook = adderLook(cardAdder());
           results.adder.singleDestinationIsText =
             textOf(cardAdder()?.querySelector('.dest .chip.fixed')) === '.card' &&
             textOf(cardAdder()?.querySelector('.dest .reach')) === '· 4 elements' &&
@@ -627,6 +645,16 @@
           await settle(200);
           const effAdder = () => sroot().querySelector('.property-adder[data-adder="effective"]');
           const chip = () => effAdder()?.querySelector('.dest button.chip');
+          const effLook = adderLook(effAdder());
+          results.adder.looksTheSameInEffectiveAndCards =
+            Boolean(cardLook) && Boolean(effLook) &&
+            !cardLook.label && !effLook.label &&
+            cardLook.border.startsWith('solid') &&
+            cardLook.padding === effLook.padding &&
+            cardLook.border === effLook.border &&
+            cardLook.background === effLook.background &&
+            effLook.inputTop <= 10 && Math.abs(cardLook.inputTop - effLook.inputTop) <= 2 &&
+            Math.abs(cardLook.inputLeft - effLook.inputLeft) <= 2;
           const closedChip = chip()?.getAttribute('aria-haspopup') === 'menu' && chip()?.getAttribute('aria-expanded') === 'false';
           chip()?.click();
           await settle(200);
