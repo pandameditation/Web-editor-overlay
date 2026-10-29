@@ -3,12 +3,14 @@ import { repeat } from 'lit/directives/repeat.js';
 import { EDITABLE_STATES, isPseudoElement, mediaShort, needsGeneratedContent } from '../../../core/breakpoints.js';
 import { classFamily, type Family, type RuleEntry, type WriteTarget } from '../../../core/cascade.js';
 import { simpleClassName } from '../../../core/classes.js';
+import { escapeRegExp } from '../../../core/css.js';
 import {
   displayOrder,
   shorthandGroups,
   toRecord,
   type Declaration,
 } from '../../../core/declaration-list.js';
+import { reachText } from '../../../core/save-plan.js';
 import { mediaApplies } from '../../../core/viewport.js';
 import { field } from '../../form-errors.js';
 import { icon } from '../../icons.js';
@@ -22,7 +24,7 @@ import {
   type DeclarationTarget,
 } from '../class-editor.js';
 import { renderAdder, stylesDestination, type AdderDestination } from './property-adder.js';
-import { previewSlot, reachText } from './property-row.js';
+import { previewSlot } from './property-row.js';
 import { renderSizeStrip, slotMedia, slotName, stripSizes, type StripOther, type StripSlot } from './size-strip.js';
 import type { PendingState, StylesHost } from './types.js';
 
@@ -140,6 +142,24 @@ function renderRows(target: DeclarationTarget, list: readonly Declaration[], hos
 }
 
 /**
+ * The head of a block of declarations: its icon, its name (`:hover`, `≤767px`), what kind it is,
+ * then whatever the place adds at the end (a card's trash, Effective's "when it applies" note).
+ * One markup for the card blocks and the Effective groups, so they read as the same thing.
+ */
+export function renderBlockHeader(
+  iconName: string,
+  name: string,
+  kind: string,
+  trailing: TemplateResult | typeof nothing = nothing,
+): TemplateResult {
+  return html`<div class="blabel">
+    ${icon(iconName, 12)}
+    <span class="sel">${name}</span>
+    <span class="kindtxt">${kind}</span>
+    ${trailing}
+  </div>`;
+}
+/**
  * "+ Add property" (or "+ Add state or pseudo-element") under a block, with the places it can
  * write. One open at a time, through the panel's state; hidden while searching (R8).
  */
@@ -171,11 +191,11 @@ export function renderBlockAdder(
         open: Boolean(open),
         menuOpen: ui.menu?.id === `dest-${id}`,
         onOpen: () => {
-          host.adderForm.reset();
+          host.form.reset();
           host.patch({ adder: { id, draft: '', dest: '' }, menu: null, popover: null });
         },
         onCancel: () => {
-          host.adderForm.reset();
+          host.form.reset();
           host.patch({ adder: null, menu: null });
         },
         onPick: (key) => {
@@ -297,11 +317,11 @@ export function renderFamilyCard(
       const pseudo = isPseudoElement(state);
       const live = target.target.kind === 'live';
       return html`<div class="block" data-block=${state}>
-        <div class="blabel">
-          ${icon(pseudo ? 'pseudo' : 'cursor', 12)}
-          <span class="sel">${state}</span>
-          <span class="kindtxt">${pseudo ? 'pseudo-element' : 'state'}</span>
-          ${host.filtering
+        ${renderBlockHeader(
+          pseudo ? 'pseudo' : 'cursor',
+          state,
+          pseudo ? 'pseudo-element' : 'state',
+          host.filtering
             ? nothing
             : renderKill({
               label: `Remove ${target.selector}`,
@@ -311,8 +331,8 @@ export function renderFamilyCard(
               tight: true,
               size: 11,
               onClick: () => engine.removeRule(target.target),
-            })}
-        </div>
+            }),
+        )}
         <div class="decls" data-declarations=${id}>
           ${repeat(
             members,
@@ -343,7 +363,7 @@ export function renderFamilyCard(
         onState: (state) => {
           const result = engine.addStateRule(key, state, media === null ? null : { media });
           if (result.kind === 'refused') {
-            host.adderForm.fail(`prop-add-${stateAdderId}`, result.message);
+            host.form.fail(`prop-add-${stateAdderId}`, result.message);
             return;
           }
           const id = blockId(key, picked, state);
@@ -356,7 +376,7 @@ export function renderFamilyCard(
             : host.ui.pendingStates;
           // A ::before or ::after renders nothing without content, so its adder offers that first.
           const draft = result.kind === 'pending' && needsGeneratedContent(state) ? 'content' : '';
-          host.adderForm.reset();
+          host.form.reset();
           host.patch({ pendingStates, adder: { id, draft, dest: '' }, menu: null });
         },
       },
@@ -436,12 +456,12 @@ function renderPendingBlock(entry: PendingState, label: string, uses: number, ho
     });
   };
   return html`<div class="block pending" data-block=${entry.state}>
-    <div class="blabel">
-      ${icon(pseudo ? 'pseudo' : 'cursor', 12)}
-      <span class="sel">${entry.state}</span>
-      <span class="kindtxt">${pseudo ? 'pseudo-element' : 'state'}</span>
-      ${renderKill({ label: `Remove ${label}`, title: `Remove ${label}: nothing is written yet`, tight: true, size: 11, onClick: forget })}
-    </div>
+    ${renderBlockHeader(
+      pseudo ? 'pseudo' : 'cursor',
+      entry.state,
+      pseudo ? 'pseudo-element' : 'state',
+      renderKill({ label: `Remove ${label}`, title: `Remove ${label}: nothing is written yet`, tight: true, size: 11, onClick: forget }),
+    )}
     <div class="decls" data-declarations=${id}>
       <p class="hint" style="margin:0">No declarations yet.</p>
     </div>
@@ -466,7 +486,7 @@ function renderPendingBlock(entry: PendingState, label: string, uses: number, ho
 
 /** Rules written for the class in combination (`.card.featured`, `.promo .card`) reaching the element. */
 function rulesElsewhere(name: string, host: StylesHost): string[] {
-  const mention = new RegExp(`\\.${CSS.escape(name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w-])`);
+  const mention = new RegExp(`\\.${escapeRegExp(CSS.escape(name))}(?![\\w-])`);
   return [...new Set(host.model.entries.map((entry) => entry.family))]
     .filter((family) => family !== `.${CSS.escape(name)}` && mention.test(family));
 }
@@ -788,11 +808,13 @@ export const sourcesStyles: CSSResult = css`
     font-family: var(--heo-mono);
     font-size: 10.5px;
   }
-  .blabel .kindtxt {
+  .blabel .kindtxt,
+  .blabel .note {
     color: var(--heo-text-dim);
     font-size: 10px;
   }
-  .blabel .kill {
+  .blabel .kill,
+  .blabel .note {
     margin-left: auto;
   }
   .cls .body .actions {

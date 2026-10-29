@@ -15,6 +15,7 @@ import { labelFor, selectableParent } from '../../core/dom.js';
 import { listen, unlisten } from '../../core/shield.js';
 import { resolvesOffsets } from '../../core/transform.js';
 import { normalizeClassName, simpleClassName } from '../../core/classes.js';
+import { reachText } from '../../core/save-plan.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
@@ -27,6 +28,7 @@ import {
   blockId,
   cardView,
   renderBlockAdder,
+  renderBlockHeader,
   renderFamilyCard,
   renderInlineCard,
   renderUnknownCard,
@@ -44,7 +46,6 @@ import {
   isViewportDependent,
   previewSlot,
   propertyRowStyles,
-  reachText,
   renderPropertyRow,
   saveContextFor,
   scopeKey,
@@ -308,26 +309,13 @@ export class HeoStylesPanel extends HeoElement {
         padding-top: 10px;
         border-top: 1px solid var(--heo-line);
       }
-      .egroup-h {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        margin: 0 0 7px;
-        color: var(--heo-text-dim);
+      /* A group heads a whole section rather than a block inside a card: a little larger. */
+      .egroup > .blabel {
+        margin-bottom: 7px;
       }
-      .egroup-h .sel {
-        color: var(--heo-text);
-        font-family: var(--heo-mono);
+      .egroup > .blabel .sel {
         font-size: 11px;
         font-weight: 500;
-      }
-      .egroup-h .kind,
-      .egroup-h .note {
-        color: var(--heo-text-dim);
-        font-size: 10px;
-      }
-      .egroup-h .note {
-        margin-left: auto;
       }
       .actions {
         display: flex;
@@ -571,13 +559,12 @@ export class HeoStylesPanel extends HeoElement {
       patch: (next) => this.#patch(next),
       filtering: Boolean(this.ui.filter.trim()),
       hit: (...texts) => this.#hit(...texts),
-      focusAfterRender: (property, listId) => this.#focusAfterRender(property, listId),
       focusSelector: (selector) => this.#focusSelector(selector),
-      adderForm: this.adderForm,
       mediaForm: this.mediaForm,
       toggleMenu: (id, open) => this.#toggleMenu(id, open),
       forkForm: this.forkForm,
       openCard: (key) => this.#openCard(key),
+      // The adder's errors: one adder is open at a time, so one form.
       form: this.adderForm,
       // The adder's draft is a view of the one open adder: nothing else holds one.
       get newProperty() {
@@ -739,12 +726,12 @@ export class HeoStylesPanel extends HeoElement {
         const listId = `state-${group.state}`;
         const pseudo = group.kind === 'pseudo-element';
         return html`<div class="egroup" data-egroup=${group.state}>
-          <div class="egroup-h">
-            ${icon(pseudo ? 'pseudo' : 'cursor', 12)}
-            <span class="sel">${group.state}</span>
-            <span class="kind">${pseudo ? 'pseudo-element' : 'state'}</span>
-            <span class="note">${pseudo ? 'its own box' : 'when it applies, over the above'}</span>
-          </div>
+          ${renderBlockHeader(
+            pseudo ? 'pseudo' : 'cursor',
+            group.state,
+            pseudo ? 'pseudo-element' : 'state',
+            html`<span class="note">${pseudo ? 'its own box' : 'when it applies, over the above'}</span>`,
+          )}
           <div class="rows" data-declarations=${listId}>
             ${group.properties.map((property) =>
           renderPropertyRow({ property, scope, element: el, model, listId }, host))}
@@ -844,12 +831,12 @@ export class HeoStylesPanel extends HeoElement {
     const properties = [...names].sort().filter((property) => this.#hit(property, picked, short));
     const now = mediaApplies(media, null);
     return html`<div class="egroup" data-egroup=${`size:${picked}`}>
-      <div class="egroup-h">
-        ${icon(mediaIcon(media), 12)}
-        <span class="sel">${short}</span>
-        <span class="kind">size</span>
-        <span class="note">${now ? `in effect at ${model.width}px` : `not at ${model.width}px`}</span>
-      </div>
+      ${renderBlockHeader(
+        mediaIcon(media),
+        short,
+        'size',
+        html`<span class="note">${now ? `in effect at ${model.width}px` : `not at ${model.width}px`}</span>`,
+      )}
       <div class="rows" data-declarations=${listId}>
         ${properties.map((property) =>
           renderPropertyRow({ property, scope, element: el, model, listId }, host))}

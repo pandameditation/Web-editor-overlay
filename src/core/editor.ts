@@ -42,6 +42,7 @@ import { escapeRegExp } from './css.js';
 import {
   contributionLabel,
   planViewportSave as planSave,
+  reachText,
   type AddDestination,
   type SaveContext,
   type SaveOption,
@@ -1016,9 +1017,6 @@ function mediaDetail(rule: Pick<DesignRule, 'media'>): { media?: string } {
 /** The bookkeeping attribute a solo save option is previewed through (the journal skips `data-heo-*`). */
 const SAVE_PREVIEW_ATTR = 'data-heo-save-preview';
 
-function plural(count: number, word: string): string {
-  return `${count} ${word}${count === 1 ? '' : 's'}`;
-}
 
 /** Whether a selector names `.name` as a class token. */
 function mentionsClass(selector: string, name: string): boolean {
@@ -3484,7 +3482,7 @@ export class EditorEngine {
         this.#asOneEntry(label, () => {
           for (const [property, value] of entries) this.setDeclaration(apply.target, property, value);
         });
-        notice = `Saved ${what} in ${option.title.replace(/^The /, 'the ')}, for ${plural(option.reach, 'element')}.`;
+        notice = `Saved ${what} in ${option.title.replace(/^The /, 'the ')}, for ${reachText(option.reach)}.`;
         break;
       }
       case 'new-rule': {

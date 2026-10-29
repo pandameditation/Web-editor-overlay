@@ -104,12 +104,8 @@ export interface StylesHost extends AdderHost {
   /** Whether a search narrows the panel, and the one predicate every surface filters with. */
   filtering: boolean;
   hit(...texts: Array<string | undefined>): boolean;
-  /** Focus a property's value field in one declaration list once the next render has landed. */
-  focusAfterRender(property: string, listId: string): void;
   /** Focus a control inside the panel once the next render has landed. */
   focusSelector(selector: string): void;
-  /** The adder's errors: one adder is open at a time, so one form. */
-  adderForm: FormErrors;
   /** The strips' "Add a media query…" field: one is open at a time. */
   mediaForm: FormErrors;
   /** Open or close one of the panel's menus; closing hands focus back to what opened it. */

@@ -8,7 +8,7 @@ import type {
   WriteTarget,
 } from '../../../core/cascade.js';
 import { longhandsOf, splitImportant } from '../../../core/declaration-list.js';
-import type { SaveContext } from '../../../core/save-plan.js';
+import { reachText, shortLabel, type SaveContext } from '../../../core/save-plan.js';
 import { mediaApplies } from '../../../core/viewport.js';
 import { icon } from '../../icons.js';
 import { buildSuggestions, valueKindFor } from '../../suggestions.js';
@@ -145,12 +145,6 @@ export function sourceLabel(contribution: Contribution): string {
   return `${entry.selector}${entry.media ? ` @media ${entry.media}` : ''}`;
 }
 
-/** The same, short: `inline style`, `.card ≥768px`. */
-export function shortLabel(contribution: Contribution): string {
-  if (contribution.source.kind === 'inline') return 'inline style';
-  const entry = contribution.source.entry;
-  return `${entry.selector}${entry.media ? ` ${mediaShort(entry.media)}` : ''}`;
-}
 
 /**
  * The value a field shows for a contribution.
@@ -236,10 +230,6 @@ export function saveContextFor(
   return { element: spec.element, declarations, slot, width };
 }
 
-/** "1 element", "4 elements": how many elements a rule or class reaches, said the same everywhere. */
-export function reachText(n: number): string {
-  return `${n} ${n === 1 ? 'element' : 'elements'}`;
-}
 
 export function shorten(value: string, max = 22): string {
   if (value.length <= max) return value;

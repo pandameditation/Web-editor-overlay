@@ -4,10 +4,9 @@ import type { Contribution, ElementModel } from '../../../core/cascade.js';
 import { buildSuggestions, valueKindFor } from '../../suggestions.js';
 import { icon } from '../../icons.js';
 import { renderPromote } from './promote.js';
+import { reachText, shortLabel } from '../../../core/save-plan.js';
 import {
-  reachText,
   readRow,
-  shortLabel,
   shownValue,
   slotWidth,
   sourceLabel,

@@ -85,13 +85,20 @@ export interface SaveNaming {
   stemClass(element: HTMLElement): string | null;
 }
 
+/** Where a value comes from, short: `inline style`, `.card ≥768px`. */
+export function shortLabel(by: Contribution): string {
+  if (by.source.kind === 'inline') return 'inline style';
+  const entry = by.source.entry;
+  return `${entry.selector}${entry.media ? ` ${mediaShort(entry.media)}` : ''}`;
+}
 /** A person-readable name for what wins: `.promo .card !important`, `.card ≥768px`, `inline style`. */
 export function contributionLabel(by: Contribution): string {
-  const base =
-    by.source.kind === 'inline'
-      ? 'inline style'
-      : `${by.source.entry.selector}${by.source.entry.media ? ` ${mediaShort(by.source.entry.media)}` : ''}`;
+  const base = shortLabel(by);
   return by.important ? `${base} !important` : base;
+}
+/** "1 element", "4 elements": how many elements a rule or class reaches, said the same everywhere. */
+export function reachText(n: number): string {
+  return `${n} ${n === 1 ? 'element' : 'elements'}`;
 }
 
 let warned = false;
