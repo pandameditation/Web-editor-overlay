@@ -13,9 +13,11 @@ import {
   displayOrder,
   fromRecord,
   groupFor,
+  longhandsOf,
   shorthandChain,
   shorthandGroups,
   shorthandsFor,
+  splitImportant,
   toRecord,
   valueOf,
   withPromotedSide,
@@ -278,6 +280,73 @@ test('two families stay separate, each above its own sides', () => {
     shown(block('margin=1px padding=2px margin-top=3px padding-left=4px')),
     'margin[margin-top] padding[padding-left]',
   );
+});
+
+/* -------------------------------------------------------------------------- */
+/* Longhands of a shorthand                                                    */
+/* -------------------------------------------------------------------------- */
+
+test('a box shorthand knows its four sides', () => {
+  assert.deepEqual(longhandsOf('padding'), ['padding-top', 'padding-right', 'padding-bottom', 'padding-left']);
+  assert.deepEqual(longhandsOf('margin'), ['margin-top', 'margin-right', 'margin-bottom', 'margin-left']);
+});
+
+test('border reaches every longhand under it, nearest first', () => {
+  /*
+   * Transitively, because an inline `border` override has to see a rule's
+   * `border-left-width !important`, which is two steps down.
+   */
+  const all = longhandsOf('border');
+  assert.deepEqual(all.slice(0, 7), [
+    'border-top', 'border-right', 'border-bottom', 'border-left',
+    'border-width', 'border-style', 'border-color',
+  ]);
+  assert.equal(all.length, 7 + 12);
+  assert.ok(all.includes('border-left-width'));
+  assert.ok(all.includes('border-top-color'));
+  assert.ok(!all.includes('border-top-left-radius'));
+});
+
+test('a partial shorthand reaches only its own part', () => {
+  assert.deepEqual(longhandsOf('border-width'), [
+    'border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width',
+  ]);
+  assert.deepEqual(longhandsOf('border-left'), ['border-left-width', 'border-left-style', 'border-left-color']);
+  assert.deepEqual(longhandsOf('outline'), ['outline-width', 'outline-style', 'outline-color']);
+});
+
+test('a property that is not one of these shorthands has no longhands', () => {
+  assert.deepEqual(longhandsOf('color'), []);
+  assert.deepEqual(longhandsOf('padding-left'), []);
+});
+
+test('longhandsOf inverts shorthandsFor exactly', () => {
+  for (const shorthand of ['padding', 'border', 'border-width', 'border-left', 'outline', 'border-radius']) {
+    for (const longhand of longhandsOf(shorthand)) {
+      assert.ok(shorthandChain(longhand).includes(shorthand), `${longhand} under ${shorthand}`);
+    }
+  }
+});
+
+/* -------------------------------------------------------------------------- */
+/* Importance in typed text                                                    */
+/* -------------------------------------------------------------------------- */
+
+test('a trailing !important is split off however it is spaced', () => {
+  assert.deepEqual(splitImportant('red !important'), { value: 'red', important: true });
+  assert.deepEqual(splitImportant('red!important'), { value: 'red', important: true });
+  assert.deepEqual(splitImportant('red ! important'), { value: 'red', important: true });
+  assert.deepEqual(splitImportant('red !IMPORTANT '), { value: 'red', important: true });
+});
+
+test('text that does not say is null, not false', () => {
+  // Null keeps the declaration's current importance; false would drop it on every retype.
+  assert.deepEqual(splitImportant('red'), { value: 'red', important: null });
+  assert.deepEqual(splitImportant('  12px 16px  '), { value: '12px 16px', important: null });
+});
+
+test('!important alone is an empty value that asks for importance', () => {
+  assert.deepEqual(splitImportant('!important'), { value: '', important: true });
 });
 
 /* -------------------------------------------------------------------------- */

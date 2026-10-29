@@ -127,6 +127,59 @@ export function shorthandsFor(property: string): string[] {
   return [];
 }
 
+/** Every name `shorthandsFor` knows about, which is the universe `longhandsOf` inverts. */
+const SIDES = ['top', 'right', 'bottom', 'left'] as const;
+const BORDER_PARTS = ['width', 'style', 'color'] as const;
+const SHORTHAND_FAMILY_MEMBERS: readonly string[] = [
+  ...SIDES.map((side) => `margin-${side}`),
+  ...SIDES.map((side) => `padding-${side}`),
+  ...['top-left', 'top-right', 'bottom-right', 'bottom-left'].map((corner) => `border-${corner}-radius`),
+  ...SIDES.map((side) => `border-${side}`),
+  ...BORDER_PARTS.map((part) => `border-${part}`),
+  ...SIDES.flatMap((side) => BORDER_PARTS.map((part) => `border-${side}-${part}`)),
+  ...BORDER_PARTS.map((part) => `outline-${part}`),
+];
+
+/**
+ * Every longhand a shorthand sets, nearest first: the inverse of `shorthandsFor`, over the same
+ * families.
+ *
+ * Needed by anything asking "does a rule already decide part of this shorthand": editing `padding`
+ * inline has to see a rule's `padding-top !important`, which beats a plain `padding` there. So
+ * `border` gives its four sides, its three parts and their twelve `border-{side}-{part}`, and a
+ * property that is not one of these shorthands gives nothing.
+ */
+export function longhandsOf(shorthand: string): string[] {
+  const name = shorthand.trim().toLowerCase();
+  const out: string[] = [];
+  let frontier = [name];
+  while (frontier.length) {
+    const next: string[] = [];
+    for (const parent of frontier) {
+      for (const member of SHORTHAND_FAMILY_MEMBERS) {
+        if (out.includes(member) || !shorthandsFor(member).includes(parent)) continue;
+        out.push(member);
+        next.push(member);
+      }
+    }
+    frontier = next;
+  }
+  return out;
+}
+
+/**
+ * A value with any trailing `!important` split off.
+ *
+ * `important` is null when the text does not say, which is different from saying "not important":
+ * a value retyped without the flag keeps the declaration's current importance, so the caller needs
+ * to know whether the user asked for anything at all.
+ */
+export function splitImportant(text: string): { value: string; important: boolean | null } {
+  const match = /!\s*important\s*$/i.exec(text);
+  if (!match) return { value: text.trim(), important: null };
+  return { value: text.slice(0, match.index).trim(), important: true };
+}
+
 /**
  * Every shorthand that would overwrite this property, nearest first and outermost last.
  *
