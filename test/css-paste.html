@@ -1178,6 +1178,29 @@ color: rebeccapurple;`;
       engine.cancelCssPaste();
       await frames();
 
+      /*
+       * Effective styles' Paste CSS opens the dialog in the inline context for the selected element
+       * (R16): what is pasted there is about this element, as the section is.
+       */
+      api.select(target);
+      engine.setDockTab('styles');
+      await frames();
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      const effective = deepQuery('heo-styles-panel')?.shadowRoot
+        ?.querySelector('heo-section[heading="Effective styles"]');
+      const effectivePaste = Array.from(effective?.querySelectorAll('.actions button') ?? [])
+        .find((button) => /Paste CSS/.test(button.textContent ?? ''));
+      effectivePaste?.click();
+      await frames();
+      results.effective = {
+        pasteOpensInlineContext:
+          Boolean(effectivePaste) &&
+          engine.store.value.cssPaste?.context === 'inline' &&
+          engine.store.value.cssPaste?.element === target,
+      };
+      engine.cancelCssPaste();
+      await frames();
+
       results.browserErrors = { ok: errors.length === 0, errors };
       const failed = Object.entries(results)
         .filter(([, group]) => group && typeof group === 'object')

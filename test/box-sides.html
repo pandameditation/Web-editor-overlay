@@ -177,8 +177,9 @@
          * captured once goes stale mid-gesture and every assertion after it reads a detached node.
          * That is also exactly the thing under test here, so holding a reference would hide it.
          */
+        // Effective styles' element rows: what replaced "Set on this element" (th has only inline styles).
         const modified = () =>
-          panel.shadowRoot.querySelector('heo-section[heading="Set on this element"]');
+          panel.shadowRoot.querySelector('heo-section[heading="Effective styles"] .rows[data-declarations="effective"]');
         const listed = () =>
           Array.from(modified()?.querySelectorAll('.row') ?? []).map((row) => row.dataset.property);
         const rowFor = (property) =>
@@ -218,6 +219,18 @@
           };
         }
 
+        {
+          // Spacing's margin/padding rows are the same row Effective styles draws (R32), not a copy.
+          const spacingRows = Array.from(
+            panel.shadowRoot.querySelectorAll('heo-section[heading="Spacing"] .rows[data-declarations="spacing"] .row'),
+          );
+          results.box = {
+            sidesRowsUseTheSharedRow:
+              spacingRows.map((row) => row.dataset.property).join(',') === 'margin,padding' &&
+              spacingRows.every((row) => row.dataset.heoPart === 'row') &&
+              rowFor('padding')?.dataset.heoPart === 'row',
+          };
+        }
         /* ------------------------------------------------------------------ *
          * 2. A side that is genuinely declared IS a row, and sits beside its
          *    shorthand — which is what plain alphabetical order gives.
@@ -435,8 +448,12 @@
         {
           const section = () =>
             Array.from(panel.shadowRoot.querySelectorAll('heo-section')).find(
-              (s) => s.heading === 'Set on this element',
+              (s) => s.heading === 'Effective styles',
             );
+          // Effective styles' adder waits behind "+ Add property".
+          section()?.querySelector('.add-prop[data-adder="effective"]')?.click();
+          await panel.updateComplete;
+          await frames();
           const adder = () => section()?.querySelector('.property-adder input');
           const offeredFor = async (text) => {
             const input = adder();

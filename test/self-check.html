@@ -1300,8 +1300,9 @@
       check('rowNamesTheRuleItCameFrom', () =>
         rowFor('width')?.querySelector('.from')?.textContent.trim());
       check('rowCountsAsSet', () => rowFor('width')?.classList.contains('set'));
+      // Said by the line under the focused row now (R9), which replaced the name's tooltip.
       check('rowTooltipExplainsTheOverride', () =>
-        rowFor('width')?.querySelector('.name')?.title.includes('inline override'));
+        /Overrides in the inline style/.test(rowFor('width')?.closest('.prow')?.querySelector('.where')?.textContent ?? ''));
 
       /* An inline style still wins, and is attributed to the element. */
       engine.setStyle('width', '120px', probeEl);
@@ -1652,11 +1653,11 @@
       await wait(140);
       const setSection = () =>
         Array.from(dockPanel('styles').shadowRoot.querySelectorAll('heo-section'))
-          .find((s) => s.heading === 'Set on this element');
+          .find((s) => s.heading === 'Effective styles');
       const setRows = () =>
-        Array.from(setSection()?.querySelectorAll('.rows .row') ?? []).map((r) => r.dataset.property);
+        Array.from(setSection()?.querySelectorAll('.rows[data-declarations="effective"] .row') ?? []).map((r) => r.dataset.property);
       const setRowField = (property) =>
-        Array.from(setSection()?.querySelectorAll('.rows .row') ?? [])
+        Array.from(setSection()?.querySelectorAll('.rows[data-declarations="effective"] .row') ?? [])
           .find((r) => r.dataset.property === property)
           ?.querySelector('heo-value-field');
       check('theSetSectionListsTheDeclaration', () => setRows().join(','));
@@ -1715,8 +1716,8 @@
       await frame();
       check('setSectionExcludesClassDeclarations', () => {
         const section = Array.from(dockPanel('styles').shadowRoot.querySelectorAll('heo-section'))
-          .find((s) => s.heading === 'Set on this element');
-        const rows = Array.from(section?.querySelectorAll('.rows .row') ?? [])
+          .find((s) => s.heading === 'Effective styles');
+        const rows = Array.from(section?.querySelectorAll('.rows[data-declarations="effective"] .row') ?? [])
           .map((r) => r.dataset.property);
         const fromCard = Object.keys(engine.classes.get('card').declarations);
         return `rows=${rows.join(',')} card=${fromCard.join(',')} overlap=${rows.filter((r) => fromCard.includes(r)).join(',') || 'none'}`;
@@ -1759,7 +1760,7 @@
           .find((s) => s.heading === heading);
 
       check('setOnThisElementIsInlineOnly', () =>
-        Array.from(stylesSection('Set on this element').querySelectorAll('.rows .row'))
+        Array.from(stylesSection('Effective styles').querySelectorAll('.rows[data-declarations="effective"] .row'))
           .map((r) => r.dataset.property).sort().join(','));
 
       const cssRules = stylesSection('CSS rules');
@@ -1790,7 +1791,7 @@
       await frame();
       await wait(120);
       check('emptySectionsStayClosed', () => {
-        const shut = ['Set on this element', 'Classes', 'CSS rules'].map((heading) => {
+        const shut = ['Effective styles', 'Classes', 'CSS rules'].map((heading) => {
           const section = stylesSection(heading);
           return `${heading}=${section ? section.open : 'missing'}`;
         });
@@ -1931,12 +1932,13 @@
       /*
        * And a state rule never reports as the element's current value. This is why
        * they are collected apart from the cascade: in it, the panel would claim this
-       * paragraph is already the hover colour.
+       * paragraph is already the hover colour. Effective styles' own :hover group is where it
+       * belongs, said as a state, so only the element's rows are checked.
        */
       check('noStateValueEscapesIntoTheOtherSections', () => {
         const hoverColour = 'rgb(238,17,17)';
         return !Array.from(dockPanel('styles').shadowRoot.querySelectorAll('heo-value-field'))
-          .filter((f) => !cssRules.contains(f))
+          .filter((f) => !cssRules.contains(f) && !f.closest('.egroup'))
           .some((f) => (f.value || '').replace(/\s/g, '').toLowerCase() === hoverColour);
       });
 
@@ -1952,24 +1954,26 @@
        * ------------------------------------------------------------------ */
       api.select(document.getElementById('para'));
       await frame();
+      // A class card, not the element's own inline card that the Styles panel draws first.
+      const CLASS_CARD = '.cls:not([data-card="inline"])';
       const stylesChip = Array.from(dockPanel('styles').shadowRoot.querySelectorAll('.chip .name'))
         .find((x) => x.textContent.trim() === 'card');
       stylesChip.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
       await frame();
       const columnsIn = (panel) => {
-        const row = dockPanel(panel).shadowRoot.querySelector('.cls .decl');
+        const row = dockPanel(panel).shadowRoot.querySelector(CLASS_CARD + ' .decl');
         return row ? getComputedStyle(row).gridTemplateColumns : 'no row';
       };
       const stylesColumns = columnsIn('styles');
       check('stylesClassRowLayout', () => stylesColumns);
       check('stylesAddPropertyIsVisible', () =>
         Boolean(dockPanel('styles').shadowRoot
-          .querySelector('.cls .decl .pair input')?.getClientRects().length));
+          .querySelector(CLASS_CARD + ' .decl .pair input')?.getClientRects().length));
       check('stylesConfirmIsVisible', () =>
         Boolean(dockPanel('styles').shadowRoot
-          .querySelector('.cls .confirm')?.getClientRects().length));
+          .querySelector(CLASS_CARD + ' .confirm')?.getClientRects().length));
       check('stylesRemoveSitsOnTheSameRow', () => {
-        const row = dockPanel('styles').shadowRoot.querySelector('.cls .decl');
+        const row = dockPanel('styles').shadowRoot.querySelector(CLASS_CARD + ' .decl');
         const drop = row?.querySelector('.drop');
         const field = row?.querySelector('heo-value-field');
         if (!drop || !field) return 'missing';
@@ -2323,8 +2327,8 @@
       /* Set-on-this-element lists what a rule declares, not only inline styles. */
       check('setSectionListsRuleProperties', () => {
         const section = Array.from(dockPanel('styles').shadowRoot.querySelectorAll('heo-section'))
-          .find((s) => s.heading === 'Set on this element');
-        return Array.from(section?.querySelectorAll('.rows .row') ?? [])
+          .find((s) => s.heading === 'Effective styles');
+        return Array.from(section?.querySelectorAll('.rows[data-declarations="effective"] .row') ?? [])
           .map((r) => r.dataset.property).join(',');
       });
       exprProbe.remove();
@@ -2396,12 +2400,15 @@
       await wait(120);
       const inlineSetSection = () =>
         Array.from(dockPanel('styles').shadowRoot.querySelectorAll('heo-section'))
-          .find((s) => s.heading === 'Set on this element');
+          .find((s) => s.heading === 'Effective styles');
       const inlineAdderInput = () => inlineSetSection()?.querySelector('.property-adder input');
       const sectionBeforeAdder = inlineSetSection();
       if (sectionBeforeAdder && !sectionBeforeAdder.open) {
         sectionBeforeAdder.shadowRoot.querySelector('.head')?.click();
       }
+      await frame();
+      // Effective styles' adder waits behind "+ Add property" until it is opened.
+      inlineSetSection()?.querySelector('.add-prop[data-adder="effective"]')?.click();
       await frame();
       check('setSectionOffersAnElementPropertyAdder', () => Boolean(inlineAdderInput()));
       check('elementPropertyAdderHasAConfirmButton', () =>
@@ -2426,13 +2433,14 @@
       await wait(140);
       const inlineValueField = () =>
         inlineSetSection()?.querySelector(
-          '.rows .row[data-property="letter-spacing"] heo-value-field',
+          '.rows[data-declarations="effective"] .row[data-property="letter-spacing"] heo-value-field',
         );
-      check('elementPropertyAdderSeedsAStartingValue', () => inlineValueField()?.value === '0px');
+      // Seeded with what the element resolves to now (R23), so adding it changes nothing until edited.
+      check('elementPropertyAdderSeedsAStartingValue', () => inlineValueField()?.value === 'normal');
       check('elementPropertyAdderFocusesTheNewValueField', () =>
         Boolean(inlineValueField()?.matches(':focus-within')));
       check('elementPropertyAdderCommitsAnInlineDeclaration', () =>
-        inlineAdderTarget.style.getPropertyValue('letter-spacing') === '0px');
+        inlineAdderTarget.style.getPropertyValue('letter-spacing') === 'normal');
       check('elementPropertyAdderKeepsExistingInlineDeclarations', () =>
         inlineAdderTarget.style.getPropertyValue('color') === 'rgb(1, 2, 3)');
       check('elementPropertyAdderCreatesAStyleRecord', () => {
@@ -2447,7 +2455,7 @@
         const record = engine.records.find(
           (r) => r.detail?.property === 'letter-spacing' && r.target === '#inline-adder-target',
         );
-        return Boolean(record && record.before == null && record.after === '0px');
+        return Boolean(record && record.before == null && record.after === 'normal');
       });
 
       api.undo();
@@ -2458,7 +2466,7 @@
       api.redo();
       await frame();
       check('redoRestoresTheAddedInlineProperty', () =>
-        inlineAdderTarget.style.getPropertyValue('letter-spacing') === '0px' &&
+        inlineAdderTarget.style.getPropertyValue('letter-spacing') === 'normal' &&
         inlineAdderTarget.style.getPropertyValue('color') === 'rgb(1, 2, 3)');
       engine.history.clear();
       inlineAdderTarget.remove();
@@ -2889,11 +2897,11 @@
       check('classChipIsAButton', () => Boolean(chipName()));
       chipName().dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
       await frame();
-      check('classEditorOpensInStyles', () => Boolean(sp.shadowRoot.querySelector('.cls .decls')));
+      check('classEditorOpensInStyles', () => Boolean(sp.shadowRoot.querySelector('.cls:not([data-card="inline"]) .decls')));
       check('classEditorListsDeclarations', () =>
-        Array.from(sp.shadowRoot.querySelectorAll('.cls .decl .p')).map((p) => p.textContent).join(','));
+        Array.from(sp.shadowRoot.querySelectorAll('.cls:not([data-card="inline"]) .decl .p')).map((p) => p.textContent).join(','));
       const cardBefore = engine.classes.get('card').declarations['padding'];
-      const clsField = sp.shadowRoot.querySelector('.cls .decl heo-value-field');
+      const clsField = sp.shadowRoot.querySelector('.cls:not([data-card="inline"]) .decl heo-value-field');
       clsField.dispatchEvent(new CustomEvent('value-change', {
         detail: { value: '3px' }, bubbles: true, composed: true,
       }));

@@ -232,13 +232,35 @@
         sectionsBefore: headingsOf().length,
       };
 
-      // Named for what it now covers: properties, values, classes and rules, not just names.
+      // Named for what it covers: properties, values, classes and rules, of this element's styles.
       results.styles.saysWhatItSearches =
-        filterField.getAttribute('label') === 'Search in element';
+        filterField.getAttribute('label') === 'Search styles';
 
       await typeInto(filterField, 'shadow', stylePanel);
       results.styles.narrowsTheSections = headingsOf().length < results.styles.sectionsBefore;
       results.styles.keepsTheMatchingOne = headingsOf().includes('Effects');
+
+      /* The reworked panel under a query (R8, D5, D16). */
+      const effectiveRows = () =>
+        Array.from(stylePanel.shadowRoot.querySelectorAll('[data-declarations="effective"] .row'))
+          .map((row) => row.dataset.property);
+      await typeInto(filterField, '', stylePanel);
+      const rowsUnfiltered = effectiveRows();
+      await typeInto(filterField, 'padding', stylePanel);
+      results.search = {
+        // Named for what it searches, consistently with its placeholder.
+        ariaLabelIsSearchStyles:
+          filterField.getAttribute('label') === 'Search styles' &&
+          filterField.getAttribute('placeholder') === 'Search properties, values, selectors…',
+        // `.card` gives `para` several properties; the query keeps only padding.
+        narrowsEffectiveStyles:
+          rowsUnfiltered.length > 1 && effectiveRows().join(',') === 'padding',
+        // A query asks what is here; adding something, pasting or extracting is not an answer to it.
+        hidesAdders:
+          stylePanel.shadowRoot.querySelectorAll('[data-heo-part="adder"]').length === 0 &&
+          !Array.from(stylePanel.shadowRoot.querySelectorAll('button'))
+            .some((b) => /paste css/i.test(b.textContent)),
+      };
 
       /* ---------------------------------------------------------------- *
        * What the search reaches. The bug being pinned first: margin and
@@ -288,20 +310,22 @@
       );
       results.styles.offersTheNearMiss = offered().includes('isolation');
 
-      // And taking one seeds the add popup with it, so the completion is the whole gesture.
+      // And taking one opens the Effective styles adder with it, so the completion is the whole gesture.
+      const adderBox = () => stylePanel.shadowRoot.querySelector('.property-adder[data-adder="effective"]');
+      const adderInput = () => adderBox()?.querySelector('input');
+      const closeAdder = async () => {
+        adderBox()?.querySelector('.cancel')?.click();
+        await stylePanel.updateComplete;
+        await frames();
+      };
       const isolationRow = Array.from(
         stylePanel.shadowRoot.querySelectorAll('.nomatch .offer .option'),
       ).find((b) => b.querySelector('.name').textContent.trim() === 'isolation');
       isolationRow?.click();
       await stylePanel.updateComplete;
       await frames();
-      results.styles.takingOneSeedsTheAdder =
-        (stylePanel.draftRows ?? []).length === 1 &&
-        stylePanel.draftRows[0].property === 'isolation';
-      stylePanel.shadowRoot
-        .querySelector('.addpop .pophead button')
-        ?.click();
-      await stylePanel.updateComplete;
+      results.styles.takingOneSeedsTheAdder = adderInput()?.value === 'isolation';
+      await closeAdder();
 
       // Nothing resembles it either: said plainly, with no list of red herrings.
       await typeInto(filterField, 'zzzznope', stylePanel);
@@ -309,70 +333,52 @@
         Boolean(stylePanel.shadowRoot.querySelector('.nomatch .verdict.no')) &&
         offered().length === 0;
 
-      // Back to the query the add-popup block below is written against.
-      await typeInto(filterField, 'shadow', stylePanel);
-
-      /* The add popup: seeded from the query, several rows, one change. */
+      /*
+       * The search's Add, seeded from the query.
+       *
+       * It used to open a multi-row popup; that popup is gone (one Add property everywhere, the user
+       * confirmed it), and several declarations in one step go through Paste CSS. Add now opens
+       * Effective styles' own adder with the query as its draft, one property at a time.
+       */
+      const target = document.getElementById('para');
+      await typeInto(filterField, 'box-shadow', stylePanel);
       filterField.shadowRoot.querySelector('.go').click();
       await stylePanel.updateComplete;
       await frames();
-      const popup = () => stylePanel.shadowRoot.querySelector('.addpop');
-      const popButton = (pattern) =>
-        Array.from(stylePanel.shadowRoot.querySelectorAll('.popfoot button')).find((b) =>
-          pattern.test(b.textContent),
-        );
-      results.styles.popupOpened = Boolean(popup());
-      results.styles.seededFromTheQuery =
-        popup()?.querySelector('heo-search-field')?.shadowRoot?.querySelector('input')?.value === 'shadow';
-
-      // A second row, so the batch is genuinely a batch.
-      popButton(/another/i)?.click();
-      await stylePanel.updateComplete;
-      await frames();
-      results.styles.takesMoreThanOneRow =
-        stylePanel.shadowRoot.querySelectorAll('.poprow').length === 2;
-
-      /*
-       * Filled through the real inputs rather than by assigning the panel's state.
-       *
-       * Writing `draftRows` directly looks simpler and is wrong: handing a value field a new
-       * `.value` makes it announce that value back, which overwrites the row that was just set.
-       * Typing is what the control is built for and what a user does.
-       */
-      const fillRow = async (index, property, value) => {
-        const row = stylePanel.shadowRoot.querySelectorAll('.poprow')[index];
-        const nameInput = row.querySelector('heo-search-field').shadowRoot.querySelector('input');
-        nameInput.value = property;
-        nameInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      await wait(80);
+      results.styles.popupOpened = Boolean(adderBox());
+      results.styles.seededFromTheQuery = adderInput()?.value === 'box-shadow';
+      // Add (and Enter in the field) opens Effective styles' own adder, seeded, with the caret in it.
+      results.search.addOpensTheEffectiveAdder =
+        results.styles.popupOpened &&
+        results.styles.seededFromTheQuery &&
+        stylePanel.shadowRoot.activeElement === adderInput();
+      const commitBtn = () => adderBox()?.querySelector('.confirm');
+      /** Name a property in the open adder, through its real input, and press Enter. */
+      const addNamed = async (property) => {
+        if (!adderBox()) {
+          filterField.shadowRoot.querySelector('.go').click();
+          await stylePanel.updateComplete;
+          await frames();
+        }
+        const input = adderInput();
+        input.value = property;
+        input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
         await stylePanel.updateComplete;
-        const valueInput = stylePanel.shadowRoot
-          .querySelectorAll('.poprow')[index]
-          .querySelector('heo-value-field')
-          .shadowRoot.querySelector('input');
-        valueInput.value = value;
-        valueInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        adderInput().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, composed: true, cancelable: true }));
         await stylePanel.updateComplete;
         await frames();
+        await wait(120);
       };
-      await fillRow(0, 'box-shadow', '0 1px 2px #0003');
-      await fillRow(1, 'opacity', '0.9');
-      // Both rows held on to what was typed, which is what makes the batch below meaningful.
-      results.styles.rowsTookWhatWasTyped =
-        (stylePanel.draftRows ?? []).map((r) => `${r.property}=${r.value}`).join('|') ===
-        'box-shadow=0 1px 2px #0003|opacity=0.9';
-      const changesBefore = engine.records.length;
-      // "Add 2 declarations" with two rows ready, "Add declaration" with one: the count is part of
-      // the label so the button says what it is about to do.
-      popButton(/add (\d+ )?declarations?/i)?.click();
-      await frames();
-      await wait(120);
-
-      const target = document.getElementById('para');
+      const changesBefore = engine.history.size;
+      await addNamed('box-shadow');
+      results.styles.oneUndoEntry = engine.history.size === changesBefore + 1;
+      results.styles.popupClosed = !adderBox();
+      await addNamed('opacity');
+      // Each lands inline, seeded with what the element already resolves to.
       results.styles.bothLanded =
-        target.style.boxShadow !== '' && target.style.opacity === '0.9';
-      // One entry, because the user made one decision. Two trips through the old form meant two.
-      results.styles.oneUndoEntry = engine.records.length === changesBefore + 1;
-      results.styles.popupClosed = !popup();
+        target.style.boxShadow !== '' && target.style.opacity === '1';
+      engine.undo();
       engine.undo();
       await frames();
       results.styles.undoTakesBothBack =
@@ -381,10 +387,9 @@
       /* ---------------------------------------------------------------- *
        * A property that belongs to no section, added from the verdict.
        *
-       * This is the reported bug, and it was not the write path: that
-       * worked. The popup opened with nothing focused, so the value being
-       * typed went to the document, the commit button stayed disabled with
-       * no reason given, and pressing it did nothing.
+       * The reported bug was focus: the old popup opened with nothing
+       * focused, so the next keystroke went to the document and the
+       * commit button did nothing.
        * ---------------------------------------------------------------- */
       await typeInto(filterField, 'font-stretch', stylePanel);
       results.styles.knowsUncataloguedProperties = Boolean(
@@ -396,89 +401,45 @@
       await stylePanel.updateComplete;
       await wait(150);
 
-      // Where the next keystroke goes. Seeded with the name, so the value is what is missing.
-      const focused = stylePanel.shadowRoot.activeElement;
+      // Where the next keystroke goes: the adder's field, holding the name, so Enter adds it.
       results.styles.focusesTheMissingHalf =
-        focused?.tagName.toLowerCase() === 'heo-value-field';
+        stylePanel.shadowRoot.activeElement === adderInput() && adderInput()?.value === 'font-stretch';
+      results.styles.arrivesReadyToCommit = Boolean(commitBtn()) && commitBtn().disabled === false;
 
-      const commitBtn = () =>
-        Array.from(stylePanel.shadowRoot.querySelectorAll('.popfoot button')).find((b) =>
-          /add (\d+ )?declarations?/i.test(b.textContent),
-        );
-      const stretchInput = stylePanel.shadowRoot
-        .querySelector('.poprow heo-value-field')
-        .shadowRoot.querySelector('input');
-      const setStretch = async (text) => {
-        stretchInput.value = text;
-        stretchInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-        await stylePanel.updateComplete;
-        await frames();
-      };
-
-      /*
-       * Live on arrival, because the row is seeded with a starting value.
-       *
-       * The same thing the class editor has always done when a property is added there: a
-       * declaration with no value neither renders nor says what kind of value it wants. It also
-       * means pressing the button in the verdict writes the declaration, which is what pressing it
-       * looks like it should do.
-       */
-      results.styles.arrivesReadyToCommit =
-        Boolean(commitBtn()) && commitBtn().disabled === false;
-      results.styles.seededAValue = Boolean((stylePanel.draftRows ?? [])[0]?.value);
-
-      // And when a row IS genuinely incomplete -- no property -- pressing the button says what is
-      // missing under that field and puts focus there, rather than ignoring the click, which is
-      // what the reported bug felt like. The button is never disabled.
+      // An empty name, confirmed: said under the field, with focus put back there.
       {
-        const nameField = stylePanel.shadowRoot.querySelector('.poprow heo-search-field');
-        const nameInput = nameField.shadowRoot.querySelector('input');
-        nameInput.value = '';
-        nameInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        const input = adderInput();
+        input.value = '';
+        input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
         await stylePanel.updateComplete;
         await frames();
         const styleBefore = target.getAttribute('style') ?? '';
         commitBtn()?.click();
         await stylePanel.updateComplete;
         await frames();
-        const error = stylePanel.shadowRoot.querySelector('.addpop .field-error')?.textContent ?? '';
+        const error = adderBox()?.querySelector('.field-error')?.textContent ?? '';
         results.styles.saysWhyItCannotCommit =
           commitBtn().disabled === false &&
           /property to add/i.test(error) &&
-          nameField.getAttribute('aria-invalid') === 'true' &&
-          stylePanel.shadowRoot.activeElement === nameField &&
+          adderInput().getAttribute('aria-invalid') === 'true' &&
+          stylePanel.shadowRoot.activeElement === adderInput() &&
           (target.getAttribute('style') ?? '') === styleBefore;
-        nameInput.value = 'font-stretch';
-        nameInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-        await stylePanel.updateComplete;
-        await frames();
       }
 
-      await setStretch('50%');
-      commitBtn()?.click();
+      await addNamed('font-stretch');
+      // Seeded with the resolved value, so adding it changes nothing until it is edited.
+      results.styles.seededAValue = target.style.getPropertyValue('font-stretch') !== '';
+      const stretchRow = () =>
+        stylePanel.shadowRoot.querySelector('[data-declarations="effective"] heo-value-field[data-property="font-stretch"]');
+      stretchRow()?.dispatchEvent(new CustomEvent('value-change', { detail: { value: '50%' }, bubbles: true, composed: true }));
       await stylePanel.updateComplete;
-      await wait(150);
-
+      await wait(120);
       results.styles.uncataloguedLanded = target.style.getPropertyValue('font-stretch') === '50%';
-      /*
-       * And it is on screen afterwards. The filter is dropped on commit, because a query left
-       * over the result narrows the panel to whatever still matches it -- for a property in no
-       * section, one row, and for a property picked from the completions rather than typed,
-       * nothing at all. That is what made a working add look like a no-op.
-       */
+      // The search went when the adder opened: adders are hidden while it narrows the panel.
       results.styles.filterClearedSoTheResultShows =
         filterField.shadowRoot.querySelector('input').value === '';
-      results.styles.showsUnderSetOnThisElement = (() => {
-        const first = Array.from(stylePanel.shadowRoot.querySelectorAll('heo-section')).find(
-          (s) => s.heading === 'Set on this element',
-        );
-        return Boolean(
-          first &&
-          Array.from(first.querySelectorAll('.row .pn')).some(
-            (n) => n.textContent.trim() === 'font-stretch',
-          ),
-        );
-      })();
+      results.styles.showsUnderSetOnThisElement = Boolean(stretchRow());
+      engine.undo();
       engine.undo();
       await frames();
 
@@ -509,11 +470,9 @@
 
       await frames();
       await wait(120);
-      const setSection = () =>
-        Array.from(stylePanel.shadowRoot.querySelectorAll('heo-section')).find(
-          (s) => s.heading === 'Set on this element',
-        );
-      const authoredRows = Array.from(setSection().querySelectorAll('.row .pn')).map((n) =>
+      const authoredRows = Array.from(
+        stylePanel.shadowRoot.querySelectorAll('[data-declarations="effective"] .row .pn'),
+      ).map((n) =>
         n.textContent.trim(),
       );
       results.styles.panelShowsTheAuthoredName = authoredRows.includes('word-wrap');
@@ -590,40 +549,15 @@
         said.push(`${kind}: ${message}`);
         return realNotify(message, kind);
       };
-      /* Driven through the popup, which is the panel's only way in. */
-      const addDeclaration = async (property, value) => {
+      /* Driven through Effective styles' adder, which is the panel's way in. */
+      const addDeclaration = async (property) => {
         said.length = 0;
-        if (popup()) {
-          stylePanel.shadowRoot.querySelector('.addpop .pophead button').click();
-          await stylePanel.updateComplete;
-          await frames();
-        }
-        filterField.shadowRoot.querySelector('.go').click();
-        await stylePanel.updateComplete;
-        await frames();
-        await wait(120);
-        const nameInput = stylePanel.shadowRoot
-          .querySelector('.poprow heo-search-field')
-          .shadowRoot.querySelector('input');
-        nameInput.value = property;
-        nameInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-        await stylePanel.updateComplete;
-        await frames();
-        const valueInput = stylePanel.shadowRoot
-          .querySelector('.poprow heo-value-field')
-          .shadowRoot.querySelector('input');
-        valueInput.value = value;
-        valueInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-        await stylePanel.updateComplete;
-        await frames();
-        commitBtn()?.click();
-        await stylePanel.updateComplete;
-        await wait(150);
+        await addNamed(property);
         return {
           said: [...said],
-          // A refusal is said under the row's property field, not in a toast.
-          error: stylePanel.shadowRoot.querySelector('.addpop .field-error')?.textContent ?? '',
-          stillOpen: Boolean(popup()),
+          // A refusal is said under the adder's field, not in a toast.
+          error: adderBox()?.querySelector('.field-error')?.textContent ?? '',
+          stillOpen: Boolean(adderBox()),
           style: target.getAttribute('style') ?? '',
         };
       };
@@ -631,35 +565,33 @@
       // A property THIS browser does not know is written anyway, and said out loud. Refusing it
       // made the editor unable to express a declaration for any browser but its own -- and
       // `font-width` is the spec's own name for the widely supported `font-stretch`.
-      const unknown = await addDeclaration('font-width', '125%');
-      results.styles.unsupportedIsStillWritten = unknown.style.includes('font-width: 125%');
+      const unknown = await addDeclaration('font-width');
+      results.styles.unsupportedIsStillWritten = /font-width:\s*\S/.test(unknown.style);
       results.styles.unsupportedIsFlagged = unknown.said.some((n) => /does not know/i.test(n));
 
       // Deprecated but supported: allowed, with advice naming what replaced it.
-      const legacy = await addDeclaration('word-wrap', 'break-word');
-      results.styles.deprecatedIsAllowed = legacy.style.includes('word-wrap: break-word');
+      const legacy = await addDeclaration('word-wrap');
+      results.styles.deprecatedIsAllowed = /word-wrap:\s*\S/.test(legacy.style);
       results.styles.deprecatedIsAdvised = legacy.said.some((n) => /deprecated/i.test(n));
 
       // The dedupe the panel never had, which a class always did.
-      const twice = await addDeclaration('word-wrap', 'anywhere');
+      const twice = await addDeclaration('word-wrap');
       results.styles.duplicateIsRefused = /already sets/i.test(twice.error);
       results.styles.refusalKeepsThePopupOpen = twice.stillOpen;
 
       // The validity check a class never had, which the panel always did.
-      const junk = await addDeclaration('not a property', '1');
+      const junk = await addDeclaration('not a property');
       results.styles.junkIsRefused = /is not a property name/i.test(junk.error);
       results.styles.junkIsNotWritten = !junk.style.includes('not a property');
 
       // And the trailing colon typed out of habit is normalised, not treated as gibberish:
       // CSS.supports('letter-spacing:', 'initial') is false, so it used to look invented.
-      const colon = await addDeclaration('letter-spacing:', '2px');
-      results.styles.trailingColonIsNormalised = colon.style.includes('letter-spacing: 2px');
+      await closeAdder();
+      const colon = await addDeclaration('letter-spacing:');
+      results.styles.trailingColonIsNormalised = /letter-spacing:\s*\S/.test(colon.style);
 
       engine.notify = realNotify;
-      if (popup()) {
-        stylePanel.shadowRoot.querySelector('.addpop .pophead button').click();
-        await stylePanel.updateComplete;
-      }
+      await closeAdder();
       for (const name of ['font-width', 'word-wrap', 'letter-spacing']) {
         engine.setStyle(name, '', target);
       }
@@ -685,8 +617,6 @@
         results.styles.saysWhenNothingIsClose &&
         results.styles.popupOpened &&
         results.styles.seededFromTheQuery &&
-        results.styles.takesMoreThanOneRow &&
-        results.styles.rowsTookWhatWasTyped &&
         results.styles.bothLanded &&
         results.styles.oneUndoEntry &&
         results.styles.popupClosed &&

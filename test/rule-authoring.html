@@ -359,7 +359,7 @@
           await frames();
           await wait(400);
           const inlineFamily = () =>
-            familyIn(sectionNamed('Set on this element')?.querySelector('.rows'));
+            familyIn(panelRoot().querySelector('.cls[data-card="inline"] .decls'));
           const startedAt = inlineFamily();
           results.promoting = {
             inlineHasOneControlPerSide: startedAt?.controls === 2,
@@ -524,7 +524,7 @@
           await frames();
           await wait(450);
           results.stableOrder.inline = await flipFourTimes(() =>
-            sectionNamed('Set on this element')?.querySelector('.rows'),
+            panelRoot().querySelector('.cls[data-card="inline"] .decls'),
           );
 
           /*

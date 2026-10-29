@@ -161,8 +161,11 @@ export class HeoValueField extends LitElement {
 
       /* A generous strip rather than a hairline: it is the affordance for opening
          the list, so it has to be aimable even when it holds no chip. */
+      /* Never narrower than what it holds: shrinking it slid the tag and the buttons over the text.
+         The input gives way instead. */
       .trailing {
         display: flex;
+        flex: 0 0 auto;
         align-items: center;
         justify-content: flex-end;
         gap: 2px;

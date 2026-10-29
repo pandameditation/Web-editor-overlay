@@ -2343,6 +2343,24 @@ export class EditorEngine {
     this.#bumpRevision();
   }
 
+  /**
+   * `overrideStyle` for a batch: one undo entry, each value written with the same importance rule.
+   *
+   * The box editor commits several sides at once. Through `setStyles` alone, a side edited against
+   * a rule's `!important` was written plain and ignored by the page, the bug `overrideStyle` fixes
+   * for one field.
+   */
+  overrideStyles(declarations: Record<string, string>, label: string, el = this.store.value.selected): void {
+    if (!el) return;
+    this.setStyles(
+      Object.fromEntries(
+        Object.entries(declarations).map(([property, value]) => [property, this.#inlineText(el, property, value)]),
+      ),
+      label,
+      el,
+    );
+  }
+
   /* ---------------------------------------------------------------------- */
   /* Per-property baselines                                                 */
   /* ---------------------------------------------------------------------- */

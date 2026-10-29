@@ -456,6 +456,213 @@
           third.classList.contains(desktopPlan.autoName) && engine.rules.has(desktopKey);
         engine.setPreviewWidth(null);
 
+        /* ------------------------------------------------------------------ *
+         * The panel: one edit path, and the box that asks where a value stays.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'panel';
+        const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+        const deep = (selector, root = document) => {
+          const direct = root.querySelector?.(selector);
+          if (direct) return direct;
+          for (const el of root.querySelectorAll?.('*') ?? []) {
+            if (!el.shadowRoot) continue;
+            const found = deep(selector, el.shadowRoot);
+            if (found) return found;
+          }
+          return null;
+        };
+        results.context = { innerWidth, actualIsBelow768: innerWidth < 768 };
+        const second = document.getElementById('second');
+        api.select(second);
+        engine.setDockTab('styles');
+        await frames();
+        await wait(250);
+        const panel = () => deep('heo-styles-panel');
+        const root = () => panel().shadowRoot;
+        const settle = async () => {
+          await panel().updateComplete;
+          await frames();
+        };
+        const rowIn = (list, property) =>
+          root().querySelector(`[data-declarations="${list}"] .row[data-property="${property}"]`);
+        const fieldIn = (list, property) => rowIn(list, property)?.querySelector('heo-value-field');
+        const boxUnder = (list, property) => rowIn(list, property)?.closest('.prow')?.querySelector('.savebox');
+        const anyBox = () => root().querySelector('.savebox');
+        const send = async (el, type, value) => {
+          el?.dispatchEvent(new CustomEvent(type, { detail: { value }, bubbles: true, composed: true }));
+          await settle();
+        };
+        const key = async (el, name) => {
+          el?.dispatchEvent(new KeyboardEvent('keydown', { key: name, bubbles: true, composed: true, cancelable: true }));
+          await settle();
+        };
+        const hoverRule = ruleFor('.card:hover');
+
+        /* ---- edit: each surface writes where its row says ---- */
+        let size = engine.history.size;
+        await send(fieldIn('state-:hover', 'background-color'), 'value-change', '#abcdef');
+        results.edit.stateRowWritesTheStateRule =
+          hoverRule.style.getPropertyValue('background-color') === 'rgb(171, 205, 239)' &&
+          !second.hasAttribute('style') && engine.history.size === size + 1;
+        results.ask = { neverForStateRows: !anyBox() };
+        engine.undo();
+        await settle();
+
+        rowIn('effective', 'background-color')?.querySelector('.dots')?.click();
+        await settle();
+        const baseLine = Array.from(root().querySelectorAll('.pop .c-line'))
+          .find((line) => line.querySelector('.src')?.textContent.trim().startsWith('.card'));
+        await send(baseLine?.querySelector('heo-value-field'), 'value-change', '#fafafa');
+        results.edit.popoverEditWritesDirectly =
+          baseCard.style.getPropertyValue('background-color') === 'rgb(250, 250, 250)' &&
+          !second.hasAttribute('style') && !anyBox();
+        engine.undo();
+        root().querySelector('.pop')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true }));
+        await settle();
+
+        const resetIn = (list, property) => Boolean(rowIn(list, property)?.querySelector('.reset'));
+        const resetBefore = resetIn('typography', 'color');
+        await send(fieldIn('typography', 'color'), 'value-change', 'rgb(9, 9, 9)');
+        // The same path as Effective styles: inline, and important because `.promo .card` is.
+        results.edit.categorySectionsUseTheSamePath =
+          /^rgb\(9, 9, 9\)\s*!important$/.test(inlineText(second, 'color') ?? '') && !anyBox();
+        results.reset = {
+          ...results.reset,
+          onlyAfterASessionChange:
+            !resetBefore &&
+            resetIn('typography', 'color') && resetIn('effective', 'color') &&
+            root().querySelectorAll('.egroup .reset').length === 0,
+        };
+        engine.undo();
+        await settle();
+        results.reset.onlyAfterASessionChange =
+          results.reset.onlyAfterASessionChange && !resetIn('typography', 'color');
+
+        // A pick from the value list (⌄) is a commit like typing.
+        const weightField = fieldIn('typography', 'font-weight');
+        weightField.shadowRoot.querySelector('[aria-label="Show tokens and values"]')?.click();
+        await weightField.updateComplete;
+        await frames();
+        const option = Array.from(weightField.shadowRoot.querySelectorAll('.popup [role="option"]'))
+          .find((one) => /^\s*(?:bold|700)\b/.test(one.textContent));
+        option?.click();
+        await settle();
+        results.edit.valueListPickUsesTheSamePath =
+          Boolean(option) && /^(?:bold|700)$/.test(inlineText(second, 'font-weight') ?? '');
+        engine.undo();
+        await settle();
+
+        size = engine.history.size;
+        await send(fieldIn('surface', 'background-color'), 'value-change', 'rgb(2, 2, 2)');
+        results.ask.notForAPlainRuleWinner =
+          inlineText(second, 'background-color') === 'rgb(2, 2, 2)' && !anyBox();
+        engine.undo();
+        await settle();
+
+        /* ---- the box, on Spacing's padding (its winner is a media rule at either width) ---- */
+        const padField = () => fieldIn('spacing', 'padding');
+        const padBefore = getComputedStyle(second).padding;
+        await send(padField(), 'value-input', '5px 6px');
+        const noBoxWhileTyping = !anyBox();
+        // Committed from the field itself, as Enter does, so focus moves into the box.
+        padField()?.focusInput();
+        await send(padField(), 'value-change', '5px 6px');
+        const radios = () => Array.from(boxUnder('spacing', 'padding')?.querySelectorAll('[role="radio"]') ?? []);
+        const checked = () => radios().find((one) => one.getAttribute('aria-checked') === 'true');
+        await wait(50);
+        results.ask.whenWinnerIsAMediaRule =
+          Boolean(boxUnder('spacing', 'padding')) && !inlineText(second, 'padding');
+        results.box = {
+          appearsAfterTheValueIsEntered:
+            noBoxWhileTyping && Boolean(boxUnder('spacing', 'padding')) &&
+            padField()?.hasAttribute('pending') && padField()?.value === '5px 6px',
+        };
+        const soloShown =
+          checked()?.dataset.kind === 'solo' &&
+          second.hasAttribute('data-heo-save-preview') &&
+          getComputedStyle(second).padding === '5px 6px';
+        const focusedChecked = root().activeElement === checked();
+        await key(boxUnder('spacing', 'padding'), 'ArrowDown');
+        results.box.isARadiogroupWithArrowKeys =
+          Boolean(boxUnder('spacing', 'padding')?.querySelector('[role="radiogroup"]')) &&
+          radios().length >= 2 && focusedChecked && checked()?.dataset.kind === 'inline' &&
+          root().activeElement === checked();
+        results.box.previewsTheHighlightedChoiceLive =
+          soloShown && !second.hasAttribute('data-heo-save-preview') && second.style.padding === '5px 6px';
+        size = engine.history.size;
+        await key(boxUnder('spacing', 'padding'), 'Escape');
+        results.box.escapeRevertsThePage =
+          !anyBox() && !second.hasAttribute('data-heo-save-preview') && !second.hasAttribute('style') &&
+          getComputedStyle(second).padding === padBefore;
+
+        const managedBefore = managedText();
+        const classesBefore = second.className;
+        await send(padField(), 'value-change', '5px 6px');
+        Array.from(anyBox()?.querySelectorAll('.foot .btn') ?? []).find((b) => b.textContent.trim() === 'Cancel')?.click();
+        await settle();
+        results.box.cancelLeavesNoHistory =
+          !anyBox() && engine.history.size === size && managedText() === managedBefore &&
+          second.className === classesBefore && getComputedStyle(second).padding === padBefore;
+
+        await send(padField(), 'value-change', '5px 6px');
+        engine.setPreviewWidth(1024);
+        await settle();
+        results.box.previewChangeCancelsIt =
+          !anyBox() && !second.hasAttribute('data-heo-save-preview') && !second.hasAttribute('style');
+        engine.setPreviewWidth(null);
+        await settle();
+
+        await wait(2600); // past the merge window, so one entry is one entry
+        size = engine.history.size;
+        await send(padField(), 'value-change', '5px 6px');
+        await key(checked(), 'Enter');
+        await wait(50);
+        const added = Array.from(second.classList).find((one) => one !== 'card');
+        results.box.enterSaves =
+          !anyBox() && Boolean(added) && getComputedStyle(second).padding === '5px 6px';
+        results.box.saveIsOneUndoEntry = engine.history.size === size + 1;
+        engine.undo();
+        await settle();
+        results.box.saveIsOneUndoEntry =
+          results.box.saveIsOneUndoEntry && second.className === classesBefore &&
+          getComputedStyle(second).padding === padBefore;
+
+        /* ---- categories: the same rule from every section ---- */
+        engine.setPreviewWidth(320);
+        await settle();
+        await send(fieldIn('typography', 'font-size'), 'value-change', '18px');
+        results.categories = { typographyAsksWhenViewportDependent: Boolean(boxUnder('typography', 'font-size')) };
+        await key(anyBox(), 'Escape');
+        const align = rowIn('typography', 'text-align')?.querySelector('heo-segmented');
+        await send(align, 'segment-change', 'center');
+        results.categories.segmentedUsesTheSamePath =
+          Boolean(boxUnder('typography', 'text-align')) && !inlineText(second, 'text-align');
+        await key(anyBox(), 'Escape');
+        engine.setPreviewWidth(null);
+        await settle();
+        const boxEditor = () => root().querySelector('heo-box-editor');
+        boxEditor()?.dispatchEvent(new CustomEvent('box-change', {
+          detail: { declarations: { 'padding-top': '3px' } }, bubbles: true, composed: true,
+        }));
+        await settle();
+        const spacingBox = Boolean(root().querySelector('.spacing-save .savebox')) &&
+          /Save padding-top: 3px to/.test(root().querySelector('.spacing-save .savebox .q')?.textContent.replace(/\s+/g, ' '));
+        await key(anyBox(), 'Escape');
+        const untouched = !inlineText(second, 'padding-top');
+        // `#imp` has no rule for its margin at any size, so the same commit goes inline at once.
+        api.select(imp);
+        await frames();
+        await wait(150);
+        boxEditor()?.dispatchEvent(new CustomEvent('box-change', {
+          detail: { declarations: { 'margin-left': '4px' } }, bubbles: true, composed: true,
+        }));
+        await settle();
+        // Padding's winner is a media rule, so it asks; a margin no rule sets does not.
+        results.categories.boxEditorFollowsTheSaveRule =
+          spacingBox && untouched && !anyBox() && inlineText(imp, 'margin-left') === '4px';
+        engine.undo();
+        await settle();
+
         const failed = Object.entries(results)
           .filter(([, group]) => group && typeof group === 'object')
           .filter(([, group]) => Object.values(group).some((value) => value === false))

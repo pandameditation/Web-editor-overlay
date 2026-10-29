@@ -1,17 +1,15 @@
 import { css, html, nothing, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
+import { isPseudoElement, needsGeneratedContent } from '../../core/breakpoints.js';
 import {
   appliedRules,
-  authoredInline,
   cascadedDeclarations,
-  declaredMap,
-  declaredValues,
   fromElementClass,
-  inlineDeclarations,
   stateRules,
   type AppliedRule,
-  type DeclarationOrigin,
+  type ElementModel,
+  type WriteTarget,
 } from '../../core/cascade.js';
 import {
   parentLayoutProperties,
@@ -20,26 +18,17 @@ import {
   sizeConstraints,
   type SizeConstraint,
 } from '../../core/css.js';
-import {
-  displayOrder,
-  fromRecord,
-  shorthandGroups,
-} from '../../core/declaration-list.js';
+import { splitImportant, toRecord } from '../../core/declaration-list.js';
 import { ruleDeclarations } from '../../core/sheets.js';
-import {
-  checkDeclaration,
-  normalizeProperty,
-  propertyIsKnown,
-} from '../../core/declarations.js';
+import { normalizeProperty, propertyIsKnown } from '../../core/declarations.js';
 import { labelFor, selectableParent } from '../../core/dom.js';
 import { listen, unlisten } from '../../core/shield.js';
 import { resolvesOffsets } from '../../core/transform.js';
-import { normalizeClassName } from '../../core/classes.js';
+import { normalizeClassName, simpleClassName } from '../../core/classes.js';
 import type { DesignClass } from '../../core/types.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
-import { anchoredStyle } from '../place.js';
 import { baseStyles } from '../theme.js';
 import { buildSuggestions, classSuggestions, valueKindFor } from '../suggestions.js';
 import { adderStyles } from './adder.js';
@@ -47,19 +36,35 @@ import { selectionNotice, selectionNoticeStyles } from './selection-notice.js';
 import {
   ClassEditor,
   focusDeclaration,
-  renderFamilies,
   initialValueFor,
   type DeclarationTarget,
 } from './class-editor.js';
-import { renderAdder } from './styles/property-adder.js';
+import { renderCascadePopover, popoverStyles } from './styles/cascade-popover.js';
+import { menuStyles, placeLayer } from './styles/menu.js';
+import {
+  renderAdder,
+  stylesDestination,
+  type AdderDestination,
+} from './styles/property-adder.js';
+import {
+  isViewportDependent,
+  propertyRowStyles,
+  renderPropertyRow,
+  saveContextFor,
+  scopeKey,
+  shownValue,
+  type RowSpec,
+} from './styles/property-row.js';
+import { beginSave, cancelSave, renderSaveBox, saveBoxStyles } from './styles/save-box.js';
+import type { RowScope, StylesHost, StylesUiState } from './styles/types.js';
 import type { HeoValueField } from '../controls/value-field.js';
 import '../controls/value-field.js';
 import '../controls/search-field.js';
 import '../controls/box-editor.js';
 import '../controls/segmented.js';
 import '../controls/section.js';
-import { classNameIssues, forkNameIssues, type FieldIssue } from '../../core/validation.js';
-import { field, fieldLabel, FormErrors } from '../form-errors.js';
+import { classNameIssues, forkNameIssues } from '../../core/validation.js';
+import { field, FormErrors } from '../form-errors.js';
 
 interface SectionSpec {
   id: string;
@@ -181,7 +186,9 @@ const SECTIONS: SectionSpec[] = [
   {
     id: 'effects',
     heading: 'Effects',
-    glyph: 'sparkle',
+    // Not the sparkle any more: that is Effective styles' glyph, and two sections sharing one
+    // picture made the panel's two most different sections look related.
+    glyph: 'eye',
     properties: ['opacity', 'box-shadow', 'filter', 'backdrop-filter', 'transform', 'mix-blend-mode', 'cursor'],
   },
   {
@@ -212,37 +219,8 @@ const SPACING_PROPERTIES = [
   'padding-left',
 ];
 
-/**
- * Identity of the element's own declaration list, shared by its rows and its adder.
- *
- * One string in one place because the two have to agree: the adder reports it when it asks for
- * focus, and the rows container answers to it. Spelling it twice is how they would drift.
- */
-const INLINE_ADDER_ID = 'inline-style';
-
-/** Properties rendered as a segmented control instead of a text field. */
-const SEGMENTED: Record<string, Array<{ value: string; label?: string; icon?: string; title?: string }>> = {
-  'flex-direction': [
-    { value: 'row', icon: 'columns', title: 'Row' },
-    { value: 'column', icon: 'rows', title: 'Column' },
-    { value: 'row-reverse', label: 'R⇄', title: 'Row reverse' },
-    { value: 'column-reverse', label: 'C⇅', title: 'Column reverse' },
-  ],
-  'text-align': [
-    { value: 'left', label: 'L', title: 'Left' },
-    { value: 'center', label: 'C', title: 'Center' },
-    { value: 'right', label: 'R', title: 'Right' },
-    { value: 'justify', label: 'J', title: 'Justify' },
-  ],
-  'box-sizing': [
-    { value: 'content-box', label: 'content' },
-    { value: 'border-box', label: 'border' },
-  ],
-  'flex-wrap': [
-    { value: 'nowrap', label: 'no wrap' },
-    { value: 'wrap', label: 'wrap' },
-  ],
-};
+/** The Effective styles element block: its rows' list and its adder share the id. */
+const EFFECTIVE_LIST_ID = 'effective';
 
 /**
  * Sections the user has opened or closed by hand, which then wins for the session.
@@ -265,15 +243,22 @@ function sectionOpen(id: string, fallback: boolean): boolean {
   return userToggled.get(id) ?? fallback;
 }
 
+const EMPTY_UI: StylesUiState = {
+  filter: '',
+  popover: null,
+  menu: null,
+  adder: null,
+  pending: null,
+};
+
 /**
  * The style editor.
  *
- * Two halves. The top half is a task-oriented form: the groups a designer
- * reaches for, each field aware of the project's design tokens, each showing
- * whether the value is set here or inherited from the cascade. The bottom half is
- * a cascade inspector that shows which rule actually wins and lets that rule be
- * edited in place — the difference between patching one element with an inline
- * override and fixing the class that every instance shares.
+ * Effective styles comes first: what the element renders with, one row per property, each with a
+ * dot that opens the cascade behind it. Under it, where those styles are written, then the
+ * task-oriented sections a designer reaches for. Every property row in the panel is the same row
+ * with the same edit path, so a value typed in Typography goes where one typed in Effective styles
+ * goes, and asks where it should stay when the page shows it only at some widths.
  */
 @customElement('heo-styles-panel')
 export class HeoStylesPanel extends HeoElement {
@@ -282,6 +267,10 @@ export class HeoStylesPanel extends HeoElement {
     ClassEditor.styles,
     adderStyles,
     selectionNoticeStyles,
+    propertyRowStyles,
+    popoverStyles,
+    saveBoxStyles,
+    menuStyles,
     css`
       :host {
         display: block;
@@ -296,75 +285,48 @@ export class HeoStylesPanel extends HeoElement {
         border-bottom: 1px solid var(--heo-line);
       }
 
-      .rows {
-        display: grid;
-        gap: 6px;
+      /* Effective styles: the element, then a group per state or pseudo-element. */
+      .egroup {
+        margin-top: 12px;
+        padding-top: 10px;
+        border-top: 1px solid var(--heo-line);
       }
-      /* The trailing column collapses to nothing when a row has no reset button,
-         so rows without one stay flush with the rest. */
-      .row {
-        display: grid;
-        grid-template-columns: 96px minmax(0, 1fr) auto;
-        align-items: center;
-        gap: 6px;
-      }
-      .reset {
-        display: grid;
-        place-items: center;
-        width: 20px;
-        height: 20px;
-        border: 0;
-        border-radius: 5px;
-        background: transparent;
-        color: var(--heo-text-faint);
-        cursor: pointer;
-        padding: 0;
-      }
-      .reset:hover {
-        background: var(--heo-hover);
-        color: var(--heo-accent);
-      }
-      .row .pn {
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .row > .name {
+      .egroup-h {
         display: flex;
         align-items: center;
-        gap: 4px;
-        overflow: hidden;
+        gap: 6px;
+        margin: 0 0 7px;
         color: var(--heo-text-dim);
-        font-family: var(--heo-mono);
-        font-size: 10.5px;
-        text-overflow: ellipsis;
-        white-space: nowrap;
       }
-      .row.set > .name {
+      .egroup-h .sel {
         color: var(--heo-text);
+        font-family: var(--heo-mono);
+        font-size: 11px;
+        font-weight: 500;
       }
-      /* The selector a value arrived from. Worth a glance because editing the row
-         writes an inline override rather than changing that rule. */
-      .row .from {
-        flex: 0 1 auto;
-        min-width: 0;
-        overflow: hidden;
-        color: var(--heo-accent);
-        font-size: 9.5px;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        opacity: 0.75;
+      .egroup-h .kind,
+      .egroup-h .note {
+        color: var(--heo-text-dim);
+        font-size: 10px;
       }
-      .row .dot {
-        width: 5px;
-        height: 5px;
-        flex: 0 0 auto;
-        border-radius: 999px;
-        background: var(--heo-accent);
-        opacity: 0;
+      .egroup-h .note {
+        margin-left: auto;
       }
-      .row.set .dot {
-        opacity: 1;
+      .block-add {
+        margin-top: 4px;
+      }
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 10px;
+      }
+      .spacing-save {
+        margin-top: 4px;
+      }
+      /* The cap notice keeps its own two-column row: a name and the owner's value. */
+      .capped .row {
+        grid-template-columns: 96px minmax(0, 1fr);
       }
 
       /* Classes */
@@ -647,64 +609,18 @@ export class HeoStylesPanel extends HeoElement {
         font-size: 9.5px;
       }
 
-      /* Add declaration */
-      .adder {
-        display: grid;
-        gap: 6px;
-      }
-      .adder .pick {
-        position: relative;
-      }
-      .adder .options {
-        position: absolute;
-        left: 0;
-        right: 0;
-        top: 30px;
-        z-index: 5;
-        max-height: 190px;
-        overflow-y: auto;
-        padding: 4px;
-        border: 1px solid var(--heo-line-strong);
-        border-radius: var(--heo-r-sm);
-        background: var(--heo-raised);
-        box-shadow: var(--heo-shadow-lg);
-      }
-      .adder .option {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 8px;
-        width: 100%;
-        padding: 4px 7px;
-        border: 0;
-        border-radius: 5px;
-        background: transparent;
-        color: var(--heo-text);
-        font-family: var(--heo-mono);
-        font-size: 11px;
-        text-align: left;
-        cursor: pointer;
-      }
-      .adder .option:hover {
-        background: var(--heo-hover);
-      }
-      .adder .option span:last-child {
-        color: var(--heo-text-faint);
-        font-family: var(--heo-font);
-        font-size: 10px;
-      }
     `,
   ];
-
-  /** Where the add-a-property fields say what is wrong with a name; checks run on commit. */
-  protected propertyForm = new FormErrors(this, () => []);
 
   protected state = new StoreController(
     this,
     this.editor.store,
-    (s) => [s.selected, s.selection, s.revision, s.registry, s.geometry] as const,
+    (s) => [s.selected, s.selection, s.revision, s.registry, s.geometry, s.previewWidth] as const,
     shallowArrayEquals,
   );
+
+  /** Everything the panel's pieces read and change, replaced whole so a render follows. */
+  @state() private ui: StylesUiState = EMPTY_UI;
 
   @state() private classDraft = '';
   /** Which class chip is expanded into its definition, if any. */
@@ -714,23 +630,6 @@ export class HeoStylesPanel extends HeoElement {
   /** Name typed for the copy, empty while the suggested one will do. */
   @state() private forkDraft = '';
   @state() private classProperty = '';
-  /** Draft in the element-scoped property adder, kept apart from class and rule drafts. */
-  @state() private inlineProperty = '';
-  /** What the panel is being filtered by. Empty shows every section. */
-  @state() private filter = '';
-  /** Whether the add-a-declaration popup is up. */
-  @state() private adderOpen = false;
-  /** Where it is placed, computed against the trigger when it opens. */
-  @state() private adderStyle = '';
-  /**
-   * The declarations being written, one row each.
-   *
-   * A list rather than a single pair, because setting one property is rarely the whole intention —
-   * a shadow is a colour and an offset, a grid is a template and a gap. The old form could only
-   * take one at a time, so three declarations meant three trips through the same box and three
-   * separate entries on the undo stack.
-   */
-  @state() private draftRows: Array<{ property: string; value: string }> = [];
 
   /* The panel's small forms, each with its own errors. See `form-errors.ts`. */
   protected classForm = new FormErrors(this, () => classNameIssues('class-add', this.classDraft));
@@ -739,7 +638,8 @@ export class HeoStylesPanel extends HeoElement {
     if (!name) return [];
     return forkNameIssues('class-fork', this.forkDraft, name, (candidate) => Boolean(this.editor.classes.get(candidate)));
   });
-  protected adderForm = new FormErrors(this, () => this.#adderIssues());
+  /** The one open adder's errors; checks run on commit, through `form.fail`. */
+  protected adderForm = new FormErrors(this, () => []);
   /** The element whose size cap has already auto-opened the parent section. */
   #capsShownFor: HTMLElement | null = null;
   @state() private sectionsVersion = 0;
@@ -752,6 +652,117 @@ export class HeoStylesPanel extends HeoElement {
    */
   private readonly openRules = new Map<string, string>();
 
+  /** The model of the last render, and what it was built from. */
+  #memo: { key: unknown[]; model: ElementModel } | null = null;
+  /** What the last update saw, to tell a new selection or preview width from a re-render. */
+  #seen: { element: HTMLElement | null; width: number | null } = { element: null, width: null };
+  /** The popover that was open after the last render, to focus a new one once. */
+  #shownPopover: string | null = null;
+
+  /**
+   * The selected element's model, built once per render and reused until something it reads
+   * changes: the element, the document, the registries, the geometry, the preview width or one of
+   * the engine's in-flight previews (whose paint the model subtracts).
+   */
+  #model(el: HTMLElement): ElementModel {
+    const engine = this.editor;
+    const s = engine.store.value;
+    const inline = engine.previewTarget;
+    const rule = engine.rulePreviewTarget;
+    const cls = engine.classPreviewTarget;
+    const design = engine.designRulePreviewTarget;
+    const key: unknown[] = [
+      el, s.revision, s.registry, s.geometry, s.previewWidth, engine.settings.value.viewportSizes,
+      inline?.el, inline?.property, inline?.before,
+      rule?.rule, rule?.property, rule?.before,
+      cls?.name, cls && JSON.stringify(cls.declarations),
+      design?.key, design && JSON.stringify(design.declarations),
+    ];
+    const memo = this.#memo;
+    if (memo && memo.key.length === key.length && memo.key.every((one, at) => one === key[at])) {
+      return memo.model;
+    }
+    const model = engine.elementModel(el);
+    this.#memo = { key, model };
+    return model;
+  }
+
+  override willUpdate(): void {
+    const element = this.editor.selected;
+    const width = this.editor.store.value.previewWidth;
+    const seen = this.#seen;
+    this.#seen = { element, width };
+    // What was open belonged to the old selection or the old width's question. The engine has
+    // already put the page back (select and setPreviewWidth end a save preview).
+    if (element !== seen.element) {
+      this.ui = { ...this.ui, popover: null, menu: null, adder: null, pending: null };
+    } else if (width !== seen.width) {
+      this.ui = { ...this.ui, popover: null, menu: null, pending: null };
+    }
+  }
+
+  override updated(): void {
+    this.#placeLayers();
+    const popover = this.ui.popover?.rowId ?? null;
+    if (popover && popover !== this.#shownPopover) {
+      this.renderRoot.querySelector<HTMLElement>('.pop')?.focus({ preventScroll: true });
+    }
+    this.#shownPopover = popover;
+  }
+
+  /** Keep the open popover and menu under what they belong to; close one whose anchor went away. */
+  #placeLayers(): void {
+    const root = this.renderRoot;
+    const popover = this.ui.popover;
+    if (popover) {
+      const anchor = root.querySelector(`.row[data-row="${CSS.escape(popover.rowId)}"]`);
+      if (!anchor) this.ui = { ...this.ui, popover: null };
+      else placeLayer(root.querySelector<HTMLElement>('.pop'), anchor, { minWidth: 300, gap: 4 });
+    }
+    const menu = this.ui.menu;
+    if (menu) {
+      const anchor = root.querySelector(`[data-menu-anchor="${CSS.escape(menu.id)}"]`);
+      if (!anchor) this.ui = { ...this.ui, menu: null };
+      else placeLayer(root.querySelector<HTMLElement>(`.menu[data-menu="${CSS.escape(menu.id)}"]`), anchor);
+    }
+  }
+
+  #patch(next: Partial<StylesUiState>): void {
+    this.ui = { ...this.ui, ...next };
+  }
+
+  /** What every piece is handed: the engine, this render's model and the panel's state. */
+  #host(el: HTMLElement, model: ElementModel): StylesHost {
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    const panel = this;
+    return {
+      engine: this.editor,
+      element: el,
+      model,
+      previewWidth: this.editor.store.value.previewWidth,
+      get ui() {
+        return panel.ui;
+      },
+      patch: (next) => this.#patch(next),
+      filtering: Boolean(this.ui.filter.trim()),
+      hit: (...texts) => this.#hit(...texts),
+      focusAfterRender: (property, listId) => this.#focusAfterRender(property, listId),
+      focusSelector: (selector) => this.#focusSelector(selector),
+      adderForm: this.adderForm,
+      form: this.adderForm,
+      // The adder's draft is a view of the one open adder: nothing else holds one.
+      get newProperty() {
+        return panel.ui.adder?.draft ?? '';
+      },
+      onNewProperty: (value) => {
+        const adder = this.ui.adder;
+        if (adder) this.#patch({ adder: { ...adder, draft: value } });
+      },
+      onFocus: (property, scope) => this.#focusAfterRender(property, scope ?? ''),
+      openSource: (_property, target) => this.#openSource(el, target),
+    };
+  }
+
   override render(): TemplateResult {
     const el = this.editor.selected;
     if (!el || !el.isConnected) {
@@ -762,35 +773,11 @@ export class HeoStylesPanel extends HeoElement {
     }
 
     const computed = getComputedStyle(el);
-    const inFlight = this.editor.previewTarget;
-    const preview = inFlight && inFlight.el === el ? inFlight : null;
+    const model = this.#model(el);
+    const host = this.#host(el, model);
     const rules = appliedRules(el);
     const cascade = cascadedDeclarations(rules);
-    const inline = authoredInline(el, preview);
-    const { values: declared, origins } = declaredMap(cascade, inline);
-    // Subtract any live preview. It is painted onto the style attribute, so the cascade
-    // read above cannot tell it apart from a value the user actually set — and feeding
-    // it back into the row it came from would tell that row its half-typed text is
-    // already committed. Undo then has nothing to take back, and the commit that
-    // follows looks like a no-op.
-    //
-    // The origin is put back along with the value, and that is the part that keeps
-    // backspace from being destructive. Emptying a field takes the property out of the
-    // style attribute, so the row read as "this element declares nothing here" and was
-    // dropped from "Set on this element" on the keystroke that blanked it — taking the
-    // caret, and the value being replaced, with it. The declaration is still there as
-    // far as the user and the undo stack are concerned, so the row stays until the
-    // empty value is actually committed, which is to say until focus leaves.
-    if (preview) {
-      if (preview.before) {
-        declared.set(preview.property, preview.before);
-        origins.set(preview.property, { kind: 'inline', selector: 'style attribute' });
-      } else {
-        declared.delete(preview.property);
-      }
-    }
-
-    const filtering = Boolean(this.filter.trim());
+    const filtering = host.filtering;
     /*
      * Computed once, used three times.
      *
@@ -799,48 +786,435 @@ export class HeoStylesPanel extends HeoElement {
      * CSS rules section all read the same list rather than each rebuilding it.
      */
     const matching = this.#matchingRules(el, rules);
-    const found = filtering ? this.#matchCount(el, computed, declared, matching) : -1;
+    const found = filtering ? this.#matchCount(el, model, computed, matching) : -1;
+    const popover = this.ui.popover;
+    const popoverOn = popover?.scope.kind === 'parent' && popover.scope.element !== el
+      ? popover.scope.element
+      : el;
 
     return html`
       ${selectionNotice(this.editor.selection.length, el)}
       <div class="top">
         <span class="chip">${icon('cursor', 11)} ${labelFor(el)}</span>
-        <!--
-          The filter sits on the first line, in the room Extract class used to take.
-
-          It is the most-wanted thing in a panel this long — there are more than a hundred
-          properties across a dozen sections — so it belongs where the eye already is rather than
-          buried among them. Extract class moved into Classes, which is where the rest of that
-          subject lives anyway.
-        -->
         <heo-search-field
-          label="Search in element"
-          placeholder="Search in element…"
-          .value=${this.filter}
+          label="Search styles"
+          placeholder="Search properties, values, selectors…"
+          .value=${this.ui.filter}
           .count=${found}
           action=${this.#addLabel()}
           action-icon="plus"
           action-compact
-          @search-input=${(event: CustomEvent<{ value: string }>) => {
-        this.filter = event.detail.value;
-      }}
-          @search-submit=${() => this.#openAdder(this.filter.trim())}
+          @search-input=${(event: CustomEvent<{ value: string }>) => this.#patch({ filter: event.detail.value })}
+          @search-submit=${() => this.#openEffectiveAdder(this.ui.filter.trim())}
         ></heo-search-field>
       </div>
 
-      ${this.#renderModified(el, computed, declared, origins, inline)}
+      ${this.#renderEffective(el, model, host)}
+      ${this.#renderInlineCard(el, model, host)}
       ${this.#renderClasses(el)} ${this.#renderCssRules(el, matching, cascade)}
-      ${this.#renderSpacing(el, computed, declared, origins)}
+      ${this.#renderSpacing(el, model, computed, host)}
       ${SECTIONS.filter((section) => !section.when || section.when(computed)).map((section) =>
-        this.#renderSection(section, el, computed, declared, origins),
-      )}
-      ${this.#renderParent(el, computed, declared, origins)}
-      <!-- Withheld while the popup is up: the user has acted on these completions, and leaving
-           them behind the popup restates a question that has been answered. -->
-      ${found === 0 && !this.adderOpen ? this.#renderNoMatch() : nothing}
-      ${this.adderOpen ? this.#renderAddPopup(el) : nothing}
+      this.#renderSection(section, el, model, host),
+    )}
+      ${this.#renderParent(el, model, host)}
+      ${found === 0 ? this.#renderNoMatch() : nothing}
+      ${popover
+        ? renderCascadePopover(
+          popover,
+          host,
+          popoverOn,
+          popoverOn === el ? model : this.editor.elementModel(popoverOn),
+        )
+        : nothing}
     `;
   }
+
+  /* ---------------------------------------------------------------------- */
+  /* Effective styles                                                       */
+  /* ---------------------------------------------------------------------- */
+
+  /**
+   * What the element renders with, first in the panel.
+   *
+   * One row per property with an applying declaration, wherever it is declared, because "what is
+   * this element actually using" is the question people open a style panel with. Each row's dot
+   * opens the cascade behind its value; the rows edit like every other row in the panel. Then a
+   * group per state or pseudo-element in effect now, whose rows write into that state's own rule,
+   * since a hover colour cannot be an inline style.
+   */
+  #renderEffective(el: HTMLElement, model: ElementModel, host: StylesHost): TemplateResult | typeof nothing {
+    const filtering = host.filtering;
+    const own = model.appliedProperties().filter((property) => {
+      const list = model.cascade(property);
+      return this.#hit(
+        property,
+        list.applying[0]?.value,
+        ...list.applying.map((one) => (one.source.kind === 'rule' ? one.source.entry.selector : 'inline style')),
+      );
+    });
+    const groups = model.groups().map((group) => {
+      const all = statePropertiesOf(model, group.state);
+      return {
+        ...group,
+        properties: this.#hit(group.state)
+          ? all
+          : all.filter((property) =>
+            this.#hit(property, shownValue(model.cascade(property, { width: null, state: group.state }).applying[0]))),
+      };
+    }).filter((group) => group.properties.length);
+    if (filtering && !own.length && !groups.length) return nothing;
+    const at = host.previewWidth;
+
+    return html`<heo-section
+      heading="Effective styles"
+      glyph="sparkle"
+      badge=${model.appliedProperties().length ? String(model.appliedProperties().length) : ''}
+      ?open=${filtering ? true : sectionOpen('effective', true)}
+      @section-toggle=${(event: CustomEvent<{ open: boolean }>) => this.#remember('effective', event.detail.open)}
+    >
+      <p class="hint" style="margin:0 0 9px">
+        What this element renders with${at !== null ? ` at ${at}px` : ''}, after the cascade. Pick a
+        size to see what changes there. Click a dot to see what else declares it.
+      </p>
+      <div class="rows" data-declarations=${EFFECTIVE_LIST_ID}>
+        ${own.map((property) =>
+      renderPropertyRow({ property, scope: { kind: 'element' }, element: el, model, listId: EFFECTIVE_LIST_ID }, host))}
+      </div>
+      ${own.length ? nothing : html`<p class="hint" style="margin:0">
+        ${filtering ? 'No property matches.' : 'Nothing declares anything for this element yet.'}
+      </p>`}
+      ${this.#renderBlockAdder(host, EFFECTIVE_LIST_ID, this.#elementDestinations(el, model), '')}
+      ${groups.map((group) => {
+        const scope: RowScope = { kind: 'state', state: group.state };
+        const listId = `state-${group.state}`;
+        const pseudo = group.kind === 'pseudo-element';
+        return html`<div class="egroup" data-egroup=${group.state}>
+          <div class="egroup-h">
+            ${icon(pseudo ? 'pseudo' : 'cursor', 12)}
+            <span class="sel">${group.state}</span>
+            <span class="kind">${pseudo ? 'pseudo-element' : 'state'}</span>
+            <span class="note">${pseudo ? 'its own box' : 'when it applies, over the above'}</span>
+          </div>
+          <div class="rows" data-declarations=${listId}>
+            ${group.properties.map((property) =>
+          renderPropertyRow({ property, scope, element: el, model, listId }, host))}
+          </div>
+          ${this.#renderBlockAdder(host, listId, this.#stateDestinations(el, model, group.state), group.state)}
+        </div>`;
+      })}
+      ${filtering
+        ? nothing
+        : html`<div class="actions">
+            <button
+              class="btn sm"
+              type="button"
+              title="Paste CSS and choose whether it belongs inline, in a class, or in a rule"
+              @click=${() => this.editor.beginCssPaste({ context: 'inline', element: el })}
+            >
+              ${icon('clipboard', 12)} Paste CSS…
+            </button>
+          </div>`}
+    </heo-section>`;
+  }
+
+  /** "+ Add property" under a block, with the places it can write. Hidden while searching. */
+  #renderBlockAdder(
+    host: StylesHost,
+    id: string,
+    destinations: AdderDestination[],
+    state: string,
+  ): TemplateResult | typeof nothing {
+    if (host.filtering) return nothing;
+    const open = this.ui.adder?.id === id ? this.ui.adder : null;
+    const el = host.element;
+    return html`<div class="block-add">
+      ${renderAdder(
+      {
+        id,
+        mode: 'property',
+        destinations,
+        selected: open?.dest,
+        disclosure: true,
+        open: Boolean(open),
+        menuOpen: this.ui.menu?.id === `dest-${id}`,
+        onOpen: () => {
+          this.adderForm.reset();
+          this.#patch({ adder: { id, draft: '', dest: '' }, menu: null, popover: null });
+        },
+        onCancel: () => {
+          this.adderForm.reset();
+          this.#patch({ adder: null, menu: null });
+        },
+        onPick: (key) => {
+          const adder = this.ui.adder;
+          if (adder) this.#patch({ adder: { ...adder, dest: key } });
+        },
+        onMenu: (opened) => {
+          this.#patch({ menu: opened ? { id: `dest-${id}` } : null });
+          if (opened) this.#focusSelector(`.menu[data-menu="${CSS.escape(`dest-${id}`)}"] .mi[aria-checked="true"]`, true);
+        },
+        seed: (property) => seedFor(el, state, property),
+        commit: (property, value, dest) => {
+          if (!dest.dest) return;
+          this.#patch({ adder: null, menu: null });
+          const { hint } = this.editor.addDeclaration(dest.dest, property, value);
+          if (hint) this.editor.notify(hint, 'info');
+        },
+      },
+      host,
+    )}
+    </div>`;
+  }
+
+  /** Where the element block's adder writes: inline (the default), each class, a new class. */
+  #elementDestinations(el: HTMLElement, model: ElementModel): AdderDestination[] {
+    const destinations = [
+      stylesDestination(
+        'inline style',
+        'this element only, every size',
+        { kind: 'target', target: { kind: 'inline', element: el } },
+        toRecord(model.inline),
+        'this element',
+      ),
+    ];
+    for (const name of Array.from(el.classList)) {
+      if (name.startsWith('heo-')) continue;
+      const base = model.entries.find((entry) =>
+        simpleClassName(entry.family) === name &&
+        entry.state === '' &&
+        entry.media === null &&
+        entry.target.kind !== 'readonly');
+      const owned = this.editor.classes.get(name);
+      const target: WriteTarget | null = base
+        ? base.target
+        : owned && owned.origin !== 'stylesheet'
+          ? { kind: 'class', name }
+          : null;
+      const reach = model.reach(`.${CSS.escape(name)}`);
+      destinations.push(
+        stylesDestination(
+          `.${name}`,
+          `${reach} ${reach === 1 ? 'element' : 'elements'}, every size`,
+          target ? { kind: 'target', target } : { kind: 'new-rule', selector: `.${CSS.escape(name)}`, media: null },
+          base ? toRecord(base.declarations) : owned ? { ...owned.declarations } : {},
+          `.${name}`,
+        ),
+      );
+    }
+    destinations.push(
+      stylesDestination(
+        'a new class',
+        'this element only',
+        { kind: 'auto-class', element: el, media: null, state: '' },
+        {},
+        'a new class',
+      ),
+    );
+    return destinations;
+  }
+
+  /**
+   * Where a state group's adder writes: the families that already have that state first, then the
+   * rest, then a new class of the element's own in that state.
+   */
+  #stateDestinations(el: HTMLElement, model: ElementModel, state: string): AdderDestination[] {
+    const { classes, others } = model.families();
+    const keys = [...classes, ...others].map((family) => family.key);
+    const existing = (key: string) =>
+      model.entries.find((entry) =>
+        entry.family === key && entry.state === state && entry.media === null && entry.target.kind !== 'readonly');
+    const ordered = [...keys.filter((key) => existing(key)), ...keys.filter((key) => !existing(key))];
+    return [
+      ...ordered.map((key) => {
+        const entry = existing(key);
+        const reach = model.reach(key);
+        return stylesDestination(
+          `${key}${state}`,
+          `${reach} ${reach === 1 ? 'element' : 'elements'}`,
+          entry ? { kind: 'target', target: entry.target } : { kind: 'new-rule', selector: `${key}${state}`, media: null },
+          entry ? toRecord(entry.declarations) : {},
+          `${key}${state}`,
+        );
+      }),
+      stylesDestination(
+        `a new class${state}`,
+        'this element only',
+        { kind: 'auto-class', element: el, media: null, state },
+        {},
+        `a new class${state}`,
+      ),
+    ];
+  }
+
+  /**
+   * Open the Effective styles adder, seeded with what was being looked for.
+   *
+   * Searching for a property and not finding it is the most common way somebody arrives at wanting
+   * to add one, so the query carries over as the draft. The search is cleared on the way: adders
+   * are hidden while it narrows the panel, and the question it asked has been answered.
+   */
+  #openEffectiveAdder(seed = ''): void {
+    const property = normalizeProperty(seed);
+    this.#clearFilter();
+    userToggled.set('effective', true);
+    this.adderForm.reset();
+    this.#patch({ adder: { id: EFFECTIVE_LIST_ID, draft: property, dest: '' }, menu: null, popover: null });
+    this.#focusSelector(`.property-adder[data-adder="${EFFECTIVE_LIST_ID}"] input`);
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Focus and the layers                                                   */
+  /* ---------------------------------------------------------------------- */
+
+  /** Focus a property's value field in one list once the next render has landed, and flash its row. */
+  #focusAfterRender(property: string, listId: string): void {
+    void this.updateComplete.then(() =>
+      requestAnimationFrame(() => {
+        const root = this.renderRoot;
+        const selector = `heo-value-field[data-property="${CSS.escape(property)}"]`;
+        const list = listId ? root.querySelector(`[data-declarations="${CSS.escape(listId)}"]`) : null;
+        const found = (list?.querySelector(selector) ?? root.querySelector(selector)) as HeoValueField | null;
+        if (!found) return;
+        found.focusInput({ select: true });
+        const row = found.closest('.prow') ?? found.closest('.decl');
+        row?.classList.remove('flash');
+        row?.classList.add('flash');
+        setTimeout(() => row?.classList.remove('flash'), 1300);
+      }),
+    );
+  }
+
+  /**
+   * Focus a control once the next render has landed. A value field takes the caret in its input.
+   * `onlyFromKeyboard` leaves focus where it is unless it was on the control that asked.
+   */
+  #focusSelector(selector: string, onlyFromKeyboard = false): void {
+    const from = onlyFromKeyboard ? (this.renderRoot as ShadowRoot).activeElement : null;
+    if (onlyFromKeyboard && (!from || from.localName === 'input')) return;
+    void this.updateComplete.then(() =>
+      requestAnimationFrame(() => {
+        const found = this.renderRoot.querySelector<HTMLElement>(selector);
+        if (!found) return;
+        if (found.localName === 'heo-value-field') (found as HeoValueField).focusInput();
+        else found.focus({ preventScroll: true });
+      }),
+    );
+  }
+
+  /*
+   * Dismissed by a press anywhere else, through `listen`.
+   *
+   * `listen` and not `addEventListener`, for the reason the other popovers document: the event
+   * shield suppresses `pointerdown` for the page, so a plain listener never hears the press that
+   * should close these. A save box is not closed this way: clicking elsewhere to read is allowed,
+   * and only a new edit, a new selection or a new preview width cancels it. An adder with a draft
+   * is left to its own blur, which adds what was typed.
+   */
+  #onOutsidePress = (event: Event): void => {
+    const path = event.composedPath();
+    const inside = (selector: string): boolean =>
+      path.some((node) => node instanceof Element && node.matches?.(selector));
+    const next: Partial<StylesUiState> = {};
+    const popover = this.ui.popover;
+    if (popover && !inside('.pop') && !inside(`.row[data-row="${CSS.escape(popover.rowId)}"] .dots`)) {
+      next.popover = null;
+    }
+    const menu = this.ui.menu;
+    if (menu && !inside(`.menu[data-menu="${CSS.escape(menu.id)}"]`) && !inside(`[data-menu-anchor="${CSS.escape(menu.id)}"]`)) {
+      next.menu = null;
+    }
+    const adder = this.ui.adder;
+    if (adder && !adder.draft.trim() && !inside(`[data-adder="${CSS.escape(adder.id)}"]`) && !inside('.menu')) {
+      next.adder = null;
+    }
+    if (Object.keys(next).length) this.#patch(next);
+  };
+
+  /*
+   * Kept under their anchors when the world moves.
+   *
+   * A fixed layer is placed against a rect that anything can invalidate: the panel scrolls under
+   * it, the dock is dragged, the window is resized.
+   */
+  #onViewportChange = (): void => {
+    if (this.ui.popover || this.ui.menu) this.#placeLayers();
+  };
+
+  /*
+   * Escape closes the innermost open thing, and goes no further: the global keymap reads Escape as
+   * "deselect". Menus, adders, value fields and the save box handle their own; this is for when
+   * focus sits elsewhere in the panel.
+   */
+  #onKeydown = (event: KeyboardEvent): void => {
+    if (event.key !== 'Escape' || event.defaultPrevented) return;
+    const ui = this.ui;
+    if (ui.menu) {
+      const id = ui.menu.id;
+      this.#patch({ menu: null });
+      this.#focusSelector(`[data-menu-anchor="${CSS.escape(id)}"]`);
+    } else if (ui.adder) {
+      this.adderForm.reset();
+      this.#patch({ adder: null });
+    } else if (ui.popover) {
+      const rowId = ui.popover.rowId;
+      this.#patch({ popover: null });
+      this.#focusSelector(`.row[data-row="${CSS.escape(rowId)}"] .dots`);
+    } else if (ui.pending) {
+      const el = this.editor.selected;
+      if (el) cancelSave(this.#host(el, this.#model(el)), true);
+    } else {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
+  override connectedCallback(): void {
+    super.connectedCallback();
+    listen(document, 'pointerdown', this.#onOutsidePress, true);
+    listen(window, 'scroll', this.#onViewportChange, true);
+    listen(window, 'resize', this.#onViewportChange);
+    this.addEventListener('keydown', this.#onKeydown);
+  }
+
+  override disconnectedCallback(): void {
+    super.disconnectedCallback();
+    unlisten(document, 'pointerdown', this.#onOutsidePress, true);
+    unlisten(window, 'scroll', this.#onViewportChange, true);
+    unlisten(window, 'resize', this.#onViewportChange);
+    this.removeEventListener('keydown', this.#onKeydown);
+  }
+
+  /**
+   * Where a popover line's link goes: the class or rule that line writes, opened in place.
+   *
+   * Today's Classes and CSS rules sections hold them until Sources replaces both.
+   */
+  #openSource(el: HTMLElement, target: { selector: string; family: string; isClass: boolean }): void {
+    this.#patch({ popover: null });
+    const name = target.isClass ? simpleClassName(target.family) : null;
+    let heading: string;
+    if (name && el.classList.contains(name)) {
+      this.openClass = name;
+      userToggled.set('classes', true);
+      heading = 'Classes';
+    } else {
+      userToggled.set('cssrules', true);
+      const rule = this.#matchingRules(el, appliedRules(el)).find((one) => one.selector === target.selector);
+      if (rule) this.openRules.set(this.#ruleKey(rule), this.openRules.get(this.#ruleKey(rule)) ?? '');
+      this.sectionsVersion += 1;
+      heading = 'CSS rules';
+    }
+    void this.updateComplete.then(() => {
+      const section = Array.from(this.renderRoot.querySelectorAll<HTMLElement & { heading: string }>('heo-section'))
+        .find((one) => one.heading === heading);
+      section?.scrollIntoView({ block: 'nearest' });
+    });
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* In its parent                                                          */
+  /* ---------------------------------------------------------------------- */
 
   /**
    * How the parent treats this element — and, when it is the reason a size is
@@ -858,20 +1232,15 @@ export class HeoStylesPanel extends HeoElement {
    * tooltip, hovering the group highlights it on the page, and one click selects
    * it outright.
    */
-  #renderParent(
-    el: HTMLElement,
-    computed: CSSStyleDeclaration,
-    declared: Map<string, string>,
-    origins: Map<string, DeclarationOrigin>,
-  ): TemplateResult | typeof nothing {
+  #renderParent(el: HTMLElement, model: ElementModel, host: StylesHost): TemplateResult | typeof nothing {
     const parent = selectableParent(el);
     const parentComputed = parent ? getComputedStyle(parent) : null;
     const all = ['flex', 'align-self', 'order'];
     if (parentComputed?.display.includes('grid')) all.push('grid-column', 'grid-row');
-    const filtering = Boolean(this.filter.trim());
-    const own = all.filter((property) => this.#matches(property, declared.get(property)));
+    const filtering = host.filtering;
+    const own = all.filter((property) => this.#hit(property, shownValue(model.cascade(property).applying[0])));
     // The parent's own controls and the cap notices are about the parent, and the field says
-    // "search in element" — so while filtering this section is its matching rows or nothing.
+    // "search styles" of this element — so while filtering this section is its matching rows or nothing.
     if (filtering && !own.length) return nothing;
 
     const caps = filtering
@@ -879,7 +1248,7 @@ export class HeoStylesPanel extends HeoElement {
       : [...sizeConstraints(el, 'width'), ...sizeConstraints(el, 'height')].filter(
         (cap) => cap.binding,
       );
-    const setCount = own.filter((property) => declared.has(property)).length;
+    const setCount = own.filter((property) => model.cascade(property).applying.length).length;
 
     // Open itself the first time a cap turns up for this element: it is the answer
     // to a question the user is actively asking, and hiding it behind a disclosure
@@ -889,27 +1258,29 @@ export class HeoStylesPanel extends HeoElement {
       this.#capsShownFor = el;
       userToggled.set('child', true);
     }
+    const open = filtering ? true : sectionOpen('child', caps.length > 0 || setCount > 0);
+    const scope: RowScope = { kind: 'parent', element: el };
 
     return html`<heo-section
       heading="In its parent"
       glyph="moveOut"
       badge=${caps.length ? String(caps.length) : setCount ? String(setCount) : ''}
-      ?open=${filtering ? true : sectionOpen('child', caps.length > 0 || setCount > 0)}
+      ?open=${open}
       @section-toggle=${(event: CustomEvent<{ open: boolean }>) =>
         this.#remember('child', event.detail.open)}
     >
       ${caps.length ? caps.map((cap) => this.#renderConstraint(cap)) : nothing}
 
-      <div class="rows">
+      <div class="rows" data-declarations="parent-self">
         ${own.map((property) =>
-          this.#renderRow(property, el, computed, declared, undefined, origins),
-        )}
+          renderPropertyRow({ property, scope, element: el, model, listId: 'parent-self' }, host))}
       </div>
 
       ${filtering
         ? nothing
         : parent && parentComputed
-          ? this.#renderParentControls(parent, parentComputed)
+          // The parent's model is built only when the section is open to show it.
+          ? open ? this.#renderParentControls(parent, host) : nothing
           : html`<p class="hint" style="margin:9px 0 0">
               This element has no editable parent, so its size is decided by the viewport.
             </p>`}
@@ -943,7 +1314,7 @@ export class HeoStylesPanel extends HeoElement {
       </div>
       <div class="row">
         <span class="name" title=${`${cap.property} on ${labelFor(owner)}`}>
-          <span class="dot"></span>${cap.property}
+          ${cap.property}
         </span>
         <heo-value-field
           .value=${cap.value}
@@ -959,21 +1330,11 @@ export class HeoStylesPanel extends HeoElement {
   }
 
   /** The parent's own layout properties, clearly fenced off as not this element's. */
-  #renderParentControls(parent: HTMLElement, parentComputed: CSSStyleDeclaration): TemplateResult {
+  #renderParentControls(parent: HTMLElement, host: StylesHost): TemplateResult {
     const properties = parentLayoutProperties(parent);
-    const parentDeclared = new Map(
-      Array.from(declaredValues(parent), ([property, entry]) => [property, entry.value]),
-    );
-    const parentOrigins = new Map<string, DeclarationOrigin>(
-      Array.from(declaredValues(parent), ([property, entry]) => [
-        property,
-        {
-          kind: entry.from === 'style attribute' ? ('inline' as const) : ('rule' as const),
-          selector: entry.from,
-        },
-      ]),
-    );
-    const setCount = properties.filter((property) => parentDeclared.has(property)).length;
+    const model = this.editor.elementModel(parent);
+    const setCount = properties.filter((property) => model.cascade(property).applying.length).length;
+    const scope: RowScope = { kind: 'parent', element: parent };
 
     return html`<div
       class="onparent"
@@ -998,177 +1359,74 @@ export class HeoStylesPanel extends HeoElement {
       <p class="hint" style="margin:0 0 8px">
         These change the container, so every child moves with them.
       </p>
-      <div class="rows">
+      <div class="rows" data-declarations="parent-up">
         ${properties.map((property) =>
-      this.#renderRow(property, parent, parentComputed, parentDeclared, undefined, parentOrigins),
-    )}
+      renderPropertyRow({ property, scope, element: parent, model, listId: 'parent-up' }, host))}
       </div>
     </div>`;
   }
 
-  /**
-   * Everything this element actually sets, first in the panel.
-   *
-   * "Set" means declared somewhere that matches this element, as opposed to
-   * inherited or left at the browser's default — which is the same distinction the
-   * blue dot has always drawn on a row. Restricting this to the `style` attribute
-   * made the section disagree with its own dots and hid the majority of what a real
-   * page declares, since most declarations live in a stylesheet.
-   *
-   * It answers a question the grouped sections below cannot: they are organised by
-   * concern, so `margin-top` is buried inside Spacing and an unusual property might
-   * not appear in any group at all. Rows are intentionally duplicated with those
-   * sections — the same declaration being editable in two places is less confusing
-   * than not being able to find it.
-   *
-   * Ordered inline-first, because the values written onto this element are the ones
-   * a user is most likely to have just changed.
-   */
-  #renderModified(
-    el: HTMLElement,
-    computed: CSSStyleDeclaration,
-    declared: Map<string, string>,
-    origins: Map<string, DeclarationOrigin>,
-    inline: Record<string, string>,
-  ): TemplateResult | typeof nothing {
-    const filtering = Boolean(this.filter.trim());
-    const properties = [...declared.keys()]
-      // Longhands synthesised from a box shorthand are already represented by the
-      // shorthand itself; listing both would double every margin and padding.
-      // `declaredMap` keeps them out of `origins` for exactly this test — see the note
-      // there for what listing them cost.
-      .filter((property) => origins.has(property))
-      // Only what this element itself declares. Anything arriving from a rule belongs
-      // to that rule, and now has somewhere better to be edited: a class under
-      // Classes, any other selector under CSS rules. Listing them here invited the
-      // one edit nobody wants — an inline override on this element, forking the
-      // design instead of fixing the rule that was actually responsible.
-      .filter((property) => origins.get(property)?.kind === 'inline')
-      // Narrowed by the search like every other surface, on the name or the value.
-      .filter((property) => this.#matches(property, declared.get(property)))
-      /*
-       * Plain alphabetical, which is the stable base the family grouping then arranges: a shorthand
-       * and its sides are pulled together by `displayOrder` regardless of where they sort.
-       *
-       * There used to be a rank ahead of this, putting names present in the style
-       * attribute above the rest. Everything listed here is in the style attribute — the
-       * filters above say so — so the only rows the rank could separate were the phantom
-       * sides synthesised from a shorthand, and separate them it did: `margin`, `padding`,
-       * `text-align`, and only then the four `padding-*`. Worse, the rank was not stable
-       * under editing. Committing a value promoted the row into the upper group, so a row
-       * moved as a direct result of being edited.
-       */
-      .sort((a, b) => a.localeCompare(b));
-    const inlineCount = Object.keys(inline).length;
-    // While filtering the section is only worth drawing when it has a row: its empty state is an
-    // explanation of the cascade, which is not an answer to what was typed.
-    if (filtering && !properties.length) return nothing;
+  /* ---------------------------------------------------------------------- */
+  /* Where the styles are written, until Sources replaces these sections    */
+  /* ---------------------------------------------------------------------- */
 
+  /**
+   * The element's own style attribute, as a card of declarations.
+   *
+   * Effective styles shows what wins; this is what the element itself writes, in the order it
+   * writes it, with the card editor every class and rule uses: so a shorthand and its side are one
+   * family with the control that says which one wins, and each row has its `!important` toggle and
+   * its trash.
+   */
+  #renderInlineCard(el: HTMLElement, model: ElementModel, host: StylesHost): TemplateResult | typeof nothing {
+    const target: WriteTarget = { kind: 'inline', element: el };
+    const declarations = toRecord(model.inline);
+    const count = model.inline.length;
+    const filtering = host.filtering;
+    const shown = filtering
+      ? Object.fromEntries(Object.entries(declarations).filter(([property, value]) => this.#hit(property, value)))
+      : declarations;
+    if (filtering && !Object.keys(shown).length) return nothing;
+    const open = filtering ? true : sectionOpen('inline', count > 0);
+    const adder = this.ui.adder?.id === 'inline' ? this.ui.adder : null;
     return html`<heo-section
-      heading="Set on this element"
-      glyph="sliders"
-      badge=${properties.length ? String(properties.length) : ''}
-      ?open=${filtering ? true : sectionOpen('modified', properties.length > 0)}
-      @section-toggle=${(event: CustomEvent<{ open: boolean }>) =>
-        this.#remember('modified', event.detail.open)}
+      heading="Inline style"
+      glyph="cursor"
+      badge=${count ? String(count) : ''}
+      ?open=${open}
+      @section-toggle=${(event: CustomEvent<{ open: boolean }>) => this.#remember('inline', event.detail.open)}
     >
-      ${properties.length === 0
-        ? html`<p class="hint" style="margin:0">
-            Nothing is set on the element itself. What reaches it comes from its classes or from
-            other rules, listed below. Changing a value anywhere else on this panel writes it
-            onto the element and it will appear here.
-          </p>`
-        : html`<p class="hint" style="margin:0 0 9px">
-              On the element itself, as authored — highest priority in the cascade. What its
-              classes and other rules contribute is below, editable at the source.
-            </p>
-            <!-- Named with the same id the adder below uses, so the focus helper lands in this
-                 list rather than in a class or rule row for the same property. -->
-            <div class="rows" data-declarations=${INLINE_ADDER_ID}>
-              ${renderFamilies(
-          /*
-           * Two orders, deliberately. Which side of a family wins is a fact about the *attribute*,
-           * so the groups are computed from `inline`, which is in attribute order. What the user
-           * sees is the stable alphabetical sequence above, so the display entries are built from
-           * that. Reading the winner off the display order instead had the sides always appear to
-           * win, because `padding` sorts before `padding-left` whatever the attribute says.
-           */
-          displayOrder(
-            properties.map((property) => ({
-              property,
-              value: declared.get(property) ?? '',
-              important: false,
-            })),
-            shorthandGroups(
-              fromRecord(inline).filter((one) => properties.includes(one.property)),
-            ),
-          ),
-          (property) => this.#renderRow(property, el, computed, declared, undefined, origins),
-          // Re-asserting the declaration is what promotes it: the shared write path moves the
-          // touched side last. The same one line the class and rule lists use.
-          (property) => this.editor.setStyle(property, declared.get(property) ?? '', el),
-          'this element',
-        )}
-            </div>
-            ${inlineCount && !filtering
-            ? html`<button
-                  class="btn sm"
-                  type="button"
-                  style="margin-top:9px"
-                  title="Move this element's inline declarations into a reusable class"
-                  @click=${() => this.editor.beginClassExtraction(el)}
-                >
-                  ${icon('blocks', 12)} Extract ${inlineCount} inline into a class
-                </button>`
-            : nothing}`}
-      ${!filtering
-        ? renderAdder(
-          {
-            id: INLINE_ADDER_ID,
-            mode: 'property',
-            // Today's always-visible row, until Effective styles brings the "+ Add property" one.
-            disclosure: false,
-            destinations: [
-              {
-                key: INLINE_ADDER_ID,
-                label: 'This element',
-                reach: '',
-                existing: inline,
-                ownerLabel: 'This element',
-              },
-            ],
-            seed: initialValueFor,
-            commit: (property, value) => this.editor.setStyle(property, value, el),
-          },
-          {
-            engine: this.editor,
-            form: this.propertyForm,
-            newProperty: this.inlineProperty,
-            onNewProperty: (value: string) => {
-              this.inlineProperty = value;
-            },
-            // Scoped by the adder's own id like the other lists, rather than by hunting for
-            // the section: the rows container above carries the same id.
-            onFocus: (property: string, scope?: string) =>
-              focusDeclaration(this.renderRoot, property, scope),
-          },
-        )
-        : nothing}
-      ${!filtering
-        ? html`<button
-            class="btn sm"
-            type="button"
-            style="margin-top:9px"
-            title="Paste CSS and choose whether it belongs inline, in a class, or in a rule"
-            @click=${() => this.editor.beginCssPaste({ context: 'inline', element: el })}
-          >
-            ${icon('clipboard', 12)} Paste CSS…
-          </button>`
-        : nothing}
+      <p class="hint" style="margin:0 0 7px">
+        On this element only, at every size. Wins over every rule unless one is
+        <code class="mono">!important</code>.
+      </p>
+      <div class="cls" data-card="inline">
+        ${ClassEditor.renderDeclarations(
+      {
+        label: 'this element',
+        id: 'inline',
+        declarations: shown,
+        empty: 'Nothing is written on the element itself.',
+        preview: (property, value) => this.editor.previewDeclaration(target, property, value),
+        commit: (property, value) => this.editor.setDeclaration(target, property, value),
+        remove: (property) => this.editor.removeDeclaration(target, property),
+        important: (property) => model.inline.some((one) => one.property === property && one.important),
+        setImportance: (property, important) => this.editor.setImportance(target, property, important),
+        seed: (property) => seedFor(el, '', property),
+      },
+      {
+        engine: this.editor,
+        element: el,
+        form: this.adderForm,
+        newProperty: adder?.draft ?? '',
+        onNewProperty: (value) => this.#patch({ adder: { id: 'inline', draft: value, dest: '' } }),
+        onFocus: (property, scope) => this.#focusAfterRender(property, scope ?? 'inline'),
+        actions: 'none',
+      },
+    )}
+      </div>
     </heo-section>`;
   }
-
-  /* ---------------------------------------------------------------------- */
 
   /**
    * Every rule reaching this element that is not one of its own classes.
@@ -1196,7 +1454,7 @@ export class HeoStylesPanel extends HeoElement {
     // Already narrowed by #matchingRules in render, because the count beside the search field is
     // drawn from the same list and the two must not disagree. Inline is "Set on this element"; a
     // bare single-class selector is "Classes". Both edit the same declarations somewhere better.
-    const filtering = Boolean(this.filter.trim());
+    const filtering = Boolean(this.ui.filter.trim());
     if (filtering && !all.length) return nothing;
 
     return html`<heo-section
@@ -1354,7 +1612,7 @@ export class HeoStylesPanel extends HeoElement {
     const host = {
       engine: this.editor,
       element: el,
-      form: this.propertyForm,
+      form: this.adderForm,
       newProperty: this.openRules.get(key) ?? '',
       onNewProperty: (value: string) => {
         this.openRules.set(key, value);
@@ -1415,7 +1673,7 @@ export class HeoStylesPanel extends HeoElement {
    */
   #renderClasses(el: HTMLElement): TemplateResult | typeof nothing {
     const classes = Array.from(el.classList).filter((name) => !name.startsWith('heo-'));
-    const filtering = Boolean(this.filter.trim());
+    const filtering = Boolean(this.ui.filter.trim());
     const shown = filtering ? this.#matchingClasses(el) : classes;
     // Nothing here matches, and while filtering the affordances below are not what was asked for.
     if (filtering && !shown.length) return nothing;
@@ -1540,7 +1798,7 @@ export class HeoStylesPanel extends HeoElement {
     const host = {
       engine: this.editor,
       element: el,
-      form: this.propertyForm,
+      form: this.adderForm,
       newProperty: this.classProperty,
       onNewProperty: (value: string) => {
         this.classProperty = value;
@@ -1740,32 +1998,37 @@ export class HeoStylesPanel extends HeoElement {
    * their names. The section narrows itself instead: the box editor stays for any spacing query,
    * since it is the editor for all eight sides at once, and the shorthand rows come and go with
    * the query like every other row.
+   *
+   * The box commits a batch, which follows the same rule as one row: inline unless one of its
+   * sides depends on the viewport, in which case one box asks where the whole batch should stay.
    */
   #renderSpacing(
     el: HTMLElement,
+    model: ElementModel,
     computed: CSSStyleDeclaration,
-    declared: Map<string, string>,
-    origins: Map<string, DeclarationOrigin>,
+    host: StylesHost,
   ): TemplateResult | typeof nothing {
     const longhands = SPACING_PROPERTIES.filter((property) => property.includes('-'));
     const declaredBox: Record<string, string> = {};
-    for (const property of longhands) declaredBox[property] = declared.get(property) ?? '';
+    for (const property of longhands) declaredBox[property] = shownValue(model.cascade(property).applying[0]);
     const computedBox: Record<string, string> = { width: computed.width, height: computed.height };
     for (const property of longhands) computedBox[property] = computed.getPropertyValue(property);
 
     const hits = SPACING_PROPERTIES.filter((property) =>
-      this.#matches(property, declared.get(property)),
+      this.#hit(property, shownValue(model.cascade(property).applying[0])),
     );
     if (!hits.length) return nothing;
     const shorthands = ['margin', 'padding'].filter((property) => hits.includes(property));
-
     const touched = longhands.filter((property) => declaredBox[property]).length;
+    const scope: RowScope = { kind: 'section', id: 'spacing' };
+    const boxId = `box:${scopeKey(scope, el)}`;
+    const pending = this.ui.pending?.rowId === boxId ? this.ui.pending : null;
 
     return html`<heo-section
       heading="Spacing"
       glyph="wrap"
       badge=${touched ? String(touched) : ''}
-      ?open=${this.filter.trim() ? true : sectionOpen('spacing', true)}
+      ?open=${host.filtering ? true : sectionOpen('spacing', true)}
       @section-toggle=${(event: CustomEvent<{ open: boolean }>) =>
         this.#remember('spacing', event.detail.open)}
     >
@@ -1774,135 +2037,70 @@ export class HeoStylesPanel extends HeoElement {
         .computed=${computedBox}
         .suggestions=${buildSuggestions(this.editor, 'margin', el)}
         @box-change=${(event: CustomEvent<{ declarations: Record<string, string> }>) =>
-        this.editor.setStyles(event.detail.declarations, 'Adjust spacing', el)}
+        this.#commitBox(event.detail.declarations, { property: '', scope, element: el, model, listId: 'spacing' }, boxId, host)}
       ></heo-box-editor>
+      ${pending ? html`<div class="spacing-save">${renderSaveBox(pending, host)}</div>` : nothing}
 
       ${shorthands.length
-        ? html`<div class="rows" style="margin-top:10px">
+        ? html`<div class="rows" style="margin-top:10px" data-declarations="spacing">
             ${shorthands.map((property) =>
-          this.#renderRow(property, el, computed, declared, `all sides`, origins),
-        )}
+          renderPropertyRow(
+            { property, scope, element: el, model, placeholder: 'all sides', listId: 'spacing' },
+            host,
+          ))}
           </div>`
         : nothing}
     </heo-section>`;
   }
 
+  /** A box-editor batch: inline as one entry, or one save box when any side depends on the viewport. */
+  #commitBox(declarations: Record<string, string>, spec: RowSpec, boxId: string, host: StylesHost): void {
+    const previewWidth = host.previewWidth;
+    const dependent = Object.keys(declarations).filter((property) =>
+      splitImportant(declarations[property]).value && isViewportDependent(spec.scope, spec.model, property, previewWidth));
+    if (host.ui.pending) cancelSave(host);
+    if (!dependent.length) {
+      this.editor.overrideStyles(declarations, 'Adjust spacing', spec.element);
+      return;
+    }
+    // Led by a side that depends on the viewport, so the save context takes its size.
+    const ordered = Object.fromEntries([
+      ...dependent.map((property) => [property, declarations[property]]),
+      ...Object.entries(declarations).filter(([property]) => !dependent.includes(property)),
+    ]);
+    beginSave(host, boxId, 'spacing', saveContextFor(spec, ordered, previewWidth), true);
+  }
+
   #renderSection(
     section: SectionSpec,
     el: HTMLElement,
-    computed: CSSStyleDeclaration,
-    declared: Map<string, string>,
-    origins: Map<string, DeclarationOrigin>,
+    model: ElementModel,
+    host: StylesHost,
   ): TemplateResult | typeof nothing {
     const properties = section.properties.filter((property) =>
-      this.#matches(property, declared.get(property)),
+      this.#hit(property, shownValue(model.cascade(property).applying[0])),
     );
     // Searched and nothing here matches: the section goes rather than standing open and empty.
     if (!properties.length) return nothing;
-    const setCount = properties.filter((property) => declared.has(property)).length;
+    const setCount = properties.filter((property) => model.cascade(property).applying.length).length;
+    const scope: RowScope = { kind: 'section', id: section.id };
     return html`<heo-section
       heading=${section.heading}
       glyph=${section.glyph}
       badge=${setCount ? String(setCount) : ''}
-      ?open=${this.filter.trim()
+      ?open=${host.filtering
         ? true
         : sectionOpen(section.id, section.id === 'layout' || section.id === 'typography')}
       @section-toggle=${(event: CustomEvent<{ open: boolean }>) =>
         this.#remember(section.id, event.detail.open)}
     >
       ${section.note ? html`<p class="hint" style="margin:0 0 9px">${section.note}</p>` : nothing}
-      <div class="rows">
+      <div class="rows" data-declarations=${section.id}>
         ${properties.map((property) =>
-          this.#renderRow(property, el, computed, declared, undefined, origins),
-        )}
+          renderPropertyRow({ property, scope, element: el, model, listId: section.id }, host))}
       </div>
     </heo-section>`;
   }
-
-  /**
-   * One property row.
-   *
-   * Shows the value that actually wins the cascade, as authored. That matters more
-   * than it sounds: a `width: min(980px, calc(100% - var(--space-xl)))` living in a
-   * stylesheet used to appear as a grey `948px` placeholder, so the panel described
-   * the outcome while hiding the intent — and the expression the user wanted to
-   * adjust was nowhere on screen. The resolved number is still one click away, at
-   * the top of the value list.
-   *
-   * Where the value came from is marked rather than flattened, because editing here
-   * always writes onto this element: adjusting a value that arrived from `.card`
-   * creates an inline override, which is a different act from fixing the class.
-   */
-  #renderRow(
-    property: string,
-    el: HTMLElement,
-    computed: CSSStyleDeclaration,
-    declared: Map<string, string>,
-    placeholderOverride?: string,
-    origins?: Map<string, DeclarationOrigin>,
-  ): TemplateResult {
-    const value = declared.get(property) ?? '';
-    const isSet = declared.has(property);
-    const origin = origins?.get(property);
-    const computedValue = computed.getPropertyValue(property).trim();
-    const segments = SEGMENTED[property];
-
-    const control = segments
-      ? html`<heo-segmented
-          .options=${segments}
-          .value=${value || computedValue}
-          clearable
-          ?removable=${isSet}
-          label=${property}
-          @segment-change=${(event: CustomEvent<{ value: string }>) =>
-          this.editor.setStyle(property, event.detail.value, el)}
-        ></heo-segmented>`
-      : html`<heo-value-field
-          data-property=${property}
-          .value=${value}
-          .kind=${valueKindFor(property)}
-          .property=${property}
-          .computed=${computedValue}
-          .suggestions=${buildSuggestions(this.editor, property, el)}
-          placeholder=${placeholderOverride ?? shorten(computedValue)}
-          clearable
-          @value-input=${(event: CustomEvent<{ value: string }>) =>
-          this.editor.previewStyle(property, event.detail.value, el)}
-          @value-revert=${() => this.editor.cancelPreview()}
-          @value-change=${(event: CustomEvent<{ value: string }>) =>
-          this.editor.overrideStyle(property, event.detail.value, el)}
-        ></heo-value-field>`;
-
-    const resettable = this.editor.canResetStyle(el, property);
-    const baseline = this.editor.styleBaseline(el, property);
-
-    return html`<div class=${`row${isSet ? ' set' : ''}`} data-property=${property}>
-      <span class="name" title=${describeOrigin(property, value, computedValue, origin)}>
-        <span class="dot"></span><span class="pn">${property}</span>
-        ${origin && origin.kind === 'rule'
-        ? html`<span class="from" title=${`From the ${origin.selector} rule`}>
-              ${origin.selector}
-            </span>`
-        : nothing}
-      </span>
-      ${control}
-      ${resettable
-        ? html`<button
-            class="reset"
-            type="button"
-            aria-label=${`Reset ${property}`}
-            title=${baseline
-            ? `Back to ${baseline}, its value before this session`
-            : 'Remove this declaration, as it was before this session'}
-            @click=${() => this.editor.resetStyle(property, el)}
-          >
-            ${icon('undo', 11)}
-          </button>`
-        : nothing}
-    </div>`;
-  }
-
-  /* ---------------------------------------------------------------------- */
 
   /* ---------------------------------------------------------------------- */
   /* Finding a property, and adding one                                     */
@@ -1916,20 +2114,9 @@ export class HeoStylesPanel extends HeoElement {
    * which is what makes the unfiltered panel fall out of the same code path.
    */
   #hit(...texts: Array<string | undefined>): boolean {
-    const needle = this.filter.trim().toLowerCase();
+    const needle = this.ui.filter.trim().toLowerCase();
     if (!needle) return true;
     return texts.some((text) => text?.toLowerCase().includes(needle));
-  }
-
-  /**
-   * Whether a property row survives the filter.
-   *
-   * The value counts as well as the name, because half of what a user is looking for is a value:
-   * which rows mention `var(--brand)`, where `1px solid` is coming from, what else is `flex`.
-   * Searching only names meant the panel could not answer any of those.
-   */
-  #matches(property: string, value?: string): boolean {
-    return this.#hit(property, value);
   }
 
   /** The element's classes the query reaches — by name, or by what the class declares. */
@@ -1970,25 +2157,25 @@ export class HeoStylesPanel extends HeoElement {
    */
   #matchCount(
     el: HTMLElement,
+    model: ElementModel,
     computed: CSSStyleDeclaration,
-    declared: Map<string, string>,
     matchingRules: readonly AppliedRule[],
   ): number {
     const properties = new Set<string>();
     const consider = (property: string): void => {
-      if (this.#matches(property, declared.get(property))) properties.add(property);
+      if (this.#hit(property, shownValue(model.cascade(property).applying[0]))) properties.add(property);
     };
     for (const section of SECTIONS.filter((section) => !section.when || section.when(computed))) {
       for (const property of section.properties) consider(property);
     }
     for (const property of SPACING_PROPERTIES) consider(property);
-    for (const property of declared.keys()) consider(property);
+    for (const property of model.appliedProperties()) consider(property);
     return properties.size + this.#matchingClasses(el).length + matchingRules.length;
   }
 
   /** What the add action would do, named after what has been typed. */
   #addLabel(): string {
-    const seed = this.filter.trim();
+    const seed = this.ui.filter.trim();
     return seed ? `Add ${seed}` : 'Add a declaration';
   }
 
@@ -2006,7 +2193,7 @@ export class HeoStylesPanel extends HeoElement {
    * real property that is merely absent from it, `scroll-margin` for one, is not called invalid.
    */
   #renderNoMatch(): TemplateResult {
-    const seed = this.filter.trim();
+    const seed = this.ui.filter.trim();
     const near = searchProperties(seed, 12).filter((meta) => meta.name !== seed);
     const real = seed ? propertyIsKnown(seed) : false;
 
@@ -2046,7 +2233,7 @@ export class HeoStylesPanel extends HeoElement {
                 type="button"
                 role="listitem"
                 title=${`Add ${meta.name} to this element`}
-                @click=${() => this.#openAdder(meta.name)}
+                @click=${() => this.#openEffectiveAdder(meta.name)}
               >
                 <span class="name">${meta.name}</span>
                 <span class="meta">${PROPERTY_GROUP_LABELS[meta.group]}</span>
@@ -2068,363 +2255,12 @@ export class HeoStylesPanel extends HeoElement {
             title=${real
             ? `Add ${seed} to this element`
             : `Add ${seed} anyway — this browser will ignore it`}
-            @click=${() => this.#openAdder(seed)}
+            @click=${() => this.#openEffectiveAdder(seed)}
           >
             ${icon('plus', 12)} ${this.#addLabel()}
           </button>`
         : nothing}
     </div>`;
-  }
-
-  /**
-   * Open the popup, seeded with whatever was being looked for.
-   *
-   * Searching for a property and not finding it is the most common way somebody arrives at wanting
-   * to add one, so the query carries over rather than having to be typed a second time.
-   */
-  #openAdder(seed = ''): void {
-    /*
-     * Seeded with a starting value, not just a name.
-     *
-     * The same thing the class editor has always done when a property is added there, and the
-     * reason is the same: a declaration with no value neither renders nor says what kind of value
-     * it wants. It also means the commit button is live the moment the popup opens, so arriving
-     * from "font-stretch is a CSS property, it is just not set here" and pressing the button
-     * writes the declaration -- which is what pressing it looks like it should do.
-     */
-    const property = normalizeProperty(seed);
-    this.draftRows = [{ property, value: property ? initialValueFor(property) : '' }];
-    /*
-     * Measured before it opens, not after.
-     *
-     * The anchor is already on screen — it is what was just clicked — while the popup is not, so
-     * there is nothing to wait for. Positioning it afterwards meant one frame painted at the
-     * element's static position, which for a panel pinned to the right edge put it across the page.
-     */
-    this.#positionAdder();
-    this.adderOpen = true;
-    void this.updateComplete.then(() => {
-      // Re-measured once it exists, since its height decides whether it flips above the field.
-      this.#positionAdder();
-      const popup = this.renderRoot.querySelector<HTMLElement>('.addpop');
-      if (popup && typeof popup.showPopover === 'function' && !popup.matches(':popover-open')) {
-        try {
-          popup.showPopover();
-        } catch {
-          /* already open, or popovers are unsupported: it still renders in place */
-        }
-      }
-      /*
-       * Focused on the half that is missing.
-       *
-       * The popup used to open with nothing focused at all, which made a working feature look
-       * broken: arriving from "font-stretch is a CSS property, it is just not set here" and
-       * pressing the button gave a popup with the name already filled and no caret, so the value
-       * being typed went to the document — where the global keymap was listening — and the commit
-       * button stayed disabled. Clicking it then did nothing, correctly and unhelpfully.
-       */
-      const row = this.renderRoot.querySelector('.poprow');
-      const target = property
-        ? row?.querySelector('heo-value-field')
-        : row?.querySelector('heo-search-field');
-      target?.shadowRoot?.querySelector<HTMLInputElement>('input')?.focus();
-    });
-  }
-
-  /*
-   * Dismissed by a press anywhere else, through `listen`.
-   *
-   * `listen` and not `addEventListener`, for the reason the other popovers document: the event
-   * shield suppresses `pointerdown` for the page, so a plain listener never hears the press that
-   * should close this.
-   */
-  #onOutsidePress = (event: Event): void => {
-    if (!this.adderOpen) return;
-    if (event.composedPath().some((node) => node instanceof HTMLElement && node.classList?.contains('addpop'))) {
-      return;
-    }
-    if (event.composedPath().includes(this.renderRoot.querySelector('.top') as EventTarget)) return;
-    this.#closeAdder();
-  };
-
-  /*
-   * Kept under its anchor when the world moves.
-   *
-   * A fixed popup is placed once against a rect that anything can invalidate: the panel scrolls
-   * under it, the dock is dragged, the window is resized. Without this it stays where it was and
-   * ends up pointing at nothing — and since it is clamped to the viewport, a narrower window is
-   * exactly the case where the first placement is furthest from where it belongs.
-   */
-  #onViewportChange = (): void => {
-    if (this.adderOpen) this.#positionAdder();
-  };
-
-  override connectedCallback(): void {
-    super.connectedCallback();
-    listen(document, 'pointerdown', this.#onOutsidePress, true);
-    listen(window, 'scroll', this.#onViewportChange, true);
-    listen(window, 'resize', this.#onViewportChange);
-  }
-
-  override disconnectedCallback(): void {
-    super.disconnectedCallback();
-    unlisten(document, 'pointerdown', this.#onOutsidePress, true);
-    unlisten(window, 'scroll', this.#onViewportChange, true);
-    unlisten(window, 'resize', this.#onViewportChange);
-  }
-
-  #closeAdder(): void {
-    this.adderOpen = false;
-    this.draftRows = [];
-    this.adderForm.reset();
-  }
-
-  /**
-   * What stops the rows being written: a property name that cannot be one, or one already set.
-   *
-   * A row with no property is left out rather than flagged — somebody who added a row and changed
-   * their mind — unless no row has one, which leaves nothing to add.
-   */
-  #adderIssues(): FieldIssue[] {
-    const el = this.editor.store.value.selected;
-    if (!el || !this.adderOpen) return [];
-    const inline = inlineDeclarations(el);
-    const claimed: Record<string, string> = {};
-    const issues: FieldIssue[] = [];
-    let any = false;
-    this.draftRows.forEach((row, index) => {
-      if (!row.property.trim()) return;
-      any = true;
-      const verdict = checkDeclaration({
-        property: row.property,
-        value: row.value,
-        existing: { ...inline, ...claimed },
-        label: labelFor(el),
-      });
-      if (verdict.refusal) issues.push({ field: `add-prop-${index}`, message: verdict.refusal });
-      else if (verdict.property) claimed[verdict.property] = row.value || 'initial';
-    });
-    if (!any) issues.unshift({ field: 'add-prop-0', message: 'Type the property to add.' });
-    return issues;
-  }
-
-  /**
-   * Placed against the field that opened it, in the top layer.
-   *
-   * A popup rather than a modal, which is the point: adding a declaration is a small act done while
-   * reading the panel, and a modal would black out the very rows the user is comparing against. The
-   * top layer is needed all the same, because the dock clips its descendants and carries a backdrop
-   * filter, so anything painted normally is cut off by the panel it belongs to.
-   */
-  #positionAdder(): void {
-    const field =
-      this.renderRoot.querySelector('.top heo-search-field') ?? this.renderRoot.querySelector('.top');
-    const anchor = field?.getBoundingClientRect();
-    if (!anchor) return;
-    this.adderStyle = anchoredStyle({
-      anchor,
-      // Absent on the first pass, which is the point of the estimate: the popup does not exist yet.
-      popup: this.renderRoot.querySelector('.addpop')?.getBoundingClientRect(),
-      content: this.renderRoot.querySelector('.addpop')?.scrollHeight,
-      minWidth: 300,
-      gap: 6,
-    });
-  }
-
-  /**
-   * The popup: a property and its value side by side, as many times as needed.
-   *
-   * Side by side because they are one declaration, and stacking them made a pair of unrelated
-   * boxes. Repeatable because the useful unit of work is a rule, not a property — and committing
-   * the rows together means one undo entry for a change the user made as one decision.
-   */
-  #renderAddPopup(el: HTMLElement): TemplateResult {
-    const ready = this.draftRows.filter((row) => row.property.trim()).length;
-
-    return html`<div
-      class="addpop"
-      popover="manual"
-      style=${this.adderStyle}
-      role="dialog"
-      aria-label="Add declarations"
-      @keydown=${(event: KeyboardEvent) => {
-        if (event.key !== 'Escape') return;
-        event.preventDefault();
-        // Not allowed to bubble: the global keymap reads Escape as "deselect", and closing a
-        // popup is not a request to change what is selected.
-        event.stopPropagation();
-        this.#closeAdder();
-      }}
-    >
-      <div class="pophead">
-        <span>Add declarations to <code class="mono">${labelFor(el)}</code></span>
-        <button
-          class="btn icon ghost sm"
-          type="button"
-          aria-label="Close"
-          @click=${() => this.#closeAdder()}
-        >
-          ${icon('close', 11)}
-        </button>
-      </div>
-
-      <div class="poplabels" aria-hidden="true">
-        ${fieldLabel('Property', { required: true })}${fieldLabel('Value')}
-      </div>
-      <div class="poprows">
-        ${this.draftRows.map((row, index) => this.#renderDraftRow(el, row, index))}
-      </div>
-
-      <div class="popfoot">
-        <button
-          class="btn sm"
-          type="button"
-          title="Add another declaration to this batch"
-          @click=${() => {
-        this.draftRows = [...this.draftRows, { property: '', value: '' }];
-      }}
-        >
-          ${icon('plus', 12)} Another
-        </button>
-        <span class="spacer"></span>
-        <button
-          class="btn sm primary"
-          type="button"
-          title="Write these declarations onto the element"
-          @click=${() => this.#commitRows(el)}
-        >
-          ${icon('check', 12)}
-          ${ready > 1 ? `Add ${ready} declarations` : 'Add declaration'}
-        </button>
-      </div>
-    </div>`;
-  }
-
-  #renderDraftRow(
-    el: HTMLElement,
-    row: { property: string; value: string },
-    index: number,
-  ): TemplateResult {
-    const matches = searchProperties(row.property, 14).map((meta) => ({
-      value: meta.name,
-      hint: PROPERTY_GROUP_LABELS[meta.group],
-    }));
-    const update = (next: Partial<{ property: string; value: string }>): void => {
-      this.draftRows = this.draftRows.map((entry, at) =>
-        at === index ? { ...entry, ...next } : entry,
-      );
-    };
-
-    const name = `add-prop-${index}`;
-    return html`<div class="poprow">
-      <div class="cell">
-        <heo-search-field
-          ${field(this.adderForm, name, { required: true })}
-          mode="suggest"
-          label="CSS property"
-          placeholder="property"
-          .value=${row.property}
-          .suggestions=${matches}
-          @search-input=${(event: CustomEvent<{ value: string }>) =>
-        update({ property: event.detail.value })}
-        ></heo-search-field>
-        ${this.adderForm.error(name)}
-      </div>
-      <heo-value-field
-        .value=${row.value}
-        .kind=${row.property ? valueKindFor(row.property) : 'text'}
-        .property=${row.property}
-        .suggestions=${row.property ? buildSuggestions(this.editor, row.property, el) : []}
-        placeholder="value"
-        @value-input=${(event: CustomEvent<{ value: string }>) =>
-        update({ value: event.detail.value })}
-        @value-change=${(event: CustomEvent<{ value: string }>) =>
-        update({ value: event.detail.value })}
-      ></heo-value-field>
-      <button
-        class="btn icon ghost sm"
-        type="button"
-        ?disabled=${this.draftRows.length < 2}
-        title="Remove this row"
-        aria-label="Remove this row"
-        @click=${() => {
-        this.draftRows = this.draftRows.filter((_entry, at) => at !== index);
-      }}
-      >
-        ${icon('close', 11)}
-      </button>
-    </div>`;
-  }
-
-  /**
-   * Write every complete row, as one change.
-   *
-   * Incomplete rows are ignored rather than refused: a half-typed fourth row is somebody having
-   * changed their mind, not an error to report. A value the browser rejects still is one, and it is
-   * named individually so the message says which row to fix.
-   */
-  #commitRows(el: HTMLElement): void {
-    if (!this.adderForm.submit()) return;
-    /*
-     * Vetted through the shared check, so this agrees with a class and with a CSS rule.
-     *
-     * The three surfaces used to disagree. Here the value was checked and anything this browser
-     * rejected was refused outright; in a class nothing was checked at all but adding a property
-     * twice was caught. So `flx: 1` was impossible here and trivial there, and `font-stretch`
-     * added twice was caught there and silently duplicated here.
-     */
-    const inline = inlineDeclarations(el);
-    const declarations: Record<string, string> = {};
-    const advice: string[] = [];
-
-    for (const row of this.draftRows) {
-      if (!row.property.trim()) continue;
-      const verdict = checkDeclaration({
-        property: row.property,
-        value: row.value,
-        // Both what the element already declares and what earlier rows in this same batch claimed,
-        // so a name typed into two rows is caught before it silently overwrites itself.
-        existing: { ...inline, ...declarations },
-        label: labelFor(el),
-      });
-      // Refusals were shown on their rows by `adderForm`; nothing refused reaches here.
-      if (verdict.refusal || !verdict.property) continue;
-      // A value is no longer required: the popup seeds one, and a property with an empty value is
-      // a row waiting to be filled rather than an error.
-      const value = row.value.trim() || initialValueFor(verdict.property);
-      declarations[verdict.property] = value;
-      if (verdict.advice) advice.push(verdict.advice);
-    }
-
-    const names = Object.keys(declarations);
-    if (!names.length) return;
-    this.editor.setStyles(
-      declarations,
-      names.length === 1 ? 'Add a declaration' : `Add ${names.length} declarations`,
-      el,
-    );
-    this.#closeAdder();
-    /*
-     * The filter goes with it, so the panel shows what just happened.
-     *
-     * Keeping the query narrowed the panel to whichever sections still matched it, which for a
-     * property in no section at all is a single row under "Set on this element" — and for a
-     * property picked from the completions rather than typed, nothing at all. The search was the
-     * way in to adding something; once it is added, leaving a filter over the result answers a
-     * question nobody is still asking.
-     */
-    this.#clearFilter();
-
-    const added =
-      names.length === 1
-        ? `Added ${names[0]} to ${labelFor(el)}.`
-        : `Added ${names.length} declarations to ${labelFor(el)}.`;
-    // One notice, and the advice decides its tone: everything landed either way, so a warning here
-    // means "this worked, and here is something you may not have known".
-    this.editor.notify(
-      advice.length ? `${added} ${advice.join(' ')}` : added,
-      advice.length ? 'warn' : 'success',
-    );
   }
 
   /**
@@ -2434,7 +2270,7 @@ export class HeoStylesPanel extends HeoElement {
    * while it has focus, so that a re-render of this panel cannot overwrite what is being typed.
    */
   #clearFilter(): void {
-    this.filter = '';
+    this.#patch({ filter: '' });
     this.renderRoot
       .querySelector<HTMLElement & { reset?: (next?: string) => void }>('.top heo-search-field')
       ?.reset?.('');
@@ -2446,27 +2282,26 @@ export class HeoStylesPanel extends HeoElement {
   }
 }
 
-/** A row's tooltip: the value, and where it is coming from. */
-function describeOrigin(
-  property: string,
-  value: string,
-  computedValue: string,
-  origin: DeclarationOrigin | undefined,
-): string {
-  if (!origin) {
-    return `${property} is ${computedValue || 'unset'} — inherited, or the browser's default`;
+/** The properties a state's rules in effect now declare, sorted. */
+function statePropertiesOf(model: ElementModel, state: string): string[] {
+  const names = new Set<string>();
+  for (const entry of model.entries) {
+    if (entry.state !== state || !model.applies(entry)) continue;
+    for (const one of entry.declarations) names.add(one.property.toLowerCase());
   }
-  if (origin.kind === 'inline') return `${property}: ${value} — set on this element`;
-  return (
-    `${property}: ${value} — from the ${origin.selector} rule. ` +
-    'Changing it here writes an inline override on this element only; edit the rule ' +
-    'itself under Matched CSS rules to change every element using it.'
-  );
+  return [...names].sort();
 }
 
-function shorten(value: string, max = 22): string {
-  if (value.length <= max) return value;
-  return `${value.slice(0, max - 1)}…`;
+/**
+ * What a property added from the Styles panel starts as: the value the element resolves to now,
+ * so adding it changes nothing until it is edited. A pseudo-element's rule starts from `initial`,
+ * and `content` in a `::before`/`::after` from an empty string, which is what makes it render.
+ */
+function seedFor(el: HTMLElement, state: string, property: string): string {
+  if (state && isPseudoElement(state)) {
+    return property === 'content' && needsGeneratedContent(state) ? '""' : 'initial';
+  }
+  return getComputedStyle(el).getPropertyValue(property).trim() || initialValueFor(property);
 }
 
 declare global {

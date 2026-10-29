@@ -618,21 +618,24 @@
           }
         }
 
-        /* And the add-a-declaration popup, which had no max-height at all. */
+        /*
+         * And what the search's Add opens. It used to be a popup with no max-height at all; it is
+         * now Effective styles' own adder, which has to come into view with its confirm reachable.
+         */
         const styleSearch = panel.shadowRoot.querySelector('.top heo-search-field');
         styleSearch.shadowRoot.querySelector('.go').click();
         await panel.updateComplete;
         await frames();
         await wait(150);
-        const addpop = panel.shadowRoot.querySelector('.addpop');
-        results.placement.addPopupFitsOnScreen = addpop
-          ? onScreen(addpop.getBoundingClientRect())
+        const adder = panel.shadowRoot.querySelector('.property-adder[data-adder="effective"]');
+        results.placement.addPopupFitsOnScreen = adder
+          ? onScreen(adder.getBoundingClientRect())
           : null;
         results.placement.addPopupFooterIsReachable = (() => {
-          const foot = panel.shadowRoot.querySelector('.popfoot');
-          return foot ? onScreen(foot.getBoundingClientRect()) : null;
+          const confirm = adder?.querySelector('.confirm');
+          return confirm ? onScreen(confirm.getBoundingClientRect()) : null;
         })();
-        panel.shadowRoot.querySelector('.addpop .pophead button')?.click();
+        adder?.querySelector('.cancel')?.click();
         await panel.updateComplete;
         await frames();
         engine.setStyle('width', '', para);

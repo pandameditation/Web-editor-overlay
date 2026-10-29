@@ -7,6 +7,7 @@ import type { AddDestination } from '../../../core/save-plan.js';
 import { field } from '../../form-errors.js';
 import { icon } from '../../icons.js';
 import type { ClassEditorHost } from '../class-editor.js';
+import { renderMenu } from './menu.js';
 
 /**
  * The one "add a property" control.
@@ -255,6 +256,7 @@ export function renderAdder(spec: AdderSpec, host: AdderHost): TemplateResult {
                   type="button"
                   aria-haspopup="menu"
                   aria-expanded=${spec.menuOpen ? 'true' : 'false'}
+                  data-menu-anchor=${`dest-${spec.id}`}
                   title="Choose where to write it"
                   @pointerdown=${(event: Event) => event.preventDefault()}
                   @click=${() => spec.onMenu?.(!spec.menuOpen)}
@@ -265,7 +267,26 @@ export function renderAdder(spec: AdderSpec, host: AdderHost): TemplateResult {
             ${dest.reach ? html`<span class="reach">· ${dest.reach}</span>` : nothing}
           </p>`
       : nothing}
-      ${several && spec.menuOpen ? renderDestinationMenu(spec, dest) : nothing}
+      ${several && spec.menuOpen
+      ? renderMenu({
+        id: `dest-${spec.id}`,
+        label: 'Write it in',
+        groups: [{
+          caption: 'Write it in',
+          items: spec.destinations.map((one) => ({
+            key: one.key,
+            label: one.label,
+            note: one.reach,
+            checked: one.key === dest.key,
+            onSelect: () => {
+              spec.onPick?.(one.key);
+              spec.onMenu?.(false);
+            },
+          })),
+        }],
+        onClose: () => spec.onMenu?.(false),
+      })
+      : nothing}
       <datalist id=${listId}>
         ${state
       ? EDITABLE_STATES.map(
@@ -277,30 +298,6 @@ export function renderAdder(spec: AdderSpec, host: AdderHost): TemplateResult {
       </datalist>
     </div>
   `;
-}
-
-/** "Write it in": one radio item per destination, the current one ticked. */
-function renderDestinationMenu(spec: AdderSpec, current: AdderDestination): TemplateResult {
-  return html`<div class="dest-menu" role="menu" aria-label="Write it in">
-    <p class="dest-cap" aria-hidden="true">Write it in</p>
-    ${spec.destinations.map(
-    (one) => html`<button
-        class="dest-item"
-        type="button"
-        role="menuitemradio"
-        aria-checked=${one.key === current.key ? 'true' : 'false'}
-        @pointerdown=${(event: Event) => event.preventDefault()}
-        @click=${() => {
-        spec.onPick?.(one.key);
-        spec.onMenu?.(false);
-      }}
-      >
-        <span class="tick">${one.key === current.key ? icon('check', 11) : nothing}</span>
-        <span class="lbl mono">${one.label}</span>
-        <span class="reach">${one.reach}</span>
-      </button>`,
-  )}
-  </div>`;
 }
 
 /**
@@ -322,8 +319,7 @@ export const adderRowStyles: CSSResult = css`
     min-width: 0;
   }
   .property-adder .field-error,
-  .property-adder .dest,
-  .property-adder .dest-menu {
+  .property-adder .dest {
     grid-column: 1 / -1;
   }
   .property-adder .confirm {
@@ -353,8 +349,7 @@ export const adderRowStyles: CSSResult = css`
   }
   .property-adder .cancel,
   .add-prop,
-  .property-adder .chip,
-  .property-adder .dest-item {
+  .property-adder .chip {
     border: 0;
     background: transparent;
     color: var(--heo-text-dim);
@@ -369,8 +364,7 @@ export const adderRowStyles: CSSResult = css`
     border-radius: var(--heo-r-sm);
   }
   .property-adder .cancel:hover,
-  .add-prop:hover,
-  .property-adder .dest-item:hover {
+  .add-prop:hover {
     background: var(--heo-hover);
     color: var(--heo-text);
   }
@@ -415,46 +409,10 @@ export const adderRowStyles: CSSResult = css`
     background: transparent;
     cursor: default;
   }
-  .property-adder .dest-menu {
-    display: grid;
-    gap: 1px;
-    padding: 4px;
-    border: 1px solid var(--heo-line-strong);
-    border-radius: var(--heo-r-md);
-    background: var(--heo-raised);
-    box-shadow: var(--heo-shadow-md);
-  }
-  .property-adder .dest-cap {
-    margin: 0;
-    padding: 4px 6px 3px;
-    color: var(--heo-text-dim);
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-  }
-  .property-adder .dest-item {
-    display: grid;
-    grid-template-columns: 14px auto 1fr;
-    align-items: center;
-    gap: 6px;
-    padding: 5px 6px;
-    border-radius: var(--heo-r-sm);
-    text-align: left;
-  }
-  .property-adder .dest-item .lbl {
-    color: var(--heo-text);
-    font-size: 10.5px;
-  }
-  .property-adder .dest-item .reach {
-    justify-self: end;
-    font-size: 10.5px;
-  }
   .add-prop:focus-visible,
   .property-adder .cancel:focus-visible,
   .property-adder .confirm:focus-visible,
-  .property-adder .chip:focus-visible,
-  .property-adder .dest-item:focus-visible {
+  .property-adder .chip:focus-visible {
     outline: 2px solid var(--heo-focus-ring);
     outline-offset: 1px;
   }
