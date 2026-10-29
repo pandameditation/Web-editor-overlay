@@ -1,3 +1,4 @@
+import { simpleClassName } from './classes.js';
 import { BLOCK_STYLE_ID, CLASS_STYLE_ID, RULE_STYLE_ID, TOKEN_STYLE_ID } from './constants.js';
 import { parseDeclarations, splitBoxValue } from './css.js';
 import {
@@ -306,11 +307,6 @@ function reachOf(
   return found;
 }
 
-/** The class name of a bare `.name` selector, or null for anything else. */
-function simpleClassName(selector: string): string | null {
-  const match = /^\.(-?[_a-zA-Z][\w-]*)$/.exec(selector.trim());
-  return match ? match[1] : null;
-}
 
 /* -------------------------------------------------------------------------- */
 /* Walking the sheets                                                          */
