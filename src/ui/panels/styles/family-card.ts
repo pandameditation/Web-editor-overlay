@@ -22,7 +22,7 @@ import {
   type DeclarationTarget,
 } from '../class-editor.js';
 import { renderAdder, stylesDestination, type AdderDestination } from './property-adder.js';
-import { reachText } from './property-row.js';
+import { previewSlot, reachText } from './property-row.js';
 import { renderSizeStrip, slotMedia, slotName, stripSizes, type StripOther, type StripSlot } from './size-strip.js';
 import type { PendingState, StylesHost } from './types.js';
 
@@ -88,7 +88,7 @@ export function cardView(family: Family, host: StylesHost): CardView {
   const shown = !host.filtering || familyHit || visible.some(rowHit);
   const { slots, others, count } = stripSizes(model, visible, previewWidth, ui.otherSlots.get(family.key) ?? []);
   const available = ['base', ...slots.map((slot) => slot.key), ...others.map((other) => other.key)];
-  let picked = ui.cardPicks.get(family.key) ?? previewSlotOf(host);
+  let picked = ui.cardPicks.get(family.key) ?? previewSlot(model, previewWidth);
   if (!available.includes(picked)) picked = 'base';
   // A card found by one of its declarations opens at a size that holds one (R8).
   if (host.filtering && !familyHit) {
@@ -98,15 +98,6 @@ export function cardView(family: Family, host: StylesHost): CardView {
   return { family, visible, familyHit, shown, picked, slots, others, count };
 }
 
-/** The slot the preview width picks, the one every size picker follows until a hand pick. */
-function previewSlotOf(host: StylesHost): string {
-  const width = host.previewWidth;
-  if (width === null) return 'base';
-  const slots = host.model.slots();
-  const exact = slots.find((one) => one.at === width);
-  if (exact) return exact.key;
-  return slots.filter((one) => mediaApplies(one.media, width)).sort((a, b) => a.at - b.at).at(-1)?.key ?? 'base';
-}
 
 /** One declaration list's card target: rows write that rule's declaration and nothing else. */
 function entryTarget(entry: RuleEntry, label: string, listId: string, host: StylesHost): DeclarationTarget {
