@@ -1,6 +1,6 @@
 import type { ElementModel, RuleEntry } from '../../../core/cascade.js';
 import type { EditorEngine } from '../../../core/editor.js';
-import type { SaveContext, SaveOption, SavePlan } from '../../../core/save-plan.js';
+import type { AddDestination, SaveContext, SaveOption, SavePlan } from '../../../core/save-plan.js';
 import type { FormErrors } from '../../form-errors.js';
 import type { AdderHost } from './property-adder.js';
 
@@ -67,6 +67,25 @@ export interface StylesUiState {
   cardPicks: ReadonlyMap<string, string>;
   /** Cards shut by hand this session, by family key (`inline` for the inline card). */
   closedCards: ReadonlySet<string>;
+  /**
+   * States and pseudo-elements added to a card with nothing written yet (§5.7). Shown as blocks
+   * until their first property lands; nothing empty is ever stored to show them.
+   */
+  pendingStates: ReadonlyArray<PendingState>;
+  /** A note under one card block after an add, such as why no `content` was written. */
+  blockHint: { block: string; text: string } | null;
+  /** The class card whose "Detach styles from class" panel is open, by class name. */
+  detachOpen: string | null;
+  /** The name typed for the detached copy; empty while the suggested one will do. */
+  forkDraft: string;
+}
+
+/** A block waiting for its first property: where it is shown and where that property goes. */
+export interface PendingState {
+  family: string;
+  slot: string;
+  state: string;
+  dest: AddDestination;
 }
 
 export type SourcesTab = 'all' | 'inline' | 'classes' | 'rules';
@@ -95,6 +114,10 @@ export interface StylesHost extends AdderHost {
   mediaForm: FormErrors;
   /** Open or close one of the panel's menus; closing hands focus back to what opened it. */
   toggleMenu(id: string, open: boolean): void;
+  /** The Detach copy's name field. */
+  forkForm: FormErrors;
+  /** Open a card in Sources, scroll it into view and flash it. */
+  openCard(key: string): void;
   /** Open the card a declaration is written in, at its size, from a popover line's link. */
   openSource(property: string, entry: RuleEntry): void;
 }

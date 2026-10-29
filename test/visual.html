@@ -186,7 +186,7 @@
         chip?.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
         await wait(160);
         const link = Array.from(panel.shadowRoot.querySelectorAll('.link'))
-          .find((b) => b.textContent.includes('Just this element'));
+          .find((b) => b.textContent.includes('Detach styles from class'));
         link?.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
         await wait(160);
         panel.shadowRoot.querySelector('.detach')?.scrollIntoView({ block: 'center' });

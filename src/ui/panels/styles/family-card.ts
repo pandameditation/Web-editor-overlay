@@ -1,7 +1,7 @@
 import { css, html, nothing, type CSSResult, type TemplateResult } from 'lit';
 import { repeat } from 'lit/directives/repeat.js';
-import { EDITABLE_STATES, isPseudoElement, needsGeneratedContent } from '../../../core/breakpoints.js';
-import type { Family, RuleEntry, WriteTarget } from '../../../core/cascade.js';
+import { EDITABLE_STATES, isPseudoElement, mediaShort, needsGeneratedContent } from '../../../core/breakpoints.js';
+import { classFamily, type Family, type RuleEntry, type WriteTarget } from '../../../core/cascade.js';
 import { simpleClassName } from '../../../core/classes.js';
 import {
   displayOrder,
@@ -10,6 +10,7 @@ import {
   type Declaration,
 } from '../../../core/declaration-list.js';
 import { mediaApplies } from '../../../core/viewport.js';
+import { field } from '../../form-errors.js';
 import { icon } from '../../icons.js';
 import { renderKill } from '../../kill.js';
 import {
@@ -22,7 +23,7 @@ import {
 } from '../class-editor.js';
 import { renderAdder, stylesDestination, type AdderDestination } from './property-adder.js';
 import { renderSizeStrip, slotMedia, slotName, stripSizes, type StripOther, type StripSlot } from './size-strip.js';
-import type { StylesHost } from './types.js';
+import type { PendingState, StylesHost } from './types.js';
 
 /**
  * Where an element's styles are written, one card per place.
@@ -160,6 +161,8 @@ export function renderBlockAdder(
     mode?: 'property' | 'state';
     /** State mode: what to do with the state named. */
     onState?: (state: string, dest: AdderDestination) => void;
+    /** After a property is written, with the engine's note when there is one; else it is notified. */
+    onAdded?: (hint: string | null) => void;
   } = {},
 ): TemplateResult | typeof nothing {
   if (host.filtering) return nothing;
@@ -201,7 +204,8 @@ export function renderBlockAdder(
           if (!dest.dest) return;
           host.patch({ adder: null, menu: null });
           const { hint } = host.engine.addDeclaration(dest.dest, property, value);
-          if (hint) host.engine.notify(hint, 'info');
+          if (options.onAdded) options.onAdded(hint);
+          else if (hint) host.engine.notify(hint, 'info');
         },
       },
       host,
@@ -215,17 +219,16 @@ export function renderBlockAdder(
 
 /**
  * One selector family as a card: the strip, then what the picked size declares, then each state or
- * pseudo-element at that size, each block with its own "+ Add property".
+ * pseudo-element at that size, each block with its own "+ Add property", then "+ Add state or
+ * pseudo-element". A card for a class the element wears ends with its way out of the class.
  *
- * `group` is the Sources group it is drawn in; `actions` is what a class card on the element ends
- * with, owned by the panel.
+ * `group` is the Sources group it is drawn in.
  */
 export function renderFamilyCard(
   view: CardView,
   host: StylesHost,
-  options: { group: 'classes' | 'rules'; actions?: TemplateResult | typeof nothing },
+  options: { group: 'classes' | 'rules' },
 ): TemplateResult | typeof nothing {
-  const actions = options.actions ?? nothing;
   if (!view.shown) return nothing;
   const { family, visible, picked } = view;
   const { model, ui, engine } = host;
@@ -243,6 +246,10 @@ export function renderFamilyCard(
     const media = slotMedia(model, picked);
     const label = `${key}${short ? ` ${short}` : ''}`;
     const rowHit = (one: Declaration): boolean => !host.filtering || view.familyHit || host.hit(one.property, one.value);
+    const hintFor = (id: string): TemplateResult | typeof nothing =>
+      ui.blockHint?.block === id ? html`<p class="hint block-hint">${ui.blockHint.text}</p>` : nothing;
+    const noteAdded = (id: string) => (hint: string | null): void =>
+      host.patch({ blockHint: hint ? { block: id, text: hint } : null });
 
     // The base block: the selector itself at this size, with no repeated selector label (R19).
     const base = inSlot.filter((entry) => !entry.state);
@@ -273,7 +280,8 @@ export function renderFamilyCard(
               ${picked === 'base' ? 'No declarations yet.' : 'Nothing at this size yet.'}
             </p>`}
       </div>
-      ${renderBlockAdder(host, baseId, [baseDest], '')}
+      ${hintFor(baseId)}
+      ${renderBlockAdder(host, baseId, [baseDest], '', { onAdded: noteAdded(baseId) })}
     </div>`;
 
     // Each state or pseudo-element at this size, in the state list's order.
@@ -281,9 +289,14 @@ export function renderFamilyCard(
       const at = EDITABLE_STATES.findIndex((one) => one.name === state);
       return at === -1 ? EDITABLE_STATES.length : at;
     };
-    const states = [...new Set(inSlot.filter((entry) => entry.state).map((entry) => entry.state))]
-      .sort((a, b) => order(a) - order(b));
-    const stateBlocks = states.map((state) => {
+    const states = [...new Set(inSlot.filter((entry) => entry.state).map((entry) => entry.state))];
+    // Added with nothing written yet; dropped once its rule has a declaration, which makes it real.
+    const pending = ui.pendingStates.filter((one) =>
+      one.family === key && one.slot === picked && !states.includes(one.state));
+    const ordered = [...states, ...pending.map((one) => one.state)].sort((a, b) => order(a) - order(b));
+    const stateBlocks = ordered.map((state) => {
+      const waiting = pending.find((one) => one.state === state);
+      if (waiting) return host.filtering ? nothing : renderPendingBlock(waiting, `${key}${state}${short ? ` ${short}` : ''}`, uses, host);
       const members = inSlot.filter((entry) => entry.state === state);
       const rows = members.flatMap((entry) => entry.declarations.filter(rowHit));
       if (host.filtering && !view.familyHit && !rows.length) return nothing;
@@ -316,14 +329,47 @@ export function renderFamilyCard(
             (entry) => renderRows(entryTarget(entry, stateLabel, id, host), entry.declarations.filter(rowHit), host),
           )}
         </div>
+        ${hintFor(id)}
         ${renderBlockAdder(
           host,
           id,
           [stylesDestination(stateLabel, reachText(model.reach(key)), { kind: 'target', target: target.target }, toRecord(target.declarations), stateLabel)],
           state,
+          { onAdded: noteAdded(id) },
         )}
       </div>`;
     });
+
+    // "+ Add state or pseudo-element": the same adder, naming a state instead of a property (R24).
+    const stateAdderId = `state|${key}|${picked}`;
+    const stateAdder = renderBlockAdder(
+      host,
+      stateAdderId,
+      [stylesDestination(label, reachText(uses), { kind: 'new-rule', selector: key, media }, {}, label)],
+      '',
+      {
+        mode: 'state',
+        onState: (state) => {
+          const result = engine.addStateRule(key, state, media === null ? null : { media });
+          if (result.kind === 'refused') {
+            host.adderForm.fail(`prop-add-${stateAdderId}`, result.message);
+            return;
+          }
+          const id = blockId(key, picked, state);
+          const pendingStates = result.kind === 'pending'
+            ? [
+              ...host.ui.pendingStates.filter((one) =>
+                !(one.family === key && one.slot === picked && one.state === state)),
+              { family: key, slot: picked, state, dest: result.dest },
+            ]
+            : host.ui.pendingStates;
+          // A ::before or ::after renders nothing without content, so its adder offers that first.
+          const draft = result.kind === 'pending' && needsGeneratedContent(state) ? 'content' : '';
+          host.adderForm.reset();
+          host.patch({ pendingStates, adder: { id, draft, dest: '' }, menu: null });
+        },
+      },
+    );
 
     return html`<div class="body">
       ${renderSizeStrip({
@@ -361,7 +407,10 @@ export function renderFamilyCard(
           </p>`}
       ${baseBlock}
       ${stateBlocks}
-      ${host.filtering ? nothing : actions}
+      ${stateAdder}
+      ${name && options.group === 'classes' && owned && host.element.classList.contains(name) && !host.filtering
+        ? renderClassActions(name, host)
+        : nothing}
     </div>`;
   };
 
@@ -375,6 +424,201 @@ export function renderFamilyCard(
       sessionDot: Boolean(owned && owned.origin !== 'stylesheet'),
     })}
     ${open ? body() : nothing}
+  </div>`;
+}
+
+/**
+ * A state or pseudo-element added to a card and not written yet (§5.7).
+ *
+ * Adding a block must not change the page: an empty rule never reaches it, and a seed declaration
+ * would (a `::marker { content: "" }` hides the bullet, an empty `::before` becomes a flex item).
+ * So the block is only UI until its first property, which `addDeclaration` writes in one entry.
+ * Its trash only forgets it.
+ */
+function renderPendingBlock(entry: PendingState, label: string, uses: number, host: StylesHost): TemplateResult {
+  const id = blockId(entry.family, entry.slot, entry.state);
+  const pseudo = isPseudoElement(entry.state);
+  const forget = (): void => {
+    host.patch({
+      pendingStates: host.ui.pendingStates.filter((one) => one !== entry),
+      adder: host.ui.adder?.id === id ? null : host.ui.adder,
+    });
+  };
+  return html`<div class="block pending" data-block=${entry.state}>
+    <div class="blabel">
+      ${icon(pseudo ? 'pseudo' : 'cursor', 12)}
+      <span class="sel">${entry.state}</span>
+      <span class="kindtxt">${pseudo ? 'pseudo-element' : 'state'}</span>
+      ${renderKill({ label: `Remove ${label}`, title: `Remove ${label}: nothing is written yet`, tight: true, size: 11, onClick: forget })}
+    </div>
+    <div class="decls" data-declarations=${id}>
+      <p class="hint" style="margin:0">No declarations yet.</p>
+    </div>
+    ${renderBlockAdder(
+      host,
+      id,
+      [stylesDestination(label, reachText(uses), entry.dest, {}, label)],
+      entry.state,
+      {
+        onAdded: (hint) => host.patch({
+          pendingStates: host.ui.pendingStates.filter((one) => one !== entry),
+          blockHint: hint ? { block: id, text: hint } : null,
+        }),
+      },
+    )}
+  </div>`;
+}
+
+/* -------------------------------------------------------------------------- */
+/* A class card's way out of the class                                         */
+/* -------------------------------------------------------------------------- */
+
+/** Rules written for the class in combination (`.card.featured`, `.promo .card`) reaching the element. */
+function rulesElsewhere(name: string, host: StylesHost): string[] {
+  const mention = new RegExp(`\\.${CSS.escape(name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w-])`);
+  return [...new Set(host.model.entries.map((entry) => entry.family))]
+    .filter((family) => family !== `.${CSS.escape(name)}` && mention.test(family));
+}
+
+/** "Manage in Tokens" and "Detach styles from class", then the detach panel while it is open. */
+function renderClassActions(name: string, host: StylesHost): TemplateResult {
+  const { engine, ui } = host;
+  const uses = engine.classes.usage().get(name) ?? 0;
+  const open = ui.detachOpen === name;
+  return html`<div class="actions">
+      <button
+        class="link"
+        type="button"
+        title="Open this class in the design system panel"
+        @click=${() => engine.setDockTab('tokens')}
+      >
+        Manage in Tokens
+      </button>
+      <span class="spacer"></span>
+      <button
+        class="link"
+        type="button"
+        data-act="detach"
+        aria-expanded=${open ? 'true' : 'false'}
+        title=${uses > 1
+          ? `Style this element on its own, without affecting the other ${uses - 1} using .${name}`
+          : `Style this element on its own, without .${name}`}
+        @click=${() => {
+          host.forkForm.reset();
+          host.patch({ detachOpen: open ? null : name, forkDraft: '' });
+        }}
+      >
+        ${open ? 'Never mind' : 'Detach styles from class'}
+      </button>
+    </div>
+    ${open ? renderDetach(name, host, uses) : nothing}`;
+}
+
+/**
+ * The way back out of a shared class, for one element (R22).
+ *
+ * Two routes, because the two answers to "is this still a thing worth naming" lead different
+ * places. Copying keeps a reusable rule, its sizes and states included, and is the right move for
+ * a variant, which is most of the time, so it leads and Enter takes it. Moving the declarations
+ * inline is the exact inverse of extracting a class, for values that were only ever this
+ * element's; only the unconditional ones can go there, and the panel says what is lost.
+ */
+function renderDetach(name: string, host: StylesHost, uses: number): TemplateResult | typeof nothing {
+  const { engine, element, ui } = host;
+  const entry = engine.classes.get(name);
+  if (!entry) return nothing;
+  const family = classFamily(name);
+  const base = family.base.length || Object.keys(entry.declarations).length;
+  const count = base + family.members.reduce((sum, member) => sum + member.declarations.length, 0);
+  const others = Math.max(0, uses - 1);
+  const suggestion = engine.classes.uniqueName(entry.name);
+  const forkName = ui.forkDraft.trim() || suggestion;
+  const variants = [...new Set(family.members.map((member) =>
+    member.state || (member.media ? mediaShort(member.media) : '')).filter(Boolean))];
+  const elsewhere = rulesElsewhere(name, host);
+  // Dropped with the last element wearing it, unless the page authored it: an overlay-owned rule
+  // with no users is dead weight in the export.
+  const orphans = others === 0 && entry.origin !== 'stylesheet';
+  const plural = (n: number): string => `${n} declaration${n === 1 ? '' : 's'}`;
+  const fork = (): void => {
+    if (!host.forkForm.submit()) return;
+    const forked = engine.forkClass(name, element, ui.forkDraft.trim() || undefined);
+    if (!forked) return;
+    host.patch({ detachOpen: null, forkDraft: '' });
+    host.openCard(`.${CSS.escape(forked)}`);
+  };
+
+  return html`<div class="detach">
+    <p class="lede">
+      ${others
+        ? html`<code class="mono">.${entry.name}</code> is on ${uses} elements. Both options leave the
+            other ${others} alone.`
+        : html`Only this element uses <code class="mono">.${entry.name}</code>.`}
+    </p>
+
+    <div class="choice" data-choice="copy">
+      <div class="head">${icon('duplicate', 12)} <b>Copy it for this element</b></div>
+      <p>
+        Makes <code class="mono">.${forkName}</code> with the same ${plural(count)}${family.members.length
+          ? ', its states and sizes included,'
+          : ''} and swaps it in here. Still a class you can reuse, just not a shared one.
+      </p>
+      ${elsewhere.length
+        ? html`<p class="warn">
+            ${icon('alert', 11)}
+            <span>Rules written for <code class="mono">.${entry.name}</code> elsewhere
+              (${elsewhere.join(', ')}) stop applying here.</span>
+          </p>`
+        : nothing}
+      <div class="row">
+        <input
+          ${field(host.forkForm, 'class-fork')}
+          class="input mono fork-input"
+          type="text"
+          .value=${ui.forkDraft}
+          placeholder=${suggestion}
+          spellcheck="false"
+          autocomplete="off"
+          aria-label="Name for the copy"
+          @input=${(event: Event) => host.patch({ forkDraft: (event.target as HTMLInputElement).value })}
+          @keydown=${(event: KeyboardEvent) => {
+            if (event.key !== 'Enter') return;
+            event.preventDefault();
+            fork();
+          }}
+        />
+        <button class="btn sm primary" type="button" @click=${fork}>${icon('duplicate', 12)} Copy</button>
+      </div>
+      ${host.forkForm.error('class-fork')}
+    </div>
+
+    <div class="choice" data-choice="move">
+      <div class="head">${icon('unlink', 12)} <b>Move the styles onto the element</b></div>
+      <p>
+        Its ${plural(base)} become this element's inline style and
+        <code class="mono">.${entry.name}</code> comes off it${orphans
+          ? html`. Nothing else uses it, so the rule goes too.`
+          : html`, but stays defined for the rest.`}
+      </p>
+      ${variants.length
+        ? html`<p class="warn">
+            ${icon('alert', 11)}
+            <span>Its ${variants.join(', ')} rules can't be written inline, so this element loses them.</span>
+          </p>`
+        : nothing}
+      <div class="row">
+        <span class="spacer"></span>
+        <button
+          class="btn sm"
+          type="button"
+          @click=${() => {
+            if (engine.inlineClass(entry.name, element)) host.patch({ detachOpen: null });
+          }}
+        >
+          ${icon('unlink', 12)} Move to this element
+        </button>
+      </div>
+    </div>
   </div>`;
 }
 
@@ -569,5 +813,79 @@ export const sourcesStyles: CSSResult = css`
   }
   .cls.flash {
     animation: heo-row-flash 1.2s ease-out;
+  }
+  .block-add {
+    margin-top: 4px;
+  }
+  .block-hint {
+    margin: 4px 0 0;
+  }
+  .cls .body .actions .spacer {
+    flex: 1 1 auto;
+  }
+
+  /* Leaving a shared class, for one element. Two routes, each stating what it does to the class
+     and to everything else wearing it: the question that decides between them. */
+  .detach {
+    display: grid;
+    gap: 7px;
+    margin: 8px 0 0;
+    padding: 9px;
+    border: 1px solid var(--heo-accent-line);
+    border-radius: var(--heo-r-sm);
+    background: var(--heo-accent-soft);
+  }
+  .detach .lede {
+    margin: 0;
+    color: var(--heo-text-dim);
+    font-size: 10.5px;
+    line-height: 1.45;
+  }
+  .detach .choice {
+    display: grid;
+    gap: 6px;
+    padding: 8px 9px;
+    border-radius: var(--heo-r-sm);
+    background: var(--heo-bg);
+  }
+  .detach .choice .head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--heo-text);
+    font-size: 11.5px;
+  }
+  .detach .choice .head b {
+    font-weight: 600;
+  }
+  .detach .choice > p {
+    margin: 0;
+    color: var(--heo-text-dim);
+    font-size: 10.5px;
+    line-height: 1.5;
+  }
+  .detach .choice > p.warn {
+    display: flex;
+    gap: 6px;
+    align-items: flex-start;
+  }
+  .detach .choice > p.warn svg {
+    flex: 0 0 auto;
+    margin-top: 2px;
+    color: var(--heo-warn);
+  }
+  .detach .choice .row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .detach .choice .row .input {
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 24px;
+    font-size: 11px;
+  }
+  .detach .choice .row .spacer {
+    flex: 1 1 auto;
   }
 `;

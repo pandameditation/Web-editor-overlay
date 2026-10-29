@@ -15,12 +15,18 @@ import { anchoredStyle } from '../../place.js';
  */
 
 /*
- * Focus a field the moment it appears (an adder opening, a menu's inline field). A stable
- * function, so Lit calls it once per new input rather than on every render, which would pull focus
- * back from wherever the user moved it.
+ * Focus a field the moment it appears (an adder opening, a menu's inline field), with what it
+ * opened with selected: a draft it starts with (`content` in a new ::before) is a suggestion that
+ * Enter accepts and typing replaces. A stable function, so Lit calls it once per new input rather
+ * than on every render, which would pull focus back from wherever the user moved it.
  */
 export const focusWhenOpened = (input?: Element): void => {
-  if (input instanceof HTMLInputElement) requestAnimationFrame(() => input.focus());
+  if (input instanceof HTMLInputElement) {
+    requestAnimationFrame(() => {
+      input.focus();
+      input.select();
+    });
+  }
 };
 
 export interface MenuItem {

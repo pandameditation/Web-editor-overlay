@@ -3756,7 +3756,8 @@ export class EditorEngine {
   addStateRule(
     family: string,
     state: string,
-    slot: SizeSlot | null,
+    /** The size, by its media; a strip's other media query has no preset slot, only this. */
+    slot: Pick<SizeSlot, 'media'> | null,
   ):
     | { kind: 'existing'; target: WriteTarget }
     | { kind: 'pending'; dest: AddDestination }

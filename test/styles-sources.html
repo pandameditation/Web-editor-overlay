@@ -805,6 +805,263 @@
           results.keys.focusRingOnEveryControl = Boolean(ring) && rings.every((one) => one === true);
           if (!results.keys.focusRingOnEveryControl) results.keys.rings = rings;
           sroot().activeElement?.blur();
+          /* ---------------------------------------------------------------- *
+           * "+ Add state or pseudo-element" (R24, §5.7, §15 M1): nothing is
+           * written until the first property lands.
+           * ---------------------------------------------------------------- */
+          progress.textContent = 'addState';
+          const managed = () => document.getElementById('heo-design-rules')?.textContent ?? '';
+          const stateAdd = (k) => body(k)?.querySelector(':scope > .block-add .add-prop');
+          const stateAdder = (k) => body(k)?.querySelector(':scope > .block-add .property-adder');
+          const openAdderOf = (scope) => scope?.querySelector('.property-adder');
+          const addState = async (k, state) => {
+            stateAdd(k)?.click();
+            await settle(150);
+            await typeInto(stateAdder(k).querySelector('input'), state);
+            key(stateAdder(k).querySelector('input'), 'Enter');
+            await settle(250);
+          };
+          const addProperty = async (scope, property) => {
+            const input = openAdderOf(scope())?.querySelector('input');
+            await typeInto(input, property);
+            key(openAdderOf(scope())?.querySelector('input'), 'Enter');
+            await settle(300);
+          };
+          const beforeOf = (el, property) => getComputedStyle(el, '::before').getPropertyValue(property);
+          results.addState = {};
+          {
+            // Named in the state list, or refused with R24's two messages.
+            stateAdd('.card')?.click();
+            await settle(150);
+            key(stateAdder('.card').querySelector('input'), 'Enter');
+            await settle(120);
+            const emptyMessage = textOf(stateAdder('.card')?.querySelector('.field-error'));
+            await typeInto(stateAdder('.card').querySelector('input'), ':hovr');
+            key(stateAdder('.card').querySelector('input'), 'Enter');
+            await settle(120);
+            const unknown = textOf(stateAdder('.card')?.querySelector('.field-error'));
+            const offered = Array.from(stateAdder('.card')?.querySelectorAll('datalist option') ?? [])
+              .map((one) => `${one.value} ${one.textContent.trim()}`);
+            key(stateAdder('.card')?.querySelector('input'), 'Escape');
+            await settle(120);
+            results.addState.rejectsUnknownNames =
+              emptyMessage === 'Type a state like :hover or a pseudo-element like ::before.' &&
+              unknown === ':hovr is not a state or pseudo-element the editor knows.' &&
+              offered.length === 11 && offered.includes(':hover state') && offered.includes('::marker pseudo-element') &&
+              !stateAdder('.card');
+          }
+          {
+            // A state with no rule: a block with its adder open, and nothing on the page yet.
+            const history = engine.history.size;
+            const text = managed();
+            await addState('.card', ':active');
+            const pendingBlock = () => block('.card', ':active');
+            const shown = pendingBlock()?.classList.contains('pending') &&
+              /No declarations yet\./.test(textOf(pendingBlock()));
+            // The export's stylesheets, not its scripts: this page's own script names the selector.
+            const exportedCss = Array.from(new DOMParser().parseFromString(api.exportHTML(), 'text/html')
+              .querySelectorAll('style')).map((one) => one.textContent).join('\n');
+            const nothingYet = engine.history.size === history && managed() === text &&
+              !/\.card:active/.test(exportedCss);
+            results.addState.stateOpensItsAddProperty =
+              Boolean(openAdderOf(pendingBlock())) &&
+              sroot().activeElement === openAdderOf(pendingBlock())?.querySelector('input');
+            await addProperty(pendingBlock, 'opacity');
+            results.addState.pendingStateWritesNothingUntilAPropertyIsAdded =
+              shown && nothingYet && engine.history.size === history + 1 &&
+              /\.card:active\s*\{[^}]*opacity/.test(managed());
+            results.addState.createsTheStateRule =
+              Boolean(pendingBlock()) && !pendingBlock().classList.contains('pending') &&
+              Boolean(rowIn(pendingBlock(), 'opacity'));
+            engine.undo();
+            await settle(200);
+            // A state that already has declarations opens that block's adder instead.
+            await addState('.card', ':hover');
+            results.addState.stateOpensItsAddProperty =
+              results.addState.stateOpensItsAddProperty &&
+              engine.history.size === history &&
+              !block('.card', ':hover')?.classList.contains('pending') &&
+              sroot().activeElement === openAdderOf(block('.card', ':hover'))?.querySelector('input');
+            key(sroot().activeElement, 'Escape');
+            await settle(150);
+            // Pending blocks belong to the selection they were added for.
+            await addState('.card', ':focus');
+            const there = Boolean(block('.card', ':focus'));
+            api.select(item);
+            await settle(250);
+            api.select(target);
+            await settle(300);
+            results.addState.pendingStateIsDroppedOnSelectionChange =
+              there && !block('.card', ':focus') && engine.history.size === history;
+          }
+          {
+            // An emptied page rule is reused, rather than a second .card:hover written elsewhere.
+            block('.card', ':hover')?.querySelector('.blabel .kill')?.click();
+            await settle(250);
+            const history = engine.history.size;
+            const emptied = siteRule('.card:hover')?.style.length === 0 && !block('.card', ':hover');
+            await addState('.card', ':hover');
+            const waiting = block('.card', ':hover')?.classList.contains('pending') &&
+              sroot().activeElement === openAdderOf(block('.card', ':hover'))?.querySelector('input');
+            await addProperty(() => block('.card', ':hover'), 'opacity');
+            results.addState.reusesAnExistingEmptyRule =
+              emptied && waiting && engine.history.size === history + 1 &&
+              /opacity/.test(siteRule('.card:hover')?.style.cssText ?? '') &&
+              !/\.card:hover/.test(managed()) &&
+              engine.records.some((record) => record.detail?.selector === '.card:hover' && Boolean(record.detail?.rulePath));
+            engine.undo();
+            engine.undo();
+            await settle(250);
+          }
+          {
+            // In the card's current size: a phone :focus is written inside the phone media query.
+            card('.card')?.querySelector('.slots [data-slot="phone"]')?.click();
+            await settle(150);
+            await addState('.card', ':focus');
+            await addProperty(() => block('.card', ':focus'), 'opacity');
+            const made = engine.rules.list().find((rule) => rule.selector === '.card:focus');
+            results.addState.respectsTheCardsSize =
+              Boolean(made) && /max-width:\s*767px/.test(made.media ?? '') &&
+              /@media \(max-width: 767px\)\s*\{\s*\.card:focus/.test(managed());
+            engine.undo();
+            card('.card')?.querySelector('.slots .base')?.click();
+            await settle(200);
+          }
+          {
+            /*
+             * §15 M1: the selected .card.featured already shows a ::before (★, from .featured::before).
+             * Adding ::before to .card and then a colour must not add `content`, which would replace
+             * the star on this element; the block says why.
+             */
+            const history = engine.history.size;
+            await addState('.card', '::before');
+            const draft = openAdderOf(block('.card', '::before'))?.querySelector('input');
+            const prefilled = draft?.value === 'content' && draft.selectionStart === 0 && draft.selectionEnd === 7;
+            const nothingYet = engine.history.size === history;
+            await addProperty(() => block('.card', '::before'), 'color');
+            const colour = rowIn(block('.card', '::before'), 'color')?.querySelector('heo-value-field');
+            const oneEntry = engine.history.size === history + 1;
+            colour?.dispatchEvent(new CustomEvent('value-change', { detail: { value: 'red' }, bubbles: true, composed: true }));
+            await settle(250);
+            const rule = (/\.card::before\s*\{([^}]*)\}/.exec(managed()) ?? [])[1] ?? '';
+            results.addState.beforeKeepsContentFromAnotherRule =
+              prefilled && nothingYet && oneEntry &&
+              /color:\s*red/.test(rule) && !/content/.test(rule) &&
+              beforeOf(target, 'content') === '"★"' &&
+              beforeOf(target, 'color') === 'rgb(255, 0, 0)' &&
+              textOf(block('.card', '::before')?.querySelector('.block-hint')) ===
+                'Not adding content: this element already has a ::before from .featured::before.';
+            engine.undo();
+            engine.undo();
+            await settle(250);
+            // Enter takes the offered `content`, which is what makes a new ::before render.
+            const second = document.querySelectorAll('.card')[1];
+            await addState('.card', '::before');
+            key(openAdderOf(block('.card', '::before'))?.querySelector('input'), 'Enter');
+            await settle(300);
+            results.addState.pseudoStartsWithEmptyContent =
+              engine.history.size === history + 1 &&
+              /\.card::before\s*\{\s*content:\s*""/.test(managed()) &&
+              beforeOf(second, 'content') === '""';
+            engine.undo();
+            await settle(250);
+            // ::after on elements with no other ::after: content "" goes in with the first property.
+            await addState('.card', '::after');
+            await addProperty(() => block('.card', '::after'), 'color');
+            const after = (/\.card::after\s*\{([^}]*)\}/.exec(managed()) ?? [])[1] ?? '';
+            results.addState.beforeGetsContentWithItsFirstOtherProperty =
+              engine.history.size === history + 1 && /content:\s*""/.test(after) && /color/.test(after);
+            engine.undo();
+            await settle(250);
+          }
+          {
+            // ::marker: nothing written until a property, and never `content` (it hides the bullet).
+            api.select(item);
+            await settle(300);
+            const history = engine.history.size;
+            const text = managed();
+            await addState('.item', '::marker');
+            const untouched = getComputedStyle(item, '::marker').content === 'normal' &&
+              managed() === text && engine.history.size === history && Boolean(block('.item', '::marker'));
+            await addProperty(() => block('.item', '::marker'), 'color');
+            const marker = (/\.item::marker\s*\{([^}]*)\}/.exec(managed()) ?? [])[1] ?? '';
+            results.addState.markerWritesNothingUntilAPropertyIsAdded =
+              untouched && engine.history.size === history + 1 && /color/.test(marker) && !/content/.test(marker) &&
+              getComputedStyle(item, '::marker').content === 'normal';
+            engine.undo();
+            api.select(target);
+            await settle(300);
+          }
+
+          /* ---------------------------------------------------------------- *
+           * Detach styles from class (R22).
+           * ---------------------------------------------------------------- */
+          progress.textContent = 'detach';
+          const detachLink = () => Array.from(body('.card')?.querySelectorAll('.actions .link') ?? [])
+            .find((one) => one.dataset.act === 'detach');
+          const panelText = (choice) => textOf(body('.card')?.querySelector(`.detach [data-choice="${choice}"]`));
+          results.detach = {};
+          {
+            const before = textOf(detachLink());
+            const closed = detachLink()?.getAttribute('aria-expanded') === 'false';
+            detachLink()?.click();
+            await settle(200);
+            results.detach.linkIsRenamed =
+              before === 'Detach styles from class' && closed &&
+              textOf(detachLink()) === 'Never mind' && detachLink()?.getAttribute('aria-expanded') === 'true' &&
+              !/Just this element/.test(textOf(sources()));
+            results.detach.copyWarnsAboutRulesElsewhere =
+              /Rules written for \.card elsewhere \(\.card\.featured, \.promo \.card\) stop applying here\./.test(panelText('copy')) &&
+              /its states and sizes included/.test(panelText('copy'));
+            results.detach.moveWarnsAboutLostVariants =
+              /Its ≤767px, ≥768px, print, :hover rules can't be written inline, so this element loses them\./.test(panelText('move'));
+            // Copy: a class with the base, plus one rule per size and state; swapped in place.
+            const list = document.createElement('style');
+            list.id = 'list-rule';
+            list.textContent = '.card:active, .card:focus { text-decoration: underline; }';
+            document.head.append(list);
+            await settle(200);
+            const history = engine.history.size;
+            Array.from(body('.card')?.querySelectorAll('.detach [data-choice="copy"] button') ?? [])
+              .find((one) => /Copy/.test(one.textContent))?.click();
+            await settle(300);
+            const fork = Array.from(target.classList).find((name) => name !== 'featured' && name !== 'card');
+            const rulesOf = engine.rules.list().filter((rule) => rule.selector.startsWith(`.${fork}`));
+            const has = (selector, media) => rulesOf.some((rule) =>
+              rule.selector === selector && (media ? (rule.media ?? '').includes(media) : !rule.media));
+            results.detach.copyCarriesStatesAndSizes =
+              Boolean(fork) && !target.classList.contains('card') && engine.history.size === history + 1 &&
+              engine.classes.get(fork)?.declarations.padding === '12px 16px' &&
+              has(`.${fork}`, 'max-width') && has(`.${fork}`, 'min-width') && has(`.${fork}`, 'print') &&
+              has(`.${fork}:hover`) && has(`.${fork}:hover`, 'min-width') &&
+              Boolean(card(`.${fork}`));
+            results.detach.copySplitsSelectorLists =
+              has(`.${fork}:active`) && has(`.${fork}:focus`) &&
+              !rulesOf.some((rule) => rule.selector.includes(','));
+            engine.undo();
+            list.remove();
+            await settle(300);
+            // Move: only the unconditional declarations become inline; the class comes off.
+            if (detachLink()?.getAttribute('aria-expanded') !== 'true') {
+              detachLink()?.click();
+              await settle(200);
+            }
+            const styleBefore = target.getAttribute('style');
+            Array.from(body('.card')?.querySelectorAll('.detach [data-choice="move"] button') ?? [])
+              .find((one) => /Move/.test(one.textContent))?.click();
+            await settle(300);
+            results.detach.moveTakesOnlyTheBaseDeclarations =
+              !target.classList.contains('card') &&
+              target.style.getPropertyValue('padding') === '12px 16px' &&
+              target.style.getPropertyValue('font-weight') === '600' &&
+              target.style.getPropertyValue('color') === 'rgb(185, 28, 28)' &&
+              !target.style.getPropertyValue('box-shadow');
+            engine.undo();
+            await settle(300);
+            results.detach.moveTakesOnlyTheBaseDeclarations =
+              results.detach.moveTakesOnlyTheBaseDeclarations &&
+              target.classList.contains('card') && target.getAttribute('style') === styleBefore;
+          }
         }
         const failed = Object.entries(results)
           .filter(([, group]) => group && typeof group === 'object')

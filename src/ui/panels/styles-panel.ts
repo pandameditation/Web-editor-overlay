@@ -15,7 +15,6 @@ import { labelFor, selectableParent } from '../../core/dom.js';
 import { listen, unlisten } from '../../core/shield.js';
 import { resolvesOffsets } from '../../core/transform.js';
 import { normalizeClassName, simpleClassName } from '../../core/classes.js';
-import type { DesignClass } from '../../core/types.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
@@ -254,6 +253,10 @@ const EMPTY_UI: StylesUiState = {
   tab: 'all',
   cardPicks: new Map(),
   closedCards: new Set(),
+  pendingStates: [],
+  blockHint: null,
+  detachOpen: null,
+  forkDraft: '',
 };
 
 /**
@@ -407,62 +410,6 @@ export class HeoStylesPanel extends HeoElement {
         color: var(--heo-text);
       }
 
-      /* Leaving a shared class, for one element. Two routes, each stating what it
-         does to the class and to everything else wearing it — the question that
-         decides between them, and one nobody should have to work out from a label. */
-      .detach {
-        display: grid;
-        gap: 7px;
-        margin: 0 0 8px;
-        padding: 9px;
-        border: 1px solid var(--heo-accent-line);
-        border-radius: var(--heo-r-sm);
-        background: var(--heo-accent-soft);
-      }
-      .detach .lede {
-        margin: 0;
-        color: var(--heo-text-dim);
-        font-size: 10.5px;
-        line-height: 1.45;
-      }
-      .detach .choice {
-        display: grid;
-        gap: 6px;
-        padding: 8px 9px;
-        border-radius: var(--heo-r-sm);
-        background: var(--heo-bg);
-      }
-      .detach .choice .head {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        color: var(--heo-text);
-        font-size: 11.5px;
-      }
-      .detach .choice .head b {
-        font-weight: 600;
-      }
-      .detach .choice > p {
-        margin: 0;
-        color: var(--heo-text-faint);
-        font-size: 10.5px;
-        line-height: 1.5;
-      }
-      .detach .choice .row {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-      }
-      .detach .choice .row .input {
-        flex: 1 1 auto;
-        min-width: 0;
-        height: 24px;
-        font-size: 11px;
-      }
-      .detach .choice .row .spacer {
-        flex: 1 1 auto;
-      }
-
 
     `,
   ];
@@ -478,17 +425,13 @@ export class HeoStylesPanel extends HeoElement {
   @state() private ui: StylesUiState = EMPTY_UI;
 
   @state() private classDraft = '';
-  /** Which class has its "just this element" options showing, if any. */
-  @state() private detachOpen: string | null = null;
-  /** Name typed for the copy, empty while the suggested one will do. */
-  @state() private forkDraft = '';
 
   /* The panel's small forms, each with its own errors. See `form-errors.ts`. */
   protected classForm = new FormErrors(this, () => classNameIssues('class-add', this.classDraft));
   protected forkForm = new FormErrors(this, () => {
-    const name = this.detachOpen;
+    const name = this.ui.detachOpen;
     if (!name) return [];
-    return forkNameIssues('class-fork', this.forkDraft, name, (candidate) => Boolean(this.editor.classes.get(candidate)));
+    return forkNameIssues('class-fork', this.ui.forkDraft, name, (candidate) => Boolean(this.editor.classes.get(candidate)));
   });
   /** The one open adder's errors; checks run on commit, through `form.fail`. */
   protected adderForm = new FormErrors(this, () => []);
@@ -557,6 +500,10 @@ export class HeoStylesPanel extends HeoElement {
         finderOpen: false,
         mediaDraft: null,
         otherSlots: new Map(),
+        pendingStates: [],
+        blockHint: null,
+        detachOpen: null,
+        forkDraft: '',
       };
     }
     // A new width: every size picker follows it again (R13), and what was asked at the old one goes.
@@ -569,6 +516,8 @@ export class HeoStylesPanel extends HeoElement {
         menu: null,
         pending: null,
         sizeDraft: null,
+        pendingStates: [],
+        blockHint: null,
       };
     }
   }
@@ -626,6 +575,8 @@ export class HeoStylesPanel extends HeoElement {
       adderForm: this.adderForm,
       mediaForm: this.mediaForm,
       toggleMenu: (id, open) => this.#toggleMenu(id, open),
+      forkForm: this.forkForm,
+      openCard: (key) => this.#openCard(key),
       form: this.adderForm,
       // The adder's draft is a view of the one open adder: nothing else holds one.
       get newProperty() {
@@ -1358,7 +1309,7 @@ export class HeoStylesPanel extends HeoElement {
     const classCards = tab === 'all' || tab === 'classes'
       ? classes.map(({ name, view }) =>
         view
-          ? renderFamilyCard(view, host, { group: 'classes', actions: this.#classActions(name, el) })
+          ? renderFamilyCard(view, host, { group: 'classes' })
           : renderUnknownCard(name, host))
         .filter((card) => card !== nothing)
       : [];
@@ -1457,37 +1408,6 @@ export class HeoStylesPanel extends HeoElement {
     </heo-section>`;
   }
 
-  /** What a class card on the element ends with: its management links and the detach panel. */
-  #classActions(name: string, el: HTMLElement): TemplateResult | typeof nothing {
-    const entry = this.editor.classes.get(name);
-    if (!entry) return nothing;
-    const uses = this.editor.classes.usage().get(name) ?? 0;
-    return html`<div class="actions">
-        <button
-          class="link"
-          type="button"
-          title="Open this class in the design system panel"
-          @click=${() => this.editor.setDockTab('tokens')}
-        >
-          Manage in Tokens
-        </button>
-        <button
-          class="link"
-          type="button"
-          aria-expanded=${this.detachOpen === name}
-          title=${uses > 1
-        ? `Style this element on its own, without affecting the other ${uses - 1} using .${name}`
-        : `Style this element on its own, without .${name}`}
-          @click=${() => {
-        this.detachOpen = this.detachOpen === name ? null : name;
-      }}
-        >
-          ${this.detachOpen === name ? 'Never mind' : 'Just this element…'}
-        </button>
-      </div>
-      ${this.detachOpen === name ? this.#renderDetach(entry, el, uses) : nothing}`;
-  }
-
   /**
    * Open a card where it is written, scroll it into view and flash it; with a property, focus that
    * declaration in the block at `slot` and `state`.
@@ -1565,115 +1485,6 @@ export class HeoStylesPanel extends HeoElement {
     }}
       ></heo-value-field>
       ${this.classForm.error('class-add')}`;
-  }
-
-  /**
-   * The way back out of a shared class, for one element.
-   *
-   * Extracting into a class is a one-way door as things stand: past that point the
-   * only ways to make a single element differ were to pile an inline override on top
-   * of the class — which leaves the class in the markup, still claiming to describe
-   * the element — or to retype every declaration by hand and remember to remove it.
-   * Neither is what "just change this one" means, and both are worse than the state
-   * before the extraction happened.
-   *
-   * Two routes rather than one, because the two answers to "is this still a thing
-   * worth naming" lead different places. Inlining is the exact inverse of extraction
-   * and the right move for values that were only ever this element's. Forking keeps a
-   * reusable rule and is the right move for a variant, which is most of the time —
-   * so it leads, and it is the one Enter would take.
-   */
-  #renderDetach(entry: DesignClass, el: HTMLElement, uses: number): TemplateResult {
-    const count = Object.keys(entry.declarations).length;
-    const others = Math.max(0, uses - 1);
-    const suggestion = this.editor.classes.uniqueName(entry.name);
-    const forkName = this.forkDraft.trim() || suggestion;
-    // Dropped with the last element wearing it, unless the page authored it: an
-    // overlay-owned rule with no users is dead weight in the export.
-    const orphans = others === 0 && entry.origin !== 'stylesheet';
-
-    return html`<div class="detach">
-      <p class="lede">
-        ${others
-        ? html`<code class="mono">.${entry.name}</code> is on ${uses} elements. Both options leave
-            the other ${others} alone.`
-        : html`Only this element uses <code class="mono">.${entry.name}</code>.`}
-      </p>
-
-      <div class="choice">
-        <div class="head">
-          ${icon('duplicate', 12)}
-          <b>Copy it for this element</b>
-        </div>
-        <p>
-          Makes <code class="mono">.${forkName}</code> with the same ${count}
-          declaration${count === 1 ? '' : 's'} and swaps it in here. Still a class you can reuse,
-          just not a shared one.
-        </p>
-        <div class="row">
-          <input
-            ${field(this.forkForm, 'class-fork')}
-            class="input mono fork-input"
-            type="text"
-            .value=${this.forkDraft}
-            placeholder=${suggestion}
-            spellcheck="false"
-            autocomplete="off"
-            aria-label="Name for the copy"
-            @input=${(event: Event) => {
-        this.forkDraft = (event.target as HTMLInputElement).value;
-      }}
-            @keydown=${(event: KeyboardEvent) => {
-        if (event.key !== 'Enter') return;
-        event.preventDefault();
-        this.#fork(entry.name, el);
-      }}
-          />
-          <button class="btn sm primary" type="button" @click=${() => this.#fork(entry.name, el)}>
-            ${icon('duplicate', 12)} Copy
-          </button>
-        </div>
-        ${this.forkForm.error('class-fork')}
-      </div>
-
-      <div class="choice">
-        <div class="head">
-          ${icon('unlink', 12)}
-          <b>Move the styles onto the element</b>
-        </div>
-        <p>
-          The exact opposite of extracting a class: the ${count}
-          declaration${count === 1 ? '' : 's'} become this element's own inline styles and
-          <code class="mono">.${entry.name}</code>
-          comes off it${orphans
-        ? html`. Nothing else uses it, so the rule goes too.`
-        : html`, but stays defined for the rest.`}
-        </p>
-        <div class="row">
-          <span class="spacer"></span>
-          <button
-            class="btn sm"
-            type="button"
-            @click=${() => {
-        if (!this.editor.inlineClass(entry.name, el)) return;
-        this.detachOpen = null;
-      }}
-          >
-            ${icon('unlink', 12)} Move to this element
-          </button>
-        </div>
-      </div>
-    </div>`;
-  }
-
-  /** Fork the class, then follow it: the panel should be editing the copy. */
-  #fork(name: string, el: HTMLElement): void {
-    if (!this.forkForm.submit()) return;
-    const forked = this.editor.forkClass(name, el, this.forkDraft.trim() || undefined);
-    if (!forked) return;
-    this.forkDraft = '';
-    this.detachOpen = null;
-    this.#openCard(`.${CSS.escape(forked)}`);
   }
 
   /**
