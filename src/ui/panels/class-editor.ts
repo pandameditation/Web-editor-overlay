@@ -58,10 +58,6 @@ export interface DeclarationTarget {
   seed(property: string): string;
   /** Why this target cannot be written, when it cannot. Disables the promote toggle with it. */
   readonly?: string;
-  /** True when something more specific wins this property on the selected element. */
-  overridden?(property: string): boolean;
-  /** The property's tooltip, when there is more to say than its name. */
-  describe?(property: string): string;
   /** What the value comes to here, when that differs from what is written. */
   resolve?(property: string): string;
 }
@@ -209,6 +205,8 @@ export function renderCardHeader(spec: {
   onToggle: () => void;
   /** The class was defined in this session rather than read from a stylesheet. */
   sessionDot: boolean;
+  /** A name that is a label rather than a selector ("Inline style"), set in the text face. */
+  plain?: boolean;
 }): TemplateResult {
   return html`<header
     role="button"
@@ -223,7 +221,7 @@ export function renderCardHeader(spec: {
   >
     ${icon(spec.expanded ? 'chevronDown' : 'chevronRight', 11)}
     ${spec.sessionDot ? html`<span class="dot" title="Defined in this session"></span>` : nothing}
-    <span class="n">${spec.name}</span>
+    <span class=${spec.plain ? 'n plain' : 'n'} title=${spec.name}>${spec.name}</span>
     ${spec.file ? html`<span class="file">${spec.file}</span>` : nothing}
     <span class="meta">${spec.meta}</span>
   </header>`;
@@ -252,9 +250,9 @@ export function renderDeclarationRow(
   const value = splitImportant(target.declarations[property] ?? '').value;
   const important = target.important(property);
   return html`<div
-    class=${`decl${options.promote ? ' promotable' : ''}${target.overridden?.(property) ? ' overridden' : ''}`}
+    class=${`decl${options.promote ? ' promotable' : ''}`}
   >
-    <span class="p" title=${target.describe?.(property) ?? property}>${property}</span>
+    <span class="p" title=${property}>${property}</span>
     <heo-value-field
       data-property=${property}
       .computed=${target.resolve?.(property) ?? resolvedValue(value, element)}
@@ -331,6 +329,9 @@ export const ClassEditor = {
       text-overflow: ellipsis;
       white-space: nowrap;
     }
+    .cls .n.plain {
+      font-family: var(--heo-font);
+    }
     .cls .meta {
       flex: 0 0 auto;
       color: var(--heo-text-faint);
@@ -380,12 +381,6 @@ export const ClassEditor = {
     /* A fourth column for the !important toggle, between the value and the trash. */
     .cls .decl.promotable {
       grid-template-columns: 92px minmax(0, 1fr) 18px 18px;
-    }
-    /* A declaration something more specific beats. Dimmed rather than hidden: that
-       it is being overridden is usually the answer to "why did nothing happen". */
-    .cls .decl.overridden .p,
-    .cls .decl.overridden heo-value-field {
-      opacity: 0.45;
     }
     /* A shorthand and its own sides, shown as one thing.
 
@@ -644,8 +639,12 @@ export const ClassEditor = {
    * more useful than an empty editor that looks broken.
    */
   renderUnknown(name: string, host: ClassEditorHost): TemplateResult {
-    return html`<div class="cls">
-      <div class="undefined-note">
+    return html`<div class="cls">${ClassEditor.renderUnknownBody(name, host)}</div>`;
+  },
+
+  /** The same note and offer, for a host that draws its own card around them. */
+  renderUnknownBody(name: string, host: ClassEditorHost): TemplateResult {
+    return html`<div class="undefined-note">
         No rule for <code class="mono">.${name}</code> is readable from this page — it may come from
         a framework, a cross-origin stylesheet, or nowhere at all. Defining it here adds a rule the
         editor owns and exports.
@@ -661,8 +660,7 @@ export const ClassEditor = {
         >
           ${icon('plus', 12)} Define .${name}
         </button>
-      </div>
-    </div>`;
+      </div>`;
   },
 };
 

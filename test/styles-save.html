@@ -520,6 +520,20 @@
         root().querySelector('.pop')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true }));
         await settle();
 
+        /*
+         * A card row writes the declaration it shows, straight into its rule: no "where should this
+         * stay" box, even for a base rule a media rule overrides at some widths, and nothing inline.
+         */
+        size = engine.history.size;
+        const cardRow = Array.from(root().querySelectorAll('heo-section[heading="Sources"] .cls[data-card=".card"] .block[data-block="base"] .decl'))
+          .find((row) => row.querySelector('.p')?.textContent.trim() === 'padding');
+        await send(cardRow?.querySelector('heo-value-field'), 'value-change', '13px 17px');
+        results.edit.cardEditWritesDirectly =
+          baseCard.style.getPropertyValue('padding') === '13px 17px' &&
+          !second.hasAttribute('style') && !/padding/.test(target.getAttribute('style') ?? '') &&
+          !anyBox() && engine.history.size === size + 1;
+        engine.undo();
+        await settle();
         const resetIn = (list, property) => Boolean(rowIn(list, property)?.querySelector('.reset'));
         const resetBefore = resetIn('typography', 'color');
         await send(fieldIn('typography', 'color'), 'value-change', 'rgb(9, 9, 9)');

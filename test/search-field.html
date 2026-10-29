@@ -32,6 +32,10 @@
     section p {
       letter-spacing: 0.013em;
     }
+    /* Only at ≥1024px, so not in effect in the 756px harness: a card found by it has to switch size. */
+    @media (min-width: 1024px) {
+      .card { word-spacing: 2px; }
+    }
   </style>
 </head>
 
@@ -217,16 +221,14 @@
 
       results.styles = {
         filterIsOnTheFirstLine: Boolean(filterField),
-        // Freed up by moving Extract class into Classes, where the rest of that subject lives.
+        // Freed up by moving Extract into the inline card, whose declarations it extracts (R21).
         extractIsNoLongerOnTheFirstLine: !Array.from(
           stylePanel.shadowRoot.querySelectorAll('.top button'),
         ).some((b) => /extract/i.test(b.textContent)),
         extractIsInTheClassesSection: (() => {
-          const classes = Array.from(stylePanel.shadowRoot.querySelectorAll('heo-section')).find(
-            (s) => s.heading === 'Classes',
-          );
+          const inline = stylePanel.shadowRoot.querySelector('heo-section[heading="Sources"] .cls[data-card="inline"]');
           return Boolean(
-            classes && Array.from(classes.querySelectorAll('button')).some((b) => /extract/i.test(b.textContent)),
+            inline && Array.from(inline.querySelectorAll('button')).some((b) => /extract/i.test(b.textContent)),
           );
         })(),
         sectionsBefore: headingsOf().length,
@@ -273,18 +275,37 @@
       await typeInto(filterField, 'padding', stylePanel);
       results.styles.findsPadding = headingsOf().includes('Spacing');
 
+      // Sources' cards, re-queried after every render.
+      const sourceCard = (key) =>
+        stylePanel.shadowRoot.querySelector(`heo-section[heading="Sources"] .cls[data-card="${CSS.escape(key)}"]`);
+      const cardRows = (key) =>
+        Array.from(sourceCard(key)?.querySelectorAll('.decl:not(.property-adder) .p') ?? []).map((p) => p.textContent.trim());
+
       // A value, not a name. `.card` declares padding: 8px and nothing is called "8px".
       await typeInto(filterField, '8px', stylePanel);
-      results.styles.findsByValue = headingsOf().includes('Classes');
+      results.styles.findsByValue =
+        headingsOf().includes('Sources') && sourceCard('.card')?.dataset.group === 'classes';
+      // Found by a declaration, a card shows only the rows that match (R8).
+      results.search.findsADeclarationInsideAClassCard = cardRows('.card').join(',') === 'padding';
 
       // A class by name.
       await typeInto(filterField, 'card', stylePanel);
-      results.styles.findsAClass = headingsOf().includes('Classes');
+      results.styles.findsAClass = headingsOf().includes('Sources') && Boolean(sourceCard('.card'));
+      // Found by its selector, a card shows everything it declares at the size it is on.
+      results.search.findsACardBySelector =
+        cardRows('.card').join(',') === 'padding' && !sourceCard('section p');
+
+      // A card holding the match only at another size opens at that size.
+      await typeInto(filterField, 'word-spacing', stylePanel);
+      results.search.switchesCardToTheMatchingSize =
+        sourceCard('.card')?.querySelector('.slots [aria-pressed="true"]')?.dataset.slot === 'laptop' &&
+        cardRows('.card').join(',') === 'word-spacing';
 
       // A stylesheet rule by a value only it declares: `section p` is not one of the
-      // element's classes, so it lives under CSS rules.
+      // element's classes, so it is under OTHER RULES.
       await typeInto(filterField, '0.013em', stylePanel);
-      results.styles.findsACssRule = headingsOf().includes('CSS rules');
+      results.styles.findsACssRule =
+        headingsOf().includes('Sources') && sourceCard('section p')?.dataset.group === 'rules' && !sourceCard('.card');
 
       /* ---------------------------------------------------------------- *
        * Out of rows: the completions arrive in the panel, not in the popup.

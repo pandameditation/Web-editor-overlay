@@ -13,8 +13,6 @@ import { icon } from '../../icons.js';
 
 export interface HeaderSpec {
   element: HTMLElement;
-  /** Which class is open where it is written, for the name's pressed state. */
-  openClass: string | null;
   finderOpen: boolean;
   onToggleFinder(open: boolean): void;
   onOpenClass(name: string): void;
@@ -34,7 +32,6 @@ export function renderElementHeader(spec: HeaderSpec): TemplateResult {
           <button
             class="name"
             type="button"
-            aria-expanded=${spec.openClass === name ? 'true' : 'false'}
             title=${`Edit .${name} in Sources`}
             @click=${() => spec.onOpenClass(name)}
           >
@@ -132,9 +129,6 @@ export const headerStyles: CSSResult = css`
     font-family: var(--heo-mono);
     font-size: 11px;
     cursor: pointer;
-  }
-  .cchip .name[aria-expanded='true'] {
-    color: var(--heo-accent-text);
   }
   .cchip .kill {
     display: grid;

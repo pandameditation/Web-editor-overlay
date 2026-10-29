@@ -177,15 +177,16 @@
             .find((rule) => rule.selectorText === selector);
 
         /** One rule group's rows, as `property=value` with a marker for a shadowed one. */
-        const rowsFor = async (id) => {
+        const rowsFor = async (id, slot = null) => {
           api.select(document.getElementById(id));
           engine.setDockTab('styles');
           await frames();
           await wait(320);
           // Re-queried every time: the dock rebuilds its panels, so a held reference goes stale.
           const panel = deep('heo-styles-panel');
+          // Page rules are Sources' OTHER RULES cards (R17), where the CSS rules section used to be.
           const section = Array.from(panel.shadowRoot.querySelectorAll('heo-section')).find(
-            (s) => s.heading === 'CSS rules',
+            (s) => s.heading === 'Sources',
           );
           if (section && !section.open) section.shadowRoot.querySelector('.head')?.click();
           await frames();
@@ -198,10 +199,20 @@
           if (header && header.getAttribute('aria-expanded') !== 'true') header.click();
           await frames();
           await wait(280);
-          const block = Array.from(section?.querySelectorAll('.cls') ?? []).find((b) =>
+          let block = Array.from(section?.querySelectorAll('.cls') ?? []).find((b) =>
             b.querySelector('header')?.textContent.includes(`#${id}`),
           );
           if (!block) return null;
+          // A rule inside a media query is that size of its card: picked from the strip's ⋮.
+          if (slot) {
+            block.querySelector('.slots .more')?.click();
+            await frames();
+            await wait(120);
+            panel.shadowRoot.querySelector(`.menu .mi[data-key="${CSS.escape(slot)}"]`)?.click();
+            await frames();
+            await wait(200);
+            block = section.querySelector(`.cls[data-card="${CSS.escape(`#${id}`)}"]`);
+          }
           return Array.from(block.querySelectorAll('.decl:not(.property-adder)'))
             .map((row) => {
               const name = row.querySelector('.p')?.textContent?.trim() ?? '';
@@ -306,8 +317,8 @@
          * 5. And all of it works inside an at-rule.
          * ------------------------------------------------------------------ */
         progress.textContent = 'atRule';
-        const linkedMedia = await rowsFor('linked-media');
-        const inlineMedia = await rowsFor('inline-media');
+        const linkedMedia = await rowsFor('linked-media', 'other:(min-width: 1px)');
+        const inlineMedia = await rowsFor('inline-media', 'other:(min-width: 1px)');
         results.atRule = {
           linked: linkedMedia,
           inline: inlineMedia,
@@ -393,18 +404,15 @@
           api.select(document.getElementById('promote-class'));
           await frames();
           await wait(400);
-          const classes = sectionNamed('Classes');
-          if (classes && !classes.open) classes.shadowRoot.querySelector('.head')?.click();
-          await frames();
-          await wait(200);
-          // The class chips are in the element header now.
+          // The class chips are in the element header now; a name opens its card in Sources.
           const chip = Array.from(panelRoot().querySelectorAll('.ident .cchip .name')).find(
             (c) => c.textContent.includes('promoted'),
           );
-          if (chip?.getAttribute('aria-expanded') !== 'true') chip?.click();
+          chip?.click();
           await frames();
           await wait(350);
-          const classFamily = () => familyIn(sectionNamed('Classes')?.querySelector('.decls'));
+          const classFamily = () =>
+            familyIn(sectionNamed('Sources')?.querySelector('.cls[data-group="classes"] .decls'));
           results.promoting.classHasOneControlPerSide = classFamily()?.controls === 2;
           results.promoting.classStartsWithSidesWinning = classFamily()?.pressed === 'sides';
           classFamily()?.other?.click();
@@ -418,7 +426,7 @@
           api.select(document.getElementById('linked'));
           await frames();
           await wait(400);
-          const rules = sectionNamed('CSS rules');
+          const rules = sectionNamed('Sources');
           if (rules && !rules.open) rules.shadowRoot.querySelector('.head')?.click();
           await frames();
           await wait(200);
@@ -429,7 +437,7 @@
           await frames();
           await wait(350);
           const ruleFamily = () =>
-            familyIn(sectionNamed('CSS rules')?.querySelector('.cls .decls'));
+            familyIn(sectionNamed('Sources')?.querySelector('.cls[data-card="#linked"] .decls'));
           results.promoting.ruleHasOneControlPerSide = ruleFamily()?.controls === 2;
           const rulePressed = ruleFamily()?.pressed;
           ruleFamily()?.other?.click();
@@ -504,7 +512,7 @@
           engine.setDockTab('styles');
           await frames();
           await wait(400);
-          const rules = sectionNamed('CSS rules');
+          const rules = sectionNamed('Sources');
           if (rules && !rules.open) rules.shadowRoot.querySelector('.head')?.click();
           await frames();
           await wait(200);
@@ -516,7 +524,7 @@
           await wait(350);
           results.stableOrder = {
             rule: await flipFourTimes(() =>
-              sectionNamed('CSS rules')?.querySelector('.cls .decls'),
+              sectionNamed('Sources')?.querySelector('.cls[data-card="#between"] .decls'),
             ),
           };
 
@@ -540,7 +548,7 @@
           api.select(document.getElementById('between'));
           await frames();
           await wait(450);
-          const kill = sectionNamed('CSS rules')?.querySelector('.cls .decls .kill');
+          const kill = sectionNamed('Sources')?.querySelector('.cls[data-card="#between"] .decls .kill');
           const killStyle = kill ? getComputedStyle(kill) : null;
           results.removeControl = {
             exists: Boolean(kill),
@@ -557,7 +565,7 @@
            * which read well under 3:1; and it used the up arrow the !important toggle now uses, so
            * one picture meant two things a few pixels apart. Measured on the rule card still open.
            */
-          const ruleList = sectionNamed('CSS rules')?.querySelector('.cls .decls');
+          const ruleList = sectionNamed('Sources')?.querySelector('.cls[data-card="#between"] .decls');
           const fam = ruleList?.querySelector('.family');
           const sideControls = Array.from(fam?.querySelectorAll('.side-win') ?? []);
           const loser = fam?.querySelector('.side-win:not(.on) + .fam-rows');

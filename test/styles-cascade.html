@@ -420,6 +420,26 @@
         results.popover.listsOtherSizesAtActual =
           pop()?.querySelector('.sub')?.textContent.trim() === 'At other sizes or states' &&
           lines().some((line) => line.classList.contains('idle') && line.querySelector('.src').textContent.includes(otherLabel));
+        /*
+         * A line's link opens the card it is written in, at that rule's size, with the declaration
+         * focused: following ".card ≥768px →" lands on the tablet slot of the .card card, not on its
+         * All sizes view, where that padding is not listed.
+         */
+        const linkSlot = below768 ? 'tablet' : 'phone';
+        lines().find((line) => line.classList.contains('idle') && line.querySelector('.src').textContent.includes(otherLabel))
+          ?.querySelector('button.src')?.click();
+        await settle(400);
+        const linkedCard = root().querySelector('heo-section[heading="Sources"] .cls[data-card=".card"]');
+        const focused = root().activeElement;
+        results.popover.linkOpensTheCardAtTheRulesSize =
+          !pop() &&
+          linkedCard?.querySelector(':scope > header')?.getAttribute('aria-expanded') === 'true' &&
+          linkedCard?.querySelector('.slots [aria-pressed="true"]')?.dataset.slot === linkSlot &&
+          focused?.localName === 'heo-value-field' && focused.dataset.property === 'padding' &&
+          focused.closest('[data-declarations]')?.dataset.declarations === `card|.card|${linkSlot}|` &&
+          focused.value === (below768 ? '20px 28px' : '10px 12px');
+        focused?.shadowRoot?.querySelector('input')?.blur();
+        await settle();
         await closePop();
         await openDot('typography', 'font-family');
         const inherited = pop()?.querySelector('.none')?.textContent.replace(/\s+/g, ' ') ?? '';

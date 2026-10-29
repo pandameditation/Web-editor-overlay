@@ -515,33 +515,31 @@
             await frames();
             await wait(150);
           };
-          await openSection('Classes');
+          await openSection('Sources');
           // Expand .boxy, which declares margin-left, so two lists on screen can answer to the
           // same property name. That is the whole precondition for the focus bug.
-          // The class chips are in the element header now.
+          // The class chips are in the element header now; a name opens its card in Sources.
           Array.from(panel.shadowRoot.querySelectorAll('.ident .cchip .name'))
             .find((c) => c.textContent.includes('boxy'))
             ?.click();
           await frames();
           await wait(250);
 
-          await openSection('CSS rules');
-          Array.from(sectionNamed('CSS rules')?.querySelectorAll('.cls > header') ?? [])
-            .find((h) => h.textContent.includes('#subject'))
-            ?.click();
-          await frames();
-          await wait(250);
-
-          const ruleList = () =>
-            Array.from(sectionNamed('CSS rules')?.querySelectorAll('.cls') ?? []).find((block) =>
-              block.querySelector('header')?.textContent.includes('#subject'),
-            );
+          // The page rule is an OTHER RULES card, open by default.
+          const ruleList = () => sectionNamed('Sources')?.querySelector('.cls[data-card="#subject"]');
+          const boxyCard = () => sectionNamed('Sources')?.querySelector('.cls[data-card=".boxy"]');
           const ruleRows = () =>
             Array.from(ruleList()?.querySelectorAll('heo-value-field') ?? []).map(
               (f) => f.dataset.property,
             );
           const ruleAdder = () => ruleList()?.querySelector('.property-adder input');
           const add = async (name) => {
+            // Behind "+ Add property" in Styles (R23).
+            if (!ruleAdder()) {
+              ruleList()?.querySelector('.block[data-block="base"] .add-prop')?.click();
+              await frames();
+              await wait(120);
+            }
             const input = ruleAdder();
             input.focus();
             input.value = name;
@@ -564,9 +562,7 @@
           results.addingASideToARule = {
             rowsBefore: ruleRows().join(','),
             classIsExpanded: Boolean(
-              sectionNamed('Classes')?.querySelector(
-                'heo-value-field[data-property="margin-left"]',
-              ),
+              boxyCard()?.querySelector('heo-value-field[data-property="margin-left"]'),
             ),
           };
 
@@ -584,12 +580,23 @@
             afterMargin && ruleList()?.contains(afterMargin),
           );
           results.addingASideToARule.focusIsNotInTheClass = Boolean(
-            afterMargin && !sectionNamed('Classes')?.contains(afterMargin),
+            afterMargin && !boxyCard()?.contains(afterMargin),
           );
 
           /* --- padding-left, where the rule already declares `padding`. --- */
           await add('padding-left');
           const afterPadding = focusedField();
+          /*
+           * A new property starts at what the element resolves to (R23), 8px here, which changes
+           * nothing; the side is then set to 0, as a user would, so the rest has a side to see.
+           */
+          const seededSide = afterPadding?.value;
+          afterPadding?.dispatchEvent(new CustomEvent('value-change', {
+            detail: { value: '0px' }, bubbles: true, composed: true,
+          }));
+          await frames();
+          await wait(250);
+          results.addingASideToARule.seedsWhatTheElementResolvesTo = seededSide === '8px';
           const liveRule = Array.from(document.styleSheets)
             .flatMap((sheet) => {
               try {
@@ -642,7 +649,7 @@
         progress.textContent = 'rulesReadTheFile';
         {
           /** The expanded declaration rows of one selector's group under CSS rules. */
-          const rowsFor = async (id) => {
+          const rowsFor = async (id, slot = null) => {
             api.select(document.getElementById(id));
             engine.setDockTab('styles');
             await frames();
@@ -650,20 +657,31 @@
             // Re-queried each time: the dock rebuilds its panels, so a held reference goes stale.
             const live = deep('heo-styles-panel');
             const section = Array.from(live.shadowRoot.querySelectorAll('heo-section')).find(
-              (s) => s.heading === 'CSS rules',
+              (s) => s.heading === 'Sources',
             );
             if (section && !section.open) section.shadowRoot.querySelector('.head')?.click();
             await frames();
             await wait(180);
-            Array.from(section?.querySelectorAll('.cls > header') ?? [])
-              .find((h) => h.textContent.includes(`#${id}`))
-              ?.click();
+            // Cards start open, and a header is a toggle: only a shut one is clicked.
+            const header = Array.from(section?.querySelectorAll('.cls > header') ?? [])
+              .find((h) => h.textContent.includes(`#${id}`));
+            if (header?.getAttribute('aria-expanded') !== 'true') header?.click();
             await frames();
             await wait(280);
-            const block = Array.from(section?.querySelectorAll('.cls') ?? []).find((b) =>
+            let block = Array.from(section?.querySelectorAll('.cls') ?? []).find((b) =>
               b.querySelector('header')?.textContent.includes(`#${id}`),
             );
             if (!block) return null;
+            // A rule inside a media query is that size of its card, picked from the strip's ⋮.
+            if (slot) {
+              block.querySelector('.slots .more')?.click();
+              await frames();
+              await wait(120);
+              live.shadowRoot.querySelector(`.menu .mi[data-key="${CSS.escape(slot)}"]`)?.click();
+              await frames();
+              await wait(200);
+              block = section.querySelector(`.cls[data-card="${CSS.escape(`#${id}`)}"]`);
+            }
             return Array.from(block.querySelectorAll('.decl:not(.property-adder)')).map((row) => ({
               property: row.querySelector('.p')?.textContent?.trim() ?? '',
               value: row.querySelector('heo-value-field')?.value ?? '',
@@ -722,7 +740,7 @@
            * not a silent gap.
            */
           results.atRules = {
-            media: asText(await rowsFor('inmedia')),
+            media: asText(await rowsFor('inmedia', 'other:(min-width: 1px)')),
             supports: asText(await rowsFor('insupports')),
             layer: asText(await rowsFor('inlayer')),
             container: asText(await rowsFor('incontainer')),

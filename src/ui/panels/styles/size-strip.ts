@@ -1,7 +1,9 @@
 import { css, html, nothing, type CSSResult, type TemplateResult } from 'lit';
 import { ref } from 'lit/directives/ref.js';
-import { mediaIcon, type DeviceIcon } from '../../../core/breakpoints.js';
+import { mediaIcon, mediaShort, type DeviceIcon } from '../../../core/breakpoints.js';
+import type { ElementModel, RuleEntry } from '../../../core/cascade.js';
 import { mediaQueryIssues } from '../../../core/validation.js';
+import { mediaApplies } from '../../../core/viewport.js';
 import { field, type FormErrors } from '../../form-errors.js';
 import { icon } from '../../icons.js';
 import { focusWhenOpened, renderMenu } from './menu.js';
@@ -55,6 +57,64 @@ export interface SizeStripSpec {
 
 /** The field name the strip's media field reports under. */
 export const MEDIA_FIELD = 'media-query';
+
+/**
+ * A strip's buttons for a set of rules: one per slot visible at the preview width, then the other
+ * media queries those rules (or the user, through "Add a media query…") use, each with its count.
+ *
+ * Effective styles passes the element's base rules, a card its family's visible members; the
+ * counting, the visibility rule and the titles are the same for both, so they are written once.
+ */
+export function stripSizes(
+  model: ElementModel,
+  entries: readonly RuleEntry[],
+  previewWidth: number | null,
+  added: readonly string[] = [],
+): { slots: StripSlot[]; others: StripOther[]; count(key: string): number } {
+  const visible = (media: string): boolean => previewWidth === null || mediaApplies(media, previewWidth);
+  const count = (key: string): number =>
+    entries.filter((entry) => model.slotOf(entry) === key)
+      .reduce((sum, entry) => sum + entry.declarations.length, 0);
+  const slots = model.slots().filter((slot) => visible(slot.media)).map((slot) => {
+    const n = count(slot.key);
+    const notNow = !mediaApplies(slot.media, null);
+    return {
+      key: slot.key,
+      icon: slot.icon,
+      name: slot.name,
+      count: n,
+      notNow,
+      title: `${slot.name}${n ? ` — ${n} declaration${n === 1 ? '' : 's'} at this size` : ' — none yet, click to add'}${notNow ? ` · not in effect at ${model.width}px` : ''}`,
+    };
+  });
+  const media = new Set<string>();
+  for (const entry of entries) {
+    const key = model.slotOf(entry);
+    if (key.startsWith('other:')) media.add(key.slice('other:'.length));
+  }
+  for (const one of added) media.add(one);
+  const others = [...media].filter(visible).map((one) => ({
+    key: `other:${one}`,
+    media: one,
+    count: count(`other:${one}`),
+    notNow: !mediaApplies(one, null),
+  }));
+  return { slots, others, count };
+}
+
+/** The media query a strip key stands for: null for All sizes. */
+export function slotMedia(model: ElementModel, key: string): string | null {
+  if (key === 'base') return null;
+  if (key.startsWith('other:')) return key.slice('other:'.length);
+  return model.slots().find((one) => one.key === key)?.media ?? null;
+}
+
+/** How a strip key is named in text: `≤767px`, `@media print`, or nothing for All sizes. */
+export function slotName(model: ElementModel, key: string): string {
+  const media = slotMedia(model, key);
+  if (media === null) return '';
+  return key.startsWith('other:') ? `@media ${media}` : mediaShort(media);
+}
 
 export function renderSizeStrip(spec: SizeStripSpec): TemplateResult {
   const menuId = `strip-${spec.owner}`;

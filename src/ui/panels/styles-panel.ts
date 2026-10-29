@@ -1,16 +1,7 @@
 import { css, html, nothing, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
-import { repeat } from 'lit/directives/repeat.js';
-import { isPseudoElement, mediaIcon, mediaShort, needsGeneratedContent } from '../../core/breakpoints.js';
-import {
-  appliedRules,
-  cascadedDeclarations,
-  fromElementClass,
-  stateRules,
-  type AppliedRule,
-  type ElementModel,
-  type WriteTarget,
-} from '../../core/cascade.js';
+import { mediaIcon, mediaShort } from '../../core/breakpoints.js';
+import { type ElementModel, type RuleEntry, type WriteTarget } from '../../core/cascade.js';
 import {
   parentLayoutProperties,
   PROPERTY_GROUP_LABELS,
@@ -19,7 +10,6 @@ import {
   type SizeConstraint,
 } from '../../core/css.js';
 import { splitImportant, toRecord } from '../../core/declaration-list.js';
-import { ruleDeclarations } from '../../core/sheets.js';
 import { normalizeProperty, propertyIsKnown } from '../../core/declarations.js';
 import { labelFor, selectableParent } from '../../core/dom.js';
 import { listen, unlisten } from '../../core/shield.js';
@@ -33,22 +23,24 @@ import { baseStyles } from '../theme.js';
 import { buildSuggestions, classSuggestions, valueKindFor } from '../suggestions.js';
 import { adderStyles } from './adder.js';
 import { selectionNotice, selectionNoticeStyles } from './selection-notice.js';
+import { ClassEditor, focusDeclaration } from './class-editor.js';
 import {
-  ClassEditor,
-  focusDeclaration,
-  initialValueFor,
-  type DeclarationTarget,
-} from './class-editor.js';
+  blockId,
+  cardView,
+  renderBlockAdder,
+  renderFamilyCard,
+  renderInlineCard,
+  renderUnknownCard,
+  sourcesStyles,
+  visibleAt,
+  type CardView,
+} from './styles/family-card.js';
 import { renderCascadePopover, popoverStyles } from './styles/cascade-popover.js';
 import { headerStyles, renderElementHeader } from './styles/header.js';
 import { previewBarStyles, previewPresets, renderPreviewBar, SIZE_FIELD } from './styles/preview-bar.js';
-import { renderSizeStrip, sizeStripStyles, stripMediaIssues, type StripOther, type StripSlot } from './styles/size-strip.js';
+import { renderSizeStrip, sizeStripStyles, stripMediaIssues, stripSizes } from './styles/size-strip.js';
 import { menuStyles, placeLayer } from './styles/menu.js';
-import {
-  renderAdder,
-  stylesDestination,
-  type AdderDestination,
-} from './styles/property-adder.js';
+import { stylesDestination, type AdderDestination } from './styles/property-adder.js';
 import {
   isViewportDependent,
   previewSlot,
@@ -259,6 +251,9 @@ const EMPTY_UI: StylesUiState = {
   sizeDraft: null,
   mediaDraft: null,
   otherSlots: new Map(),
+  tab: 'all',
+  cardPicks: new Map(),
+  closedCards: new Set(),
 };
 
 /**
@@ -284,6 +279,7 @@ export class HeoStylesPanel extends HeoElement {
     headerStyles,
     previewBarStyles,
     sizeStripStyles,
+    sourcesStyles,
     css`
       :host {
         display: block;
@@ -328,9 +324,6 @@ export class HeoStylesPanel extends HeoElement {
       }
       .egroup-h .note {
         margin-left: auto;
-      }
-      .block-add {
-        margin-top: 4px;
       }
       .actions {
         display: flex;
@@ -470,104 +463,6 @@ export class HeoStylesPanel extends HeoElement {
         flex: 1 1 auto;
       }
 
-      /* Cascade inspector */
-      .rule {
-        margin-bottom: 8px;
-        border: 1px solid var(--heo-line);
-        border-radius: var(--heo-r-sm);
-        overflow: hidden;
-      }
-      .rule > header {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        padding: 6px 8px;
-        background: var(--heo-sunken);
-      }
-      .rule.inline {
-        border-color: var(--heo-accent-line);
-      }
-      .rule.inline > header {
-        background: var(--heo-accent-soft);
-        color: var(--heo-text);
-      }
-      .rule .sel {
-        flex: 1 1 auto;
-        min-width: 0;
-        overflow: hidden;
-        color: var(--heo-text);
-        font-family: var(--heo-mono);
-        font-size: 10.5px;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .rule .decls {
-        padding: 6px 8px;
-        display: grid;
-        gap: 4px;
-      }
-      .decl {
-        display: grid;
-        grid-template-columns: 96px 1fr;
-        align-items: center;
-        gap: 6px;
-      }
-      .property-adder {
-        grid-template-columns: 96px minmax(0, 1fr) 18px;
-      }
-      .property-adder .pair {
-        display: flex;
-        gap: 4px;
-        min-width: 0;
-      }
-      .property-adder .pair .input {
-        flex: 1 1 auto;
-        min-width: 0;
-      }
-      .property-adder .confirm {
-        display: grid;
-        place-items: center;
-        flex: 0 0 auto;
-        width: 28px;
-        border: 1px solid var(--heo-accent-line);
-        border-radius: var(--heo-r-sm);
-        background: var(--heo-accent-soft);
-        color: var(--heo-accent);
-        cursor: pointer;
-        padding: 0;
-        transition:
-          background var(--heo-fast),
-          color var(--heo-fast);
-      }
-      .property-adder .confirm:hover:not(:disabled) {
-        background: var(--heo-accent);
-        color: var(--heo-accent-ink);
-      }
-      .property-adder .confirm:disabled {
-        border-color: var(--heo-line);
-        background: transparent;
-        color: var(--heo-text-disabled);
-        cursor: not-allowed;
-      }
-      .decl .p {
-        overflow: hidden;
-        color: var(--heo-text-dim);
-        font-family: var(--heo-mono);
-        font-size: 10.5px;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .decl.overridden .p,
-      .decl.overridden heo-value-field {
-        opacity: 0.45;
-      }
-      .cond {
-        padding: 4px 8px;
-        border-top: 1px solid var(--heo-line);
-        color: var(--heo-text-faint);
-        font-family: var(--heo-mono);
-        font-size: 9.5px;
-      }
 
     `,
   ];
@@ -583,13 +478,10 @@ export class HeoStylesPanel extends HeoElement {
   @state() private ui: StylesUiState = EMPTY_UI;
 
   @state() private classDraft = '';
-  /** Which class chip is expanded into its definition, if any. */
-  @state() private openClass: string | null = null;
   /** Which class has its "just this element" options showing, if any. */
   @state() private detachOpen: string | null = null;
   /** Name typed for the copy, empty while the suggested one will do. */
   @state() private forkDraft = '';
-  @state() private classProperty = '';
 
   /* The panel's small forms, each with its own errors. See `form-errors.ts`. */
   protected classForm = new FormErrors(this, () => classNameIssues('class-add', this.classDraft));
@@ -613,16 +505,6 @@ export class HeoStylesPanel extends HeoElement {
   protected mediaForm = new FormErrors(this, () => stripMediaIssues(this.ui.mediaDraft?.text ?? null));
   /** The element whose size cap has already auto-opened the parent section. */
   #capsShownFor: HTMLElement | null = null;
-  @state() private sectionsVersion = 0;
-  /**
-   * Which CSS rule groups are open, and the add-property draft inside each.
-   *
-   * A Map rather than a Set because every open group owns a draft: they are all on
-   * screen at once, so one shared field would put the text in the wrong group.
-   * Not reactive by itself — mutations bump `sectionsVersion`.
-   */
-  private readonly openRules = new Map<string, string>();
-
   /** The model of the last render, and what it was built from. */
   #memo: { key: unknown[]; model: ElementModel } | null = null;
   /** What the last update saw, to tell a new selection or preview width from a re-render. */
@@ -679,7 +561,15 @@ export class HeoStylesPanel extends HeoElement {
     }
     // A new width: every size picker follows it again (R13), and what was asked at the old one goes.
     if (width !== seen.width) {
-      this.ui = { ...this.ui, effPick: null, popover: null, menu: null, pending: null, sizeDraft: null };
+      this.ui = {
+        ...this.ui,
+        effPick: null,
+        cardPicks: new Map(),
+        popover: null,
+        menu: null,
+        pending: null,
+        sizeDraft: null,
+      };
     }
   }
 
@@ -734,6 +624,8 @@ export class HeoStylesPanel extends HeoElement {
       focusAfterRender: (property, listId) => this.#focusAfterRender(property, listId),
       focusSelector: (selector) => this.#focusSelector(selector),
       adderForm: this.adderForm,
+      mediaForm: this.mediaForm,
+      toggleMenu: (id, open) => this.#toggleMenu(id, open),
       form: this.adderForm,
       // The adder's draft is a view of the one open adder: nothing else holds one.
       get newProperty() {
@@ -744,7 +636,7 @@ export class HeoStylesPanel extends HeoElement {
         if (adder) this.#patch({ adder: { ...adder, draft: value } });
       },
       onFocus: (property, scope) => this.#focusAfterRender(property, scope ?? ''),
-      openSource: (_property, target) => this.#openSource(el, target),
+      openSource: (property, entry) => this.#openSource(property, entry),
     };
   }
 
@@ -760,18 +652,7 @@ export class HeoStylesPanel extends HeoElement {
     const computed = getComputedStyle(el);
     const model = this.#model(el);
     const host = this.#host(el, model);
-    const rules = appliedRules(el);
-    const cascade = cascadedDeclarations(rules);
-    const filtering = host.filtering;
-    /*
-     * Computed once, used three times.
-     *
-     * #matchingRules walks every stylesheet through stateRules, and this render runs on every
-     * keystroke while filtering — so the count beside the field, the empty-state test and the
-     * CSS rules section all read the same list rather than each rebuilding it.
-     */
-    const matching = this.#matchingRules(el, rules);
-    const found = filtering ? this.#matchCount(el, model, computed, matching) : -1;
+    const found = host.filtering ? this.#matchCount(el, model, computed, host) : -1;
     const popover = this.ui.popover;
     const popoverOn = popover?.scope.kind === 'parent' && popover.scope.element !== el
       ? popover.scope.element
@@ -781,14 +662,13 @@ export class HeoStylesPanel extends HeoElement {
       ${selectionNotice(this.editor.selection.length, el)}
       ${renderElementHeader({
         element: el,
-        openClass: this.openClass,
         finderOpen: this.ui.finderOpen,
         onToggleFinder: (open) => {
           this.classForm.reset();
           this.#patch({ finderOpen: open });
           this.#focusSelector(open ? '.ident .finder heo-value-field' : '.ident .cchip.add');
         },
-        onOpenClass: (name) => this.#openSource(el, { selector: `.${name}`, family: `.${name}`, isClass: true }),
+        onOpenClass: (name) => this.#openCard(`.${CSS.escape(name)}`),
         onRemoveClass: (name) => this.editor.toggleClass(name, el),
         finder: this.#renderFinder(el),
       })}
@@ -819,8 +699,7 @@ export class HeoStylesPanel extends HeoElement {
       </div>
 
       ${this.#renderEffective(el, model, host)}
-      ${this.#renderInlineCard(el, model, host)}
-      ${this.#renderClasses(el)} ${this.#renderCssRules(el, matching, cascade)}
+      ${this.#renderSources(el, model, host)}
       ${this.#renderSpacing(el, model, computed, host)}
       ${SECTIONS.filter((section) => !section.when || section.when(computed)).map((section) =>
       this.#renderSection(section, el, model, host),
@@ -893,7 +772,7 @@ export class HeoStylesPanel extends HeoElement {
       ${own.length ? nothing : html`<p class="hint" style="margin:0">
         ${filtering ? 'No property matches.' : 'Nothing declares anything for this element yet.'}
       </p>`}
-      ${this.#renderBlockAdder(host, EFFECTIVE_LIST_ID, this.#elementDestinations(el, model), '')}
+      ${renderBlockAdder(host, EFFECTIVE_LIST_ID, this.#elementDestinations(el, model), '')}
       ${this.#renderSizeGroup(el, model, host)}
       ${groups.map((group) => {
         const scope: RowScope = { kind: 'state', state: group.state };
@@ -910,7 +789,7 @@ export class HeoStylesPanel extends HeoElement {
             ${group.properties.map((property) =>
           renderPropertyRow({ property, scope, element: el, model, listId }, host))}
           </div>
-          ${this.#renderBlockAdder(host, listId, this.#stateDestinations(el, model, group.state), group.state)}
+          ${renderBlockAdder(host, listId, this.#stateDestinations(el, model, group.state), group.state)}
         </div>`;
       })}
       ${filtering
@@ -946,37 +825,13 @@ export class HeoStylesPanel extends HeoElement {
   }
 
   /** Effective styles' sizes: what changes at each, counted from the rules reaching the element. */
-  #effectiveSizes(model: ElementModel, previewWidth: number | null): { slots: StripSlot[]; others: StripOther[] } {
-    const visible = (media: string): boolean => previewWidth === null || mediaApplies(media, previewWidth);
-    const base = model.entries.filter((entry) => entry.state === '');
-    const count = (key: string): number =>
-      base.filter((entry) => model.slotOf(entry) === key)
-        .reduce((sum, entry) => sum + entry.declarations.length, 0);
-    const slots = model.slots().filter((slot) => visible(slot.media)).map((slot) => {
-      const n = count(slot.key);
-      const notNow = !mediaApplies(slot.media, null);
-      return {
-        key: slot.key,
-        icon: slot.icon,
-        name: slot.name,
-        count: n,
-        notNow,
-        title: `${slot.name}${n ? ` — ${n} declaration${n === 1 ? '' : 's'} at this size` : ' — none yet, click to add'}${notNow ? ` · not in effect at ${model.width}px` : ''}`,
-      };
-    });
-    const media = new Set<string>();
-    for (const entry of base) {
-      const key = model.slotOf(entry);
-      if (key.startsWith('other:')) media.add(key.slice('other:'.length));
-    }
-    for (const one of this.ui.otherSlots.get(EFFECTIVE_LIST_ID) ?? []) media.add(one);
-    const others = [...media].filter(visible).map((one) => ({
-      key: `other:${one}`,
-      media: one,
-      count: count(`other:${one}`),
-      notNow: !mediaApplies(one, null),
-    }));
-    return { slots, others };
+  #effectiveSizes(model: ElementModel, previewWidth: number | null): ReturnType<typeof stripSizes> {
+    return stripSizes(
+      model,
+      model.entries.filter((entry) => entry.state === ''),
+      previewWidth,
+      this.ui.otherSlots.get(EFFECTIVE_LIST_ID) ?? [],
+    );
   }
 
   #renderEffectiveStrip(model: ElementModel, host: StylesHost): TemplateResult {
@@ -1042,7 +897,7 @@ export class HeoStylesPanel extends HeoElement {
       ${properties.length
         ? nothing
         : html`<p class="hint" style="margin:0">Nothing changes at this size yet.</p>`}
-      ${this.#renderBlockAdder(host, listId, this.#sizeDestinations(el, model, picked, media, short), '')}
+      ${renderBlockAdder(host, listId, this.#sizeDestinations(el, model, picked, media, short), '')}
     </div>`;
   }
 
@@ -1079,55 +934,6 @@ export class HeoStylesPanel extends HeoElement {
         `a new class ${short}`,
       ),
     ];
-  }
-
-  /** "+ Add property" under a block, with the places it can write. Hidden while searching. */
-  #renderBlockAdder(
-    host: StylesHost,
-    id: string,
-    destinations: AdderDestination[],
-    state: string,
-  ): TemplateResult | typeof nothing {
-    if (host.filtering) return nothing;
-    const open = this.ui.adder?.id === id ? this.ui.adder : null;
-    const el = host.element;
-    return html`<div class="block-add">
-      ${renderAdder(
-      {
-        id,
-        mode: 'property',
-        destinations,
-        selected: open?.dest,
-        disclosure: true,
-        open: Boolean(open),
-        menuOpen: this.ui.menu?.id === `dest-${id}`,
-        onOpen: () => {
-          this.adderForm.reset();
-          this.#patch({ adder: { id, draft: '', dest: '' }, menu: null, popover: null });
-        },
-        onCancel: () => {
-          this.adderForm.reset();
-          this.#patch({ adder: null, menu: null });
-        },
-        onPick: (key) => {
-          const adder = this.ui.adder;
-          if (adder) this.#patch({ adder: { ...adder, dest: key } });
-        },
-        onMenu: (opened) => {
-          this.#patch({ menu: opened ? { id: `dest-${id}` } : null });
-          if (opened) this.#focusSelector(`.menu[data-menu="${CSS.escape(`dest-${id}`)}"] .mi[aria-checked="true"]`, true);
-        },
-        seed: (property) => seedFor(el, state, property),
-        commit: (property, value, dest) => {
-          if (!dest.dest) return;
-          this.#patch({ adder: null, menu: null });
-          const { hint } = this.editor.addDeclaration(dest.dest, property, value);
-          if (hint) this.editor.notify(hint, 'info');
-        },
-      },
-      host,
-    )}
-    </div>`;
   }
 
   /** Where the element block's adder writes: inline (the default), each class, a new class. */
@@ -1349,34 +1155,6 @@ export class HeoStylesPanel extends HeoElement {
     this.removeEventListener('keydown', this.#onKeydown);
   }
 
-  /**
-   * Where a popover line's link goes: the class or rule that line writes, opened in place.
-   *
-   * Today's Classes and CSS rules sections hold them until Sources replaces both.
-   */
-  #openSource(el: HTMLElement, target: { selector: string; family: string; isClass: boolean }): void {
-    this.#patch({ popover: null });
-    const name = target.isClass ? simpleClassName(target.family) : null;
-    let heading: string;
-    if (name && el.classList.contains(name)) {
-      this.openClass = name;
-      // Opened by following a link, not by hand: a hand-shut section gives way, nothing is recorded.
-      if (userToggled.get('classes') === false) userToggled.delete('classes');
-      heading = 'Classes';
-    } else {
-      if (userToggled.get('cssrules') === false) userToggled.delete('cssrules');
-      const rule = this.#matchingRules(el, appliedRules(el)).find((one) => one.selector === target.selector);
-      if (rule) this.openRules.set(this.#ruleKey(rule), this.openRules.get(this.#ruleKey(rule)) ?? '');
-      this.sectionsVersion += 1;
-      heading = 'CSS rules';
-    }
-    void this.updateComplete.then(() => {
-      const section = Array.from(this.renderRoot.querySelectorAll<HTMLElement & { heading: string }>('heo-section'))
-        .find((one) => one.heading === heading);
-      section?.scrollIntoView({ block: 'nearest' });
-    });
-  }
-
   /* ---------------------------------------------------------------------- */
   /* In its parent                                                          */
   /* ---------------------------------------------------------------------- */
@@ -1532,354 +1310,237 @@ export class HeoStylesPanel extends HeoElement {
   }
 
   /* ---------------------------------------------------------------------- */
-  /* Where the styles are written, until Sources replaces these sections    */
+  /* Sources                                                                */
   /* ---------------------------------------------------------------------- */
 
   /**
-   * The element's own style attribute, as a card of declarations.
-   *
-   * Effective styles shows what wins; this is what the element itself writes, in the order it
-   * writes it, with the card editor every class and rule uses: so a shorthand and its side are one
-   * family with the control that says which one wins, and each row has its `!important` toggle and
-   * its trash.
+   * The cards Sources shows, in its order: the element's classes in class-list order, then every
+   * other family reaching it in file order (R17). Worked out once per render, because the badge,
+   * the tabs, the search count and the section itself all read the same list.
    */
-  #renderInlineCard(el: HTMLElement, model: ElementModel, host: StylesHost): TemplateResult | typeof nothing {
-    const target: WriteTarget = { kind: 'inline', element: el };
-    const declarations = toRecord(model.inline);
-    const count = model.inline.length;
-    const filtering = host.filtering;
-    const shown = filtering
-      ? Object.fromEntries(Object.entries(declarations).filter(([property, value]) => this.#hit(property, value)))
-      : declarations;
-    if (filtering && !Object.keys(shown).length) return nothing;
-    const open = filtering ? true : sectionOpen('inline', count > 0);
-    const adder = this.ui.adder?.id === 'inline' ? this.ui.adder : null;
-    return html`<heo-section
-      heading="Inline style"
-      glyph="cursor"
-      badge=${count ? String(count) : ''}
-      ?open=${open}
-      @section-toggle=${(event: CustomEvent<{ open: boolean }>) => this.#remember('inline', event.detail.open)}
-    >
-      <p class="hint" style="margin:0 0 7px">
-        On this element only, at every size. Wins over every rule unless one is
-        <code class="mono">!important</code>.
-      </p>
-      <div class="cls" data-card="inline">
-        ${ClassEditor.renderDeclarations(
-      {
-        label: 'this element',
-        id: 'inline',
-        declarations: shown,
-        empty: 'Nothing is written on the element itself.',
-        preview: (property, value) => this.editor.previewDeclaration(target, property, value),
-        commit: (property, value) => this.editor.setDeclaration(target, property, value),
-        remove: (property) => this.editor.removeDeclaration(target, property),
-        important: (property) => model.inline.some((one) => one.property === property && one.important),
-        setImportance: (property, important) => this.editor.setImportance(target, property, important),
-        seed: (property) => seedFor(el, '', property),
-      },
-      {
-        engine: this.editor,
-        element: el,
-        form: this.adderForm,
-        newProperty: adder?.draft ?? '',
-        onNewProperty: (value) => this.#patch({ adder: { id: 'inline', draft: value, dest: '' } }),
-        onFocus: (property, scope) => this.#focusAfterRender(property, scope ?? 'inline'),
-        actions: 'none',
-      },
-    )}
-      </div>
-    </heo-section>`;
+  #sourceCards(el: HTMLElement, model: ElementModel, host: StylesHost): {
+    classes: Array<{ name: string; view: CardView | null }>;
+    others: CardView[];
+  } {
+    const { classes, others } = model.families();
+    const byName = new Map(classes.map((family) => [simpleClassName(family.key), family]));
+    return {
+      classes: Array.from(el.classList)
+        .filter((name) => !name.startsWith('heo-'))
+        .map((name) => {
+          const family = byName.get(name);
+          if (family) return { name, view: cardView(family, host) };
+          // Defined in the registry but writing nothing yet (an empty class): a card to fill.
+          if (this.editor.classes.get(name)) {
+            return {
+              name,
+              view: cardView({ key: `.${name}`, isClass: true, members: [], first: Infinity }, host),
+            };
+          }
+          return { name, view: null };
+        }),
+      // While previewing, a rule with nothing in effect at that width is not where anything is written.
+      others: others.map((family) => cardView(family, host)).filter((view) => view.visible.length),
+    };
   }
 
   /**
-   * Every rule reaching this element that is not one of its own classes.
-   *
-   * The reason this section exists is a mismatch it fixes. `*`, `p`, `.fig .ph` and
-   * `.pull blockquote` all put declarations on an element, and they used to surface
-   * among the element's own values — where changing one wrote an inline override on
-   * this element alone, quietly forking the design instead of editing the rule that
-   * was actually responsible. Grouping them by the selector they came from, with the
-   * same editor a class gets, means the edit lands where the cause is.
-   *
-   * State and pseudo-element rules live here too. They are found separately, because
-   * `:hover` does not match while a panel is asking and `::before` cannot match at
-   * all, so both were previously invisible — there was no way to reach the styling of
-   * a link's hover, or a pseudo-element's content, from the editor.
-   *
-   * Closed by default, and one closed sub-section per selector: this is reference
-   * material for when something unexpected is happening, not the first thing to read.
+   * Where the element's styles are written: its style attribute, its classes, every other rule
+   * reaching it. Grouped by what they are rather than by specificity, which is Effective styles'
+   * question; editing here changes the class or rule itself, for every element it styles.
    */
-  #renderCssRules(
-    el: HTMLElement,
-    all: AppliedRule[],
-    cascade: Map<string, { from: AppliedRule }>,
-  ): TemplateResult | typeof nothing {
-    // Already narrowed by #matchingRules in render, because the count beside the search field is
-    // drawn from the same list and the two must not disagree. Inline is "Set on this element"; a
-    // bare single-class selector is "Classes". Both edit the same declarations somewhere better.
-    const filtering = Boolean(this.ui.filter.trim());
-    if (filtering && !all.length) return nothing;
+  #renderSources(el: HTMLElement, model: ElementModel, host: StylesHost): TemplateResult | typeof nothing {
+    const { classes, others } = this.#sourceCards(el, model, host);
+    const filtering = host.filtering;
+    const tab = this.ui.tab;
+    const inlineCount = model.inline.length ? 1 : 0;
+    const inline = tab === 'all' || tab === 'inline' ? renderInlineCard(host) : nothing;
+    const classCards = tab === 'all' || tab === 'classes'
+      ? classes.map(({ name, view }) =>
+        view
+          ? renderFamilyCard(view, host, { group: 'classes', actions: this.#classActions(name, el) })
+          : renderUnknownCard(name, host))
+        .filter((card) => card !== nothing)
+      : [];
+    const otherCards = tab === 'all' || tab === 'rules'
+      ? others.map((view) => renderFamilyCard(view, host, { group: 'rules' })).filter((card) => card !== nothing)
+      : [];
+    const empty = inline === nothing && !classCards.length && !otherCards.length;
+    if (filtering && empty) return nothing;
+
+    const tabs: Array<[typeof tab, string, number | null]> = [
+      ['all', 'All', null],
+      ['inline', 'Inline', inlineCount],
+      ['classes', 'Classes', classes.length],
+      ['rules', 'Rules', others.length],
+    ];
+    const pick = (next: typeof tab): void => {
+      this.#patch({ tab: next });
+      this.#focusSelector(`.src-tabs [data-tab="${next}"]`);
+    };
+    const badge = inlineCount + classes.length + others.length;
+    const head = (label: string, count: number): TemplateResult =>
+      html`<p class="src-h">${label} <span class="c">${count}</span><span class="rule-line"></span></p>`;
 
     return html`<heo-section
-      heading="CSS rules"
-      glyph="code"
-      badge=${all.length ? String(all.length) : ''}
-      ?open=${filtering ? true : sectionOpen('cssrules', all.length > 0)}
-      @section-toggle=${(event: CustomEvent<{ open: boolean }>) =>
-        this.#remember('cssrules', event.detail.open)}
+      heading="Sources"
+      glyph="layers"
+      badge=${badge ? String(badge) : ''}
+      ?open=${filtering ? true : sectionOpen('sources', badge > 0)}
+      @section-toggle=${(event: CustomEvent<{ open: boolean }>) => this.#remember('sources', event.detail.open)}
     >
-      ${!filtering
-        ? html`<button
-            class="btn sm"
-            type="button"
-            style="margin-bottom:9px"
-            title="Paste CSS and choose a shared selector or another destination"
-            @click=${() =>
+      <p class="hint" style="margin:0 0 8px">
+        Where those styles are written. Editing here changes the class or rule itself.
+      </p>
+      <div
+        class="src-tabs"
+        role="tablist"
+        aria-label="Show sources"
+        @keydown=${(event: KeyboardEvent) => {
+        const keys = tabs.map(([key]) => key);
+        const at = keys.indexOf(tab);
+        const to = event.key === 'ArrowRight'
+          ? (at + 1) % keys.length
+          : event.key === 'ArrowLeft'
+            ? (at - 1 + keys.length) % keys.length
+            : event.key === 'Home'
+              ? 0
+              : event.key === 'End'
+                ? keys.length - 1
+                : -1;
+        if (to === -1) return;
+        event.preventDefault();
+        pick(keys[to]);
+      }}
+      >
+        ${tabs.map(([key, label, count]) => html`<button
+          type="button"
+          role="tab"
+          data-tab=${key}
+          aria-selected=${tab === key ? 'true' : 'false'}
+          tabindex=${tab === key ? '0' : '-1'}
+          @click=${() => pick(key)}
+        >
+          ${label}${count === null ? nothing : html` <span class="c">${count}</span>`}
+        </button>`)}
+      </div>
+      ${inline === nothing ? nothing : html`${head('Inline style', inlineCount)}${inline}`}
+      ${tab === 'all' || tab === 'classes'
+        ? classCards.length || !filtering
+          ? html`${head('Classes', classes.length)}${classCards.length
+            ? classCards
+            : html`<p class="hint" style="margin:0">No classes yet. Add one with + at the top.</p>`}`
+          : nothing
+        : nothing}
+      ${(tab === 'all' || tab === 'rules') && (otherCards.length || !filtering)
+        ? html`${head('Other rules', others.length)}${otherCards}`
+        : nothing}
+      ${empty ? html`<p class="hint" style="margin:10px 0 0">Nothing here matches.</p>` : nothing}
+      ${filtering
+        ? nothing
+        : html`<div class="actions">
+            <button
+              class="btn sm"
+              type="button"
+              data-act="paste"
+              title="Paste CSS and choose where it goes: inline, a class, a rule, a size"
+              @click=${() =>
             this.editor.beginCssPaste({
               context: 'rule',
               element: el,
               selector: this.editor.suggestedRuleSelector(el),
             })}
-          >
-            ${icon('clipboard', 12)} Paste CSS…
-          </button>`
-        : nothing}
-      ${all.length === 0
-        ? html`<p class="hint" style="margin:0">
-            No stylesheet rule beyond this element's own classes reaches it, so everything else is
-            inherited or a browser default.
-          </p>`
-        : html`<p class="hint" style="margin:0 0 8px">
-              Most specific first. Editing one of these changes the rule itself, so every element it
-              matches changes with it — unlike the values above, which are this element's alone.
-            </p>
-            ${repeat(
-          all,
-          (rule) => this.#ruleKey(rule),
-          (rule) => this.#renderRuleGroup(rule, el, cascade),
-        )}`}
+            >
+              ${icon('clipboard', 12)} Paste CSS…
+            </button>
+          </div>`}
     </heo-section>`;
   }
 
-  /**
-   * Identity for a rule across re-renders.
-   *
-   * Selector plus source plus condition, rather than the live `CSSStyleRule`: keying
-   * on the object would defeat `repeat`'s reuse the moment a stylesheet is re-read.
-   * The pseudo is in there because `a` and `a:hover` are two groups the user opens
-   * independently.
-   */
-  #ruleKey(rule: AppliedRule): string {
-    return `${rule.source}|${rule.condition ?? ''}|${rule.selector}|${rule.pseudo ?? ''}`;
-  }
-
-  /** One selector, collapsed, with the Classes editor inside it. */
-  #renderRuleGroup(
-    rule: AppliedRule,
-    el: HTMLElement,
-    cascade: Map<string, { from: AppliedRule }>,
-  ): TemplateResult {
-    const key = this.#ruleKey(rule);
-    const expanded = this.openRules.has(key);
-    const shown = rule.matchedSelector ?? rule.selector;
-    const live = rule.rule;
-    /*
-     * A declaration list the editor owns, exactly as a class gets one.
-     *
-     * `rule.declarations` comes from `rule.style.cssText`, and a `CSSStyleDeclaration` rewrites what
-     * it is asked to serialise: it stores longhands and rebuilds shorthands, so an authored `#222`
-     * reads back `rgb(34, 34, 34)` and a rule declaring `padding: 8px` then `padding-left: 0` reads
-     * back as one merged `padding: 8px 8px 8px 0px`, with neither name the user typed in it. Rows
-     * drawn from that disagreed with the file a save writes — which is how adding a side to a rule
-     * could look like it had edited the shorthand instead.
-     *
-     * A class never had this problem because `ClassRegistry` holds its declarations as data and only
-     * ever generates CSS from them. `ruleDeclarations` gives a rule the same footing: the file's
-     * text where it can be read, the live rule as a one-time seed where it cannot, and this
-     * session's edits on top either way.
-     */
-    const source = live ? ruleDeclarations(live) : rule.declarations;
-    const declarations: Record<string, string> = {};
-    // Keyed by name because that is what a row is. Two declarations of the *same* property cannot
-    // both be shown this way and the later one wins, which is also what the browser does; the
-    // shorthand-and-its-side case, which is the one that was broken, is two different names and
-    // survives in the order the file has them.
-    for (const one of source) declarations[one.property] = one.value;
-
-    // Subtract any live preview, exactly as the element's own rows do with an inline
-    // one. `rule.declarations` was read off the live rule, and a preview is painted
-    // into that rule — so without this the row is handed its own half-typed text as
-    // its committed value. Nothing then looks like it changed: the commit dedupes to
-    // a no-op, and the focus-out that follows reverts the preview instead, which read
-    // as the edit being rolled back to whatever the stylesheet said.
-    //
-    // An emptied field restores the value it started from rather than dropping the
-    // property, so backspacing to retype cannot delete the declaration out from under
-    // the caret. Removing it is what the commit does, once it is asked for.
-    const preview = this.editor.rulePreviewTarget;
-    if (live && preview && preview.rule === live) {
-      if (preview.before) declarations[preview.property] = preview.before;
-      else delete declarations[preview.property];
-    }
-
-    const target: DeclarationTarget = {
-      label: shown,
-      id: key.replace(/[^\w-]/g, '_'),
-      declarations,
-      empty: 'This rule declares nothing the editor can read.',
-      preview: (property, value) => {
-        if (live) this.editor.previewRuleDeclaration(live, property, value);
-      },
-      commit: (property, value) => {
-        if (live) this.editor.setRuleDeclaration(live, property, value);
-      },
-      remove: (property) => {
-        if (live) this.editor.setRuleDeclaration(live, property, '');
-      },
-      // Read off the rule's declarations, which carry importance as a flag rather than in the text.
-      important: (property) =>
-        source.some((one) => one.property === property && one.important),
-      setImportance: (property, important) => {
-        if (live) this.editor.setImportance({ kind: 'live', rule: live }, property, important);
-      },
-      seed: initialValueFor,
-      paste: () => {
-        if (live) {
-          this.editor.beginCssPaste({
-            context: 'rule',
-            element: el,
-            selector: rule.selector,
-            liveRule: live,
-          });
-        }
-      },
-      // A state rule is not in the cascade as things stand, so it cannot be said to be
-      // overridden — dimming it on that basis would be telling the user something false.
-      overridden: (property) => {
-        if (rule.pseudo) return false;
-        const winner = cascade.get(property);
-        return winner ? winner.from !== rule : false;
-      },
-      describe: (property) => {
-        if (rule.pseudo) {
-          return `${property} applies to ${shown}, a state this element is not in right now`;
-        }
-        const winner = cascade.get(property);
-        if (winner && winner.from !== rule) return `Overridden by ${winner.from.selector}`;
-        return `${property} wins the cascade here`;
-      },
-      resolve: (property) =>
-        rule.pseudo ? '' : getComputedStyle(el).getPropertyValue(property).trim(),
-    };
-
-    const host = {
-      engine: this.editor,
-      element: el,
-      form: this.adderForm,
-      newProperty: this.openRules.get(key) ?? '',
-      onNewProperty: (value: string) => {
-        this.openRules.set(key, value);
-        this.sectionsVersion += 1;
-      },
-      onFocus: (property: string, scope?: string) =>
-        focusDeclaration(this.renderRoot, property, scope),
-      // Editing the declarations is the point here; a rule has no "apply to selection"
-      // and deleting a shared rule from one element's panel is far too large an action.
-      actions: 'none' as const,
-    };
-
-    return html`<div class="cls">
-      <header
-        role="button"
-        tabindex="0"
-        aria-expanded=${expanded}
-        @click=${() => this.#toggleRule(key)}
-        @keydown=${(event: KeyboardEvent) => {
-        if (event.key !== 'Enter' && event.key !== ' ') return;
-        event.preventDefault();
-        this.#toggleRule(key);
+  /** What a class card on the element ends with: its management links and the detach panel. */
+  #classActions(name: string, el: HTMLElement): TemplateResult | typeof nothing {
+    const entry = this.editor.classes.get(name);
+    if (!entry) return nothing;
+    const uses = this.editor.classes.usage().get(name) ?? 0;
+    return html`<div class="actions">
+        <button
+          class="link"
+          type="button"
+          title="Open this class in the design system panel"
+          @click=${() => this.editor.setDockTab('tokens')}
+        >
+          Manage in Tokens
+        </button>
+        <button
+          class="link"
+          type="button"
+          aria-expanded=${this.detachOpen === name}
+          title=${uses > 1
+        ? `Style this element on its own, without affecting the other ${uses - 1} using .${name}`
+        : `Style this element on its own, without .${name}`}
+          @click=${() => {
+        this.detachOpen = this.detachOpen === name ? null : name;
       }}
-      >
-        ${icon(expanded ? 'chevronDown' : 'chevronRight', 11)}
-        <span class="n mono" title=${rule.selector}>${shown}</span>
-        <span class="meta">
-          ${rule.declarations.length}
-          ${rule.declarations.length === 1 ? 'rule' : 'rules'} · ${rule.source}${rule.condition
-        ? ` · ${rule.condition}`
-        : ''}
-        </span>
-      </header>
-      ${expanded
-        ? html`${rule.pseudo
-          ? html`<p class="hint" style="margin:0 0 6px">
-                Applies on <code class="mono">${rule.pseudo}</code>, so the page will not change
-                until that state is active.
-              </p>`
-          : nothing}
-            ${ClassEditor.renderDeclarations(target, host)}`
-        : nothing}
-    </div>`;
-  }
-
-  #toggleRule(key: string): void {
-    if (this.openRules.has(key)) this.openRules.delete(key);
-    else this.openRules.set(key, '');
-    this.sectionsVersion += 1;
+        >
+          ${this.detachOpen === name ? 'Never mind' : 'Just this element…'}
+        </button>
+      </div>
+      ${this.detachOpen === name ? this.#renderDetach(entry, el, uses) : nothing}`;
   }
 
   /**
-   * The class opened from the header, edited where it is written.
+   * Open a card where it is written, scroll it into view and flash it; with a property, focus that
+   * declaration in the block at `slot` and `state`.
    *
-   * The chips and the class finder moved to the header, where the element is named; this section
-   * holds the open class's definition until Sources gives every class its own card. Searchable by
-   * name and by what the class declares, so `1px solid` finds the class that sets it.
+   * Reached from the header's class names and from the popover's links. A hand-shut Sources
+   * section or card gives way, and nothing is recorded as a hand pick of the section.
    */
-  #renderClasses(el: HTMLElement): TemplateResult | typeof nothing {
-    const classes = Array.from(el.classList).filter((name) => !name.startsWith('heo-'));
-    const filtering = Boolean(this.ui.filter.trim());
-    const shown = filtering ? this.#matchingClasses(el) : classes;
-    // Nothing here matches, and while filtering the affordances below are not what was asked for.
-    if (filtering && !shown.length) return nothing;
-    const open = this.openClass && shown.includes(this.openClass) ? this.openClass : null;
-    return html`<heo-section
-      heading="Classes"
-      glyph="blocks"
-      badge=${shown.length ? String(shown.length) : ''}
-      ?open=${filtering ? true : sectionOpen('classes', classes.length > 0)}
-      @section-toggle=${(event: CustomEvent<{ open: boolean }>) =>
-        this.#remember('classes', event.detail.open)}
-    >
-      <!-- Withheld while filtering: a search asks what is already here, and these make something new. -->
-      ${filtering
-        ? nothing
-        : html`<button
-            class="btn sm"
-            type="button"
-            style="margin-bottom:9px"
-            title="Turn this element's inline styles into a reusable class"
-            @click=${() => this.editor.beginClassExtraction(el)}
-          >
-            ${icon('droplet', 12)} Extract class
-          </button>
-          <button
-            class="btn sm"
-            type="button"
-            style="margin-bottom:9px"
-            title="Paste CSS and choose a reusable class or another destination"
-            @click=${() => this.editor.beginCssPaste({ context: 'class', element: el })}
-          >
-            ${icon('clipboard', 12)} Paste CSS…
-          </button>`}
-      ${open
-        ? this.#renderOpenClass(open, el)
-        : html`<p class="hint" style="margin:0">
-            ${classes.length
-          ? 'Pick a class in the header to edit it here.'
-          : 'No classes yet. Adding one keeps styling reusable instead of inline.'}
-          </p>`}
-    </heo-section>`;
+  #openCard(key: string, options: { slot?: string; state?: string; property?: string } = {}): void {
+    const el = this.editor.selected;
+    const isClass = el ? Array.from(el.classList).some((name) => `.${name}` === key || `.${CSS.escape(name)}` === key) : false;
+    const tab = this.ui.tab;
+    const fits = tab === 'all' || (tab === 'classes' && isClass) || (tab === 'rules' && !isClass);
+    const closed = new Set(this.ui.closedCards);
+    closed.delete(key);
+    const picks = new Map(this.ui.cardPicks);
+    if (options.slot) picks.set(key, options.slot);
+    if (userToggled.get('sources') === false) userToggled.delete('sources');
+    this.#clearFilter();
+    this.#patch({ popover: null, tab: fits ? tab : 'all', closedCards: closed, cardPicks: picks });
+    void this.updateComplete.then(() => requestAnimationFrame(() => {
+      const card = this.renderRoot.querySelector<HTMLElement>(`.cls[data-card="${CSS.escape(key)}"]`);
+      if (!card) return;
+      card.scrollIntoView({ block: 'nearest' });
+      card.classList.remove('flash');
+      // Restarted on a later frame, so a second open flashes again.
+      requestAnimationFrame(() => card.classList.add('flash'));
+      setTimeout(() => card.classList.remove('flash'), 1300);
+      if (options.property) {
+        focusDeclaration(this.renderRoot, options.property, blockId(key, options.slot ?? 'base', options.state ?? ''));
+      } else {
+        card.querySelector<HTMLElement>(':scope > header')?.focus({ preventScroll: true });
+      }
+    }));
+  }
+
+  /**
+   * Where a popover line's link goes: the card the declaration is written in, at its size.
+   *
+   * A rule not in effect at the width being previewed is not on screen, so the preview goes back
+   * to Actual first, and the card is picked only once the new width has cleared the old picks.
+   */
+  #openSource(property: string, entry: RuleEntry): void {
+    this.#patch({ popover: null });
+    const el = this.editor.selected;
+    if (!el) return;
+    const slot = this.#model(el).slotOf(entry);
+    const open = (): void => this.#openCard(entry.family, { slot, state: entry.state, property });
+    if (!visibleAt(entry, this.editor.store.value.previewWidth)) {
+      this.editor.setPreviewWidth(null);
+      void this.updateComplete.then(open);
+    } else {
+      open();
+    }
   }
 
   /** The header's "find or create a class" field: today's finder, with its form and suggestions. */
@@ -1904,77 +1565,6 @@ export class HeoStylesPanel extends HeoElement {
     }}
       ></heo-value-field>
       ${this.classForm.error('class-add')}`;
-  }
-
-  /**
-   * The class's definition, opened in place under its chip.
-   *
-   * The same editor the design system panel uses, on purpose: a class means the
-   * same thing in both places, and editing one here changes every element wearing
-   * it — a distinction worth making obvious rather than re-teaching in a second UI.
-   */
-  #renderOpenClass(name: string, el: HTMLElement): TemplateResult {
-    const entry = this.editor.classes.get(name);
-    const host = {
-      engine: this.editor,
-      element: el,
-      form: this.adderForm,
-      newProperty: this.classProperty,
-      onNewProperty: (value: string) => {
-        this.classProperty = value;
-      },
-      onRemoved: () => {
-        this.openClass = null;
-      },
-      onFocus: (property: string, scope?: string) =>
-        focusDeclaration(this.renderRoot, property, scope),
-      // Reached from this element's own chips: "Apply to selection" is already true,
-      // and deleting a rule every other element shares is far too large an action to
-      // sit under one element's panel. The design system panel owns both.
-      actions: 'none' as const,
-    };
-    if (!entry) return ClassEditor.renderUnknown(name, host);
-
-    const uses = this.editor.classes.usage().get(name) ?? 0;
-    return html`
-      <p class="hint" style="margin:0 0 6px">
-        Editing <code class="mono">.${name}</code>${uses > 1
-        ? html` changes all ${uses} elements using it.`
-        : html`, which only this element uses.`}
-        <button
-          class="link"
-          type="button"
-          title="Open this class in the design system panel"
-          @click=${() => this.editor.setDockTab('tokens')}
-        >
-          Manage it in Tokens
-        </button>
-        ·
-        <button
-          class="link"
-          type="button"
-          aria-expanded=${this.detachOpen === name}
-          title=${uses > 1
-        ? `Style this element on its own, without affecting the other ${uses - 1} using .${name}`
-        : `Style this element on its own, without .${name}`}
-          @click=${() => {
-        this.detachOpen = this.detachOpen === name ? null : name;
-      }}
-        >
-          ${this.detachOpen === name ? 'Never mind' : 'Just this element…'}
-        </button>
-      </p>
-      ${this.detachOpen === name ? this.#renderDetach(entry, el, uses) : nothing}
-      ${ClassEditor.render(entry, {
-        expanded: true,
-        uses,
-        bare: true,
-        onToggle: () => {
-          this.openClass = null;
-        },
-        host,
-      })}
-    `;
   }
 
   /**
@@ -2067,7 +1657,6 @@ export class HeoStylesPanel extends HeoElement {
             @click=${() => {
         if (!this.editor.inlineClass(entry.name, el)) return;
         this.detachOpen = null;
-        this.openClass = null;
       }}
           >
             ${icon('unlink', 12)} Move to this element
@@ -2084,7 +1673,7 @@ export class HeoStylesPanel extends HeoElement {
     if (!forked) return;
     this.forkDraft = '';
     this.detachOpen = null;
-    this.openClass = forked;
+    this.#openCard(`.${CSS.escape(forked)}`);
   }
 
   /**
@@ -2239,34 +1828,6 @@ export class HeoStylesPanel extends HeoElement {
     return texts.some((text) => text?.toLowerCase().includes(needle));
   }
 
-  /** The element's classes the query reaches — by name, or by what the class declares. */
-  #matchingClasses(el: HTMLElement): string[] {
-    return Array.from(el.classList)
-      .filter((name) => !name.startsWith('heo-'))
-      .filter((name) => {
-        if (this.#hit(name)) return true;
-        const entry = this.editor.classes.get(name);
-        if (!entry) return false;
-        return Object.entries(entry.declarations).some(([property, value]) =>
-          this.#hit(property, value),
-        );
-      });
-  }
-
-  /** The rules in the CSS rules section the query reaches — by selector, or by declaration. */
-  #matchingRules(el: HTMLElement, rules: AppliedRule[]): AppliedRule[] {
-    const direct = rules.filter(
-      (rule) => rule.origin === 'stylesheet' && !fromElementClass(rule.selector, el),
-    );
-    return [...direct, ...stateRules(el)]
-      .sort((a, b) => b.specificity - a.specificity)
-      .filter(
-        (rule) =>
-          this.#hit(rule.selector, rule.matchedSelector, rule.source, rule.condition) ||
-          rule.declarations.some((one) => this.#hit(one.property, one.value)),
-      );
-  }
-
   /**
    * How many things the filter is showing, across every surface that draws one.
    *
@@ -2279,7 +1840,7 @@ export class HeoStylesPanel extends HeoElement {
     el: HTMLElement,
     model: ElementModel,
     computed: CSSStyleDeclaration,
-    matchingRules: readonly AppliedRule[],
+    host: StylesHost,
   ): number {
     const properties = new Set<string>();
     const consider = (property: string): void => {
@@ -2290,7 +1851,11 @@ export class HeoStylesPanel extends HeoElement {
     }
     for (const property of SPACING_PROPERTIES) consider(property);
     for (const property of model.appliedProperties()) consider(property);
-    return properties.size + this.#matchingClasses(el).length + matchingRules.length;
+    // A card counts once as itself, whether its selector or one of its declarations matched.
+    const { classes, others } = this.#sourceCards(el, model, host);
+    const cards = classes.filter(({ name, view }) => (view ? view.shown : this.#hit(`.${name}`))).length +
+      others.filter((view) => view.shown).length;
+    return properties.size + cards;
   }
 
   /** What the add action would do, named after what has been typed. */
@@ -2398,7 +1963,7 @@ export class HeoStylesPanel extends HeoElement {
 
   #remember(id: string, open: boolean): void {
     userToggled.set(id, open);
-    this.sectionsVersion += 1;
+    this.requestUpdate();
   }
 }
 
@@ -2410,18 +1975,6 @@ function statePropertiesOf(model: ElementModel, state: string): string[] {
     for (const one of entry.declarations) names.add(one.property.toLowerCase());
   }
   return [...names].sort();
-}
-
-/**
- * What a property added from the Styles panel starts as: the value the element resolves to now,
- * so adding it changes nothing until it is edited. A pseudo-element's rule starts from `initial`,
- * and `content` in a `::before`/`::after` from an empty string, which is what makes it render.
- */
-function seedFor(el: HTMLElement, state: string, property: string): string {
-  if (state && isPseudoElement(state)) {
-    return property === 'content' && needsGeneratedContent(state) ? '""' : 'initial';
-  }
-  return getComputedStyle(el).getPropertyValue(property).trim() || initialValueFor(property);
 }
 
 declare global {

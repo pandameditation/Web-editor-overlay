@@ -378,9 +378,10 @@ color: rebeccapurple;`;
         };
       });
 
-      /* The CSS RULES section must keep its body after the section opening tag is
-       * rendered. This expands the section and one rule so an empty-body regression
-       * cannot pass by finding only the heading. */
+      /* The page rule's card must keep its body after the section opening tag is rendered.
+       * Sources replaced the CSS rules section, and its OTHER RULES cards hold page rules now
+       * (R17); the card is checked for its rows so an empty-body regression cannot pass by
+       * finding only the heading. */
       api.select(target);
       api.openPanel('styles');
       await frames();
@@ -390,7 +391,7 @@ color: rebeccapurple;`;
         ?.shadowRoot?.querySelector('heo-styles-panel');
       const cssRulesSection = () => Array.from(
         stylesPanel()?.shadowRoot?.querySelectorAll('heo-section') ?? [],
-      ).find((section) => section.heading === 'CSS rules');
+      ).find((section) => section.heading === 'Sources');
       const section = cssRulesSection();
       if (section && !section.open) section.shadowRoot?.querySelector('.head')?.click();
       await frames();
@@ -1200,6 +1201,35 @@ color: rebeccapurple;`;
       };
       engine.cancelCssPaste();
       await frames();
+      /*
+       * Sources ends with the one Paste CSS of the Styles panel's write-where-it-is-written half:
+       * the rule context, with the suggested selector, as the CSS rules section's button did
+       * (R17). Classes have no paste of their own here any more (R20): the dialog offers a class
+       * destination, so a second button only duplicated it.
+       */
+      const sourcesSection = deepQuery('heo-styles-panel')?.shadowRoot
+        ?.querySelector('heo-section[heading="Sources"]');
+      const sourcesPaste = Array.from(sourcesSection?.querySelectorAll(':scope > .actions button') ?? [])
+        .filter((button) => /Paste CSS/.test(button.textContent ?? ''));
+      sourcesPaste[0]?.click();
+      await frames();
+      const pasted = engine.store.value.cssPaste;
+      results.sources = {
+        pasteOpensRuleContext:
+          sourcesPaste.length === 1 &&
+          sourcesPaste[0].textContent.trim() === 'Paste CSS…' &&
+          pasted?.context === 'rule' &&
+          pasted?.element === target &&
+          pasted?.selector === engine.suggestedRuleSelector(target),
+      };
+      engine.cancelCssPaste();
+      await frames();
+      // Two in the whole panel: Effective styles' (inline) and Sources' (rule). None on a card.
+      const everyPaste = Array.from(deepQuery('heo-styles-panel')?.shadowRoot?.querySelectorAll('button') ?? [])
+        .filter((button) => /Paste CSS/.test(button.textContent ?? ''));
+      results.sources.noClassPasteInStyles =
+        everyPaste.length === 2 &&
+        !everyPaste.some((button) => button.closest('.cls'));
 
       results.browserErrors = { ok: errors.length === 0, errors };
       const failed = Object.entries(results)

@@ -137,8 +137,7 @@ function renderLine(
             class="src"
             type="button"
             title=${`Edit ${label}${why}`}
-            @click=${() =>
-          host.openSource(property, { selector: entry.selector, family: entry.family, isClass: /^\.[\w-]+$/.test(entry.family) })}
+            @click=${() => host.openSource(property, entry)}
           >
             <span>${shortLabel(one)}</span>${icon('arrowRight', 10)}
           </button>`

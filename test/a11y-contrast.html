@@ -604,6 +604,10 @@
           await measure(specs, 'disabled');
           hosts.forEach((h, i) => { if (h) h.disabled = was[i]; });
         };
+        // The adder waits behind "+ Add property" in Styles (R23); open one to reach its confirm.
+        await ui(() => {
+          deep((el) => el.localName === 'button' && el.classList.contains('add-prop') && inside('heo-styles-panel')(el))?.click();
+        });
         await disabledOn([
           { name: 'styles.adder.confirm', component: C, file: `${F}:627`, cat: 'control-disabled', kind: 'icon', min: 3, host: () => deep((el) => el.localName === 'button' && el.classList.contains('confirm') && inside('heo-styles-panel')(el)) },
           { name: 'searchField.go', component: 'search-field', file: 'src/ui/controls/search-field.ts:167', cat: 'control-disabled', kind: 'icon', min: 3, host: () => deep((el) => el.localName === 'button' && el.classList.contains('go') && inside('heo-search-field')(el) && inside('heo-styles-panel')(el)) },

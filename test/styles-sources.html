@@ -300,6 +300,512 @@
             opened && !finder() && plus()?.getAttribute('aria-expanded') === 'false' &&
             target.classList.contains('featured');
         }
+        /* ------------------------------------------------------------------ *
+         * Sources: where the element's styles are written (R17–R21, R23, R29).
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'sources';
+        {
+          const sroot = () => deep('heo-styles-panel').shadowRoot;
+          const sources = () => sroot().querySelector('heo-section[heading="Sources"]');
+          const card = (key) => sources()?.querySelector(`.cls[data-card="${CSS.escape(key)}"]`);
+          const body = (key) => card(key)?.querySelector(':scope > .body');
+          const blocks = (key) => Array.from(body(key)?.querySelectorAll(':scope > .block') ?? []);
+          const block = (key, name) => body(key)?.querySelector(`:scope > .block[data-block="${CSS.escape(name)}"]`);
+          const rowsOf = (scope) =>
+            Array.from(scope?.querySelectorAll('.decl:not(.property-adder)') ?? []);
+          const rowIn = (scope, property) =>
+            rowsOf(scope).find((row) => row.querySelector('.p')?.textContent.trim() === property);
+          const key = (el, name) => el?.dispatchEvent(
+            new KeyboardEvent('keydown', { key: name, bubbles: true, composed: true, cancelable: true }));
+          const typeInto = async (input, text) => {
+            input.value = text;
+            input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+            await settle(80);
+          };
+          const model = () => engine.elementModel(target);
+          const familyDeclarations = (family) => model().entries
+            .filter((entry) => entry.family === family)
+            .reduce((sum, entry) => sum + entry.declarations.length, 0);
+          const textOf = (el) => el?.textContent.replace(/\s+/g, ' ').trim() ?? '';
+
+          // Tokens' class card, to compare the look against.
+          engine.setDockTab('tokens');
+          await settle(300);
+          const tokensCard = await openCard('.card');
+          const tokensHeaderBg = getComputedStyle(tokensCard.querySelector(':scope > header')).backgroundColor;
+          const tokensHasAdder = Boolean(tokensCard.querySelector('[data-heo-part="adder"]'));
+          api.select(target);
+          engine.setDockTab('styles');
+          await settle(400);
+
+          /* The header's class name opens its card where it is written. */
+          const featuredBefore = sources()?.open;
+          sroot().querySelector('.ident .cchip[data-class="featured"] .name')?.click();
+          await settle(300);
+          results.header.nameOpensItsCard =
+            featuredBefore !== undefined &&
+            sources()?.open === true &&
+            card('.featured')?.querySelector(':scope > header')?.getAttribute('aria-expanded') === 'true' &&
+            sroot().activeElement === card('.featured')?.querySelector(':scope > header');
+
+          /* The section and its groups. */
+          const headings = Array.from(sroot().querySelectorAll('heo-section')).map((one) => one.heading);
+          const dividers = Array.from(sources()?.querySelectorAll('.src-h') ?? []).map((one) => textOf(one));
+          const cardKeys = (group) =>
+            Array.from(sources()?.querySelectorAll(`.cls[data-group="${group}"]`) ?? []).map((one) => one.dataset.card);
+          results.sources = {
+            // Second, after Effective styles, and before every category section (R17).
+            directlyAfterEffectiveStyles:
+              headings[0] === 'Effective styles' && headings[1] === 'Sources',
+            // Inline, then classes, then the rest: .card (0,1,0) sits above .card.featured (0,2,0).
+            groupsByMeaningNotSpecificity:
+              dividers.join('|') === 'Inline style 1|Classes 2|Other rules 3' &&
+              cardKeys('classes').join(',') === '.card,.featured' &&
+              !/\b(inline|rule|class)\b/.test(textOf(sources()?.querySelector('.cls[data-card=".card"] > header'))),
+            classesInClassListOrder:
+              cardKeys('classes').join(',') === Array.from(target.classList).map((name) => `.${name}`).join(','),
+            otherRulesInFileOrder: cardKeys('rules').join(',') === '.card.featured,.promo .card,section p',
+          };
+
+          /* Tabs: All · Inline · Classes · Rules, with counts. */
+          const tabs = () => Array.from(sources()?.querySelectorAll('.src-tabs [role="tab"]') ?? []);
+          const tab = (name) => sources()?.querySelector(`.src-tabs [data-tab="${name}"]`);
+          const labels = tabs().map((one) => textOf(one)).join('|');
+          tab('rules')?.click();
+          await settle(150);
+          const onlyRules = !card('inline') && cardKeys('classes').length === 0 && cardKeys('rules').length === 3 &&
+            tab('rules')?.getAttribute('aria-selected') === 'true';
+          tab('inline')?.click();
+          await settle(150);
+          const onlyInline = Boolean(card('inline')) && !cardKeys('classes').length && !cardKeys('rules').length;
+          tab('all')?.click();
+          await settle(150);
+          results.sources.tabsFilterAndCount =
+            labels === 'All|Inline 1|Classes 2|Rules 3' && onlyRules && onlyInline &&
+            cardKeys('classes').length === 2 && cardKeys('rules').length === 3;
+          // Roving: one tab in the tab order, the arrows and Home/End move and select.
+          tab('all').focus();
+          key(tab('all'), 'ArrowRight');
+          await settle(150);
+          const right = tab('inline')?.getAttribute('aria-selected') === 'true' && sroot().activeElement === tab('inline');
+          key(tab('inline'), 'End');
+          await settle(150);
+          const end = tab('rules')?.getAttribute('aria-selected') === 'true';
+          key(tab('rules'), 'ArrowRight');
+          await settle(150);
+          const wraps = tab('all')?.getAttribute('aria-selected') === 'true';
+          key(tab('all'), 'ArrowLeft');
+          await settle(150);
+          key(tab('rules'), 'Home');
+          await settle(150);
+          results.sources.tabsUseArrowKeys =
+            right && end && wraps &&
+            tab('all')?.getAttribute('aria-selected') === 'true' && sroot().activeElement === tab('all') &&
+            tabs().filter((one) => one.tabIndex === 0).length === 1;
+          // One Paste CSS, at the bottom of Sources, and none on a card (R17, R20).
+          const lastChild = sources()?.lastElementChild;
+          results.sources.onePasteButtonAtTheBottom =
+            lastChild?.matches('.actions') && textOf(lastChild) === 'Paste CSS…';
+          results.sources.noPerCardPaste =
+            !Array.from(sources()?.querySelectorAll('.cls button') ?? []).some((one) => /paste/i.test(one.textContent));
+
+          /* Cards: the Tokens class card. */
+          const cardHeader = (k) => card(k)?.querySelector(':scope > header');
+          const meta = (k) => textOf(cardHeader(k)?.querySelector('.meta'));
+          results.cards = {
+            useTheTokensClassCard:
+              ['.card', '.featured', 'section p', 'inline'].every((k) =>
+                Boolean(cardHeader(k)?.querySelector('.n')) && Boolean(cardHeader(k)?.querySelector('.meta')) &&
+                getComputedStyle(cardHeader(k)).backgroundColor === tokensHeaderBg),
+            // N rules across what is in effect · N× elements the selector matches; none for inline.
+            metaCountsRulesAndElements:
+              meta('.card') === `${familyDeclarations('.card')} rules · 4×` &&
+              meta('.featured') === `${familyDeclarations('.featured')} rules · 1×` &&
+              meta('.promo .card') === '1 rule · 4×' &&
+              meta('inline') === '2 rules',
+          };
+          const file = () => cardHeader('section p')?.querySelector('.file');
+          const restDisplay = file() ? getComputedStyle(file()).display : 'missing';
+          cardHeader('section p').focus();
+          await settle(60);
+          results.cards.fileOnlyOnHover =
+            restDisplay === 'none' && getComputedStyle(file()).display !== 'none' && textOf(file()).length > 0;
+          // A disclosure: role button, in the tab order, Enter and Space toggle it.
+          const header = () => cardHeader('section p');
+          const operable = header()?.getAttribute('role') === 'button' && header()?.tabIndex === 0 &&
+            header()?.getAttribute('aria-expanded') === 'true';
+          key(header(), 'Enter');
+          await settle(120);
+          const shut = header()?.getAttribute('aria-expanded') === 'false' && !body('section p');
+          key(header(), ' ');
+          await settle(120);
+          results.cards.headerIsKeyboardOperable =
+            operable && shut && header()?.getAttribute('aria-expanded') === 'true' && Boolean(body('section p'));
+          const allKeys = Array.from(sources()?.querySelectorAll('.cls[data-card]') ?? []).map((one) => one.dataset.card);
+          results.cards.oneCardPerSelectorFamily =
+            new Set(allKeys).size === allKeys.length &&
+            !allKeys.some((k) => /:/.test(k)) &&
+            Boolean(block('.card', ':hover'));
+          // A class no readable rule defines gets a card that offers to define it.
+          target.classList.add('ghost');
+          await settle(300);
+          const ghost = card('.ghost');
+          const define = Array.from(ghost?.querySelectorAll('button') ?? []).find((one) => /Define \.ghost/.test(one.textContent));
+          const offered = ghost?.dataset.group === 'classes' && ghost?.hasAttribute('data-unknown') && Boolean(define);
+          define?.click();
+          await settle(300);
+          results.cards.unknownClassOffersDefine =
+            offered && Boolean(engine.classes.get('ghost')) &&
+            !card('.ghost')?.hasAttribute('data-unknown') &&
+            /No declarations yet\./.test(textOf(card('.ghost')));
+          target.classList.remove('ghost');
+          engine.classes.remove('ghost');
+          await settle(200);
+
+          /* Card bodies. */
+          const cardBody = body('.card');
+          results.cardBody = {
+            // Straight into the declarations: strip, then the base block's rows, no selector label.
+            noRepeatedSelectorLabel:
+              cardBody?.firstElementChild?.matches('.slots') &&
+              cardBody?.children[1]?.matches('.block[data-block="base"]') &&
+              cardBody?.children[1]?.firstElementChild?.matches('.decls') &&
+              !cardBody?.children[1]?.querySelector('.blabel'),
+            statesFollowTheBase:
+              blocks('.card').map((one) => one.dataset.block).join(',') === 'base,:hover' &&
+              blocks('.featured').map((one) => one.dataset.block).join(',') === 'base,:focus-within,::before' &&
+              textOf(block('.featured', '::before')?.querySelector('.kindtxt')) === 'pseudo-element',
+          };
+          // Picking a size says where it applies and how far it reaches.
+          card('.card')?.querySelector('.slots [data-slot="tablet"]')?.click();
+          await settle(150);
+          const hint = textOf(body('.card')?.querySelector('.slot-hint'));
+          results.cardBody.slotHintSaysReach =
+            new RegExp(`^Only at ≥768px — ${innerWidth >= 768 ? 'in effect' : 'not'} at ${innerWidth}px\\. Adds to or overrides “All sizes” there, for all 4 elements\\.$`).test(hint) &&
+            blocks('.card').map((one) => one.dataset.block).join(',') === 'base,:hover' &&
+            Boolean(rowIn(block('.card', ':hover'), 'box-shadow'));
+          card('.card')?.querySelector('.slots .base')?.click();
+          await settle(150);
+          // The trash on a page rule's state block empties it; the rule stays in the file.
+          let before = engine.history.size;
+          block('.card', ':hover')?.querySelector('.blabel .kill')?.click();
+          await settle(200);
+          results.cardBody.trashEmptiesAFileRule =
+            engine.history.size === before + 1 &&
+            Boolean(siteRule('.card:hover')) && siteRule('.card:hover').style.length === 0 &&
+            !block('.card', ':hover');
+          engine.undo();
+          await settle(200);
+          // The trash on a rule the editor made removes it.
+          engine.addDeclaration({ kind: 'new-rule', selector: '.card:active', media: null }, 'opacity', '0.9');
+          await settle(200);
+          const active = block('.card', ':active');
+          before = engine.history.size;
+          active?.querySelector('.blabel .kill')?.click();
+          await settle(200);
+          results.cardBody.trashRemovesThatRule =
+            Boolean(active) && engine.history.size === before + 1 &&
+            !engine.rules.list().some((rule) => rule.selector === '.card:active') &&
+            !block('.card', ':active');
+          engine.undo();
+          engine.undo();
+          await settle(200);
+
+          /* Card rows write their own declaration. */
+          results.cardRows = {
+            noDots: !sources()?.querySelector('.cls .dots, .cls .moon'),
+          };
+          before = engine.history.size;
+          const promoColor = () => rowIn(body('.promo .card'), 'color')?.querySelector('heo-value-field');
+          promoColor()?.dispatchEvent(new CustomEvent('value-change', { detail: { value: '#123456' }, bubbles: true, composed: true }));
+          await settle(200);
+          results.cardRows.writeThatDeclarationDirectly =
+            engine.history.size === before + 1 &&
+            siteRule('.promo .card')?.style.getPropertyValue('color') === 'rgb(18, 52, 86)' &&
+            siteRule('.promo .card')?.style.getPropertyPriority('color') === 'important' &&
+            target.style.color === 'rgb(185, 28, 28)';
+          engine.undo();
+          await settle(200);
+          const second = document.querySelectorAll('.card')[1];
+          const weight = () => rowIn(body('.card'), 'font-weight')?.querySelector('heo-value-field');
+          weight()?.dispatchEvent(new CustomEvent('value-input', { detail: { value: '800' }, bubbles: true, composed: true }));
+          await settle(150);
+          const previewed = getComputedStyle(second).fontWeight === '800';
+          before = engine.history.size;
+          engine.cancelPreview();
+          await settle(150);
+          results.cardRows.previewWhileTyping =
+            previewed && getComputedStyle(second).fontWeight === '600' && engine.history.size === before &&
+            weight()?.value === '600';
+          before = engine.history.size;
+          rowIn(body('.card'), 'text-transform')?.querySelector('.kill')?.click();
+          await settle(200);
+          results.cardRows.trashRemovesTheDeclaration =
+            engine.history.size === before + 1 &&
+            siteRule('.card')?.style.getPropertyValue('text-transform') === '' &&
+            !rowIn(body('.card'), 'text-transform');
+          engine.undo();
+          await settle(200);
+
+          /* The inline card (R21). */
+          const inline = () => card('inline');
+          const extract = () => Array.from(inline()?.querySelectorAll('.actions button') ?? []).find((one) => /Extract/.test(one.textContent));
+          results.inlineCard = {
+            listsInlineDeclarations:
+              rowsOf(inline()).map((row) => row.querySelector('.p').textContent.trim()).join(',') === 'color,font-size' &&
+              textOf(cardHeader('inline')?.querySelector('.n')) === 'Inline style',
+          };
+          extract()?.click();
+          await settle(200);
+          results.inlineCard.extractOpensTheDialog =
+            textOf(extract()) === 'Extract 2 into a class' &&
+            engine.store.value.extraction?.mode === 'class' && engine.store.value.extraction?.element === target;
+          engine.cancelExtraction();
+          api.select(item);
+          await settle(300);
+          results.inlineCard.extractDisabledWhenEmpty =
+            extract()?.disabled === true && !rowsOf(inline()).length &&
+            Boolean(inline()?.querySelector('[data-heo-part="adder"]'));
+          api.select(target);
+          await settle(300);
+
+          /* One adder everywhere (R23). */
+          const addButton = (scope) => scope?.querySelector(':scope > .block-add .add-prop, :scope .block-add .add-prop');
+          results.adder = {
+            oneComponentEverywhere:
+              Boolean(sroot().querySelector('.block-add [data-heo-part="adder"][data-adder="effective"]')) &&
+              Boolean(sroot().querySelector('.egroup [data-heo-part="adder"]')) &&
+              Boolean(block('.card', 'base')?.querySelector('[data-heo-part="adder"]')) &&
+              Boolean(inline()?.querySelector('[data-heo-part="adder"]')) &&
+              tokensHasAdder,
+          };
+          addButton(block('.card', 'base'))?.click();
+          await settle(200);
+          const cardAdder = () => block('.card', 'base')?.querySelector('.property-adder');
+          results.adder.singleDestinationIsText =
+            textOf(cardAdder()?.querySelector('.dest .chip.fixed')) === '.card' &&
+            textOf(cardAdder()?.querySelector('.dest .reach')) === '· 4 elements' &&
+            !cardAdder()?.querySelector('.dest button.chip');
+          // Validated with today's messages, and nothing is written while it is refused.
+          before = engine.history.size;
+          await typeInto(cardAdder().querySelector('input'), 'padding');
+          key(cardAdder().querySelector('input'), 'Enter');
+          await settle(150);
+          const duplicate = textOf(cardAdder()?.querySelector('.field-error'));
+          await typeInto(cardAdder().querySelector('input'), '');
+          key(cardAdder().querySelector('input'), 'Enter');
+          await settle(150);
+          const emptyMessage = textOf(cardAdder()?.querySelector('.field-error'));
+          results.adder.validatesWithTodaysMessages =
+            /padding/.test(duplicate) && /\.card/.test(duplicate) &&
+            emptyMessage === 'Type the property to add.' && engine.history.size === before;
+          // Seeded with what the element resolves to (section p's 0.01em, here), focused and selected.
+          const resolved = getComputedStyle(target).letterSpacing;
+          await typeInto(cardAdder().querySelector('input'), 'letter-spacing');
+          key(cardAdder().querySelector('input'), 'Enter');
+          await settle(300);
+          const added = rowIn(block('.card', 'base'), 'letter-spacing')?.querySelector('heo-value-field');
+          results.adder.seedsTheResolvedValue =
+            engine.history.size === before + 1 &&
+            resolved !== 'normal' &&
+            siteRule('.card')?.style.getPropertyValue('letter-spacing') === resolved && added?.value === resolved;
+          results.adder.focusesTheNewValue = Boolean(added) && sroot().activeElement === added;
+          engine.undo();
+          await settle(200);
+          // Escape closes an adder and leaves nothing behind.
+          addButton(block('.card', 'base'))?.click();
+          await settle(200);
+          await typeInto(cardAdder().querySelector('input'), 'margin');
+          before = engine.history.size;
+          key(cardAdder().querySelector('input'), 'Escape');
+          await settle(200);
+          results.adder.escapeCancels =
+            !cardAdder() && Boolean(addButton(block('.card', 'base'))) && engine.history.size === before &&
+            engine.selected === target;
+          // Several destinations: a chip that opens "Write it in", every rule with its reach.
+          sroot().querySelector('.block-add [data-adder="effective"]')?.click();
+          await settle(200);
+          const effAdder = () => sroot().querySelector('.property-adder[data-adder="effective"]');
+          const chip = () => effAdder()?.querySelector('.dest button.chip');
+          const closedChip = chip()?.getAttribute('aria-haspopup') === 'menu' && chip()?.getAttribute('aria-expanded') === 'false';
+          chip()?.click();
+          await settle(200);
+          const menu = () => sroot().querySelector('.menu[data-menu="dest-effective"]');
+          const items = () => Array.from(menu()?.querySelectorAll('.mi') ?? []);
+          results.adder.severalDestinationsMakeAMenu =
+            closedChip && chip()?.getAttribute('aria-expanded') === 'true' &&
+            menu()?.getAttribute('role') === 'menu' &&
+            textOf(menu()?.querySelector('.cap')) === 'Write it in' &&
+            items().length > 1 && items().every((one) => one.getAttribute('role') === 'menuitemradio') &&
+            items()[0].getAttribute('aria-checked') === 'true';
+          results.adder.menuListsEveryRuleWithReach =
+            items().map((one) => `${textOf(one.querySelector('.lbl'))}|${textOf(one.querySelector('small'))}`).join(';') ===
+            'inline style|this element only, every size;.card|4 elements, every size;.featured|1 element, every size;a new class|this element only';
+          // Escape inside the menu closes the menu only; the next one closes the adder (keys).
+          key(items()[0], 'Escape');
+          await settle(200);
+          const menuShutFirst = !menu() && Boolean(effAdder());
+          key(effAdder()?.querySelector('input'), 'Escape');
+          await settle(200);
+          results.keys = {
+            escapeClosesInnermostFirst: menuShutFirst && !effAdder(),
+          };
+          // "a new class" makes an automatic class for this element.
+          sroot().querySelector('.block-add [data-adder="effective"]')?.click();
+          await settle(200);
+          chip()?.click();
+          await settle(200);
+          items().find((one) => textOf(one.querySelector('.lbl')) === 'a new class')?.click();
+          await settle(200);
+          await typeInto(effAdder().querySelector('input'), 'letter-spacing');
+          const classesBefore = Array.from(target.classList);
+          before = engine.history.size;
+          key(effAdder().querySelector('input'), 'Enter');
+          await settle(300);
+          const fresh = Array.from(target.classList).filter((name) => !classesBefore.includes(name));
+          results.adder.newClassDestinationMakesAnAutomaticClass =
+            fresh.length === 1 && engine.isAutomaticClass(fresh[0], target) && engine.history.size === before + 1;
+          engine.undo();
+          await settle(200);
+          // A size with no rule for the family yet: the adder creates the media rule.
+          card('.featured')?.querySelector('.slots [data-slot="phone"]')?.click();
+          await settle(200);
+          addButton(block('.featured', 'base'))?.click();
+          await settle(200);
+          const featuredAdder = () => block('.featured', 'base')?.querySelector('.property-adder');
+          const featuredChip = textOf(featuredAdder()?.querySelector('.dest .chip.fixed'));
+          await typeInto(featuredAdder().querySelector('input'), 'outline-offset');
+          before = engine.history.size;
+          key(featuredAdder().querySelector('input'), 'Enter');
+          await settle(300);
+          const made = engine.rules.list().find((rule) => rule.selector === '.featured' && rule.media);
+          results.adder.createsTheMediaRuleWhenMissing =
+            featuredChip === '.featured ≤767px' && engine.history.size === before + 1 &&
+            Boolean(made) && /max-width:\s*767px/.test(made.media) && 'outline-offset' in made.declarations &&
+            Boolean(rowIn(block('.featured', 'base'), 'outline-offset'));
+          engine.undo();
+          card('.featured')?.querySelector('.slots .base')?.click();
+          await settle(200);
+
+          /* The size strip (R12). */
+          const strip = (k) => card(k)?.querySelector('[data-heo-part="strip"]');
+          const slotButton = (k, slot) => strip(k)?.querySelector(`[data-slot="${slot}"]`);
+          const slotCount = (k, slot) => model().entries
+            .filter((entry) => entry.family === k && model().slotOf(entry) === slot)
+            .reduce((sum, entry) => sum + entry.declarations.length, 0);
+          results.strip = {
+            sameComponentInEffectiveAndCards:
+              Boolean(sroot().querySelector('[data-heo-part="strip"][data-strip="effective"]')) &&
+              strip('.card')?.matches('.slots[role="group"]'),
+            countsPerSlot:
+              textOf(strip('.card')?.querySelector('.base .c')) === String(slotCount('.card', 'base')) &&
+              textOf(slotButton('.card', 'phone')?.querySelector('.c')) === `+${slotCount('.card', 'phone')}` &&
+              textOf(slotButton('.card', 'tablet')?.querySelector('.c')) === `+${slotCount('.card', 'tablet')}` &&
+              slotCount('.card', 'tablet') === 2,
+            emptySlotShowsPlainPlus:
+              slotButton('.card', 'laptop')?.classList.contains('empty') &&
+              textOf(slotButton('.card', 'laptop')?.querySelector('.c')) === '+',
+          };
+          const notNow = innerWidth < 768 ? slotButton('.card', 'tablet') : slotButton('.card', 'phone');
+          const nowButton = innerWidth < 768 ? slotButton('.card', 'phone') : slotButton('.card', 'tablet');
+          results.strip.notNowIsDashedNotFaded =
+            notNow?.classList.contains('notnow') && !nowButton?.classList.contains('notnow') &&
+            getComputedStyle(notNow).borderTopStyle === 'dashed' &&
+            getComputedStyle(notNow).opacity === '1' &&
+            getComputedStyle(notNow).color === getComputedStyle(nowButton).color;
+          // print is not a width: it waits under ⋮, counted.
+          const more = () => strip('.card')?.querySelector('.more');
+          const badge = textOf(more()?.querySelector('.badge'));
+          more()?.click();
+          await settle(200);
+          const stripMenu = () => sroot().querySelector('.menu[data-menu="strip-.card"]');
+          const printItem = Array.from(stripMenu()?.querySelectorAll('.mi') ?? []).find((one) => /@media print/.test(one.textContent));
+          results.strip.otherMediaUnderMore =
+            badge === '1' && !strip('.card')?.querySelector('[data-slot="print"]') &&
+            /1 decl\./.test(textOf(printItem));
+          Array.from(stripMenu()?.querySelectorAll('.mi') ?? []).find((one) => /Add a media query/.test(one.textContent))?.click();
+          await settle(200);
+          const mediaInput = () => stripMenu()?.querySelector('.mfield input');
+          before = engine.history.size;
+          await typeInto(mediaInput(), 'screen and and');
+          key(mediaInput(), 'Enter');
+          await settle(200);
+          const refused = /isn't a media query this browser understands/.test(textOf(stripMenu()?.querySelector('.mfield')));
+          await typeInto(mediaInput(), '(prefers-color-scheme: dark)');
+          key(mediaInput(), 'Enter');
+          await settle(200);
+          results.strip.addMediaQueryValidates =
+            refused && !stripMenu() && more()?.getAttribute('aria-pressed') === 'true' &&
+            /Only at @media \(prefers-color-scheme: dark\)/.test(textOf(body('.card')?.querySelector('.slot-hint'))) &&
+            engine.history.size === before;
+          card('.card')?.querySelector('.slots .base')?.click();
+          await settle(200);
+
+          /* The !important toggle (R29). */
+          const cardRowsAll = () => rowsOf(sources());
+          results.promote = {
+            ...results.promote,
+            isAToggleWithAriaPressed:
+              cardRowsAll().length > 10 &&
+              cardRowsAll().every((row) =>
+                ['true', 'false'].includes(row.querySelector('button.promote')?.getAttribute('aria-pressed'))),
+            namesPropertyAndSource:
+              rowIn(body('.promo .card'), 'color')?.querySelector('.promote')?.getAttribute('aria-label') === '!important on color in .promo .card' &&
+              rowIn(body('.promo .card'), 'color')?.querySelector('.promote')?.getAttribute('aria-pressed') === 'true',
+          };
+          sroot().querySelector('.rows[data-declarations="effective"] .row[data-property="color"] .dots')?.click();
+          await settle(250);
+          const lines = Array.from(sroot().querySelectorAll('.pop .c-line'));
+          results.promote.presentOnEveryCardRowAndPopoverLine =
+            cardRowsAll().every((row) => row.querySelectorAll('.promote').length === 1) &&
+            lines.length > 1 && lines.every((line) => line.querySelectorAll('.promote').length === 1);
+          key(sroot().querySelector('.pop'), 'Escape');
+          await settle(200);
+          before = engine.history.size;
+          rowIn(body('.card'), 'opacity')?.querySelector('.promote')?.click();
+          await settle(200);
+          results.promote.togglesImportanceInPlace =
+            engine.history.size === before + 1 &&
+            siteRule('.card')?.style.getPropertyPriority('opacity') === 'important' &&
+            siteRule('.card')?.style.getPropertyValue('opacity') === '1' &&
+            rowIn(body('.card'), 'opacity')?.querySelector('.promote')?.getAttribute('aria-pressed') === 'true';
+          engine.undo();
+          await settle(200);
+
+          /* Keys. */
+          cardHeader('.card')?.focus();
+          key(cardHeader('.card'), 'Escape');
+          await settle(150);
+          results.keys.escapeNeverDeselects = engine.selected === target;
+          key(cardHeader('.card'), 'Enter');
+          await settle(150);
+          const enterShut = cardHeader('.card')?.getAttribute('aria-expanded') === 'false';
+          key(cardHeader('.card'), 'Enter');
+          await settle(150);
+          results.keys.cardHeaderEnterToggles =
+            enterShut && cardHeader('.card')?.getAttribute('aria-expanded') === 'true';
+          // Every control Sources adds shows the focus ring when focused from the keyboard.
+          const ring = getComputedStyle(sroot().host).getPropertyValue('--heo-focus-ring').trim();
+          const controls = [
+            tab('all'),
+            cardHeader('.card'),
+            slotButton('.card', 'phone'),
+            strip('.card')?.querySelector('.more'),
+            rowIn(body('.card'), 'opacity')?.querySelector('.promote'),
+            rowIn(body('.card'), 'opacity')?.querySelector('.kill'),
+            addButton(block('.card', 'base')),
+            block('.featured', '::before')?.querySelector('.blabel .kill'),
+          ];
+          const rings = controls.map((control) => {
+            if (!control) return 'missing';
+            control.focus();
+            const style = getComputedStyle(control);
+            return control.matches(':focus-visible') && style.outlineStyle === 'solid' && style.outlineWidth === '2px';
+          });
+          results.keys.focusRingOnEveryControl = Boolean(ring) && rings.every((one) => one === true);
+          if (!results.keys.focusRingOnEveryControl) results.keys.rings = rings;
+          sroot().activeElement?.blur();
+        }
         const failed = Object.entries(results)
           .filter(([, group]) => group && typeof group === 'object')
           .filter(([, group]) => Object.values(group).some((value) => value === false))

@@ -28,6 +28,9 @@
       .card { color: #000000; }
     }
     .card:hover { background-color: #f9fafb; }
+    @media (min-width: 768px) {
+      .card:hover { box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1); }
+    }
     .featured::before { content: "★"; color: #f59e0b; }
   </style>
   <!-- Bootstrap spells the phone bound 767.98px: it is still the phone slot. -->
@@ -485,6 +488,74 @@
               `Phone, up to 767px, ${phoneCount} declarations`,
         };
 
+        /* ---- what Sources and the groups show depends on the preview (R7) ---- */
+        progress.textContent = 'filter';
+        engine.setPreviewWidth(null);
+        await settle();
+        const sources = () => root().querySelector('heo-section[heading="Sources"]');
+        const card = (key) => sources()?.querySelector(`.cls[data-card="${CSS.escape(key)}"]`);
+        const slotsOf = (scope) => Array.from(scope?.querySelectorAll('.slots [data-slot]') ?? []).map((one) => one.dataset.slot);
+        const badgeOf = (scope) => scope?.querySelector('.slots .more .badge')?.textContent.trim() ?? '';
+        const metaOf = (key) => card(key)?.querySelector(':scope > header .meta')?.textContent.trim() ?? '';
+        const pressedIn = (scope) =>
+          scope?.querySelector('.slots .base[aria-pressed="true"]')
+            ? 'base'
+            : scope?.querySelector('.slots [data-slot][aria-pressed="true"]')?.dataset.slot ?? null;
+        const pickIn = async (scope, slot) => {
+          scope?.querySelector(`.slots [data-slot="${slot}"]`)?.click();
+          await settle();
+        };
+        const hoverRows = () =>
+          Array.from(root().querySelectorAll('[data-egroup=":hover"] .row')).map((row) => row.dataset.property);
+        const cardCount = (width) => {
+          const model = engine.elementModel(target);
+          return model.entries
+            .filter((entry) => entry.family === '.card' && (width === null || entry.medias.every((one) => matchMediaAt(one, width))))
+            .reduce((sum, entry) => sum + entry.declarations.length, 0);
+        };
+        // Width queries only, which is all this sample has besides print.
+        const matchMediaAt = (media, width) => {
+          if (/print/.test(media)) return false;
+          const max = /max-width:\s*([\d.]+)px/.exec(media);
+          const min = /min-width:\s*([\d.]+)px/.exec(media);
+          return (!max || width <= Number(max[1])) && (!min || width >= Number(min[1]));
+        };
+        // Every size, and print under ⋮, at Actual; the ≥768px :hover rule is the tablet block.
+        await pickIn(card('.card'), 'tablet');
+        const tabletHover = Boolean(card('.card')?.querySelector('.block[data-block=":hover"]'));
+        card('.card')?.querySelector('.slots .base')?.click();
+        await settle();
+        results.filter = {
+          actualShowsEveryMediaRule:
+            ['phone', 'tablet', 'laptop', 'desktop'].every((slot) => slotsOf(card('.card')).includes(slot)) &&
+            badgeOf(card('.card')) === '1' &&
+            metaOf('.card') === `${cardCount(null)} rules · 4×` &&
+            tabletHover,
+        };
+        engine.setPreviewWidth(320);
+        await settle(300);
+        const phoneMeta = metaOf('.card');
+        const phonePressed = [pressedIn(root().querySelector('heo-section[heading="Effective styles"]')), pressedIn(card('.card')), pressedIn(card('.featured'))];
+        results.filter.previewHidesNonMatchingRules =
+          phoneMeta === `${cardCount(320)} rules · 4×` && cardCount(320) < cardCount(null) &&
+          !card('.card')?.querySelector('.block[data-block=":hover"] .decl .p[title="box-shadow"]');
+        results.filter.stripsShowOnlyMatchingSlots =
+          slotsOf(card('.card')).join(',') === 'phone' &&
+          slotsOf(root().querySelector('[data-strip="effective"]')?.parentElement).join(',') === 'phone' &&
+          badgeOf(card('.card')) === '';
+        const hoverAt320 = hoverRows();
+        engine.setPreviewWidth(1024);
+        await settle(300);
+        const hoverAt1024 = hoverRows();
+        const widePressed = [pressedIn(root().querySelector('heo-section[heading="Effective styles"]')), pressedIn(card('.card'))];
+        results.filter.previewHidesStateRulesOutsideTheWidth =
+          hoverAt1024.includes('box-shadow') && !hoverAt320.includes('box-shadow') &&
+          hoverAt320.includes('background-color');
+        // The preview's slot is what every strip shows, the Effective one and each card's.
+        results.follow.previewPicksItsSlotEverywhere =
+          phonePressed.join(',') === 'phone,phone,phone' && widePressed.join(',') === 'laptop,laptop';
+        engine.setPreviewWidth(null);
+        await settle();
         const failed = Object.entries(results)
           .filter(([, group]) => group && typeof group === 'object')
           .filter(([, group]) => Object.values(group).some((value) => value === false))

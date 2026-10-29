@@ -1,4 +1,4 @@
-import type { ElementModel } from '../../../core/cascade.js';
+import type { ElementModel, RuleEntry } from '../../../core/cascade.js';
 import type { EditorEngine } from '../../../core/editor.js';
 import type { SaveContext, SaveOption, SavePlan } from '../../../core/save-plan.js';
 import type { FormErrors } from '../../form-errors.js';
@@ -61,7 +61,15 @@ export interface StylesUiState {
    * until a declaration lands, so nothing empty is ever stored to show a size.
    */
   otherSlots: ReadonlyMap<string, readonly string[]>;
+  /** Which Sources groups are shown. */
+  tab: SourcesTab;
+  /** A card's hand-picked size, by family key; cleared when the preview width changes (R13). */
+  cardPicks: ReadonlyMap<string, string>;
+  /** Cards shut by hand this session, by family key (`inline` for the inline card). */
+  closedCards: ReadonlySet<string>;
 }
+
+export type SourcesTab = 'all' | 'inline' | 'classes' | 'rules';
 
 export interface StylesHost extends AdderHost {
   engine: EditorEngine;
@@ -83,6 +91,10 @@ export interface StylesHost extends AdderHost {
   focusSelector(selector: string): void;
   /** The adder's errors: one adder is open at a time, so one form. */
   adderForm: FormErrors;
-  /** Open the place a declaration is written, from a popover line's link. */
-  openSource(property: string, target: { selector: string; family: string; isClass: boolean }): void;
+  /** The strips' "Add a media query…" field: one is open at a time. */
+  mediaForm: FormErrors;
+  /** Open or close one of the panel's menus; closing hands focus back to what opened it. */
+  toggleMenu(id: string, open: boolean): void;
+  /** Open the card a declaration is written in, at its size, from a popover line's link. */
+  openSource(property: string, entry: RuleEntry): void;
 }

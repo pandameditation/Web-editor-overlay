@@ -284,7 +284,7 @@ export class HeoTokensPanel extends HeoElement {
       ${this.#shows('tokens')
         ? TOKEN_GROUPS.map((group) => this.#renderGroup(group, usage)).filter(Boolean)
         : nothing}
-      ${this.#shows('classes') ? this.#renderClasses(el) : nothing}
+      ${this.#shows('classes') ? this.#renderClassList(el) : nothing}
       ${this.#shows('rules') ? this.#renderRules(el) : nothing}
       ${this.query ? this.#renderNoMatches() : nothing}
       ${this.#renderTransfer()}
@@ -654,7 +654,7 @@ export class HeoTokensPanel extends HeoElement {
     </heo-section>`;
   }
 
-  #renderClasses(el: HTMLElement | null): TemplateResult | typeof nothing {
+  #renderClassList(el: HTMLElement | null): TemplateResult | typeof nothing {
     const globalClasses = this.#matchClasses(this.editor.classes.list());
     const localQuery = this.classDraft.trim();
     const classes = this.#matchClasses(globalClasses, localQuery);

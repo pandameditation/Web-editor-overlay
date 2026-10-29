@@ -635,6 +635,8 @@ export class HeoValueField extends LitElement {
   #blurTimer: ReturnType<typeof setTimeout> | undefined;
   /** The last value this field committed, to tell an echo from an external change. */
   #lastCommitted = '';
+  /** A `value-input` went out since the last commit or revert: a preview may be painted. */
+  #painted = false;
   #onScroll = (): void => {
     if (this.open) this.#positionPopup();
   };
@@ -1541,6 +1543,13 @@ export class HeoValueField extends LitElement {
       // Nothing to commit, but `value-input` may have painted a live preview on the
       // way here — typing a value and deleting it again, or cancelling a colour
       // picker. Say so, so the host can put the page back.
+      //
+      // Only when this field did paint one. The host's revert puts back whatever preview is in
+      // flight, and one field's delayed focus-out used to land after the next field had started
+      // previewing: commit a value with Enter, click into the row below, type, and the page
+      // snapped back while the new field still showed the typed text.
+      if (!this.#painted) return;
+      this.#painted = false;
       this.dispatchEvent(new CustomEvent('value-revert', { bubbles: true, composed: true }));
     }, 120);
   }
@@ -1815,6 +1824,7 @@ export class HeoValueField extends LitElement {
   /** Update the composer and preview the result, the way typing in the field does. */
   #updateComposer(next: { fn: FunctionName; parts: string[]; operators: string[] }): void {
     this.composer = next;
+    this.#painted = true;
     this.dispatchEvent(
       new CustomEvent('value-input', {
         detail: { value: this.#composed(next) },
@@ -1978,6 +1988,7 @@ export class HeoValueField extends LitElement {
   }
 
   #emit(type: 'value-input' | 'value-change'): void {
+    this.#painted = type === 'value-input';
     this.dispatchEvent(
       new CustomEvent(type, {
         detail: { value: this.draft.trim() },
