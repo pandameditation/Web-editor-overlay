@@ -10,6 +10,7 @@ import {
   type ViewportPreset,
 } from '../../../core/breakpoints.js';
 import type { EditorEngine } from '../../../core/editor.js';
+import { countText } from '../../../core/save-plan.js';
 import { collectPageMedia } from '../../../core/viewport.js';
 import { field, type FormErrors } from '../../form-errors.js';
 import { icon } from '../../icons.js';
@@ -139,7 +140,7 @@ function renderPreviewMenu(spec: PreviewBarSpec, presets: readonly ViewportPrese
       key: `media:${one.media}`,
       icon: mediaIcon(one.media),
       label: mediaShort(one.media),
-      note: `${one.rules} ${one.rules === 1 ? 'rule' : 'rules'}${at !== null ? ` · preview ${at}` : ''}`,
+      note: `${countText(one.rules, 'rule')}${at !== null ? ` · preview ${at}` : ''}`,
       title: at !== null ? `Preview at ${at}px` : 'Not a width: shown at Actual',
       onSelect: () => preview(at),
     };
@@ -188,7 +189,7 @@ function renderPreviewMenu(spec: PreviewBarSpec, presets: readonly ViewportPrese
           <li>Print and preference queries can't be previewed.</li>
           <li>Images picked by &lt;picture&gt; or srcset don't change.</li>
           ${unreadable
-          ? html`<li>${unreadable} ${unreadable === 1 ? 'stylesheet' : 'stylesheets'} from another origin can't be previewed.</li>`
+          ? html`<li>${countText(unreadable, 'stylesheet')} from another origin can't be previewed.</li>`
           : nothing}
           ${spec.inShadowRoot
           ? html`<li>Styles inside this component's shadow root keep the real width.</li>`

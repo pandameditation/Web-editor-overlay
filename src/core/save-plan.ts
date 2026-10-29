@@ -87,8 +87,10 @@ export interface SaveNaming {
 
 /** Where a value comes from, short: `inline style`, `.card ≥768px`. */
 export function shortLabel(by: Contribution): string {
-  if (by.source.kind === 'inline') return 'inline style';
-  const entry = by.source.entry;
+  return by.source.kind === 'inline' ? 'inline style' : entryLabel(by.source.entry);
+}
+/** A rule entry, short: `.card`, `.card ≥768px`. */
+export function entryLabel(entry: Pick<RuleEntry, 'selector' | 'media'>): string {
   return `${entry.selector}${entry.media ? ` ${mediaShort(entry.media)}` : ''}`;
 }
 /** A person-readable name for what wins: `.promo .card !important`, `.card ≥768px`, `inline style`. */
@@ -96,9 +98,17 @@ export function contributionLabel(by: Contribution): string {
   const base = shortLabel(by);
   return by.important ? `${base} !important` : base;
 }
+/** `word` for one, its plural otherwise: the one place a count picks its noun. Regular plurals only. */
+export function plural(n: number, word: string): string {
+  return n === 1 ? word : `${word}s`;
+}
+/** "1 rule", "3 rules": a count with its noun. */
+export function countText(n: number, word: string): string {
+  return `${n} ${plural(n, word)}`;
+}
 /** "1 element", "4 elements": how many elements a rule or class reaches, said the same everywhere. */
 export function reachText(n: number): string {
-  return `${n} ${n === 1 ? 'element' : 'elements'}`;
+  return countText(n, 'element');
 }
 
 let warned = false;

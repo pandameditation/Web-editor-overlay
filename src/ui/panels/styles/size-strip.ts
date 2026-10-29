@@ -2,6 +2,7 @@ import { css, html, nothing, type CSSResult, type TemplateResult } from 'lit';
 import { ref } from 'lit/directives/ref.js';
 import { mediaIcon, mediaShort, type DeviceIcon } from '../../../core/breakpoints.js';
 import type { ElementModel, RuleEntry } from '../../../core/cascade.js';
+import { countText } from '../../../core/save-plan.js';
 import { mediaQueryIssues } from '../../../core/validation.js';
 import { mediaApplies } from '../../../core/viewport.js';
 import { field, type FormErrors } from '../../form-errors.js';
@@ -84,7 +85,7 @@ export function stripSizes(
       name: slot.name,
       count: n,
       notNow,
-      title: `${slot.name}${n ? ` — ${n} declaration${n === 1 ? '' : 's'} at this size` : ' — none yet, click to add'}${notNow ? ` · not in effect at ${model.width}px` : ''}`,
+      title: `${slot.name}${n ? ` — ${countText(n, 'declaration')} at this size` : ' — none yet, click to add'}${notNow ? ` · not in effect at ${model.width}px` : ''}`,
     };
   });
   const media = new Set<string>();

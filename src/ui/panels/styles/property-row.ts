@@ -1,5 +1,5 @@
 import { css, html, nothing, type CSSResult, type TemplateResult } from 'lit';
-import { isPseudoElement, mediaShort } from '../../../core/breakpoints.js';
+import { isPseudoElement } from '../../../core/breakpoints.js';
 import type {
   CascadeContext,
   CascadeList,
@@ -8,7 +8,7 @@ import type {
   WriteTarget,
 } from '../../../core/cascade.js';
 import { longhandsOf, splitImportant } from '../../../core/declaration-list.js';
-import { reachText, shortLabel, type SaveContext } from '../../../core/save-plan.js';
+import { entryLabel, reachText, shortLabel, type SaveContext } from '../../../core/save-plan.js';
 import { mediaApplies } from '../../../core/viewport.js';
 import { icon } from '../../icons.js';
 import { buildSuggestions, valueKindFor } from '../../suggestions.js';
@@ -438,7 +438,7 @@ function whereHint(
       one.target === stateTarget && one.state === state);
     if (!entry) return html`Edits the <b>${state}</b> rule`;
     const reach = spec.model.reach(entry.family);
-    return html`Edits <b>${entry.selector}${entry.media ? ` ${mediaShort(entry.media)}` : ''}</b> ·
+    return html`Edits <b>${entryLabel(entry)}</b> ·
       ${reachText(reach)}`;
   }
   if (asks) return html`Depends on the viewport: after Enter, choose where it stays`;

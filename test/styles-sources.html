@@ -678,6 +678,29 @@
           results.keys = {
             escapeClosesInnermostFirst: menuShutFirst && !effAdder(),
           };
+          // A size group's adder: the same shared adder, so the same box. Pinned here too, since
+          // only the element block's adder was compared before and a size group could drift alone.
+          const effSlot = () => sroot().querySelector('[data-strip="effective"] [data-slot="tablet"]');
+          effSlot()?.click();
+          await settle(200);
+          sroot().querySelector('.block-add button[data-adder="size-tablet"]')?.click();
+          await settle(200);
+          const sizeAdder = () => sroot().querySelector('.property-adder[data-adder="size-tablet"]');
+          const sizeLook = adderLook(sizeAdder());
+          results.adder.looksTheSameInASizeGroup =
+            Boolean(cardLook) && Boolean(sizeLook) && !sizeLook.label &&
+            cardLook.padding === sizeLook.padding &&
+            cardLook.border === sizeLook.border &&
+            cardLook.background === sizeLook.background &&
+            Math.abs(cardLook.inputTop - sizeLook.inputTop) <= 2 &&
+            Math.abs(cardLook.inputLeft - sizeLook.inputLeft) <= 2;
+          key(sizeAdder()?.querySelector('input'), 'Escape');
+          await settle(200);
+          // Picking the size shown again goes back to All sizes, as the rest of this page expects.
+          effSlot()?.click();
+          await settle(200);
+          results.adder.sizeGroupClosesBehindItself =
+            !sizeAdder() && !sroot().querySelector('[data-egroup="size:tablet"]');
           // "a new class" makes an automatic class for this element.
           sroot().querySelector('.block-add [data-adder="effective"]')?.click();
           await settle(200);

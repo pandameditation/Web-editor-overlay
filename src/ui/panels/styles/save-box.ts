@@ -1,5 +1,6 @@
 import { css, html, nothing, type CSSResult, type TemplateResult } from 'lit';
-import type { SaveContext, SaveOption } from '../../../core/save-plan.js';
+import { plural, type SaveContext, type SaveOption } from '../../../core/save-plan.js';
+import { framedBox } from '../../theme.js';
 import type { PendingSave, StylesHost } from './types.js';
 
 /**
@@ -139,7 +140,7 @@ export function renderSaveBox(pending: PendingSave, host: StylesHost): TemplateR
         >
           <span class="radio" aria-hidden="true"></span>
           <span class="t">${titled(option.title)}</span>
-          <span class="r"><b>${option.reach}</b> ${option.reach === 1 ? 'element' : 'elements'}</span>
+          <span class="r"><b>${option.reach}</b> ${plural(option.reach, 'element')}</span>
           <span class="s">${option.sub} · ${verdict}</span>
         </button>`;
   })}
@@ -164,9 +165,7 @@ export const saveBoxStyles: CSSResult = css`
     gap: 4px;
     margin: 5px 0 3px;
     padding: 8px;
-    border: 1px solid var(--heo-accent-line);
-    border-radius: var(--heo-r-md);
-    background: color-mix(in oklab, var(--heo-accent) 6%, var(--heo-sunken));
+    ${framedBox}
   }
   .savebox .q {
     margin: 0 0 2px;

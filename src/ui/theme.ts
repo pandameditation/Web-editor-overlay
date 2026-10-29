@@ -516,6 +516,15 @@ export const baseStyles = css`
   }
 `;
 
+/**
+ * The framed box a form opens in where it was asked for: the save box and an opened
+ * "+ Add property". Declarations only, so each keeps its own selector and spacing.
+ */
+export const framedBox = css`
+  border: 1px solid var(--heo-accent-line);
+  border-radius: var(--heo-r-md);
+  background: color-mix(in oklab, var(--heo-accent) 6%, var(--heo-sunken));
+`;
 /** Floating surface shared by the toolbar, menus and the dock. */
 export const surfaceStyles = css`
   .surface {

@@ -4,6 +4,7 @@ import { EDITABLE_STATES } from '../../../core/breakpoints.js';
 import { searchProperties } from '../../../core/css.js';
 import { checkDeclaration } from '../../../core/declarations.js';
 import type { AddDestination } from '../../../core/save-plan.js';
+import { framedBox } from '../../theme.js';
 import { field } from '../../form-errors.js';
 import { icon } from '../../icons.js';
 import type { ClassEditorHost } from '../class-editor.js';
@@ -329,9 +330,7 @@ export const adderRowStyles: CSSResult = css`
     gap: 5px;
     margin-top: 2px;
     padding: 7px;
-    border: 1px solid var(--heo-accent-line);
-    border-radius: var(--heo-r-md);
-    background: color-mix(in oklab, var(--heo-accent) 6%, var(--heo-sunken));
+    ${framedBox}
   }
   .property-adder.framed .pair {
     grid-column: 1 / -1;

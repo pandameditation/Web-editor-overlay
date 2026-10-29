@@ -10,7 +10,7 @@ import {
   toRecord,
   type Declaration,
 } from '../../../core/declaration-list.js';
-import { reachText } from '../../../core/save-plan.js';
+import { countText, reachText } from '../../../core/save-plan.js';
 import { mediaApplies } from '../../../core/viewport.js';
 import { field } from '../../form-errors.js';
 import { icon } from '../../icons.js';
@@ -428,7 +428,7 @@ export function renderFamilyCard(
   return html`<div class="cls" data-card=${key} data-group=${options.group}>
     ${renderCardHeader({
       name: key,
-      meta: `${declarations} ${declarations === 1 ? 'rule' : 'rules'} · ${uses}×`,
+      meta: `${countText(declarations, 'rule')} · ${uses}×`,
       file,
       expanded: open,
       onToggle: () => toggleCard(host, key),
@@ -550,7 +550,6 @@ function renderDetach(name: string, host: StylesHost, uses: number): TemplateRes
   // Dropped with the last element wearing it, unless the page authored it: an overlay-owned rule
   // with no users is dead weight in the export.
   const orphans = others === 0 && entry.origin !== 'stylesheet';
-  const plural = (n: number): string => `${n} declaration${n === 1 ? '' : 's'}`;
   const fork = (): void => {
     if (!host.forkForm.submit()) return;
     const forked = engine.forkClass(name, element, ui.forkDraft.trim() || undefined);
@@ -570,7 +569,7 @@ function renderDetach(name: string, host: StylesHost, uses: number): TemplateRes
     <div class="choice" data-choice="copy">
       <div class="head">${icon('duplicate', 12)} <b>Copy it for this element</b></div>
       <p>
-        Makes <code class="mono">.${forkName}</code> with the same ${plural(count)}${family.members.length
+        Makes <code class="mono">.${forkName}</code> with the same ${countText(count, 'declaration')}${family.members.length
           ? ', its states and sizes included,'
           : ''} and swaps it in here. Still a class you can reuse, just not a shared one.
       </p>
@@ -606,7 +605,7 @@ function renderDetach(name: string, host: StylesHost, uses: number): TemplateRes
     <div class="choice" data-choice="move">
       <div class="head">${icon('unlink', 12)} <b>Move the styles onto the element</b></div>
       <p>
-        Its ${plural(base)} become this element's inline style and
+        Its ${countText(base, 'declaration')} become this element's inline style and
         <code class="mono">.${entry.name}</code> comes off it${orphans
           ? html`. Nothing else uses it, so the rule goes too.`
           : html`, but stays defined for the rest.`}
@@ -659,7 +658,7 @@ export function renderInlineCard(host: StylesHost): TemplateResult | typeof noth
     ${renderCardHeader({
       name: 'Inline style',
       plain: true,
-      meta: `${count} ${count === 1 ? 'rule' : 'rules'}`,
+      meta: countText(count, 'rule'),
       expanded: open,
       onToggle: () => toggleCard(host, INLINE_LIST_ID),
       sessionDot: false,
