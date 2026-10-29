@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Styles panel states, to look at</title>
+  <!--
+    A page to look at, not a fixture: it sets one Styles panel state from its query string and
+    reports ready, so `browser-check.mjs --shot` can capture it.
+
+      ?state=actual | preview-320 | popover-padding | save-spacing | save-typography-320 |
+             sources | add-menu | detach | preview-menu | search-padding
+      &theme=dark | light
+
+    `--shot` resizes the window to 1440x900 after the page reports, so the page re-places what it
+    opened on resize (debounced, well inside the 400 ms before the capture): the popover and the
+    menus follow their anchors again, and the section being shown is scrolled back into view.
+
+    The RESULTS also carry a few rectangles measured before that resize, because a screenshot is not
+    evidence of a layout (dev-flow section 3): the property names line up, a save box sits under its
+    row, and a menu sits under its trigger inside the panel.
+
+    The sample is the shared one (design section 8): the prototype's model, as real CSS.
+  -->
+  <style id="site">
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+
+    .card {
+      padding: 12px 16px;
+      margin: 0 0 12px;
+      color: #1f2937;
+      background-color: #ffffff;
+      border-radius: 8px;
+      font-size: 15px;
+      font-weight: 600;
+      text-transform: none;
+      text-align: left;
+      opacity: 1;
+      display: block;
+    }
+
+    .featured {
+      border: 1px solid #a5b4fc;
+    }
+
+    .card.featured {
+      background-color: #eef2ff;
+    }
+
+    .promo .card {
+      color: #3730a3 !important;
+    }
+
+    section p {
+      letter-spacing: 0.01em;
+    }
+
+    @media (max-width: 767px) {
+      .cards {
+        grid-template-columns: 1fr;
+      }
+
+      .card {
+        padding: 10px 12px;
+      }
+    }
+
+    @media (min-width: 768px) {
+      .card {
+        padding: 20px 28px;
+      }
+    }
+
+    @media print {
+      .card {
+        color: #000000;
+      }
+    }
+
+    .card:hover {
+      background-color: #f9fafb;
+    }
+
+    @media (min-width: 768px) {
+      .card:hover {
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+      }
+    }
+
+    .featured:focus-within {
+      outline: 2px solid #6366f1;
+    }
+
+    .featured::before {
+      content: "★";
+      color: #f59e0b;
+    }
+  </style>
+</head>
+
+<body>
+  <section class="promo">
+    <div class="cards">
+      <p id="target" class="card featured" style="color: #b91c1c; font-size: 16px">The selected card</p>
+      <p class="card">Second</p>
+      <p class="card">Third</p>
+      <p class="card">Fourth</p>
+    </div>
+  </section>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const params = new URLSearchParams(location.search);
+      const state = params.get('state') ?? 'actual';
+      const theme = params.get('theme') === 'light' ? 'light' : 'dark';
+      const progress = document.getElementById('progress');
+      const frames = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const deep = (selector, root = document) => {
+        const direct = root.querySelector?.(selector);
+        if (direct) return direct;
+        for (const el of root.querySelectorAll?.('*') ?? []) {
+          if (!el.shadowRoot) continue;
+          const found = deep(selector, el.shadowRoot);
+          if (found) return found;
+        }
+        return null;
+      };
+      const api = window.HtmlEditorOverlay.mount({ theme, presets: false, detectScriptContent: false });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+      const target = document.getElementById('target');
+      api.select(target);
+      engine.setDockTab('styles');
+      const panel = () => deep('heo-styles-panel');
+      // Re-queried on every use: the panel re-renders on every change.
+      const sroot = () => panel()?.shadowRoot ?? null;
+      const q = (selector) => sroot()?.querySelector(selector) ?? null;
+      const settle = async (ms = 200) => {
+        await panel()?.updateComplete;
+        await frames();
+        await wait(ms);
+      };
+      await settle(400);
+      const send = (el, type, detail) =>
+        el?.dispatchEvent(new CustomEvent(type, { detail, bubbles: true, composed: true }));
+      const section = (heading) => q(`heo-section[heading="${heading}"]`);
+      const show = (el) => el?.scrollIntoView({ block: 'start' });
+
+      /* ---- the states ---- */
+      let shown = null;
+      const missing = [];
+      const need = (el, what) => {
+        if (!el) missing.push(what);
+        return el;
+      };
+      progress.textContent = state;
+      switch (state) {
+        case 'actual':
+          break;
+        case 'preview-320':
+          engine.setPreviewWidth(320);
+          break;
+        case 'popover-padding': {
+          const row = q('[data-declarations="effective"] .row[data-property="padding"]') ??
+            q('[data-declarations="effective"] .row[data-property="padding-top"]');
+          // On screen first, so the popover is placed against a row the window shows.
+          row?.scrollIntoView({ block: 'center' });
+          await settle();
+          need(row?.querySelector('.dots'), 'effective padding dot')?.click();
+          shown = () => q('.dots[aria-expanded="true"]')?.closest('.row');
+          break;
+        }
+        case 'save-spacing':
+          send(need(q('[data-declarations="spacing"] heo-value-field[data-property="padding"]'), 'spacing padding field'),
+            'value-change', { value: '14px 18px' });
+          shown = () => section('Spacing');
+          break;
+        case 'save-typography-320':
+          engine.setPreviewWidth(320);
+          await settle();
+          send(need(q('[data-declarations="typography"] heo-value-field[data-property="font-size"]'), 'typography font-size field'),
+            'value-change', { value: '18px' });
+          shown = () => section('Typography');
+          break;
+        case 'sources':
+          shown = () => section('Sources');
+          break;
+        case 'add-menu':
+          need(q('.slots[data-strip="effective"] button[data-slot="phone"]'), 'effective phone slot')?.click();
+          await settle();
+          need(q('.block-add button[data-adder="size-phone"]'), 'phone group adder')?.click();
+          await settle();
+          need(q('.property-adder[data-adder="size-phone"] .dest button.chip'), 'destination chip')?.click();
+          shown = () => q('.egroup[data-egroup="size:phone"]');
+          break;
+        case 'detach':
+          need(q('.cls[data-card=".card"] .actions .link[data-act="detach"]'), 'detach link')?.click();
+          shown = () => q('.cls[data-card=".card"] .actions');
+          break;
+        case 'preview-menu':
+          need(q('[data-menu-anchor="preview"]'), 'preview menu button')?.click();
+          break;
+        case 'search-padding': {
+          const field = need(q('.top heo-search-field'), 'search field');
+          field?.reset?.('padding');
+          send(field, 'search-input', { value: 'padding' });
+          break;
+        }
+        default:
+          missing.push(`unknown state ${state}`);
+      }
+      await settle(300);
+      show(shown?.());
+      await settle();
+
+      /* ---- layout, measured rather than looked at ---- */
+      const rect = (el) => {
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return { left: Math.round(r.left), top: Math.round(r.top), right: Math.round(r.right), bottom: Math.round(r.bottom) };
+      };
+      const panelRect = rect(panel());
+      const layout = {};
+      // Every effective row's name starts at the same x, whatever its dot shows.
+      const names = Array.from(sroot()?.querySelectorAll('[data-declarations="effective"] .row .pn') ?? []).map((el) => rect(el).left);
+      layout.effectiveNamesAlign = names.length > 0 && names.every((x) => x === names[0]);
+      const rects = { panel: panelRect, names };
+      const box = q('.savebox');
+      if (box) {
+        const owner = box.closest('.prow')?.querySelector('.row') ?? q('.spacing-save')?.previousElementSibling;
+        layout.saveBoxIsUnderItsRow = Boolean(owner) && rect(box).top >= rect(owner).bottom - 1;
+        layout.saveBoxIsInsideThePanel = rect(box).left >= panelRect.left && rect(box).right <= panelRect.right + 1;
+      }
+      const menu = q('.menu');
+      if (menu) {
+        const anchor = q(`[data-menu-anchor="${CSS.escape(menu.dataset.menu)}"]`);
+        // Below its trigger, or above it when the window has no room underneath; never over it.
+        layout.menuSitsBesideItsTrigger = Boolean(anchor) &&
+          (rect(menu).top >= rect(anchor).bottom - 1 || rect(menu).bottom <= rect(anchor).top + 1);
+        Object.assign(rects, { menu: rect(menu), menuAnchor: rect(anchor) });
+        layout.menuIsInsideThePanel = rect(menu).left >= panelRect.left - 1 && rect(menu).right <= panelRect.right + 1;
+      }
+      const pop = q('.pop');
+      if (pop) {
+        const row = q(`.row[data-row="${CSS.escape(panel().ui?.popover?.rowId ?? '')}"]`) ?? q('.dots[aria-expanded="true"]')?.closest('.row');
+        layout.popoverSitsBesideItsRow = Boolean(row) &&
+          (rect(pop).top >= rect(row).bottom - 1 || rect(pop).bottom <= rect(row).top + 1);
+        Object.assign(rects, { pop: rect(pop), popRow: rect(row) });
+      }
+
+      /* ---- after the shot's resize: put the layers back under their anchors ---- */
+      let timer = 0;
+      addEventListener('resize', () => {
+        clearTimeout(timer);
+        timer = setTimeout(async () => {
+          // Scrolled first, then re-rendered: the panel places its popover and menus against their
+          // anchors in updated(), so they land where the anchors now are.
+          show(shown?.());
+          panel()?.requestUpdate();
+          await panel()?.updateComplete;
+          progress.textContent = `${state} re-placed at ${innerWidth}x${innerHeight}`;
+        }, 150);
+      });
+
+      document.getElementById('out').textContent = 'RESULTS:' + JSON.stringify({
+        ready: true, state, theme, missing, layout, rects, at: { width: innerWidth, height: innerHeight },
+      }) + ':END';
+    })().catch((error) => {
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify({ ready: false, error: String(error?.message ?? error) }) + ':END';
+    });
+  </script>
+</body>
+
+</html>

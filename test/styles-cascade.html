@@ -421,6 +421,33 @@
           pop()?.querySelector('.sub')?.textContent.trim() === 'At other sizes or states' &&
           lines().some((line) => line.classList.contains('idle') && line.querySelector('.src').textContent.includes(otherLabel));
         /*
+         * The popover follows its row when the dock scrolls. A scroll does not leave the dock's
+         * shadow root, so a panel listening only at the window never heard it, and the popover
+         * stayed where it was opened while its row moved away. Measured as the 4px placement gap
+         * to the row, above or below it (placement flips to whichever side has room).
+         */
+        {
+          const scroller = deep('heo-dock')?.shadowRoot?.querySelector('.body');
+          const padRowNow = () => rowIn('effective', 'padding');
+          const hugs = () => {
+            const p = pop()?.getBoundingClientRect();
+            const r = padRowNow()?.getBoundingClientRect();
+            return Boolean(p && r) && (Math.abs(p.top - r.bottom - 4) <= 1 || Math.abs(r.top - p.bottom - 4) <= 1);
+          };
+          const start = scroller?.scrollTop ?? 0;
+          const rowTop = () => padRowNow()?.getBoundingClientRect().top ?? NaN;
+          const hugsBefore = hugs();
+          const rowBefore = rowTop();
+          if (scroller) scroller.scrollTop = start + 40;
+          await frames();
+          await frames();
+          results.popover.followsItsRowWhenTheDockScrolls =
+            hugsBefore && rowBefore - rowTop() > 10 && hugs();
+          if (scroller) scroller.scrollTop = start;
+          await frames();
+          await frames();
+        }
+        /*
          * A line's link opens the card it is written in, at that rule's size, with the declaration
          * focused: following ".card ≥768px →" lands on the tablet slot of the .card card, not on its
          * All sizes view, where that padding is not listed.

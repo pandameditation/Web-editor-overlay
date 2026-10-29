@@ -1098,11 +1098,22 @@ export class HeoStylesPanel extends HeoElement {
     event.stopPropagation();
   };
 
+  /*
+   * The tree the panel is rendered in, listened to for scrolls as well as the window: a scroll
+   * event does not leave the shadow root it happens in, so the dock's own scroller (the one the
+   * panel scrolls in) never reached the window listener, and an open popover stayed put while its
+   * row scrolled away (measured: 0 events at the window, 1 at the dock's root).
+   */
+  #scrollRoot: Node | null = null;
+
   override connectedCallback(): void {
     super.connectedCallback();
     listen(document, 'pointerdown', this.#onOutsidePress, true);
     listen(window, 'scroll', this.#onViewportChange, true);
     listen(window, 'resize', this.#onViewportChange);
+    const root = this.getRootNode();
+    this.#scrollRoot = root === document ? null : root;
+    if (this.#scrollRoot) listen(this.#scrollRoot, 'scroll', this.#onViewportChange, true);
     this.addEventListener('keydown', this.#onKeydown);
   }
 
@@ -1111,6 +1122,8 @@ export class HeoStylesPanel extends HeoElement {
     unlisten(document, 'pointerdown', this.#onOutsidePress, true);
     unlisten(window, 'scroll', this.#onViewportChange, true);
     unlisten(window, 'resize', this.#onViewportChange);
+    if (this.#scrollRoot) unlisten(this.#scrollRoot, 'scroll', this.#onViewportChange, true);
+    this.#scrollRoot = null;
     this.removeEventListener('keydown', this.#onKeydown);
   }
 

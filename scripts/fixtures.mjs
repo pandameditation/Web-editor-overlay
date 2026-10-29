@@ -148,6 +148,8 @@ export const MANUAL_PAGES = {
     'Reports measured panel widths for eyeballing layout. No pass or fail in it.',
   'test/popover-gestures.html':
     'Poked by hand through scripts/firefox-poke.mjs. Emits no results at all.',
+  'test/styles-shots.html':
+    'A page to look at. Sets one panel state from its query string and reports ready.',
 };
 
 /**
