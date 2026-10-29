@@ -6,6 +6,7 @@ import { icon } from '../../icons.js';
 import { renderPromote } from './promote.js';
 import { reachText, shortLabel } from '../../../core/save-plan.js';
 import {
+  isViewportDependent,
   readRow,
   shownValue,
   slotWidth,
@@ -88,7 +89,9 @@ export function renderCascadePopover(
     <div class="lines" role="list">
       ${list.applying.map((one, index) => renderLine(one, index === 0 ? 'win' : 'lost', host, element, model, property))}
     </div>
-    ${list.applying.length ? nothing : renderUndeclared(host, element, model, property)}
+    ${list.applying.length
+      ? nothing
+      : renderUndeclared(host, element, model, property, writesInline(scope, model, property, host.previewWidth))}
     ${idle.length
       ? html`<p class="sub">${host.previewWidth === null ? 'At other sizes or states' : 'In other states'}</p>
           <div class="lines" role="list">
@@ -173,12 +176,25 @@ function renderLine(
   </div>`;
 }
 
+/**
+ * Whether typing in the row writes an inline value straight away. A state row writes its state
+ * rule, and a viewport-dependent row asks where to save first, so neither "adds it inline".
+ */
+function writesInline(
+  scope: RowSpec['scope'],
+  model: ElementModel,
+  property: string,
+  previewWidth: number | null,
+): boolean {
+  return scope.kind !== 'state' && !isViewportDependent(scope, model, property, previewWidth);
+}
 /** Nothing declares it: say where the value comes from, and what typing one would do. */
 function renderUndeclared(
   host: StylesHost,
   element: HTMLElement,
   model: ElementModel,
   property: string,
+  inline: boolean,
 ): TemplateResult {
   const resolved = getComputedStyle(element).getPropertyValue(property).trim();
   const from = model.inheritedFrom(property);
@@ -194,7 +210,7 @@ function renderUndeclared(
     ${from
       ? html`inherited from <code>${tag}</code> (${shortLabel(from.contribution)})`
       : html`the browser's default`}.
-    Typing a value adds it inline.
+    ${inline ? 'Typing a value adds it inline.' : nothing}
   </p>`;
 }
 
