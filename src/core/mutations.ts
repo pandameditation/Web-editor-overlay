@@ -344,7 +344,21 @@ export function previewInline(el: HTMLElement, property: string, value: string):
   writeInline(el, { [property]: value }, { promote: false });
 }
 
-export { authoredValue as inlineAuthoredValue };
+/**
+ * One inline declaration as written, `!important` included, or the empty string.
+ *
+ * What a preview restores and what a reset goes back to. Both used to keep the value alone, so
+ * cancelling a preview or resetting a property quietly dropped the importance the author wrote.
+ */
+export function inlineAuthoredText(el: HTMLElement, property: string): string {
+  const list = authoredEntries(el);
+  for (let index = list.length - 1; index >= 0; index -= 1) {
+    const one = list[index];
+    if (one.property.toLowerCase() !== property.toLowerCase()) continue;
+    return one.important ? `${one.value} !important` : one.value;
+  }
+  return '';
+}
 
 /**
  * Set or remove one inline CSS declaration.

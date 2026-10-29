@@ -1853,7 +1853,7 @@ export class HeoStylesPanel extends HeoElement {
           this.editor.previewStyle(property, event.detail.value, el)}
           @value-revert=${() => this.editor.cancelPreview()}
           @value-change=${(event: CustomEvent<{ value: string }>) =>
-          this.editor.setStyle(property, event.detail.value, el)}
+          this.editor.overrideStyle(property, event.detail.value, el)}
         ></heo-value-field>`;
 
     const resettable = this.editor.canResetStyle(el, property);

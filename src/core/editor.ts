@@ -32,8 +32,9 @@ import {
   cascadedDeclarations,
   inlineDeclarations,
   type ElementModel,
+  type WriteTarget,
 } from './cascade.js';
-import { bindViewport, MediaEvaluator, unbindViewport } from './viewport.js';
+import { authoredPrelude, bindViewport, MediaEvaluator, unbindViewport } from './viewport.js';
 import { addClassToBlockElements, applyBlockInlineRules, blockIdsReferencedByCSS } from './block-css.js';
 import {
   parsePastedCSS,
@@ -123,7 +124,7 @@ import {
   replaceElements,
   mergeElements,
   wrapElements,
-  inlineAuthoredValue,
+  inlineAuthoredText,
   previewInline,
   replaceElement,
   retagElement,
@@ -216,7 +217,9 @@ import { indexSource, type SourceIndex, type SourceRisk } from './source-patch.j
 import type { Placement } from './css-patch.js';
 import { startEdgeScroll } from './autoscroll.js';
 import {
+  longhandsOf,
   sameOrder,
+  splitImportant,
   valueOf,
   withPromotedSide,
   withValue,
@@ -932,6 +935,32 @@ function paintInOrder(rule: CSSStyleRule, declarations: readonly Declaration[]):
   for (const one of declarations) {
     rule.style.setProperty(one.property, one.value, one.important ? 'important' : '');
   }
+}
+
+/**
+ * Every at-rule prelude around a rule, as authored, outermost first.
+ *
+ * The identity of a rule that has no readable location (a constructed sheet): with the selector, it
+ * tells `.card` from `.card` inside `@media`. Authored, so a viewport preview's rewrite of the media
+ * text cannot change the key mid-session.
+ */
+function authoredContext(rule: CSSRule): string {
+  const out: string[] = [];
+  for (let at = rule.parentRule; at; at = at.parentRule) {
+    if (!(at instanceof CSSStyleRule)) out.unshift(authoredPrelude(at));
+  }
+  return out.join(' ');
+}
+
+/**
+ * A registry value with its importance decided: the explicit flag, else what was typed, else what
+ * the declaration it replaces had. Registries keep `!important` inside the text (`toRecord`).
+ */
+function keepImportance(value: string, current: string | undefined, important?: boolean): string {
+  const { value: text, important: typed } = splitImportant(value);
+  if (!text) return '';
+  const was = splitImportant(current ?? '').important === true;
+  return (important ?? typed ?? was) ? `${text} !important` : text;
 }
 
 /** How long after a change the page is compared with its file again. */
@@ -1876,6 +1905,70 @@ export class EditorEngine {
   }
 
   /**
+   * The default edit of a value shown for an element: an inline override that actually wins.
+   *
+   * `setStyle` writes exactly the text it is given, which is what a primitive should do, and was the
+   * whole of the panel's edit path. Against a rule with `!important` that wrote a plain inline value
+   * the page ignored, so the panel changed and the page did not (R25.1). Here the text keeps the
+   * element's own importance when it does not say, and takes `!important` when an applying rule
+   * needs beating; `opts.important === false` (the field's tag) writes without it regardless.
+   *
+   * An empty value removes the inline declaration. Typing back the value already in effect, with the
+   * importance already in effect, writes nothing (I27): it would add an override that changes
+   * nothing on the page.
+   */
+  overrideStyle(
+    property: string,
+    value: string,
+    el = this.store.value.selected,
+    opts: { important?: boolean } = {},
+  ): void {
+    if (!el) return;
+    const { value: text } = splitImportant(value);
+    if (!text) {
+      if (this.#committedInlineText(el, property)) this.setStyle(property, '', el);
+      else this.#endPreview();
+      return;
+    }
+    const next = this.#inlineText(el, property, value, opts.important);
+    const important = splitImportant(next).important === true;
+    // Read with the preview subtracted, so the value being typed is not mistaken for the state.
+    const winner = this.elementModel(el).cascade(property).applying[0];
+    if (winner && winner.value === text && winner.important === important) {
+      this.#endPreview();
+      return;
+    }
+    this.setStyle(property, next, el);
+  }
+
+  /**
+   * The inline text one value should be written as, `!important` decided.
+   *
+   * Typed importance wins; otherwise the element's own declaration keeps its importance, and a rule
+   * that would beat a plain value makes it important. Shared by `overrideStyle` and every batch
+   * written inline, so a box edit against an important rule gets the same treatment as one field.
+   */
+  #inlineText(el: HTMLElement, property: string, value: string, important?: boolean): string {
+    const { value: text, important: typed } = splitImportant(value);
+    if (!text) return '';
+    const own = splitImportant(this.#committedInlineText(el, property)).important === true;
+    const next = important ?? typed ?? (own || this.#ruleNeedsImportant(el, property));
+    return next ? `${text} !important` : text;
+  }
+
+  /**
+   * Whether an applying rule declares this property, or any of its longhands, `!important`.
+   *
+   * Longhands too (L14): editing `padding` inline has to beat a rule's `padding-top !important`,
+   * which a plain `padding` loses to on that side.
+   */
+  #ruleNeedsImportant(el: HTMLElement, property: string): boolean {
+    const model = this.elementModel(el);
+    return [property, ...longhandsOf(property)].some((name) =>
+      model.cascade(name).applying.some((one) => one.source.kind === 'rule' && one.important));
+  }
+
+  /**
    * The offsets to write alongside a switch to `absolute` or `fixed`, if any are needed.
    *
    * Only on the way out of the flow the element is currently in. Re-picking the position it
@@ -1920,7 +2013,7 @@ export class EditorEngine {
       property,
       // The authored value of this exact name, so a preview of `-webkit-transform` reverts to
       // what that declaration said rather than to whatever `transform` happens to hold.
-      before: inlineAuthoredValue(el, property),
+      before: inlineAuthoredText(el, property),
     };
     // Through the same list the commands edit, so a preview of an aliased name paints under that
     // name instead of adding a second declaration under the canonical one for the drag's duration.
@@ -1942,8 +2035,23 @@ export class EditorEngine {
   inlineStyle(property: string, el = this.store.value.selected): string {
     if (!el) return '';
     const preview = this.#preview;
-    if (preview && preview.el === el && preview.property === property) return preview.before;
+    if (preview && preview.el === el && preview.property === property) {
+      // `before` carries any `!important`; this reader answers with the value alone, as the CSSOM does.
+      return splitImportant(preview.before).value;
+    }
     return el.style.getPropertyValue(property);
+  }
+
+  /**
+   * One inline declaration as committed and as written, `!important` included.
+   *
+   * Through the preview, like `inlineStyle`, but from the attribute text rather than the CSSOM, so
+   * the baseline a reset compares against and goes back to keeps the author's importance.
+   */
+  #committedInlineText(el: HTMLElement, property: string): string {
+    const preview = this.#preview;
+    if (preview && preview.el === el && preview.property === property) return preview.before;
+    return inlineAuthoredText(el, property);
   }
 
   /**
@@ -2063,7 +2171,11 @@ export class EditorEngine {
       return;
     }
     this.#classPreview ??= { name, declarations: { ...entry.declarations } };
-    this.classes.setDeclaration(name, property, value);
+    this.classes.setDeclaration(
+      name,
+      property,
+      keepImportance(value, this.#classPreview.declarations[property]),
+    );
   }
 
   setStyles(declarations: Record<string, string>, label?: string, el = this.store.value.selected): void {
@@ -2094,7 +2206,9 @@ export class EditorEngine {
       this.#styleBaseline.set(el, map);
     }
     if (!map.has(property)) {
-      map.set(property, el.style.getPropertyValue(property) || null);
+      // The authored text, `!important` included: a reset that went back to the value alone would
+      // drop the importance the author wrote (R34).
+      map.set(property, this.#committedInlineText(el, property) || null);
     }
   }
 
@@ -2107,8 +2221,9 @@ export class EditorEngine {
   canResetStyle(el: HTMLElement, property: string): boolean {
     const baseline = this.styleBaseline(el, property);
     if (baseline === undefined) return false;
-    // Through the preview, so a value being typed does not flicker the reset affordance.
-    return (this.inlineStyle(property, el) || '') !== (baseline ?? '');
+    // Through the preview, so a value being typed does not flicker the reset affordance. Authored
+    // text on both sides, so a change of importance alone counts as a change.
+    return this.#committedInlineText(el, property) !== (baseline ?? '');
   }
 
   /**
@@ -2173,7 +2288,13 @@ export class EditorEngine {
    * from two places now — the design system panel and the class chips in Styles —
    * and an undoable mutation should not exist twice.
    */
-  setClassDeclaration(name: string, property: string, value: string): void {
+  setClassDeclaration(
+    name: string,
+    property: string,
+    value: string,
+    important?: boolean,
+    label?: string,
+  ): void {
     const live = this.classes.get(name);
     if (!live) return;
     /*
@@ -2203,7 +2324,7 @@ export class EditorEngine {
     if (origin && value.trim()) {
       // The preview went through the same rule, so `setRuleDeclaration` unwinds it. This slot only
       // holds a preview of a class the editor owns, and cannot be describing this edit.
-      this.setRuleDeclaration(origin, property, value);
+      this.setRuleDeclaration(origin, property, value, important, label);
       return;
     }
     // A preview may have gone through the origin rule on the way here. Unwind it before the registry
@@ -2217,22 +2338,25 @@ export class EditorEngine {
     this.#classPreview = null;
     const before: DesignClass = preview ? { ...live, declarations: preview.declarations } : live;
     const snapshot: DesignClass = { ...before, declarations: { ...before.declarations } };
+    // The registry keeps importance inside the text, so it is composed here under the same keep rule
+    // as a stylesheet rule: retyping a value never drops `!important` by accident (F11).
+    const stored = keepImportance(value, snapshot.declarations[property], important);
     this.history.commit({
-      label: `Set ${property} on .${name}`,
+      label: label ?? `Set ${property} on .${name}`,
       mergeKey: `class:${name}:${property}`,
       subject: `class-decl:${name}:${property}`,
       record: {
         id: nextChangeId(),
         kind: 'token-class',
-        summary: `Set ${property} to ${value || '(removed)'} on .${name}`,
+        summary: `Set ${property} to ${stored || '(removed)'} on .${name}`,
         target: `.${name}`,
         before: snapshot.declarations[property],
-        after: value || undefined,
-        detail: { class: name, property, value },
+        after: stored || undefined,
+        detail: { class: name, property, value: stored },
         at: Date.now(),
       },
       apply: () => {
-        this.classes.setDeclaration(name, property, value);
+        this.classes.setDeclaration(name, property, stored);
       },
       revert: () => this.classes.upsert(snapshot),
     });
@@ -2415,11 +2539,21 @@ export class EditorEngine {
       selector: entry.selector,
       declarations: { ...entry.declarations },
     };
-    this.rules.setDeclaration(entry.selector, property, value);
+    this.rules.setDeclaration(
+      entry.selector,
+      property,
+      keepImportance(value, this.#designRulePreview.declarations[property]),
+    );
   }
 
   /** Change one declaration on a rule. An empty value keeps the row and drops the CSS. */
-  setDesignRuleDeclaration(selector: string, property: string, value: string): void {
+  setDesignRuleDeclaration(
+    selector: string,
+    property: string,
+    value: string,
+    important?: boolean,
+    label?: string,
+  ): void {
     const live = this.rules.get(selector);
     if (!live) return;
     const key = live.selector;
@@ -2450,7 +2584,7 @@ export class EditorEngine {
     if (origin && value.trim()) {
       // The preview went through the same rule, so `setRuleDeclaration` unwinds it. This slot only
       // holds a preview of a rule the editor owns, and cannot be describing this edit.
-      this.setRuleDeclaration(origin, property, value);
+      this.setRuleDeclaration(origin, property, value, important, label);
       return;
     }
     // A preview may have gone through the origin rule on the way here. Unwind it before the registry
@@ -2464,23 +2598,27 @@ export class EditorEngine {
     this.#designRulePreview = null;
     const before: DesignRule = preview ? { ...live, declarations: preview.declarations } : live;
     const snapshot: DesignRule = { ...before, declarations: { ...before.declarations } };
+    // As for a class: importance lives in the registry's text and is kept unless asked (F11).
+    const stored = keepImportance(value, snapshot.declarations[property], important);
 
     this.history.commit({
-      label: `Set ${property} on ${key}`,
-      mergeKey: `rule:${key}:${property}`,
-      subject: `rule-decl:${key}:${property}`,
+      label: label ?? `Set ${property} on ${key}`,
+      // `design-rule:` rather than `rule:`, so a managed rule and a page rule with the same selector
+      // can never merge into one undo entry (H2).
+      mergeKey: `design-rule:${key}:${property}`,
+      subject: `design-rule-decl:${key}:${property}`,
       record: {
         id: nextChangeId(),
         kind: 'token-rule',
-        summary: `Set ${property} to ${value || '(removed)'} on ${key}`,
+        summary: `Set ${property} to ${stored || '(removed)'} on ${key}`,
         target: key,
         before: snapshot.declarations[property],
-        after: value || undefined,
-        detail: { selector: key, property, value },
+        after: stored || undefined,
+        detail: { selector: key, property, value: stored },
         at: Date.now(),
       },
       apply: () => {
-        this.rules.setDeclaration(key, property, value);
+        this.rules.setDeclaration(key, property, stored);
       },
       revert: () => this.rules.upsert(snapshot),
     });
@@ -2510,7 +2648,7 @@ export class EditorEngine {
     const snapshot: DesignRule = { ...entry, declarations: { ...entry.declarations } };
     this.history.commit({
       label: `Remove ${property} from ${key}`,
-      subject: `rule-decl:${key}:${property}`,
+      subject: `design-rule-decl:${key}:${property}`,
       record: {
         id: nextChangeId(),
         kind: 'token-rule',
@@ -2570,7 +2708,7 @@ export class EditorEngine {
     this.#designRulePreview = null;
     this.history.commit({
       label: `Retarget ${previous}`,
-      subject: `rule-selector:${previous}`,
+      subject: `design-rule-selector:${previous}`,
       record: {
         id: nextChangeId(),
         kind: 'token-rule',
@@ -2679,8 +2817,14 @@ export class EditorEngine {
       before: this.#authoredRuleValue(rule, property),
       priority: rule.style.getPropertyPriority(property),
     };
-    const next = value.trim();
-    if (next) rule.style.setProperty(property, next);
+    /*
+     * Painted with a priority, never with `!important` inside the value: the CSSOM ignores
+     * `setProperty(p, 'v !important')` outright (F10), and a plain `setProperty(p, v)` on an
+     * important declaration drops its importance (F11). So the typed flag wins, else the
+     * declaration's own priority is kept.
+     */
+    const { value: next, important: typed } = splitImportant(value);
+    if (next) rule.style.setProperty(property, next, typed ? 'important' : this.#rulePreview.priority);
     else rule.style.removeProperty(property);
   }
 
@@ -2695,13 +2839,27 @@ export class EditorEngine {
     }
   }
 
-  setRuleDeclaration(rule: CSSStyleRule, property: string, value: string): void {
+  setRuleDeclaration(
+    rule: CSSStyleRule,
+    property: string,
+    value: string,
+    important?: boolean,
+    label?: string,
+  ): void {
     // Put the previewed value back first, so the command records the rule as it was
     // before the user started exploring.
     this.#endRulePreview();
     const before = this.#authoredRuleValue(rule, property);
     const beforePriority = rule.style.getPropertyPriority(property);
-    const after = value.trim();
+    /*
+     * Importance is a flag, kept unless something asks to change it.
+     *
+     * `!important` typed into the value used to be handed to `setProperty` as part of the value,
+     * which the CSSOM ignores (F10); and a value retyped without it was painted with no priority,
+     * which silently demoted an important declaration on the page (F11). The explicit argument
+     * wins, then what was typed, then what the declaration already had.
+     */
+    const { value: after, important: typed } = splitImportant(value);
     /*
      * Snapshotted before the write and recomputed rather than re-read, because the CSSOM cannot be
      * asked afterwards what names it was given.
@@ -2712,7 +2870,14 @@ export class EditorEngine {
      * whose `padding` comes after it would change the file and change nothing on the page.
      */
     const beforeList = ruleDeclarations(rule);
-    const afterList = withPromotedSide(withValue(beforeList, property, after), property);
+    const current =
+      [...beforeList].reverse().find((one) => one.property.toLowerCase() === property.toLowerCase())
+        ?.important ?? beforePriority === 'important';
+    const priority = after && (important ?? typed ?? current) ? 'important' : '';
+    const afterList = withPromotedSide(
+      withValue(beforeList, property, after, priority === 'important'),
+      property,
+    );
     const reordered = !sameOrder(withValue(beforeList, property, after), afterList);
     const selector = rule.selectorText;
     const target = this.store.value.selected;
@@ -2728,11 +2893,19 @@ export class EditorEngine {
      * the same sheet can renumber everything after it.
      */
     const at = describeRule(rule);
+    /*
+     * Keyed by where the rule is, not by its selector (H2). `.card` at every size and `.card` inside
+     * `@media (max-width: 767px)` are two rules, and a selector key merged an edit to one into an
+     * edit to the other inside the merge window, so one undo reverted both.
+     */
+    const key = at
+      ? `live-rule:${at.sheetId}:${at.path.join('.')}:${property}`
+      : `live-rule:${selector}|${authoredContext(rule)}:${property}`;
 
     this.history.commit({
-      label: `Set ${property} on ${selector}`,
-      mergeKey: `rule:${selector}:${property}`,
-      subject: `rule:${selector}:${property}`,
+      label: label ?? `Set ${property} on ${selector}`,
+      mergeKey: key,
+      subject: key,
       record: {
         id: nextChangeId(),
         kind: 'style',
@@ -2746,7 +2919,7 @@ export class EditorEngine {
           value: after,
           selector,
           scope: 'stylesheet rule',
-          priority: beforePriority,
+          priority,
           ...(at
             ? {
               file: at.label,
@@ -2760,7 +2933,7 @@ export class EditorEngine {
         at: Date.now(),
       },
       apply: () => {
-        if (after) rule.style.setProperty(property, after);
+        if (after) rule.style.setProperty(property, after, priority);
         else rule.style.removeProperty(property);
         // A promotion is a reorder, and the page only shows a reorder if the paint is replayed in
         // the new order. Skipped when nothing moved, which is almost always.
@@ -2788,6 +2961,152 @@ export class EditorEngine {
       },
     });
     if (target) this.#bumpRevision();
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* One declaration wherever it lives                                      */
+  /* ---------------------------------------------------------------------- */
+
+  /**
+   * Write one declaration where it lives, as one undo entry.
+   *
+   * The one dispatcher the panel's rows, cards and popover lines go through, so "edit this
+   * declaration" cannot mean four slightly different things depending on which surface the user is
+   * in. Each target keeps its own primitive, and importance follows the same keep rule in all of
+   * them: `opts.important`, else typed `!important`, else what the declaration already had.
+   *
+   * A read-only target says why and writes nothing: no history entry for an edit that did not
+   * happen.
+   */
+  setDeclaration(
+    target: WriteTarget,
+    property: string,
+    value: string,
+    opts: { important?: boolean } = {},
+  ): void {
+    this.#writeDeclaration(target, property, value, opts.important);
+  }
+
+  #writeDeclaration(
+    target: WriteTarget,
+    property: string,
+    value: string,
+    important: boolean | undefined,
+    label?: string,
+  ): void {
+    switch (target.kind) {
+      case 'inline': {
+        const el = target.element;
+        const { value: text, important: typed } = splitImportant(value);
+        const was = splitImportant(this.#committedInlineText(el, property)).important === true;
+        const next = text && (important ?? typed ?? was) ? `${text} !important` : text;
+        if (label === undefined) {
+          this.setStyle(property, next, el);
+          return;
+        }
+        this.#endPreview();
+        this.#captureBaseline(el, property);
+        this.history.commit({ ...setStyleProperty(el, property, next), label });
+        this.#bumpRevision();
+        return;
+      }
+      case 'live':
+        this.setRuleDeclaration(target.rule, property, value, important, label);
+        return;
+      case 'class':
+        this.setClassDeclaration(target.name, property, value, important, label);
+        return;
+      case 'design-rule':
+        this.setDesignRuleDeclaration(target.key, property, value, important, label);
+        return;
+      case 'readonly':
+        this.notify(target.reason, 'info');
+    }
+  }
+
+  /** Paint a value into its declaration without history; `cancelPreview()` puts it back. */
+  previewDeclaration(target: WriteTarget, property: string, value: string): void {
+    switch (target.kind) {
+      case 'inline': {
+        const el = target.element;
+        const { value: text, important: typed } = splitImportant(value);
+        const was = splitImportant(this.#committedInlineText(el, property)).important === true;
+        this.previewStyle(property, text && (typed ?? was) ? `${text} !important` : text, el);
+        return;
+      }
+      case 'live':
+        this.previewRuleDeclaration(target.rule, property, value);
+        return;
+      case 'class':
+        this.previewClassDeclaration(target.name, property, value);
+        return;
+      case 'design-rule':
+        this.previewDesignRuleDeclaration(target.key, property, value);
+        return;
+      case 'readonly':
+    }
+  }
+
+  /**
+   * Add or remove `!important` on a declaration, keeping its value: the promote toggle.
+   *
+   * The only way a shared rule ever gains importance. Nothing writes it on the user's behalf.
+   */
+  setImportance(target: WriteTarget, property: string, important: boolean): void {
+    if (target.kind === 'readonly') {
+      this.notify(target.reason, 'info');
+      return;
+    }
+    const current = this.#declaredValue(target, property);
+    if (!current) return;
+    const where =
+      target.kind === 'inline'
+        ? labelFor(target.element)
+        : target.kind === 'live'
+          ? target.rule.selectorText
+          : target.kind === 'class'
+            ? `.${target.name}`
+            : target.key;
+    const label = important
+      ? `Add !important to ${property} in ${where}`
+      : `Remove !important from ${property} in ${where}`;
+    this.#writeDeclaration(target, property, current, important, label);
+  }
+
+  /** Remove one declaration from where it lives, as one undo entry: the trash. */
+  removeDeclaration(target: WriteTarget, property: string): void {
+    switch (target.kind) {
+      case 'inline':
+        this.setStyle(property, '', target.element);
+        return;
+      case 'live':
+        this.setRuleDeclaration(target.rule, property, '');
+        return;
+      case 'class':
+        this.removeClassDeclaration(target.name, property);
+        return;
+      case 'design-rule':
+        this.removeDesignRuleDeclaration(target.key, property);
+        return;
+      case 'readonly':
+        this.notify(target.reason, 'info');
+    }
+  }
+
+  /** What a target declares for a property, as committed and without `!important`. */
+  #declaredValue(target: WriteTarget, property: string): string {
+    switch (target.kind) {
+      case 'inline':
+        return splitImportant(this.#committedInlineText(target.element, property)).value;
+      case 'live':
+        return valueOf(ruleDeclarations(target.rule), property) ?? '';
+      case 'class':
+        return splitImportant(this.classes.get(target.name)?.declarations[property] ?? '').value;
+      case 'design-rule':
+        return splitImportant(this.rules.get(target.key)?.declarations[property] ?? '').value;
+      case 'readonly':
+        return '';
+    }
   }
 
   /**

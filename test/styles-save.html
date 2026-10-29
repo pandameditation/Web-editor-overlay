@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Where an edit is saved</title>
+  <!--
+    The shared sample (design §8). `.promo .card { color … !important }` beats the selected card's
+    plain inline colour, which is the case every importance assertion below is about.
+  -->
+  <style id="site">
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+
+    .card {
+      padding: 12px 16px;
+      margin: 0 0 12px;
+      color: #1f2937;
+      background-color: #ffffff;
+      border-radius: 8px;
+      font-size: 15px;
+      font-weight: 600;
+      text-transform: none;
+      text-align: left;
+      opacity: 1;
+      display: block;
+    }
+
+    .featured {
+      border: 1px solid #a5b4fc;
+    }
+
+    .card.featured {
+      background-color: #eef2ff;
+    }
+
+    .promo .card {
+      color: #3730a3 !important;
+    }
+
+    section p {
+      letter-spacing: 0.01em;
+    }
+
+    @media (max-width: 767px) {
+      .cards {
+        grid-template-columns: 1fr;
+      }
+
+      .card {
+        padding: 10px 12px;
+      }
+    }
+
+    @media (min-width: 768px) {
+      .card {
+        padding: 20px 28px;
+      }
+    }
+
+    @media print {
+      .card {
+        color: #000000;
+      }
+    }
+
+    .card:hover {
+      background-color: #f9fafb;
+    }
+
+    @media (min-width: 768px) {
+      .card:hover {
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+      }
+    }
+
+    .featured:focus-within {
+      outline: 2px solid #6366f1;
+    }
+
+    .featured::before {
+      content: "★";
+      color: #f59e0b;
+    }
+  </style>
+</head>
+
+<body>
+  <section class="promo">
+    <div class="cards">
+      <p id="target" class="card featured" style="color: #b91c1c; font-size: 16px">The selected card</p>
+      <p class="card">Second</p>
+      <p class="card">Third</p>
+      <p class="card">Fourth</p>
+    </div>
+  </section>
+  <p id="imp" style="color: rgb(0, 128, 0) !important">Inline and important</p>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const results = {};
+      const errors = [];
+      addEventListener('error', (event) => errors.push('error: ' + event.message));
+      addEventListener('unhandledrejection', (event) => errors.push('rejection: ' + String(event.reason)));
+      const progress = document.getElementById('progress');
+      const frames = () => new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      /** The first style rule in the `#site` sheet with this selector, optionally inside this media. */
+      const ruleFor = (selector, media = null, sheetId = 'site') => {
+        const walk = (list, inside) => {
+          for (const rule of Array.from(list)) {
+            if (rule instanceof CSSStyleRule) {
+              if (rule.selectorText === selector && inside === media) return rule;
+            } else if (rule instanceof CSSMediaRule) {
+              const found = walk(rule.cssRules, rule.media.mediaText);
+              if (found) return found;
+            }
+          }
+          return null;
+        };
+        return walk(document.getElementById(sheetId).sheet.cssRules, null);
+      };
+      /** One declaration out of a style attribute, as written. */
+      const inlineText = (el, property) => {
+        const match = new RegExp(`(?:^|;)\\s*${property}\\s*:\\s*([^;]*)`, 'i')
+          .exec(el.getAttribute('style') ?? '');
+        return match ? match[1].trim() : null;
+      };
+      try {
+        const api = window.HtmlEditorOverlay.mount({
+          theme: 'dark',
+          presets: false,
+          detectScriptContent: false,
+        });
+        const engine = api.engine;
+        api.setEditing(true);
+        await engine.whenReady();
+        await frames();
+        const target = document.getElementById('target');
+        const imp = document.getElementById('imp');
+
+        /* ------------------------------------------------------------------ *
+         * The default edit of an element's value, and rule writes that keep importance.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'edit';
+        // No rule declares font-weight with importance, so the default edit is a plain inline value.
+        engine.overrideStyle('font-weight', '700', target);
+        const weight = inlineText(target, 'font-weight');
+        // `.promo .card` has `color … !important`: a plain inline colour would be ignored by the page.
+        engine.overrideStyle('color', '#ff0000', target);
+        const colour = inlineText(target, 'color');
+        const promo = ruleFor('.promo .card');
+        // F11: retyping an important rule's value used to paint it with no priority.
+        engine.setRuleDeclaration(promo, 'color', '#123456');
+        const promoKept =
+          promo.style.getPropertyPriority('color') === 'important' &&
+          promo.style.getPropertyValue('color') === 'rgb(18, 52, 86)';
+        const promoRecord = engine.history.records.at(-1);
+        // F10: `setProperty(p, 'v !important')` is ignored by the CSSOM, so typed importance never painted.
+        const sectionP = ruleFor('section p');
+        engine.setRuleDeclaration(sectionP, 'letter-spacing', '2px !important');
+        results.edit = {
+          defaultWritesInline: weight === '700',
+          inlineGetsImportantWhenARuleHasIt: /^#ff0000\s*!important$/i.test(colour ?? ''),
+          inlineOverrideActuallyRenders: getComputedStyle(target).color === 'rgb(255, 0, 0)',
+          ruleEditKeepsImportance: promoKept && promoRecord?.detail?.priority === 'important',
+          typedImportantPaintsOnARule:
+            sectionP.style.getPropertyPriority('letter-spacing') === 'important' &&
+            sectionP.style.getPropertyValue('letter-spacing') === '2px',
+        };
+
+        /* ------------------------------------------------------------------ *
+         * Reset puts back what the author wrote, importance included.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'reset';
+        // The element's own importance is kept by the edit, so the reset is the only thing that
+        // could lose it: the baseline used to be read from the CSSOM, which has no `!important`.
+        engine.overrideStyle('color', 'blue', imp);
+        const editedImportant = /!important/.test(inlineText(imp, 'color') ?? '');
+        engine.resetStyle('color', imp);
+        results.reset = {
+          restoresImportance:
+            editedImportant &&
+            /^rgb\(0,\s*128,\s*0\)\s*!important$/.test(inlineText(imp, 'color') ?? '') &&
+            engine.canResetStyle(imp, 'color') === false,
+        };
+
+        const failed = Object.entries(results)
+          .filter(([, group]) => group && typeof group === 'object')
+          .filter(([, group]) => Object.values(group).some((value) => value === false))
+          .map(([name]) => name);
+        document.getElementById('out').textContent =
+          'RESULTS:' + JSON.stringify({ ...results, errors, failed }, null, 2) + ':END';
+      } catch (e) {
+        document.getElementById('out').textContent =
+          'RESULTS:' +
+          JSON.stringify({ threw: String((e && e.stack) || e), errors, failed: ['threw'] }, null, 2) +
+          ':END';
+      }
+    })();
+  </script>
+</body>
+
+</html>
