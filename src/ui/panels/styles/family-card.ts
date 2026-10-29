@@ -22,6 +22,7 @@ import {
   type DeclarationTarget,
 } from '../class-editor.js';
 import { renderAdder, stylesDestination, type AdderDestination } from './property-adder.js';
+import { reachText } from './property-row.js';
 import { renderSizeStrip, slotMedia, slotName, stripSizes, type StripOther, type StripSlot } from './size-strip.js';
 import type { PendingState, StylesHost } from './types.js';
 
@@ -61,7 +62,6 @@ export function visibleAt(entry: RuleEntry, previewWidth: number | null): boolea
   return previewWidth === null || entry.medias.every((media) => mediaApplies(media, previewWidth));
 }
 
-const reachText = (n: number): string => `${n} ${n === 1 ? 'element' : 'elements'}`;
 
 /** A card worked out once per render: the panel counts and orders by it, the card draws it. */
 export interface CardView {

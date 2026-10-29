@@ -5,6 +5,7 @@ import { buildSuggestions, valueKindFor } from '../../suggestions.js';
 import { icon } from '../../icons.js';
 import { renderPromote } from './promote.js';
 import {
+  reachText,
   readRow,
   shortLabel,
   shownValue,
@@ -166,7 +167,7 @@ function renderLine(
       })}
     </div>
     <span class="where">
-      Edits <b>${label}</b> · ${entry ? `${reach} ${reach === 1 ? 'element' : 'elements'}` : 'this element only'}${entry?.media
+      Edits <b>${label}</b> · ${entry ? reachText(reach) : 'this element only'}${entry?.media
       ? `, at ${mediaShort(entry.media)}`
       : ''}
     </span>

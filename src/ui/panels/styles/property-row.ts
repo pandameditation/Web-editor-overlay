@@ -236,6 +236,11 @@ export function saveContextFor(
   return { element: spec.element, declarations, slot, width };
 }
 
+/** "1 element", "4 elements": how many elements a rule or class reaches, said the same everywhere. */
+export function reachText(n: number): string {
+  return `${n} ${n === 1 ? 'element' : 'elements'}`;
+}
+
 export function shorten(value: string, max = 22): string {
   if (value.length <= max) return value;
   return `${value.slice(0, max - 1)}…`;
@@ -444,7 +449,7 @@ function whereHint(
     if (!entry) return html`Edits the <b>${state}</b> rule`;
     const reach = spec.model.reach(entry.family);
     return html`Edits <b>${entry.selector}${entry.media ? ` ${mediaShort(entry.media)}` : ''}</b> ·
-      ${reach} ${reach === 1 ? 'element' : 'elements'}`;
+      ${reachText(reach)}`;
   }
   if (asks) return html`Depends on the viewport: after Enter, choose where it stays`;
   if (winner && winner.source.kind === 'rule') {

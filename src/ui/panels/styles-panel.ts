@@ -44,6 +44,7 @@ import {
   isViewportDependent,
   previewSlot,
   propertyRowStyles,
+  reachText,
   renderPropertyRow,
   saveContextFor,
   scopeKey,
@@ -879,7 +880,7 @@ export class HeoStylesPanel extends HeoElement {
         const reach = model.reach(family.key);
         return stylesDestination(
           `${family.key} ${short}`,
-          `${reach} ${reach === 1 ? 'element' : 'elements'}`,
+          reachText(reach),
           entry ? { kind: 'target', target: entry.target } : { kind: 'new-rule', selector: family.key, media },
           entry ? toRecord(entry.declarations) : {},
           `${family.key} ${short}`,
@@ -923,7 +924,7 @@ export class HeoStylesPanel extends HeoElement {
       destinations.push(
         stylesDestination(
           `.${name}`,
-          `${reach} ${reach === 1 ? 'element' : 'elements'}, every size`,
+          `${reachText(reach)}, every size`,
           target ? { kind: 'target', target } : { kind: 'new-rule', selector: `.${CSS.escape(name)}`, media: null },
           base ? toRecord(base.declarations) : owned ? { ...owned.declarations } : {},
           `.${name}`,
@@ -959,7 +960,7 @@ export class HeoStylesPanel extends HeoElement {
         const reach = model.reach(key);
         return stylesDestination(
           `${key}${state}`,
-          `${reach} ${reach === 1 ? 'element' : 'elements'}`,
+          reachText(reach),
           entry ? { kind: 'target', target: entry.target } : { kind: 'new-rule', selector: `${key}${state}`, media: null },
           entry ? toRecord(entry.declarations) : {},
           `${key}${state}`,
