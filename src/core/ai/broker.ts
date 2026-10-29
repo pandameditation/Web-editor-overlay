@@ -25,7 +25,7 @@
  */
 
 import { normalizeClassName } from '../classes.js';
-import { fromElementClass } from '../css.js';
+import { fromElementClass } from '../cascade.js';
 import { findStyleRule } from '../sheets.js';
 import { checkDeclaration } from '../declarations.js';
 import { isOverlayNode } from '../dom.js';

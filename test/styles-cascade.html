@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>One cascade model per element</title>
+  <!--
+    The shared sample (design §8): the prototype's model, as real CSS.
+
+    `.promo .card { color … !important }` against the element's plain inline colour is the case
+    from the brief: the page renders the rule's indigo while the panel said red (F1).
+  -->
+  <style id="site">
+    .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .card {
+      padding: 12px 16px;
+      margin: 0 0 12px;
+      color: #1f2937;
+      background-color: #ffffff;
+      border-radius: 8px;
+      font-size: 15px;
+      font-weight: 600;
+      text-transform: none;
+      text-align: left;
+      opacity: 1;
+      display: block;
+    }
+    .featured { border: 1px solid #a5b4fc; }
+    .card.featured { background-color: #eef2ff; }
+    .promo .card { color: #3730a3 !important; }
+    section p { letter-spacing: 0.01em; }
+    @media (max-width: 767px) {
+      .cards { grid-template-columns: 1fr; }
+      .card { padding: 10px 12px; }
+    }
+    @media (min-width: 768px) {
+      .card { padding: 20px 28px; }
+    }
+    @media print {
+      .card { color: #000000; }
+    }
+    .card:hover { background-color: #f9fafb; }
+    @media (min-width: 768px) {
+      .card:hover { box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1); }
+    }
+    .featured:focus-within { outline: 2px solid #6366f1; }
+    .featured::before { content: "★"; color: #f59e0b; }
+  </style>
+  <!--
+    Specificity cases, each written so the old numbers and the old ordering get it wrong.
+
+    The losing rule always comes later in the file, so document order cannot be what makes the
+    right one win.
+  -->
+  <style id="specificity">
+    #spec { width: 1px; }
+    .a.b.c.d.e.f.g.h.i.j.k { width: 11px; }
+    .z p { margin-left: 3px; }
+    :where(.w) p { margin-left: 7px; }
+    :is(#isx, .isy) { text-indent: 4px; }
+    .isy.isy { text-indent: 9px; }
+    @media all {
+      .mq { word-spacing: 5px; }
+    }
+    .mq { word-spacing: 2px; }
+  </style>
+</head>
+<body>
+  <section class="promo">
+    <div class="cards">
+      <p id="target" class="card featured" style="color: #b91c1c; font-size: 16px">The selected card</p>
+      <p class="card">Second</p>
+      <p class="card">Third</p>
+      <p class="card">Fourth</p>
+    </div>
+  </section>
+  <div id="spec" class="a b c d e f g h i j k">Eleven classes and one id</div>
+  <div class="w z"><p id="wherep">Inside :where</p></div>
+  <span id="isx" class="isy">Inside :is</span>
+  <span id="mq" class="mq">After a media rule</span>
+  <div id="probe"></div>
+
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const results = {};
+      const errors = [];
+      addEventListener('error', (event) => errors.push('error: ' + event.message));
+      addEventListener('unhandledrejection', (event) => errors.push('rejection: ' + String(event.reason)));
+      const progress = document.getElementById('progress');
+      const frames = () => new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const deep = (selector, root = document) => {
+        const direct = root.querySelector?.(selector);
+        if (direct) return direct;
+        for (const el of root.querySelectorAll?.('*') ?? []) {
+          if (!el.shadowRoot) continue;
+          const found = deep(selector, el.shadowRoot);
+          if (found) return found;
+        }
+        return null;
+      };
+
+      try {
+        /* A scripted transport, only so the context a model would be sent can be read. */
+        const asked = [];
+        const api = window.HtmlEditorOverlay.mount({
+          theme: 'dark',
+          presets: false,
+          detectScriptContent: false,
+          aiTransport: (request) => {
+            asked.push(request.context);
+            return (async function* () {
+              yield { op: 'summary', text: 'Looked, changed nothing.' };
+            })();
+          },
+        });
+        const engine = api.engine;
+        api.setEditing(true);
+        await engine.whenReady();
+        await frames();
+
+        const target = document.getElementById('target');
+        const winner = (list) => list.applying[0];
+        const sourceOf = (contribution) =>
+          contribution?.source.kind === 'inline' ? 'inline' : contribution?.source.entry.selector;
+
+        /* ------------------------------------------------------------------ *
+         * The window this ran in.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'context';
+        const below768 = matchMedia('(max-width: 767px)').matches;
+        results.context = {
+          innerWidth,
+          /*
+           * The suite's headless window is 756px, so Actual sits in the phone range and the padding
+           * winner below is a media rule. Recorded so a run in a wider window says why the
+           * expectations changed; they are derived from `matchMedia`, not from this.
+           */
+          actualIsBelow768: innerWidth < 768,
+          agreesWithTheWindow: below768 === innerWidth < 768,
+        };
+
+        /* ------------------------------------------------------------------ *
+         * The model, through engine.elementModel.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'model';
+        const model = engine.elementModel(target);
+        const padding = model.cascade('padding');
+        const color = model.cascade('color');
+        const expectedPadding = below768 ? '10px 12px' : '20px 28px';
+        const expectedPaddingMedia = below768 ? '(max-width: 767px)' : '(min-width: 768px)';
+        const otherPaddingMedia = below768 ? '(min-width: 768px)' : '(max-width: 767px)';
+
+        const specModel = engine.elementModel(document.getElementById('spec'));
+        const whereModel = engine.elementModel(document.getElementById('wherep'));
+        const isModel = engine.elementModel(document.getElementById('isx'));
+        const mqModel = engine.elementModel(document.getElementById('mq'));
+
+        /*
+         * Every property the page renders, read back through the model and compared to the browser.
+         *
+         * The winner's value is painted on a bare probe element and its computed value compared with
+         * the target's, so `#eef2ff` and `rgb(238, 242, 255)` compare equal without this page
+         * restating the browser's serialisation rules.
+         */
+        const probe = document.getElementById('probe');
+        const computedOf = (property, value) => {
+          probe.removeAttribute('style');
+          probe.style.setProperty(property, value);
+          return getComputedStyle(probe).getPropertyValue(property);
+        };
+        const checked = [
+          'color', 'background-color', 'font-size', 'font-weight', 'padding', 'margin',
+          'border-radius', 'border', 'text-transform', 'text-align', 'opacity', 'display',
+        ];
+        const disagreements = checked.filter((property) => {
+          const top = winner(model.cascade(property));
+          if (!top) return true;
+          return computedOf(property, top.value) !==
+            getComputedStyle(target).getPropertyValue(property);
+        });
+
+        results.model = {
+          /*
+           * The winner comes first, and at a width under 768 it is the phone media rule.
+           *
+           * The old walk never entered a media rule that did not match the window, so there was
+           * nothing to order at any other width; the old `+1` made a media rule win every tie.
+           */
+          winnerFirstWithMediaWinner:
+            winner(padding)?.value === expectedPadding &&
+            winner(padding)?.source.entry?.media === expectedPaddingMedia &&
+            padding.applying[1]?.source.entry?.media === null &&
+            padding.applying[1]?.value === '12px 16px',
+          // F1: an important rule beats a plain inline value, so the inline red is second.
+          importantRuleBeatsInline:
+            sourceOf(winner(color)) === '.promo .card' &&
+            winner(color)?.important === true &&
+            winner(color)?.value === '#3730a3' &&
+            sourceOf(color.applying[1]) === 'inline' &&
+            getComputedStyle(target).color === 'rgb(55, 48, 163)',
+          /*
+           * The rules that do not apply now are still in the model, as idle: the other size, print,
+           * and the hover colour. A preview at another width has to be able to show them.
+           */
+          idleListsTheOtherSizes:
+            padding.idle.some((one) => one.source.entry?.media === otherPaddingMedia) &&
+            padding.idle.every((one) => one.source.entry?.media !== expectedPaddingMedia) &&
+            color.idle.some((one) => one.source.entry?.media === 'print') &&
+            model.cascade('background-color').idle.some((one) => one.source.entry?.state === ':hover'),
+          // Eleven classes still lose to one id: a sum of 110 against 100 used to say otherwise.
+          specificityCountsTuplesNotSums:
+            sourceOf(winner(specModel.cascade('width'))) === '#spec' &&
+            getComputedStyle(document.getElementById('spec')).width === '1px',
+          // `:where(.w) p` is [0,0,1], so `.z p` wins although it comes first.
+          whereCountsZero:
+            sourceOf(winner(whereModel.cascade('margin-left'))) === '.z p' &&
+            getComputedStyle(document.getElementById('wherep')).marginLeft === '3px',
+          // `:is(#isx, .isy)` counts as its id, so it beats the later `.isy.isy`.
+          isTakesItsMostSpecificArgument:
+            sourceOf(winner(isModel.cascade('text-indent'))) === ':is(#isx, .isy)' &&
+            getComputedStyle(document.getElementById('isx')).textIndent === '4px',
+          // A later plain rule of equal specificity beats an earlier media rule: no bonus.
+          mediaRulesGetNoSpecificityBonus:
+            winner(mqModel.cascade('word-spacing'))?.source.entry?.media === null &&
+            winner(mqModel.cascade('word-spacing'))?.value === '2px' &&
+            getComputedStyle(document.getElementById('mq')).wordSpacing === '2px',
+          winnerMatchesComputed: checked.length >= 10 && disagreements.length === 0,
+        };
+        results.model.disagreements = disagreements.join(',');
+
+        /* ------------------------------------------------------------------ *
+         * The same answer, through the surfaces that already exist.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'surfaces';
+        api.select(target);
+        engine.setDockTab('styles');
+        await frames();
+        await wait(300);
+        /*
+         * Re-queried, never held: the panel re-renders on every store change. Today's panel reads
+         * `declaredMap`, which let the inline loop overwrite the important rule's value (F1).
+         */
+        const colorField = () =>
+          deep('heo-styles-panel')?.shadowRoot?.querySelector('.row[data-property="color"] heo-value-field');
+        // The legacy readers parse the CSSOM, which spells the colour rgb(); compared as painted.
+        const indigo = 'rgb(55, 48, 163)';
+        results.model.panelNoLongerShowsALosingInlineValue =
+          computedOf('color', colorField()?.value ?? '') === indigo;
+
+        engine.ai.upsert({
+          id: 'styles-cascade-probe',
+          label: 'Styles cascade probe',
+          transport: 'local',
+          provider: 'openai-compatible',
+          baseURL: 'http://127.0.0.1:9/v1',
+          model: 'm',
+        });
+        engine.ai.activate('styles-cascade-probe');
+        await engine.promptAi('Look at this card.', target);
+        await wait(100);
+        // Parsed rather than pattern-matched: the markup the bundle carries also says #b91c1c.
+        const bundle = asked.length ? JSON.parse(asked.at(-1)) : null;
+        const declaredColor = bundle?.declared?.find((one) => one.property === 'color');
+        results.model.declaredMapKeepsTheImportantRule =
+          computedOf('color', declaredColor?.value ?? '') === indigo &&
+          declaredColor?.from === '.promo .card' &&
+          declaredColor?.own === false;
+
+        const failed = Object.entries(results)
+          .filter(([, group]) => group && typeof group === 'object')
+          .filter(([, group]) => Object.values(group).some((value) => value === false))
+          .map(([name]) => name);
+        document.getElementById('out').textContent =
+          'RESULTS:' + JSON.stringify({ ...results, errors, failed }, null, 2) + ':END';
+      } catch (e) {
+        document.getElementById('out').textContent =
+          'RESULTS:' +
+          JSON.stringify({ threw: String((e && e.stack) || e), errors, failed: ['threw'] }, null, 2) +
+          ':END';
+      }
+    })();
+  </script>
+</body>
+</html>

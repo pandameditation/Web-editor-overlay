@@ -125,6 +125,9 @@ export function collectStyleSources(project?: FileHost | null): StyleSource[] {
   return out;
 }
 
+/** Why a constructed sheet is not edited in place. Also the cascade model's read-only reason. */
+export const CONSTRUCTED_SHEET_REASON = 'A constructed sheet, owned by the component that adopted it.';
+
 function describe(
   sheet: CSSStyleSheet,
   kind: SheetKind,
@@ -185,7 +188,7 @@ function describe(
   if (!readOnly && kind === 'adopted' && !extra.element) {
     // Constructed sheets can be rewritten, but they belong to whichever component
     // adopted them and will be overwritten on its next render.
-    readOnly = 'A constructed sheet, owned by the component that adopted it.';
+    readOnly = CONSTRUCTED_SHEET_REASON;
   }
 
   return {

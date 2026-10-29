@@ -1,5 +1,6 @@
 import { TOKEN_STYLE_ID } from './constants.js';
-import { appliedRules, isColorValue, tokensInValue } from './css.js';
+import { appliedRules } from './cascade.js';
+import { isColorValue, tokensInValue } from './css.js';
 import { queryDeep } from './dom.js';
 import { withParsedSheet } from './sheets.js';
 import { ManagedStyleSheet } from './stylesheet.js';

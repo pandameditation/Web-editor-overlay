@@ -9,13 +9,15 @@ import {
   declaredValues,
   fromElementClass,
   inlineDeclarations,
+  stateRules,
+  type AppliedRule,
+  type DeclarationOrigin,
+} from '../../core/cascade.js';
+import {
   parentLayoutProperties,
   PROPERTY_GROUP_LABELS,
   searchProperties,
   sizeConstraints,
-  stateRules,
-  type AppliedRule,
-  type DeclarationOrigin,
   type SizeConstraint,
 } from '../../core/css.js';
 import {

@@ -32,12 +32,11 @@ import {
   declaredMap,
   declaredValues,
   fromElementClass,
-  parentLayoutProperties,
-  sizeConstraints,
   stateRules,
   type AppliedRule,
   type InlinePreview,
-} from '../css.js';
+} from '../cascade.js';
+import { parentLayoutProperties, sizeConstraints } from '../css.js';
 import { labelFor, selectableParent, selectorFor } from '../dom.js';
 import { cleanInnerMarkup, cleanMarkup } from '../mutations.js';
 import type { ClassRegistry } from '../classes.js';

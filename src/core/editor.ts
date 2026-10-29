@@ -26,7 +26,14 @@ import {
   TOKEN_STYLE_ID,
   VERSION,
 } from './constants.js';
-import { appliedRules, cascadedDeclarations, inlineDeclarations } from './css.js';
+import {
+  appliedRules,
+  buildElementModel,
+  cascadedDeclarations,
+  inlineDeclarations,
+  type ElementModel,
+} from './cascade.js';
+import { bindViewport, MediaEvaluator, unbindViewport } from './viewport.js';
 import { addClassToBlockElements, applyBlockInlineRules, blockIdsReferencedByCSS } from './block-css.js';
 import {
   parsePastedCSS,
@@ -971,6 +978,13 @@ export class EditorEngine {
   /** Editor preferences that travel with the page in its seed. */
   readonly settings = new SettingsRegistry();
   readonly options: MountOptions;
+  /**
+   * Media queries answered at any width, for the cascade model and every legacy reader.
+   *
+   * Under the overlay host when there is one, so the iframe it uses sits inside the editor's own
+   * tree; created lazily, on the first question about a width other than the window's.
+   */
+  readonly #media = new MediaEvaluator(() => document.querySelector(HOST_TAG));
 
   #listeners: Array<() => void> = [];
   #observers: Array<MutationObserver | ResizeObserver | IntersectionObserver> = [];
@@ -1104,6 +1118,8 @@ export class EditorEngine {
 
   constructor(options: MountOptions = {}) {
     this.options = options;
+    // Nothing previews a width yet, so the page renders at the window's own.
+    bindViewport(this.#media, () => null);
     this.#sourceAccess = { endpoint: options.sourceEndpoint, token: options.sourceToken };
     // A change to something inside a shadow tree is journaled from inside that tree.
     this.history.observeRootsWith((record) => shadowRootsOf(elementOfRecord(record)));
@@ -1381,6 +1397,8 @@ export class EditorEngine {
     this.rules.destroy();
     this.library.destroy();
     this.ai.destroy();
+    unbindViewport(this.#media);
+    this.#media.destroy();
     // Every `<link>` the editor stood in for goes back to loading its own file. A page
     // the editor has left must not be rendering from a `<style>` the editor put there.
     releaseStyleMirrors();
@@ -2301,6 +2319,23 @@ export class EditorEngine {
     return preview
       ? { selector: preview.selector, declarations: { ...preview.declarations } }
       : null;
+  }
+
+  /**
+   * The cascade model of one element, with every in-flight preview subtracted.
+   *
+   * The one place a model is built from the engine's state, so the panel, the save planner and
+   * the fixtures all subtract the same four previews: a value being typed is paint, not state.
+   */
+  elementModel(el: HTMLElement): ElementModel {
+    return buildElementModel(el, {
+      previews: {
+        inline: this.previewTarget,
+        rule: this.rulePreviewTarget,
+        cls: this.classPreviewTarget,
+        designRule: this.designRulePreviewTarget,
+      },
+    });
   }
 
   /**
