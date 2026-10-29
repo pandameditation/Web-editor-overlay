@@ -17,6 +17,7 @@
 
 import { normalizeClassName } from './classes.js';
 import { nextChangeId, type Command } from './history.js';
+import { designRuleKey, normalizeMedia } from './rules.js';
 import { safeSelector } from './selectors.js';
 import type { ChangeRecord, DesignClass, DesignRule } from './types.js';
 
@@ -28,9 +29,10 @@ export interface CssRegistries {
     remove(name: string): DesignClass | undefined;
   };
   rules: {
-    get(selector: string): DesignRule | undefined;
+    /** By registry key (`designRuleKey`). */
+    get(key: string): DesignRule | undefined;
     upsert(entry: DesignRule): DesignRule;
-    remove(selector: string): DesignRule | undefined;
+    remove(key: string): DesignRule | undefined;
   };
 }
 
@@ -45,6 +47,8 @@ export interface UpsertOptions {
   verb?: string;
   /** Tags the record's origin, e.g. `css-paste` or `ai`. Read by the save plan and the prompt. */
   source?: string;
+  /** For a rule: the media condition it applies under, without `@media`. */
+  media?: string | null;
 }
 
 /**
@@ -134,30 +138,38 @@ export function upsertRuleCommand(
   const selector = safeSelector(rawSelector);
   const entries = Object.entries(declarations);
   if (!selector || !entries.length) return null;
-
+  const media = options.media?.trim() ? normalizeMedia(options.media) : undefined;
+  // The key, not the selector: `.card` and `.card` at ≤767px are two rules.
+  const key = designRuleKey(selector, media);
   const verb = options.verb ?? 'Paste';
-  const existing = registries.rules.get(selector);
+  const existing = registries.rules.get(key);
   const previous = existing ? { ...existing, declarations: { ...existing.declarations } } : null;
   const next: DesignRule = {
     ...(existing ?? { selector, origin: 'user' as const }),
     selector,
     declarations: { ...(existing?.declarations ?? {}), ...declarations },
     origin: 'user',
+    ...(media ? { media } : {}),
   };
-
+  const where = media ? `${selector} at @media ${media}` : selector;
   const records: ChangeRecord[] = entries.map(([property, value]) => ({
     id: nextChangeId(),
     kind: 'token-rule',
-    summary: `${verb} ${property} into ${selector}`,
+    summary: `${verb} ${property} into ${where}`,
     target: selector,
     before: existing?.declarations[property],
     after: value,
-    detail: { selector, property, value, ...(options.source ? { source: options.source } : {}) },
+    detail: {
+      selector,
+      property,
+      value,
+      ...(media ? { media } : {}),
+      ...(options.source ? { source: options.source } : {}),
+    },
     at: Date.now(),
   }));
-
   return {
-    label: `${verb} CSS into ${selector}`,
+    label: `${verb} CSS into ${where}`,
     record: records[0],
     extraRecords: records.slice(1),
     apply: () => {
@@ -165,7 +177,7 @@ export function upsertRuleCommand(
     },
     revert: () => {
       if (previous) registries.rules.upsert(previous);
-      else registries.rules.remove(selector);
+      else registries.rules.remove(key);
     },
   };
 }

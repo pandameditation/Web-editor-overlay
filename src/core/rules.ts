@@ -22,10 +22,11 @@ import type { DesignRule } from './types.js';
  * those are rules, and until now the only way to write one was to open the CSS panel
  * and type CSS.
  *
- * **Keyed on the selector.** Two rules with the same selector are one rule with the
- * declarations merged, which is both what a stylesheet does and what the user means.
- * It also makes the registry idempotent under re-import, which is what a design system
- * needs to be portable.
+ * **Keyed on the selector and its media condition** (`designRuleKey`). Two rules with the same
+ * selector and condition are one rule with the declarations merged, which is both what a
+ * stylesheet does and what the user means. It also makes the registry idempotent under
+ * re-import, which is what a design system needs to be portable. `.card` and `.card` at ≤767px
+ * are two rules.
  *
  * **Insertion order is preserved, not sorted.** Every other registry here sorts its
  * list alphabetically because a token's position has no meaning. A rule's does: two
@@ -48,6 +49,61 @@ import type { DesignRule } from './types.js';
  * belongs to `TokenRegistry`. Both are skipped here, because a selector held in two
  * registries is a selector emitted twice.
  */
+/**
+ * A media condition as the browser serialises it, so two spellings of one condition are one key.
+ *
+ * Memoised without eviction: a page has a few dozen distinct conditions, `designRuleKey` asks on
+ * every lookup of a media rule, and the serialisation does not depend on the window, so an answer
+ * never goes stale.
+ */
+const normalized = new Map<string, string>();
+export function normalizeMedia(media: string): string {
+  const text = String(media ?? '').trim();
+  const known = normalized.get(text);
+  if (known !== undefined) return known;
+  let out = text;
+  try {
+    if (typeof matchMedia === 'function') out = matchMedia(text).media;
+  } catch {
+    out = text;
+  }
+  normalized.set(text, out);
+  return out;
+}
+
+/**
+ * The registry identity of a rule: its selector, plus its media condition when it has one.
+ *
+ * Derived, never stored, so it cannot drift from the entry it names. For an unconditional rule the
+ * key is the selector, which is why callers that only ever address unconditional rules keep working
+ * unchanged. A selector alone stopped being an identity once `.card` and `.card` at ≤767px could
+ * both be managed rules (H3).
+ */
+export function designRuleKey(
+  rule: string | Pick<DesignRule, 'selector' | 'media'>,
+  media?: string | null,
+): string {
+  const selectorText = typeof rule === 'string' ? rule : rule.selector;
+  const condition = typeof rule === 'string' ? media : rule.media;
+  const selector = safeSelector(selectorText) || String(selectorText ?? '').trim();
+  const text = condition?.trim();
+  return text ? `@media ${normalizeMedia(text)} ${selector}` : selector;
+}
+
+/**
+ * A media condition fit to store, `undefined` for none, or `null` for one to refuse: longer than
+ * 300 characters, or one the browser cannot read (it serialises an unreadable query as `not all`).
+ */
+export function storableMedia(media: unknown): string | undefined | null {
+  if (media === undefined || media === null || media === '') return undefined;
+  if (typeof media !== 'string' || media.length > 300) return null;
+  const text = media.trim();
+  if (!text) return undefined;
+  const serialized = normalizeMedia(text);
+  if (serialized === 'not all' && text.toLowerCase() !== 'not all') return null;
+  return serialized;
+}
+
 export class RuleRegistry {
   #rules = new Map<string, DesignRule>();
   #sheet = new ManagedStyleSheet(RULE_STYLE_ID);
@@ -232,10 +288,13 @@ export class RuleRegistry {
    * Also null once the editor owns the rule, because then its declarations are the managed block's
    * to emit and patching a file rule from them would write the same CSS in two places.
    */
-  originRule(selector: string, property: string): CSSStyleRule | null {
-    const key = safeSelector(selector) || String(selector ?? '').trim();
-    if (this.#rules.get(key)?.origin !== 'stylesheet') return null;
-    return this.#origins.get(`${key}|${property}`) ?? this.#homes.get(key) ?? null;
+  originRule(key: string, property: string): CSSStyleRule | null {
+    const entry = this.get(key);
+    // A scanned rule never has media (the scan is top level only), and a media rule must never be
+    // routed into the page's unconditional rule with the same selector.
+    if (entry?.origin !== 'stylesheet' || entry.media) return null;
+    const selector = entry.selector;
+    return this.#origins.get(`${selector}|${property}`) ?? this.#homes.get(selector) ?? null;
   }
 
   /**
@@ -255,19 +314,19 @@ export class RuleRegistry {
    * `toCSS` emit the rule — and emitting something that was just patched in place is the duplicate
    * this path exists to avoid.
    */
-  noteStylesheetDeclarations(selector: string, declarations: readonly Declaration[]): void {
-    const key = safeSelector(selector) || String(selector ?? '').trim();
-    const entry = this.#rules.get(key);
+  noteStylesheetDeclarations(key: string, declarations: readonly Declaration[]): void {
+    const entry = this.get(key);
     if (!entry || entry.origin !== 'stylesheet') return;
-    this.#rules.set(key, { ...entry, declarations: toRecord(declarations) });
+    this.#rules.set(designRuleKey(entry), { ...entry, declarations: toRecord(declarations) });
     // `#invalidate` rather than `#flush`: the managed sheet is built from `toCSS`, which leaves
     // scanned rules out, so rewriting it would emit the same bytes it already holds.
     this.#invalidate();
   }
 
   /** Which stylesheet a scanned rule came from, for the panel to show. */
-  sourceOf(selector: string): string | undefined {
-    return this.#sources.get(safeSelector(selector));
+  sourceOf(key: string): string | undefined {
+    const entry = this.get(key);
+    return entry && !entry.media ? this.#sources.get(entry.selector) : undefined;
   }
 
   /**
@@ -286,16 +345,17 @@ export class RuleRegistry {
     return [...this.#rules.values()];
   }
 
-  get(selector: string): DesignRule | undefined {
-    return this.#rules.get(safeSelector(selector) || String(selector ?? '').trim());
+  /** By key (`designRuleKey`); a selector-shaped key also matches through whitespace normalisation. */
+  get(key: string): DesignRule | undefined {
+    return this.#rules.get(key) ?? this.#rules.get(safeSelector(key) || String(key ?? '').trim());
   }
 
   get size(): number {
     return this.#rules.size;
   }
 
-  has(selector: string): boolean {
-    return this.get(selector) !== undefined;
+  has(key: string): boolean {
+    return this.get(key) !== undefined;
   }
 
   /**
@@ -310,13 +370,23 @@ export class RuleRegistry {
   matches(): Map<string, number> {
     if (this.#matchCache) return this.#matchCache;
     const counts = new Map<string, number>();
-    for (const selector of this.#rules.keys()) counts.set(selector, countMatches(selector));
+    // Per selector inside one pass, so `.card` and its media variant cost one query.
+    const bySelector = new Map<string, number>();
+    for (const [key, entry] of this.#rules) {
+      let count = bySelector.get(entry.selector);
+      if (count === undefined) {
+        count = countMatches(entry.selector);
+        bySelector.set(entry.selector, count);
+      }
+      counts.set(key, count);
+    }
     this.#matchCache = counts;
     return counts;
   }
 
-  matchCount(selector: string): number {
-    return this.matches().get(safeSelector(selector)) ?? 0;
+  matchCount(key: string): number {
+    const entry = this.get(key);
+    return entry ? this.matches().get(designRuleKey(entry)) ?? 0 : 0;
   }
 
   /**
@@ -330,14 +400,16 @@ export class RuleRegistry {
   upsert(entry: DesignRule): DesignRule {
     const selector = safeSelector(entry.selector);
     if (!selector) throw new Error(`"${entry.selector}" is not a valid CSS selector.`);
+    const media = entry.media?.trim() ? normalizeMedia(entry.media) : undefined;
     const next: DesignRule = {
       selector,
       declarations: { ...entry.declarations },
       label: entry.label,
       description: entry.description,
       origin: entry.origin ?? 'user',
+      ...(media ? { media } : {}),
     };
-    this.#rules.set(selector, next);
+    this.#rules.set(designRuleKey(next), next);
     this.#flush();
     return next;
   }
@@ -351,8 +423,8 @@ export class RuleRegistry {
    * costs far more than an inert entry does. `toCSS` skips empties, so nothing invalid
    * reaches the page; `removeDeclaration` is how you actually get rid of one.
    */
-  setDeclaration(selector: string, property: string, value: string): DesignRule | undefined {
-    const entry = this.get(selector);
+  setDeclaration(key: string, property: string, value: string): DesignRule | undefined {
+    const entry = this.get(key);
     if (!entry) return undefined;
     const next = value.trim();
     return this.upsert({
@@ -385,8 +457,8 @@ export class RuleRegistry {
   }
 
   /** Drop a declaration entirely, name and all. */
-  removeDeclaration(selector: string, property: string): DesignRule | undefined {
-    const entry = this.get(selector);
+  removeDeclaration(key: string, property: string): DesignRule | undefined {
+    const entry = this.get(key);
     if (!entry) return undefined;
     // Through the shared model like every other edit, so "remove a declaration" cannot come to mean
     // two different things in two registries.
@@ -413,11 +485,13 @@ export class RuleRegistry {
    *
    * Returns null when the new selector is invalid or already taken by another rule.
    */
-  rename(from: string, to: string): DesignRule | null {
-    const previous = safeSelector(from);
-    const next = safeSelector(to);
-    const entry = previous ? this.#rules.get(previous) : undefined;
-    if (!entry || !next) return null;
+  rename(fromKey: string, to: string): DesignRule | null {
+    const entry = this.get(fromKey);
+    const selector = safeSelector(to);
+    if (!entry || !selector) return null;
+    // The media condition is kept: renaming `.card` at ≤767px gives `.other` at ≤767px.
+    const previous = designRuleKey(entry);
+    const next = designRuleKey(selector, entry.media);
     if (next === previous) return entry;
     if (this.#rules.has(next)) return null;
 
@@ -431,7 +505,7 @@ export class RuleRegistry {
      */
     if (entry.origin === 'stylesheet') return null;
 
-    const renamed: DesignRule = { ...entry, selector: next };
+    const renamed: DesignRule = { ...entry, selector };
     const rebuilt = new Map<string, DesignRule>();
     for (const [key, value] of this.#rules) {
       if (key === previous) rebuilt.set(next, renamed);
@@ -442,11 +516,10 @@ export class RuleRegistry {
     return renamed;
   }
 
-  remove(selector: string): DesignRule | undefined {
-    const key = safeSelector(selector);
-    const entry = key ? this.#rules.get(key) : undefined;
+  remove(key: string): DesignRule | undefined {
+    const entry = this.get(key);
     if (!entry) return undefined;
-    this.#rules.delete(key);
+    this.#rules.delete(designRuleKey(entry));
     this.#flush();
     return entry;
   }
@@ -456,12 +529,21 @@ export class RuleRegistry {
     for (const entry of rules) {
       const selector = safeSelector(entry.selector);
       if (!selector) continue;
-      if (!options.overwrite && this.#rules.has(selector)) continue;
-      this.#rules.set(selector, {
-        ...entry,
+      const media = storableMedia(entry.media);
+      if (media === null) {
+        // Recoverable: one unreadable condition costs that rule, not the import.
+        console.warn('[html-editor-overlay] dropped a rule with an unreadable media condition', selector);
+        continue;
+      }
+      const key = designRuleKey(selector, media);
+      if (!options.overwrite && this.#rules.has(key)) continue;
+      const { media: _ignored, ...rest } = entry;
+      this.#rules.set(key, {
+        ...rest,
         selector,
         declarations: { ...entry.declarations },
         origin: entry.origin ?? 'imported',
+        ...(media ? { media } : {}),
       });
       count += 1;
     }
@@ -499,9 +581,9 @@ export class RuleRegistry {
     return this.#css(this.#owned(includeAll));
   }
 
-  /** The same CSS, narrowed to named selectors, for writing out only what is used. */
-  cssFor(selectors: ReadonlySet<string>, includeAll = false): string {
-    return this.#css(this.#owned(includeAll).filter((entry) => selectors.has(entry.selector)));
+  /** The same CSS, narrowed to named keys (`designRuleKey`), for writing out only what is used. */
+  cssFor(keys: ReadonlySet<string>, includeAll = false): string {
+    return this.#css(this.#owned(includeAll).filter((entry) => keys.has(designRuleKey(entry))));
   }
 
   #owned(includeAll: boolean): DesignRule[] {
@@ -511,7 +593,10 @@ export class RuleRegistry {
   #css(entries: readonly DesignRule[]): string {
     return entries
       .filter((entry) => Object.values(entry.declarations).some((value) => value.trim()))
-      .map((entry) => `${entry.selector} {\n${declarationsToCSS(entry.declarations)}\n}`)
+      .map((entry) => {
+        const block = `${entry.selector} {\n${declarationsToCSS(entry.declarations)}\n}`;
+        return entry.media ? `@media ${entry.media} {\n${block}\n}` : block;
+      })
       .join('\n\n');
   }
 

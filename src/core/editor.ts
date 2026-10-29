@@ -3,7 +3,6 @@ import {
   normalizeClassName,
   planClassMerge,
   prettifyClassName,
-  simpleClassName,
   suggestClassName,
   type ClassCollision,
   type ClassMergePlan,
@@ -263,7 +262,7 @@ import {
   type BundleSubject,
   type BundleSurvey,
 } from './bundle.js';
-import { RuleRegistry } from './rules.js';
+import { designRuleKey, RuleRegistry } from './rules.js';
 import {
   decodeSeed,
   decodeSeedSync,
@@ -963,6 +962,16 @@ function keepImportance(value: string, current: string | undefined, important?: 
   return (important ?? typed ?? was) ? `${text} !important` : text;
 }
 
+/** How a person reads a managed rule's name: the selector, and its media condition when it has one. */
+function ruleName(rule: Pick<DesignRule, 'selector' | 'media'>): string {
+  return rule.media ? `${rule.selector} at @media ${rule.media}` : rule.selector;
+}
+
+/** `detail.media` for a record about a media rule, so the prompt can tell the two `.card`s apart. */
+function mediaDetail(rule: Pick<DesignRule, 'media'>): { media?: string } {
+  return rule.media ? { media: rule.media } : {};
+}
+
 /** How long after a change the page is compared with its file again. */
 const SOURCE_INDEX_DELAY_MS = 250;
 /** How old a comparison may be before selecting an element asks for a fresh one. */
@@ -1129,7 +1138,12 @@ export class EditorEngine {
    * exploration be reverted by the tokens panel's — putting a value back onto the wrong
    * rule.
    */
-  #designRulePreview: { selector: string; declarations: Record<string, string> } | null = null;
+  #designRulePreview: {
+    key: string;
+    selector: string;
+    media?: string;
+    declarations: Record<string, string>;
+  } | null = null;
   /** The rule declaration a live preview is painting over. */
   #rulePreview:
     | { rule: CSSStyleRule; property: string; before: string; priority: string }
@@ -2141,7 +2155,7 @@ export class EditorEngine {
     const rulePreview = this.#designRulePreview;
     this.#designRulePreview = null;
     if (rulePreview) {
-      const entry = this.rules.get(rulePreview.selector);
+      const entry = this.rules.get(rulePreview.key);
       if (entry) this.rules.upsert({ ...entry, declarations: rulePreview.declarations });
     }
   }
@@ -2438,12 +2452,16 @@ export class EditorEngine {
    * committing compares equal and does nothing, and looking away reverts the preview,
    * losing the edit.
    */
-  get designRulePreviewTarget(): { selector: string; declarations: Record<string, string> } | null {
+  get designRulePreviewTarget(): {
+    key: string;
+    selector: string;
+    media?: string;
+    declarations: Record<string, string>;
+  } | null {
     const preview = this.#designRulePreview;
-    return preview
-      ? { selector: preview.selector, declarations: { ...preview.declarations } }
-      : null;
+    return preview ? { ...preview, declarations: { ...preview.declarations } } : null;
   }
+
 
   /**
    * The cascade model of one element, with every in-flight preview subtracted.
@@ -2519,9 +2537,10 @@ export class EditorEngine {
    * registry holds the authoritative value, so the next commit or a cancel puts things
    * right; there is nothing to unwind.
    */
-  previewDesignRuleDeclaration(selector: string, property: string, value: string): void {
-    const entry = this.rules.get(selector);
+  previewDesignRuleDeclaration(ruleKey: string, property: string, value: string): void {
+    const entry = this.rules.get(ruleKey);
     if (!entry) return;
+    const key = designRuleKey(entry);
     /*
      * Previewed through the same rule the commit will patch.
      *
@@ -2530,17 +2549,21 @@ export class EditorEngine {
      * duplicate — so whether a drag or a typed value produced the edit would decide where it landed
      * in the file.
      */
-    const origin = this.rules.originRule(entry.selector, property);
+    // Only an unconditional rule can have a page origin: `originRule` refuses a media rule, so a
+    // managed `section p` at ≤767px is never routed into the file's `section p`.
+    const origin = this.rules.originRule(key, property);
     if (origin) {
       this.previewRuleDeclaration(origin, property, value);
       return;
     }
     this.#designRulePreview ??= {
+      key,
       selector: entry.selector,
+      ...(entry.media ? { media: entry.media } : {}),
       declarations: { ...entry.declarations },
     };
     this.rules.setDeclaration(
-      entry.selector,
+      key,
       property,
       keepImportance(value, this.#designRulePreview.declarations[property]),
     );
@@ -2548,15 +2571,16 @@ export class EditorEngine {
 
   /** Change one declaration on a rule. An empty value keeps the row and drops the CSS. */
   setDesignRuleDeclaration(
-    selector: string,
+    ruleKey: string,
     property: string,
     value: string,
     important?: boolean,
     label?: string,
   ): void {
-    const live = this.rules.get(selector);
+    const live = this.rules.get(ruleKey);
     if (!live) return;
-    const key = live.selector;
+    const key = designRuleKey(live);
+    const named = ruleName(live);
     /*
      * A rule the project already declares is edited where it is declared.
      *
@@ -2594,7 +2618,7 @@ export class EditorEngine {
     // A live preview has already written into the registry, so the pre-edit state has to
     // come from the snapshot taken when the preview began — otherwise undo would return
     // to the last frame of the exploration rather than to the start.
-    const preview = this.#designRulePreview?.selector === key ? this.#designRulePreview : null;
+    const preview = this.#designRulePreview?.key === key ? this.#designRulePreview : null;
     this.#designRulePreview = null;
     const before: DesignRule = preview ? { ...live, declarations: preview.declarations } : live;
     const snapshot: DesignRule = { ...before, declarations: { ...before.declarations } };
@@ -2602,7 +2626,7 @@ export class EditorEngine {
     const stored = keepImportance(value, snapshot.declarations[property], important);
 
     this.history.commit({
-      label: label ?? `Set ${property} on ${key}`,
+      label: label ?? `Set ${property} on ${named}`,
       // `design-rule:` rather than `rule:`, so a managed rule and a page rule with the same selector
       // can never merge into one undo entry (H2).
       mergeKey: `design-rule:${key}:${property}`,
@@ -2610,11 +2634,11 @@ export class EditorEngine {
       record: {
         id: nextChangeId(),
         kind: 'token-rule',
-        summary: `Set ${property} to ${stored || '(removed)'} on ${key}`,
-        target: key,
+        summary: `Set ${property} to ${stored || '(removed)'} on ${named}`,
+        target: live.selector,
         before: snapshot.declarations[property],
         after: stored || undefined,
-        detail: { selector: key, property, value: stored },
+        detail: { selector: live.selector, property, value: stored, ...mediaDetail(live) },
         at: Date.now(),
       },
       apply: () => {
@@ -2626,10 +2650,11 @@ export class EditorEngine {
   }
 
   /** Drop a declaration from a rule, name and all. */
-  removeDesignRuleDeclaration(selector: string, property: string): void {
-    const entry = this.rules.get(selector);
+  removeDesignRuleDeclaration(ruleKey: string, property: string): void {
+    const entry = this.rules.get(ruleKey);
     if (!entry) return;
-    const key = entry.selector;
+    const key = designRuleKey(entry);
+    const named = ruleName(entry);
     /*
      * Removing a declaration the file declares has to reach the file, and only this path can.
      *
@@ -2647,15 +2672,15 @@ export class EditorEngine {
     this.#designRulePreview = null;
     const snapshot: DesignRule = { ...entry, declarations: { ...entry.declarations } };
     this.history.commit({
-      label: `Remove ${property} from ${key}`,
+      label: `Remove ${property} from ${named}`,
       subject: `design-rule-decl:${key}:${property}`,
       record: {
         id: nextChangeId(),
         kind: 'token-rule',
-        summary: `Remove ${property} from ${key}`,
-        target: key,
+        summary: `Remove ${property} from ${named}`,
+        target: entry.selector,
         before: snapshot.declarations[property],
-        detail: { selector: key, property },
+        detail: { selector: entry.selector, property, ...mediaDetail(entry) },
         at: Date.now(),
       },
       apply: () => {
@@ -2673,18 +2698,21 @@ export class EditorEngine {
    * rule to the end of the sheet and silently change which of two equally specific rules
    * wins. Returns the stored selector, or null when the rename was refused.
    */
-  renameDesignRule(from: string, to: string): string | null {
-    const entry = this.rules.get(from);
+  renameDesignRule(fromKey: string, to: string): string | null {
+    const entry = this.rules.get(fromKey);
     if (!entry) return null;
     const previous = entry.selector;
+    const previousKey = designRuleKey(entry);
     const next = safeSelector(to);
     if (!next) {
       this.notify(`"${String(to ?? '').trim()}" is not a CSS selector the browser accepts.`, 'error');
       return null;
     }
-    if (next === previous) return previous;
-    if (this.rules.has(next)) {
-      this.notify(`${next} already has a rule.`, 'error');
+    // The media condition stays with the rule, so the new key is the new selector at that condition.
+    const nextKey = designRuleKey(next, entry.media);
+    if (nextKey === previousKey) return previousKey;
+    if (this.rules.has(nextKey)) {
+      this.notify(`${ruleName({ selector: next, media: entry.media })} already has a rule.`, 'error');
       return null;
     }
     /*
@@ -2697,7 +2725,7 @@ export class EditorEngine {
      */
     if (entry.origin === 'stylesheet') {
       this.notify(
-        `${previous} comes from ${this.rules.sourceOf(previous) ?? 'the page’s CSS'}, so its ` +
+        `${previous} comes from ${this.rules.sourceOf(previousKey) ?? 'the page’s CSS'}, so its ` +
         'selector cannot be changed from here — the original would keep applying. Edit that ' +
         'rule in the Styles panel, or add a new rule for the selector you want.',
         'warn',
@@ -2708,33 +2736,34 @@ export class EditorEngine {
     this.#designRulePreview = null;
     this.history.commit({
       label: `Retarget ${previous}`,
-      subject: `design-rule-selector:${previous}`,
+      subject: `design-rule-selector:${previousKey}`,
       record: {
         id: nextChangeId(),
         kind: 'token-rule',
-        summary: `Change the selector ${previous} to ${next}`,
+        summary: `Change the selector ${previous} to ${next}${entry.media ? ` at @media ${entry.media}` : ''}`,
         target: next,
         before: previous,
         after: next,
-        detail: { selector: next, previousSelector: previous },
+        detail: { selector: next, previousSelector: previous, ...mediaDetail(entry) },
         at: Date.now(),
       },
       apply: () => {
-        this.rules.rename(previous, next);
+        this.rules.rename(previousKey, next);
       },
       revert: () => {
-        this.rules.rename(next, previous);
+        this.rules.rename(nextKey, previous);
       },
     });
     this.#bumpRevision();
-    return next;
+    return nextKey;
   }
 
   /** Delete a rule, keeping it on the undo stack. */
-  removeDesignRule(selector: string): void {
-    const entry = this.rules.get(selector);
+  removeDesignRule(ruleKey: string): void {
+    const entry = this.rules.get(ruleKey);
     if (!entry) return;
-    const key = entry.selector;
+    const key = designRuleKey(entry);
+    const named = ruleName(entry);
     /*
      * Only rules this session owns can be deleted, and that is not a limitation to hide.
      *
@@ -2745,7 +2774,7 @@ export class EditorEngine {
      */
     if (entry.origin === 'stylesheet') {
       this.notify(
-        `${key} is declared in ${this.rules.sourceOf(key) ?? 'the page’s CSS'}, so it cannot be ` +
+        `${named} is declared in ${this.rules.sourceOf(key) ?? 'the page’s CSS'}, so it cannot be ` +
         'deleted from here. Remove it from that stylesheet, or override what it sets.',
         'warn',
       );
@@ -2762,17 +2791,17 @@ export class EditorEngine {
      * fighting over the same property is rarer still.
      */
     this.history.commit({
-      label: `Delete rule ${key}`,
+      label: `Delete rule ${named}`,
       record: {
         id: nextChangeId(),
         kind: 'token-rule',
-        summary: `Remove CSS rule ${key}`,
-        target: key,
+        summary: `Remove CSS rule ${named}`,
+        target: entry.selector,
         before: Object.entries(snapshot.declarations)
           .filter(([, value]) => value.trim())
           .map(([property, value]) => `${property}: ${value}`)
           .join('; '),
-        detail: { selector: key },
+        detail: { selector: entry.selector, ...mediaDetail(entry) },
         at: Date.now(),
       },
       apply: () => {
@@ -3208,13 +3237,18 @@ export class EditorEngine {
         this.tokens.remove(name);
       }
     }
-    // The rule's own list, which is the authoritative account of both the values and their order.
-    const declarations = ruleDeclarations(rule);
-    for (const part of rule.selectorText.split(',')) {
-      const name = simpleClassName(part);
-      if (name) this.classes.noteStylesheetDeclarations(name, declarations);
+    /*
+     * By rule identity, per registry, matching what each one scans (M1). The class registry merges
+     * every rule for a class, media variants included, so it is handed the rule object and rebuilds
+     * from its members; a rule it never saw means a rescan. The rule registry scans top level only,
+     * so a rule inside `@media` or any other at-rule has no record there to note, and noting it by
+     * selector would have replaced `section p` with its phone variant.
+     */
+    if (!this.classes.noteStylesheetRule(rule)) this.classes.scanDocument();
+    if (rule.parentRule === null) {
+      // The rule's own list, which is the authoritative account of both the values and their order.
+      this.rules.noteStylesheetDeclarations(rule.selectorText, ruleDeclarations(rule));
     }
-    this.rules.noteStylesheetDeclarations(rule.selectorText, declarations);
   }
 
   /* ---------------------------------------------------------------------- */

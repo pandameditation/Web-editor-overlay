@@ -85,6 +85,12 @@
       content: "★";
       color: #f59e0b;
     }
+    /* A page rule and its phone variant, for the registry-resync pins (design §5.4 item 8). */
+    @media (max-width: 767px) {
+      section p {
+        color: rgb(0, 0, 255);
+      }
+    }
   </style>
 </head>
 
@@ -189,6 +195,117 @@
             /^rgb\(0,\s*128,\s*0\)\s*!important$/.test(inlineText(imp, 'color') ?? '') &&
             engine.canResetStyle(imp, 'color') === false,
         };
+
+        /* ------------------------------------------------------------------ *
+         * Rules at a size are rules of their own, in the registries, history and output.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'persist';
+        const phoneCard = ruleFor('.card', '(max-width: 767px)');
+        const tabletCard = ruleFor('.card', '(min-width: 768px)');
+        const baseCard = ruleFor('.card');
+        const phoneSectionP = ruleFor('section p', '(max-width: 767px)');
+        const MEDIA = '(max-width: 767px)';
+        const managedText = () => document.getElementById('heo-design-rules')?.textContent ?? '';
+        results.persist = {};
+
+        // Keyed by selector, editing the media rule replaced `.card`'s merged record (and
+        // `section p`'s) with the media rule's declarations alone.
+        const cardBefore = { ...engine.classes.get('card').declarations };
+        const sectionBefore = JSON.stringify(engine.rules.get('section p').declarations);
+        engine.setDeclaration({ kind: 'live', rule: tabletCard }, 'padding', '22px 30px');
+        engine.setDeclaration({ kind: 'live', rule: phoneSectionP }, 'color', 'rgb(0, 0, 128)');
+        const cardAfter = engine.classes.get('card');
+        results.persist.mediaRuleEditLeavesTheBaseRecordAlone =
+          cardAfter.declarations.color === cardBefore.color &&
+          cardAfter.declarations.color !== undefined &&
+          JSON.stringify(engine.rules.get('section p').declarations) === sectionBefore &&
+          cardAfter.origin === 'stylesheet' &&
+          engine.rules.get('section p').origin === 'stylesheet';
+        // The note has to give what a fresh scan gives: the merge of every `.card` rule, where the
+        // last padding (the ≥768px block, just edited) wins.
+        const noted = { ...engine.classes.get('card').declarations };
+        engine.classes.scanDocument();
+        const scanned = engine.classes.get('card').declarations;
+        const names = new Set([...Object.keys(noted), ...Object.keys(scanned)]);
+        results.persist.classRecordMatchesAFreshScanAfterAMediaEdit =
+          [...names].every((name) => noted[name] === scanned[name]) && noted.padding === '22px 30px';
+
+        // H2: `.card` at every size and `.card` at ≤767px used to share the history key
+        // `rule:.card:padding`, so the second edit merged into the first and one undo took both.
+        const sizeBefore = engine.history.size;
+        engine.setDeclaration({ kind: 'live', rule: baseCard }, 'padding', '13px 17px');
+        engine.setDeclaration({ kind: 'live', rule: phoneCard }, 'padding', '9px 11px');
+        const twoRecords = engine.history.records.slice(-2);
+        // No folder is connected here, so there is no write plan: the change set it is built from
+        // (`engine.records`) is checked instead.
+        const plan = await engine.previewWritePlan();
+        const planned = plan ? plan.writes.flatMap((write) => write.records) : engine.records;
+        const inPlan = (record) => planned.some((one) => one.id === record.id);
+        const grew = engine.history.size - sizeBefore;
+        engine.undo();
+        const afterUndo =
+          baseCard.style.getPropertyValue('padding') === '13px 17px' &&
+          phoneCard.style.getPropertyValue('padding') === '10px 12px';
+        engine.redo();
+        results.persist.sameSelectorAtTwoSizesIsTwoUndoEntries =
+          grew === 2 &&
+          twoRecords.length === 2 &&
+          Boolean(twoRecords[0].detail?.rulePath) &&
+          twoRecords[0].detail.rulePath !== twoRecords[1].detail?.rulePath &&
+          twoRecords.every(inPlan) &&
+          afterUndo;
+
+        // A managed `section p` at ≤767px and the page's `section p` both used `rule:section p:…`.
+        engine.rules.upsert({
+          selector: 'section p',
+          media: MEDIA,
+          declarations: { 'word-spacing': '1px' },
+          origin: 'user',
+        });
+        const pageSectionP = ruleFor('section p');
+        const mergeBefore = engine.history.size;
+        engine.setDeclaration({ kind: 'live', rule: pageSectionP }, 'word-spacing', '2px');
+        engine.setDeclaration(
+          { kind: 'design-rule', key: `@media ${MEDIA} section p` },
+          'word-spacing',
+          '3px',
+        );
+        results.persist.designRuleAndPageRuleDoNotMerge =
+          engine.history.size - mergeBefore === 2 &&
+          engine.history.records.at(-1)?.detail?.media === MEDIA &&
+          /@media \(max-width: 767px\)\s*\{\s*section p\s*\{[^}]*word-spacing:\s*3px/.test(managedText()) &&
+          pageSectionP.style.getPropertyValue('word-spacing') === '2px';
+
+        // Editing a page media rule patches it where it is (a rule path), never a managed copy.
+        engine.setDeclaration({ kind: 'live', rule: phoneCard }, 'margin', '0 0 8px');
+        const marginRecord = engine.history.records.at(-1);
+        results.persist.noDuplicateSelectorInFile =
+          Boolean(marginRecord?.detail?.rulePath) &&
+          marginRecord.detail.scope === 'stylesheet rule' &&
+          !/\.card\s*\{[^}]*margin:\s*0 0 8px/.test(managedText());
+
+        // The managed block carries the media condition into the exported page.
+        engine.rules.upsert({
+          selector: '.card',
+          media: MEDIA,
+          declarations: { 'letter-spacing': '1px' },
+          origin: 'user',
+        });
+        const exported = engine.exportHTML();
+        results.persist.mediaVariantIsExported =
+          /@media \(max-width: 767px\)\s*\{\s*\.card\s*\{[^}]*letter-spacing:\s*1px/.test(exported);
+
+        // A seed that dropped the condition would land the phone variant on every size.
+        const seed = await engine.designSystemSeed();
+        engine.rules.remove(`@media ${MEDIA} .card`);
+        const goneBeforeImport = !engine.rules.has(`@media ${MEDIA} .card`);
+        await engine.importDesignSystemText(seed, true);
+        const back = engine.rules.get(`@media ${MEDIA} .card`);
+        results.persist.seedCarriesMedia =
+          goneBeforeImport &&
+          back?.media === MEDIA &&
+          back?.declarations['letter-spacing'] === '1px' &&
+          engine.rules.get('.card')?.declarations?.['letter-spacing'] !== '1px';
 
         const failed = Object.entries(results)
           .filter(([, group]) => group && typeof group === 'object')

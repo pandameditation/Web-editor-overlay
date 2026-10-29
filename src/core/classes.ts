@@ -4,7 +4,6 @@ import {
   toRecord,
   withPromotedSide,
   withValue,
-  type Declaration,
 } from './declaration-list.js';
 import { queryDeep } from './dom.js';
 import { ruleDeclarations, withParsedSheet } from './sheets.js';
@@ -29,6 +28,15 @@ export class ClassRegistry {
   #origins = new Map<string, CSSStyleRule>();
   /** The unconditional rule each scanned class was last declared in. See `originRule`. */
   #homes = new Map<string, CSSStyleRule>();
+  /**
+   * Every live rule that contributed to each scanned class, in walk order.
+   *
+   * A scanned class is the merge of every rule written for it, media variants included (F4), so a
+   * live edit to one of them can only be reflected by merging the same rules again. Replacing the
+   * record with the edited rule's declarations, which is what this used to do, turned `.card` into
+   * whatever its `@media (max-width: 767px)` block said. See `noteStylesheetRule`.
+   */
+  #members = new Map<string, CSSStyleRule[]>();
 
   /**
    * Collect single-class rules from the page.
@@ -41,6 +49,7 @@ export class ClassRegistry {
     // cannot go on being offered as somewhere to write.
     this.#origins.clear();
     this.#homes.clear();
+    this.#members.clear();
     for (const sheet of Array.from(document.styleSheets)) {
       if (sheet.ownerNode instanceof Element && sheet.ownerNode.hasAttribute('data-heo-generated')) {
         continue;
@@ -92,7 +101,12 @@ export class ClassRegistry {
           if (!name) continue;
           const declarations = readDeclarations(rule);
           if (!Object.keys(declarations).length) continue;
-          if (live) this.#noteOrigin(name, rule, declarations);
+          if (live) {
+            this.#noteOrigin(name, rule, declarations);
+            const members = this.#members.get(name) ?? [];
+            if (!members.includes(rule)) members.push(rule);
+            this.#members.set(name, members);
+          }
           const existing = this.#classes.get(name);
           if (existing && existing.origin !== 'stylesheet') continue;
           this.#classes.set(name, {
@@ -167,30 +181,47 @@ export class ClassRegistry {
   }
 
   /**
-   * Record what the page now says about a declaration this registry does not own.
+   * Record what the page now says after a live edit to one of its rules.
    *
-   * The other half of routing an edit through `originRule`: the value was changed in the rule that
-   * declares it, and a CSSOM mutation is invisible from here, so the copy held in this map is stale
-   * and the editor would go on showing the old value.
+   * A CSSOM mutation is invisible from here, so the copy held in this map is stale and the editor
+   * would go on showing the old value. The rule is identified by the object, not by its selector:
+   * `.card` and `.card` inside `@media` share a selector and are different rules, and each class's
+   * record is rebuilt by merging the rules that made it, the same merge the scan does.
    *
-   * Handed the rule's whole declaration list rather than one property, because order is part of what
-   * changed. When a block holds both a shorthand and one of its longhands, the edit moves the
-   * touched side last so it wins — and a copy that took only the new value kept the old order, so
-   * the panel showed the other side as the winner while the page rendered this one. One list, copied
-   * across, cannot disagree with itself.
+   * Returns false when the rule names a scanned class it did not contribute to (it was empty when
+   * the scan ran, so it was skipped). Those classes are reset first, so the rescan the caller then
+   * runs does not merge the old values back over the new ones.
    *
    * `setDeclaration` cannot do this job. It flips `origin` to `'user'`, which is precisely what makes
    * `toCSS` emit the class — and emitting something that was just patched in place is the duplicate
    * this path exists to avoid.
    */
-  noteStylesheetDeclarations(name: string, declarations: readonly Declaration[]): void {
-    const key = name.replace(/^\./, '');
-    const entry = this.#classes.get(key);
-    if (!entry || entry.origin !== 'stylesheet') return;
-    this.#classes.set(key, { ...entry, declarations: toRecord(declarations) });
+  noteStylesheetRule(rule: CSSStyleRule): boolean {
+    const strangers: string[] = [];
+    let changed = false;
+    for (const part of rule.selectorText.split(',')) {
+      const name = simpleClassName(part);
+      const entry = name ? this.#classes.get(name) : undefined;
+      if (!name || !entry || entry.origin !== 'stylesheet') continue;
+      const members = this.#members.get(name);
+      if (!members?.includes(rule)) {
+        strangers.push(name);
+        continue;
+      }
+      this.#classes.set(name, {
+        ...entry,
+        declarations: Object.assign({}, ...members.map((member) => readDeclarations(member))),
+      });
+      changed = true;
+    }
+    for (const name of strangers) {
+      const entry = this.#classes.get(name);
+      if (entry) this.#classes.set(name, { ...entry, declarations: {} });
+    }
     // `#invalidate` rather than `#flush`: the managed sheet is built from `toCSS`, which leaves
     // scanned classes out, so rewriting it would emit the same bytes it already holds.
-    this.#invalidate();
+    if (changed || strangers.length) this.#invalidate();
+    return strangers.length === 0;
   }
 
   list(): DesignClass[] {
@@ -394,6 +425,7 @@ export class ClassRegistry {
     // what stops an unmounted editor keeping the page's stylesheets alive.
     this.#origins.clear();
     this.#homes.clear();
+    this.#members.clear();
   }
 
   #flush(): void {

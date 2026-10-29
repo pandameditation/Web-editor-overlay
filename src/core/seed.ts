@@ -94,6 +94,8 @@ export function compactDesignSystem(doc: DesignSystemDocument): DesignSystemDocu
    */
   const rules = (doc.rules ?? []).map((entry) => {
     const next: DesignRule = { selector: entry.selector, declarations: entry.declarations };
+    // A size variant without its condition would land on the next page as an unconditional rule.
+    if (entry.media) next.media = entry.media;
     if (entry.label) next.label = entry.label;
     if (entry.description) next.description = entry.description;
     return next;

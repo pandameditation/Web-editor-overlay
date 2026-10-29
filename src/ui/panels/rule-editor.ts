@@ -1,5 +1,6 @@
 import { css, html, nothing, type CSSResult, type TemplateResult } from 'lit';
-import { summarizeRule } from '../../core/rules.js';
+import { mediaShort } from '../../core/breakpoints.js';
+import { designRuleKey, summarizeRule } from '../../core/rules.js';
 import type { DesignRule } from '../../core/types.js';
 import { icon } from '../icons.js';
 import { ClassEditor, type ClassEditorHost } from './class-editor.js';
@@ -30,14 +31,14 @@ import { field } from '../form-errors.js';
  */
 
 export interface RuleEditorHost extends ClassEditorHost {
-  /** The rule whose selector is being rewritten, if any. */
-  editingSelector: string | null;
-  onEditSelector: (selector: string | null) => void;
+  /** The key (`designRuleKey`) of the rule whose selector is being rewritten, if any. */
+  editingKey: string | null;
+  onEditSelector: (key: string | null) => void;
   /**
-   * A rule's selector changed, so anything the host keyed on the old one has moved.
+   * A rule's key changed, so anything the host keyed on the old one has moved.
    *
-   * Which is the expanded card, and it is not optional in practice: the selector *is*
-   * the identity here, so a rename with nothing listening collapses the card the user is
+   * Which is the expanded card, and it is not optional in practice: the key *is* the
+   * identity here, so a rename with nothing listening collapses the card the user is
    * working in the moment they retarget it.
    */
   onRenamed?: (from: string, to: string) => void;
@@ -83,6 +84,9 @@ export const RuleEditor = {
     }
 
     /* The selector, in code, because that is what the user will look for in a file. */
+    .rule .sel .media {
+      color: var(--heo-text-dim);
+    }
     .rule .sel {
       flex: 1 1 auto;
       min-width: 0;
@@ -225,7 +229,9 @@ export const RuleEditor = {
     },
   ): TemplateResult {
     const { expanded, matches, onToggle, host } = options;
-    const editingSelector = host.editingSelector === entry.selector;
+    // The key, not the selector: `.card` and `.card` at ≤767px are two cards.
+    const key = designRuleKey(entry);
+    const editingSelector = host.editingKey === key;
     /*
      * Read out of the page's CSS, as opposed to written here.
      *
@@ -253,7 +259,11 @@ export const RuleEditor = {
             ${scanned
             ? nothing
             : html`<span class="dot" title="Written in this session, so a save carries it"></span>`}
-            <span class="sel" title=${entry.selector}>${entry.selector}</span>
+            <span class="sel" title=${entry.media ? `${entry.selector} at @media ${entry.media}` : entry.selector}
+              >${entry.selector}${entry.media
+            ? html` <span class="media">${mediaShort(entry.media)}</span>`
+            : nothing}</span
+            >
             ${expanded ? nothing : html`<span class="props">${summarizeRule(entry)}</span>`}
             <span
               class=${`hits ${matches > 0 ? 'live' : 'idle'}`}
@@ -287,7 +297,7 @@ export const RuleEditor = {
                     type="button"
                     aria-pressed=${editingSelector}
                     title="Point this rule at a different selector"
-                    @click=${() => host.onEditSelector(editingSelector ? null : entry.selector)}
+                    @click=${() => host.onEditSelector(editingSelector ? null : key)}
                   >
                     ${icon('search', 12)}
                     ${editingSelector ? 'Keep this selector' : 'Change selector'}
@@ -296,8 +306,8 @@ export const RuleEditor = {
                     class="btn sm danger"
                     type="button"
                     @click=${() => {
-                host.engine.removeDesignRule(entry.selector);
-                host.onRemoved?.(entry.selector);
+                host.engine.removeDesignRule(key);
+                host.onRemoved?.(key);
               }}
                   >
                     ${icon('trash', 12)} Delete
@@ -322,7 +332,7 @@ export const RuleEditor = {
    * sentence names the file as the thing about to be edited rather than the thing being left alone.
    */
   renderSource(entry: DesignRule, host: RuleEditorHost): TemplateResult {
-    const source = host.engine.rules.sourceOf(entry.selector);
+    const source = host.engine.rules.sourceOf(designRuleKey(entry));
     return html`<p class="from">
       ${icon('file', 12)}
       <span>
@@ -362,19 +372,21 @@ export const RuleEditor = {
         @selector-submit=${(event: CustomEvent<{ value: string }>) => {
         const raw = event.detail.value;
         const wanted = safeSelector(raw);
+        const key = designRuleKey(entry);
+        const wantedKey = wanted ? designRuleKey(wanted, entry.media) : '';
         const problem =
           selectorIssues(name, raw)[0]?.message ??
-          (wanted && wanted !== entry.selector && host.engine.rules.has(wanted)
+          (wanted && wantedKey !== key && host.engine.rules.has(wantedKey)
             ? `${wanted} already has a rule. Choose another selector, or edit that rule.`
             : null);
         if (problem) {
           host.form.fail(name, problem);
           return;
         }
-        const next = host.engine.renameDesignRule(entry.selector, raw);
+        const next = host.engine.renameDesignRule(key, raw);
         if (!next) return;
         host.onEditSelector(null);
-        host.onRenamed?.(entry.selector, next);
+        host.onRenamed?.(key, next);
       }}
         @selector-cancel=${() => host.onEditSelector(null)}
       ></heo-selector-field>
@@ -397,9 +409,10 @@ export const RuleEditor = {
     // reason the class editor does: a preview is written into the registry this came
     // from, so reading it back would tell the field its own draft was already
     // committed — after which committing compares equal and does nothing.
+    const key = designRuleKey(entry);
     const preview = engine.designRulePreviewTarget;
     const declarations =
-      preview && preview.selector === entry.selector ? preview.declarations : entry.declarations;
+      preview && preview.key === key ? preview.declarations : entry.declarations;
 
     return html`<div class="cls">
       ${ClassEditor.renderDeclarations(
@@ -407,20 +420,22 @@ export const RuleEditor = {
         label: entry.selector,
         // Namespaced and flattened: a selector is not an id. Two rules could otherwise
         // produce the same datalist id, and `h2 > p` is not a valid one at all.
-        id: `rule-${entry.selector.replace(/[^\w-]+/g, '_')}`,
+        id: `rule-${key.replace(/[^\w-]+/g, '_')}`,
         declarations,
         empty: 'No declarations yet. Add a property below to give this rule something to do.',
-        preview: (property, value) =>
-          engine.previewDesignRuleDeclaration(entry.selector, property, value),
-        commit: (property, value) =>
-          engine.setDesignRuleDeclaration(entry.selector, property, value),
-        remove: (property) => engine.removeDesignRuleDeclaration(entry.selector, property),
-        paste: () =>
-          engine.beginCssPaste({
-            context: 'rule',
-            element: host.element,
-            selector: entry.selector,
-          }),
+        preview: (property, value) => engine.previewDesignRuleDeclaration(key, property, value),
+        commit: (property, value) => engine.setDesignRuleDeclaration(key, property, value),
+        remove: (property) => engine.removeDesignRuleDeclaration(key, property),
+        // No paste on a media rule: the paste dialog writes unconditional rules only (D12), so it
+        // would put the pasted CSS on every size while the card says ≥768px.
+        paste: entry.media
+          ? undefined
+          : () =>
+            engine.beginCssPaste({
+              context: 'rule',
+              element: host.element,
+              selector: entry.selector,
+            }),
       },
       host,
     )}

@@ -26,7 +26,7 @@ import { tokensInValue } from './css.js';
 import { patchCSS, type DeclarationPatch } from './css-patch.js';
 import { queryDeep } from './dom.js';
 import type { BlockLibrary } from './library.js';
-import type { RuleRegistry } from './rules.js';
+import { designRuleKey, type RuleRegistry } from './rules.js';
 import { safeSelector } from './selectors.js';
 import { portableSettings, type SettingsRegistry } from './settings.js';
 import type { TokenRegistry } from './tokens.js';
@@ -227,8 +227,9 @@ export function designSystemUsage(registries: DesignRegistries): DesignSystemUsa
   const rules = new Set(
     registries.rules
       .list()
-      .filter((entry) => (ruleMatches.get(entry.selector) ?? 0) > 0)
-      .map((entry) => entry.selector),
+      // Keys, not selectors: `.card` and `.card` at ≤767px are separate rules to keep or prune.
+      .filter((entry) => (ruleMatches.get(designRuleKey(entry)) ?? 0) > 0)
+      .map((entry) => designRuleKey(entry)),
   );
 
   /* ---- Tokens: seed from everything that survived, plus the page's own CSS ---- */
@@ -243,7 +244,7 @@ export function designSystemUsage(registries: DesignRegistries): DesignSystemUsa
     for (const value of Object.values(entry.declarations)) want(value);
   }
   for (const entry of registries.rules.list()) {
-    if (!rules.has(entry.selector)) continue;
+    if (!rules.has(designRuleKey(entry))) continue;
     for (const value of Object.values(entry.declarations)) want(value);
   }
   for (const value of pageTokenReferences()) wanted.add(value);
@@ -358,7 +359,8 @@ export function designSystemExtent(
     tokens: owned(registries.tokens.list()).filter((entry) => used.tokens.has(entry.name)).length,
     classes: owned(registries.classes.list()).filter((entry) => used.classes.has(entry.name))
       .length,
-    rules: owned(registries.rules.list()).filter((entry) => used.rules.has(entry.selector)).length,
+    rules: owned(registries.rules.list()).filter((entry) => used.rules.has(designRuleKey(entry)))
+      .length,
   };
 }
 
@@ -494,8 +496,8 @@ export function restoreDesignSystem(
   drop(
     registries.rules.list().map((entry) => ({ ...entry })),
     snapshot.rules,
-    (entry) => entry.selector,
-    (selector) => registries.rules.remove(selector),
+    (entry) => designRuleKey(entry),
+    (key) => registries.rules.remove(key),
   );
   drop(
     registries.library.list().map((entry) => ({ ...entry })),

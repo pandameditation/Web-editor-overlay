@@ -470,6 +470,33 @@ test('a merge says which elements are folded in and removed', () => {
 test('no records is one plain sentence', () => {
   assert.equal(prompt([]), 'No changes were made in this editing session.');
 });
+/*
+ * Two managed `.card` rules, one inside a media condition, read as one rule unless the step says
+ * which: an agent would then put the phone padding on every card (H3).
+ */
+test('a rule step inside a media condition says so', () => {
+  const text = prompt([
+    record({
+      kind: 'token-rule',
+      target: '.card',
+      summary: 'Set padding to 4px on .card at @media (max-width: 767px)',
+      detail: { selector: '.card', property: 'padding', value: '4px', media: '(max-width: 767px)' },
+    }),
+  ]);
+  assert.match(text, /CSS rule for `\.card` inside `@media \(max-width: 767px\)`; see New CSS rules\./);
+});
+test('a rule step without a media condition does not mention one', () => {
+  const text = prompt([
+    record({
+      kind: 'token-rule',
+      target: '.card',
+      summary: 'Set padding to 4px on .card',
+      detail: { selector: '.card', property: 'padding', value: '4px' },
+    }),
+  ]);
+  assert.match(text, /CSS rule for `\.card`; see New CSS rules\./);
+  assert.doesNotMatch(text, /inside `@media/);
+});
 
 /* -------------------------------------------------------------------------- */
 

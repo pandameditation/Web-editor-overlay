@@ -1,6 +1,8 @@
 import { css, html, nothing, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { ModalController } from '../../core/modal.js';
+import { mediaShort } from '../../core/breakpoints.js';
+import { designRuleKey } from '../../core/rules.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
@@ -249,7 +251,7 @@ export class HeoStyleDialog extends HeoElement {
         <div class="who">
           <div class="title">
             <h2 id="heo-style-dialog-title" title=${isClass ? `.${open.name}` : open.name}>
-              ${isClass ? `.${open.name}` : open.name}
+              ${isClass ? `.${open.name}` : this.#ruleTitle(open.name)}
             </h2>
             ${this.#renderTally(open.kind, open.name)}
           </div>
@@ -313,7 +315,8 @@ export class HeoStyleDialog extends HeoElement {
     }
     return RuleEditor.render(entry, {
       expanded: true,
-      matches: this.editor.rules.matches().get(entry.selector) ?? 0,
+      // By key, or a media rule opened here would read "0 elements".
+      matches: this.editor.rules.matches().get(designRuleKey(entry)) ?? 0,
       onToggle: () => this.#close(),
       host,
       bare: true,
@@ -348,7 +351,7 @@ export class HeoStyleDialog extends HeoElement {
       },
       onRemoved: () => this.editor.closeStyleEditor(),
       onFocus: (property, scope) => focusDeclaration(this.renderRoot, property, scope),
-      editingSelector: this.editingSelector,
+      editingKey: this.editingSelector,
       onEditSelector: (next) => {
         this.editingSelector = next;
       },
@@ -365,6 +368,13 @@ export class HeoStyleDialog extends HeoElement {
        */
       actions: 'none',
     };
+  }
+
+  /** A rule's selector, with its size when it has a media condition: `.card ≤767px`. */
+  #ruleTitle(key: string): string {
+    const entry = this.editor.rules.get(key);
+    if (!entry) return key;
+    return entry.media ? `${entry.selector} ${mediaShort(entry.media)}` : entry.selector;
   }
 
   /** How far the thing reaches, for the chip beside the title. */

@@ -89,6 +89,14 @@ export interface DesignRule {
    * that won by coming later, which left the file declaring the same selector twice.
    */
   origin?: 'stylesheet' | 'user' | 'imported';
+  /**
+   * The media condition the rule applies under, without `@media`, as the browser serialises it
+   * (`normalizeMedia`). Absent for an unconditional rule.
+   *
+   * What lets the editor create `.card` at ≤767px beside `.card` itself: the two are separate rules,
+   * so a registry key is the selector plus this (`designRuleKey`), never the selector alone.
+   */
+  media?: string;
 }
 
 /** Declared prop on a library component. */

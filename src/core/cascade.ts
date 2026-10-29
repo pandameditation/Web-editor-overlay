@@ -16,6 +16,7 @@ import {
   type SizeSlot,
 } from './breakpoints.js';
 import { styleMirrorFor } from './mirror.js';
+import { designRuleKey } from './rules.js';
 import { CONSTRUCTED_SHEET_REASON, ruleDeclarations } from './sheets.js';
 import {
   compareSpecificity,
@@ -140,7 +141,7 @@ export interface ModelPreviews {
   inline?: (InlinePreview & { el: HTMLElement }) | null;
   rule?: { rule: CSSStyleRule; property: string; before: string; priority: string } | null;
   cls?: { name: string; declarations: Record<string, string> } | null;
-  designRule?: { selector: string; declarations: Record<string, string> } | null;
+  designRule?: { key: string; declarations: Record<string, string> } | null;
 }
 
 export interface ElementModelOptions {
@@ -470,6 +471,18 @@ function ownerOf(rule: CSSRule): Element | null {
   return node instanceof Element ? node : null;
 }
 
+/**
+ * The registry key of a rule in the managed rule sheet: its selector, at the media condition of
+ * the `@media` block the registry emitted around it.
+ */
+function managedRuleKey(rule: CSSStyleRule): string {
+  const parent = rule.parentRule;
+  return designRuleKey(
+    rule.selectorText,
+    parent instanceof CSSMediaRule ? authoredMediaText(parent.media) : null,
+  );
+}
+
 /** Where an edit to this rule goes. Only the model knows which sheet a rule lives in. */
 export function targetFor(rule: CSSStyleRule): WriteTarget {
   const owner = ownerOf(rule);
@@ -479,8 +492,7 @@ export function targetFor(rule: CSSStyleRule): WriteTarget {
     const name = rule.parentRule === null ? simpleClassName(rule.selectorText) : null;
     if (name) return { kind: 'class', name };
   }
-  // Keyed by selector until design rules carry a media condition of their own.
-  if (owner.id === RULE_STYLE_ID) return { kind: 'design-rule', key: rule.selectorText };
+  if (owner.id === RULE_STYLE_ID) return { kind: 'design-rule', key: managedRuleKey(rule) };
   if (owner.hasAttribute('data-heo-generated')) {
     return {
       kind: 'readonly',
@@ -510,7 +522,7 @@ function committedDeclarations(rule: CSSStyleRule, previews: ModelPreviews): Dec
     if (simpleClassName(rule.selectorText) === cls.name) return fromRecord(cls.declarations);
   }
   const design = previews.designRule;
-  if (design && owner?.id === RULE_STYLE_ID && rule.selectorText === design.selector) {
+  if (design && owner?.id === RULE_STYLE_ID && managedRuleKey(rule) === design.key) {
     return fromRecord(design.declarations);
   }
   const list = ruleDeclarations(rule);

@@ -2,6 +2,7 @@ import { css, html, nothing, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 import { normalizeClassName } from '../../core/classes.js';
+import { designRuleKey } from '../../core/rules.js';
 import { labelFor } from '../../core/dom.js';
 import { type SeedTarget } from '../../core/seed.js';
 import { TOKEN_GROUP_LABELS, TOKEN_GROUPS, prettifyTokenName } from '../../core/tokens.js';
@@ -787,7 +788,8 @@ export class HeoTokensPanel extends HeoElement {
     if (this.query.trim() && !globalRules.length && !localQuery) return nothing;
     const matches = this.editor.rules.matches();
     const authored = rules.filter((entry) =>
-      this.editor.rules.authored().some((own) => own.selector === entry.selector),
+      // By key: a scanned `.card` is not authored because a managed `.card` at ≤767px is.
+      this.editor.rules.authored().some((own) => designRuleKey(own) === designRuleKey(entry)),
     ).length;
     const fromPage = rules.length - authored;
 
@@ -840,8 +842,8 @@ export class HeoTokensPanel extends HeoElement {
             <div>
               ${repeat(
               rules,
-              (entry) => entry.selector,
-              (entry) => this.#renderRule(entry, matches.get(entry.selector) ?? 0, el),
+              (entry) => designRuleKey(entry),
+              (entry) => this.#renderRule(entry, matches.get(designRuleKey(entry)) ?? 0, el),
             )}
             </div>
           `}
@@ -951,11 +953,12 @@ export class HeoTokensPanel extends HeoElement {
   }
 
   #renderRule(entry: DesignRule, matches: number, el: HTMLElement | null): TemplateResult {
+    const key = designRuleKey(entry);
     return RuleEditor.render(entry, {
-      expanded: this.expandedRule === entry.selector,
+      expanded: this.expandedRule === key,
       matches,
       onToggle: () => {
-        this.expandedRule = this.expandedRule === entry.selector ? null : entry.selector;
+        this.expandedRule = this.expandedRule === key ? null : key;
         // Retargeting belongs to an open card. Left set, reopening the card would land
         // straight back in the selector field the user had already stepped away from.
         this.editingRuleSelector = null;
@@ -984,7 +987,7 @@ export class HeoTokensPanel extends HeoElement {
         if (this.expandedRule === from) this.expandedRule = to;
       },
       onFocus: (property, scope) => focusDeclaration(this.renderRoot, property, scope),
-      editingSelector: this.editingRuleSelector,
+      editingKey: this.editingRuleSelector,
       onEditSelector: (next) => {
         this.editingRuleSelector = next;
         if (next) this.expandedRule = next;

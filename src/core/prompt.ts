@@ -400,7 +400,10 @@ function stepsFor(record: ChangeRecord, blocks: Block[]): string[] {
      */
     case 'token-rule':
       return [
-        `${sentence(record.summary)}. This is a CSS rule for ${code(detail.selector ?? record.target)}; see New CSS rules.`,
+        // Inside its media condition, said, or an agent reading two `.card` steps finds one rule.
+        `${sentence(record.summary)}. This is a CSS rule for ${code(detail.selector ?? record.target)}${
+          detail.media ? ` inside ${code(`@media ${detail.media}`)}` : ''
+        }; see New CSS rules.`,
       ];
 
     /*

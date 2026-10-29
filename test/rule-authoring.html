@@ -44,6 +44,10 @@
         color: #333;
       }
     }
+    /* A page rule with the same selector as a managed media rule, for the rules group. */
+    section p {
+      color: rgb(10, 20, 30);
+    }
   </style>
 </head>
 
@@ -61,6 +65,7 @@
     <p id="between-inline" style="padding:12px;color:#444;padding-left:0;font-size:15px">
       Loose declarations between the two sides, inline.
     </p>
+    <section><p id="section-p">A paragraph in a section.</p></section>
   </main>
 
   <div id="report">
@@ -542,6 +547,61 @@
           };
         }
 
+        /* ------------------------------------------------------------------ *
+         * 7b. A managed rule inside a media condition is its own rule (H3).
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'rules';
+        {
+          const fileRule = liveRule('section p');
+          const fileBefore = fileRule?.cssText ?? '';
+          // Set up through the registry: the Styles panel that creates these arrives later.
+          engine.rules.upsert({
+            selector: 'section p',
+            media: '(max-width: 767px)',
+            declarations: { color: 'rgb(0, 0, 255)' },
+            origin: 'user',
+          });
+          api.select(document.getElementById('section-p'));
+          engine.setDockTab('tokens');
+          await frames();
+          await wait(300);
+          const rulesSection = () => Array.from(
+            deep('heo-tokens-panel')?.shadowRoot?.querySelectorAll('heo-section') ?? [],
+          ).find((section) => section.heading === 'CSS rules');
+          if (rulesSection() && !rulesSection().open) {
+            rulesSection().shadowRoot.querySelector('.head')?.click();
+          }
+          await frames();
+          await wait(200);
+          // Re-queried after every render; a card is told apart by its media suffix.
+          const cards = () => Array.from(rulesSection()?.querySelectorAll('.rule') ?? [])
+            .filter((card) => card.querySelector('.sel')?.textContent.trim().startsWith('section p'));
+          const mediaCard = () => cards().find((card) => card.querySelector('.sel .media'));
+          const header = mediaCard()?.querySelector('header');
+          if (header && header.getAttribute('aria-expanded') !== 'true') header.click();
+          await frames();
+          await wait(200);
+          const colourField = Array.from(mediaCard()?.querySelectorAll('.decl') ?? [])
+            .find((row) => row.querySelector('.p')?.textContent.trim() === 'color')
+            ?.querySelector('heo-value-field');
+          colourField?.dispatchEvent(new CustomEvent('value-change', {
+            detail: { value: 'rgb(0, 128, 0)' }, bubbles: true, composed: true,
+          }));
+          await frames();
+          const managed = document.getElementById('heo-design-rules')?.textContent ?? '';
+          const record = engine.history.records.at(-1);
+          results.rules = {
+            // Routed by selector, this edit used to land in the file's `section p` and change it at
+            // every size.
+            mediaRuleEditDoesNotTouchTheSameSelectorInTheFile:
+              Boolean(colourField) &&
+              (fileRule?.cssText ?? '') === fileBefore &&
+              /@media \(max-width: 767px\)\s*\{\s*section p\s*\{[^}]*color:\s*rgb\(0, 128, 0\)/.test(managed) &&
+              record?.detail?.media === '(max-width: 767px)',
+            // Keyed by selector, the two rules collapsed into one card.
+            mediaRuleHasItsOwnCard: cards().length === 2 && Boolean(mediaCard()),
+          };
+        }
         /* ------------------------------------------------------------------ *
          * 8. How the stylesheet text is asked for.
          * ------------------------------------------------------------------ */
