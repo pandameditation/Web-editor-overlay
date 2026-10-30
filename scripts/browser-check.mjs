@@ -7,12 +7,15 @@
  * poll for a completion marker and shut Chrome down deterministically.
  *
  * Usage: node scripts/browser-check.mjs <file-or-url> [timeoutMs]
+ *
+ * Trusted keys: the page gets `window.__heoPressKeys`, as described in `trusted-keys.mjs`.
  */
 import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { answerKeys, KEYS_BINDING } from './trusted-keys.mjs';
 
 const CHROME_CANDIDATES = [
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -114,9 +117,14 @@ class CDP {
   #logs = [];
   #scripts = new Map();
   #onPaused = null;
+  #onBinding = null;
 
   onPaused(handler) {
     this.#onPaused = handler;
+  }
+
+  onBinding(handler) {
+    this.#onBinding = handler;
   }
 
   scriptURL(scriptId) {
@@ -132,6 +140,9 @@ class CDP {
       }
       if (message.method === 'Debugger.paused' && this.#onPaused) {
         this.#onPaused(message.params);
+      }
+      if (message.method === 'Runtime.bindingCalled' && this.#onBinding) {
+        this.#onBinding(message.params);
       }
       if (message.id && this.#pending.has(message.id)) {
         const { resolve, reject } = this.#pending.get(message.id);
@@ -213,8 +224,9 @@ async function main() {
     if (!existsSync(absolute)) throw new Error(`No such file: ${absolute}`);
     url = pathToFileURL(absolute).href;
   }
+  // Blank first, then navigated: the key binding has to exist before the page's own scripts run.
   const created = await fetch(
-    `http://127.0.0.1:${port}/json/new?${encodeURIComponent(url)}`,
+    `http://127.0.0.1:${port}/json/new?${encodeURIComponent('about:blank')}`,
     { method: 'PUT' },
   ).then((response) => response.json());
 
@@ -232,6 +244,11 @@ async function main() {
   await cdp.send('Log.enable');
   await cdp.send('Page.enable');
   await cdp.send('Inspector.enable').catch(() => { });
+  await cdp.send('Runtime.addBinding', { name: KEYS_BINDING }).catch(() => { });
+  cdp.onBinding((params) => {
+    if (params.name === KEYS_BINDING) answerKeys(params.payload, (method, args) => cdp.send(method, args)).catch(() => { });
+  });
+  await cdp.send('Page.navigate', { url });
 
   const deadline = Date.now() + timeoutMs;
   let payload = null;

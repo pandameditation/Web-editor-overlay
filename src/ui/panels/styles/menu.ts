@@ -1,3 +1,4 @@
+import { tieLayer } from '../../../core/focus.js';
 import { css, html, nothing, type CSSResult, type TemplateResult } from 'lit';
 import { icon } from '../../icons.js';
 import { anchoredStyle } from '../../place.js';
@@ -163,24 +164,56 @@ export function menuKeydown(event: KeyboardEvent, onClose: () => void): void {
 export function placeLayer(
   layer: HTMLElement | null,
   anchor: Element | null,
-  options: { minWidth?: number; gap?: number } = {},
+  options: { minWidth?: number; gap?: number; left?: number; source?: HTMLElement | null } = {},
 ): void {
   if (!layer || !anchor) return;
-  if (typeof layer.showPopover === 'function' && !layer.matches(':popover-open')) {
-    try {
-      layer.showPopover();
-    } catch {
-      /* already open, or popovers are unsupported: it still renders in place */
-    }
-  }
+  showLayer(layer, options.source ?? null);
+  /*
+   * `left` lines the layer up with something other than the anchor across, keeping the anchor's
+   * rows for above or below: a card popped from a class name sits over the card's own column.
+   */
+  const rect = anchor.getBoundingClientRect();
   const next = anchoredStyle({
-    anchor: anchor.getBoundingClientRect(),
+    anchor: options.left === undefined
+      ? rect
+      : new DOMRect(options.left, rect.top, options.minWidth ?? rect.width, rect.height),
     popup: layer.getBoundingClientRect(),
     content: layer.scrollHeight,
     minWidth: options.minWidth ?? 220,
     gap: options.gap ?? 4,
   });
   if (layer.getAttribute('style') !== next) layer.setAttribute('style', next);
+}
+
+/** `showPopover({ source })`, which this TypeScript's DOM types do not describe yet. */
+type ShowPopover = (this: HTMLElement, options?: { source?: HTMLElement }) => void;
+
+/** The opener each open layer was shown for, so a layer moved to another opener is shown again. */
+const shownFor = new WeakMap<HTMLElement, HTMLElement | null>();
+
+/**
+ * Show `layer` in the top layer, for `source` when given.
+ *
+ * The source ties the layer to its opener for the browser and assistive technology. Tab order is
+ * the overlay's own (`containTab` in `core/focus.ts`), so the layer is tied there too: Tab from the
+ * opener goes in, Shift+Tab from its first control comes back, Tab past its last goes on.
+ */
+function showLayer(layer: HTMLElement, source: HTMLElement | null): void {
+  if (typeof layer.showPopover !== 'function') return;
+  tieLayer(layer, source);
+  const open = layer.matches(':popover-open');
+  if (open && shownFor.get(layer) === source) return;
+  try {
+    if (open) layer.hidePopover();
+    try {
+      (layer.showPopover as ShowPopover).call(layer, source ? { source } : undefined);
+    } catch {
+      layer.showPopover();
+    }
+    shownFor.set(layer, source);
+  } catch {
+    /* popovers are unsupported: it still renders in place */
+  }
 }
 
 export const menuStyles: CSSResult = css`

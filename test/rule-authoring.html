@@ -404,7 +404,7 @@
           api.select(document.getElementById('promote-class'));
           await frames();
           await wait(400);
-          // The class chips are in the element header now; a name opens its card in Sources.
+          // The class chips are in the element header; a name opens its card in a popover there.
           const chip = Array.from(panelRoot().querySelectorAll('.ident .cchip .name')).find(
             (c) => c.textContent.includes('promoted'),
           );
@@ -412,7 +412,7 @@
           await frames();
           await wait(350);
           const classFamily = () =>
-            familyIn(sectionNamed('Sources')?.querySelector('.cls[data-group="classes"] .decls'));
+            familyIn(panelRoot().querySelector('.cardpop .cls[data-group="classes"] .decls'));
           results.promoting.classHasOneControlPerSide = classFamily()?.controls === 2;
           results.promoting.classStartsWithSidesWinning = classFamily()?.pressed === 'sides';
           classFamily()?.other?.click();

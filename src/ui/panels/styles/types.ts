@@ -1,3 +1,4 @@
+import type { TemplateResult, nothing } from 'lit';
 import type { ElementModel, RuleEntry } from '../../../core/cascade.js';
 import type { EditorEngine } from '../../../core/editor.js';
 import type { AddDestination, SaveContext, SaveOption, SavePlan } from '../../../core/save-plan.js';
@@ -40,8 +41,21 @@ export interface PendingSave {
 export interface StylesUiState {
   /** What the panel is being filtered by. Empty shows everything. */
   filter: string;
-  /** The one cascade popover. `rowId` names the row it is anchored to. */
-  popover: { scope: RowScope; property: string; rowId: string } | null;
+  /**
+   * The one cascade popover. `rowId` names the row it is anchored to. `source` is the line whose
+   * card is expanded under it, by the rule entry's `order`, with the block to focus in it.
+   */
+  popover: {
+    scope: RowScope;
+    property: string;
+    rowId: string;
+    source?: { key: string; order: number; slot: string; state: string } | null;
+  } | null;
+  /**
+   * A Sources card opened over the panel from a header class name. `key` is the card's family;
+   * `anchor` selects what it is placed against.
+   */
+  cardPop: { key: string; anchor: string } | null;
   /** The one open menu, by id. */
   menu: { id: string } | null;
   /** The one open adder: its id, the draft, and the destination picked in it. */
@@ -114,6 +128,11 @@ export interface StylesHost extends AdderHost {
   forkForm: FormErrors;
   /** Open a card in Sources, scroll it into view and flash it. */
   openCard(key: string): void;
-  /** Open the card a declaration is written in, at its size, from a popover line's link. */
+  /**
+   * A popover line's link: expand the card the declaration is written in under that line, at its
+   * size, or collapse it when it is the one expanded.
+   */
   openSource(property: string, entry: RuleEntry): void;
+  /** The card for `key`, drawn whole and always open, for a popover to hold. */
+  sourceCard(key: string): TemplateResult | typeof nothing;
 }

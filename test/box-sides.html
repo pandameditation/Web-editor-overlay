@@ -518,7 +518,8 @@
           await openSection('Sources');
           // Expand .boxy, which declares margin-left, so two lists on screen can answer to the
           // same property name. That is the whole precondition for the focus bug.
-          // The class chips are in the element header now; a name opens its card in Sources.
+          // The class chips are in the element header; a name opens its card in a popover, so the
+          // class's list sits over the panel while the rule's list is in Sources.
           Array.from(panel.shadowRoot.querySelectorAll('.ident .cchip .name'))
             .find((c) => c.textContent.includes('boxy'))
             ?.click();
@@ -527,7 +528,7 @@
 
           // The page rule is an OTHER RULES card, open by default.
           const ruleList = () => sectionNamed('Sources')?.querySelector('.cls[data-card="#subject"]');
-          const boxyCard = () => sectionNamed('Sources')?.querySelector('.cls[data-card=".boxy"]');
+          const boxyCard = () => panel.shadowRoot.querySelector('.cardpop .cls[data-card=".boxy"]');
           const ruleRows = () =>
             Array.from(ruleList()?.querySelectorAll('heo-value-field') ?? []).map(
               (f) => f.dataset.property,

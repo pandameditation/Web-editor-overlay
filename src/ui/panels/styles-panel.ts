@@ -1,6 +1,6 @@
 import { css, html, nothing, type PropertyValues, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
-import { mediaIcon, mediaShort } from '../../core/breakpoints.js';
+import { isWidthQuery, mediaIcon, mediaKind, mediaNow, mediaShort } from '../../core/breakpoints.js';
 import { rulesPass, type ElementModel, type RuleEntry, type WriteTarget } from '../../core/cascade.js';
 import {
   parentLayoutProperties,
@@ -35,6 +35,7 @@ import {
   sourcesStyles,
   visibleAt,
   type CardView,
+  type Popped,
 } from './styles/family-card.js';
 import { renderCascadePopover, popoverStyles } from './styles/cascade-popover.js';
 import { headerStyles, renderElementHeader } from './styles/header.js';
@@ -245,6 +246,7 @@ const EMPTY_UI: StylesUiState = {
   filter: '',
   effPick: null,
   popover: null,
+  cardPop: null,
   menu: null,
   adder: null,
   pending: null,
@@ -260,6 +262,13 @@ const EMPTY_UI: StylesUiState = {
   detachOpen: null,
   forkDraft: '',
 };
+
+/** The focused element, through shadow roots. */
+function deepActive(): Element | null {
+  let node: Element | null = document.activeElement;
+  while (node?.shadowRoot?.activeElement) node = node.shadowRoot.activeElement;
+  return node;
+}
 
 /**
  * The style editor.
@@ -441,8 +450,6 @@ export class HeoStylesPanel extends HeoElement {
   #memo: { key: unknown[]; model: ElementModel } | null = null;
   /** What the last update saw, to tell a new selection or preview width from a re-render. */
   #seen: { element: HTMLElement | null; width: number | null } = { element: null, width: null };
-  /** The popover that was open after the last render, to focus a new one once. */
-  #shownPopover: string | null = null;
 
   /**
    * The selected element's model, built once per render and reused until something it reads
@@ -483,6 +490,7 @@ export class HeoStylesPanel extends HeoElement {
       this.ui = {
         ...this.ui,
         popover: null,
+        cardPop: null,
         menu: null,
         adder: null,
         pending: null,
@@ -511,13 +519,41 @@ export class HeoStylesPanel extends HeoElement {
     }
   }
 
+  /*
+   * Focus stays where it was when a layer opens: on the dot, the class name, the link. Each layer
+   * is shown for that opener, so Tab goes from it into the layer and on out of it, and closing puts
+   * focus back on it (`#refocusOpener`). Moving focus into the layer instead left it on the layer's
+   * own box, which shows no ring and sits at the end of the panel's tab order.
+   */
   override updated(): void {
     this.#placeLayers();
-    const popover = this.ui.popover?.rowId ?? null;
-    if (popover && popover !== this.#shownPopover) {
-      this.renderRoot.querySelector<HTMLElement>('.pop')?.focus({ preventScroll: true });
+  }
+
+  /** What opened each open layer, as a selector into the panel; innermost first. */
+  #openers(): Array<{ layer: string; opener: string }> {
+    const out: Array<{ layer: string; opener: string }> = [];
+    const popover = this.ui.popover;
+    if (popover?.source) {
+      out.push({
+        layer: `.pop:not(.cardpop) .srccard[data-order="${popover.source.order}"]`,
+        opener: `.pop:not(.cardpop) .src[data-order="${popover.source.order}"]`,
+      });
     }
-    this.#shownPopover = popover;
+    if (popover) out.push({ layer: '.pop:not(.cardpop)', opener: `.row[data-row="${CSS.escape(popover.rowId)}"] .dots` });
+    if (this.ui.cardPop) out.push({ layer: '.cardpop', opener: this.ui.cardPop.anchor });
+    return out;
+  }
+
+  /**
+   * Close something and give focus back to what opened it, unless focus has gone somewhere else
+   * that can hold it. `opener` is a selector into the panel.
+   */
+  #closeTo(next: Partial<StylesUiState>, opener: string): void {
+    const active = deepActive();
+    const keep = active && active !== document.body && this.renderRoot.contains(active) &&
+      !this.#openers().some(({ layer }) => this.renderRoot.querySelector(layer)?.contains(active));
+    this.#patch(next);
+    if (!keep) this.#focusSelector(opener);
   }
 
   /** Keep the open popover and menu under what they belong to; close one whose anchor went away. */
@@ -527,7 +563,19 @@ export class HeoStylesPanel extends HeoElement {
     if (popover) {
       const anchor = root.querySelector(`.row[data-row="${CSS.escape(popover.rowId)}"]`);
       if (!anchor) this.ui = { ...this.ui, popover: null };
-      else placeLayer(root.querySelector<HTMLElement>('.pop'), anchor, { minWidth: 300, gap: 4 });
+      else {
+        placeLayer(root.querySelector<HTMLElement>('.pop:not(.cardpop)'), anchor, {
+          minWidth: 300,
+          gap: 4,
+          source: anchor.querySelector<HTMLElement>('.dots'),
+        });
+      }
+    }
+    const cardPop = this.ui.cardPop;
+    if (cardPop) {
+      const anchor = root.querySelector<HTMLElement>(cardPop.anchor);
+      if (!anchor) this.ui = { ...this.ui, cardPop: null };
+      else placeLayer(root.querySelector<HTMLElement>('.cardpop'), anchor, { ...this.#cardPopFrame(cardPop.key), source: anchor });
     }
     const menu = this.ui.menu;
     if (menu) {
@@ -536,7 +584,12 @@ export class HeoStylesPanel extends HeoElement {
       // gets the bar's width rather than spilling past the panel's edge.
       const place = root.querySelector(`[data-menu-place="${CSS.escape(menu.id)}"]`) ?? anchor;
       if (!anchor) this.ui = { ...this.ui, menu: null };
-      else placeLayer(root.querySelector<HTMLElement>(`.menu[data-menu="${CSS.escape(menu.id)}"]`), place, { minWidth: 260 });
+      else {
+        placeLayer(root.querySelector<HTMLElement>(`.menu[data-menu="${CSS.escape(menu.id)}"]`), place, {
+          minWidth: 260,
+          source: anchor instanceof HTMLElement ? anchor : null,
+        });
+      }
     }
   }
 
@@ -548,7 +601,7 @@ export class HeoStylesPanel extends HeoElement {
   #host(el: HTMLElement, model: ElementModel): StylesHost {
     // eslint-disable-next-line @typescript-eslint/no-this-alias
     const panel = this;
-    return {
+    const host: StylesHost = {
       engine: this.editor,
       element: el,
       model,
@@ -576,7 +629,15 @@ export class HeoStylesPanel extends HeoElement {
       },
       onFocus: (property, scope) => this.#focusAfterRender(property, scope ?? ''),
       openSource: (property, entry) => this.#openSource(property, entry),
+      sourceCard: (key) => this.#poppedCard(el, model, host, key, {
+        onClose: () => {
+          const popover = this.ui.popover;
+          if (!popover?.source) return;
+          this.#closeTo({ popover: { ...popover, source: null } }, `.pop:not(.cardpop) .src[data-order="${popover.source.order}"]`);
+        },
+      }),
     };
+    return host;
   }
 
   /**
@@ -615,7 +676,17 @@ export class HeoStylesPanel extends HeoElement {
           this.#patch({ finderOpen: open });
           this.#focusSelector(open ? '.ident .finder heo-value-field' : '.ident .cchip.add');
         },
-        onOpenClass: (name) => this.#openCard(`.${CSS.escape(name)}`),
+        openClass: (() => {
+          const key = this.ui.cardPop?.key;
+          return Array.from(el.classList).find((name) => `.${CSS.escape(name)}` === key) ?? null;
+        })(),
+        // A toggle: the open class's name closes its card.
+        onOpenClass: (name) => {
+          const key = `.${CSS.escape(name)}`;
+          const anchor = `.ident .cchip[data-class="${CSS.escape(name)}"] .name`;
+          if (this.ui.cardPop?.key === key) this.#closeTo({ cardPop: null }, anchor);
+          else this.#popCard(key, anchor);
+        },
         onRemoveClass: (name) => this.editor.toggleClass(name, el),
         finder: this.#renderFinder(el),
       })}
@@ -661,6 +732,7 @@ export class HeoStylesPanel extends HeoElement {
           popoverOn === el ? model : this.editor.elementModel(popoverOn),
         )
         : nothing}
+      ${this.ui.cardPop ? this.#renderCardPop(el, model, host) : nothing}
     `;
   }
 
@@ -834,8 +906,8 @@ export class HeoStylesPanel extends HeoElement {
       ${renderBlockHeader(
         mediaIcon(media),
         short,
-        'size',
-        html`<span class="note">${now ? `in effect at ${model.width}px` : `not at ${model.width}px`}</span>`,
+        mediaKind(media),
+        html`<span class="note">${mediaNow(media, now, model.width)}</span>`,
       )}
       <div class="rows" data-declarations=${listId}>
         ${properties.map((property) =>
@@ -843,7 +915,9 @@ export class HeoStylesPanel extends HeoElement {
       </div>
       ${properties.length
         ? nothing
-        : html`<p class="hint" style="margin:0">Nothing changes at this size yet.</p>`}
+        : html`<p class="hint" style="margin:0">
+            Nothing changes ${isWidthQuery(media) ? 'at this size' : 'under this media query'} yet.
+          </p>`}
       ${renderBlockAdder(host, listId, this.#sizeDestinations(el, model, picked, media, short), '')}
     </div>`;
   }
@@ -1027,8 +1101,42 @@ export class HeoStylesPanel extends HeoElement {
    * and only a new edit, a new selection or a new preview width cancels it. An adder with a draft
    * is left to its own blur, which adds what was typed.
    */
+  /** When the last press landed outside this panel: focus is not pulled back into it after one. */
+  #pressedOutsideAt = 0;
+
+  /*
+   * Focus that drops out of a layer onto nothing goes back to the layer's opener.
+   *
+   * A value field blurs itself on Escape, a press on blank panel space blurs whatever had focus,
+   * and a removed control takes focus with it. Each left focus on the document body, where the next
+   * Escape reached the page's keymap and deselected the element. A press outside the panel is left
+   * alone: the user moved on.
+   */
+  #onFocusOut = (event: FocusEvent): void => {
+    if (event.relatedTarget) return;
+    const path = event.composedPath();
+    const root = this.renderRoot;
+    // By the path, not `contains`: a field's input sits in the field's own shadow root.
+    const owner = this.#openers().find(({ layer, opener }) => {
+      const at = root.querySelector(layer);
+      const by = root.querySelector(opener);
+      return (at && path.includes(at)) || (by && path[0] === by);
+    });
+    if (!owner) return;
+    requestAnimationFrame(() => {
+      if (performance.now() - this.#pressedOutsideAt < 400) return;
+      const active = deepActive();
+      if (active && active !== document.body) return;
+      // The innermost opener still on screen: a collapsed card's link, else the popover's dot.
+      const back = [owner, ...this.#openers()].map(({ opener }) => root.querySelector<HTMLElement>(opener)).find(Boolean)
+        ?? root.querySelector<HTMLElement>(owner.opener);
+      back?.focus({ preventScroll: true });
+    });
+  };
+
   #onOutsidePress = (event: Event): void => {
     const path = event.composedPath();
+    if (!path.includes(this)) this.#pressedOutsideAt = performance.now();
     const inside = (selector: string): boolean =>
       path.some((node) => node instanceof Element && node.matches?.(selector));
     const next: Partial<StylesUiState> = {};
@@ -1036,6 +1144,9 @@ export class HeoStylesPanel extends HeoElement {
     if (popover && !inside('.pop') && !inside(`.row[data-row="${CSS.escape(popover.rowId)}"] .dots`)) {
       next.popover = null;
     }
+    // Its own menus, adders, value lists and save box are inside it, so a press there keeps it.
+    const cardPop = this.ui.cardPop;
+    if (cardPop && !inside('.cardpop') && !inside(cardPop.anchor)) next.cardPop = null;
     const menu = this.ui.menu;
     if (menu && !inside(`.menu[data-menu="${CSS.escape(menu.id)}"]`) && !inside(`[data-menu-anchor="${CSS.escape(menu.id)}"]`)) {
       next.menu = null;
@@ -1054,7 +1165,7 @@ export class HeoStylesPanel extends HeoElement {
    * it, the dock is dragged, the window is resized.
    */
   #onViewportChange = (): void => {
-    if (this.ui.popover || this.ui.menu) this.#placeLayers();
+    if (this.ui.popover || this.ui.menu || this.ui.cardPop) this.#placeLayers();
   };
 
   /*
@@ -1072,6 +1183,11 @@ export class HeoStylesPanel extends HeoElement {
     } else if (ui.adder) {
       this.adderForm.reset();
       this.#patch({ adder: null });
+    } else if (ui.popover?.source) {
+      // An expanded card collapses first, back to its line's link.
+      const order = ui.popover.source.order;
+      this.#patch({ popover: { ...ui.popover, source: null } });
+      this.#focusSelector(`.pop:not(.cardpop) .src[data-order="${order}"]`);
     } else if (ui.popover) {
       const rowId = ui.popover.rowId;
       this.#patch({ popover: null });
@@ -1079,6 +1195,12 @@ export class HeoStylesPanel extends HeoElement {
     } else if (ui.pending) {
       const el = this.editor.selected;
       if (el) cancelSave(this.#host(el, this.#model(el)), true);
+    } else if (ui.cardPop) {
+      // After the save box: one opened inside the card is closer in than the card itself.
+      const anchor = ui.cardPop.anchor;
+      this.#patch({ cardPop: null });
+      // Back to what opened it: the class name, or the dot of the row a popover link came from.
+      this.#focusSelector(anchor.startsWith('.row') ? `${anchor} .dots` : anchor);
     } else {
       return;
     }
@@ -1103,6 +1225,7 @@ export class HeoStylesPanel extends HeoElement {
     this.#scrollRoot = root === document ? null : root;
     if (this.#scrollRoot) listen(this.#scrollRoot, 'scroll', this.#onViewportChange, true);
     this.addEventListener('keydown', this.#onKeydown);
+    this.renderRoot.addEventListener('focusout', this.#onFocusOut as EventListener);
   }
 
   override disconnectedCallback(): void {
@@ -1113,6 +1236,7 @@ export class HeoStylesPanel extends HeoElement {
     if (this.#scrollRoot) unlisten(this.#scrollRoot, 'scroll', this.#onViewportChange, true);
     this.#scrollRoot = null;
     this.removeEventListener('keydown', this.#onKeydown);
+    this.renderRoot.removeEventListener('focusout', this.#onFocusOut as EventListener);
   }
 
   /* ---------------------------------------------------------------------- */
@@ -1435,7 +1559,7 @@ export class HeoStylesPanel extends HeoElement {
     if (options.slot) picks.set(key, options.slot);
     if (userToggled.get('sources') === false) userToggled.delete('sources');
     this.#clearFilter();
-    this.#patch({ popover: null, tab: fits ? tab : 'all', closedCards: closed, cardPicks: picks });
+    this.#patch({ popover: null, cardPop: null, tab: fits ? tab : 'all', closedCards: closed, cardPicks: picks });
     void this.updateComplete.then(() => requestAnimationFrame(() => {
       const card = this.renderRoot.querySelector<HTMLElement>(`.cls[data-card="${CSS.escape(key)}"]`);
       if (!card) return;
@@ -1453,17 +1577,133 @@ export class HeoStylesPanel extends HeoElement {
   }
 
   /**
-   * Where a popover line's link goes: the card the declaration is written in, at its size.
+   * Open a Sources card over the panel, against `anchor`: where it was asked for, so the class or
+   * rule is edited without leaving the row (or the header) and scrolling down to its card. With a
+   * property, that declaration is focused in the block at `slot` and `state`.
    *
-   * A rule not in effect at the width being previewed is not on screen, so the preview goes back
-   * to Actual first, and the card is picked only once the new width has cleared the old picks.
+   * The Sources copy steps aside while it is open, so the card exists once: its adders, menus and
+   * focus targets are found by id, and two copies would answer to the same one.
+   */
+  #popCard(key: string, anchor: string, options: { slot?: string; state?: string; property?: string } = {}): void {
+    const closed = new Set(this.ui.closedCards);
+    closed.delete(key);
+    const picks = new Map(this.ui.cardPicks);
+    if (options.slot) picks.set(key, options.slot);
+    this.#patch({ popover: null, menu: null, adder: null, cardPop: { key, anchor }, closedCards: closed, cardPicks: picks });
+    // Focus stays on the class name; Tab goes on into the card from there.
+    if (!options.property) return;
+    void this.updateComplete.then(() => requestAnimationFrame(() => {
+      const pop = this.renderRoot.querySelector<HTMLElement>('.cardpop');
+      if (pop) focusDeclaration(pop, options.property!, blockId(key, options.slot ?? 'base', options.state ?? ''));
+    }));
+  }
+
+  /**
+   * Where the popped card goes across: over its own place in Sources, at that card's width, so it
+   * wraps and lines up exactly as it does there; only its height follows what opened it. The card
+   * keeps its place while popped (it shows a note there); with no place on screen (another tab),
+   * the panel's own column.
+   */
+  #cardPopFrame(key: string): { minWidth: number; gap: number; left?: number } {
+    const place = this.renderRoot.querySelector(`heo-section[heading="Sources"] .cls[data-card="${CSS.escape(key)}"]`)
+      ?? this.renderRoot.querySelector('heo-section');
+    const box = place?.getBoundingClientRect();
+    /*
+     * The popover's frame is 3px of padding and 1px of border each side, and the popped card drops
+     * its own 1px border: 6px wider than the place leaves the card's rows exactly as wide.
+     */
+    return box && box.width
+      ? { minWidth: Math.round(box.width) + 6, gap: 4, left: Math.round(box.left) - 3 }
+      : { minWidth: 320, gap: 4 };
+  }
+
+  /**
+   * One Sources card, drawn for a popover: the same card as in Sources, so it edits the same way,
+   * always open, and unfiltered, since a search narrows the panel, not the card asked for. Nothing
+   * when the element has no such card.
+   */
+  #poppedCard(
+    el: HTMLElement,
+    model: ElementModel,
+    host: StylesHost,
+    key: string,
+    popped: Popped,
+  ): TemplateResult | typeof nothing {
+    const whole: StylesHost = Object.assign(Object.create(host) as StylesHost, {
+      filtering: false,
+      hit: () => true,
+    });
+    const { classes, others } = this.#sourceCards(el, model, whole);
+    const named = classes.find(({ name, view }) => (view?.family.key ?? `.${CSS.escape(name)}`) === key);
+    const other = others.find((view) => view.family.key === key);
+    return named
+      ? named.view
+        ? renderFamilyCard(named.view, whole, { group: 'classes', popped })
+        : renderUnknownCard(named.name, whole, { popped })
+      : other
+        ? renderFamilyCard(other, whole, { group: 'rules', popped })
+        : nothing;
+  }
+
+  /** A class name's card, in a popover under the chips. */
+  #renderCardPop(el: HTMLElement, model: ElementModel, host: StylesHost): TemplateResult | typeof nothing {
+    const pop = this.ui.cardPop;
+    if (!pop) return nothing;
+    const card = this.#poppedCard(el, model, host, pop.key, {
+      onClose: () => this.#closeTo({ cardPop: null }, pop.anchor),
+    });
+    if (card === nothing) return nothing;
+    return html`<div
+      class="pop cardpop"
+      role="dialog"
+      popover="manual"
+      tabindex="-1"
+      data-card-pop=${pop.key}
+      aria-label=${`Edit ${pop.key}`}
+    >
+      ${card}
+    </div>`;
+  }
+
+  /**
+   * A popover line's link, as a toggle: expand the card the declaration is written in under that
+   * line, at the rule's size and with the declaration focused, or collapse it when it is the one
+   * expanded. The popover stays open either way, so the cascade and the rule are edited together.
+   *
+   * A rule not in effect at the width being previewed has nothing to show at it, so the preview
+   * goes back to Actual first, and the popover is opened again there. A family the element has no
+   * card for (a parent's rule) still opens in Sources.
    */
   #openSource(property: string, entry: RuleEntry): void {
-    this.#patch({ popover: null });
+    const popover = this.ui.popover;
     const el = this.editor.selected;
-    if (!el) return;
-    const slot = this.#model(el).slotOf(entry);
-    const open = (): void => this.#openCard(entry.family, { slot, state: entry.state, property });
+    if (!popover || !el) return;
+    if (popover.source?.order === entry.order) {
+      this.#patch({ popover: { ...popover, source: null } });
+      this.#focusSelector(`.pop:not(.cardpop) .src[data-order="${entry.order}"]`);
+      return;
+    }
+    const model = this.#model(el);
+    const slot = model.slotOf(entry);
+    const known = model.families().classes.concat(model.families().others).some((one) => one.key === entry.family) ||
+      Array.from(el.classList).some((name) => `.${CSS.escape(name)}` === entry.family);
+    if (popover.scope.kind === 'parent' || !known) {
+      this.#patch({ popover: null });
+      this.#openCard(entry.family, { slot, state: entry.state, property });
+      return;
+    }
+    const source = { key: entry.family, order: entry.order, slot, state: entry.state };
+    const open = (): void => {
+      const picks = new Map(this.ui.cardPicks);
+      picks.set(entry.family, slot);
+      const closed = new Set(this.ui.closedCards);
+      closed.delete(entry.family);
+      this.#patch({ popover: { ...popover, source }, cardPop: null, adder: null, menu: null, cardPicks: picks, closedCards: closed });
+      void this.updateComplete.then(() => requestAnimationFrame(() => {
+        const under = this.renderRoot.querySelector<HTMLElement>(`.pop:not(.cardpop) .srccard[data-order="${entry.order}"]`);
+        if (under) focusDeclaration(under, property, blockId(entry.family, slot, entry.state));
+      }));
+    };
     if (!visibleAt(entry, this.editor.store.value.previewWidth)) {
       this.editor.setPreviewWidth(null);
       void this.updateComplete.then(open);

@@ -298,7 +298,8 @@
         const fieldIn = (list, property) => rowIn(list, property)?.querySelector('heo-value-field');
         const moons = (row) => row?.querySelectorAll('.dots .moon').length ?? -1;
         const whereOf = (row) => row?.closest('.prow')?.querySelector('.under .where');
-        const pop = () => root().querySelector('.pop');
+        // The cascade popover, not a card opened over the panel from one of its links.
+        const pop = () => root().querySelector('.pop:not(.cardpop)');
         const openDot = async (list, property) => {
           rowIn(list, property)?.querySelector('.dots')?.click();
           await settle();
@@ -448,18 +449,32 @@
           await frames();
         }
         /*
-         * A line's link opens the card it is written in, at that rule's size, with the declaration
-         * focused: following ".card ≥768px →" lands on the tablet slot of the .card card, not on its
-         * All sizes view, where that padding is not listed.
+         * A line's link expands the card it is written in right under that line, inside the
+         * popover, at that rule's size, with the declaration focused: following ".card ≥768px"
+         * lands on the tablet slot of the .card card, not on its All sizes view, where that padding
+         * is not listed. The link is a toggle, and the popover stays open both ways.
          */
         const linkSlot = below768 ? 'tablet' : 'phone';
-        lines().find((line) => line.classList.contains('idle') && line.querySelector('.src').textContent.includes(otherLabel))
-          ?.querySelector('button.src')?.click();
+        const link = () => lines().find((line) => line.classList.contains('idle') && line.querySelector('.src').textContent.includes(otherLabel))
+          ?.querySelector('button.src');
+        const linkOrder = link()?.dataset.order;
+        link()?.click();
         await settle(400);
-        const linkedCard = root().querySelector('heo-section[heading="Sources"] .cls[data-card=".card"]');
+        const under = () => pop()?.querySelector(`.srccard[data-order="${linkOrder}"]`);
+        const linkedCard = under()?.querySelector('.cls[data-card=".card"]');
         const focused = root().activeElement;
+        const linkBox = link()?.getBoundingClientRect();
+        const underBox = under()?.getBoundingClientRect();
+        results.popover.linkExpandsTheCardUnderIt =
+          Boolean(pop()) && Boolean(linkedCard) && link()?.getAttribute('aria-expanded') === 'true' &&
+          // In the link's own line, straight after its "Edits …" caption, and below the link.
+          under()?.parentElement === link()?.closest('.pl') &&
+          under()?.previousElementSibling?.matches('.where') === true &&
+          underBox.top >= linkBox.bottom &&
+          // One copy: the Sources card steps aside while this one is open.
+          !root().querySelector('heo-section[heading="Sources"] .cls[data-card=".card"] heo-value-field');
         results.popover.linkOpensTheCardAtTheRulesSize =
-          !pop() &&
+          Boolean(pop()) &&
           linkedCard?.querySelector(':scope > header')?.getAttribute('aria-expanded') === 'true' &&
           linkedCard?.querySelector('.slots [aria-pressed="true"]')?.dataset.slot === linkSlot &&
           focused?.localName === 'heo-value-field' && focused.dataset.property === 'padding' &&
@@ -467,7 +482,80 @@
           focused.value === (below768 ? '20px 28px' : '10px 12px');
         focused?.shadowRoot?.querySelector('input')?.blur();
         await settle();
+        // Pressed again, the card folds away and the popover stays, focus on the link.
+        link()?.click();
+        await settle(250);
+        results.popover.theLinkIsAToggle =
+          Boolean(pop()) && !under() && link()?.getAttribute('aria-expanded') === 'false' &&
+          root().activeElement === link() &&
+          Boolean(root().querySelector('heo-section[heading="Sources"] .cls[data-card=".card"] heo-value-field'));
+        // Escape folds an expanded card first, and only the next one closes the popover.
+        link()?.click();
+        await settle(300);
+        pop()?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true, cancelable: true }));
+        await settle(200);
+        results.popover.escapeFoldsTheCardFirst = Boolean(pop()) && !under() && root().activeElement === link();
         await closePop();
+        /*
+         * Focus around the popover, with real keys: the harness's trusted Tab and Escape. Opening
+         * left focus on the popover's own box (no ring, end of the panel's tab order), and closing
+         * dropped it on the page, where the next Escape deselected the element.
+         */
+        {
+          let keySeq = 0;
+          const keyWaiters = new Map();
+          window.__heoKeysDone = (id) => { keyWaiters.get(id)?.(); keyWaiters.delete(id); };
+          const keys = (...names) => new Promise((resolve) => {
+            const id = ++keySeq;
+            keyWaiters.set(id, resolve);
+            window.__heoPressKeys(JSON.stringify({ id, keys: names }));
+          }).then(() => settle(150));
+          const deepFocus = () => {
+            let node = document.activeElement;
+            while (node?.shadowRoot?.activeElement) node = node.shadowRoot.activeElement;
+            return node;
+          };
+          const inside = (box, node) => {
+            for (let at = node; at; at = at.parentNode ?? at.host ?? null) if (at === box) return true;
+            return false;
+          };
+          const dot = () => rowIn('effective', 'padding')?.querySelector('.dots');
+          dot()?.focus();
+          dot()?.click();
+          await settle(200);
+          const staysOnTheDot = Boolean(pop()) && deepFocus() === dot();
+          await keys('Tab');
+          const tabbedIn = inside(pop(), deepFocus());
+          await keys('Shift+Tab');
+          const shiftTabbedBack = deepFocus() === dot();
+          // A card expanded under a line, closed from its own header: focus goes back to its link.
+          const firstLink = () => pop()?.querySelector('button.src');
+          firstLink()?.focus();
+          firstLink()?.click();
+          await settle(300);
+          pop()?.querySelector('.srccard .cls > header')?.click();
+          await settle(250);
+          const headerCloseReturnsToTheLink = !pop()?.querySelector('.srccard') && deepFocus() === firstLink();
+          // A value field inside blurs itself on Escape: focus comes back to the link, not the page.
+          firstLink()?.click();
+          await settle(300);
+          pop()?.querySelector('.srccard heo-value-field')?.focusInput?.();
+          await settle(100);
+          await keys('Escape');
+          await keys('Escape');
+          const fieldEscapeStaysInThePanel = Boolean(pop()) && inside(pop(), deepFocus());
+          await keys('Escape');
+          await keys('Escape');
+          const escapesCloseBackToTheDot = !pop() && deepFocus() === dot() && engine.selected === target;
+          results.focus = {
+            openingKeepsFocusOnTheDot: staysOnTheDot,
+            tabFromTheDotGoesIntoThePopover: tabbedIn,
+            shiftTabFromItsFirstControlComesBack: shiftTabbedBack,
+            closingACardFromItsHeaderReturnsToItsLink: headerCloseReturnsToTheLink,
+            escapeInAFieldInsideKeepsFocusInThePopover: fieldEscapeStaysInThePanel,
+            escapesCloseBackToTheDotAndKeepTheSelection: escapesCloseBackToTheDot,
+          };
+        }
         await openDot('typography', 'font-family');
         const inherited = pop()?.querySelector('.none')?.textContent.replace(/\s+/g, ' ') ?? '';
         await closePop();

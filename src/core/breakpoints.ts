@@ -264,6 +264,39 @@ export function isWidthQuery(media: string): boolean {
   return /\b(?:min-|max-)?(?:device-)?(?:width|height|aspect-ratio)\b|\borientation\b/i.test(media);
 }
 
+/*
+ * Saying a media query the way its kind reads.
+ *
+ * Only a query about the viewport is a size. `print`, `(prefers-reduced-motion: reduce)` and
+ * `(prefers-color-scheme: dark)` hold or not whatever the width, so "size", "at this size" and
+ * "not at 333px" said something untrue about them: the width has nothing to do with it.
+ */
+
+/** What a group under `media` is: a `size`, or a `media query`. */
+export function mediaKind(media: string): 'size' | 'media query' {
+  return isWidthQuery(media) ? 'size' : 'media query';
+}
+
+/** `media` as a label: `≤767px` for a size, `@media print` for anything else. */
+export function mediaLabel(media: string): string {
+  return isWidthQuery(media) ? mediaShort(media) : `@media ${media.trim()}`;
+}
+
+/** The phrase for being under `media`: `at ≤767px` for a size, `under @media print` otherwise. */
+export function underMedia(media: string): string {
+  return isWidthQuery(media) ? `at ${mediaShort(media)}` : `under ${mediaLabel(media)}`;
+}
+
+/**
+ * Whether `media` is in effect, said for its kind: a size is `in effect at 768px` or `not at 768px`;
+ * print is `only when printing`; anything else is `in effect now` or `not in effect now`.
+ */
+export function mediaNow(media: string, applies: boolean, width: number): string {
+  if (isWidthQuery(media)) return applies ? `in effect at ${width}px` : `not at ${width}px`;
+  if (/^\s*(?:only\s+)?print\s*$/i.test(media)) return 'only when printing';
+  return applies ? 'in effect now' : 'not in effect now';
+}
+
 /* -------------------------------------------------------------------------- */
 /* States and pseudo-elements                                                  */
 /* -------------------------------------------------------------------------- */

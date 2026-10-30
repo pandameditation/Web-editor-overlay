@@ -1,6 +1,6 @@
 import { css, html, nothing, type CSSResult, type TemplateResult } from 'lit';
 import { repeat } from 'lit/directives/repeat.js';
-import { EDITABLE_STATES, isPseudoElement, mediaShort, needsGeneratedContent } from '../../../core/breakpoints.js';
+import { EDITABLE_STATES, isPseudoElement, isWidthQuery, mediaNow, mediaShort, needsGeneratedContent } from '../../../core/breakpoints.js';
 import { classFamily, type Family, type RuleEntry, type WriteTarget } from '../../../core/cascade.js';
 import { simpleClassName } from '../../../core/classes.js';
 import { escapeRegExp } from '../../../core/css.js';
@@ -182,45 +182,45 @@ export function renderBlockAdder(
   const el = host.element;
   return html`<div class="block-add">
     ${renderAdder(
-      {
-        id,
-        mode: options.mode ?? 'property',
-        destinations,
-        selected: open?.dest,
-        disclosure: true,
-        open: Boolean(open),
-        menuOpen: ui.menu?.id === `dest-${id}`,
-        onOpen: () => {
-          host.form.reset();
-          host.patch({ adder: { id, draft: '', dest: '' }, menu: null, popover: null });
-        },
-        onCancel: () => {
-          host.form.reset();
-          host.patch({ adder: null, menu: null });
-        },
-        onPick: (key) => {
-          const adder = host.ui.adder;
-          if (adder) host.patch({ adder: { ...adder, dest: key } });
-        },
-        onMenu: (opened) => {
-          host.patch({ menu: opened ? { id: `dest-${id}` } : null });
-          if (opened) host.focusSelector(`.menu[data-menu="${CSS.escape(`dest-${id}`)}"] .mi[aria-checked="true"]`);
-        },
-        seed: (property) => seedFor(el, state, property),
-        commit: (property, value, dest) => {
-          if (options.mode === 'state') {
-            options.onState?.(property, dest);
-            return;
-          }
-          if (!dest.dest) return;
-          host.patch({ adder: null, menu: null });
-          const { hint } = host.engine.addDeclaration(dest.dest, property, value);
-          if (options.onAdded) options.onAdded(hint);
-          else if (hint) host.engine.notify(hint, 'info');
-        },
+    {
+      id,
+      mode: options.mode ?? 'property',
+      destinations,
+      selected: open?.dest,
+      disclosure: true,
+      open: Boolean(open),
+      menuOpen: ui.menu?.id === `dest-${id}`,
+      onOpen: () => {
+        host.form.reset();
+        host.patch({ adder: { id, draft: '', dest: '' }, menu: null, popover: null });
       },
-      host,
-    )}
+      onCancel: () => {
+        host.form.reset();
+        host.patch({ adder: null, menu: null });
+      },
+      onPick: (key) => {
+        const adder = host.ui.adder;
+        if (adder) host.patch({ adder: { ...adder, dest: key } });
+      },
+      onMenu: (opened) => {
+        host.patch({ menu: opened ? { id: `dest-${id}` } : null });
+        if (opened) host.focusSelector(`.menu[data-menu="${CSS.escape(`dest-${id}`)}"] .mi[aria-checked="true"]`);
+      },
+      seed: (property) => seedFor(el, state, property),
+      commit: (property, value, dest) => {
+        if (options.mode === 'state') {
+          options.onState?.(property, dest);
+          return;
+        }
+        if (!dest.dest) return;
+        host.patch({ adder: null, menu: null });
+        const { hint } = host.engine.addDeclaration(dest.dest, property, value);
+        if (options.onAdded) options.onAdded(hint);
+        else if (hint) host.engine.notify(hint, 'info');
+      },
+    },
+    host,
+  )}
   </div>`;
 }
 
@@ -233,12 +233,14 @@ export function renderBlockAdder(
  * pseudo-element at that size, each block with its own "+ Add property", then "+ Add state or
  * pseudo-element". A card for a class the element wears ends with its way out of the class.
  *
- * `group` is the Sources group it is drawn in.
+ * `group` is the Sources group it is drawn in. `popped` draws it in a popover (a class name's card,
+ * or under a cascade popover's line): always open, and its header calls `onClose`. The Sources copy
+ * of a popped card shows only its header, so the card exists once.
  */
 export function renderFamilyCard(
   view: CardView,
   host: StylesHost,
-  options: { group: 'classes' | 'rules' },
+  options: { group: 'classes' | 'rules'; popped?: Popped },
 ): TemplateResult | typeof nothing {
   if (!view.shown) return nothing;
   const { family, visible, picked } = view;
@@ -246,7 +248,8 @@ export function renderFamilyCard(
   const key = family.key;
   const name = family.isClass ? simpleClassName(key) : null;
   const owned = name ? engine.classes.get(name) : undefined;
-  const open = host.filtering || !ui.closedCards.has(key);
+  const away = !options.popped && poppedKey(host) === key;
+  const open = Boolean(options.popped) || (!away && (host.filtering || !ui.closedCards.has(key)));
   const declarations = visible.reduce((sum, entry) => sum + entry.declarations.length, 0);
   const uses = model.reach(key);
   const lead = visible[0] ?? family.members[0];
@@ -282,13 +285,15 @@ export function renderFamilyCard(
     const baseBlock = html`<div class="block" data-block="base">
       <div class="decls" data-declarations=${baseId}>
         ${base.length && baseRows.length
-          ? repeat(
-            base,
-            (entry) => entry.order,
-            (entry) => renderRows(entryTarget(entry, label, baseId, host), entry.declarations.filter(rowHit), host),
-          )
-          : html`<p class="hint" style="margin:0">
-              ${picked === 'base' ? 'No declarations yet.' : 'Nothing at this size yet.'}
+        ? repeat(
+          base,
+          (entry) => entry.order,
+          (entry) => renderRows(entryTarget(entry, label, baseId, host), entry.declarations.filter(rowHit), host),
+        )
+        : html`<p class="hint" style="margin:0">
+              ${picked === 'base'
+                ? 'No declarations yet.'
+                : `Nothing ${media !== null && !isWidthQuery(media) ? 'under this media query' : 'at this size'} yet.`}
             </p>`}
       </div>
       ${hintFor(baseId)}
@@ -318,36 +323,36 @@ export function renderFamilyCard(
       const live = target.target.kind === 'live';
       return html`<div class="block" data-block=${state}>
         ${renderBlockHeader(
-          pseudo ? 'pseudo' : 'cursor',
-          state,
-          pseudo ? 'pseudo-element' : 'state',
-          host.filtering
-            ? nothing
-            : renderKill({
-              label: `Remove ${target.selector}`,
-              title: live
-                ? `Remove ${state}'s declarations from ${target.selector} (the empty rule stays in ${target.sheetLabel})`
-                : `Remove ${target.selector}`,
-              tight: true,
-              size: 11,
-              onClick: () => engine.removeRule(target.target),
-            }),
-        )}
+        pseudo ? 'pseudo' : 'cursor',
+        state,
+        pseudo ? 'pseudo-element' : 'state',
+        host.filtering
+          ? nothing
+          : renderKill({
+            label: `Remove ${target.selector}`,
+            title: live
+              ? `Remove ${state}'s declarations from ${target.selector} (the empty rule stays in ${target.sheetLabel})`
+              : `Remove ${target.selector}`,
+            tight: true,
+            size: 11,
+            onClick: () => engine.removeRule(target.target),
+          }),
+      )}
         <div class="decls" data-declarations=${id}>
           ${repeat(
-            members,
-            (entry) => entry.order,
-            (entry) => renderRows(entryTarget(entry, stateLabel, id, host), entry.declarations.filter(rowHit), host),
-          )}
+        members,
+        (entry) => entry.order,
+        (entry) => renderRows(entryTarget(entry, stateLabel, id, host), entry.declarations.filter(rowHit), host),
+      )}
         </div>
         ${hintFor(id)}
         ${renderBlockAdder(
-          host,
-          id,
-          [stylesDestination(stateLabel, reachText(model.reach(key)), { kind: 'target', target: target.target }, toRecord(target.declarations), stateLabel)],
-          state,
-          { onAdded: noteAdded(id) },
-        )}
+        host,
+        id,
+        [stylesDestination(stateLabel, reachText(model.reach(key)), { kind: 'target', target: target.target }, toRecord(target.declarations), stateLabel)],
+        state,
+        { onAdded: noteAdded(id) },
+      )}
       </div>`;
     });
 
@@ -384,36 +389,36 @@ export function renderFamilyCard(
 
     return html`<div class="body">
       ${renderSizeStrip({
-        owner: key,
-        picked,
-        baseCount: view.count('base'),
-        baseTitle: 'Without a media query: at every size',
-        slots: view.slots,
-        others: view.others,
-        width: model.width,
-        menuOpen: ui.menu?.id === `strip-${key}`,
-        mediaDraft: ui.mediaDraft?.owner === key ? ui.mediaDraft.text : null,
-        mediaForm: host.mediaForm,
-        onPick: (slot) => {
-          const next = new Map(host.ui.cardPicks);
-          next.set(key, slot);
-          host.patch({ cardPicks: next });
-        },
-        onMenu: (opened) => host.toggleMenu(`strip-${key}`, opened),
-        onMediaDraft: (text) => host.patch({ mediaDraft: text === null ? null : { owner: key, text } }),
-        onAddMedia: (added) => {
-          // Only remembered here until a declaration is written at it: nothing empty is stored.
-          const slots = new Map(host.ui.otherSlots);
-          slots.set(key, [...new Set([...(slots.get(key) ?? []), added])]);
-          const picks = new Map(host.ui.cardPicks);
-          picks.set(key, `other:${added}`);
-          host.patch({ otherSlots: slots, cardPicks: picks });
-        },
-      })}
+      owner: key,
+      picked,
+      baseCount: view.count('base'),
+      baseTitle: 'Without a media query: at every size',
+      slots: view.slots,
+      others: view.others,
+      width: model.width,
+      menuOpen: ui.menu?.id === `strip-${key}`,
+      mediaDraft: ui.mediaDraft?.owner === key ? ui.mediaDraft.text : null,
+      mediaForm: host.mediaForm,
+      onPick: (slot) => {
+        const next = new Map(host.ui.cardPicks);
+        next.set(key, slot);
+        host.patch({ cardPicks: next });
+      },
+      onMenu: (opened) => host.toggleMenu(`strip-${key}`, opened),
+      onMediaDraft: (text) => host.patch({ mediaDraft: text === null ? null : { owner: key, text } }),
+      onAddMedia: (added) => {
+        // Only remembered here until a declaration is written at it: nothing empty is stored.
+        const slots = new Map(host.ui.otherSlots);
+        slots.set(key, [...new Set([...(slots.get(key) ?? []), added])]);
+        const picks = new Map(host.ui.cardPicks);
+        picks.set(key, `other:${added}`);
+        host.patch({ otherSlots: slots, cardPicks: picks });
+      },
+    })}
       ${picked === 'base'
         ? nothing
         : html`<p class="hint slot-hint" style="margin:0 0 7px">
-            Only at <b>${short}</b> — ${media !== null && mediaApplies(media, null) ? `in effect at ${model.width}px` : `not at ${model.width}px`}.
+            Only ${media !== null && !isWidthQuery(media) ? 'under' : 'at'} <b>${short}</b> — ${media === null ? '' : mediaNow(media, mediaApplies(media, null), model.width)}.
             Adds to or overrides “All sizes” there${uses > 1 ? `, for all ${uses} elements` : ''}.
           </p>`}
       ${baseBlock}
@@ -427,15 +432,32 @@ export function renderFamilyCard(
 
   return html`<div class="cls" data-card=${key} data-group=${options.group}>
     ${renderCardHeader({
-      name: key,
-      meta: `${countText(declarations, 'rule')} · ${uses}×`,
-      file,
-      expanded: open,
-      onToggle: () => toggleCard(host, key),
-      sessionDot: Boolean(owned && owned.origin !== 'stylesheet'),
-    })}
-    ${open ? body() : nothing}
+    name: key,
+    meta: `${countText(declarations, 'rule')} · ${uses}×`,
+    file,
+    expanded: open,
+    onToggle: () => (options.popped ? options.popped.onClose() : away ? closePopped(host) : toggleCard(host, key)),
+    sessionDot: Boolean(owned && owned.origin !== 'stylesheet'),
+  })}
+    ${open ? body() : away ? poppedNote() : nothing}
   </div>`;
+}
+/** A card drawn in a popover, and how its header closes it there. */
+export interface Popped {
+  onClose(): void;
+}
+/** The card open in a popover, if any: from a class name, or under a cascade popover's line. */
+function poppedKey(host: StylesHost): string | undefined {
+  return host.ui.cardPop?.key ?? host.ui.popover?.source?.key ?? undefined;
+}
+/** The Sources copy's header, while its card is popped: put the card back here. */
+function closePopped(host: StylesHost): void {
+  const popover = host.ui.popover;
+  host.patch({ cardPop: null, popover: popover?.source ? { ...popover, source: null } : popover });
+}
+/** What a card's Sources place says while the card is open in a popover. */
+function poppedNote(): TemplateResult {
+  return html`<p class="hint popped-note">Open in a popover above.</p>`;
 }
 
 /**
@@ -457,26 +479,26 @@ function renderPendingBlock(entry: PendingState, label: string, uses: number, ho
   };
   return html`<div class="block pending" data-block=${entry.state}>
     ${renderBlockHeader(
-      pseudo ? 'pseudo' : 'cursor',
-      entry.state,
-      pseudo ? 'pseudo-element' : 'state',
-      renderKill({ label: `Remove ${label}`, title: `Remove ${label}: nothing is written yet`, tight: true, size: 11, onClick: forget }),
-    )}
+    pseudo ? 'pseudo' : 'cursor',
+    entry.state,
+    pseudo ? 'pseudo-element' : 'state',
+    renderKill({ label: `Remove ${label}`, title: `Remove ${label}: nothing is written yet`, tight: true, size: 11, onClick: forget }),
+  )}
     <div class="decls" data-declarations=${id}>
       <p class="hint" style="margin:0">No declarations yet.</p>
     </div>
     ${renderBlockAdder(
-      host,
-      id,
-      [stylesDestination(label, reachText(uses), entry.dest, {}, label)],
-      entry.state,
-      {
-        onAdded: (hint) => host.patch({
-          pendingStates: host.ui.pendingStates.filter((one) => one !== entry),
-          blockHint: hint ? { block: id, text: hint } : null,
-        }),
-      },
-    )}
+    host,
+    id,
+    [stylesDestination(label, reachText(uses), entry.dest, {}, label)],
+    entry.state,
+    {
+      onAdded: (hint) => host.patch({
+        pendingStates: host.ui.pendingStates.filter((one) => one !== entry),
+        blockHint: hint ? { block: id, text: hint } : null,
+      }),
+    },
+  )}
   </div>`;
 }
 
@@ -512,12 +534,12 @@ function renderClassActions(name: string, host: StylesHost): TemplateResult {
         data-act="detach"
         aria-expanded=${open ? 'true' : 'false'}
         title=${uses > 1
-          ? `Style this element on its own, without affecting the other ${uses - 1} using .${name}`
-          : `Style this element on its own, without .${name}`}
+      ? `Style this element on its own, without affecting the other ${uses - 1} using .${name}`
+      : `Style this element on its own, without .${name}`}
         @click=${() => {
-          host.forkForm.reset();
-          host.patch({ detachOpen: open ? null : name, forkDraft: '' });
-        }}
+      host.forkForm.reset();
+      host.patch({ detachOpen: open ? null : name, forkDraft: '' });
+    }}
       >
         ${open ? 'Never mind' : 'Detach styles from class'}
       </button>
@@ -561,25 +583,25 @@ function renderDetach(name: string, host: StylesHost, uses: number): TemplateRes
   return html`<div class="detach">
     <p class="lede">
       ${others
-        ? html`<code class="mono">.${entry.name}</code> is on ${uses} elements. Both options leave the
+      ? html`<code class="mono">.${entry.name}</code> is on ${uses} elements. Both options leave the
             other ${others} alone.`
-        : html`Only this element uses <code class="mono">.${entry.name}</code>.`}
+      : html`Only this element uses <code class="mono">.${entry.name}</code>.`}
     </p>
 
     <div class="choice" data-choice="copy">
       <div class="head">${icon('duplicate', 12)} <b>Copy it for this element</b></div>
       <p>
         Makes <code class="mono">.${forkName}</code> with the same ${countText(count, 'declaration')}${family.members.length
-          ? ', its states and sizes included,'
-          : ''} and swaps it in here. Still a class you can reuse, just not a shared one.
+      ? ', its states and sizes included,'
+      : ''} and swaps it in here. Still a class you can reuse, just not a shared one.
       </p>
       ${elsewhere.length
-        ? html`<p class="warn">
+      ? html`<p class="warn">
             ${icon('alert', 11)}
             <span>Rules written for <code class="mono">.${entry.name}</code> elsewhere
               (${elsewhere.join(', ')}) stop applying here.</span>
           </p>`
-        : nothing}
+      : nothing}
       <div class="row">
         <input
           ${field(host.forkForm, 'class-fork')}
@@ -592,10 +614,10 @@ function renderDetach(name: string, host: StylesHost, uses: number): TemplateRes
           aria-label="Name for the copy"
           @input=${(event: Event) => host.patch({ forkDraft: (event.target as HTMLInputElement).value })}
           @keydown=${(event: KeyboardEvent) => {
-            if (event.key !== 'Enter') return;
-            event.preventDefault();
-            fork();
-          }}
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      fork();
+    }}
         />
         <button class="btn sm primary" type="button" @click=${fork}>${icon('duplicate', 12)} Copy</button>
       </div>
@@ -607,23 +629,23 @@ function renderDetach(name: string, host: StylesHost, uses: number): TemplateRes
       <p>
         Its ${countText(base, 'declaration')} become this element's inline style and
         <code class="mono">.${entry.name}</code> comes off it${orphans
-          ? html`. Nothing else uses it, so the rule goes too.`
-          : html`, but stays defined for the rest.`}
+      ? html`. Nothing else uses it, so the rule goes too.`
+      : html`, but stays defined for the rest.`}
       </p>
       ${variants.length
-        ? html`<p class="warn">
+      ? html`<p class="warn">
             ${icon('alert', 11)}
             <span>Its ${variants.join(', ')} rules can't be written inline, so this element loses them.</span>
           </p>`
-        : nothing}
+      : nothing}
       <div class="row">
         <span class="spacer"></span>
         <button
           class="btn sm"
           type="button"
           @click=${() => {
-            if (engine.inlineClass(entry.name, element)) host.patch({ detachOpen: null });
-          }}
+      if (engine.inlineClass(entry.name, element)) host.patch({ detachOpen: null });
+    }}
         >
           ${icon('unlink', 12)} Move to this element
         </button>
@@ -656,13 +678,13 @@ export function renderInlineCard(host: StylesHost): TemplateResult | typeof noth
   const count = all.length;
   return html`<div class="cls" data-card=${INLINE_LIST_ID}>
     ${renderCardHeader({
-      name: 'Inline style',
-      plain: true,
-      meta: countText(count, 'rule'),
-      expanded: open,
-      onToggle: () => toggleCard(host, INLINE_LIST_ID),
-      sessionDot: false,
-    })}
+    name: 'Inline style',
+    plain: true,
+    meta: countText(count, 'rule'),
+    expanded: open,
+    onToggle: () => toggleCard(host, INLINE_LIST_ID),
+    sessionDot: false,
+  })}
     ${open
       ? html`<div class="body">
           <p class="hint" style="margin:0 0 7px">
@@ -672,19 +694,19 @@ export function renderInlineCard(host: StylesHost): TemplateResult | typeof noth
           <div class="block" data-block="base">
             <div class="decls" data-declarations=${INLINE_LIST_ID}>
               ${shown.length
-                ? renderRows(writeTarget(target, all, '', 'inline style', INLINE_LIST_ID, host), shown, host)
-                : html`<p class="hint" style="margin:0">Nothing is written on the element itself.</p>`}
+          ? renderRows(writeTarget(target, all, '', 'inline style', INLINE_LIST_ID, host), shown, host)
+          : html`<p class="hint" style="margin:0">Nothing is written on the element itself.</p>`}
             </div>
             ${renderBlockAdder(
-              host,
-              INLINE_LIST_ID,
-              [stylesDestination('inline style', 'this element only, every size', { kind: 'target', target }, toRecord(all), 'this element')],
-              '',
-            )}
+            host,
+            INLINE_LIST_ID,
+            [stylesDestination('inline style', 'this element only, every size', { kind: 'target', target }, toRecord(all), 'this element')],
+            '',
+          )}
           </div>
           ${host.filtering
-            ? nothing
-            : html`<div class="actions">
+          ? nothing
+          : html`<div class="actions">
                 <button
                   class="btn sm"
                   type="button"
@@ -705,23 +727,43 @@ export function renderInlineCard(host: StylesHost): TemplateResult | typeof noth
  * A class on the element that no readable rule defines: a framework utility, a cross-origin rule,
  * or a typo. Its card says so and offers to define it (R18).
  */
-export function renderUnknownCard(name: string, host: StylesHost): TemplateResult | typeof nothing {
-  const key = `.${name}`;
+export function renderUnknownCard(
+  name: string,
+  host: StylesHost,
+  options: { popped?: Popped } = {},
+): TemplateResult | typeof nothing {
+  const key = `.${CSS.escape(name)}`;
   if (host.filtering && !host.hit(key)) return nothing;
-  const open = host.filtering || !host.ui.closedCards.has(key);
+  const away = !options.popped && poppedKey(host) === key;
+  const open = Boolean(options.popped) || (!away && (host.filtering || !host.ui.closedCards.has(key)));
   return html`<div class="cls" data-card=${key} data-group="classes" data-unknown>
     ${renderCardHeader({
-      name: key,
-      meta: 'not defined',
-      expanded: open,
-      onToggle: () => toggleCard(host, key),
-      sessionDot: false,
-    })}
-    ${open ? ClassEditor.renderUnknownBody(name, host) : nothing}
+    name: key,
+    meta: 'not defined',
+    expanded: open,
+    onToggle: () => (options.popped ? options.popped.onClose() : away ? closePopped(host) : toggleCard(host, key)),
+    sessionDot: false,
+  })}
+    ${open ? ClassEditor.renderUnknownBody(name, host) : away ? poppedNote() : nothing}
   </div>`;
 }
 
 export const sourcesStyles: CSSResult = css`
+  /* A card opened over the panel: the popover's surface is the card's frame, so the card's own
+     border and gap go, and a tall card scrolls inside the popover rather than past the window. */
+  .pop.cardpop {
+    max-height: min(70vh, 560px);
+    padding: 3px 3px 6px;
+  }
+  .pop.cardpop > .cls {
+    margin: 0;
+    border: 0;
+    background: transparent;
+  }
+  .popped-note {
+    margin: 0;
+    padding: 2px 10px 9px;
+  }
   .src-tabs {
     display: flex;
     gap: 2px;

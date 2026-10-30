@@ -1,6 +1,9 @@
 import { propertyMeta, type PropertyMeta } from '../core/css.js';
 import type { EditorEngine } from '../core/editor.js';
+import { normalizeMedia } from '../core/rules.js';
+import { countText } from '../core/save-plan.js';
 import type { DesignToken, TokenGroup } from '../core/types.js';
+import { collectPageMedia, mediaApplies } from '../core/viewport.js';
 import type { ValueKind, ValueSuggestion } from './controls/value-field.js';
 
 /**
@@ -218,4 +221,80 @@ export function classSuggestions(engine: EditorEngine, query = ''): ValueSuggest
       group: count > 0 ? 'Used in this project' : 'Available classes',
     };
   });
+}
+
+/*
+ * What "Add a media query…" offers.
+ *
+ * The page's own conditions first, since adding one of those is the common case and their text
+ * has to match the file's exactly to land in the same rule; then the common queries that are not
+ * sizes, grouped by what they answer (new sizes have "Add a viewport size…"). Each is kept only
+ * when this browser parses it, so nothing offered is then refused.
+ */
+const MEDIA_GROUPS: ReadonlyArray<{ group: string; items: ReadonlyArray<[string, string]> }> = [
+  {
+    group: 'Preferences',
+    items: [
+      ['(prefers-color-scheme: dark)', 'dark mode'],
+      ['(prefers-color-scheme: light)', 'light mode'],
+      ['(prefers-reduced-motion: reduce)', 'less motion'],
+      ['(prefers-contrast: more)', 'more contrast'],
+      ['(prefers-contrast: less)', 'less contrast'],
+      ['(prefers-reduced-transparency: reduce)', 'less transparency'],
+      ['(forced-colors: active)', 'high contrast mode'],
+    ],
+  },
+  {
+    group: 'Media',
+    items: [
+      ['print', 'when printing'],
+      ['screen', 'on screens'],
+    ],
+  },
+  {
+    group: 'Input',
+    items: [
+      ['(hover: hover)', 'can hover'],
+      ['(hover: none)', 'cannot hover'],
+      ['(pointer: coarse)', 'touch'],
+      ['(pointer: fine)', 'mouse or trackpad'],
+    ],
+  },
+  {
+    group: 'Display',
+    items: [
+      ['(orientation: portrait)', 'taller than wide'],
+      ['(orientation: landscape)', 'wider than tall'],
+      ['(display-mode: standalone)', 'installed app'],
+      ['(dynamic-range: high)', 'HDR screen'],
+    ],
+  },
+];
+
+/** Whether this browser parses `media`: an unknown query reads back as `not all`. */
+function understood(media: string): boolean {
+  return normalizeMedia(media) !== 'not all';
+}
+
+/**
+ * Suggestions for the "Add a media query…" field. `taken` are the queries the strip already has,
+ * which are left out.
+ */
+export function mediaQuerySuggestions(taken: readonly string[] = []): ValueSuggestion[] {
+  const skip = new Set(taken.map((one) => normalizeMedia(one)));
+  const out: ValueSuggestion[] = [];
+  const seen = new Set<string>();
+  const add = (value: string, hint: string, group: string): void => {
+    const key = normalizeMedia(value);
+    if (seen.has(key) || skip.has(key) || !understood(value)) return;
+    seen.add(key);
+    const now = mediaApplies(value, null) ? ' · on now' : '';
+    out.push({ value, label: `@media ${value}`, hint: `${hint}${now}`, group });
+  };
+  // Every condition the page's own CSS uses, sizes included: picking one lands in the same rules.
+  for (const one of collectPageMedia()) add(one.media, countText(one.rules, 'rule'), 'On this page');
+  for (const { group, items } of MEDIA_GROUPS) {
+    for (const [value, hint] of items) add(value, hint, group);
+  }
+  return out;
 }

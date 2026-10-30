@@ -1,4 +1,4 @@
-import { mediaShort } from './breakpoints.js';
+import { isWidthQuery, mediaLabel, underMedia } from './breakpoints.js';
 import { simpleClassName } from './classes.js';
 import {
   managedOrder,
@@ -91,7 +91,7 @@ export function shortLabel(by: Contribution): string {
 }
 /** A rule entry, short: `.card`, `.card ≥768px`. */
 export function entryLabel(entry: Pick<RuleEntry, 'selector' | 'media'>): string {
-  return `${entry.selector}${entry.media ? ` ${mediaShort(entry.media)}` : ''}`;
+  return `${entry.selector}${entry.media ? ` ${mediaLabel(entry.media)}` : ''}`;
 }
 /** A person-readable name for what wins: `.promo .card !important`, `.card ≥768px`, `inline style`. */
 export function contributionLabel(by: Contribution): string {
@@ -124,7 +124,9 @@ export function planViewportSave(
   const otherMedia = ctx.slot?.startsWith('other:') ? ctx.slot.slice('other:'.length) : null;
   const media = slot?.media ?? otherMedia;
   const width = slot?.at ?? ctx.width;
-  const sizeLabel = media ? mediaShort(media) : '';
+  // `≤767px` for a size, `@media print` for a query that is not one (print, a preference).
+  const sizeLabel = media ? mediaLabel(media) : '';
+  const isSize = media !== null && isWidthQuery(media);
   const visibleNow = mediaApplies(media, null);
 
   /** Every property of the batch simulated as `as`; the first loser names the verdict. */
@@ -178,7 +180,7 @@ export function planViewportSave(
     const beaten = important ? simulate(asNew, () => false) : null;
     options.push({
       kind: 'solo',
-      title: `This element only, at ${sizeLabel}`,
+      title: `This element only, ${media ? underMedia(media) : ''}`,
       sub:
         `${auto.reuse ? 'in its automatic class' : 'adds an automatic class'}, .${auto.name}, ` +
         `${auto.reuse ? 'on' : 'to'} this element` +
@@ -196,7 +198,7 @@ export function planViewportSave(
     naming.inlineImportant(ctx.element, property, ctx.declarations[property]));
   options.push({
     kind: 'inline',
-    title: media ? 'This element, at every size' : 'This element only',
+    title: media ? (isSize ? 'This element, at every size' : 'This element, always') : 'This element only',
     sub: `inline style${inlineImportant ? ', with !important to beat a rule that has it' : ''}`,
     reach: 1,
     important: inlineImportant,
@@ -227,7 +229,7 @@ export function planViewportSave(
       kind: 'rule',
       title: `The ${rule.isClass ? 'class' : 'rule'} ${rule.selector}${sizeLabel ? ` ${sizeLabel}` : ''}`,
       sub: rule.entry
-        ? rule.isClass ? 'the class itself, at that size' : 'the stylesheet rule'
+        ? rule.isClass ? `the class itself, ${isSize ? 'at that size' : 'under that media query'}` : 'the stylesheet rule'
         : 'added to the class, for every element that has it',
       reach: model.reach(rule.selector),
       important: false,

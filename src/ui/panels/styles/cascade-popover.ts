@@ -111,6 +111,8 @@ function renderLine(
   const target = targetOf(one, element);
   const entry = one.source.kind === 'rule' ? one.source.entry : null;
   const label = sourceLabel(one);
+  // The link is a toggle: its rule's card opens under this line, and closes again.
+  const expanded = Boolean(entry) && host.ui.popover?.source?.order === entry?.order;
   const reach = entry ? model.reach(entry.family) : 1;
   const why = entry && kind === 'idle'
     ? entry.state
@@ -136,10 +138,12 @@ function renderLine(
       ? html`<button
             class="src"
             type="button"
-            title=${`Edit ${label}${why}`}
+            data-order=${entry.order}
+            aria-expanded=${expanded ? 'true' : 'false'}
+            title=${expanded ? `Close ${label}` : `Edit ${label}${why}`}
             @click=${() => host.openSource(property, entry)}
           >
-            <span>${shortLabel(one)}</span>${icon('arrowRight', 10)}
+            <span>${shortLabel(one)}</span>${icon(expanded ? 'chevronDown' : 'chevronRight', 10)}
           </button>`
       : html`<span class="src"><span>inline style</span></span>`}
       <heo-value-field
@@ -170,6 +174,9 @@ function renderLine(
       ? `, at ${mediaShort(entry.media)}`
       : ''}
     </span>
+    ${expanded && entry
+      ? html`<div class="srccard" data-order=${entry.order}>${host.sourceCard(entry.family)}</div>`
+      : nothing}
   </div>`;
 }
 
@@ -291,6 +298,13 @@ export const popoverStyles: CSSResult = css`
   .c-line.idle .cdot {
     background: transparent;
     box-shadow: inset 0 0 0 1px var(--heo-text-dim);
+  }
+  /* Into the popover's side padding: the card's own rows need the room more than the gutter does. */
+  .pl .srccard {
+    margin: 6px -6px 2px;
+  }
+  .pl .srccard > .cls {
+    margin: 0;
   }
   .c-line .src {
     display: inline-flex;

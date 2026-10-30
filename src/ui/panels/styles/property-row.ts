@@ -1,5 +1,6 @@
+import { slotMedia } from './size-strip.js';
 import { css, html, nothing, type CSSResult, type TemplateResult } from 'lit';
-import { isPseudoElement } from '../../../core/breakpoints.js';
+import { isPseudoElement, isWidthQuery, underMedia } from '../../../core/breakpoints.js';
 import type {
   CascadeContext,
   CascadeList,
@@ -395,8 +396,11 @@ export function renderPropertyRow(spec: RowSpec, host: StylesHost): TemplateResu
     property,
     list,
     expanded,
-    onToggle: () =>
-      host.patch({ popover: expanded ? null : { scope, property, rowId }, menu: null }),
+    onToggle: () => {
+      host.patch({ popover: expanded ? null : { scope, property, rowId }, menu: null, cardPop: null });
+      // Closed by its dot, focus is on the dot: Safari does not focus a pressed button by itself.
+      if (expanded) host.focusSelector(`.row[data-row="${CSS.escape(rowId)}"] .dots`);
+    },
   })}
       <span class="name">
         <span class="pn" title=${property}>${property}</span>
@@ -441,7 +445,13 @@ function whereHint(
     return html`Edits <b>${entryLabel(entry)}</b> ·
       ${reachText(reach)}`;
   }
-  if (asks) return html`Depends on the viewport: after Enter, choose where it stays`;
+  if (asks) {
+    // A size group under a query that is not a size (print, a preference) does not depend on the viewport.
+    const media = spec.scope.kind === 'size' ? slotMedia(spec.model, spec.scope.slot) : null;
+    return media !== null && !isWidthQuery(media)
+      ? html`Only ${underMedia(media)}: after Enter, choose where it stays`
+      : html`Depends on the viewport: after Enter, choose where it stays`;
+  }
   if (winner && winner.source.kind === 'rule') {
     return html`Overrides in the <b>inline style</b> · this element only · ${shortLabel(winner)} stays as is`;
   }

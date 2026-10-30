@@ -7,7 +7,9 @@ import { mediaQueryIssues } from '../../../core/validation.js';
 import { mediaApplies } from '../../../core/viewport.js';
 import { field, type FormErrors } from '../../form-errors.js';
 import { icon } from '../../icons.js';
-import { focusWhenOpened, renderMenu } from './menu.js';
+import { renderMenu } from './menu.js';
+import { HeoValueField } from '../../controls/value-field.js';
+import { mediaQuerySuggestions } from '../../suggestions.js';
 
 /**
  * The one size strip: "All sizes", a button per breakpoint slot, and ⋮ for every other media query.
@@ -20,6 +22,8 @@ import { focusWhenOpened, renderMenu } from './menu.js';
 
 export interface StripSlot {
   key: string;
+  /** The query the slot stands for, so the media field does not offer it again. */
+  media: string;
   icon: DeviceIcon;
   name: string;
   count: number;
@@ -81,6 +85,7 @@ export function stripSizes(
     const notNow = !mediaApplies(slot.media, null);
     return {
       key: slot.key,
+      media: slot.media,
       icon: slot.icon,
       name: slot.name,
       count: n,
@@ -202,41 +207,59 @@ export function renderSizeStrip(spec: SizeStripSpec): TemplateResult {
       : nothing}`;
 }
 
-/** "Add a media query…" as an inline field: Enter picks it as a slot, Escape puts the item back. */
+/**
+ * "Add a media query…" as an inline field: the page's own conditions and the common queries that
+ * are not sizes are offered as it opens and narrowed as it is typed; Enter or a pick adds it as a
+ * slot, Escape puts the item back. The same submit field as the header's class finder.
+ */
 function renderMediaField(spec: SizeStripSpec): TemplateResult {
-  const submit = (): void => {
+  const submit = (text: string): void => {
+    spec.onMediaDraft(text);
     if (!spec.mediaForm.submit()) return;
-    const media = (spec.mediaDraft ?? '').trim().replace(/^@media\s+/i, '');
+    const media = text.trim().replace(/^@media\s+/i, '');
     spec.onMediaDraft(null);
     spec.onAddMedia(media);
     spec.onMenu(false);
   };
-  return html`<div class="mfield">
-    <input
+  return html`<div
+    class="mfield"
+    @keydown=${{
+    // Caught on the way down, as the class finder does: the field would take Escape as "revert"
+    // and swallow it, leaving the field open and the next Escape to the menu.
+    capture: true,
+    handleEvent: (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      spec.mediaForm.reset();
+      spec.onMediaDraft(null);
+    },
+  }}
+  >
+    <heo-value-field
       ${field(spec.mediaForm, MEDIA_FIELD, { required: true })}
-      class="input mono"
-      type="text"
-      aria-label="Media query"
+      class="mono"
+      action="Add media query"
+      action-icon="plus"
       placeholder="print, (prefers-color-scheme: dark)"
-      spellcheck="false"
-      autocomplete="off"
-      .value=${spec.mediaDraft ?? ''}
-      ${ref(focusWhenOpened)}
-      @input=${(event: Event) => spec.onMediaDraft((event.target as HTMLInputElement).value)}
-      @keydown=${(event: KeyboardEvent) => {
-      if (event.key === 'Enter') {
-        event.preventDefault();
-        submit();
-      } else if (event.key === 'Escape') {
-        event.preventDefault();
-        event.stopPropagation();
-        spec.mediaForm.reset();
-        spec.onMediaDraft(null);
-      }
-    }}
-    />
+      .suggestions=${mediaQuerySuggestions([...spec.others.map((one) => one.media), ...spec.slots.map((one) => one.media)])}
+      .value=${''}
+      ${ref(openMediaField)}
+      @value-input=${(event: CustomEvent<{ value: string }>) => spec.onMediaDraft(event.detail.value)}
+      @value-change=${(event: CustomEvent<{ value: string }>) => spec.onMediaDraft(event.detail.value)}
+      @value-submit=${(event: CustomEvent<{ value: string }>) => submit(event.detail.value)}
+    ></heo-value-field>
     ${spec.mediaForm.error(MEDIA_FIELD)}
   </div>`;
+}
+
+/** Focus the media field as it appears, with its suggestions showing. */
+function openMediaField(el?: Element): void {
+  if (!(el instanceof HeoValueField)) return;
+  void el.updateComplete.then(() => requestAnimationFrame(() => {
+    el.focusInput({ select: true });
+    el.openList();
+  }));
 }
 
 /** The issues the strip's media field is checked against. */

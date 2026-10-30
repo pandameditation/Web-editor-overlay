@@ -1964,29 +1964,31 @@
        * ------------------------------------------------------------------ */
       api.select(document.getElementById('para'));
       await frame();
-      // A class card, not the element's own inline card that the Styles panel draws first.
+      // A class card, not the element's own inline card that the Styles panel draws first. In
+      // Styles, the chip opens it in a popover over the panel; Tokens lists it in place.
       const CLASS_CARD = '.cls:not([data-card="inline"])';
+      const STYLES_CARD = '.cardpop .cls';
       const stylesChip = Array.from(dockPanel('styles').shadowRoot.querySelectorAll('.cchip .name'))
         .find((x) => x.textContent.trim() === '.card');
       stylesChip.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
       await frame();
       const columnsIn = (panel) => {
-        const row = dockPanel(panel).shadowRoot.querySelector(CLASS_CARD + ' .decl');
+        const row = dockPanel(panel).shadowRoot.querySelector((panel === 'styles' ? STYLES_CARD : CLASS_CARD) + ' .decl');
         return row ? getComputedStyle(row).gridTemplateColumns : 'no row';
       };
       const stylesColumns = columnsIn('styles');
       check('stylesClassRowLayout', () => stylesColumns);
       // In Styles the adder waits behind "+ Add property" (R23), which opens today's row.
-      dockPanel('styles').shadowRoot.querySelector(CLASS_CARD + ' .add-prop')?.click();
+      dockPanel('styles').shadowRoot.querySelector(STYLES_CARD + ' .add-prop')?.click();
       await frame();
       check('stylesAddPropertyIsVisible', () =>
         Boolean(dockPanel('styles').shadowRoot
-          .querySelector(CLASS_CARD + ' .decl .pair input')?.getClientRects().length));
+          .querySelector(STYLES_CARD + ' .decl .pair input')?.getClientRects().length));
       check('stylesConfirmIsVisible', () =>
         Boolean(dockPanel('styles').shadowRoot
-          .querySelector(CLASS_CARD + ' .confirm')?.getClientRects().length));
+          .querySelector(STYLES_CARD + ' .confirm')?.getClientRects().length));
       check('stylesRemoveSitsOnTheSameRow', () => {
-        const row = dockPanel('styles').shadowRoot.querySelector(CLASS_CARD + ' .decl');
+        const row = dockPanel('styles').shadowRoot.querySelector(STYLES_CARD + ' .decl');
         const drop = row?.querySelector('.drop');
         const field = row?.querySelector('heo-value-field');
         if (!drop || !field) return 'missing';
@@ -2911,11 +2913,12 @@
       check('classChipIsAButton', () => Boolean(chipName()));
       chipName().dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
       await frame();
-      check('classEditorOpensInStyles', () => Boolean(sp.shadowRoot.querySelector('.cls:not([data-card="inline"]) .decls')));
+      // In a popover over the panel, where the chip is.
+      check('classEditorOpensInStyles', () => Boolean(sp.shadowRoot.querySelector('.cardpop .cls .decls')));
       check('classEditorListsDeclarations', () =>
-        Array.from(sp.shadowRoot.querySelectorAll('.cls:not([data-card="inline"]) .decl .p')).map((p) => p.textContent).join(','));
+        Array.from(sp.shadowRoot.querySelectorAll('.cardpop .cls .decl .p')).map((p) => p.textContent).join(','));
       const cardBefore = engine.classes.get('card').declarations['padding'];
-      const clsField = sp.shadowRoot.querySelector('.cls:not([data-card="inline"]) .decl heo-value-field');
+      const clsField = sp.shadowRoot.querySelector('.cardpop .cls .decl heo-value-field');
       clsField.dispatchEvent(new CustomEvent('value-change', {
         detail: { value: '3px' }, bubbles: true, composed: true,
       }));

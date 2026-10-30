@@ -29,6 +29,62 @@ const FOCUSABLE = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(',');
 
+/*
+ * Layers that belong after their opener.
+ *
+ * A popover the chrome draws at the end of its panel (the cascade popover, a card opened from a
+ * class name, a menu) is part of the control that opened it, as far as the hand on the keyboard is
+ * concerned: Tab from the opener should go in, Shift+Tab from its first control should come back,
+ * and Tab past its last should go on to what follows the opener. Document order put it after every
+ * section instead, so Tab from a dot went to the row's own field. The browser's own answer
+ * (`showPopover({ source })`) cannot help here, because this module takes Tab over in the chrome.
+ */
+const openers = new WeakMap<HTMLElement, HTMLElement>();
+const tied = new Set<HTMLElement>();
+
+/** Tab treats `layer` as sitting right after `opener`, while it is open; null unties it. */
+export function tieLayer(layer: HTMLElement, opener: HTMLElement | null): void {
+  if (opener) {
+    openers.set(layer, opener);
+    tied.add(layer);
+  } else {
+    openers.delete(layer);
+    tied.delete(layer);
+  }
+}
+
+/** Whether `node` is inside `root`, through shadow roots. */
+function deepContains(root: Element, node: Node): boolean {
+  for (let at: Node | null = node; at; at = at.parentNode ?? (at instanceof ShadowRoot ? at.host : null)) {
+    if (at === root) return true;
+  }
+  return false;
+}
+
+/** `stops` with each open, tied layer's controls moved to right after its opener. */
+function withLayersAfterOpeners(stops: HTMLElement[]): HTMLElement[] {
+  const live = [...tied].filter((layer) => {
+    const open = layer.isConnected && (!layer.matches('[popover]') || layer.matches(':popover-open'));
+    if (!layer.isConnected) tied.delete(layer);
+    return open;
+  });
+  // Outer layers first, so a menu opened inside a card moves with the card, then into place in it.
+  const depth = (layer: HTMLElement): number => live.filter((one) => one !== layer && deepContains(one, layer)).length;
+  live.sort((a, b) => depth(a) - depth(b));
+  let out = stops;
+  for (const layer of live) {
+    const opener = openers.get(layer);
+    if (!opener || deepContains(layer, opener)) continue;
+    const inside = out.filter((el) => deepContains(layer, el));
+    if (!inside.length) continue;
+    const rest = out.filter((el) => !deepContains(layer, el));
+    const at = rest.indexOf(opener);
+    if (at === -1) continue;
+    out = [...rest.slice(0, at + 1), ...inside, ...rest.slice(at + 1)];
+  }
+  return out;
+}
+
 /** True when the keystroke came from inside an open native modal. */
 function insideNativeModal(event: KeyboardEvent): boolean {
   return event.composedPath().some((node) => node instanceof HTMLDialogElement && node.open);
@@ -79,7 +135,7 @@ export function containTab(event: KeyboardEvent): boolean {
   if (!modal && (!origin || !insideOverlay(origin))) return false;
 
   const scope = modal?.shadowRoot ?? modal ?? host;
-  const stops = focusableWithin(scope);
+  const stops = withLayersAfterOpeners(focusableWithin(scope));
   if (stops.length === 0) return false;
 
   const active = deepActiveElement();

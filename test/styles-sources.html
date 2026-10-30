@@ -338,15 +338,81 @@
           engine.setDockTab('styles');
           await settle(400);
 
-          /* The header's class name opens its card where it is written. */
-          const featuredBefore = sources()?.open;
-          sroot().querySelector('.ident .cchip[data-class="featured"] .name')?.click();
+          /*
+           * The header's class name opens its card in a popover under the name, editable there:
+           * jumping down to Sources and back up was a round trip for every class edit.
+           */
+          const chipName = () => sroot().querySelector('.ident .cchip[data-class="featured"] .name');
+          chipName()?.click();
           await settle(300);
-          results.header.nameOpensItsCard =
-            featuredBefore !== undefined &&
-            sources()?.open === true &&
-            card('.featured')?.querySelector(':scope > header')?.getAttribute('aria-expanded') === 'true' &&
-            sroot().activeElement === card('.featured')?.querySelector(':scope > header');
+          const popped = () => sroot().querySelector('.cardpop[data-card-pop=".featured"]');
+          const poppedCard = popped()?.querySelector('.cls[data-card=".featured"]');
+          const chipBox = chipName()?.getBoundingClientRect();
+          const popBox = popped()?.getBoundingClientRect();
+          results.header.nameOpensItsCardInAPopover =
+            Boolean(poppedCard) && popped()?.matches(':popover-open') === true &&
+            poppedCard.querySelector(':scope > header')?.getAttribute('aria-expanded') === 'true' &&
+            Boolean(poppedCard.querySelector('heo-value-field[data-property="border"]')) &&
+            Math.abs(popBox.top - chipBox.bottom) <= 8;
+          // One copy of the card: the Sources place says where it went, and holds no rows.
+          results.header.theSourcesCopyStepsAside =
+            /Open in a popover above/.test(textOf(card('.featured'))) &&
+            !card('.featured')?.querySelector('heo-value-field');
+          // Edited in place: a value typed there lands in the class's rule.
+          const historyBefore = engine.history.size;
+          popped()?.querySelector('heo-value-field[data-property="border"]')?.dispatchEvent(
+            new CustomEvent('value-change', { detail: { value: '2px solid #a5b4fc' }, bubbles: true, composed: true }));
+          await settle(200);
+          results.header.thePopoverEditsTheClass =
+            engine.history.size === historyBefore + 1 && Boolean(popped()) &&
+            siteRule('.featured')?.style.getPropertyValue('border') === '2px solid rgb(165, 180, 252)';
+          engine.undo();
+          await settle(200);
+          // Escape closes it and gives focus back to the name; the Sources card is whole again.
+          key(popped(), 'Escape');
+          await settle(200);
+          results.header.escapeClosesItBackToTheName =
+            !popped() && sroot().activeElement === chipName() &&
+            Boolean(card('.featured')?.querySelector('heo-value-field[data-property="border"]'));
+          // The name is a toggle: pressed while its card is open, it closes it.
+          chipName()?.click();
+          await settle(250);
+          const reopened = Boolean(popped()) && chipName()?.getAttribute('aria-expanded') === 'true';
+          chipName()?.click();
+          await settle(250);
+          results.header.nameIsAToggle =
+            reopened && !popped() && chipName()?.getAttribute('aria-expanded') === 'false';
+          /*
+           * Focus around the card, with the harness's real Tab: opening keeps focus on the name,
+           * Tab goes into the card, and closing it from its own header comes back to the name
+           * instead of dropping focus on the page.
+           */
+          {
+            let keySeq = 0;
+            const keyWaiters = new Map();
+            window.__heoKeysDone = (id) => { keyWaiters.get(id)?.(); keyWaiters.delete(id); };
+            const keys = (...names) => new Promise((resolve) => {
+              const id = ++keySeq;
+              keyWaiters.set(id, resolve);
+              window.__heoPressKeys(JSON.stringify({ id, keys: names }));
+            }).then(() => settle(150));
+            const deepFocus = () => {
+              let node = document.activeElement;
+              while (node?.shadowRoot?.activeElement) node = node.shadowRoot.activeElement;
+              return node;
+            };
+            chipName()?.focus();
+            chipName()?.click();
+            await settle(250);
+            const stays = Boolean(popped()) && deepFocus() === chipName();
+            await keys('Tab');
+            const intoTheCard = deepFocus() === popped()?.querySelector('.cls > header');
+            popped()?.querySelector('.cls > header')?.click();
+            await settle(250);
+            results.header.openingKeepsFocusOnTheName = stays;
+            results.header.tabFromTheNameGoesIntoTheCard = intoTheCard;
+            results.header.closingFromTheCardHeaderReturnsToTheName = !popped() && deepFocus() === chipName();
+          }
 
           /* The section and its groups. */
           const headings = Array.from(sroot().querySelectorAll('heo-section')).map((one) => one.heading);
@@ -807,7 +873,23 @@
             /1 decl\./.test(textOf(printItem));
           Array.from(stripMenu()?.querySelectorAll('.mi') ?? []).find((one) => /Add a media query/.test(one.textContent))?.click();
           await settle(200);
-          const mediaInput = () => stripMenu()?.querySelector('.mfield input');
+          const mediaField = () => stripMenu()?.querySelector('.mfield heo-value-field');
+          const mediaInput = () => mediaField()?.shadowRoot?.querySelector('input');
+          await settle(150);
+          // Offered as it opens: the common queries that are not sizes, by what they answer, and
+          // nothing the strip already has (print is under ⋮ already, the widths are its buttons).
+          const mediaOptions = () => Array.from(mediaField()?.shadowRoot?.querySelectorAll('.option') ?? [])
+            .map((one) => one.textContent.replace(/\s+/g, ' ').trim());
+          const openedWith = mediaOptions();
+          results.strip.addMediaQuerySuggestsValidQueries =
+            sroot().activeElement === mediaField() &&
+            openedWith.some((one) => one.includes('@media (prefers-reduced-motion: reduce)')) &&
+            openedWith.some((one) => one.includes('@media (prefers-color-scheme: dark)')) &&
+            !openedWith.some((one) => /@media print\b/.test(one)) &&
+            !openedWith.some((one) => one.includes('(max-width: 767px)'));
+          await typeInto(mediaInput(), 'reduced');
+          results.strip.addMediaQuerySuggestionsNarrowAsTyped =
+            mediaOptions().length >= 1 && mediaOptions().every((one) => /reduced/.test(one));
           before = engine.history.size;
           await typeInto(mediaInput(), 'screen and and');
           key(mediaInput(), 'Enter');
@@ -818,8 +900,13 @@
           await settle(200);
           results.strip.addMediaQueryValidates =
             refused && !stripMenu() && more()?.getAttribute('aria-pressed') === 'true' &&
-            /Only at @media \(prefers-color-scheme: dark\)/.test(textOf(body('.card')?.querySelector('.slot-hint'))) &&
+            /Only under @media \(prefers-color-scheme: dark\)/.test(textOf(body('.card')?.querySelector('.slot-hint'))) &&
             engine.history.size === before;
+          // Not a size: no width in its wording, and the empty block says "media query".
+          const mediaHint = textOf(body('.card')?.querySelector('.slot-hint'));
+          results.strip.aPreferenceQueryIsNotWordedAsASize =
+            /in effect now|not in effect now/.test(mediaHint) && !/\d+px/.test(mediaHint) &&
+            /Nothing under this media query yet/.test(textOf(body('.card')));
           card('.card')?.querySelector('.slots .base')?.click();
           await settle(200);
 

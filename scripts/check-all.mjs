@@ -38,6 +38,7 @@ import { availableParallelism, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { FIXTURES, fixtureName, scheduled, unaccountedPages } from './fixtures.mjs';
+import { answerKeys, KEYS_BINDING } from './trusted-keys.mjs';
 
 const CHROME_CANDIDATES = [
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -187,6 +188,10 @@ class Browser {
     if (!session) return;
     const logs = this.#logsBySession.get(session);
     if (!logs) return;
+    if (message.method === 'Runtime.bindingCalled' && message.params.name === KEYS_BINDING) {
+      answerKeys(message.params.payload, (method, args) => this.send(method, args, session)).catch(() => { });
+      return;
+    }
     /*
      * Recorded in the same shapes `browser-check.mjs` prints.
      *
@@ -226,11 +231,15 @@ class Browser {
     const { browserContextId } = await this.send('Target.createBrowserContext', {
       disposeOnDetach: false,
     });
-    const { targetId } = await this.send('Target.createTarget', { url, browserContextId });
+    // Blank first, then navigated: the trusted-keys binding has to exist before the page's scripts run.
+    const { targetId } = await this.send('Target.createTarget', { url: 'about:blank', browserContextId });
     const { sessionId } = await this.send('Target.attachToTarget', { targetId, flatten: true });
     this.#logsBySession.set(sessionId, []);
     await this.send('Runtime.enable', {}, sessionId);
     await this.send('Log.enable', {}, sessionId);
+    await this.send('Runtime.addBinding', { name: KEYS_BINDING }, sessionId).catch(() => { });
+    await this.send('Page.enable', {}, sessionId);
+    await this.send('Page.navigate', { url }, sessionId);
     return { browserContextId, targetId, sessionId };
   }
 

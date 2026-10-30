@@ -1,3 +1,4 @@
+import { isWidthQuery, mediaLabel } from '../../../core/breakpoints.js';
 import { css, html, nothing, type CSSResult, type TemplateResult } from 'lit';
 import { plural, type SaveContext, type SaveOption } from '../../../core/save-plan.js';
 import { framedBox } from '../../theme.js';
@@ -113,6 +114,8 @@ export function renderSaveBox(pending: PendingSave, host: StylesHost): TemplateR
   const selected = optionOf(pending);
   // Where the value would show: the slot's own width, so the note can say what to preview.
   const shownAt = host.model.slots().find((slot) => slot.key === pending.ctx.slot)?.at ?? null;
+  // A query that is not a size has no width to preview it at.
+  const otherMedia = pending.ctx.slot?.startsWith('other:') ? pending.ctx.slot.slice('other:'.length) : null;
   return html`<div
     class="savebox"
     role="group"
@@ -147,7 +150,9 @@ export function renderSaveBox(pending: PendingSave, host: StylesHost): TemplateR
     </div>
     ${selected && !selected.visibleNow
       ? html`<p class="notnow">
-          Not visible at ${host.model.width}px.${shownAt ? ` Preview ${shownAt} to see it.` : ''}
+          ${otherMedia !== null && !isWidthQuery(otherMedia)
+            ? `Not visible now: ${mediaLabel(otherMedia)} is not in effect.`
+            : `Not visible at ${host.model.width}px.${shownAt ? ` Preview ${shownAt} to see it.` : ''}`}
         </p>`
       : nothing}
     <div class="foot">

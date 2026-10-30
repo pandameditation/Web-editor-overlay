@@ -7,14 +7,17 @@ import { icon } from '../../icons.js';
  * The tag (with its id) and one chip per class, nothing else: the cascade lives in Effective
  * styles, the style attribute and the media queries in Sources, so restating them here only made
  * the first line long. Each chip is two controls, because the two acts are not comparable: the
- * name opens the class where it is written, the cross takes it off this one element. "+" finds or
- * creates a class to add.
+ * name opens and closes the class's card in a popover under the chips, the cross takes it off this
+ * one element. "+" finds or creates a class to add.
  */
 
 export interface HeaderSpec {
   element: HTMLElement;
   finderOpen: boolean;
   onToggleFinder(open: boolean): void;
+  /** The class whose card is open under the chips, if any: its name reads as pressed. */
+  openClass: string | null;
+  /** Open that class's card, or close it when it is the one open. */
   onOpenClass(name: string): void;
   onRemoveClass(name: string): void;
   /** The "find or create a class" field, owned by the panel with its form and suggestions. */
@@ -32,7 +35,8 @@ export function renderElementHeader(spec: HeaderSpec): TemplateResult {
           <button
             class="name"
             type="button"
-            title=${`Edit .${name} in Sources`}
+            aria-expanded=${spec.openClass === name ? 'true' : 'false'}
+            title=${spec.openClass === name ? `Close .${name}` : `Edit .${name}`}
             @click=${() => spec.onOpenClass(name)}
           >
             .${name}
@@ -154,10 +158,13 @@ export const headerStyles: CSSResult = css`
     color: var(--heo-text-dim);
     cursor: pointer;
   }
-  .cchip.add[aria-expanded='true'] {
+  .cchip.add[aria-expanded='true'],
+  .cchip:has(> .name[aria-expanded='true']) {
     border-color: var(--heo-accent-line);
     color: var(--heo-text);
   }
+  /* Pressed reads from the border alone: a tint behind the chip took the focus ring under 3:1
+     (a11y-contrast styles.chipKill.ring, light theme over black: 2.95). */
   .cchip .name:focus-visible,
   .cchip .kill:focus-visible,
   .cchip.add:focus-visible {
