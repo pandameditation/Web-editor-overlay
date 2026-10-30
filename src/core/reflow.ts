@@ -1,5 +1,6 @@
 import { DRAGGING_ATTR, DRAG_TIMING } from './constants.js';
 import { isOverlayNode } from './dom.js';
+import { pageScale } from './viewport.js';
 
 /**
  * Position animation for structural edits.
@@ -88,8 +89,10 @@ export function playFlip(
       if (animation.id === FLIP_ID) animation.cancel();
     }
     const last = el.getBoundingClientRect();
-    const dx = first.left - last.left;
-    const dy = first.top - last.top;
+    // The translate is in the page's CSS px, the rects in screen px: a fitted preview scales them.
+    const scale = pageScale();
+    const dx = (first.left - last.left) / scale;
+    const dy = (first.top - last.top) / scale;
     if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) continue;
 
     started.push(

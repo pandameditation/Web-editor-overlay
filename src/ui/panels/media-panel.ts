@@ -10,6 +10,7 @@ import { buildSuggestions, valueKindFor } from '../suggestions.js';
 import '../controls/value-field.js';
 import '../controls/segmented.js';
 import '../controls/section.js';
+import { pageScale } from '../../core/viewport.js';
 import { field, FormErrors } from '../form-errors.js';
 
 const FITS = ['fill', 'contain', 'cover', 'none', 'scale-down'] as const;
@@ -254,7 +255,7 @@ export class HeoMediaPanel extends HeoElement {
       </div>
       <div class="facts">
         <span class="chip">${icon('image', 11)} ${labelFor(el)}</span>
-        <span class="chip">rendered ${Math.round(box.width)}×${Math.round(box.height)}</span>
+        <span class="chip">rendered ${Math.round(box.width / pageScale())}×${Math.round(box.height / pageScale())}</span>
         ${natural ? html`<span class="chip">intrinsic ${natural}</span>` : nothing}
         ${ratio ? html`<span class="chip">ratio ${ratio}</span>` : nothing}
       </div>

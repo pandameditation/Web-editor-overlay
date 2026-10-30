@@ -4,6 +4,7 @@ import { isHorizontalFlow, isMutable, labelFor, selectableParent, visualBox } fr
 import type { EditorEngine, TransformState } from '../../core/editor.js';
 import { describeProvenance, type Provenance } from '../../core/provenance.js';
 import { listen, unlisten } from '../../core/shield.js';
+import { pageScale } from '../../core/viewport.js';
 
 /** The badge's tooltip: what is known, then where it comes from when anything can say. */
 function riskTitle(provenance: Provenance): string {
@@ -657,7 +658,7 @@ export class HeoSelectionLayer extends HeoElement {
         <span>${labelFor(el)}</span>
         ${gesture?.readout
         ? html`<span class="live">${gesture.readout}</span>`
-        : html`<span class="dim">${Math.round(box.width)}×${Math.round(box.height)}</span>`}
+        : html`<span class="dim">${cssSize(box)}</span>`}
         <!--
           Said on the outline, before anything is tried.
           The refusal and the quick menu both explain this properly, but by then the
@@ -1018,6 +1019,11 @@ const HANDLE_NAMES: Record<ResizeHandle, string> = {
   w: 'left edge',
 };
 
+/** A box's size as the page's CSS has it: a preview scaled to fit draws it smaller on screen. */
+function cssSize(box: { width: number; height: number }): string {
+  const scale = pageScale();
+  return `${Math.round(box.width / scale)}×${Math.round(box.height / scale)}`;
+}
 function boxStyle(box: { top: number; left: number; width: number; height: number }): string {
   return `top:${Math.round(box.top)}px;left:${Math.round(box.left)}px;width:${Math.round(
     box.width,

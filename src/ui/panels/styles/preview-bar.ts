@@ -186,6 +186,7 @@ function renderPreviewMenu(spec: PreviewBarSpec, presets: readonly ViewportPrese
           <li>Animations (@keyframes) keep vw at the real window's width.</li>
           <li>Page scripts see the real window: matchMedia, innerWidth, resize.</li>
           <li>Fixed elements still span the whole window.</li>
+          <li>A size wider than the window is scaled to fit; page scripts measure it scaled.</li>
           <li>Print and preference queries can't be previewed.</li>
           <li>Images picked by &lt;picture&gt; or srcset don't change.</li>
           ${unreadable

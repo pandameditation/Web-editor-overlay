@@ -55,6 +55,7 @@ import {
   bindViewport,
   noteRuleEdited,
   MediaEvaluator,
+  pageScale,
   unbindViewport,
   ViewportPreview,
 } from './viewport.js';
@@ -5723,6 +5724,14 @@ export class EditorEngine {
   }
 
   /**
+   * Scale a preview wider than the room beside the dock down to fit (the default), or show it at
+   * 100% with the page scrolling sideways. Kept across widths; no history, nothing saved.
+   */
+  setPreviewFit(fit: boolean): void {
+    this.viewport.setFit(fit);
+  }
+
+  /**
    * Add a viewport size of the user's own, as one undoable change that travels in the seed.
    *
    * The `setSplitDoubleBreaks` pattern: a `block` record for the settings, so the page counts as
@@ -8523,7 +8532,9 @@ export class EditorEngine {
      * the starting number come from.
      */
     const cascade = cascadedDeclarations(appliedRules(el));
-    const gesture = readSnapshot(el, mode, handle, x, y, {
+    // The gesture's arithmetic is in page CSS px; the pointer is in screen px (a fitted preview).
+    const scale = pageScale();
+    const gesture = readSnapshot(el, mode, handle, x / scale, y / scale, {
       inline: (property) => this.inlineStyle(property, el),
       authored: (property) =>
         this.inlineStyle(property, el) || cascade.get(property)?.value || '',
@@ -8579,12 +8590,14 @@ export class EditorEngine {
     if (!gesture) return;
     this.#transformPointer = { x, y };
     this.#transformModifiers = modifiers;
+    const scale = pageScale();
+    // In page CSS px, as `gesture.start` is.
     this.#transformTravel = Math.max(
       this.#transformTravel,
-      Math.hypot(x - gesture.start.x, y - gesture.start.y),
+      Math.hypot(x / scale - gesture.start.x, y / scale - gesture.start.y),
     );
 
-    const step = stepFor(gesture, x, y, modifiers);
+    const step = stepFor(gesture, x / scale, y / scale, modifiers);
     gesture.written = step.declarations;
     for (const [property, value] of Object.entries(step.declarations)) {
       if (value) gesture.el.style.setProperty(property, value);
@@ -8773,8 +8786,12 @@ export class EditorEngine {
     const computed = getComputedStyle(el);
     if (computed.display === 'inline' || computed.display === 'none') return null;
     const linear = linearOf(computed.transform);
-    const box = untransformedBox(el, linear, computed);
-    if (box.width <= 0 || box.height <= 0) return null;
+    // Measured in page CSS px and drawn on the screen, so scaled back by a fitted preview's zoom.
+    const scale = pageScale();
+    const page = untransformedBox(el, linear, computed);
+    if (page.width <= 0 || page.height <= 0) return null;
+    const box = { left: page.left * scale, top: page.top * scale, width: page.width * scale, height: page.height * scale };
+    const pivot = originOf(computed, page);
     return {
       /*
        * The resize and move handles are the page-side half of the panel's Offsets section, so they
@@ -8786,7 +8803,7 @@ export class EditorEngine {
       angle: declaredRotation(computed.transform) ?? angleOf(linear),
       box,
       linear,
-      origin: originOf(computed, box),
+      origin: { x: pivot.x * scale, y: pivot.y * scale },
     };
   }
 

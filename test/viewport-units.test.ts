@@ -7,7 +7,7 @@
  *     npm run test:viewport-units
  */
 import assert from 'node:assert/strict';
-import { hasWidthUnits, restateWidthUnits } from '../src/core/viewport-units.ts';
+import { hasHeightUnits, hasWidthUnits, restateViewportUnits } from '../src/core/viewport-units.ts';
 
 let passed = 0;
 const failures: string[] = [];
@@ -47,37 +47,44 @@ test('one unit among other tokens is found', () => {
 });
 
 /* -------------------------------------------------------------------------- */
-/* restateWidthUnits                                                           */
+/* restateViewportUnits                                                           */
 /* -------------------------------------------------------------------------- */
 
 test('vw becomes px at the previewed width', () => {
-  assert.equal(restateWidthUnits('50vw', 320), '160px');
-  assert.equal(restateWidthUnits('100svw', 375), '375px');
-  assert.equal(restateWidthUnits('-2vw', 320), '-6.4px');
+  assert.equal(restateViewportUnits('50vw', 320), '160px');
+  assert.equal(restateViewportUnits('100svw', 375), '375px');
+  assert.equal(restateViewportUnits('-2vw', 320), '-6.4px');
 });
 
 test('a fluid clamp keeps its shape with the unit restated', () => {
-  assert.equal(restateWidthUnits('clamp(1rem, 2.5vw + 1rem, 3rem)', 320), 'clamp(1rem, 8px + 1rem, 3rem)');
-  assert.equal(restateWidthUnits('calc(100% - 4vw)', 1024), 'calc(100% - 40.96px)');
+  assert.equal(restateViewportUnits('clamp(1rem, 2.5vw + 1rem, 3rem)', 320), 'clamp(1rem, 8px + 1rem, 3rem)');
+  assert.equal(restateViewportUnits('calc(100% - 4vw)', 1024), 'calc(100% - 40.96px)');
 });
 
 test('vmin and vmax keep the live window height', () => {
-  assert.equal(restateWidthUnits('5vmin', 320), 'calc(5 * min(3.2px, 1vh))');
+  assert.equal(restateViewportUnits('5vmin', 320), 'calc(5 * min(3.2px, 1vh))');
   // A negative factor stays a factor: `min(-16px, -5vh)` would pick the wrong side.
-  assert.equal(restateWidthUnits('-5vmax', 320), 'calc(-5 * max(3.2px, 1vh))');
+  assert.equal(restateViewportUnits('-5vmax', 320), 'calc(-5 * max(3.2px, 1vh))');
 });
 
 test('strings, urls, identifiers and height units are left exactly as written', () => {
   assert.equal(
-    restateWidthUnits('url(5vw.png) 0 0 / 10vw 50vh', 320),
+    restateViewportUnits('url(5vw.png) 0 0 / 10vw 50vh', 320),
     'url(5vw.png) 0 0 / 32px 50vh',
   );
-  assert.equal(restateWidthUnits('"5vw" 5vw', 320), '"5vw" 16px');
-  assert.equal(restateWidthUnits('var(--size-5vw, 5vw)', 320), 'var(--size-5vw, 16px)');
+  assert.equal(restateViewportUnits('"5vw" 5vw', 320), '"5vw" 16px');
+  assert.equal(restateViewportUnits('var(--size-5vw, 5vw)', 320), 'var(--size-5vw, 16px)');
+});
+
+test('with a height, a preview scaled to fit restates height units and vmin/vmax too', () => {
+  assert.equal(restateViewportUnits('100vh', 1440, 1200), '1200px');
+  assert.equal(restateViewportUnits('calc(50dvh - 2vw)', 1440, 1200), 'calc(600px - 28.8px)');
+  assert.equal(restateViewportUnits('10vmin 10vmax', 1440, 1200), '120px 144px');
+  assert.ok(hasHeightUnits('50svh') && !hasHeightUnits('50vw') && !hasHeightUnits('url(5vh.png)'));
 });
 
 test('a value with no width unit comes back untouched', () => {
-  assert.equal(restateWidthUnits('12px 16px', 320), '12px 16px');
+  assert.equal(restateViewportUnits('12px 16px', 320), '12px 16px');
 });
 
 /* -------------------------------------------------------------------------- */

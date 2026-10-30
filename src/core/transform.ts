@@ -1,3 +1,5 @@
+import { pageScale } from './viewport.js';
+
 /**
  * The geometry and arithmetic behind dragging an element's own handles.
  *
@@ -155,7 +157,14 @@ export function originOf(computed: CSSStyleDeclaration, box: Box): Point {
  * rounded to whole pixels.
  */
 export function untransformedBox(el: HTMLElement, m: Linear, computed: CSSStyleDeclaration): Box {
-  const rect = el.getBoundingClientRect();
+  /*
+   * In the page's CSS px, not the screen's: a preview scaled to fit shows the page at `pageScale()`,
+   * and every number this box feeds is written back as CSS. A 300px-wide element seen at 50% is
+   * still 300px wide to the declaration being dragged. With no scale this is the rect itself.
+   */
+  const s = pageScale();
+  const screen = el.getBoundingClientRect();
+  const rect = { left: screen.left / s, top: screen.top / s, width: screen.width / s, height: screen.height / s };
   if (isIdentity(m)) {
     return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
   }
@@ -622,15 +631,17 @@ export function containingFrame(el: HTMLElement, scheme?: string): Box {
    * the element currently has. Converting an element to absolute has to measure it against the
    * block it is about to be resolved in, before it is resolved there. Defaults to what it is now.
    */
+  // Page CSS px, as `untransformedBox` is: the window measures `innerWidth / pageScale()` in them.
+  const s = pageScale();
   if ((scheme ?? getComputedStyle(el).position) === 'fixed') {
-    return { left: 0, top: 0, width: innerWidth, height: innerHeight };
+    return { left: 0, top: 0, width: innerWidth / s, height: innerHeight / s };
   }
   const parent =
     el.offsetParent instanceof HTMLElement ? el.offsetParent : document.documentElement;
   const rect = parent.getBoundingClientRect();
   return {
-    left: rect.left + parent.clientLeft,
-    top: rect.top + parent.clientTop,
+    left: rect.left / s + parent.clientLeft,
+    top: rect.top / s + parent.clientTop,
     width: parent.clientWidth,
     height: parent.clientHeight,
   };

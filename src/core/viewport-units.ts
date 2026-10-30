@@ -18,8 +18,10 @@
  * declaration, and every important declaration of the same longhand beats them, because that
  * declaration's own twin comes later with at least zero specificity.
  *
- * Height units (`vh`, `vb`) are left alone: the previewed frame is as tall as the window, so the
- * window's height is the frame's. `vmin` and `vmax` keep a live `1vh` for the same reason.
+ * Height units (`vh`, `vb`) are left alone at 100%: the previewed frame is as tall as the window,
+ * so the window's height is the frame's, and `vmin`/`vmax` keep a live `1vh` for the same reason.
+ * A preview scaled to fit stands for a taller window, so it passes that height and they are
+ * restated too.
  *
  * Measured limits: `@keyframes` keep the window's width, anonymous `@layer` blocks are not
  * restated, an inline `!important` width-unit value cannot be outranked, and sheets inside shadow
@@ -41,7 +43,9 @@ interface Twin {
   value: string;
   important: boolean;
   /** Whether `value` has a width unit to restate. */
-  units: boolean;
+  width: boolean;
+  /** Whether it has a height unit, restated only for a preview scaled to fit. */
+  height: boolean;
 }
 
 /** One style rule's (or nested declaration block's) declarations, with where they sit. */
@@ -59,42 +63,57 @@ interface InlineBlock {
   twins: Twin[];
 }
 
-/** Quick test, before any scanning. */
+/** Quick tests, before any scanning. */
 const HAS_UNIT = /\d(?:[sld]?)(?:vw|vi|vmin|vmax)(?![\w-])/i;
+const HAS_HEIGHT_UNIT = /\d(?:[sld]?)(?:vh|vb)(?![\w-])/i;
 
-/** A number with a width unit, not inside an identifier. */
-const UNIT = /(^|[^\w.\\-])([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)[sld]?(vw|vi|vmin|vmax)(?![\w-])/gi;
+/** A number with a viewport unit, not inside an identifier. */
+const UNIT = /(^|[^\w.\\-])([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)[sld]?(vw|vi|vmin|vmax|vh|vb)(?![\w-])/gi;
 
-/** Whether `value` uses a width-relative viewport unit outside strings and `url()`. */
-export function hasWidthUnits(value: string): boolean {
-  if (!HAS_UNIT.test(value)) return false;
+/** Whether `value` uses one of `kinds` outside strings and `url()`. */
+function hasUnits(value: string, quick: RegExp, kinds: readonly string[]): boolean {
+  if (!quick.test(value)) return false;
   let found = false;
   mapOutsideStrings(value, (text) => {
-    UNIT.lastIndex = 0;
-    if (UNIT.test(text)) found = true;
+    for (const match of text.matchAll(UNIT)) if (kinds.includes(match[3].toLowerCase())) found = true;
     return text;
   });
   return found;
 }
 
+/** Whether `value` uses a width-relative viewport unit outside strings and `url()`. */
+export function hasWidthUnits(value: string): boolean {
+  return hasUnits(value, HAS_UNIT, ['vw', 'vi', 'vmin', 'vmax']);
+}
+
+/** Whether `value` uses a height-relative viewport unit outside strings and `url()`. */
+export function hasHeightUnits(value: string): boolean {
+  return hasUnits(value, HAS_HEIGHT_UNIT, ['vh', 'vb']);
+}
+
 /**
- * `value` with every width unit restated for a `width`-px viewport.
+ * `value` with its viewport units restated for a `width`-px viewport, and a `height`-px one when
+ * given.
  *
  * `5vw` at 320 becomes `16px`, which `calc()`, `clamp()`, `min()` and `max()` all accept in place.
- * `vmin`/`vmax` become `calc(n * min(3.2px, 1vh))`, keeping the window's height live.
+ * Without a height, `vh`/`vb` are left as written and `vmin`/`vmax` become
+ * `calc(n * min(3.2px, 1vh))`, keeping the window's height live. With one, all of them become px.
  */
-export function restateWidthUnits(value: string, width: number): string {
-  if (!HAS_UNIT.test(value)) return value;
-  const perUnit = width / 100;
+export function restateViewportUnits(value: string, width: number, height: number | null = null): string {
+  if (!HAS_UNIT.test(value) && (height === null || !HAS_HEIGHT_UNIT.test(value))) return value;
+  const perWidth = width / 100;
+  const perHeight = height === null ? null : height / 100;
   return mapOutsideStrings(value, (text) =>
-    text.replace(UNIT, (_match, before: string, number: string, unit: string) => {
+    text.replace(UNIT, (match, before: string, number: string, unit: string) => {
       const n = Number(number);
       const kind = unit.toLowerCase();
+      if (kind === 'vh' || kind === 'vb') return perHeight === null ? match : `${before}${round(n * perHeight)}px`;
       if (kind === 'vmin' || kind === 'vmax') {
-        const fn = kind === 'vmin' ? 'min' : 'max';
-        return `${before}calc(${n} * ${fn}(${round(perUnit)}px, 1vh))`;
+        const pick = kind === 'vmin' ? Math.min : Math.max;
+        if (perHeight !== null) return `${before}${round(n * pick(perWidth, perHeight))}px`;
+        return `${before}calc(${n} * ${kind === 'vmin' ? 'min' : 'max'}(${round(perWidth)}px, 1vh))`;
       }
-      return `${before}${round(n * perUnit)}px`;
+      return `${before}${round(n * perWidth)}px`;
     }));
 }
 
@@ -213,7 +232,8 @@ function readTwins(style: CSSStyleDeclaration): Twin[] {
       longhands: [name],
       value,
       important: style.getPropertyPriority(name) === 'important',
-      units: hasWidthUnits(value),
+      width: hasWidthUnits(value),
+      height: hasHeightUnits(value),
     });
   }
   if (pending.size) {
@@ -223,7 +243,7 @@ function readTwins(style: CSSStyleDeclaration): Twin[] {
       if (!longhands.length) continue;
       const important = /!\s*important\s*$/i.test(raw);
       const value = raw.replace(/!\s*important\s*$/i, '').trim();
-      out.push({ name, longhands, value, important, units: hasWidthUnits(value) });
+      out.push({ name, longhands, value, important, width: hasWidthUnits(value), height: hasHeightUnits(value) });
     }
   }
   return out;
@@ -346,27 +366,35 @@ function pathOf(el: Element): string {
   return `:where(${[':root', ...steps].join(' > ')})`;
 }
 
-/** Inline declarations with a width unit, on the document's own elements. */
-export function collectInline(): InlineBlock[] {
+/** Inline declarations with a width unit (or a height unit, with `heights`), on the page's elements. */
+export function collectInline(heights = false): InlineBlock[] {
   const out: InlineBlock[] = [];
   for (const el of Array.from(document.querySelectorAll('[style]'))) {
     const style = (el as HTMLElement | SVGElement).style;
-    if (!style?.length || !HAS_UNIT.test(el.getAttribute('style') ?? '')) continue;
+    const text = el.getAttribute('style') ?? '';
+    if (!style?.length || !(HAS_UNIT.test(text) || (heights && HAS_HEIGHT_UNIT.test(text)))) continue;
     if (isEditorOwned(el)) continue;
     // An inline `!important` already outranks anything a sheet can say.
-    const twins = readTwins(style).filter((one) => one.units && !one.important);
+    const twins = readTwins(style).filter((one) => (one.width || (heights && one.height)) && !one.important);
     if (twins.length) out.push({ selector: pathOf(el), twins });
   }
   return out;
 }
 
 /**
- * The internal sheet's text for a preview at `width`, or `''` when nothing uses a width unit.
+ * The internal sheet's text for a preview at `width` (and `height`, for one scaled to fit), or `''`
+ * when nothing uses a unit that needs restating.
  */
-export function unitsCss(blocks: readonly Block[], inline: readonly InlineBlock[], width: number): string {
+export function unitsCss(
+  blocks: readonly Block[],
+  inline: readonly InlineBlock[],
+  width: number,
+  height: number | null = null,
+): string {
+  const restated = (one: Twin): boolean => one.width || (height !== null && one.height);
   const contested = new Set<string>();
   const note = (twins: readonly Twin[]): void => {
-    for (const one of twins) if (one.units) for (const longhand of one.longhands) contested.add(longhand);
+    for (const one of twins) if (restated(one)) for (const longhand of one.longhands) contested.add(longhand);
   };
   for (const one of inline) note(one.twins);
   for (const one of blocks) note(one.twins);
@@ -375,7 +403,7 @@ export function unitsCss(blocks: readonly Block[], inline: readonly InlineBlock[
   const body = (twins: readonly Twin[], base: string | null, important: boolean): string =>
     twins
       .map((one) => {
-        let value = one.units ? restateWidthUnits(one.value, width) : one.value;
+        let value = restated(one) ? restateViewportUnits(one.value, width, height) : one.value;
         if (base && /url\(/i.test(value)) value = absolutizeCssUrls(value, base);
         return `${one.name}: ${value}${important || one.important ? ' !important' : ''};`;
       })

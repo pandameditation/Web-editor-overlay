@@ -13,6 +13,7 @@
  */
 
 import { breakpointOf, isWidthQuery, MAX_VIEWPORT, MIN_VIEWPORT, widthBound } from './breakpoints.js';
+import { HOST_TAG } from './constants.js';
 import { isEditorOwned } from './dom-journal.js';
 import { listen, unlisten } from './shield.js';
 import { ManagedStyleSheet } from './stylesheet.js';
@@ -56,6 +57,8 @@ export class MediaEvaluator {
   #size = '';
   #cache = new Map<string, boolean>();
   #available = true;
+  /** The height to answer at instead of the window's: a preview scaled to fit is taller. */
+  #height: number | null = null;
 
   constructor(container: () => Element | null) {
     this.#container = container;
@@ -71,9 +74,21 @@ export class MediaEvaluator {
     return this.#frame?.contentWindow?.innerWidth ?? null;
   }
 
-  /** Evaluate `media` (authored text) at `width` CSS px and the real window height. */
+  /** The height queries are answered at: the simulated one while set, else the window's. */
+  get height(): number {
+    return this.#height ?? innerHeight;
+  }
+
+  /** Answer at `height` CSS px from now on, or at the window's height again with null. */
+  setHeight(height: number | null): void {
+    if (height === this.#height) return;
+    this.#height = height;
+    this.#cache.clear();
+  }
+
+  /** Evaluate `media` (authored text) at `width` CSS px and the current height. */
   matches(media: string, width: number): boolean {
-    const key = `${width}x${innerHeight}|${media}`;
+    const key = `${width}x${this.height}|${media}`;
     const known = this.#cache.get(key);
     if (known !== undefined) return known;
     const win = this.#windowAt(width);
@@ -119,10 +134,10 @@ export class MediaEvaluator {
       this.#refuse('no frame window');
       return null;
     }
-    const size = `${width}x${innerHeight}`;
+    const size = `${width}x${this.height}`;
     if (size !== this.#size) {
       frame.style.width = `${width}px`;
-      frame.style.height = `${innerHeight}px`;
+      frame.style.height = `${this.height}px`;
       this.#size = size;
       // Reading the size flushes layout, so the frame's media queries see the new width.
       void win.innerWidth;
@@ -311,6 +326,14 @@ const DOCK_GUTTER = 28;
  * rule writes, which fire no mutation, call `noteRuleEdited()`; inline `style` changes reach the
  * observer. Measured limits (page scripts, fixed elements, cross-origin sheets, `@keyframes`) are
  * the menu's to state.
+ *
+ * A width wider than the room beside the dock is scaled to fit, by `zoom` on the root, with the
+ * overlay host zoomed back so the editor stays at its own size. The scaled page stands for a window
+ * of the previewed width and the screen's proportions, so height queries and height units are
+ * answered at the window's height divided by the scale. Turned off (`setFit(false)`), the page is
+ * shown at 100% and the root keeps room on the right for the dock, so its right edge scrolls into
+ * view instead of ending under the panel. `pageScale()` is what the editor's own geometry divides
+ * by: screen lengths are the page's CSS lengths times the scale.
  */
 export class ViewportPreview {
   readonly #evaluator: MediaEvaluator;
@@ -324,6 +347,16 @@ export class ViewportPreview {
   /** Re-entrancy guard: writing the frame sheet is itself a sheet change. */
   #busy = false;
   #frameLeft = 0;
+  /** Whether a width wider than the room is scaled to fit; at 100% otherwise. */
+  #fit = true;
+  /** The root's zoom: 1 unless the previewed width is being scaled to fit. */
+  #scale = 1;
+  /** What the root keeps free on its right at 100%, so the dock does not hide its edge. */
+  #reserve = 0;
+  /** Whether the previewed width is wider than the room beside the dock. */
+  #overflows = false;
+  /** The room beside a docked panel, in screen px: where the frame and its label fit. */
+  #room = 0;
   #unreadable = 0;
   /** The sheet restating width units, last in the document; null when nothing uses one. */
   #units: HTMLStyleElement | null = null;
@@ -347,6 +380,38 @@ export class ViewportPreview {
   /** The frame's left edge in CSS px; 0 at Actual. */
   get frameLeft(): number {
     return this.#frameLeft;
+  }
+
+  /** The root's zoom while a wide preview is scaled to fit; 1 otherwise. */
+  get scale(): number {
+    return this.#scale;
+  }
+
+  /** Whether the previewed width is wider than the room beside the dock, scaled or not. */
+  get overflows(): boolean {
+    return this.#overflows;
+  }
+
+  /** The width beside a docked panel, in screen px; the whole window with no dock. 0 at Actual. */
+  get room(): number {
+    return this.#room;
+  }
+
+  /** Whether a wider width can be scaled at all: false where `zoom` is not the standard one. */
+  get canFit(): boolean {
+    return zoomWorks();
+  }
+
+  /** Whether wider widths are scaled to fit (the default) rather than shown at 100%. */
+  get fit(): boolean {
+    return this.#fit;
+  }
+
+  /** Scale wider widths to fit, or show them at 100% and let the page scroll. */
+  setFit(fit: boolean): void {
+    if (fit === this.#fit) return;
+    this.#fit = fit;
+    this.relayout();
   }
 
   /** The evaluator iframe's own `innerWidth`, for the fixtures. */
@@ -383,6 +448,7 @@ export class ViewportPreview {
     if (!this.#evaluator.available) return false;
     this.#width = width;
     active = this;
+    this.#layout();
     this.#walk();
     this.#writeFrame();
     this.#connect();
@@ -396,9 +462,16 @@ export class ViewportPreview {
     this.#walk();
   }
 
-  /** Recompute the frame's position and rewrite only the frame sheet. No media walk. */
+  /**
+   * Recompute the frame's position and scale, and rewrite the frame sheet. A media walk only when
+   * the scale moved, since the simulated height moves with it.
+   */
   relayout(): void {
     if (this.#width === null) return;
+    if (this.#layout()) {
+      this.#evaluator.beginPass();
+      this.#walk();
+    }
     this.#writeFrame();
     this.#options.onChange();
   }
@@ -416,8 +489,9 @@ export class ViewportPreview {
       this.#options.onChange();
       return;
     }
-    if (innerHeight !== this.#height) this.reconcile();
-    this.relayout();
+    if (this.#layout() || innerHeight !== this.#height) this.#walk();
+    this.#writeFrame();
+    this.#options.onChange();
   }
 
   /** The sheet restating width units, for the fixtures; null at Actual or when nothing needs it. */
@@ -500,7 +574,7 @@ export class ViewportPreview {
     }
     // After the media rewrite, so the restatement reads which conditions apply at this width.
     this.#blocks = collectBlocks(this.#unitSheets(), this.#index);
-    this.#inline = collectInline();
+    this.#inline = collectInline(this.#scale < 1);
     this.#writeUnits();
   }
 
@@ -526,7 +600,9 @@ export class ViewportPreview {
   /** Write the units sheet, or remove it when nothing uses a width unit. */
   #writeUnits(): void {
     const width = this.#width;
-    const css = width === null ? '' : unitsCss(this.#blocks, this.#inline, width);
+    // Height units only while scaled: at 100% the frame is as tall as the window, so they are right.
+    const height = this.#scale < 1 ? this.#evaluator.height : null;
+    const css = width === null ? '' : unitsCss(this.#blocks, this.#inline, width, height);
     if (!css) {
       this.#units?.remove();
       this.#units = null;
@@ -545,20 +621,51 @@ export class ViewportPreview {
     if (root.lastElementChild !== this.#units) root.appendChild(this.#units);
   }
 
+  /**
+   * Where the frame sits and how far it is scaled, from the width, the window and the dock. Sets
+   * the evaluator's height to match. True when the scale changed, which moves that height.
+   */
+  #layout(): boolean {
+    const width = this.#width;
+    const before = this.#scale;
+    if (width === null) return false;
+    const dock = this.#options.dock();
+    const footprint = dock.open && !dock.floating ? dock.width + DOCK_GUTTER : 0;
+    const available = Math.max(MIN_VIEWPORT, innerWidth - footprint);
+    const wider = width > available;
+    this.#overflows = wider;
+    this.#room = available;
+    // Rounded down, so the scaled frame always fits rather than overhanging by a subpixel.
+    this.#scale = wider && this.#fit && zoomWorks() ? Math.floor((available / width) * 1000) / 1000 : 1;
+    // Centred in the space the docked panel leaves; flush left when the frame is wider than that.
+    this.#frameLeft = Math.max(0, Math.floor((available - width) / 2));
+    this.#reserve = wider && this.#scale === 1 ? footprint : 0;
+    this.#evaluator.setHeight(this.#scale < 1 ? Math.round(innerHeight / this.#scale) : null);
+    return this.#scale !== before;
+  }
+
   #writeFrame(): void {
     const width = this.#width;
     if (width === null) return;
-    const dock = this.#options.dock();
-    const available = innerWidth - (dock.open && !dock.floating ? dock.width + DOCK_GUTTER : 0);
-    // Centred in the space the docked panel leaves; flush left when the frame is wider than that.
-    this.#frameLeft = Math.max(0, Math.floor((available - width) / 2));
     this.#frame ??= new ManagedStyleSheet(FRAME_SHEET_ID, { internal: true });
+    /*
+     * At 100% and wider than the room, the page has to scroll sideways by hand. A page that sets
+     * `overflow-x: hidden` on its root (a common guard against a stray wide element) can only be
+     * scrolled by script, so the overflow is put back for the length of the preview. A modal's
+     * scroll lock is `html[data-heo-modal]`, which still wins on specificity.
+     */
+    const scrolls = this.#overflows && this.#scale === 1 ? ' overflow-x: auto !important;' : '';
+    const scaled = this.#scale < 1
+      // The host is a descendant, and zoom multiplies down the tree: undone there, the editor is
+      // at its own size. Important, to beat the host's inline `all: initial`.
+      ? ` zoom: ${this.#scale} !important; } ${HOST_TAG} { zoom: ${1 / this.#scale} !important;`
+      : '';
     this.#busy = true;
     try {
       this.#frame.write(
         `html { width: ${width}px !important; min-width: 0 !important; max-width: none !important; ` +
-        `margin-left: ${this.#frameLeft}px !important; margin-right: 0 !important; ` +
-        'box-sizing: border-box !important; }',
+        `margin-left: ${this.#frameLeft}px !important; margin-right: ${this.#reserve}px !important; ` +
+        `box-sizing: border-box !important;${scrolls}${scaled} }`,
       );
     } finally {
       this.#busy = false;
@@ -571,7 +678,7 @@ export class ViewportPreview {
       if (records.some(touchesPageCss)) this.reconcile();
       // An inline value, or an element moved: inline twins are keyed by position.
       else if (this.#width !== null && records.some((record) => !isEditorOwned(record.target))) {
-        this.#inline = collectInline();
+        this.#inline = collectInline(this.#scale < 1);
         this.#writeUnits();
       }
     });
@@ -603,8 +710,32 @@ export class ViewportPreview {
     this.#index.clear();
     this.#frame?.write('');
     this.#frameLeft = 0;
+    this.#scale = 1;
+    this.#reserve = 0;
+    this.#overflows = false;
+    this.#room = 0;
+    this.#evaluator.setHeight(null);
     this.#width = null;
     if (active === this) active = null;
+  }
+}
+
+/**
+ * How far the page is scaled on screen: the root's zoom while a wide preview is fitted, else 1.
+ *
+ * Screen lengths (`getBoundingClientRect`, pointer positions) are the page's CSS lengths times
+ * this, so anything turning one into the other divides or multiplies by it.
+ */
+export function pageScale(): number {
+  return active?.scale ?? 1;
+}
+
+/** Whether `zoom` is the standardised property here; without it a wide preview scrolls instead. */
+function zoomWorks(): boolean {
+  try {
+    return CSS.supports('zoom', '0.5');
+  } catch {
+    return false;
   }
 }
 

@@ -53,6 +53,9 @@
     .fluid-pending { padding: var(--missing, 3vw) 1px; }
     .fluid-strong { height: 7px !important; }
     .fluid-nest { & .fluid-inner { width: 25vw; } }
+    /* For the wide preview: half the screen tall in a fitted 1440, and a box to drag by hand. */
+    .fluid-tall { height: 50vh; width: 10px; }
+    .fluid-moved { position: absolute; left: 40px; top: 2000px; width: 60px; height: 30px; }
   </style>
   <!-- A sheet gated by its own media attribute: the attribute must never change. -->
   <style id="gated" media="(max-width: 767px)">
@@ -77,6 +80,8 @@
     <div id="fluid-inline" style="width: 20vw">inline</div>
     <div id="fluid-strong" class="fluid-strong" style="height: 5vw">strong</div>
     <div class="fluid-nest"><div id="fluid-inner" class="fluid-inner">inner</div></div>
+    <div id="fluid-tall" class="fluid-tall"></div>
+    <div id="fluid-moved" class="fluid-moved">moved</div>
   </div>
   <pre id="progress">start</pre>
   <pre id="out">pending</pre>
@@ -329,6 +334,9 @@
         const unitsHistoryBefore = engine.history.size;
         const actualTitle = fluid('fluid-title').fontSize;
         const actualBox = fluid('fluid-box').width;
+        // At 100%: 1024 is wider than this 756 window, and these are exact-pixel checks of the
+        // restatement. Scaling to fit has its own group below.
+        engine.setPreviewFit(false);
         engine.setPreviewWidth(320);
         await frames();
         const u320 = {
@@ -367,6 +375,7 @@
         };
         const exportedWithUnits = engine.exportHTML();
         engine.setPreviewWidth(null);
+        engine.setPreviewFit(true);
         await frames();
         results.units = {
           // The window is 756 wide: at 320, 5vw is 16px, where the window would say 37.8px.
@@ -396,6 +405,95 @@
             // The element's markup, assembled so this script's own text cannot match it.
             !exportedWithUnits.includes(['<style id="heo', 'viewport', 'units"'].join('-')) &&
             engine.history.size === unitsHistoryBefore,
+        };
+
+        /* ------------------------------------------------------------------ *
+         * Wider than the window: scaled to fit, or at 100% and scrolling.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'wide';
+        engine.setDock(true, 'styles');
+        await frames();
+        const room = innerWidth - engine.store.value.dockWidth - 28;
+        const frameEl2 = () => deep('heo-viewport-frame');
+        const label = () => frameEl2()?.shadowRoot?.querySelector('.label');
+        engine.setPreviewWidth(1440);
+        await frames();
+        const scale = engine.viewport.scale;
+        const rootRect = document.documentElement.getBoundingClientRect();
+        engine.select(target);
+        await frames();
+        const badgeSize = deep('heo-selection-layer')?.shadowRoot?.querySelector('.badge .dim')?.textContent.trim();
+        // A hand drag of 50 screen px moves the box 50 / scale CSS px: the page is drawn smaller.
+        const moved = document.getElementById('fluid-moved');
+        moved.scrollIntoView({ block: 'center' });
+        await frames();
+        const mb = moved.getBoundingClientRect();
+        const began = engine.startTransform(moved, 'move', null, mb.left + 10, mb.top + 10);
+        engine.updateTransform(mb.left + 60, mb.top + 10, { shift: false, alt: false });
+        engine.endTransform();
+        const movedLeft = moved.style.left;
+        engine.undo();
+        scrollTo(0, 0);
+        await frames();
+        const wide = {
+          scale,
+          rootFits: rootRect.left >= -1 && rootRect.right <= room + 1 && rootRect.right >= room - 3,
+          mediaAt1440: padding() === '20px 28px',
+          editorUnscaled: Math.round(deep('heo-dock')?.getBoundingClientRect().width ?? -1) === engine.store.value.dockWidth,
+          badge: badgeSize,
+          badgeWant: `${target.offsetWidth}×${target.offsetHeight}`,
+          // 50vh of a window `innerHeight / scale` tall, drawn at `scale`: half the screen.
+          tall: Math.abs(document.getElementById('fluid-tall').getBoundingClientRect().height - innerHeight / 2) <= 2,
+          moved: began && movedLeft === `${Math.round(40 + 50 / scale)}px`,
+          labelSays: /at \d+% to fit/.test(label()?.textContent ?? '') && Boolean(label()?.querySelector('[data-fit="100"]')),
+        };
+        // 100%: nothing scaled, and the right edge can be scrolled out from under the dock. The
+        // page here guards against sideways scroll, as many do, and the preview must undo that.
+        const guard = document.createElement('style');
+        guard.textContent = 'html, body { overflow-x: hidden; }';
+        document.head.appendChild(guard);
+        label()?.querySelector('[data-fit="100"]')?.click();
+        await frames();
+        // Where the hand can reach it: inside the room beside the dock, not centred on the frame.
+        const fitButton = label()?.querySelector('[data-fit="fit"]')?.getBoundingClientRect();
+        const fitInRoom = Boolean(fitButton) && fitButton.left >= 0 && fitButton.right <= room &&
+          fitButton.bottom <= innerHeight;
+        const overflowX = getComputedStyle(document.documentElement).overflowX;
+        scrollTo(1e6, 0);
+        await frames();
+        const atFull = {
+          scale: engine.viewport.scale,
+          right: document.documentElement.getBoundingClientRect().left + 1440,
+          labelSays: /at 100%, scroll/.test(label()?.textContent ?? '') && Boolean(label()?.querySelector('[data-fit="fit"]')),
+          zoom: getComputedStyle(document.documentElement).zoom,
+        };
+        scrollTo(0, 0);
+        label()?.querySelector('[data-fit="fit"]')?.click();
+        await frames();
+        const refit = engine.viewport.scale === scale;
+        // Fitted again, nothing is left to scroll: the page's own overflow is back.
+        const overflowRefit = getComputedStyle(document.documentElement).overflowX;
+        guard.remove();
+        engine.setPreviewWidth(null);
+        engine.setDock(false);
+        await frames();
+        results.wide = {
+          aWiderWidthIsScaledIntoTheRoomBesideTheDock: scale < 1 && wide.rootFits,
+          mediaQueriesStillAnswerAtTheWidth: wide.mediaAt1440,
+          theEditorKeepsItsOwnSize: wide.editorUnscaled,
+          theBadgeSaysCssPixels: wide.badge === wide.badgeWant,
+          heightUnitsFollowTheScaledWindow: wide.tall,
+          aHandDragWritesCssPixels: wide.moved,
+          theLabelSaysTheScaleAndOffers100: wide.labelSays,
+          at100TheRightEdgeScrollsClearOfTheDock:
+            atFull.scale === 1 && atFull.zoom === '1' && atFull.right <= room + 1 && atFull.labelSays,
+          at100FitToWindowStaysWithinReach: fitInRoom,
+          at100ThePageScrollsSidewaysEvenIfItForbidsIt: overflowX === 'auto' && overflowRefit === 'hidden',
+          fitComesBack: refit,
+          actualUndoesTheScale:
+            engine.viewport.scale === 1 &&
+            getComputedStyle(document.documentElement).zoom === '1' &&
+            getComputedStyle(deep('html-editor-overlay')).zoom === '1',
         };
 
         /* ------------------------------------------------------------------ *
