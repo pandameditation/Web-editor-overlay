@@ -509,9 +509,18 @@ export class ViewportPreview {
    *
    * Included because they style the page too: a save-preview rule has to keep beating the rule it
    * would override. Adopted sheets are left out: they cascade after the units sheet whatever it says.
+   *
+   * The frame sheet is left out as well. It is rewritten after the walk on every width change, with
+   * the walk blocked, so a twin of it would keep the previous width: going from 320 to 768 left
+   * `html { width: 320px !important }` restated last, beating the new frame, and the page stayed
+   * phone-sized until Actual cleared it. Its declarations are `!important` on the root, so they
+   * win over the twins without being restated.
    */
   #unitSheets(): CSSStyleSheet[] {
-    return Array.from(document.styleSheets).filter((sheet) => sheet.ownerNode !== this.#units);
+    return Array.from(document.styleSheets).filter((sheet) => {
+      const owner = sheet.ownerNode;
+      return owner !== this.#units && !(owner instanceof Element && owner.id === FRAME_SHEET_ID);
+    });
   }
 
   /** Write the units sheet, or remove it when nothing uses a width unit. */

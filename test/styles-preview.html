@@ -359,7 +359,12 @@
         document.getElementById('fluid-inline').setAttribute('style', 'width: 20vw');
         engine.setPreviewWidth(1024);
         await frames();
-        const u1024 = { title: fluid('fluid-title').fontSize, box: fluid('fluid-box').width };
+        const u1024 = {
+          title: fluid('fluid-title').fontSize,
+          box: fluid('fluid-box').width,
+          root: Math.round(document.documentElement.getBoundingClientRect().width),
+          gap: fluid('fluid-gap').marginLeft,
+        };
         const exportedWithUnits = engine.exportHTML();
         engine.setPreviewWidth(null);
         await frames();
@@ -373,6 +378,9 @@
           nestedRulesFollow: u320.inner === '80px',
           inlineValuesFollow: u320.inline === '64px',
           anImportantRuleStillBeatsInline: u320.strong === '7px',
+          // Straight from 320 to 1024, no Actual between: the restatement once kept a copy of the
+          // 320 frame, which beat the new one and left the page phone-sized.
+          aDirectSwitchTakesTheNewWidth: u1024.root === 1024 && u1024.gap === '102.4px',
           aLiveRuleEditIsRestatedAtOnce: liveEdit === '80px' && liveUndo === '160px',
           anInlineEditIsRestated: inlineEdit === '96px',
           // The restatement is the editor's: every registry and the cascade inspector skip these
