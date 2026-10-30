@@ -10,6 +10,7 @@ import {
   parseLength,
   toHexColor,
 } from '../../core/css.js';
+import { splitImportant } from '../../core/declaration-list.js';
 import { listen, unlisten } from '../../core/shield.js';
 import { PopoverPlacer } from '../place.js';
 import { icon } from '../icons.js';
@@ -1980,18 +1981,38 @@ export class HeoValueField extends LitElement {
   #commit(): void {
     const next = this.draft.trim();
     if (next === this.value.trim()) return;
-    this.value = next;
+    /*
+     * A typed `!important` becomes the tag, and the text keeps only the value.
+     *
+     * Declaration hosts bind the value without its flag and show the flag as `important`. Kept as
+     * text, the field held `0 0 12px !important` while the host bound `0 0 12px` before and after
+     * the commit; Lit sets a property only when the bound value changes, so nothing ever corrected
+     * the text. Turning the promote toggle off then removed the flag from the rule and left it in
+     * the field, which wrote it straight back on its next commit. The host still receives the
+     * whole text, flag included, and the tag holds until the host binds `important` itself.
+     *
+     * Only where the host owns the tag (`importantRemovable`): the Styles rows, the cascade popover
+     * and class cards. A field with no tag (the box editor, Media, Extract) keeps the text as typed,
+     * or a flag would appear that nothing there clears.
+     */
+    const typed = this.property && this.importantRemovable ? splitImportant(next) : null;
+    const kept = typed?.important && typed.value ? typed.value : next;
+    if (kept !== next) {
+      this.important = true;
+      this.draft = kept;
+    }
+    this.value = kept;
     // Remembered so a later `value` change can be told apart from the host simply
     // echoing this commit back. See `willUpdate`.
-    this.#lastCommitted = next;
-    this.#emit('value-change');
+    this.#lastCommitted = kept;
+    this.#emit('value-change', next);
   }
 
-  #emit(type: 'value-input' | 'value-change'): void {
+  #emit(type: 'value-input' | 'value-change', text = this.draft.trim()): void {
     this.#painted = type === 'value-input';
     this.dispatchEvent(
       new CustomEvent(type, {
-        detail: { value: this.draft.trim() },
+        detail: { value: text },
         bubbles: true,
         composed: true,
       }),

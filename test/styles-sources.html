@@ -630,6 +630,37 @@
           results.adder.focusesTheNewValue = Boolean(added) && sroot().activeElement === added;
           engine.undo();
           await settle(200);
+          // Typing "!important" after the same value, then the promote toggle off: the field once
+          // kept the typed text, because the value bound back to it had not changed.
+          {
+            const field = () => rowIn(block('.card', 'base'), 'margin')?.querySelector('heo-value-field');
+            const promote = () => rowIn(block('.card', 'base'), 'margin')?.querySelector('.promote');
+            const value = field()?.value;
+            const painted = siteRule('.card')?.style.getPropertyValue('margin');
+            const input = field()?.shadowRoot?.querySelector('input');
+            input?.focus();
+            await typeInto(input, `${value} !important`);
+            key(input, 'Enter');
+            await settle(200);
+            const pressed = promote()?.getAttribute('aria-pressed') === 'true' &&
+              siteRule('.card')?.style.getPropertyPriority('margin') === 'important';
+            input?.blur();
+            await settle(100);
+            promote()?.click();
+            await settle(200);
+            const shown = field()?.shadowRoot?.querySelector('input')?.value ?? '';
+            results.typedImportant = {};
+            results.typedImportant.showsAsPressed = pressed;
+            results.typedImportant.untogglingRemovesIt =
+              siteRule('.card')?.style.getPropertyPriority('margin') === '' &&
+              promote()?.getAttribute('aria-pressed') === 'false' &&
+              !/important/.test(shown) && !/important/.test(field()?.value ?? '') &&
+              field()?.important === false && shown === value &&
+              siteRule('.card')?.style.getPropertyValue('margin') === painted;
+            engine.undo();
+            engine.undo();
+            await settle(200);
+          }
           // Escape closes an adder and leaves nothing behind.
           addButton(block('.card', 'base'))?.click();
           await settle(200);
