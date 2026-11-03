@@ -500,6 +500,9 @@
 
         /* ---- edit: each surface writes where its row says ---- */
         let size = engine.history.size;
+        // States are picked on the conditions bar, then their rows edit the state's own rule.
+        root().querySelector('[data-strip="effective"] [data-cond="state::hover"]')?.click();
+        await settle();
         await send(fieldIn('state-:hover', 'background-color'), 'value-change', '#abcdef');
         results.edit.stateRowWritesTheStateRule =
           hoverRule.style.getPropertyValue('background-color') === 'rgb(171, 205, 239)' &&

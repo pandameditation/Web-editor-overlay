@@ -201,6 +201,8 @@
           sideBySide: rect(second).top === rect(target).top && rect(second).left > rect(target).left,
           printUntouched: print.media.mediaText === 'print',
           host: deep('html-editor-overlay')?.getBoundingClientRect().width ?? -1,
+          // The window's visible width: less its scrollbar, which the sample's far-down box brings.
+          visible: document.documentElement.clientWidth,
           exported: engine.exportHTML(),
           prompt: engine.buildSavePrompt(),
         };
@@ -280,7 +282,8 @@
             draft.includes('max-width: 767px') && !draft.includes('not all'),
           reappliesAfterAManagedSheetWrite: reapplied === '5px',
           onlyWidthQueriesAreRewritten: at320.printUntouched && at1024.printUntouched,
-          overlayHostIsNotNarrowed: at1024.host === innerWidth,
+          // Compared with the visible width: the sample is taller than the window, so it scrolls.
+          overlayHostIsNotNarrowed: at1024.host === at1024.visible,
           frameShadesOutsideTheFrame:
             shades.length === 2 &&
             Math.round(shades[0].left) === 0 &&
@@ -546,18 +549,39 @@
         const pressedSegs = () =>
           segs().filter((b) => b.getAttribute('aria-pressed') === 'true').map((b) => b.textContent.trim());
         const line = () => root().querySelector('.sizes .bp')?.textContent.replace(/\s+/g, ' ').trim() ?? '';
+        /*
+         * The bar is the panel's first row, above the element's header, and it works with nothing
+         * selected: the width is the page's, not the element's.
+         */
+        engine.select(null);
+        await settle();
+        const barFirst = () => {
+          const bar = root().querySelector('.sizes');
+          const next = root().querySelector('.empty, .ident');
+          return Boolean(bar && next && (bar.compareDocumentPosition(next) & Node.DOCUMENT_POSITION_FOLLOWING));
+        };
+        results.layout = { barIsFirstWithNothingSelected: barFirst() };
+        seg('320')?.click();
+        await settle();
+        results.layout.previewWorksWithNothingSelected =
+          engine.store.value.previewWidth === 320 && line() === 'Previewing 320px.';
+        seg('Actual')?.click();
+        await settle();
+        engine.select(target);
+        await settle();
+        results.layout.identFollowsTheBar = barFirst() &&
+          root().querySelector('.ident') !== null &&
+          root().querySelector('.sizes').compareDocumentPosition(root().querySelector('.ident')) === Node.DOCUMENT_POSITION_FOLLOWING;
         results.bar = {
           actualIsPressedByDefault: pressedSegs().join(',') === 'Actual',
-          lineSaysAsItIs: line().startsWith(`As it is: ${innerWidth}px. Every size and state is shown.`),
-          // Every rule reaching the card changes at one width, whatever spelling it uses.
-          listsTheElementsBreakpoints: line().endsWith('Styles change at 768px.'),
+          // The line is the width and nothing else.
+          lineSaysAsItIs: line() === `As it is: ${innerWidth}px`,
         };
         seg('320')?.click();
         await settle();
         results.bar.lineSaysPreviewing =
           engine.store.value.previewWidth === 320 && pressedSegs().join(',') === '320' &&
-          line().startsWith(
-            'Previewing 320px. Only what applies at this width is shown, and edits offer to stay at this size.');
+          line() === 'Previewing 320px.';
         const padField = () =>
           root().querySelector('[data-declarations="effective"] .row[data-property="padding"] heo-value-field');
         padField()?.focusInput();
@@ -683,7 +707,7 @@
           .filter((entry) => entry.state === '' && fresh.slotOf(entry) === 'phone')
           .reduce((sum, entry) => sum + entry.declarations.length, 0);
         results.strip = {
-          effectiveTogglesBackToAllSizes: onPhone && pressedSlot() === 'base',
+          effectiveTogglesBackToAlways: onPhone && pressedSlot() === 'base',
           // Bootstrap's 767.98px is the phone breakpoint, not "another media query".
           toleratesFractionalBreakpoints:
             Boolean(fraction) && fresh.slotOf(fraction) === 'phone' &&
@@ -698,7 +722,6 @@
         const sources = () => root().querySelector('heo-section[heading="Sources"]');
         const card = (key) => sources()?.querySelector(`.cls[data-card="${CSS.escape(key)}"]`);
         const slotsOf = (scope) => Array.from(scope?.querySelectorAll('.slots [data-slot]') ?? []).map((one) => one.dataset.slot);
-        const badgeOf = (scope) => scope?.querySelector('.slots .more .badge')?.textContent.trim() ?? '';
         const metaOf = (key) => card(key)?.querySelector(':scope > header .meta')?.textContent.trim() ?? '';
         const pressedIn = (scope) =>
           scope?.querySelector('.slots .base[aria-pressed="true"]')
@@ -708,8 +731,6 @@
           scope?.querySelector(`.slots [data-slot="${slot}"]`)?.click();
           await settle();
         };
-        const hoverRows = () =>
-          Array.from(root().querySelectorAll('[data-egroup=":hover"] .row')).map((row) => row.dataset.property);
         const cardCount = (width) => {
           const model = engine.elementModel(target);
           return model.entries
@@ -723,15 +744,16 @@
           const min = /min-width:\s*([\d.]+)px/.exec(media);
           return (!max || width <= Number(max[1])) && (!min || width >= Number(min[1]));
         };
-        // Every size, and print under ⋮, at Actual; the ≥768px :hover rule is the tablet block.
-        await pickIn(card('.card'), 'tablet');
-        const tabletHover = Boolean(card('.card')?.querySelector('.block[data-block=":hover"]'));
+        // At Actual, every condition the card declares under is on its bar, and nothing empty is;
+        // the ≥768px :hover rule is a condition of its own.
+        const atActual = slotsOf(card('.card'));
+        await pickIn(card('.card'), 'state::hover@tablet');
+        const tabletHover = Boolean(card('.card')?.querySelector('.block[data-block=":hover"] .decl .p[title="box-shadow"]'));
         card('.card')?.querySelector('.slots .base')?.click();
         await settle();
         results.filter = {
-          actualShowsEveryMediaRule:
-            ['phone', 'tablet', 'laptop', 'desktop'].every((slot) => slotsOf(card('.card')).includes(slot)) &&
-            badgeOf(card('.card')) === '1' &&
+          actualShowsEveryCondition:
+            atActual.join(',') === 'phone,tablet,other:print,state::hover,state::hover@tablet' &&
             metaOf('.card') === `${cardCount(null)} rules · 4×` &&
             tabletHover,
         };
@@ -742,18 +764,18 @@
         results.filter.previewHidesNonMatchingRules =
           phoneMeta === `${cardCount(320)} rules · 4×` && cardCount(320) < cardCount(null) &&
           !card('.card')?.querySelector('.block[data-block=":hover"] .decl .p[title="box-shadow"]');
-        results.filter.stripsShowOnlyMatchingSlots =
-          slotsOf(card('.card')).join(',') === 'phone' &&
-          slotsOf(root().querySelector('[data-strip="effective"]')?.parentElement).join(',') === 'phone' &&
-          badgeOf(card('.card')) === '';
-        const hoverAt320 = hoverRows();
+        // At 320 only what applies there: the phone size, and :hover outside any media query.
+        results.filter.barsShowOnlyMatchingConditions =
+          slotsOf(card('.card')).join(',') === 'phone,state::hover' &&
+          slotsOf(root().querySelector('[data-strip="effective"]')?.parentElement).join(',') === 'phone,state::hover';
+        const hoverAt320 = slotsOf(card('.card'));
         engine.setPreviewWidth(1024);
         await settle(300);
-        const hoverAt1024 = hoverRows();
+        const hoverAt1024 = slotsOf(card('.card'));
         const widePressed = [pressedIn(root().querySelector('heo-section[heading="Effective styles"]')), pressedIn(card('.card'))];
         results.filter.previewHidesStateRulesOutsideTheWidth =
-          hoverAt1024.includes('box-shadow') && !hoverAt320.includes('box-shadow') &&
-          hoverAt320.includes('background-color');
+          hoverAt1024.includes('state::hover@tablet') && !hoverAt320.includes('state::hover@tablet') &&
+          hoverAt320.includes('state::hover');
         // The preview's slot is what every strip shows, the Effective one and each card's.
         results.follow.previewPicksItsSlotEverywhere =
           phonePressed.join(',') === 'phone,phone,phone' && widePressed.join(',') === 'laptop,laptop';

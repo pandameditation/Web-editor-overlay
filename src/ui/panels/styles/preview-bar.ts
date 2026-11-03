@@ -23,7 +23,7 @@ import type { SegmentOption } from '../../controls/segmented.js';
  * Actual is the default and always one click away, because a preview is a way to look, not a mode
  * to live in. Previewing re-evaluates the page's media queries in place, so what the panel lists,
  * what the strips pick and where an edit offers to stay all follow the width. The line under the
- * bar says which of the two the panel is showing, and where this element's styles change.
+ * bar says which of the two the panel is showing.
  *
  * Its ⋮ menu lists the page's own media queries (any width one can be previewed), the sizes
  * offered (the user can add one), and what a preview cannot change, measured rather than guessed.
@@ -32,8 +32,6 @@ import type { SegmentOption } from '../../controls/segmented.js';
 export interface PreviewBarSpec {
   engine: EditorEngine;
   previewWidth: number | null;
-  /** The widths this element's rules change at. */
-  breakpoints: readonly number[];
   /** The user's own sizes. */
   customSizes: readonly number[];
   menuOpen: boolean;
@@ -84,12 +82,6 @@ export function renderPreviewBar(spec: PreviewBarSpec): TemplateResult {
       ariaLabel: `Previewing ${width}px`,
     });
   }
-  const changes = spec.breakpoints.length
-    ? html` Styles change at ${spec.breakpoints.map(
-      (at, index) => html`${index ? ', ' : ''}<b>${at}px</b>`,
-    )}.`
-    : nothing;
-
   return html`<div class="sizes">
     <div class="pvbar" data-menu-place=${MENU_ID}>
       <heo-segmented
@@ -119,8 +111,8 @@ export function renderPreviewBar(spec: PreviewBarSpec): TemplateResult {
     </div>
     <p class="bp">
       ${width === null
-      ? html`As it is: <b>${innerWidth}px</b>. Every size and state is shown.`
-      : html`Previewing <b>${width}px</b>. Only what applies at this width is shown, and edits offer to stay at this size.`}${changes}
+      ? html`As it is: <b>${innerWidth}px</b>`
+      : html`Previewing <b>${width}px</b>.`}
     </p>
   </div>
   ${spec.menuOpen ? renderPreviewMenu(spec, presets) : nothing}`;

@@ -21,7 +21,8 @@ export type RowScope =
   /** A size group in Effective styles: the cascade at the slot's width. */
   | { kind: 'size'; slot: string }
   /** A state or pseudo-element group: edits go into that state's rule. */
-  | { kind: 'state'; state: string }
+  /** A state, under a media key (`tablet`, `other:print`) when `slot` is set: `:hover ≥768px`. */
+  | { kind: 'state'; state: string; slot?: string }
   /** A category section (Typography, Spacing…). */
   | { kind: 'section'; id: string }
   /** In its parent: the element's own rows there, or the parent's controls. */

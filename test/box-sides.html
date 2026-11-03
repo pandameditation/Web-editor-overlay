@@ -673,12 +673,9 @@
               b.querySelector('header')?.textContent.includes(`#${id}`),
             );
             if (!block) return null;
-            // A rule inside a media query is that size of its card, picked from the strip's ⋮.
+            // A rule inside a media query is that condition of its card: a button on its bar.
             if (slot) {
-              block.querySelector('.slots .more')?.click();
-              await frames();
-              await wait(120);
-              live.shadowRoot.querySelector(`.menu .mi[data-key="${CSS.escape(slot)}"]`)?.click();
+              block.querySelector(`.slots [data-cond="${CSS.escape(slot)}"]`)?.click();
               await frames();
               await wait(200);
               block = section.querySelector(`.cls[data-card="${CSS.escape(`#${id}`)}"]`);

@@ -581,19 +581,63 @@
           /Nothing declares it for this element at 320px/.test(previewedText) &&
           !/adds it inline/.test(previewedText);
 
+        /*
+         * ---- the conditions bar: Always, then what declares something ----
+         *
+         * States moved onto the bar with the media queries; pseudo-elements stay listed groups.
+         */
+        const bar = () => root().querySelector('[data-strip="effective"]');
+        const chipKeys = () => Array.from(bar()?.querySelectorAll('[data-cond]') ?? []).map((one) => one.dataset.cond);
+        const keysOnBar = chipKeys();
+        const alwaysText = bar()?.querySelector('.base')?.textContent.replace(/\s+/g, ' ').trim() ?? '';
+        bar()?.querySelector('.more')?.click();
+        await settle();
+        const barMenu = () => root().querySelector('.menu[data-menu="strip-effective"]');
+        const menuKeys = Array.from(barMenu()?.querySelectorAll('.mi[data-key]') ?? []).map((one) => one.dataset.key);
+        barMenu()?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true, cancelable: true }));
+        await settle();
+        // Under print, nobody previews: the group still shows what print declares, not what renders now.
+        bar()?.querySelector('[data-cond="other:print"]')?.click();
+        await settle();
+        const printColour = root().querySelector('[data-egroup="size:other:print"] .row[data-property="color"] heo-value-field')?.value;
+        const printPressed = bar()?.querySelector('[data-cond="other:print"]')?.getAttribute('aria-pressed') === 'true';
+        bar()?.querySelector('[data-cond="other:print"]')?.click();
+        await settle();
+        const backToAlways = bar()?.querySelector('.base')?.getAttribute('aria-pressed') === 'true' &&
+          !root().querySelector('[data-egroup="size:other:print"]');
+        results.bar = {
+          startsAtAlways: /^Always \d+$/.test(alwaysText) && bar()?.querySelector('.base')?.getAttribute('aria-pressed') === 'true',
+          listsOnlyConditionsThatDeclareSomething:
+            keysOnBar.includes('state::hover') && keysOnBar.includes('other:print') &&
+            keysOnBar.includes('state::hover@tablet') &&
+            !keysOnBar.includes('laptop') && !keysOnBar.includes('desktop') &&
+            !keysOnBar.some((key) => key.includes('::before')),
+          moreListsOnlyWhatIsNotOnTheBar:
+            menuKeys.includes('laptop') && menuKeys.includes('state::focus') &&
+            !menuKeys.some((key) => keysOnBar.includes(key)),
+          aMediaQueryShowsItsValueWithoutPreviewing: printPressed && printColour === '#000000',
+          pressingTheOnePickedGoesBackToAlways: backToAlways,
+        };
+
         /* ---- state and pseudo-element groups ---- */
         const groupNames = Array.from(root().querySelectorAll('[data-egroup]')).map((g) => g.dataset.egroup);
         const hoverList = fresh.cascade('background-color', { width: null, state: ':hover' }).applying;
         const beforeList = fresh.cascade('color', { width: null, state: '::before' }).applying;
+        bar()?.querySelector('[data-cond="state::hover"]')?.click();
+        await settle();
+        const hoverGroup = Boolean(root().querySelector('[data-egroup="state::hover"]'));
+        const hoverMoons = moons(rowIn('state-:hover', 'background-color'));
+        bar()?.querySelector('[data-cond="state::hover"]')?.click();
+        await settle();
         results.states = {
-          oneGroupPerStateAndPseudo:
-            groupNames.join(',') === fresh.groups().map((g) => g.state).join(',') &&
-            groupNames.join(',') === ':hover,:focus-within,::before',
+          // Pseudo-elements stay listed; a state is a group only once it is picked on the bar.
+          onlyPseudoElementsAreListed: groupNames.join(',') === '::before',
+          aPickedStateIsAGroup: hoverGroup,
           // A state is over the element's own declarations: they are in its cascade.
           stateCompetesWithElement:
             hoverList[0]?.source.entry?.state === ':hover' &&
             hoverList.some((one) => one.source.entry?.selector === '.card.featured') &&
-            moons(rowIn('state-:hover', 'background-color')) >= 1,
+            hoverMoons >= 1,
           // A pseudo-element is its own box: the element's inline colour is not in its cascade.
           pseudoCompetesOnlyWithItsRules:
             beforeList.every((one) => one.source.entry?.state === '::before') &&
@@ -667,7 +711,7 @@
         await settle();
         await pickSize(nowSlot);
         const nowNote = sizeGroup(nowSlot)?.querySelector('.note')?.textContent.trim();
-        await pickSize(nowSlot); // the pressed size again: back to All sizes
+        await pickSize(nowSlot); // the pressed size again: back to Always
         results.sizeGroup = {
           // The value at that size, read at that size's width, even though the page is not there.
           listsWhatWinsAtThatSize:

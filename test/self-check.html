@@ -1929,15 +1929,21 @@
       engine.history.clear();
 
       /* State and pseudo-element rules are reachable, and say what they are. */
-      // In the `.ph` class card, as blocks after its own declarations (R19).
+      // In the `.ph` class card: the pseudo-element as a block after its own declarations (R19),
+      // the state as a condition on the card's bar.
       const phCard = () => cssRules.querySelector('.cls[data-card=".ph"]');
       check('stateAndPseudoElementRulesAreOffered', () =>
-        `${Boolean(phCard()?.querySelector('.block[data-block=":hover"]'))} ${Boolean(phCard()?.querySelector('.block[data-block="::before"]'))}`);
+        `${Boolean(phCard()?.querySelector('.slots [data-cond="state::hover"]'))} ${Boolean(phCard()?.querySelector('.block[data-block="::before"]'))}`);
+      phCard()?.querySelector('.slots [data-cond="state::hover"]')?.click();
+      await frame();
       // Its block names it as a state, so the page not changing until then is no surprise.
       const hoverGroup = phCard()?.querySelector('.block[data-block=":hover"]');
       check('aStateGroupSaysTheStateIsNotActive', () =>
         hoverGroup?.querySelector('.blabel .sel')?.textContent.trim() === ':hover' &&
         hoverGroup?.querySelector('.blabel .kindtxt')?.textContent.trim() === 'state');
+      // Back to Always, as the rest of this page expects the card.
+      phCard()?.querySelector('.slots .base')?.click();
+      await frame();
 
       /*
        * And a state rule never reports as the element's current value. This is why

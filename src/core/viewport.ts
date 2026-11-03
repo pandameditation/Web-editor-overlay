@@ -230,6 +230,48 @@ export function mediaApplies(media: string | null, width: number | null): boolea
   return bound.evaluator.matches(media, at);
 }
 
+/** Media queries that are always true and always false, for rewriting a condition in place. */
+const ALWAYS = '(min-width: 0px)';
+const NEVER = '(max-width: 0px)';
+
+/**
+ * Whether `media` applies at `width` when `assumed` is taken to be in effect.
+ *
+ * The question a group under `@media (prefers-reduced-motion: reduce)` asks of every rule: what
+ * would this element render with if that held? A browser can only answer for its own preferences,
+ * so `assumed` is substituted into each condition before the usual evaluation:
+ * - the same condition, or `(feature: value)` inside a compound one, becomes always true;
+ * - another value of that feature (`light` when `dark` is assumed) becomes always false;
+ * - an assumed media type (`print`) turns that type into `all` and any other type off.
+ * Everything else in the condition is evaluated as usual, at `width`.
+ */
+export function mediaAppliesAssuming(media: string | null, width: number | null, assumed: string | null): boolean {
+  if (media === null || !media.trim()) return true;
+  if (!assumed) return mediaApplies(media, width);
+  const flat = (text: string): string => text.trim().replace(/\s+/g, ' ').toLowerCase();
+  if (flat(media) === flat(assumed)) return true;
+  let text = media;
+  const feature = /^\(\s*([a-z-]+)\s*(?::\s*([^)]+?))?\s*\)$/i.exec(assumed.trim());
+  if (feature) {
+    const name = feature[1].toLowerCase();
+    const value = feature[2]?.trim().toLowerCase() ?? null;
+    text = text.replace(/\(\s*([a-z-]+)\s*(?::\s*([^)]+?))?\s*\)/gi, (whole, n: string, v?: string) => {
+      if (n.toLowerCase() !== name) return whole;
+      if (value === null) return ALWAYS;
+      return (v ?? '').trim().toLowerCase() === value ? ALWAYS : NEVER;
+    });
+  } else {
+    const type = /^(?:only\s+)?(print|screen|all)$/i.exec(assumed.trim())?.[1]?.toLowerCase();
+    if (type && type !== 'all') {
+      const other = type === 'print' ? 'screen' : 'print';
+      // `not all` mid-query is not valid syntax, so a query naming the other type stops parsing,
+      // which is exactly "does not apply".
+      text = text.replace(new RegExp(`\\b${type}\\b`, 'gi'), 'all').replace(new RegExp(`\\b${other}\\b`, 'gi'), 'not all');
+    }
+  }
+  return mediaApplies(text, width);
+}
+
 /* -------------------------------------------------------------------------- */
 /* Authored media text                                                         */
 /* -------------------------------------------------------------------------- */

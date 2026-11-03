@@ -25,7 +25,18 @@ import {
 } from '../class-editor.js';
 import { renderAdder, stylesDestination, type AdderDestination } from './property-adder.js';
 import { previewSlot } from './property-row.js';
-import { renderSizeStrip, slotMedia, slotName, stripSizes, type StripOther, type StripSlot } from './size-strip.js';
+import {
+  barConditions,
+  conditionKey,
+  conditionOf,
+  conditionParts,
+  mediaKeyFor,
+  remainingConditions,
+  renderConditionBar,
+  slotMedia,
+  slotName,
+  type BarChip,
+} from './size-strip.js';
 import type { PendingState, StylesHost } from './types.js';
 
 /**
@@ -74,9 +85,10 @@ export interface CardView {
   familyHit: boolean;
   /** Something in the card matches the search (always true without one). */
   shown: boolean;
+  /** `base` (Always) or a condition key. */
   picked: string;
-  slots: StripSlot[];
-  others: StripOther[];
+  /** The conditions bar's buttons. */
+  chips: BarChip[];
   count(key: string): number;
 }
 
@@ -88,16 +100,23 @@ export function cardView(family: Family, host: StylesHost): CardView {
   const rowHit = (entry: RuleEntry): boolean =>
     entry.declarations.some((one) => host.hit(one.property, one.value));
   const shown = !host.filtering || familyHit || visible.some(rowHit);
-  const { slots, others, count } = stripSizes(model, visible, previewWidth, ui.otherSlots.get(family.key) ?? []);
-  const available = ['base', ...slots.map((slot) => slot.key), ...others.map((other) => other.key)];
+  // Picked from ⋮ or added as a state, with nothing written yet: on the bar until something is.
+  const waiting = [
+    ...(ui.otherSlots.get(family.key) ?? []),
+    ...ui.pendingStates
+      .filter((one) => one.family === family.key && !isPseudoElement(one.state))
+      .map((one) => conditionKey(one.slot, one.state)),
+  ];
   let picked = ui.cardPicks.get(family.key) ?? previewSlot(model, previewWidth);
-  if (!available.includes(picked)) picked = 'base';
-  // A card found by one of its declarations opens at a size that holds one (R8).
+  // A card found by one of its declarations opens at a condition that holds one (R8).
   if (host.filtering && !familyHit) {
-    const holding = [...new Set(visible.filter(rowHit).map((entry) => model.slotOf(entry)))];
+    const holding = [...new Set(visible.filter(rowHit).map((entry) => conditionOf(model, entry)))];
     if (holding.length && !holding.includes(picked)) picked = holding[0];
   }
-  return { family, visible, familyHit, shown, picked, slots, others, count };
+  // The pick keeps its button while it is the pick, even empty: the size a preview follows, say.
+  const { chips, count } = barConditions(model, visible, previewWidth, [...waiting, picked]);
+  if (picked !== 'base' && !chips.some((chip) => chip.key === picked)) picked = 'base';
+  return { family, visible, familyHit, shown, picked, chips, count };
 }
 
 
@@ -255,7 +274,9 @@ export function renderFamilyCard(
   const lead = visible[0] ?? family.members[0];
   const file = lead?.sheetLabel;
   const body = (): TemplateResult => {
-    const inSlot = visible.filter((entry) => model.slotOf(entry) === picked);
+    // The pick as its media (the slot the blocks are under) and its state, when it is one.
+    const { media: slot, state: pickedState } = conditionParts(picked);
+    const inSlot = visible.filter((entry) => model.slotOf(entry) === slot);
     const short = slotName(model, picked);
     const media = slotMedia(model, picked);
     const label = `${key}${short ? ` ${short}` : ''}`;
@@ -267,11 +288,11 @@ export function renderFamilyCard(
 
     // The base block: the selector itself at this size, with no repeated selector label (R19).
     const base = inSlot.filter((entry) => !entry.state);
-    const baseId = blockId(key, picked, '');
+    const baseId = blockId(key, slot, '');
     const writable = [...base].reverse().find((entry) => entry.target.kind !== 'readonly');
     const baseTarget: WriteTarget | null = writable
       ? writable.target
-      : picked === 'base' && owned && owned.origin !== 'stylesheet'
+      : slot === 'base' && owned && owned.origin !== 'stylesheet'
         ? { kind: 'class', name: owned.name }
         : null;
     const baseDest = stylesDestination(
@@ -291,7 +312,7 @@ export function renderFamilyCard(
           (entry) => renderRows(entryTarget(entry, label, baseId, host), entry.declarations.filter(rowHit), host),
         )
         : html`<p class="hint" style="margin:0">
-              ${picked === 'base'
+              ${slot === 'base'
                 ? 'No declarations yet.'
                 : `Nothing ${media !== null && !isWidthQuery(media) ? 'under this media query' : 'at this size'} yet.`}
             </p>`}
@@ -300,15 +321,19 @@ export function renderFamilyCard(
       ${renderBlockAdder(host, baseId, [baseDest], '', { onAdded: noteAdded(baseId) })}
     </div>`;
 
-    // Each state or pseudo-element at this size, in the state list's order.
+    /*
+     * The blocks under the pick. Always or a media condition: its pseudo-elements, as blocks under
+     * the base block. A state: that state's block alone, since a state is picked on the bar.
+     */
     const order = (state: string): number => {
       const at = EDITABLE_STATES.findIndex((one) => one.name === state);
       return at === -1 ? EDITABLE_STATES.length : at;
     };
-    const states = [...new Set(inSlot.filter((entry) => entry.state).map((entry) => entry.state))];
+    const belongs = (state: string): boolean => (pickedState ? state === pickedState : isPseudoElement(state));
+    const states = [...new Set(inSlot.filter((entry) => entry.state && belongs(entry.state)).map((entry) => entry.state))];
     // Added with nothing written yet; dropped once its rule has a declaration, which makes it real.
     const pending = ui.pendingStates.filter((one) =>
-      one.family === key && one.slot === picked && !states.includes(one.state));
+      one.family === key && one.slot === slot && belongs(one.state) && !states.includes(one.state));
     const ordered = [...states, ...pending.map((one) => one.state)].sort((a, b) => order(a) - order(b));
     const stateBlocks = ordered.map((state) => {
       const waiting = pending.find((one) => one.state === state);
@@ -316,7 +341,7 @@ export function renderFamilyCard(
       const members = inSlot.filter((entry) => entry.state === state);
       const rows = members.flatMap((entry) => entry.declarations.filter(rowHit));
       if (host.filtering && !view.familyHit && !rows.length) return nothing;
-      const id = blockId(key, picked, state);
+      const id = blockId(key, slot, state);
       const stateLabel = `${key}${state}${short ? ` ${short}` : ''}`;
       const target = [...members].reverse().find((entry) => entry.target.kind !== 'readonly') ?? members.at(-1)!;
       const pseudo = isPseudoElement(state);
@@ -357,7 +382,7 @@ export function renderFamilyCard(
     });
 
     // "+ Add state or pseudo-element": the same adder, naming a state instead of a property (R24).
-    const stateAdderId = `state|${key}|${picked}`;
+    const stateAdderId = `state|${key}|${slot}`;
     const stateAdder = renderBlockAdder(
       host,
       stateAdderId,
@@ -366,62 +391,78 @@ export function renderFamilyCard(
       {
         mode: 'state',
         onState: (state) => {
-          const result = engine.addStateRule(key, state, media === null ? null : { media });
-          if (result.kind === 'refused') {
-            host.form.fail(`prop-add-${stateAdderId}`, result.message);
-            return;
-          }
-          const id = blockId(key, picked, state);
-          const pendingStates = result.kind === 'pending'
-            ? [
-              ...host.ui.pendingStates.filter((one) =>
-                !(one.family === key && one.slot === picked && one.state === state)),
-              { family: key, slot: picked, state, dest: result.dest },
-            ]
-            : host.ui.pendingStates;
-          // A ::before or ::after renders nothing without content, so its adder offers that first.
-          const draft = result.kind === 'pending' && needsGeneratedContent(state) ? 'content' : '';
-          host.form.reset();
-          host.patch({ pendingStates, adder: { id, draft, dest: '' }, menu: null });
+          const refused = addState(state, slot);
+          if (refused) host.form.fail(`prop-add-${stateAdderId}`, refused);
         },
       },
     );
 
+    const pick = (next: string): void => {
+      const picks = new Map(host.ui.cardPicks);
+      picks.set(key, next);
+      host.patch({ cardPicks: picks });
+    };
+    /*
+     * A state for this card, under `under`: written as nothing until its first property (§5.7). A
+     * state becomes the pick, on the bar; a pseudo-element is a block under the pick. The message
+     * when it is refused, else null.
+     */
+    const addState = (state: string, under: string): string | null => {
+      const at = slotMedia(model, under);
+      const result = engine.addStateRule(key, state, at === null ? null : { media: at });
+      if (result.kind === 'refused') return result.message;
+      const id = blockId(key, under, state);
+      const pendingStates = result.kind === 'pending'
+        ? [
+          ...host.ui.pendingStates.filter((one) =>
+            !(one.family === key && one.slot === under && one.state === state)),
+          { family: key, slot: under, state, dest: result.dest },
+        ]
+        : host.ui.pendingStates;
+      // A ::before or ::after renders nothing without content, so its adder offers that first.
+      const draft = result.kind === 'pending' && needsGeneratedContent(state) ? 'content' : '';
+      const picks = new Map(host.ui.cardPicks);
+      if (!isPseudoElement(state)) picks.set(key, conditionKey(under, state));
+      host.form.reset();
+      host.patch({ pendingStates, cardPicks: picks, adder: { id, draft, dest: '' }, menu: null });
+      return null;
+    };
+    const whenText = pickedState
+      ? html`Only on <b>${pickedState}</b>${short ? html`, ${media !== null && !isWidthQuery(media) ? 'under' : 'at'} <b>${short}</b>` : nothing} — when it applies, over “Always”${uses > 1 ? `, for all ${uses} elements` : ''}.`
+      : html`Only ${media !== null && !isWidthQuery(media) ? 'under' : 'at'} <b>${short}</b> — ${media === null ? '' : mediaNow(media, mediaApplies(media, null), model.width)}.
+          Adds to or overrides “Always” there${uses > 1 ? `, for all ${uses} elements` : ''}.`;
     return html`<div class="body">
-      ${renderSizeStrip({
+      ${renderConditionBar({
       owner: key,
       picked,
-      baseCount: view.count('base'),
-      baseTitle: 'Without a media query: at every size',
-      slots: view.slots,
-      others: view.others,
-      width: model.width,
+      alwaysCount: view.count('base'),
+      alwaysTitle: 'With no condition: at every size and in every state',
+      chips: view.chips,
+      remaining: remainingConditions(model, view.chips.map((chip) => chip.key), host.previewWidth),
       menuOpen: ui.menu?.id === `strip-${key}`,
       mediaDraft: ui.mediaDraft?.owner === key ? ui.mediaDraft.text : null,
       mediaForm: host.mediaForm,
-      onPick: (slot) => {
-        const next = new Map(host.ui.cardPicks);
-        next.set(key, slot);
-        host.patch({ cardPicks: next });
-      },
+      onPick: pick,
       onMenu: (opened) => host.toggleMenu(`strip-${key}`, opened),
       onMediaDraft: (text) => host.patch({ mediaDraft: text === null ? null : { owner: key, text } }),
-      onAddMedia: (added) => {
+      onAdd: (added) => {
+        const parts = conditionParts(added);
+        if (parts.state) {
+          const refused = addState(parts.state, parts.media);
+          if (refused) host.engine.notify(refused, 'info');
+          return;
+        }
         // Only remembered here until a declaration is written at it: nothing empty is stored.
-        const slots = new Map(host.ui.otherSlots);
-        slots.set(key, [...new Set([...(slots.get(key) ?? []), added])]);
+        const waiting = new Map(host.ui.otherSlots);
+        waiting.set(key, [...new Set([...(waiting.get(key) ?? []), added])]);
         const picks = new Map(host.ui.cardPicks);
-        picks.set(key, `other:${added}`);
-        host.patch({ otherSlots: slots, cardPicks: picks });
+        picks.set(key, added);
+        host.patch({ otherSlots: waiting, cardPicks: picks });
       },
+      keyForMedia: (typed) => mediaKeyFor(model, typed),
     })}
-      ${picked === 'base'
-        ? nothing
-        : html`<p class="hint slot-hint" style="margin:0 0 7px">
-            Only ${media !== null && !isWidthQuery(media) ? 'under' : 'at'} <b>${short}</b> — ${media === null ? '' : mediaNow(media, mediaApplies(media, null), model.width)}.
-            Adds to or overrides “All sizes” there${uses > 1 ? `, for all ${uses} elements` : ''}.
-          </p>`}
-      ${baseBlock}
+      ${picked === 'base' ? nothing : html`<p class="hint slot-hint" style="margin:0 0 7px">${whenText}</p>`}
+      ${pickedState ? nothing : baseBlock}
       ${stateBlocks}
       ${stateAdder}
       ${name && options.group === 'classes' && owned && host.element.classList.contains(name) && !host.filtering

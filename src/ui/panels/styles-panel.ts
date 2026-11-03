@@ -1,6 +1,6 @@
 import { css, html, nothing, type PropertyValues, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
-import { isWidthQuery, mediaIcon, mediaKind, mediaNow, mediaShort } from '../../core/breakpoints.js';
+import { isPseudoElement, isWidthQuery, mediaIcon, mediaKind, mediaNow } from '../../core/breakpoints.js';
 import { rulesPass, type ElementModel, type RuleEntry, type WriteTarget } from '../../core/cascade.js';
 import {
   parentLayoutProperties,
@@ -40,7 +40,21 @@ import {
 import { renderCascadePopover, popoverStyles } from './styles/cascade-popover.js';
 import { headerStyles, renderElementHeader } from './styles/header.js';
 import { previewBarStyles, previewPresets, renderPreviewBar, SIZE_FIELD } from './styles/preview-bar.js';
-import { renderSizeStrip, sizeStripStyles, stripMediaIssues, stripSizes } from './styles/size-strip.js';
+import {
+  barConditions,
+  conditionKey,
+  conditionName,
+  conditionOf,
+  conditionParts,
+  mediaKeyFor,
+  remainingConditions,
+  renderConditionBar,
+  sizeStripStyles,
+  slotMedia,
+  slotName,
+  stripMediaIssues,
+  type BarChip,
+} from './styles/size-strip.js';
 import { menuStyles, placeLayer } from './styles/menu.js';
 import { stylesDestination, type AdderDestination } from './styles/property-adder.js';
 import {
@@ -650,8 +664,11 @@ export class HeoStylesPanel extends HeoElement {
   }
   override render(): TemplateResult {
     const el = this.editor.selected;
+    // The preview bar comes first and works with or without a selection: the width is the page's.
+    const bar = this.#renderPreviewBar(el && el.isConnected ? el : null);
     if (!el || !el.isConnected) {
-      return html`<div class="empty">
+      return html`${bar}
+      <div class="empty">
         Select an element on the page to edit its styles.<br />
         Arrow keys move the selection once something is selected.
       </div>`;
@@ -667,7 +684,7 @@ export class HeoStylesPanel extends HeoElement {
       : el;
 
     return html`
-      ${selectionNotice(this.editor.selection.length, el)}
+      ${bar}
       ${renderElementHeader({
         element: el,
         finderOpen: this.ui.finderOpen,
@@ -690,18 +707,7 @@ export class HeoStylesPanel extends HeoElement {
         onRemoveClass: (name) => this.editor.toggleClass(name, el),
         finder: this.#renderFinder(el),
       })}
-      ${renderPreviewBar({
-        engine: this.editor,
-        previewWidth: host.previewWidth,
-        breakpoints: model.breakpoints(),
-        customSizes: this.editor.settings.value.viewportSizes,
-        menuOpen: this.ui.menu?.id === 'preview',
-        onMenu: (open) => this.#toggleMenu('preview', open),
-        sizeDraft: this.ui.sizeDraft,
-        sizeForm: this.sizeForm,
-        onSizeDraft: (text) => this.#patch({ sizeDraft: text }),
-        inShadowRoot: el.getRootNode() instanceof ShadowRoot,
-      })}
+      ${selectionNotice(this.editor.selection.length, el)}
       <div class="top">
         <heo-search-field
           label="Search styles"
@@ -759,7 +765,8 @@ export class HeoStylesPanel extends HeoElement {
         ...list.applying.map((one) => (one.source.kind === 'rule' ? one.source.entry.selector : 'inline style')),
       );
     });
-    const groups = model.groups().map((group) => {
+    // Pseudo-elements stay listed; states are picked on the bar, like media queries.
+    const groups = model.groups().filter((group) => group.kind === 'pseudo-element').map((group) => {
       const all = statePropertiesOf(model, group.state);
       return {
         ...group,
@@ -781,7 +788,8 @@ export class HeoStylesPanel extends HeoElement {
     >
       <p class="hint" style="margin:0 0 9px">
         What this element renders with${at !== null ? ` at ${at}px` : ''}, after the cascade. Pick a
-        size to see what changes there. Click a dot to see what else declares it.
+        size, media query or state to see what it declares when it applies. Click a dot to see what
+        else declares a value.
       </p>
       ${this.#renderEffectiveStrip(model, host)}
       <div class="rows" data-declarations=${EFFECTIVE_LIST_ID}>
@@ -837,77 +845,80 @@ export class HeoStylesPanel extends HeoElement {
     );
   }
 
-  /** The size Effective styles shows a group for: the hand pick, else the preview's slot. */
-  #effectiveSlot(model: ElementModel, previewWidth: number | null, available: readonly string[]): string {
+  /**
+   * Effective styles' bar and its pick: every condition a rule reaching the element declares under,
+   * plus one picked from ⋮ and not written yet, and the pick itself while it is empty (the size a
+   * preview follows). The pick is the hand pick, else the previewed width's size (R13).
+   */
+  #effectiveConditions(model: ElementModel, previewWidth: number | null): { chips: BarChip[]; count(key: string): number; picked: string } {
     const wanted = this.ui.effPick ?? previewSlot(model, previewWidth);
-    return wanted === 'base' || available.includes(wanted) ? wanted : 'base';
-  }
-
-  /** Effective styles' sizes: what changes at each, counted from the rules reaching the element. */
-  #effectiveSizes(model: ElementModel, previewWidth: number | null): ReturnType<typeof stripSizes> {
-    return stripSizes(
+    const { chips, count } = barConditions(
       model,
-      model.entries.filter((entry) => entry.state === ''),
+      model.entries,
       previewWidth,
-      this.ui.otherSlots.get(EFFECTIVE_LIST_ID) ?? [],
+      [...(this.ui.otherSlots.get(EFFECTIVE_LIST_ID) ?? []), wanted],
     );
+    const picked = wanted !== 'base' && chips.some((chip) => chip.key === wanted) ? wanted : 'base';
+    return { chips, count, picked };
   }
-
   #renderEffectiveStrip(model: ElementModel, host: StylesHost): TemplateResult {
-    const { slots, others } = this.#effectiveSizes(model, host.previewWidth);
-    const picked = this.#effectiveSlot(model, host.previewWidth, [...slots, ...others].map((one) => one.key));
+    const { chips, picked } = this.#effectiveConditions(model, host.previewWidth);
     const menuId = `strip-${EFFECTIVE_LIST_ID}`;
-    return renderSizeStrip({
+    return renderConditionBar({
       owner: EFFECTIVE_LIST_ID,
       picked,
-      baseCount: model.appliedProperties().length,
-      baseTitle: 'What the element renders with now, every size included',
-      slots,
-      others,
-      width: model.width,
+      alwaysCount: model.appliedProperties().length,
+      alwaysTitle: 'What the element renders with now',
+      chips,
+      remaining: remainingConditions(model, chips.map((chip) => chip.key), host.previewWidth),
       menuOpen: this.ui.menu?.id === menuId,
       mediaDraft: this.ui.mediaDraft?.owner === EFFECTIVE_LIST_ID ? this.ui.mediaDraft.text : null,
       mediaForm: this.mediaForm,
-      // Picking the size already shown goes back to All sizes, so a size is a toggle here.
-      onPick: (key) => this.#patch({ effPick: key === picked && key !== 'base' ? 'base' : key }),
+      // A button is a toggle: the bar hands back `base` for the one already picked.
+      onPick: (key) => this.#patch({ effPick: key }),
       onMenu: (open) => this.#toggleMenu(menuId, open),
       onMediaDraft: (text) =>
         this.#patch({ mediaDraft: text === null ? null : { owner: EFFECTIVE_LIST_ID, text } }),
-      onAddMedia: (media) => {
-        // Only remembered here until a declaration is written at it: nothing empty is stored.
+      onAdd: (key) => {
+        // Only remembered here until a declaration is written under it: nothing empty is stored.
         const next = new Map(this.ui.otherSlots);
-        next.set(EFFECTIVE_LIST_ID, [...new Set([...(next.get(EFFECTIVE_LIST_ID) ?? []), media])]);
-        this.#patch({ otherSlots: next, effPick: `other:${media}` });
+        next.set(EFFECTIVE_LIST_ID, [...new Set([...(next.get(EFFECTIVE_LIST_ID) ?? []), key])]);
+        this.#patch({ otherSlots: next, effPick: key });
       },
+      keyForMedia: (media) => mediaKeyFor(model, media),
     });
   }
 
   /**
-   * The picked size, as a group under the element's rows: what the rules at that size declare,
-   * read at that size's own width, and an adder that writes at it.
+   * The picked condition, as a group under the element's rows: what the rules under it declare, read
+   * as though it were in effect (at its size's width, with its media query held, in its state), and
+   * an adder that writes under it. Not what the element renders with now, where the condition is
+   * usually off and the group would show nothing it declares.
    */
   #renderSizeGroup(el: HTMLElement, model: ElementModel, host: StylesHost): TemplateResult | typeof nothing {
-    const { slots, others } = this.#effectiveSizes(model, host.previewWidth);
-    const picked = this.#effectiveSlot(model, host.previewWidth, [...slots, ...others].map((one) => one.key));
+    const { picked } = this.#effectiveConditions(model, host.previewWidth);
     if (picked === 'base') return nothing;
-    const slot = model.slots().find((one) => one.key === picked) ?? null;
-    const media = slot ? slot.media : picked.slice('other:'.length);
-    const short = slot ? mediaShort(media) : `@media ${media}`;
-    const scope: RowScope = { kind: 'size', slot: picked };
-    const listId = `size-${picked}`;
+    const { media: slot, state } = conditionParts(picked);
+    const media = slotMedia(model, picked);
+    const short = slotName(model, picked);
+    const scope: RowScope = state ? { kind: 'state', state, slot } : { kind: 'size', slot };
+    const listId = state ? `state-${state}${slot === 'base' ? '' : `@${slot}`}` : `size-${slot}`;
     const names = new Set<string>();
     for (const entry of model.entries) {
-      if (entry.state !== '' || model.slotOf(entry) !== picked) continue;
+      if (conditionOf(model, entry) !== picked) continue;
       for (const one of entry.declarations) names.add(one.property.toLowerCase());
     }
-    const properties = [...names].sort().filter((property) => this.#hit(property, picked, short));
-    const now = mediaApplies(media, null);
-    return html`<div class="egroup" data-egroup=${`size:${picked}`}>
+    const name = conditionName(model, picked);
+    const properties = [...names].sort().filter((property) => this.#hit(property, picked, name));
+    const note = state
+      ? `when it applies, over the above${short ? ` · ${media !== null && !isWidthQuery(media) ? 'under' : 'at'} ${short}` : ''}`
+      : mediaNow(media ?? '', media !== null && mediaApplies(media, null), model.width);
+    return html`<div class="egroup" data-egroup=${state ? `state:${picked.slice('state:'.length)}` : `size:${slot}`}>
       ${renderBlockHeader(
-        mediaIcon(media),
-        short,
-        mediaKind(media),
-        html`<span class="note">${mediaNow(media, now, model.width)}</span>`,
+        state ? 'cursor' : mediaIcon(media ?? ''),
+        state || short,
+        state ? 'state' : mediaKind(media ?? ''),
+        html`<span class="note">${note}</span>`,
       )}
       <div class="rows" data-declarations=${listId}>
         ${properties.map((property) =>
@@ -916,12 +927,16 @@ export class HeoStylesPanel extends HeoElement {
       ${properties.length
         ? nothing
         : html`<p class="hint" style="margin:0">
-            Nothing changes ${isWidthQuery(media) ? 'at this size' : 'under this media query'} yet.
+            Nothing ${state ? `on ${state}` : media !== null && isWidthQuery(media) ? 'changes at this size' : 'changes under this media query'} yet.
           </p>`}
-      ${renderBlockAdder(host, listId, this.#sizeDestinations(el, model, picked, media, short), '')}
+      ${renderBlockAdder(
+        host,
+        listId,
+        state ? this.#stateDestinations(el, model, state, slot) : this.#sizeDestinations(el, model, slot, media ?? '', short),
+        state,
+      )}
     </div>`;
   }
-
   /** Where a size group's adder writes: every family at that size, then a new class of its own. */
   #sizeDestinations(
     el: HTMLElement,
@@ -1008,31 +1023,35 @@ export class HeoStylesPanel extends HeoElement {
    * Where a state group's adder writes: the families that already have that state first, then the
    * rest, then a new class of the element's own in that state.
    */
-  #stateDestinations(el: HTMLElement, model: ElementModel, state: string): AdderDestination[] {
+  #stateDestinations(el: HTMLElement, model: ElementModel, state: string, slot = 'base'): AdderDestination[] {
     const { classes, others } = model.families();
     const keys = [...classes, ...others].map((family) => family.key);
+    // Under the group's media too: `:hover ≥768px` writes into the `≥768px` hover rule.
+    const media = slotMedia(model, slot);
+    const short = slotName(model, slot);
     const existing = (key: string) =>
       model.entries.find((entry) =>
-        entry.family === key && entry.state === state && entry.media === null && entry.target.kind !== 'readonly');
+        entry.family === key && entry.state === state && model.slotOf(entry) === slot && entry.target.kind !== 'readonly');
     const ordered = [...keys.filter((key) => existing(key)), ...keys.filter((key) => !existing(key))];
     return [
       ...ordered.map((key) => {
         const entry = existing(key);
         const reach = model.reach(key);
+        const label = `${key}${state}${short ? ` ${short}` : ''}`;
         return stylesDestination(
-          `${key}${state}`,
+          label,
           reachText(reach),
-          entry ? { kind: 'target', target: entry.target } : { kind: 'new-rule', selector: `${key}${state}`, media: null },
+          entry ? { kind: 'target', target: entry.target } : { kind: 'new-rule', selector: `${key}${state}`, media },
           entry ? toRecord(entry.declarations) : {},
-          `${key}${state}`,
+          label,
         );
       }),
       stylesDestination(
-        `a new class${state}`,
+        `a new class${state}${short ? ` ${short}` : ''}`,
         'this element only',
-        { kind: 'auto-class', element: el, media: null, state },
+        { kind: 'auto-class', element: el, media, state },
         {},
-        `a new class${state}`,
+        `a new class${state}${short ? ` ${short}` : ''}`,
       ),
     ];
   }
@@ -1556,7 +1575,8 @@ export class HeoStylesPanel extends HeoElement {
     const closed = new Set(this.ui.closedCards);
     closed.delete(key);
     const picks = new Map(this.ui.cardPicks);
-    if (options.slot) picks.set(key, options.slot);
+    // The condition the declaration is under: its size, and its state when it is not a pseudo-element.
+    if (options.slot) picks.set(key, conditionKey(options.slot, isPseudoElement(options.state ?? '') ? '' : options.state ?? ''));
     if (userToggled.get('sources') === false) userToggled.delete('sources');
     this.#clearFilter();
     this.#patch({ popover: null, cardPop: null, tab: fits ? tab : 'all', closedCards: closed, cardPicks: picks });
@@ -1588,7 +1608,8 @@ export class HeoStylesPanel extends HeoElement {
     const closed = new Set(this.ui.closedCards);
     closed.delete(key);
     const picks = new Map(this.ui.cardPicks);
-    if (options.slot) picks.set(key, options.slot);
+    // The condition the declaration is under: its size, and its state when it is not a pseudo-element.
+    if (options.slot) picks.set(key, conditionKey(options.slot, isPseudoElement(options.state ?? '') ? '' : options.state ?? ''));
     this.#patch({ popover: null, menu: null, adder: null, cardPop: { key, anchor }, closedCards: closed, cardPicks: picks });
     // Focus stays on the class name; Tab goes on into the card from there.
     if (!options.property) return;
@@ -1695,7 +1716,7 @@ export class HeoStylesPanel extends HeoElement {
     const source = { key: entry.family, order: entry.order, slot, state: entry.state };
     const open = (): void => {
       const picks = new Map(this.ui.cardPicks);
-      picks.set(entry.family, slot);
+      picks.set(entry.family, conditionOf(model, entry));
       const closed = new Set(this.ui.closedCards);
       closed.delete(entry.family);
       this.#patch({ popover: { ...popover, source }, cardPop: null, adder: null, menu: null, cardPicks: picks, closedCards: closed });
@@ -1710,6 +1731,21 @@ export class HeoStylesPanel extends HeoElement {
     } else {
       open();
     }
+  }
+
+  /** The preview bar: the page's width, set with or without a selected element. */
+  #renderPreviewBar(el: HTMLElement | null): TemplateResult {
+    return renderPreviewBar({
+      engine: this.editor,
+      previewWidth: this.editor.store.value.previewWidth,
+      customSizes: this.editor.settings.value.viewportSizes,
+      menuOpen: this.ui.menu?.id === 'preview',
+      onMenu: (open) => this.#toggleMenu('preview', open),
+      sizeDraft: this.ui.sizeDraft,
+      sizeForm: this.sizeForm,
+      onSizeDraft: (text) => this.#patch({ sizeDraft: text }),
+      inShadowRoot: el !== null && el.getRootNode() instanceof ShadowRoot,
+    });
   }
 
   /** The header's "find or create a class" field: today's finder, with its form and suggestions. */

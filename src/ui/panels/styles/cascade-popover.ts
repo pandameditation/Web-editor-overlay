@@ -4,6 +4,7 @@ import type { Contribution, ElementModel } from '../../../core/cascade.js';
 import { buildSuggestions, valueKindFor } from '../../suggestions.js';
 import { icon } from '../../icons.js';
 import { renderPromote } from './promote.js';
+import { conditionKey, conditionName } from './size-strip.js';
 import { reachText, shortLabel } from '../../../core/save-plan.js';
 import {
   isViewportDependent,
@@ -37,15 +38,15 @@ export function renderCascadePopover(
   const { scope, property } = state;
   const spec: RowSpec = { property, scope, element, model, listId: '' };
   const { list } = readRow(spec);
+  // The condition the row is read under: `≥768px`, `@media print`, `:hover`, `:hover ≥768px`.
   const ctx = scope.kind === 'state'
-    ? scope.state
+    ? conditionName(model, conditionKey(scope.slot ?? 'base', scope.state))
     : scope.kind === 'size'
-      ? (() => {
-        const slot = model.slots().find((one) => one.key === scope.slot);
-        return slot ? mediaShort(slot.media) : '';
-      })()
+      ? conditionName(model, scope.slot)
       : '';
-  const at = scope.kind === 'size' ? slotWidth(model, scope.slot) : host.previewWidth;
+  const at = scope.kind === 'size' || (scope.kind === 'state' && scope.slot)
+    ? slotWidth(model, scope.slot ?? '') ?? (scope.slot?.startsWith('other:') ? null : host.previewWidth)
+    : host.previewWidth;
 
   /*
    * Not in effect now, but declared: other sizes and states at Actual, other states while

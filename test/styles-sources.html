@@ -353,7 +353,9 @@
             Boolean(poppedCard) && popped()?.matches(':popover-open') === true &&
             poppedCard.querySelector(':scope > header')?.getAttribute('aria-expanded') === 'true' &&
             Boolean(poppedCard.querySelector('heo-value-field[data-property="border"]')) &&
-            Math.abs(popBox.top - chipBox.bottom) <= 8;
+            // Right against the chip, on whichever side has the room: this window is short, and the
+            // popover is placed above when there is no room below it.
+            (Math.abs(popBox.top - chipBox.bottom) <= 8 || Math.abs(popBox.bottom - chipBox.top) <= 8);
           // One copy of the card: the Sources place says where it went, and holds no rows.
           results.header.theSourcesCopyStepsAside =
             /Open in a popover above/.test(textOf(card('.featured'))) &&
@@ -511,7 +513,7 @@
           results.cards.oneCardPerSelectorFamily =
             new Set(allKeys).size === allKeys.length &&
             !allKeys.some((k) => /:/.test(k)) &&
-            Boolean(block('.card', ':hover'));
+            Boolean(card('.card')?.querySelector('.slots [data-cond="state::hover"]'));
           // A class no readable rule defines gets a card that offers to define it.
           target.classList.add('ghost');
           await settle(300);
@@ -537,20 +539,29 @@
               cardBody?.children[1]?.matches('.block[data-block="base"]') &&
               cardBody?.children[1]?.firstElementChild?.matches('.decls') &&
               !cardBody?.children[1]?.querySelector('.blabel'),
-            statesFollowTheBase:
-              blocks('.card').map((one) => one.dataset.block).join(',') === 'base,:hover' &&
-              blocks('.featured').map((one) => one.dataset.block).join(',') === 'base,:focus-within,::before' &&
-              textOf(block('.featured', '::before')?.querySelector('.kindtxt')) === 'pseudo-element',
+            // Under Always: the base block and its pseudo-elements; a state is a button on the bar.
+            pseudoElementsFollowTheBaseAndStatesAreOnTheBar:
+              blocks('.card').map((one) => one.dataset.block).join(',') === 'base' &&
+              blocks('.featured').map((one) => one.dataset.block).join(',') === 'base,::before' &&
+              textOf(block('.featured', '::before')?.querySelector('.kindtxt')) === 'pseudo-element' &&
+              Boolean(card('.featured')?.querySelector('.slots [data-cond="state::focus-within"]')),
           };
           // Picking a size says where it applies and how far it reaches.
           card('.card')?.querySelector('.slots [data-slot="tablet"]')?.click();
           await settle(150);
           const hint = textOf(body('.card')?.querySelector('.slot-hint'));
           results.cardBody.slotHintSaysReach =
-            new RegExp(`^Only at ≥768px — ${innerWidth >= 768 ? 'in effect' : 'not'} at ${innerWidth}px\\. Adds to or overrides “All sizes” there, for all 4 elements\\.$`).test(hint) &&
-            blocks('.card').map((one) => one.dataset.block).join(',') === 'base,:hover' &&
-            Boolean(rowIn(block('.card', ':hover'), 'box-shadow'));
-          card('.card')?.querySelector('.slots .base')?.click();
+            new RegExp(`^Only at ≥768px — ${innerWidth >= 768 ? 'in effect' : 'not'} at ${innerWidth}px\\. Adds to or overrides “Always” there, for all 4 elements\\.$`).test(hint) &&
+            blocks('.card').map((one) => one.dataset.block).join(',') === 'base';
+          // The ≥768px :hover rule is a condition of its own: its block alone, read as a hover.
+          card('.card')?.querySelector('.slots [data-cond="state::hover@tablet"]')?.click();
+          await settle(150);
+          results.cardBody.aStateUnderASizeIsItsOwnCondition =
+            blocks('.card').map((one) => one.dataset.block).join(',') === ':hover' &&
+            Boolean(rowIn(block('.card', ':hover'), 'box-shadow')) &&
+            /^Only on :hover, at ≥768px/.test(textOf(body('.card')?.querySelector('.slot-hint')));
+          // A state at no media query: picked on the bar, where its trash is.
+          card('.card')?.querySelector('.slots [data-cond="state::hover"]')?.click();
           await settle(150);
           // The trash on a page rule's state block empties it; the rule stays in the file.
           let before = engine.history.size;
@@ -565,6 +576,8 @@
           // The trash on a rule the editor made removes it.
           engine.addDeclaration({ kind: 'new-rule', selector: '.card:active', media: null }, 'opacity', '0.9');
           await settle(200);
+          card('.card')?.querySelector('.slots [data-cond="state::active"]')?.click();
+          await settle(150);
           const active = block('.card', ':active');
           before = engine.history.size;
           active?.querySelector('.blabel .kill')?.click();
@@ -576,7 +589,8 @@
           engine.undo();
           engine.undo();
           await settle(200);
-
+          card('.card')?.querySelector('.slots .base')?.click();
+          await settle(150);
           /* Card rows write their own declaration. */
           results.cardRows = {
             noDots: !sources()?.querySelector('.cls .dots, .cls .moon'),
@@ -815,8 +829,11 @@
             fresh.length === 1 && engine.isAutomaticClass(fresh[0], target) && engine.history.size === before + 1;
           engine.undo();
           await settle(200);
-          // A size with no rule for the family yet: the adder creates the media rule.
-          card('.featured')?.querySelector('.slots [data-slot="phone"]')?.click();
+          // A size with no rule for the family yet: picked from ⋮, where empty sizes are, then the
+          // adder creates the media rule.
+          card('.featured')?.querySelector('.slots .more')?.click();
+          await settle(200);
+          sroot().querySelector('.menu[data-menu="strip-.featured"] .mi[data-key="phone"]')?.click();
           await settle(200);
           addButton(block('.featured', 'base'))?.click();
           await settle(200);
@@ -838,8 +855,14 @@
           /* The size strip (R12). */
           const strip = (k) => card(k)?.querySelector('[data-heo-part="strip"]');
           const slotButton = (k, slot) => strip(k)?.querySelector(`[data-slot="${slot}"]`);
+          // Counted per condition: a state under a size is its own, a pseudo-element counts with its size.
+          const conditionOf = (entry) => {
+            const slot = model().slotOf(entry);
+            if (!entry.state || entry.state.includes('::')) return slot;
+            return slot === 'base' ? `state:${entry.state}` : `state:${entry.state}@${slot}`;
+          };
           const slotCount = (k, slot) => model().entries
-            .filter((entry) => entry.family === k && model().slotOf(entry) === slot)
+            .filter((entry) => entry.family === k && conditionOf(entry) === slot)
             .reduce((sum, entry) => sum + entry.declarations.length, 0);
           results.strip = {
             sameComponentInEffectiveAndCards:
@@ -849,10 +872,10 @@
               textOf(strip('.card')?.querySelector('.base .c')) === String(slotCount('.card', 'base')) &&
               textOf(slotButton('.card', 'phone')?.querySelector('.c')) === `+${slotCount('.card', 'phone')}` &&
               textOf(slotButton('.card', 'tablet')?.querySelector('.c')) === `+${slotCount('.card', 'tablet')}` &&
-              slotCount('.card', 'tablet') === 2,
-            emptySlotShowsPlainPlus:
-              slotButton('.card', 'laptop')?.classList.contains('empty') &&
-              textOf(slotButton('.card', 'laptop')?.querySelector('.c')) === '+',
+              slotCount('.card', 'tablet') === 1 &&
+              textOf(slotButton('.card', 'state::hover@tablet')?.querySelector('.c')) === '+1',
+            // A size that declares nothing has no button; ⋮ has it.
+            emptySizesAreNotOnTheBar: !slotButton('.card', 'laptop') && !slotButton('.card', 'desktop'),
           };
           const notNow = innerWidth < 768 ? slotButton('.card', 'tablet') : slotButton('.card', 'phone');
           const nowButton = innerWidth < 768 ? slotButton('.card', 'phone') : slotButton('.card', 'tablet');
@@ -861,16 +884,17 @@
             getComputedStyle(notNow).borderTopStyle === 'dashed' &&
             getComputedStyle(notNow).opacity === '1' &&
             getComputedStyle(notNow).color === getComputedStyle(nowButton).color;
-          // print is not a width: it waits under ⋮, counted.
+          // print declares something, so it is on the bar with its count; ⋮ lists only the rest.
           const more = () => strip('.card')?.querySelector('.more');
-          const badge = textOf(more()?.querySelector('.badge'));
           more()?.click();
           await settle(200);
           const stripMenu = () => sroot().querySelector('.menu[data-menu="strip-.card"]');
-          const printItem = Array.from(stripMenu()?.querySelectorAll('.mi') ?? []).find((one) => /@media print/.test(one.textContent));
-          results.strip.otherMediaUnderMore =
-            badge === '1' && !strip('.card')?.querySelector('[data-slot="print"]') &&
-            /1 decl\./.test(textOf(printItem));
+          const menuKeys = Array.from(stripMenu()?.querySelectorAll('.mi[data-key]') ?? []).map((one) => one.dataset.key);
+          const onBar = Array.from(strip('.card')?.querySelectorAll('[data-cond]') ?? []).map((one) => one.dataset.cond);
+          results.strip.otherMediaIsOnTheBarAndMoreHasTheRest =
+            textOf(slotButton('.card', 'other:print')) === 'print+1' &&
+            menuKeys.includes('laptop') && menuKeys.includes('state::focus') &&
+            !menuKeys.some((one) => onBar.includes(one));
           Array.from(stripMenu()?.querySelectorAll('.mi') ?? []).find((one) => /Add a media query/.test(one.textContent))?.click();
           await settle(200);
           const mediaField = () => stripMenu()?.querySelector('.mfield heo-value-field');
@@ -899,7 +923,8 @@
           key(mediaInput(), 'Enter');
           await settle(200);
           results.strip.addMediaQueryValidates =
-            refused && !stripMenu() && more()?.getAttribute('aria-pressed') === 'true' &&
+            refused && !stripMenu() &&
+            slotButton('.card', 'other:(prefers-color-scheme: dark)')?.getAttribute('aria-pressed') === 'true' &&
             /Only under @media \(prefers-color-scheme: dark\)/.test(textOf(body('.card')?.querySelector('.slot-hint'))) &&
             engine.history.size === before;
           // Not a size: no width in its wording, and the empty block says "media query".
@@ -1065,6 +1090,8 @@
           }
           {
             // An emptied page rule is reused, rather than a second .card:hover written elsewhere.
+            card('.card')?.querySelector('.slots [data-cond="state::hover"]')?.click();
+            await settle(150);
             block('.card', ':hover')?.querySelector('.blabel .kill')?.click();
             await settle(250);
             const history = engine.history.size;

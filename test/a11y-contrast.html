@@ -34,8 +34,15 @@
     focus are emulated by copying every :hover and :focus-visible rule to a forcing class.
   -->
   <main id="page">
-    <!-- A phone-size rule on #a, so the Styles panel's size strips have a count to show. -->
+    <!--
+      A phone-size rule on #a, so the Styles panel's conditions bars have a count to show, and a
+      tablet one, not in effect in this 756px window, for the bar's dashed "not now" button: a size
+      that declares nothing has no button any more.
+    -->
     <style>
+      @media (min-width: 768px) {
+        #a { margin-top: 1px; }
+      }
       @media (max-width: 767px) {
         #a {
           padding-top: 2px;

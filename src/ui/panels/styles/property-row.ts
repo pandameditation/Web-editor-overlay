@@ -6,6 +6,7 @@ import type {
   CascadeList,
   Contribution,
   ElementModel,
+  RuleEntry,
   WriteTarget,
 } from '../../../core/cascade.js';
 import { longhandsOf, splitImportant } from '../../../core/declaration-list.js';
@@ -81,7 +82,7 @@ export function scopeKey(scope: RowScope, selected: HTMLElement): string {
     case 'size':
       return `size:${scope.slot}`;
     case 'state':
-      return `state:${scope.state}`;
+      return `state:${scope.state}${scope.slot && scope.slot !== 'base' ? `@${scope.slot}` : ''}`;
     case 'section':
       return `section:${scope.id}`;
     case 'parent':
@@ -98,10 +99,19 @@ export function slotWidth(model: ElementModel, slot: string): number | null {
   return model.slots().find((one) => one.key === slot)?.at ?? null;
 }
 
-/** The cascade a row reads: a size group at its slot's width, a state group in its state. */
+/**
+ * The cascade a row reads: a size group at its slot's width, a group under another media query
+ * with that query taken to hold, a state group in its state (under its media, when it has one).
+ * So a group shows what the element renders with when its condition is in effect, not now.
+ */
 export function scopeContext(scope: RowScope, model: ElementModel): CascadeContext {
-  if (scope.kind === 'size') return { width: slotWidth(model, scope.slot) };
-  if (scope.kind === 'state') return { width: null, state: scope.state };
+  const under = (slot: string | undefined): CascadeContext => {
+    if (!slot || slot === 'base') return { width: null };
+    if (slot.startsWith('other:')) return { width: null, media: slot.slice('other:'.length) };
+    return { width: slotWidth(model, slot) };
+  };
+  if (scope.kind === 'size') return under(scope.slot);
+  if (scope.kind === 'state') return { ...under(scope.slot), state: scope.state };
   return { width: null };
 }
 
@@ -198,13 +208,18 @@ export function readRow(spec: RowSpec): {
         one.source.entry.state === '' &&
         model.slotOf(one.source.entry) === scope.slot) ?? winner;
   } else if (scope.kind === 'state') {
-    const own = list.applying.find((one) =>
-      one.source.kind === 'rule' && one.source.entry.state === scope.state);
+    // The group's own rule: this state under this media, whatever else would also apply then.
+    const slot = scope.slot ?? 'base';
+    // A pseudo-element group is drawn as it always was: any of its rules that applies now.
+    const anyMedia = scope.slot === undefined && isPseudoElement(scope.state);
+    const mine = (entry: RuleEntry): boolean =>
+      entry.state === scope.state && (anyMedia ? model.applies(entry) : model.slotOf(entry) === slot);
+    const own = list.applying.find((one) => one.source.kind === 'rule' && mine(one.source.entry));
     shown = own ?? winner;
     const entry =
       own?.source.kind === 'rule'
         ? own.source.entry
-        : model.entries.find((one) => one.state === scope.state && model.applies(one));
+        : [...model.entries].reverse().find((one) => mine(one) && one.target.kind !== 'readonly');
     stateTarget = entry?.target ?? null;
   }
   return { list, winner, shown, stateTarget };

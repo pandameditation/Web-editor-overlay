@@ -8,14 +8,7 @@ import {
   withValue,
   type Declaration,
 } from './declaration-list.js';
-import {
-  breakpointOf,
-  EDITABLE_STATES,
-  isPseudoElement,
-  slotForMedia,
-  slotsWith,
-  type SizeSlot,
-} from './breakpoints.js';
+import { EDITABLE_STATES, isPseudoElement, slotForMedia, slotsWith, type SizeSlot } from './breakpoints.js';
 import { styleMirrorFor } from './mirror.js';
 import { designRuleKey } from './rules.js';
 import { CONSTRUCTED_SHEET_REASON, ruleDeclarations } from './sheets.js';
@@ -31,6 +24,7 @@ import {
   beginMediaPass,
   effectiveWidth,
   mediaApplies,
+  mediaAppliesAssuming,
 } from './viewport.js';
 
 /**
@@ -120,6 +114,11 @@ export interface CascadeList {
 export interface CascadeContext {
   width: number | null;
   state?: string;
+  /**
+   * A media query to treat as in effect (`print`, `(prefers-color-scheme: dark)`): what the
+   * element would render with if it held, which the browser cannot be asked directly.
+   */
+  media?: string | null;
 }
 
 /** The rules sharing one selector once states and pseudo-elements are peeled off. */
@@ -160,16 +159,17 @@ export interface ElementModel {
   /** Every style rule reaching the element: every media, every state. */
   entries: RuleEntry[];
   cascade(property: string, ctx?: CascadeContext): CascadeList;
-  /** Media at `width` (null: now), `@supports` passes, and not inside `@container`. */
-  applies(entry: RuleEntry, width?: number | null): boolean;
+  /**
+   * Media at `width` (null: now), with `assumed` taken to hold, `@supports` passes, and not inside
+   * `@container`.
+   */
+  applies(entry: RuleEntry, width?: number | null, assumed?: string | null): boolean;
   /** Names with an applying declaration now, as declared (not expanded), sorted. */
   appliedProperties(): string[];
   families(): { classes: Family[]; others: Family[]; unknownClasses: string[] };
   slots(): SizeSlot[];
   /** `'base'`, a slot key, or `other:<media>`. */
   slotOf(entry: RuleEntry): string;
-  /** The widths where this element's rules change, sorted. */
-  breakpoints(): number[];
   /** The states and pseudo-elements with at least one rule applying now. */
   groups(): { state: string; kind: 'state' | 'pseudo-element' }[];
   /** How many elements the family's selector matches. */
@@ -679,8 +679,8 @@ export function buildElementModel(el: HTMLElement, options: ElementModelOptions 
   const reaches = new Map<string, number>();
   let families: ReturnType<ElementModel['families']> | null = null;
 
-  const applies = (entry: RuleEntry, at: number | null = null): boolean =>
-    !entry.container && mediaAndSupports(entry, at);
+  const applies = (entry: RuleEntry, at: number | null = null, assumed: string | null = null): boolean =>
+    !entry.container && entry.supports && entry.medias.every((one) => mediaAppliesAssuming(one, at, assumed));
 
   const fromEntries = (list: readonly RuleEntry[], property: string): Contribution[] =>
     list.flatMap((entry) =>
@@ -689,14 +689,15 @@ export function buildElementModel(el: HTMLElement, options: ElementModelOptions 
   const cascade = (name: string, ctx: CascadeContext = { width: null }): CascadeList => {
     const property = name.trim().toLowerCase();
     const state = ctx.state ?? '';
-    const key = `${property}|${ctx.width ?? ''}|${state}`;
+    const assumed = ctx.media ?? null;
+    const key = `${property}|${ctx.width ?? ''}|${state}|${assumed ?? ''}`;
     const known = lists.get(key);
     if (known) return known;
 
     const base = entries.filter((entry) => entry.state === '');
     const baseApplying = (): Contribution[] => [
       ...contributionsOf(inline, property, { kind: 'inline' }),
-      ...fromEntries(base.filter((entry) => applies(entry, ctx.width)), property),
+      ...fromEntries(base.filter((entry) => applies(entry, ctx.width, assumed)), property),
     ];
     let applying: Contribution[];
     let idle: Contribution[];
@@ -705,13 +706,13 @@ export function buildElementModel(el: HTMLElement, options: ElementModelOptions 
       idle = fromEntries(
         entries.filter((entry) =>
           entry.state === ''
-            ? !applies(entry, ctx.width)
+            ? !applies(entry, ctx.width, assumed)
             : !isPseudoElement(entry.state)),
         property,
       );
     } else {
       const own = entries.filter((entry) => entry.state === state);
-      const ownApplying = own.filter((entry) => applies(entry, ctx.width));
+      const ownApplying = own.filter((entry) => applies(entry, ctx.width, assumed));
       // A state competes with the element's own declarations; a pseudo-element only with its rules.
       applying = [
         ...fromEntries(ownApplying, property),
@@ -776,16 +777,6 @@ export function buildElementModel(el: HTMLElement, options: ElementModelOptions 
     slotOf(entry) {
       if (entry.media === null) return 'base';
       return slotForMedia(entry.media, slots)?.key ?? `other:${entry.media}`;
-    },
-    breakpoints() {
-      const out = new Set<number>();
-      for (const entry of entries) {
-        for (const media of entry.medias) {
-          const at = breakpointOf(media);
-          if (at !== null) out.add(at);
-        }
-      }
-      return [...out].sort((a, b) => a - b);
     },
     groups() {
       const seen: string[] = [];
@@ -862,7 +853,7 @@ export function winnerWith(
   } else if (h.as.kind === 'replace') {
     const entry = h.as.entry;
     rest = applying.filter((one) => one.source.kind !== 'rule' || one.source.entry !== entry);
-    if (!model.applies(entry, ctx.width) || !inContext(entry.state, ctx)) {
+    if (!model.applies(entry, ctx.width, ctx.media ?? null) || !inContext(entry.state, ctx)) {
       return { wins: false, by: rest[0] };
     }
     const at = entry.declarations.findIndex((one) => one.property.toLowerCase() === property);
@@ -875,7 +866,7 @@ export function winnerWith(
     };
   } else {
     const { selector, media, state, sheetOrder } = h.as;
-    if (!mediaApplies(media, ctx.width) || !inContext(state, ctx)) return { wins: false, by: rest[0] };
+    if (!mediaAppliesAssuming(media, ctx.width, ctx.media ?? null) || !inContext(state, ctx)) return { wins: false, by: rest[0] };
     rank = { important: h.important, inline: false, specificity: specificityOf(selector), order: sheetOrder, index: 0 };
   }
   const by = rest.find((one) => compareRanks(rankOf(one), rank) < 0);
