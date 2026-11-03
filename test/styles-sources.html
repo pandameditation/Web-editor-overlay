@@ -485,13 +485,23 @@
               ['.card', '.featured', 'section p', 'inline'].every((k) =>
                 Boolean(cardHeader(k)?.querySelector('.n')) && Boolean(cardHeader(k)?.querySelector('.meta')) &&
                 getComputedStyle(cardHeader(k)).backgroundColor === tokensHeaderBg),
-            // N rules across what is in effect · N× elements the selector matches; none for inline.
+            // N rules across what is in effect • N× elements the selector matches; none for inline.
             metaCountsRulesAndElements:
-              meta('.card') === `${familyDeclarations('.card')} rules · 4×` &&
-              meta('.featured') === `${familyDeclarations('.featured')} rules · 1×` &&
-              meta('.promo .card') === '1 rule · 4×' &&
+              meta('.card') === `${familyDeclarations('.card')} rules • 4×` &&
+              meta('.featured') === `${familyDeclarations('.featured')} rules • 1×` &&
+              meta('.promo .card') === '1 rule • 4×' &&
               meta('inline') === '2 rules',
           };
+          /* The uses count is a pill, its colour read before its number: green for one, orange for more. */
+          const pill = (k) => cardHeader(k)?.querySelector('.meta .uses');
+          const pillBg = (k) => (pill(k) ? getComputedStyle(pill(k)).backgroundColor : '');
+          results.cards.usesIsAPill =
+            textOf(pill('.card')) === '4×' && pill('.card').classList.contains('many') &&
+            textOf(pill('.featured')) === '1×' && pill('.featured').classList.contains('one') &&
+            !pill('inline') &&
+            parseFloat(getComputedStyle(pill('.card')).borderTopLeftRadius) >= 7 &&
+            pill('.card').getBoundingClientRect().height <= 15 &&
+            pillBg('.card') !== pillBg('.featured') && pillBg('.card') !== 'rgba(0, 0, 0, 0)';
           const file = () => cardHeader('section p')?.querySelector('.file');
           const restDisplay = file() ? getComputedStyle(file()).display : 'missing';
           cardHeader('section p').focus();

@@ -624,8 +624,8 @@
           await wait(200);
           // Re-queried after every render; a card is told apart by its media suffix.
           const cards = () => Array.from(rulesSection()?.querySelectorAll('.rule') ?? [])
-            .filter((card) => card.querySelector('.sel')?.textContent.trim().startsWith('section p'));
-          const mediaCard = () => cards().find((card) => card.querySelector('.sel .media'));
+            .filter((card) => card.querySelector('.n')?.textContent.trim().startsWith('section p'));
+          const mediaCard = () => cards().find((card) => card.querySelector('.n .note'));
           const header = mediaCard()?.querySelector('header');
           if (header && header.getAttribute('aria-expanded') !== 'true') header.click();
           await frames();

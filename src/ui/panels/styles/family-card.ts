@@ -313,8 +313,8 @@ export function renderFamilyCard(
         )
         : html`<p class="hint" style="margin:0">
               ${slot === 'base'
-                ? 'No declarations yet.'
-                : `Nothing ${media !== null && !isWidthQuery(media) ? 'under this media query' : 'at this size'} yet.`}
+            ? 'No declarations yet.'
+            : `Nothing ${media !== null && !isWidthQuery(media) ? 'under this media query' : 'at this size'} yet.`}
             </p>`}
       </div>
       ${hintFor(baseId)}
@@ -474,7 +474,8 @@ export function renderFamilyCard(
   return html`<div class="cls" data-card=${key} data-group=${options.group}>
     ${renderCardHeader({
     name: key,
-    meta: `${countText(declarations, 'rule')} · ${uses}×`,
+    meta: countText(declarations, 'rule'),
+    uses,
     file,
     expanded: open,
     onToggle: () => (options.popped ? options.popped.onClose() : away ? closePopped(host) : toggleCard(host, key)),

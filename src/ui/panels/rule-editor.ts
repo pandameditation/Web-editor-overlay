@@ -1,10 +1,11 @@
 import { css, html, nothing, type CSSResult, type TemplateResult } from 'lit';
 import { mediaShort } from '../../core/breakpoints.js';
 import { splitImportant } from '../../core/declaration-list.js';
-import { designRuleKey, summarizeRule } from '../../core/rules.js';
+import { designRuleKey } from '../../core/rules.js';
+import { countText } from '../../core/save-plan.js';
 import type { DesignRule } from '../../core/types.js';
 import { icon } from '../icons.js';
-import { ClassEditor, initialValueFor, type ClassEditorHost } from './class-editor.js';
+import { ClassEditor, initialValueFor, renderCardHeader, type ClassEditorHost } from './class-editor.js';
 import '../controls/selector-field.js';
 import { safeSelector } from '../../core/selectors.js';
 import { selectorIssues } from '../../core/validation.js';
@@ -47,90 +48,12 @@ export interface RuleEditorHost extends ClassEditorHost {
 
 export const RuleEditor = {
   styles: css`
+    /* The same box as a class card: a rule and a class are met as the same thing. */
     .rule {
       border: 1px solid var(--heo-line);
-      border-radius: var(--heo-r-md);
-      margin-bottom: 7px;
-      background: var(--heo-raised);
+      border-radius: var(--heo-r-sm);
+      margin-bottom: 6px;
       overflow: hidden;
-      transition: border-color var(--heo-fast);
-    }
-    .rule:hover {
-      border-color: var(--heo-line-strong);
-    }
-    .rule[data-open] {
-      border-color: var(--heo-accent-line);
-    }
-
-    .rule > header {
-      display: flex;
-      align-items: center;
-      gap: 7px;
-      padding: 7px 8px;
-      background: var(--heo-sunken);
-      cursor: pointer;
-    }
-    .rule > header:hover {
-      background: var(--heo-hover);
-    }
-
-    /* Written or changed in this session, so it is going into a file on save. The same
-       mark the class cards use, and it means the same thing there. */
-    .rule .dot {
-      width: 5px;
-      height: 5px;
-      flex: 0 0 auto;
-      border-radius: 999px;
-      background: var(--heo-accent);
-    }
-
-    /* The selector, in code, because that is what the user will look for in a file. */
-    .rule .sel .media {
-      color: var(--heo-text-dim);
-    }
-    .rule .sel {
-      flex: 1 1 auto;
-      min-width: 0;
-      overflow: hidden;
-      color: var(--heo-text);
-      font-family: var(--heo-mono);
-      font-size: 11.5px;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-    .rule .props {
-      flex: 0 0 auto;
-      max-width: 42%;
-      overflow: hidden;
-      color: var(--heo-text-faint);
-      font-size: 10px;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    /* How many elements this rule is styling right now. The one number worth having on
-       a collapsed row: a rule matching nothing is the commonest way a selector is
-       wrong, and it is invisible from the selector itself. */
-    .rule .hits {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      flex: 0 0 auto;
-      height: 19px;
-      padding: 0 7px;
-      border-radius: 999px;
-      background: var(--heo-hover);
-      color: var(--heo-text-dim);
-      font-size: 9.5px;
-      font-variant-numeric: tabular-nums;
-    }
-    .rule .hits.live {
-      background: color-mix(in oklab, var(--heo-success) 20%, transparent);
-      color: color-mix(in oklab, var(--heo-success) 78%, var(--heo-text));
-    }
-    .rule .hits.idle {
-      background: color-mix(in oklab, var(--heo-warn) 18%, transparent);
-      color: color-mix(in oklab, var(--heo-warn) 80%, var(--heo-text));
     }
 
     /* minmax(0, 1fr) rather than the default auto track: an auto track takes its base
@@ -245,36 +168,17 @@ export const RuleEditor = {
     return html`<div class="rule" ?data-open=${expanded}>
       ${options.bare
         ? nothing
-        : html`<header
-            role="button"
-            tabindex="0"
-            aria-expanded=${expanded}
-            @click=${onToggle}
-            @keydown=${(event: KeyboardEvent) => {
-            if (event.key !== 'Enter' && event.key !== ' ') return;
-            event.preventDefault();
-            onToggle();
-          }}
-          >
-            ${icon(expanded ? 'chevronDown' : 'chevronRight', 11)}
-            ${scanned
-            ? nothing
-            : html`<span class="dot" title="Written in this session, so a save carries it"></span>`}
-            <span class="sel" title=${entry.media ? `${entry.selector} at @media ${entry.media}` : entry.selector}
-              >${entry.selector}${entry.media
-            ? html` <span class="media">${mediaShort(entry.media)}</span>`
-            : nothing}</span
-            >
-            ${expanded ? nothing : html`<span class="props">${summarizeRule(entry)}</span>`}
-            <span
-              class=${`hits ${matches > 0 ? 'live' : 'idle'}`}
-              title=${matches > 0
-            ? `Styling ${matches} element${matches === 1 ? '' : 's'} on this page`
-            : 'Nothing on this page matches this selector'}
-            >
-              ${matches > 0 ? `${matches}×` : '0×'}
-            </span>
-          </header>`}
+        : renderCardHeader({
+          name: entry.selector,
+          note: entry.media ? mediaShort(entry.media) : undefined,
+          title: entry.media ? `${entry.selector} at @media ${entry.media}` : entry.selector,
+          meta: countText(Object.keys(entry.declarations).length, 'rule'),
+          uses: matches,
+          expanded,
+          onToggle,
+          sessionDot: !scanned,
+          sessionTitle: 'Written in this session, so a save carries it',
+        })}
 
       ${expanded
         ? html`

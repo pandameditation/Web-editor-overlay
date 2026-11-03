@@ -60,6 +60,9 @@ export const themeVariables = css`
        dark glass but read about 2.2:1 on light glass, so the light theme darkens them. */
     --heo-success-text: var(--heo-success);
     --heo-warn-text: var(--heo-warn);
+    /* Several elements share it, so an edit reaches past this one: the uses pill's orange. */
+    --heo-shared: oklch(76% 0.13 55);
+    --heo-shared-text: var(--heo-shared);
 
     --heo-r-sm: 7px;
     --heo-r-md: 10px;
@@ -112,6 +115,7 @@ export const themeVariables = css`
     --heo-accent-text: color-mix(in oklab, var(--heo-accent) 80%, black);
     --heo-success-text: oklch(48% 0.13 155);
     --heo-warn-text: oklch(52% 0.12 70);
+    --heo-shared-text: oklch(50% 0.14 48);
 
     --heo-shadow-sm: 0 1px 2px oklch(50% 0.03 265 / 12%);
     --heo-shadow-md: 0 8px 24px -6px oklch(50% 0.03 265 / 18%), 0 2px 6px oklch(50% 0.03 265 / 10%);

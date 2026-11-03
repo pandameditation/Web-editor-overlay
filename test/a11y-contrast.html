@@ -41,8 +41,11 @@
     -->
     <style>
       @media (min-width: 768px) {
-        #a { margin-top: 1px; }
+        #a {
+          margin-top: 1px;
+        }
       }
+
       @media (max-width: 767px) {
         #a {
           padding-top: 2px;
@@ -687,7 +690,7 @@
         await measure([
           // The cascade dot is the row's only mark of a declared value.
           { name: 'styles.dot', component: 'property-row', file: `${SP}/property-row.ts`, cat: 'styles', kind: 'icon', min: 3, host: firstOf('.dots .dot:not(.none)'), inkOf: (el) => getComputedStyle(el).backgroundColor },
-          // The card's "N rules · N×" was the faint ink; the reach is what the card is read for.
+          // The card's "N rules • N×" was the faint ink; the reach is what the card is read for.
           { name: 'styles.cardMeta', component: 'class-editor', file: 'src/ui/panels/class-editor.ts', cat: 'styles', kind: 'text', min: 4.5, host: firstOf('.cls > header .meta') },
         ], 'default');
         // L8: an undeclared row's dot is nothing at rest and a ring on hover, the control's only visual there.
@@ -733,6 +736,14 @@
         await measureInteractive([
           { name: 'tokens.kill', component: C, file: 'src/ui/kill.ts', cat: 'kill', kind: 'icon', min: 3, label: true, host: () => deep((el) => el.localName === 'button' && el.classList.contains('kill') && inside('heo-tokens-panel')(el)) },
         ]);
+        // The card header's uses pill, in its three tones: none, one element, several. A rule
+        // matching nothing is written for the grey one and taken away after.
+        await ui(() => engine.createDesignRule('.heo-contrast-unused', { color: 'red' }));
+        const uses = (tone) => () => deep((el) => el.classList?.contains('uses') && el.classList.contains(tone) && inside('heo-tokens-panel')(el));
+        await measure(['none', 'one', 'many'].map((tone) => (
+          { name: `cardHeader.uses.${tone}`, component: 'class-editor', file: 'src/ui/panels/class-editor.ts', cat: 'styles', kind: 'text', min: 4.5, host: uses(tone) }
+        )), 'default');
+        await ui(() => engine.removeDesignRule('.heo-contrast-unused'));
         const combo = () => deep((el) => el.localName === 'button' && el.classList.contains('combo') && el.disabled && inside('heo-selector-field')(el));
         await measure([
           { name: 'selectorField.combo', component: 'selector-field', file: 'src/ui/controls/selector-field.ts:253', cat: 'control-disabled', kind: 'text', min: 4.5, host: combo },

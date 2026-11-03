@@ -676,16 +676,3 @@ function fileName(href: string): string {
   }
 }
 
-/**
- * A rule's declarations, as text, for the one-line summary in a collapsed row.
- *
- * Truncated on purpose: the row is a way to recognise a rule, not to read it. The
- * expanded editor is where the values live.
- */
-export function summarizeRule(entry: DesignRule, limit = 3): string {
-  const written = Object.entries(entry.declarations).filter(([, value]) => value.trim());
-  if (!written.length) return 'no declarations yet';
-  const shown = written.slice(0, limit).map(([property]) => property);
-  const rest = written.length - shown.length;
-  return rest > 0 ? `${shown.join(', ')} +${rest}` : shown.join(', ');
-}

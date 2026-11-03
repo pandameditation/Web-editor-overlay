@@ -754,7 +754,7 @@
         results.filter = {
           actualShowsEveryCondition:
             atActual.join(',') === 'phone,tablet,other:print,state::hover,state::hover@tablet' &&
-            metaOf('.card') === `${cardCount(null)} rules · 4×` &&
+            metaOf('.card') === `${cardCount(null)} rules • 4×` &&
             tabletHover,
         };
         engine.setPreviewWidth(320);
@@ -762,7 +762,7 @@
         const phoneMeta = metaOf('.card');
         const phonePressed = [pressedIn(root().querySelector('heo-section[heading="Effective styles"]')), pressedIn(card('.card')), pressedIn(card('.featured'))];
         results.filter.previewHidesNonMatchingRules =
-          phoneMeta === `${cardCount(320)} rules · 4×` && cardCount(320) < cardCount(null) &&
+          phoneMeta === `${cardCount(320)} rules • 4×` && cardCount(320) < cardCount(null) &&
           !card('.card')?.querySelector('.block[data-block=":hover"] .decl .p[title="box-shadow"]');
         // At 320 only what applies there: the phone size, and :hover outside any media query.
         results.filter.barsShowOnlyMatchingConditions =

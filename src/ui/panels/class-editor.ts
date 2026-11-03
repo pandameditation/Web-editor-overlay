@@ -9,6 +9,7 @@ import {
   type DisplayEntry,
 } from '../../core/declaration-list.js';
 import type { EditorEngine } from '../../core/editor.js';
+import { countText, reachText } from '../../core/save-plan.js';
 import type { DesignClass } from '../../core/types.js';
 import { icon } from '../icons.js';
 import { killStyles, renderKill } from '../kill.js';
@@ -190,25 +191,33 @@ export function renderFamilies(
 }
 
 /**
- * A card's collapsible header: chevron, session dot, name, file and counts.
+ * A card's collapsible header: chevron, session dot, name, file, counts and the uses pill.
  *
- * Shared by the Tokens class card and the Styles panel's source cards, so a class looks the same
- * wherever it is met. The file is there to answer "where is this written", which matters on demand
- * rather than at a glance, so it shows while the header is hovered or focused and the counts keep
- * the room otherwise.
+ * The one header every class, rule and inline-style card has, in the Styles panel, Tokens and the
+ * style dialog, so a rule looks the same wherever it is met: `.intro      9 rules • 1×`. The file
+ * is there to answer "where is this written", which matters on demand rather than at a glance, so
+ * it shows while the header is hovered or focused and the counts keep the room otherwise.
  */
 export function renderCardHeader(spec: {
   name: string;
+  /** Dim text closing the name, such as the size a rule is written at ("≤767px"). */
+  note?: string;
+  /** The name's tooltip, when the name alone does not say it all. */
+  title?: string;
   meta: string;
+  /** How many elements on the page it styles, shown as a pill. Left out where it says nothing. */
+  uses?: number;
   file?: string;
   expanded: boolean;
   onToggle: () => void;
-  /** The class was defined in this session rather than read from a stylesheet. */
+  /** The card was written in this session rather than read from a stylesheet. */
   sessionDot: boolean;
+  sessionTitle?: string;
   /** A name that is a label rather than a selector ("Inline style"), set in the text face. */
   plain?: boolean;
 }): TemplateResult {
   return html`<header
+    class="card-head"
     role="button"
     tabindex="0"
     aria-expanded=${spec.expanded}
@@ -220,12 +229,114 @@ export function renderCardHeader(spec: {
     }}
   >
     ${icon(spec.expanded ? 'chevronDown' : 'chevronRight', 11)}
-    ${spec.sessionDot ? html`<span class="dot" title="Defined in this session"></span>` : nothing}
-    <span class=${spec.plain ? 'n plain' : 'n'} title=${spec.name}>${spec.name}</span>
+    ${spec.sessionDot
+      ? html`<span class="dot" title=${spec.sessionTitle ?? 'Defined in this session'}></span>`
+      : nothing}
+    <span class=${spec.plain ? 'n plain' : 'n'} title=${spec.title ?? spec.name}
+      >${spec.name}${spec.note ? html` <span class="note">${spec.note}</span>` : nothing}</span
+    >
     ${spec.file ? html`<span class="file">${spec.file}</span>` : nothing}
-    <span class="meta">${spec.meta}</span>
+    <span class="meta"
+      >${spec.meta}${spec.uses === undefined
+      ? nothing
+      : html` <span aria-hidden="true">•</span> ${renderUses(spec.uses)}`}</span
+    >
   </header>`;
 }
+
+/**
+ * How many elements a rule styles right now, as a small pill whose colour reads before the number:
+ * grey for none, green for one, orange for several, where an edit reaches past this element.
+ */
+function renderUses(uses: number): TemplateResult {
+  const tone = uses === 0 ? 'none' : uses === 1 ? 'one' : 'many';
+  const title = uses === 0
+    ? 'Nothing on this page uses it'
+    : `Styling ${reachText(uses)} on this page`;
+  return html`<span class=${`uses ${tone}`} title=${title}>${uses}×</span>`;
+}
+
+/** The card header's look, for every surface that draws `renderCardHeader`. */
+export const cardHeaderStyles: CSSResult = css`
+  .card-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    background: var(--heo-sunken);
+    cursor: pointer;
+  }
+  .card-head:hover {
+    background: var(--heo-hover);
+  }
+  .card-head .dot {
+    width: 5px;
+    height: 5px;
+    flex: 0 0 auto;
+    border-radius: 999px;
+    background: var(--heo-accent);
+  }
+  .card-head .n {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    font-family: var(--heo-mono);
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .card-head .n.plain {
+    font-family: var(--heo-font);
+  }
+  .card-head .n .note {
+    color: var(--heo-text-dim);
+  }
+  /* Dim, not faint: the reach is what a card is read for (R31). */
+  .card-head .meta {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 4px;
+    color: var(--heo-text-dim);
+    font-size: 9.5px;
+    white-space: nowrap;
+  }
+  /* A bar rather than a button-sized chip: it is read, never pressed. */
+  .card-head .uses {
+    padding: 0 5px;
+    border-radius: 999px;
+    line-height: 14px;
+    font-variant-numeric: tabular-nums;
+  }
+  .card-head .uses.none {
+    background: color-mix(in oklab, var(--heo-text-dim) 16%, transparent);
+    color: var(--heo-text-dim);
+  }
+  .card-head .uses.one {
+    background: color-mix(in oklab, var(--heo-success) 20%, transparent);
+    color: var(--heo-success-text);
+  }
+  .card-head .uses.many {
+    background: color-mix(in oklab, var(--heo-shared) 20%, transparent);
+    color: var(--heo-shared-text);
+  }
+  /* Where the card is written: on demand, while the header is hovered or focused. */
+  .card-head .file {
+    display: none;
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--heo-text-dim);
+    font-family: var(--heo-mono);
+    font-size: 9.5px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .card-head:hover .file,
+  .card-head:focus-within .file {
+    display: inline;
+  }
+`;
 
 /**
  * One declaration row: name, value (with its `!important` tag), the `!important` toggle, trash.
@@ -295,64 +406,13 @@ export const ClassEditor = {
     killStyles,
     adderRowStyles,
     promoteStyles,
+    cardHeaderStyles,
     css`
     .cls {
       border: 1px solid var(--heo-line);
       border-radius: var(--heo-r-sm);
       margin-bottom: 6px;
       overflow: hidden;
-    }
-    .cls > header {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      padding: 6px 8px;
-      background: var(--heo-sunken);
-      cursor: pointer;
-    }
-    .cls > header:hover {
-      background: var(--heo-hover);
-    }
-    .cls .dot {
-      width: 5px;
-      height: 5px;
-      flex: 0 0 auto;
-      border-radius: 999px;
-      background: var(--heo-accent);
-    }
-    .cls .n {
-      flex: 1 1 auto;
-      min-width: 0;
-      overflow: hidden;
-      font-family: var(--heo-mono);
-      font-size: 11px;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-    .cls .n.plain {
-      font-family: var(--heo-font);
-    }
-    /* Dim, not faint: the reach is what a card is read for (R31). */
-    .cls .meta {
-      flex: 0 0 auto;
-      color: var(--heo-text-dim);
-      font-size: 9.5px;
-    }
-    /* Where the card is written: on demand, while the header is hovered or focused. */
-    .cls > header .file {
-      display: none;
-      flex: 0 1 auto;
-      min-width: 0;
-      overflow: hidden;
-      color: var(--heo-text-dim);
-      font-family: var(--heo-mono);
-      font-size: 9.5px;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-    .cls > header:hover .file,
-    .cls > header:focus-within .file {
-      display: inline;
     }
     .cls .decls {
       display: grid;
@@ -492,7 +552,8 @@ export const ClassEditor = {
         ? nothing
         : renderCardHeader({
           name: `.${entry.name}`,
-          meta: `${properties.length} rules${uses ? ` · ${uses}×` : ''}`,
+          meta: countText(properties.length, 'rule'),
+          uses,
           expanded,
           onToggle,
           sessionDot: entry.origin !== 'stylesheet',
