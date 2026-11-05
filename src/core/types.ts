@@ -1,3 +1,4 @@
+import type { ViewportEdit } from './viewports.js';
 import type { ElementAnchor } from './html-patch.js';
 import type { AiTransport } from './ai/transport.js';
 import type { AiProviderKey, AiProviderSet } from './ai/types.js';
@@ -204,6 +205,11 @@ export interface EditorSettings {
    * at most `MAX_CUSTOM_SIZES`. Each adds a preview size and a `from-W` slot.
    */
   viewportSizes: readonly number[];
+  /**
+   * The preview bar's other sizes, changed: a preset or a page size at another width, or any size
+   * hidden from the bar. One per size, keyed by the width it started at. See `core/viewports.ts`.
+   */
+  viewportEdits: readonly ViewportEdit[];
 }
 
 /** The subset of settings a document carries: only the ones that differ from the defaults. */

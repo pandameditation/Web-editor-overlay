@@ -1,4 +1,3 @@
-import { MAX_VIEWPORT, MIN_VIEWPORT } from './breakpoints.js';
 import { normalizeClassName } from './classes.js';
 import { isMutable } from './dom.js';
 import type { BlockExtraction, ClassExtraction, HtmlPaste, SourceEdit } from './editor.js';
@@ -140,18 +139,6 @@ export function forkNameIssues(
   return [];
 }
 
-/**
- * A viewport width typed into the preview menu: a whole number of pixels in the range a preview
- * can take, and not a size the list already has.
- */
-export function viewportSizeIssues(field: string, raw: string, existing: readonly number[]): FieldIssue[] {
-  const text = raw.trim().replace(/px$/i, '').trim();
-  const width = Number(text);
-  if (!text || !Number.isInteger(width) || width < MIN_VIEWPORT || width > MAX_VIEWPORT) {
-    return [{ field, message: `Type a width between ${MIN_VIEWPORT} and ${MAX_VIEWPORT} pixels.` }];
-  }
-  return existing.includes(width) ? [{ field, message: 'That size is already in the list.' }] : [];
-}
 
 /**
  * A media query typed into a size strip: one this browser can read. The browser serialises a query

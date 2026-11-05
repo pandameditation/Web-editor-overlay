@@ -63,6 +63,8 @@ export const themeVariables = css`
     /* Several elements share it, so an edit reaches past this one: the uses pill's orange. */
     --heo-shared: oklch(76% 0.13 55);
     --heo-shared-text: var(--heo-shared);
+    /* An element's id chip: a quiet slate-teal tint, apart from the tag's indigo and the bare classes. */
+    --heo-id: oklch(72% 0.05 210);
 
     --heo-r-sm: 7px;
     --heo-r-md: 10px;

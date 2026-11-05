@@ -73,6 +73,14 @@ export class HeoSegmented extends LitElement {
           background var(--heo-fast),
           color var(--heo-fast);
       }
+      /* More options than fit on one line: they wrap onto the next, each at its natural width,
+         rather than squeezing every label to an ellipsis. */
+      .bar.wrap {
+        flex-wrap: wrap;
+      }
+      .bar.wrap button {
+        flex: 1 0 auto;
+      }
       button:disabled {
         color: var(--heo-text-disabled);
         cursor: not-allowed;
@@ -104,6 +112,8 @@ export class HeoSegmented extends LitElement {
   @property({ type: String }) value = '';
   @property({ type: Boolean }) clearable = false;
   @property({ type: Boolean }) accent = false;
+  /** Wrap onto more lines when the options do not fit on one. */
+  @property({ type: Boolean }) wrap = false;
   @property({ type: String }) label = '';
   /** Show a ✕ that clears the value. For a value that is set, rather than inherited or computed. */
   @property({ type: Boolean }) removable = false;
@@ -111,7 +121,7 @@ export class HeoSegmented extends LitElement {
   @property({ type: Boolean, reflect: true }) disabled = false;
 
   override render(): TemplateResult {
-    return html`<div class="bar" role="group" aria-label=${this.label || 'Options'}>
+    return html`<div class=${this.wrap ? 'bar wrap' : 'bar'} role="group" aria-label=${this.label || 'Options'}>
       ${this.options.map((option) => {
       const active = option.value === this.value;
       return html`<button

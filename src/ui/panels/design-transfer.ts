@@ -535,6 +535,34 @@ export const DesignTransfer = {
       <span><b>${count}</b> ${count === 1 ? one : many}</span>
     </label>`;
 
+    /*
+     * The viewport sizes, as the preview bar has them: the user's own, and the presets and page
+     * sizes they moved or hid. Nothing to carry while they are all the defaults.
+     */
+    const viewportsPart = (): TemplateResult => {
+      const kept = engine.settings.value;
+      const changed = kept.viewportSizes.length + kept.viewportEdits.length;
+      const shown = engine.viewports().filter((one) => one.shown).length;
+      const on = selection.viewports !== false;
+      return html`<label
+        class=${`part${changed === 0 ? ' empty' : ''}`}
+        data-part="viewports"
+        title=${changed === 0
+          ? 'The viewport sizes are the defaults: nothing to send.'
+          : on
+            ? 'Leave the viewport sizes out of the seed'
+            : 'Put the viewport sizes back in the seed'}
+      >
+        <input
+          type="checkbox"
+          .checked=${on && changed > 0}
+          ?disabled=${changed === 0}
+          @change=${(event: Event) => choose({ viewports: (event.target as HTMLInputElement).checked })}
+        />
+        <span><b>${shown}</b> viewport ${shown === 1 ? 'size' : 'sizes'}</span>
+      </label>`;
+    };
+
     return html`<div class="transfer">
       <p class="hint" style="margin:0 0 9px">
         A seed carries this design system as one string. Paste it into any page and that page
@@ -562,6 +590,8 @@ export const DesignTransfer = {
         ${part('classes', available.classes.length, 'class', 'classes')}
         ${part('rules', available.rules?.length ?? 0, 'rule', 'rules')}
         ${part('blocks', available.blocks.length, 'block', 'blocks')}
+        <!-- Before the providers, so their API keys row stays right under the providers it belongs to. -->
+        ${viewportsPart()}
         <!--
           Providers, and the question the count used to pre-empt.
 

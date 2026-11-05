@@ -3,6 +3,7 @@ import { customElement, state } from 'lit/decorators.js';
 import { isPseudoElement, isWidthQuery, mediaIcon, mediaKind, mediaNow } from '../../core/breakpoints.js';
 import { rulesPass, type ElementModel, type RuleEntry, type WriteTarget } from '../../core/cascade.js';
 import {
+  escapeRegExp,
   parentLayoutProperties,
   PROPERTY_GROUP_LABELS,
   searchProperties,
@@ -27,6 +28,7 @@ import { ClassEditor, focusDeclaration } from './class-editor.js';
 import {
   blockId,
   cardView,
+  INLINE_LIST_ID,
   renderBlockAdder,
   renderBlockHeader,
   renderFamilyCard,
@@ -39,7 +41,8 @@ import {
 } from './styles/family-card.js';
 import { renderCascadePopover, popoverStyles } from './styles/cascade-popover.js';
 import { headerStyles, renderElementHeader } from './styles/header.js';
-import { previewBarStyles, previewPresets, renderPreviewBar, SIZE_FIELD } from './styles/preview-bar.js';
+import { previewBarStyles, renderPreviewBar } from './styles/preview-bar.js';
+import { CREATE_CLASS_TITLE, createClassLabel } from '../create-offer.js';
 import {
   barConditions,
   conditionKey,
@@ -75,7 +78,7 @@ import '../controls/search-field.js';
 import '../controls/box-editor.js';
 import '../controls/segmented.js';
 import '../controls/section.js';
-import { classNameIssues, forkNameIssues, viewportSizeIssues } from '../../core/validation.js';
+import { classNameIssues, forkNameIssues } from '../../core/validation.js';
 import { mediaApplies } from '../../core/viewport.js';
 import { field, FormErrors } from '../form-errors.js';
 
@@ -234,6 +237,11 @@ const SPACING_PROPERTIES = [
 
 /** The Effective styles element block: its rows' list and its adder share the id. */
 const EFFECTIVE_LIST_ID = 'effective';
+/** The header popovers of the element's own styles: the tag chip's, and the id chip's. */
+const ELEMENT_POP = 'element';
+const ID_POP = 'id';
+/** The id popover's adder, while no rule is written for the id. */
+const NEW_ID_RULE = 'new-id-rule';
 
 /**
  * Sections the user has opened or closed by hand, which then wins for the session.
@@ -265,7 +273,6 @@ const EMPTY_UI: StylesUiState = {
   adder: null,
   pending: null,
   finderOpen: false,
-  sizeDraft: null,
   mediaDraft: null,
   otherSlots: new Map(),
   tab: 'all',
@@ -447,15 +454,6 @@ export class HeoStylesPanel extends HeoElement {
   });
   /** The one open adder's errors; checks run on commit, through `form.fail`. */
   protected adderForm = new FormErrors(this, () => []);
-  /** "Add a viewport size…" in the preview menu: a width the list does not have yet. */
-  protected sizeForm = new FormErrors(this, () =>
-    this.ui.sizeDraft === null
-      ? []
-      : viewportSizeIssues(
-        SIZE_FIELD,
-        this.ui.sizeDraft,
-        previewPresets(this.editor.settings.value.viewportSizes).map((preset) => preset.width),
-      ));
   /** "Add a media query…" in a strip's menu. */
   protected mediaForm = new FormErrors(this, () => stripMediaIssues(this.ui.mediaDraft?.text ?? null));
   /** The element whose size cap has already auto-opened the parent section. */
@@ -526,8 +524,7 @@ export class HeoStylesPanel extends HeoElement {
         popover: null,
         menu: null,
         pending: null,
-        sizeDraft: null,
-        pendingStates: [],
+              pendingStates: [],
         blockHint: null,
       };
     }
@@ -543,18 +540,24 @@ export class HeoStylesPanel extends HeoElement {
     this.#placeLayers();
   }
 
+  #finderWatched: HTMLElement | null = null;
+  #finderObserver = new ResizeObserver(() => {
+    if (this.ui.finderOpen) this.#placeLayers();
+  });
+
   /** What opened each open layer, as a selector into the panel; innermost first. */
   #openers(): Array<{ layer: string; opener: string }> {
     const out: Array<{ layer: string; opener: string }> = [];
     const popover = this.ui.popover;
     if (popover?.source) {
       out.push({
-        layer: `.pop:not(.cardpop) .srccard[data-order="${popover.source.order}"]`,
-        opener: `.pop:not(.cardpop) .src[data-order="${popover.source.order}"]`,
+        layer: `.pop:not(.cardpop):not(.finderpop) .srccard[data-order="${popover.source.order}"]`,
+        opener: `.pop:not(.cardpop):not(.finderpop) .src[data-order="${popover.source.order}"]`,
       });
     }
-    if (popover) out.push({ layer: '.pop:not(.cardpop)', opener: `.row[data-row="${CSS.escape(popover.rowId)}"] .dots` });
+    if (popover) out.push({ layer: '.pop:not(.cardpop):not(.finderpop)', opener: `.row[data-row="${CSS.escape(popover.rowId)}"] .dots` });
     if (this.ui.cardPop) out.push({ layer: '.cardpop', opener: this.ui.cardPop.anchor });
+    if (this.ui.finderOpen) out.push({ layer: '.finderpop', opener: '.ident .cchip.add' });
     return out;
   }
 
@@ -578,18 +581,39 @@ export class HeoStylesPanel extends HeoElement {
       const anchor = root.querySelector(`.row[data-row="${CSS.escape(popover.rowId)}"]`);
       if (!anchor) this.ui = { ...this.ui, popover: null };
       else {
-        placeLayer(root.querySelector<HTMLElement>('.pop:not(.cardpop)'), anchor, {
+        placeLayer(root.querySelector<HTMLElement>('.pop:not(.cardpop):not(.finderpop)'), anchor, {
           minWidth: 300,
           gap: 4,
           source: anchor.querySelector<HTMLElement>('.dots'),
         });
       }
     }
+    if (this.ui.finderOpen) {
+      const add = root.querySelector<HTMLElement>('.ident .cchip.add');
+      const field = root.querySelector<HTMLElement>('.finderpop heo-value-field');
+      if (!add) this.ui = { ...this.ui, finderOpen: false };
+      // Across the header's line rather than from the "+": the "+" sits near the panel's right
+      // edge, and a layer starting there ran out past it.
+      else placeLayer(root.querySelector<HTMLElement>('.finderpop'), root.querySelector('.ident .line') ?? add, { gap: 6, source: add });
+      /*
+       * Placed again whenever the field resizes: its list is drawn inside it, a frame after this
+       * placement and again with every keystroke, and a layer sized before that is capped at the
+       * height of a lone input.
+       */
+      if (field && this.#finderWatched !== field) {
+        this.#finderObserver.disconnect();
+        this.#finderObserver.observe(field);
+        this.#finderWatched = field;
+      }
+    } else if (this.#finderWatched) {
+      this.#finderObserver.disconnect();
+      this.#finderWatched = null;
+    }
     const cardPop = this.ui.cardPop;
     if (cardPop) {
       const anchor = root.querySelector<HTMLElement>(cardPop.anchor);
       if (!anchor) this.ui = { ...this.ui, cardPop: null };
-      else placeLayer(root.querySelector<HTMLElement>('.cardpop'), anchor, { ...this.#cardPopFrame(cardPop.key), source: anchor });
+      else placeLayer(root.querySelector<HTMLElement>('.cardpop'), anchor, { ...this.#cardPopFrame(cardPop.cards?.[0] ?? cardPop.key), source: anchor });
     }
     const menu = this.ui.menu;
     if (menu) {
@@ -647,7 +671,7 @@ export class HeoStylesPanel extends HeoElement {
         onClose: () => {
           const popover = this.ui.popover;
           if (!popover?.source) return;
-          this.#closeTo({ popover: { ...popover, source: null } }, `.pop:not(.cardpop) .src[data-order="${popover.source.order}"]`);
+          this.#closeTo({ popover: { ...popover, source: null } }, `.pop:not(.cardpop):not(.finderpop) .src[data-order="${popover.source.order}"]`);
         },
       }),
     };
@@ -677,6 +701,7 @@ export class HeoStylesPanel extends HeoElement {
     const computed = getComputedStyle(el);
     const model = this.#model(el);
     const host = this.#host(el, model);
+    this.#syncOwnCards(el, model, host);
     const found = host.filtering ? this.#matchCount(el, model, computed, host) : -1;
     const popover = this.ui.popover;
     const popoverOn = popover?.scope.kind === 'parent' && popover.scope.element !== el
@@ -687,11 +712,25 @@ export class HeoStylesPanel extends HeoElement {
       ${bar}
       ${renderElementHeader({
         element: el,
+        elementOpen: this.ui.cardPop?.key === ELEMENT_POP,
+        onOpenElement: () => this.#popOwn(el, model, host, ELEMENT_POP),
+        idOpen: this.ui.cardPop?.key === ID_POP,
+        onOpenId: () => this.#popOwn(el, model, host, ID_POP),
+        onRemoveId: () => {
+          if (this.ui.cardPop?.key === ID_POP) this.#patch({ cardPop: null });
+          this.editor.setAttribute('id', null, el);
+          this.#focusSelector('.ident .el-chip');
+        },
         finderOpen: this.ui.finderOpen,
-        onToggleFinder: (open) => {
+        onToggleFinder: (open, refocus = true) => {
           this.classForm.reset();
-          this.#patch({ finderOpen: open });
-          this.#focusSelector(open ? '.ident .finder heo-value-field' : '.ident .cchip.add');
+          this.#patch({ finderOpen: open, ...(open ? { popover: null, cardPop: null, menu: null } : {}) });
+          if (open) {
+            this.#focusSelector('.finderpop heo-value-field');
+            // The list comes with the field: the "+" asks which class, and the answers are the list.
+            void this.updateComplete.then(() => requestAnimationFrame(() =>
+              this.renderRoot.querySelector<HeoValueField>('.finderpop heo-value-field')?.openList()));
+          } else if (refocus) this.#focusSelector('.ident .cchip.add');
         },
         openClass: (() => {
           const key = this.ui.cardPop?.key;
@@ -836,11 +875,12 @@ export class HeoStylesPanel extends HeoElement {
 
   /** Open or close one of the panel's menus; closing hands focus back to what opened it. */
   #toggleMenu(id: string, open: boolean): void {
-    this.sizeForm.reset();
     this.mediaForm.reset();
-    this.#patch({ menu: open ? { id } : null, popover: null, sizeDraft: null, mediaDraft: null });
+    this.#patch({ menu: open ? { id } : null, popover: null, mediaDraft: null });
+    // The viewport sizes panel is a dialog of fields, focused at its first; a menu at its first item.
+    const inside = id === 'preview' ? 'heo-viewport-sizes' : '.mi';
     this.#focusSelector(
-      open ? `.menu[data-menu="${CSS.escape(id)}"] .mi` : `[data-menu-anchor="${CSS.escape(id)}"]`,
+      open ? `.menu[data-menu="${CSS.escape(id)}"] ${inside}` : `[data-menu-anchor="${CSS.escape(id)}"]`,
       open,
     );
   }
@@ -1170,6 +1210,11 @@ export class HeoStylesPanel extends HeoElement {
     if (menu && !inside(`.menu[data-menu="${CSS.escape(menu.id)}"]`) && !inside(`[data-menu-anchor="${CSS.escape(menu.id)}"]`)) {
       next.menu = null;
     }
+    // The class finder's list is inside its popover, so a press on a suggestion keeps it.
+    if (this.ui.finderOpen && !inside('.finderpop') && !inside('.ident .cchip.add')) {
+      this.classForm.reset();
+      next.finderOpen = false;
+    }
     const adder = this.ui.adder;
     if (adder && !adder.draft.trim() && !inside(`[data-adder="${CSS.escape(adder.id)}"]`) && !inside('.menu')) {
       next.adder = null;
@@ -1184,7 +1229,7 @@ export class HeoStylesPanel extends HeoElement {
    * it, the dock is dragged, the window is resized.
    */
   #onViewportChange = (): void => {
-    if (this.ui.popover || this.ui.menu || this.ui.cardPop) this.#placeLayers();
+    if (this.ui.popover || this.ui.menu || this.ui.cardPop || this.ui.finderOpen) this.#placeLayers();
   };
 
   /*
@@ -1206,7 +1251,7 @@ export class HeoStylesPanel extends HeoElement {
       // An expanded card collapses first, back to its line's link.
       const order = ui.popover.source.order;
       this.#patch({ popover: { ...ui.popover, source: null } });
-      this.#focusSelector(`.pop:not(.cardpop) .src[data-order="${order}"]`);
+      this.#focusSelector(`.pop:not(.cardpop):not(.finderpop) .src[data-order="${order}"]`);
     } else if (ui.popover) {
       const rowId = ui.popover.rowId;
       this.#patch({ popover: null });
@@ -1620,6 +1665,46 @@ export class HeoStylesPanel extends HeoElement {
   }
 
   /**
+   * The element's own styles over the panel, from the header: the tag chip opens its style
+   * attribute and its id's rules, the id chip only the id's rules. A toggle, like a class name.
+   */
+  #popOwn(el: HTMLElement, model: ElementModel, host: StylesHost, key: typeof ELEMENT_POP | typeof ID_POP): void {
+    const anchor = key === ELEMENT_POP ? '.ident .el-chip' : '.ident .cchip.id .name';
+    if (this.ui.cardPop?.key === key) {
+      this.#closeTo({ cardPop: null }, anchor);
+      return;
+    }
+    this.#patch({ popover: null, menu: null, adder: null, cardPop: { key, anchor, cards: this.#ownCards(el, model, host, key) } });
+  }
+
+  /** What the tag chip or the id chip shows: the style attribute first for the tag, then the id's rules. */
+  #ownCards(el: HTMLElement, model: ElementModel, host: StylesHost, key: string): string[] {
+    const ids = this.#idCards(el, model, host).map((view) => view.family.key);
+    return key === ELEMENT_POP ? [INLINE_LIST_ID, ...ids] : ids;
+  }
+
+  /**
+   * Keep an open tag or id popover's cards in step with the rules: one written from it (its first
+   * property, through the id popover's adder), or one edited away, joins or leaves it.
+   *
+   * Assigned rather than patched, while rendering: the Sources copies drawn after read the list to
+   * step aside, so it has to be right in this same render, and nothing else needs to hear of it.
+   */
+  #syncOwnCards(el: HTMLElement, model: ElementModel, host: StylesHost): void {
+    const pop = this.ui.cardPop;
+    if (!pop || (pop.key !== ELEMENT_POP && pop.key !== ID_POP)) return;
+    const cards = this.#ownCards(el, model, host, pop.key);
+    if (cards.join('\n') !== (pop.cards ?? []).join('\n')) this.ui = { ...this.ui, cardPop: { ...pop, cards } };
+  }
+
+  /** The rules written for the element's id (`#hero`, `main #hero > p`) that reach it, in Sources order. */
+  #idCards(el: HTMLElement, model: ElementModel, host: StylesHost): CardView[] {
+    if (!el.id) return [];
+    const mention = new RegExp(`#${escapeRegExp(CSS.escape(el.id))}(?![\\w-])`);
+    return this.#sourceCards(el, model, host).others.filter((view) => mention.test(view.family.key));
+  }
+
+  /**
    * Where the popped card goes across: over its own place in Sources, at that card's width, so it
    * wraps and lines up exactly as it does there; only its height follows what opened it. The card
    * keeps its place while popped (it shows a note there); with no place on screen (another tab),
@@ -1654,6 +1739,7 @@ export class HeoStylesPanel extends HeoElement {
       filtering: false,
       hit: () => true,
     });
+    if (key === INLINE_LIST_ID) return renderInlineCard(whole, { popped });
     const { classes, others } = this.#sourceCards(el, model, whole);
     const named = classes.find(({ name, view }) => (view?.family.key ?? `.${CSS.escape(name)}`) === key);
     const other = others.find((view) => view.family.key === key);
@@ -1666,23 +1752,46 @@ export class HeoStylesPanel extends HeoElement {
         : nothing;
   }
 
-  /** A class name's card, in a popover under the chips. */
+  /** A header chip's cards, in a popover under the chips: a class's, or the element's own. */
   #renderCardPop(el: HTMLElement, model: ElementModel, host: StylesHost): TemplateResult | typeof nothing {
     const pop = this.ui.cardPop;
     if (!pop) return nothing;
-    const card = this.#poppedCard(el, model, host, pop.key, {
-      onClose: () => this.#closeTo({ cardPop: null }, pop.anchor),
-    });
-    if (card === nothing) return nothing;
+    const popped: Popped = { onClose: () => this.#closeTo({ cardPop: null }, pop.anchor) };
+    const cards = (pop.cards ?? [pop.key])
+      .map((key) => this.#poppedCard(el, model, host, key, popped))
+      .filter((card) => card !== nothing);
+    // An id no rule is written for yet: say so, and offer the rule, rather than open nothing.
+    const none = pop.key === ID_POP && !cards.length && el.id ? this.#renderNoIdRule(el, host) : nothing;
+    if (!cards.length && none === nothing) return nothing;
+    const label = pop.key === ELEMENT_POP
+      ? `Edit this ${el.localName}'s own styles`
+      : pop.key === ID_POP ? `Edit the rules for #${el.id}` : `Edit ${pop.key}`;
     return html`<div
       class="pop cardpop"
       role="dialog"
       popover="manual"
       tabindex="-1"
       data-card-pop=${pop.key}
-      aria-label=${`Edit ${pop.key}`}
+      aria-label=${label}
     >
-      ${card}
+      ${cards}${none}
+    </div>`;
+  }
+
+  /**
+   * The id chip's popover when no rule targets the id: an adder for the first property, written
+   * into a new `#id` rule, which then shows here as its card. An empty rule is never written.
+   */
+  #renderNoIdRule(el: HTMLElement, host: StylesHost): TemplateResult {
+    const selector = `#${CSS.escape(el.id)}`;
+    return html`<div class="none">
+      <p class="hint" style="margin:0">No rule is written for <code class="mono">${selector}</code> yet.</p>
+      ${renderBlockAdder(
+      host,
+      NEW_ID_RULE,
+      [stylesDestination(selector, reachText(1), { kind: 'new-rule', selector, media: null }, {}, selector)],
+      '',
+    )}
     </div>`;
   }
 
@@ -1701,7 +1810,7 @@ export class HeoStylesPanel extends HeoElement {
     if (!popover || !el) return;
     if (popover.source?.order === entry.order) {
       this.#patch({ popover: { ...popover, source: null } });
-      this.#focusSelector(`.pop:not(.cardpop) .src[data-order="${entry.order}"]`);
+      this.#focusSelector(`.pop:not(.cardpop):not(.finderpop) .src[data-order="${entry.order}"]`);
       return;
     }
     const model = this.#model(el);
@@ -1721,7 +1830,7 @@ export class HeoStylesPanel extends HeoElement {
       closed.delete(entry.family);
       this.#patch({ popover: { ...popover, source }, cardPop: null, adder: null, menu: null, cardPicks: picks, closedCards: closed });
       void this.updateComplete.then(() => requestAnimationFrame(() => {
-        const under = this.renderRoot.querySelector<HTMLElement>(`.pop:not(.cardpop) .srccard[data-order="${entry.order}"]`);
+        const under = this.renderRoot.querySelector<HTMLElement>(`.pop:not(.cardpop):not(.finderpop) .srccard[data-order="${entry.order}"]`);
         if (under) focusDeclaration(under, property, blockId(entry.family, slot, entry.state));
       }));
     };
@@ -1738,12 +1847,10 @@ export class HeoStylesPanel extends HeoElement {
     return renderPreviewBar({
       engine: this.editor,
       previewWidth: this.editor.store.value.previewWidth,
-      customSizes: this.editor.settings.value.viewportSizes,
+      viewports: this.editor.viewports(),
       menuOpen: this.ui.menu?.id === 'preview',
       onMenu: (open) => this.#toggleMenu('preview', open),
-      sizeDraft: this.ui.sizeDraft,
-      sizeForm: this.sizeForm,
-      onSizeDraft: (text) => this.#patch({ sizeDraft: text }),
+      onLayout: () => this.#placeLayers(),
       inShadowRoot: el !== null && el.getRootNode() instanceof ShadowRoot,
     });
   }
@@ -1752,10 +1859,13 @@ export class HeoStylesPanel extends HeoElement {
   #renderFinder(el: HTMLElement): TemplateResult {
     return html`<heo-value-field
         ${field(this.classForm, 'class-add')}
+        inline-list
         leading-icon="search"
         clearable
         action="Add class"
         action-icon="plus"
+        create-label=${createClassLabel(normalizeClassName(this.classDraft) || this.classDraft)}
+        create-title=${CREATE_CLASS_TITLE}
         .suggestions=${classSuggestions(this.editor, this.classDraft)}
         placeholder="find or create a class"
         @value-input=${(event: CustomEvent<{ value: string }>) => {

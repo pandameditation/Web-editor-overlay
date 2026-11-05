@@ -15,7 +15,6 @@ export interface ViewportPreset {
   width: number;
   icon: DeviceIcon;
   name: string;
-  custom?: boolean;
 }
 
 export const VIEWPORT_PRESETS: readonly ViewportPreset[] = Object.freeze([
@@ -237,22 +236,6 @@ export function mediaIcon(media: string): DeviceIcon | 'print' | 'window' {
   return /\bprint\b/i.test(media) ? 'print' : 'window';
 }
 
-/**
- * The width to preview when the user picks a media query, or null when it is not a width query.
- *
- * The widest preset an upper bound holds, or the narrowest a lower bound holds, so picking
- * `≤767px` previews the phone and `≥768px` the tablet. With no preset inside the bound, the
- * bound itself.
- */
-export function previewWidthFor(media: string, presets: readonly ViewportPreset[]): number | null {
-  const bound = widthBound(media);
-  if (!bound) return null;
-  const fits = presets
-    .map((preset) => preset.width)
-    .filter((width) => (bound.side === 'max' ? width <= bound.px : width >= bound.px));
-  if (bound.side === 'max') return fits.length ? Math.max(...fits) : Math.floor(bound.px);
-  return fits.length ? Math.min(...fits) : Math.ceil(bound.px);
-}
 
 /**
  * Whether a media query depends on the viewport's size.

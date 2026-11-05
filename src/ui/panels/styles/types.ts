@@ -53,10 +53,12 @@ export interface StylesUiState {
     source?: { key: string; order: number; slot: string; state: string } | null;
   } | null;
   /**
-   * A Sources card opened over the panel from a header class name. `key` is the card's family;
-   * `anchor` selects what it is placed against.
+   * Sources cards opened over the panel from the header. `key` is what opened it: a class's family,
+   * `element` (the tag chip: inline style and the id's rules) or `id` (the id chip: its rules).
+   * `cards` are the cards shown, in order, when they are not just `key`'s. `anchor` selects what
+   * it is placed against.
    */
-  cardPop: { key: string; anchor: string } | null;
+  cardPop: { key: string; anchor: string; cards?: string[] } | null;
   /** The one open menu, by id. */
   menu: { id: string } | null;
   /** The one open adder: its id, the draft, and the destination picked in it. */
@@ -67,8 +69,6 @@ export interface StylesUiState {
   effPick: string | null;
   /** The header's "find or create a class" field is showing. */
   finderOpen: boolean;
-  /** The preview menu's "Add a viewport size…" field, or null while it is closed. */
-  sizeDraft: string | null;
   /** A strip menu's "Add a media query…" field, for one strip at a time. */
   mediaDraft: { owner: string; text: string } | null;
   /**

@@ -594,83 +594,238 @@
           hadBox && !root().querySelector('.savebox') && engine.store.value.previewWidth === null &&
           !target.hasAttribute('data-heo-save-preview') && padding() === actualPadding;
 
-        /* ---- the ⋮ menu ---- */
+        /* ---- the ⋮ panel: viewport sizes, for editing ---- */
         progress.textContent = 'barMenu';
         const more = () => root().querySelector('.sizes .more');
         const menu = () => root().querySelector('.menu[data-menu="preview"]');
+        const sizesEl = () => menu()?.querySelector('heo-viewport-sizes');
+        const sroot = () => sizesEl()?.shadowRoot;
+        const rows = () => Array.from(sroot()?.querySelectorAll('.vp') ?? []);
+        const widthOf = (row) => Number.parseInt(row.querySelector('heo-value-field')?.value ?? row.querySelector('.fixed')?.textContent ?? '', 10);
+        const rowAt = (width) => rows().find((row) => widthOf(row) === width);
+        const rowWidths = () => rows().map(widthOf);
+        const barLabels = () => segs().map((b) => b.textContent.trim());
         const openMenu = async () => {
           if (!menu()) more()?.click();
           await settle();
           await frames();
+          await sizesEl()?.updateComplete;
         };
-        /** The menu's items under one caption. */
-        const itemsUnder = (caption) => {
-          const out = [];
-          let on = false;
-          for (const node of Array.from(menu()?.children ?? [])) {
-            if (node.matches('.cap')) on = node.textContent.trim() === caption;
-            else if (node.localName === 'hr') on = false;
-            else if (on) {
-              const item = node.matches('.mi') ? node : node.querySelector('.mi');
-              if (item) out.push(item);
-            }
-          }
-          return out;
+        const press = (button) => { button?.click(); };
+        const setWidth = async (row, value, event = 'value-change') => {
+          row?.querySelector('heo-value-field')?.dispatchEvent(
+            new CustomEvent(event, { detail: { value }, bubbles: true, composed: true }));
+          await sizesEl()?.updateComplete;
+          await settle();
         };
-        const labelOf = (item) => item.querySelector('.lbl')?.textContent.trim();
+        const toggle = async (row) => {
+          const box = row?.querySelector('input[type="checkbox"]');
+          if (!box) return;
+          box.checked = !box.checked;
+          box.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+          await sizesEl()?.updateComplete;
+          await settle();
+        };
+        // The page writes ≤767px (twice), ≥768px and print: the first is a size the panel lists,
+        // left out of the bar until it is ticked; ≥768px is the tablet preset already; print is
+        // not a size at all.
+        results.menu.pageWidthQueryIsNotInTheBarByDefault =
+          barLabels().join(',') === 'Actual,320,768,992,1024,1440';
         await openMenu();
-        const mediaItems = itemsUnder('Media queries on this page');
-        const labels = mediaItems.map(labelOf);
-        results.menu.listsPageMediaQueriesInWidthOrder =
-          menu()?.matches(':popover-open') === true &&
-          labels.join(',') === '≤767px,≤767px,≥768px,print' &&
-          /preview 320/.test(mediaItems[0]?.textContent) && /preview 768/.test(mediaItems[2]?.textContent);
-        mediaItems.find((item) => labelOf(item) === '≥768px')?.click();
+        results.menu.opensTheViewportSizesPanel =
+          menu()?.matches(':popover-open') === true && menu()?.getAttribute('role') === 'dialog' &&
+          more()?.getAttribute('aria-expanded') === 'true' &&
+          !/Media queries on this page|print/.test(menu()?.textContent ?? '');
+        results.menu.listsEverySizeByWidth =
+          rowWidths().join(',') === '320,767,768,992,1024,1440' &&
+          rowAt(767)?.dataset.origin === 'page' && /≤767px/.test(rowAt(767)?.textContent ?? '') &&
+          rowAt(992)?.dataset.origin === 'custom' && Boolean(rowAt(992)?.querySelector('.kill')) &&
+          !rowAt(320)?.querySelector('.kill') &&
+          rows().every((row) => row.querySelector('input[type="checkbox"]')?.checked === (row.dataset.origin !== 'page'));
+        // Measured once the panel has drawn its rows: placed before that, it was capped at the
+        // height of an empty box and scrolled (132px for 334px of rows).
+        results.menu.panelIsAsTallAsItsRows =
+          menu().scrollHeight <= menu().clientHeight + 1 || menu().clientHeight >= innerHeight * 0.45;
+        // Each width but a page size's is a px field with the spacing gauge, the handle that drags
+        // it, and nothing else: no unit to cycle, no list of units, functions or values to open.
+        const fieldParts = (row) => {
+          const f = row.querySelector('heo-value-field')?.shadowRoot;
+          return { gauge: Boolean(f?.querySelector('.gauge')), unit: Boolean(f?.querySelector('.unit')), chevron: Boolean(f?.querySelector('.trailing .mini')) };
+        };
+        results.menu.widthsArePxFieldsWithTheDragHandle = rows().filter((row) => row.dataset.origin !== 'page').every((row) => {
+          const parts = fieldParts(row);
+          return parts.gauge && !parts.unit && !parts.chevron;
+        });
+        // A page size keeps its media query's width: shown, not editable.
+        results.menu.pageSizeWidthIsNotEditable =
+          !rowAt(767)?.querySelector('heo-value-field') && rowAt(767)?.querySelector('.fixed')?.textContent.trim() === '767px';
+        results.menu.statesItsLimits = /keep vw at the real window/.test(sroot()?.querySelector('details')?.textContent ?? '');
+        // Picking a size is the bar's job; the panel's rows do not preview anything. A row's name
+        // is its checkbox's label: pressing it ticks the size.
+        const historyAtStart = engine.history.size;
+        press(rowAt(768)?.querySelector('.name'));
+        await sizesEl()?.updateComplete;
         await settle();
-        results.menu.clickingAWidthPreviewsIt = engine.store.value.previewWidth === 768 && !menu();
-        await openMenu();
-        const printItem = itemsUnder('Media queries on this page').find((item) => labelOf(item) === 'print');
-        const printTitle = printItem?.getAttribute('title');
-        printItem?.click();
+        results.menu.rowsDoNotPreview = engine.store.value.previewWidth === null && Boolean(menu());
+        results.menu.theNameTicksItsBox =
+          rowAt(768)?.querySelector('input[type="checkbox"]')?.checked === false &&
+          !barLabels().includes('768') && engine.history.size === historyAtStart + 1;
+        press(rowAt(768)?.querySelector('.name'));
+        await sizesEl()?.updateComplete;
         await settle();
-        results.menu.printCannotBePreviewed =
-          printTitle === 'Not a width: shown at Actual' && engine.store.value.previewWidth === null;
+        // No Apply and no Cancel: every change is kept as it is made, and the bar follows.
+        results.menu.noApplyOrCancel = !sroot()?.querySelector('footer') &&
+          !Array.from(sroot()?.querySelectorAll('button') ?? []).some((b) => /^(Apply|Cancel)$/.test(b.textContent.trim()));
+        results.menu.tickingIsLive = barLabels().includes('768') && engine.history.size === historyAtStart + 2;
+
+        /* Two sizes at one width, or a width out of range: said on the row, nothing kept. */
+        const editsBefore = JSON.stringify(engine.settings.value.viewportEdits);
+        const historyAtRefusal = engine.history.size;
+        await setWidth(rowAt(768), '1024px');
+        results.menu.refusesTwoSizesAtOneWidth =
+          /1024px is already in the list/.test(sroot()?.textContent ?? '') &&
+          JSON.stringify(engine.settings.value.viewportEdits) === editsBefore && engine.history.size === historyAtRefusal;
+        await setWidth(rows().find((row) => row.dataset.key === 'preset:768'), '50px');
+        results.menu.refusesAWidthOutOfRange =
+          /Type a width between 200 and 4000 pixels\./.test(sroot()?.textContent ?? '') &&
+          JSON.stringify(engine.settings.value.viewportEdits) === editsBefore;
+
+        /*
+         * A dragged width is kept as it moves, the bar following, and stays one undo step; the row
+         * holds its place until the width is settled, then the list is sorted by width.
+         */
+        const historyAtDrag = engine.history.size;
+        const row320 = rowAt(320);
+        await setWidth(row320, '900px', 'value-input');
+        const midBar = barLabels().join(',');
+        await setWidth(row320, '1500px', 'value-input');
+        const heldOrder = rowWidths().join(',');
+        await setWidth(row320, '1500px');
+        await toggle(rowAt(767));
+        const keptEdits = JSON.stringify(engine.settings.value.viewportEdits);
+        results.menu.dragIsLiveAndOneUndoStep =
+          midBar === 'Actual,768,900,992,1024,1440' && heldOrder === '1500,767,768,992,1024,1440' &&
+          engine.history.size === historyAtDrag + 2 &&
+          keptEdits === '[{"base":320,"width":1500},{"base":767,"shown":true}]' &&
+          barLabels().join(',') === 'Actual,767,768,992,1024,1440,1500';
+        results.menu.settledWidthIsSortedInPlace =
+          rowWidths().join(',') === '767,768,992,1024,1440,1500' &&
+          rowAt(767)?.querySelector('input[type="checkbox"]')?.checked === true;
+        const seed2 = engine.blockLibrarySeed();
+        const body2 = seed2.slice(seed2.indexOf('.') + 1).replace(/-/g, '+').replace(/_/g, '/');
+        const decoded2 = seed2 ? JSON.parse(new TextDecoder().decode(
+          Uint8Array.from(atob(body2 + '='.repeat((4 - (body2.length % 4)) % 4)), (c) => c.charCodeAt(0)),
+        )) : null;
+        results.menu.editsTravelInTheSeed =
+          JSON.stringify(decoded2?.settings?.viewportEdits) === keptEdits;
+        // Left out of a design system when the box for them is unticked; carried by default.
+        const withSizes = engine.designSystem({ tokens: true, classes: true, rules: true, blocks: true, ai: false, aiKeys: false });
+        const withoutSizes = engine.designSystem({ tokens: true, classes: true, rules: true, blocks: true, ai: false, aiKeys: false, viewports: false });
+        results.menu.designSystemCanLeaveTheSizesOut =
+          JSON.stringify(withSizes.settings?.viewportEdits) === keptEdits &&
+          !withoutSizes.settings?.viewportEdits && !withoutSizes.settings?.viewportSizes;
+        // Undo, with the panel open: the panel follows as well as the bar.
+        engine.undo();
+        engine.undo();
+        await settle();
+        await sizesEl()?.updateComplete;
+        results.menu.undoPutsTheSizesBack =
+          JSON.stringify(engine.settings.value.viewportEdits) === '[]' &&
+          barLabels().join(',') === 'Actual,320,768,992,1024,1440' &&
+          rowWidths().join(',') === '320,767,768,992,1024,1440';
+
+        /* Escape closes the panel and gives focus back to ⋮. */
         await openMenu();
-        results.menu.statesItsLimits =
-          Array.from(menu()?.querySelectorAll('.cap') ?? []).some((cap) => cap.textContent.trim() === "What a preview can't change") &&
-          /@keyframes\) keep vw/.test(menu()?.textContent ?? '');
-        menu()?.querySelector('.mi')?.focus();
-        menu()?.querySelector('.mi')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true, cancelable: true }));
+        rows()[0]?.querySelector('input[type="checkbox"]')?.focus();
+        rows()[0]?.querySelector('input[type="checkbox"]')?.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true, cancelable: true }));
         await settle();
         await frames();
         results.menu.escapeClosesAndRefocuses = !menu() && root().activeElement === more();
 
-        const sizeField = () => menu()?.querySelector('.mfield input');
+        /* "Add a viewport size…", as today: a width of one's own, and its breakpoint. */
+        const addField = () => sroot()?.querySelector('.add input');
         const typeSize = async (text) => {
           await openMenu();
-          if (!sizeField()) {
-            itemsUnder('Viewport sizes').find((item) => labelOf(item) === 'Add a viewport size…')?.click();
-            await settle();
+          if (!addField()) {
+            press(sroot()?.querySelector('.add .link'));
+            await sizesEl()?.updateComplete;
           }
-          const input = sizeField();
+          const input = addField();
           input.value = text;
           input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-          await settle();
-          sizeField()?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, composed: true, cancelable: true }));
-          await settle();
-          await frames();
+          await sizesEl()?.updateComplete;
+          addField()?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, composed: true, cancelable: true }));
+          await sizesEl()?.updateComplete;
         };
         const sizesBefore = JSON.stringify(engine.settings.value.viewportSizes);
         await typeSize('50');
         results.menu.rejectsOutOfRangeWidth =
-          /Type a width between 200 and 4000 pixels\./.test(menu()?.querySelector('.field-error')?.textContent ?? '') &&
+          /Type a width between 200 and 4000 pixels\./.test(sroot()?.querySelector('.add')?.textContent ?? '') &&
           JSON.stringify(engine.settings.value.viewportSizes) === sizesBefore;
         await typeSize('1280');
+        await settle();
+        const listedAndKept = rowWidths().includes(1280) && engine.settings.value.viewportSizes.includes(1280);
+        // Kept at once; then picked from the bar, it is a size the strip writes at.
+        seg('1280')?.click();
+        await settle();
         results.menu.addViewportSizeAddsPresetAndSlot =
+          listedAndKept &&
           engine.settings.value.viewportSizes.includes(1280) &&
           engine.store.value.previewWidth === 1280 &&
-          pressedSegs().join(',') === '1280' &&
           Boolean(root().querySelector('[data-strip="effective"] [data-slot="from-1280"]'));
+
+        /* The same panel in Settings, live there too: the dialog's Save is for its own fields. */
+        progress.textContent = 'settings';
+        {
+          engine.setAiSettings(true);
+          await frames(4);
+          const dialog = () => deep('heo-ai-settings')?.shadowRoot;
+          const inSettings = () => dialog()?.querySelector('heo-viewport-sizes');
+          await inSettings()?.updateComplete;
+          const sRows = () => Array.from(inSettings()?.shadowRoot?.querySelectorAll('.vp') ?? []);
+          const listed = sRows().map((row) => Number.parseInt(row.querySelector('heo-value-field')?.value ?? row.querySelector('.fixed')?.textContent ?? '', 10)).join(',');
+          const historyAtTick = engine.history.size;
+          const box = sRows().find((row) => row.dataset.key === 'preset:1024')?.querySelector('input[type="checkbox"]');
+          box.checked = false;
+          box.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+          await deep('heo-ai-settings')?.updateComplete;
+          await settle();
+          const unsaved = /Unsaved changes/.test(dialog()?.querySelector('footer')?.textContent ?? '');
+          results.menu.settingsHasTheSamePanel =
+            listed === '320,767,768,992,1024,1280,1440' && !unsaved &&
+            JSON.stringify(engine.settings.value.viewportEdits) === '[{"base":1024,"hidden":true}]' &&
+            engine.history.size === historyAtTick + 1 && !barLabels().includes('1024');
+          engine.setAiSettings(false);
+          await frames(2);
+          engine.undo();
+          await settle();
+        }
+        /* The save dialog's design system step: the sizes are one of the things that travel. */
+        {
+          engine.previewSave();
+          await frames(4);
+          const save = () => deep('heo-save-dialog')?.shadowRoot;
+          await deep('heo-save-dialog')?.updateComplete;
+          Array.from(save()?.querySelectorAll('footer .btn') ?? []).find((b) => /Design system/.test(b.textContent))?.click();
+          await frames(4);
+          await deep('heo-save-dialog')?.updateComplete;
+          const part = () => save()?.querySelector('[data-part="viewports"]');
+          const box = () => part()?.querySelector('input');
+          const offered = Boolean(part()) && box()?.checked === true && box()?.disabled === false &&
+            /\b6 viewport sizes\b/.test(part()?.textContent.replace(/\s+/g, ' ') ?? '');
+          results.menu.designSystemStepOffersTheSizes = offered;
+          // Not between the providers and their API keys: the keys row is the providers' sub-item.
+          const parts = Array.from(save()?.querySelectorAll('.parts > .part') ?? []);
+          const at = (match) => parts.findIndex(match);
+          const sizesAt = at((one) => one.dataset.part === 'viewports');
+          const aiAt = at((one) => /AI provider/.test(one.textContent));
+          const keysAt = at((one) => one.classList.contains('dependent'));
+          results.menu.sizesComeBeforeTheProviders =
+            sizesAt !== -1 && aiAt === sizesAt + 1 && (keysAt === -1 || keysAt === aiAt + 1);
+          engine.closeSavePreview();
+          await frames(2);
+        }
 
         /* ---- the strips follow the preview ---- */
         progress.textContent = 'follow';

@@ -683,6 +683,8 @@
           { name: 'styles.reset', component: 'property-row', file: `${SP}/property-row.ts`, cat: 'styles', kind: 'icon', min: 3, label: true, host: firstOf('.prow .reset') },
           // The header chip's ×, also faint before (F8).
           { name: 'styles.chipKill', component: 'header', file: `${SP}/header.ts`, cat: 'styles', kind: 'icon', min: 3, label: true, host: firstOf('.cchip button.kill') },
+          // The id chip's name, on its tint.
+          { name: 'styles.idChip', component: 'header', file: `${SP}/header.ts`, cat: 'styles', kind: 'text', min: 4.5, host: firstOf('.ident .cchip.id .name') },
           // A strip size's count, and a size not in effect at this width: dashed, its ink kept.
           { name: 'styles.stripCount', component: 'size-strip', file: `${SP}/size-strip.ts`, cat: 'styles', kind: 'text', min: 4.5, host: stripCounted, part: () => stripCounted()?.querySelector('.c') ?? null },
           { name: 'styles.notNowStrip', component: 'size-strip', file: `${SP}/size-strip.ts`, cat: 'styles', kind: 'icon', min: 3, host: firstOf('.slots button.notnow:not([aria-pressed="true"])') },

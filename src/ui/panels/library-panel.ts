@@ -5,7 +5,7 @@ import { acceptsChildren, isMutable, labelFor } from '../../core/dom.js';
 import { INSERT_POSITION_LABELS, type InsertPosition } from '../../core/mutations.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import type { BlockKind, LibraryBlock } from '../../core/types.js';
-import { CREATE_BLOCK_ICON, CREATE_BLOCK_TITLE, createBlockLabel } from '../block-create.js';
+import { CREATE_BLOCK_ICON, CREATE_BLOCK_TITLE, createBlockLabel } from '../create-offer.js';
 import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
 import { baseStyles } from '../theme.js';

@@ -16,6 +16,7 @@ import { icon } from '../icons.js';
 import { baseStyles, surfaceStyles } from '../theme.js';
 import type { FieldIssue } from '../../core/validation.js';
 import { field, FormErrors } from '../form-errors.js';
+import '../controls/viewport-sizes.js';
 
 /**
  * Settings: how the editor behaves on this page, and where a model is connected.
@@ -208,6 +209,9 @@ export class HeoAiSettings extends HeoElement {
         border: 1px solid var(--heo-line);
         border-radius: var(--heo-r-md);
         background: color-mix(in oklab, var(--heo-sunken) 60%, transparent);
+      }
+      .viewports-card {
+        padding: 4px 10px 8px;
       }
       .providers-card {
         display: flex;
@@ -710,6 +714,20 @@ export class HeoAiSettings extends HeoElement {
           </label>
         </section>
 
+        <section class="section" aria-labelledby="heo-settings-viewports">
+          <div class="section-head">
+            <h3 id="heo-settings-viewports">Viewport sizes</h3>
+            <p>
+              The sizes the Styles panel's preview bar offers: tick the ones to show and set their
+              widths. Your own sizes are breakpoints too. Kept as you change them, like any edit,
+              and saved with the page and in its seed.
+            </p>
+          </div>
+          <div class="card viewports-card">
+            <heo-viewport-sizes .engine=${this.editor}></heo-viewport-sizes>
+          </div>
+        </section>
+
         <section class="section providers" aria-labelledby="heo-settings-ai">
           <div class="section-head">
             <h3 id="heo-settings-ai">AI providers</h3>
@@ -1204,7 +1222,6 @@ export class HeoAiSettings extends HeoElement {
       this.providerForm.submit();
       return;
     }
-
     const ai = this.editor.ai;
     const kept = new Set(draft.sets.map((set) => set.id));
     for (const set of before.sets) {

@@ -269,11 +269,12 @@
           const chips = () => Array.from(ident()?.querySelectorAll('.cchip[data-class]') ?? []);
           const own = Array.from(target.classList).filter((name) => !name.startsWith('heo-'));
           results.header = {
-            // Tag chip, one chip per class in class-list order, and "+": nothing else on the line.
+            // Tag chip, id chip, one chip per class in class-list order, and "+": nothing else on the line.
             listsClassesOnly:
               chips().map((chip) => chip.dataset.class).join(',') === own.join(',') &&
-              ident()?.querySelector('.line').children.length === own.length + 2 &&
-              ident()?.querySelector('.el-chip')?.textContent.trim() === 'p#target',
+              ident()?.querySelector('.line').children.length === own.length + 3 &&
+              ident()?.querySelector('.el-chip')?.textContent.trim() === 'p' &&
+              ident()?.querySelector('.cchip.id .name')?.textContent.trim() === '#target',
             noStyleAttributeOrMediaChip: !/style=|@media|[≤≥]/.test(ident()?.textContent ?? ''),
           };
           const before = engine.history.size;
@@ -288,17 +289,87 @@
           const plus = () => ident()?.querySelector('.cchip.add');
           plus()?.click();
           await settle(150);
-          const finder = () => ident()?.querySelector('.finder heo-value-field');
+          const finderPop = () => ident()?.querySelector('.finderpop');
+          const finder = () => finderPop()?.querySelector('heo-value-field');
+          const list = () => finder()?.shadowRoot?.querySelector('.popup');
           const opened =
             plus()?.getAttribute('aria-expanded') === 'true' && Boolean(finder()) &&
             sroot().activeElement === finder() &&
-            /Search the project's classes or type a new name, then press Enter\./.test(ident()?.textContent ?? '');
+            // The old line telling the user to press Enter went with the Create button.
+            !/press Enter/i.test(finderPop()?.textContent ?? '');
           finder()?.shadowRoot.querySelector('input')?.dispatchEvent(
             new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true, cancelable: true }));
           await settle(120);
           results.header.plusRevealsTheFinder =
             opened && !finder() && plus()?.getAttribute('aria-expanded') === 'false' &&
             target.classList.contains('featured');
+          /*
+           * The field and its list of classes are one popover under the "+": the list is drawn
+           * inside it rather than hanging from it, and the popover goes when focus or a press goes
+           * anywhere else. It used to be a field in the header, left behind when the list closed.
+           */
+          plus()?.click();
+          await settle(200);
+          const popBox = finderPop()?.getBoundingClientRect();
+          const listBox = list()?.getBoundingClientRect();
+          const plusBox = plus()?.getBoundingClientRect();
+          results.header.finderIsOnePopoverWithItsList =
+            finderPop()?.matches(':popover-open') === true &&
+            Boolean(list()) && list().classList.contains('inline') && !list().hasAttribute('popover') &&
+            list().querySelectorAll('.option').length > 0 &&
+            // The list comes with the field, so there is no chevron to open it again.
+            !finder()?.shadowRoot?.querySelector('.trailing .mini[aria-label="Show tokens and values"]') &&
+            !finder()?.shadowRoot?.querySelector('.trailing.actionable') &&
+            listBox.top >= popBox.top && listBox.bottom <= popBox.bottom + 1 &&
+            // Under the header line, or above it when this short window has no room below.
+            (popBox.top >= plusBox.bottom || popBox.bottom <= plusBox.top) &&
+            popBox.top >= 0 && popBox.bottom <= innerHeight;
+          // Across the header line, inside the panel: placed from the "+", it ran past the edge.
+          const panelBox = deep('heo-styles-panel').getBoundingClientRect();
+          results.header.finderStaysInsideThePanel = popBox.left >= panelBox.left && popBox.right <= panelBox.right;
+          /*
+           * A name nothing matches: the list says so and offers to make it, the way the Library
+           * offers a block, and the "+" beside the field fills in, since it is the way on too.
+           */
+          {
+            const textOf = (el) => el?.textContent.replace(/\s+/g, ' ').trim() ?? '';
+            const input = finder()?.shadowRoot?.querySelector('input');
+            input.value = 'brand-new';
+            input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+            await settle(150);
+            const create = () => list()?.querySelector('[data-act="create"]');
+            const offered =
+              /Nothing matches brand-new\./.test(textOf(list())) &&
+              textOf(create()) === 'Create ".brand-new"' &&
+              finder()?.shadowRoot?.querySelector('.action')?.classList.contains('ready') === true &&
+              !/press Enter/i.test(textOf(list()));
+            const before = engine.history.size;
+            create()?.click();
+            await settle(200);
+            results.header.noMatchOffersToCreateTheClass =
+              offered && target.classList.contains('brand-new') && engine.history.size === before + 1;
+            engine.undo();
+            await settle(150);
+          }
+          // A press elsewhere in the panel closes it; the header has no field left in it.
+          sroot().querySelector('heo-section')?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, composed: true }));
+          await settle(150);
+          results.header.aPressElsewhereClosesTheFinder = !finderPop() && !ident()?.querySelector('heo-value-field');
+          // So does focus moving on: real Tabs out of the finder (a scripted focus() fires no focus
+          // events in a window that is not focused, so it would prove nothing either way).
+          plus()?.click();
+          await settle(250);
+          // The keys go to whatever has focus: wait for the field to have it, under a loaded suite.
+          for (let i = 0; i < 40 && sroot().activeElement !== finder(); i += 1) await settle(25);
+          const wasOpen = Boolean(finderPop()) && sroot().activeElement === finder();
+          await new Promise((resolve) => {
+            window.__heoKeysDone = () => resolve();
+            // Back past the "+" it belongs to, onto the chip before it: out of the finder.
+            window.__heoPressKeys(JSON.stringify({ id: 'finder-tab', keys: ['Shift+Tab', 'Shift+Tab'] }));
+          });
+          await settle(200);
+          results.header.focusLeavingClosesTheFinder =
+            wasOpen && !finderPop() && plus()?.getAttribute('aria-expanded') === 'false';
         }
         /* ------------------------------------------------------------------ *
          * Sources: where the element's styles are written (R17–R21, R23, R29).
@@ -414,6 +485,64 @@
             results.header.openingKeepsFocusOnTheName = stays;
             results.header.tabFromTheNameGoesIntoTheCard = intoTheCard;
             results.header.closingFromTheCardHeaderReturnsToTheName = !popped() && deepFocus() === chipName();
+          }
+
+          /*
+           * The element's own styles: the tag chip opens its style attribute and its id's rules in
+           * the same popover a class name uses; the id chip, quietly tinted, opens only its rules and
+           * its cross takes the id off.
+           */
+          {
+            const tag = () => sroot().querySelector('.ident .el-chip');
+            const idName = () => sroot().querySelector('.ident .cchip.id .name');
+            const ownPop = () => sroot().querySelector('.cardpop[data-card-pop="element"]');
+            const idPop = () => sroot().querySelector('.cardpop[data-card-pop="id"]');
+            const bg = (el) => (el ? getComputedStyle(el).backgroundColor : '');
+            const classChip = sroot().querySelector('.ident .cchip[data-class="card"]');
+            results.header.idChipStandsApart =
+              bg(idName()?.parentElement) !== bg(tag()) && bg(idName()?.parentElement) !== bg(classChip) &&
+              bg(idName()?.parentElement) !== 'rgba(0, 0, 0, 0)' &&
+              // The same chip as a class otherwise: its face, size and weight.
+              ['fontSize', 'fontWeight', 'fontFamily', 'height'].every((prop) =>
+                getComputedStyle(idName())[prop] === getComputedStyle(classChip.querySelector('.name'))[prop]);
+            tag()?.click();
+            await settle(300);
+            results.header.tagOpensTheInlineStyle =
+              ownPop()?.matches(':popover-open') === true && tag()?.getAttribute('aria-expanded') === 'true' &&
+              Boolean(ownPop()?.querySelector('.cls[data-card="inline"] heo-value-field')) &&
+              /Open in a popover above/.test(textOf(card('inline'))) && !card('inline')?.querySelector('heo-value-field');
+            key(ownPop(), 'Escape');
+            await settle(200);
+            results.header.tagIsAToggleAndEscapeReturnsToIt = !ownPop() && sroot().activeElement === tag();
+            idName()?.click();
+            await settle(300);
+            // No rule for #target on this page: the popover says so and offers an adder for one.
+            const noRule = Boolean(idPop()?.querySelector('.none [data-heo-part="adder"]')) &&
+              /No rule is written for #target yet/.test(textOf(idPop()));
+            engine.createDesignRule('#target', { outline: '1px dashed red' });
+            await settle(300);
+            results.header.idOpensItsRules =
+              noRule && idName()?.getAttribute('aria-expanded') === 'true' &&
+              Boolean(idPop()?.querySelector('.cls[data-card="#target"] heo-value-field[data-property="outline"]')) &&
+              !idPop()?.querySelector('.cls[data-card="inline"]') && !idPop()?.querySelector('.none');
+            idName()?.click();
+            await settle(200);
+            tag()?.click();
+            await settle(300);
+            const ownCards = Array.from(ownPop()?.querySelectorAll(':scope > .cls') ?? []).map((one) => one.dataset.card);
+            results.header.tagShowsInlineThenIdRules = ownCards.join(',') === 'inline,#target';
+            tag()?.click();
+            await settle(200);
+            engine.removeDesignRule('#target');
+            await settle(200);
+            const historyAtKill = engine.history.size;
+            sroot().querySelector('.ident .cchip.id .kill')?.click();
+            await settle(200);
+            const gone = !target.id && !sroot().querySelector('.ident .cchip.id') &&
+              engine.history.size === historyAtKill + 1 && sroot().activeElement === tag();
+            engine.undo();
+            await settle(200);
+            results.header.idCrossRemovesTheId = gone && target.id === 'target' && Boolean(idName());
           }
 
           /* The section and its groups. */

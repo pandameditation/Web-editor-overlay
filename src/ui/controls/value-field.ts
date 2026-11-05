@@ -256,6 +256,11 @@ export class HeoValueField extends LitElement {
           background var(--heo-fast),
           color var(--heo-fast);
       }
+      /* Nothing matches what was typed, so this is the way on: said by filling it in. */
+      .action.ready {
+        background: var(--heo-accent);
+        color: var(--heo-accent-ink);
+      }
       .action:hover:not(:disabled) {
         background: var(--heo-accent);
         color: var(--heo-accent-ink);
@@ -349,6 +354,21 @@ export class HeoValueField extends LitElement {
         animation: pop var(--heo-fast);
       }
       .popup:popover-open {
+        display: block;
+      }
+      /* In the field's flow, inside a popover of its own: no second frame, shadow or float. */
+      .popup.inline {
+        position: static;
+        max-height: 260px;
+        margin-top: 4px;
+        padding: 0;
+        border: 0;
+        border-radius: 0;
+        background: transparent;
+        box-shadow: none;
+        animation: none;
+      }
+      :host([inline-list]) {
         display: block;
       }
       @keyframes pop {
@@ -538,10 +558,39 @@ export class HeoValueField extends LitElement {
         color: var(--heo-text-faint);
         font-size: 11px;
       }
+      /* Nothing matches, and the way on is to make it: the line, then the button that does. */
+      .none.create {
+        display: grid;
+        justify-items: start;
+        gap: 8px;
+        padding: 6px 2px 2px;
+        color: var(--heo-text-dim);
+      }
+      .none.create p {
+        margin: 0;
+      }
+      .none.create strong {
+        color: var(--heo-text);
+        font-family: var(--heo-mono);
+        font-weight: 500;
+      }
     `,
   ];
 
   @property({ type: String }) label = '';
+  /** The input's accessible name, where the field sits in a row that names it some other way. */
+  @property({ type: String, attribute: 'field-label' }) fieldLabel = '';
+  /**
+   * A length that only ever takes this unit (the viewport widths: px): no unit to cycle, and no
+   * list of units, functions or values to open, so the field is a number with its gauge.
+   */
+  @property({ type: String, attribute: 'fixed-unit' }) fixedUnit = '';
+  /**
+   * Draw the list in the field's own flow, under the input, instead of floating it: for a field
+   * that already sits in a popover of its own (the header's class finder), so the field and its
+   * list are one box rather than a box and a second one hanging under it.
+   */
+  @property({ type: Boolean, attribute: 'inline-list' }) inlineList = false;
   /** Optional search-style leading icon for fields that name or filter an item. */
   @property({ type: String, attribute: 'leading-icon' }) leadingIcon = '';
   @property({ type: String }) value = '';
@@ -579,6 +628,12 @@ export class HeoValueField extends LitElement {
    * host keeps handing the same buffer back.
    */
   @property({ type: String }) action = '';
+  /**
+   * With an `action`: what pressing it would make of the text typed (`Create ".hero"`), shown as a
+   * button where the list would say nothing matches. Read from the host, which knows the noun.
+   */
+  @property({ type: String, attribute: 'create-label' }) createLabel = '';
+  @property({ type: String, attribute: 'create-title' }) createTitle = '';
   @property({ type: String, attribute: 'action-icon' }) actionIcon = 'plus';
   /**
    * The declaration this field shows is `!important`.
@@ -769,7 +824,7 @@ export class HeoValueField extends LitElement {
   override updated(): void {
     const popup = this.renderRoot.querySelector<HTMLElement>('.popup');
     if (!popup || !this.open) return;
-    if (typeof popup.showPopover === 'function' && !popup.matches(':popover-open')) {
+    if (!this.inlineList && typeof popup.showPopover === 'function' && !popup.matches(':popover-open')) {
       try {
         popup.showPopover();
       } catch {
@@ -845,8 +900,17 @@ export class HeoValueField extends LitElement {
     return this.open && !this.composer;
   }
 
+  /**
+   * Whether the list has a chevron and a trailing strip that opens it. Not for an inline list:
+   * it comes with the field, so a control to open it again has nothing to do.
+   */
+  get #canToggle(): boolean {
+    return this.#canOpen && !this.inlineList;
+  }
+
   /** True when there is a list worth showing, i.e. when opening it does something. */
   get #canOpen(): boolean {
+    if (this.fixedUnit) return this.suggestions.length > 0;
     return (
       this.suggestions.length > 0 || this.isNumeric || this.#computedSuggestion().length > 0
     );
@@ -950,7 +1014,7 @@ export class HeoValueField extends LitElement {
    * values — see FUNCTIONS for what differs between them.
    */
   #functionSuggestions(): ValueSuggestion[] {
-    if (!this.isNumeric || this.kind === 'number') return [];
+    if (!this.isNumeric || this.kind === 'number' || this.fixedUnit) return [];
     return (Object.keys(FUNCTIONS) as FunctionName[]).map((fn) => {
       const existing = parseCssFunction(this.draft, [fn]);
       return {
@@ -971,7 +1035,7 @@ export class HeoValueField extends LitElement {
    * rather than something the user has to finish typing correctly.
    */
   #unitSuggestions(): ValueSuggestion[] {
-    if (!this.isNumeric || this.kind === 'number') return [];
+    if (!this.isNumeric || this.kind === 'number' || this.fixedUnit) return [];
     const match = /^(-?[\d.]+)([a-z%]*)$/i.exec(this.draft.trim());
     if (!match) return [];
     const [, number, typed] = match;
@@ -1005,7 +1069,7 @@ export class HeoValueField extends LitElement {
 
   override render(): TemplateResult {
     const parsed = this.parsed;
-    const showUnit = this.isNumeric && parsed !== null && this.kind !== 'number';
+    const showUnit = this.isNumeric && parsed !== null && this.kind !== 'number' && !this.fixedUnit;
 
     return html`
       <div class="wrap">
@@ -1031,6 +1095,7 @@ export class HeoValueField extends LitElement {
           spellcheck="false"
           autocomplete="off"
           role="combobox"
+          aria-label=${this.fieldLabel || nothing}
           aria-expanded=${this.open}
           aria-autocomplete="list"
           @input=${this.#onInput}
@@ -1038,8 +1103,8 @@ export class HeoValueField extends LitElement {
           @keydown=${this.#onKeyDown}
         />
         <div
-          class=${`trailing${this.#canOpen ? ' actionable' : ''}`}
-          title=${this.#canOpen ? 'Show tokens and values' : ''}
+          class=${`trailing${this.#canToggle ? ' actionable' : ''}`}
+          title=${this.#canToggle ? 'Show tokens and values' : ''}
           @pointerdown=${this.#onTrailingDown}
           @click=${this.#onTrailingClick}
         >
@@ -1068,7 +1133,7 @@ export class HeoValueField extends LitElement {
                 ${icon('close', 11)}
               </button>`
         : nothing}
-          ${this.#canOpen
+          ${this.#canToggle
         ? html`<button
                 class="mini"
                 type="button"
@@ -1083,7 +1148,7 @@ export class HeoValueField extends LitElement {
         : nothing}
           ${this.action
         ? html`<button
-                class="action"
+                class=${`action${this.open && this.draft.trim() && !this.filtered.length ? ' ready' : ''}`}
                 type="button"
                 title=${this.action}
                 aria-label=${this.action}
@@ -1383,12 +1448,34 @@ export class HeoValueField extends LitElement {
     if (this.composer) return this.#renderComposer();
     const items = this.filtered;
     if (!items.length) {
-      return html`<div class="popup" popover="manual" style=${this.popupStyle} role="listbox">
-        <div class="none">
-          ${this.action
-          ? 'No matching name. Press Enter to use what you typed.'
-          : 'No matching token. Press Enter to keep your own value.'}
-        </div>
+      const typed = this.draft.trim();
+      return html`<div
+        class=${this.inlineList ? 'popup inline' : 'popup'}
+        popover=${this.inlineList ? nothing : 'manual'}
+        style=${this.inlineList ? '' : this.popupStyle}
+        role="listbox"
+      >
+        ${this.action && this.createLabel
+          ? html`<div class="none create">
+              ${typed ? html`<p>Nothing matches <strong>${typed}</strong>.</p>` : nothing}
+              <!-- The same act as the field's action: the offer, said with the name it will make. -->
+              <button
+                class="btn sm"
+                type="button"
+                data-act="create"
+                title=${this.createTitle || this.action}
+                ?disabled=${!typed}
+                @pointerdown=${(event: Event) => event.preventDefault()}
+                @click=${this.#submit}
+              >
+                ${icon('plus', 12)} ${this.createLabel}
+              </button>
+            </div>`
+          : html`<div class="none">
+              ${this.action
+              ? 'No matching name. Press Enter to use what you typed.'
+              : 'No matching token. Press Enter to keep your own value.'}
+            </div>`}
       </div>`;
     }
 
@@ -1401,7 +1488,12 @@ export class HeoValueField extends LitElement {
     }
 
     let index = -1;
-    return html`<div class="popup" popover="manual" style=${this.popupStyle} role="listbox">
+    return html`<div
+      class=${this.inlineList ? 'popup inline' : 'popup'}
+      popover=${this.inlineList ? nothing : 'manual'}
+      style=${this.inlineList ? '' : this.popupStyle}
+      role="listbox"
+    >
       ${repeat(
       groups,
       (group) => group.name,
@@ -1482,7 +1574,7 @@ export class HeoValueField extends LitElement {
    * popup the click had just opened — which is what made the strip look inert.
    */
   #onTrailingDown(event: PointerEvent): void {
-    if (!this.#canOpen && !this.action) return;
+    if (!this.#canToggle && !this.action) return;
     event.preventDefault();
   }
 
@@ -1494,7 +1586,7 @@ export class HeoValueField extends LitElement {
    * landed on a button are left to that button.
    */
   #onTrailingClick(event: MouseEvent): void {
-    if (!this.#canOpen) return;
+    if (!this.#canToggle) return;
     const onButton = event
       .composedPath()
       .some((node) => node instanceof HTMLElement && node.tagName === 'BUTTON');
@@ -1734,6 +1826,7 @@ export class HeoValueField extends LitElement {
    * the cost of having to recompute on scroll and resize.
    */
   #positionPopup(): void {
+    if (this.inlineList) return;
     const style = this.#placer.style(this.renderRoot.querySelector<HTMLElement>('.popup'), {
       anchor: this.getBoundingClientRect(),
       // A composer is wider than a list: three labelled rows each holding a field of their own.

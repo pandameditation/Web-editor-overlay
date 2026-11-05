@@ -14,7 +14,7 @@ import { modalOpen } from '../../core/modal.js';
 import { listen, unlisten } from '../../core/shield.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import type { LibraryBlock } from '../../core/types.js';
-import { CREATE_BLOCK_ICON, CREATE_BLOCK_TITLE, createBlockLabel } from '../block-create.js';
+import { CREATE_BLOCK_ICON, CREATE_BLOCK_TITLE, createBlockLabel } from '../create-offer.js';
 import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
 import { baseStyles, surfaceStyles } from '../theme.js';
@@ -35,7 +35,7 @@ import '../controls/segmented.js';
  * list so one search and one set of arrow keys reach either.
  *
  * The list also offers to create a block from the query, worded exactly as the Library
- * search words it (`block-create.ts`). It opens the New block dialog seeded with the query
+ * search words it (`create-offer.ts`). It opens the New block dialog seeded with the query
  * and, once saved, inserts the block at this `+` position.
  */
 

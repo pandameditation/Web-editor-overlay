@@ -100,6 +100,8 @@ export interface DesignSystemSelection {
   aiKeys: boolean;
   /** Editor preferences. Optional so existing selections keep compiling; absent means carried. */
   settings?: boolean;
+  /** The viewport sizes among them: the user's own and the bar's edits. Absent means carried. */
+  viewports?: boolean;
 }
 
 /** Everything the session owns, and no credentials. The default for every existing caller. */
@@ -139,7 +141,11 @@ export function exportDesignSystem(
     selection.ai && selection.aiKeys
       ? (registries.ai?.revealKeysForExport(ai.map((entry) => entry.id)) ?? [])
       : [];
-  const settings = selection.settings !== false ? (registries.settings?.export() ?? {}) : {};
+  const settings = selection.settings !== false ? { ...(registries.settings?.export() ?? {}) } : {};
+  if (selection.viewports === false) {
+    delete settings.viewportSizes;
+    delete settings.viewportEdits;
+  }
   /*
    * An unselected kind becomes an empty array rather than a missing key.
    *

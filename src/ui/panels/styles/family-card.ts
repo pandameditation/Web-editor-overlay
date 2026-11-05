@@ -267,7 +267,7 @@ export function renderFamilyCard(
   const key = family.key;
   const name = family.isClass ? simpleClassName(key) : null;
   const owned = name ? engine.classes.get(name) : undefined;
-  const away = !options.popped && poppedKey(host) === key;
+  const away = !options.popped && isPopped(host, key);
   const open = Boolean(options.popped) || (!away && (host.filtering || !ui.closedCards.has(key)));
   const declarations = visible.reduce((sum, entry) => sum + entry.declarations.length, 0);
   const uses = model.reach(key);
@@ -488,9 +488,10 @@ export function renderFamilyCard(
 export interface Popped {
   onClose(): void;
 }
-/** The card open in a popover, if any: from a class name, or under a cascade popover's line. */
-function poppedKey(host: StylesHost): string | undefined {
-  return host.ui.cardPop?.key ?? host.ui.popover?.source?.key ?? undefined;
+/** Whether a card is open in a popover: from a header chip, or under a cascade popover's line. */
+function isPopped(host: StylesHost, key: string): boolean {
+  const pop = host.ui.cardPop;
+  return Boolean(pop && (pop.cards ?? [pop.key]).includes(key)) || host.ui.popover?.source?.key === key;
 }
 /** The Sources copy's header, while its card is popped: put the card back here. */
 function closePopped(host: StylesHost): void {
@@ -709,13 +710,17 @@ function toggleCard(host: StylesHost, key: string): void {
  * Shown even when empty, since its "+ Add property" is the way in. Last, "Extract into a class",
  * which is where inline styles go once they turn out to be worth reusing.
  */
-export function renderInlineCard(host: StylesHost): TemplateResult | typeof nothing {
+export function renderInlineCard(
+  host: StylesHost,
+  options: { popped?: Popped } = {},
+): TemplateResult | typeof nothing {
   const { model, engine, element } = host;
   const all = model.inline;
   const familyHit = host.filtering && host.hit('inline style');
   const shown = host.filtering && !familyHit ? all.filter((one) => host.hit(one.property, one.value)) : all;
   if (host.filtering && !familyHit && !shown.length) return nothing;
-  const open = host.filtering || !host.ui.closedCards.has(INLINE_LIST_ID);
+  const away = !options.popped && isPopped(host, INLINE_LIST_ID);
+  const open = Boolean(options.popped) || (!away && (host.filtering || !host.ui.closedCards.has(INLINE_LIST_ID)));
   const target: WriteTarget = { kind: 'inline', element };
   const count = all.length;
   return html`<div class="cls" data-card=${INLINE_LIST_ID}>
@@ -724,7 +729,7 @@ export function renderInlineCard(host: StylesHost): TemplateResult | typeof noth
     plain: true,
     meta: countText(count, 'rule'),
     expanded: open,
-    onToggle: () => toggleCard(host, INLINE_LIST_ID),
+    onToggle: () => (options.popped ? options.popped.onClose() : away ? closePopped(host) : toggleCard(host, INLINE_LIST_ID)),
     sessionDot: false,
   })}
     ${open
@@ -761,7 +766,7 @@ export function renderInlineCard(host: StylesHost): TemplateResult | typeof noth
                 </button>
               </div>`}
         </div>`
-      : nothing}
+      : away ? poppedNote() : nothing}
   </div>`;
 }
 
@@ -776,7 +781,7 @@ export function renderUnknownCard(
 ): TemplateResult | typeof nothing {
   const key = `.${CSS.escape(name)}`;
   if (host.filtering && !host.hit(key)) return nothing;
-  const away = !options.popped && poppedKey(host) === key;
+  const away = !options.popped && isPopped(host, key);
   const open = Boolean(options.popped) || (!away && (host.filtering || !host.ui.closedCards.has(key)));
   return html`<div class="cls" data-card=${key} data-group="classes" data-unknown>
     ${renderCardHeader({
@@ -801,6 +806,17 @@ export const sourcesStyles: CSSResult = css`
     margin: 0;
     border: 0;
     background: transparent;
+  }
+  /* Several cards in one popover (the element's own styles): a line between them, not a gap. */
+  .pop.cardpop > .cls + .cls {
+    border-top: 1px solid var(--heo-line);
+  }
+  .pop.cardpop > .none {
+    display: grid;
+    gap: 7px;
+    justify-items: start;
+    margin: 0;
+    padding: 8px 9px 4px;
   }
   .popped-note {
     margin: 0;

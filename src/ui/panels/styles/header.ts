@@ -2,19 +2,30 @@ import { css, html, nothing, type CSSResult, type TemplateResult } from 'lit';
 import { icon } from '../../icons.js';
 
 /**
- * The selected element, and its classes.
+ * The selected element, its id and its classes.
  *
- * The tag (with its id) and one chip per class, nothing else: the cascade lives in Effective
- * styles, the style attribute and the media queries in Sources, so restating them here only made
- * the first line long. Each chip is two controls, because the two acts are not comparable: the
- * name opens and closes the class's card in a popover under the chips, the cross takes it off this
- * one element. "+" finds or creates a class to add.
+ * The tag, the id and one chip per class, nothing else: the cascade lives in Effective styles and
+ * the media queries in Sources, so restating them here only made the first line long. The tag opens
+ * what is written for this element alone, its style attribute and its id's rules, in a popover
+ * under the chips. The id and each class are two controls, because the two acts are not
+ * comparable: the name opens and closes its rules in that popover, the cross takes it off this one
+ * element. The id is the same chip with a quiet tint, since it is unique and outranks every class. "+"
+ * finds or creates a class to add, in a popover holding its field and the list of classes as one
+ * box, which closes when focus or a press goes anywhere else.
  */
 
 export interface HeaderSpec {
   element: HTMLElement;
   finderOpen: boolean;
-  onToggleFinder(open: boolean): void;
+  /** Open or close the class finder; `refocus` false leaves focus where the user took it. */
+  onToggleFinder(open: boolean, refocus?: boolean): void;
+  /** The element's own styles (inline and its id's rules) are open under the chips. */
+  elementOpen: boolean;
+  onOpenElement(): void;
+  /** Its id's rules are open under the chips. */
+  idOpen: boolean;
+  onOpenId(): void;
+  onRemoveId(): void;
   /** The class whose card is open under the chips, if any: its name reads as pressed. */
   openClass: string | null;
   /** Open that class's card, or close it when it is the one open. */
@@ -27,9 +38,63 @@ export interface HeaderSpec {
 export function renderElementHeader(spec: HeaderSpec): TemplateResult {
   const el = spec.element;
   const classes = Array.from(el.classList).filter((name) => !name.startsWith('heo-'));
-  return html`<div class="ident">
+  return html`<div
+    class="ident"
+    @focusout=${(event: FocusEvent) => {
+      if (!spec.finderOpen) return;
+      /*
+       * Focus left the finder and its "+" for anywhere else: the finder goes, rather than staying
+       * open with nothing pointing at it. Watched here, around both, because a move away from the
+       * "+" is not a focusout of the finder at all. Read a frame later, once focus has landed.
+       */
+      const ident = event.currentTarget as HTMLElement;
+      requestAnimationFrame(() => {
+        const layer = ident.querySelector('.finderpop');
+        if (!layer) return;
+        let active: Element | null = document.activeElement;
+        while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
+        const inside = (node: Element | null): boolean => {
+          for (let at: Node | null = node; at; at = at instanceof ShadowRoot ? at.host : at.parentNode) {
+            if (at === layer || (at instanceof Element && at.matches('.ident .cchip.add'))) return true;
+          }
+          return false;
+        };
+        if (active && active !== document.body && !inside(active)) spec.onToggleFinder(false, false);
+      });
+    }}
+  >
     <div class="line">
-      <span class="el-chip" title="The selected element">${el.localName}${el.id ? `#${el.id}` : ''}</span>
+      <button
+        class="el-chip"
+        type="button"
+        aria-expanded=${spec.elementOpen ? 'true' : 'false'}
+        title=${spec.elementOpen ? 'Close this element\'s own styles' : 'Edit this element\'s inline style and id rules'}
+        @click=${() => spec.onOpenElement()}
+      >
+        ${el.localName}
+      </button>
+      ${el.id
+      ? html`<span class="cchip id" data-id=${el.id}>
+          <button
+            class="name"
+            type="button"
+            aria-expanded=${spec.idOpen ? 'true' : 'false'}
+            title=${spec.idOpen ? `Close #${el.id}` : `Edit the rules for #${el.id}`}
+            @click=${() => spec.onOpenId()}
+          >
+            #${el.id}
+          </button>
+          <button
+            class="kill"
+            type="button"
+            aria-label=${`Remove id ${el.id}`}
+            title=${`Remove the id #${el.id} from this element. Links and scripts using it stop finding it.`}
+            @click=${() => spec.onRemoveId()}
+          >
+            ${icon('close', 9)}
+          </button>
+        </span>`
+      : nothing}
       ${classes.map(
     (name) => html`<span class="cchip" data-class=${name}>
           <button
@@ -57,6 +122,7 @@ export function renderElementHeader(spec: HeaderSpec): TemplateResult {
         type="button"
         aria-label="Add a class"
         title="Add a class"
+        aria-haspopup="dialog"
         aria-expanded=${spec.finderOpen ? 'true' : 'false'}
         @click=${() => spec.onToggleFinder(!spec.finderOpen)}
       >
@@ -65,7 +131,10 @@ export function renderElementHeader(spec: HeaderSpec): TemplateResult {
     </div>
     ${spec.finderOpen
       ? html`<div
-          class="finder"
+          class="pop finderpop"
+          role="dialog"
+          popover="manual"
+          aria-label="Add a class"
           @keydown=${{
         // Caught on the way down: the field would otherwise take Escape as "revert" and swallow
         // it, leaving the finder open and the next Escape to the page's keymap.
@@ -79,7 +148,6 @@ export function renderElementHeader(spec: HeaderSpec): TemplateResult {
       }}
         >
           ${spec.finder}
-          <p class="hint">Search the project's classes or type a new name, then press Enter.</p>
         </div>`
       : nothing}
   </div>`;
@@ -104,11 +172,21 @@ export const headerStyles: CSSResult = css`
     align-items: center;
     height: 24px;
     padding: 0 9px;
+    border: 1px solid transparent;
     border-radius: 999px;
     background: var(--heo-accent-soft);
     color: var(--heo-text);
     font-family: var(--heo-mono);
     font-size: 11px;
+    cursor: pointer;
+  }
+  .ident .el-chip:hover,
+  .ident .el-chip[aria-expanded='true'] {
+    border-color: var(--heo-accent-line);
+  }
+  .ident .el-chip:focus-visible {
+    outline: 2px solid var(--heo-focus-ring);
+    outline-offset: 1px;
   }
   .cchip {
     display: inline-flex;
@@ -151,6 +229,10 @@ export const headerStyles: CSSResult = css`
     background: var(--heo-line-strong);
     color: var(--heo-text);
   }
+  /* The id: a class chip with a quiet tint, so it reads apart from the tag and the classes. */
+  .cchip.id {
+    background: color-mix(in oklab, var(--heo-id) 16%, transparent);
+  }
   .cchip.add {
     justify-content: center;
     width: 24px;
@@ -171,11 +253,10 @@ export const headerStyles: CSSResult = css`
     outline: 2px solid var(--heo-focus-ring);
     outline-offset: 1px;
   }
-  .ident .finder {
+  /* The finder: its field and the list of classes in one popover under the "+". */
+  .pop.finderpop {
     display: grid;
-    gap: 5px;
-  }
-  .ident .finder .hint {
-    margin: 0;
+    gap: 6px;
+    padding: 8px;
   }
 `;

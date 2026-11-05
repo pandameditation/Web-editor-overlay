@@ -1,5 +1,6 @@
 import { MAX_CUSTOM_SIZES, MAX_VIEWPORT, MIN_VIEWPORT, VIEWPORT_PRESETS } from './breakpoints.js';
 import type { EditorSettings, PortableSettings } from './types.js';
+import { viewportEditsOf, type ViewportEdit } from './viewports.js';
 
 /**
  * Editor preferences that belong to the page rather than to the browser.
@@ -12,6 +13,7 @@ import type { EditorSettings, PortableSettings } from './types.js';
 export const DEFAULT_SETTINGS: Readonly<EditorSettings> = Object.freeze({
   splitDoubleBreaks: false,
   viewportSizes: Object.freeze([]) as readonly number[],
+  viewportEdits: Object.freeze([]) as readonly ViewportEdit[],
 });
 
 /**
@@ -22,7 +24,9 @@ export const DEFAULT_SETTINGS: Readonly<EditorSettings> = Object.freeze({
  */
 export function sameSetting(a: unknown, b: unknown): boolean {
   if (Array.isArray(a) && Array.isArray(b)) {
-    return a.length === b.length && a.every((value, index) => value === b[index]);
+    // By value for a list of records (the viewport edits), by identity for a list of numbers.
+    return a.length === b.length &&
+      a.every((value, index) => value === b[index] || JSON.stringify(value) === JSON.stringify(b[index]));
   }
   return a === b;
 }
@@ -56,6 +60,8 @@ export function portableSettings(input: unknown): PortableSettings | null {
   if (typeof raw.splitDoubleBreaks === 'boolean') next.splitDoubleBreaks = raw.splitDoubleBreaks;
   const sizes = viewportSizesOf(raw.viewportSizes);
   if (sizes) next.viewportSizes = sizes;
+  const edits = viewportEditsOf(raw.viewportEdits);
+  if (edits) next.viewportEdits = edits;
   return Object.keys(next).length ? next : null;
 }
 

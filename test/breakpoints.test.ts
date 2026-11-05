@@ -14,13 +14,13 @@ import {
   mediaIcon,
   mediaShort,
   needsGeneratedContent,
-  previewWidthFor,
   SIZE_SLOTS,
   slotForMedia,
   slotsWith,
   VIEWPORT_PRESETS,
   widthBound,
 } from '../src/core/breakpoints.ts';
+import { pageViewportWidths, viewportEditsOf, viewportList, viewportSettingsOf } from '../src/core/viewports.ts';
 
 let passed = 0;
 const failures: string[] = [];
@@ -142,17 +142,6 @@ test('breakpointOf is the width where the bound flips', () => {
   assert.equal(breakpointOf('print'), null);
 });
 
-test('previewWidthFor picks the widest preset under a max and the narrowest over a min', () => {
-  assert.equal(previewWidthFor('(max-width: 767px)', VIEWPORT_PRESETS), 320);
-  assert.equal(previewWidthFor('(max-width: 1100px)', VIEWPORT_PRESETS), 1024);
-  assert.equal(previewWidthFor('(min-width: 768px)', VIEWPORT_PRESETS), 768);
-  assert.equal(previewWidthFor('(min-width: 900px)', VIEWPORT_PRESETS), 1024);
-  // No preset inside the bound: the bound itself.
-  assert.equal(previewWidthFor('(max-width: 300px)', VIEWPORT_PRESETS), 300);
-  assert.equal(previewWidthFor('(min-width: 2000px)', VIEWPORT_PRESETS), 2000);
-  assert.equal(previewWidthFor('print', VIEWPORT_PRESETS), null);
-});
-
 test('iconForWidth and mediaIcon name a device', () => {
   assert.equal(iconForWidth(320), 'phone');
   assert.equal(iconForWidth(599), 'phone');
@@ -203,6 +192,41 @@ test('only before and after need generated content', () => {
 });
 
 /* -------------------------------------------------------------------------- */
+
+test('a width media query becomes the size it switches at; other media queries give none', () => {
+  assert.deepEqual(
+    pageViewportWidths(['(max-width: 520px)', '(min-width: 48em)', 'print', '(prefers-reduced-motion: reduce)', '(max-width: 767.98px)', '(min-width: 600px) and (max-width: 900px)', '(max-width: 520px)']),
+    [{ width: 520, media: '(max-width: 520px)' }, { width: 768, media: '(min-width: 48em)' }, { width: 767, media: '(max-width: 767.98px)' }],
+  );
+});
+
+test('the list is presets, the user\'s sizes and the page\'s, by width, each width once', () => {
+  const list = viewportList([1280], [], ['(max-width: 520px)', '(min-width: 768px)', '(min-width: 1280px)']);
+  assert.deepEqual(list.map((one) => `${one.origin}:${one.width}`), ['preset:320', 'page:520', 'preset:768', 'preset:1024', 'custom:1280', 'preset:1440']);
+  assert.equal(list.find((one) => one.origin === 'page')?.name, '≤520px');
+  // The page's sizes are listed but not in the bar until asked for; the rest are.
+  assert.deepEqual(list.filter((one) => !one.shown).map((one) => one.width), [520]);
+  assert.equal(viewportList([], [{ base: 520, shown: true }], ['(max-width: 520px)']).find((one) => one.base === 520)?.shown, true);
+});
+
+test('edits move and hide sizes, and the list stays sorted by width', () => {
+  const list = viewportList([], [{ base: 320, width: 1600 }, { base: 768, hidden: true }], []);
+  assert.deepEqual(list.map((one) => `${one.base}>${one.width}${one.shown ? '' : ' hidden'}`), ['768>768 hidden', '1024>1024', '1440>1440', '320>1600']);
+});
+
+test('a list round-trips through its settings', () => {
+  const list = viewportList([1280], [], ['(max-width: 520px)']).map((one) =>
+    one.base === 520 ? { ...one, shown: true } : one.base === 1280 ? { ...one, width: 1300, shown: false } : one.base === 1024 ? { ...one, width: 1100 } : one);
+  const settings = viewportSettingsOf(list);
+  assert.deepEqual(settings, { viewportSizes: [1300], viewportEdits: [{ base: 520, shown: true }, { base: 1024, width: 1100 }, { base: 1300, hidden: true }] });
+  const again = viewportList(settings.viewportSizes, settings.viewportEdits, ['(max-width: 520px)']);
+  assert.deepEqual(again.map((one) => [one.origin, one.width, one.shown]), [['preset', 320, true], ['page', 520, true], ['preset', 768, true], ['preset', 1100, true], ['custom', 1300, false], ['preset', 1440, true]]);
+});
+
+test('edits from a seed are rebuilt: out of range, duplicate and no-op entries go', () => {
+  assert.deepEqual(viewportEditsOf([{ base: 768, hidden: true }, { base: 768, width: 900 }, { base: 50, hidden: true }, { base: 1024, width: 1024 }, { base: 1440, width: 99999, hidden: 'yes' }, 'x']), [{ base: 768, hidden: true }]);
+  assert.equal(viewportEditsOf('nope'), null);
+});
 
 if (failures.length) {
   console.error(`\n${failures.length} failing, ${passed} passing\n`);

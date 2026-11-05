@@ -53,6 +53,7 @@ import {
   authoredMediaText,
   authoredPrelude,
   bindViewport,
+  collectPageMedia,
   noteRuleEdited,
   MediaEvaluator,
   pageScale,
@@ -129,7 +130,8 @@ import {
   slotsWith,
   type SizeSlot,
 } from './breakpoints.js';
-import { DEFAULT_SETTINGS, SettingsRegistry, viewportSizesOf } from './settings.js';
+import { DEFAULT_SETTINGS, sameSetting, SettingsRegistry, viewportSizesOf } from './settings.js';
+import { viewportEditsOf, viewportList, viewportSettingsOf, type Viewport } from './viewports.js';
 import {
   applyBlockProps,
   BlockLibrary,
@@ -5747,17 +5749,52 @@ export class EditorEngine {
     return true;
   }
 
-  /** Remove one of the user's viewport sizes, as one undoable change. */
-  removeViewportSize(width: number): boolean {
-    const current = this.settings.value.viewportSizes;
-    if (!current.includes(width)) return false;
-    this.#commitViewportSizes(
-      current.filter((one) => one !== width),
-      `Remove the ${width}px viewport size`,
+  /**
+   * The preview bar's sizes, from the page's media queries and the settings: every size, shown or
+   * hidden, by width. See `core/viewports.ts`.
+   */
+  viewports(): Viewport[] {
+    return viewportList(
+      this.settings.value.viewportSizes,
+      this.settings.value.viewportEdits,
+      collectPageMedia().map((one) => one.media),
     );
+  }
+  /**
+   * Keep an edited list of sizes (the viewport sizes panel, as it is edited), as one undoable change
+   * that travels in the seed: the user's own sizes, and which sizes are shown at which width. Changes
+   * under one `mergeKey` in a row are one undo step: a width dragged through many values. False when
+   * it changes nothing.
+   */
+  applyViewports(list: readonly Viewport[], mergeKey?: string): boolean {
+    const { viewportSizes, viewportEdits } = viewportSettingsOf(list);
+    const sizes = viewportSizesOf(viewportSizes) ?? [];
+    const edits = viewportEditsOf(viewportEdits) ?? [];
+    const before = this.settings.value;
+    if (sameSetting(sizes, before.viewportSizes) && sameSetting(edits, before.viewportEdits)) return false;
+    const previous = { viewportSizes: before.viewportSizes, viewportEdits: before.viewportEdits };
+    const label = 'Change the viewport sizes';
+    this.history.commit({
+      label,
+      ...(mergeKey ? { mergeKey } : {}),
+      record: {
+        id: nextChangeId(),
+        kind: 'block',
+        summary: label,
+        target: 'settings',
+        detail: { block: 'settings', setting: 'viewports', value: JSON.stringify({ viewportSizes: sizes, viewportEdits: edits }) },
+        at: Date.now(),
+      },
+      apply: () => {
+        this.settings.set({ viewportSizes: sizes, viewportEdits: edits });
+      },
+      revert: () => {
+        this.settings.set(previous);
+      },
+    });
+    this.#bumpRevision();
     return true;
   }
-
   #commitViewportSizes(next: readonly number[], label: string): void {
     const previous = this.settings.value.viewportSizes;
     this.history.commit({
