@@ -909,6 +909,17 @@
           const seeded = inputOf(cardAdder())?.value;
           const nothingYet = engine.history.size === before;
           const noSwitch = !fieldOf(cardAdder())?.head;
+          /*
+           * Its list opens whole: the seed is a suggestion, not a search. Read as a query, it filtered
+           * the list down to what contains "0.01em" until a blur committed it and the list came back.
+           */
+          fieldOf(cardAdder())?.openList();
+          await settle(150);
+          const groupsAtOpen = Array.from(fieldOf(cardAdder())?.shadowRoot?.querySelectorAll('.popup .group') ?? [])
+            .map((one) => textOf(one));
+          results.adder.theValueListOpensWhole =
+            groupsAtOpen.some((name) => !/^(computed|units|functions)$/i.test(name));
+          fieldOf(cardAdder())?.closePopup();
           key(inputOf(cardAdder()), 'Enter');
           await settle(300);
           const added = rowIn(block('.card', 'base'), 'letter-spacing')?.querySelector('heo-value-field');

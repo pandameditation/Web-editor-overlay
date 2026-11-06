@@ -747,6 +747,11 @@ export class HeoValueField extends LitElement {
    */
   #highlightMoved = false;
   #blurTimer: ReturnType<typeof setTimeout> | undefined;
+  /**
+   * The text `seedDraft` put in the box. Not a search: the list filters only once the user types
+   * something else, so a seeded value opens the whole list as a committed one does.
+   */
+  #seed: string | null = null;
   /** The last value this field committed, to tell an echo from an external change. */
   #lastCommitted = '';
   /** A `value-input` went out since the last commit or revert: a preview may be painted. */
@@ -1022,7 +1027,7 @@ export class HeoValueField extends LitElement {
      * It showed up worst inside the clamp composer, where each part always holds a value, so the
      * token list was always empty and "use the design tokens for the bounds" was impossible.
      */
-    const searching = this.draft.trim() !== this.value.trim();
+    const searching = this.draft.trim() !== this.value.trim() && this.draft.trim() !== this.#seed?.trim();
     const needle = searching ? this.draft.trim().toLowerCase() : '';
     const units = this.#unitSuggestions();
     const functions = this.#functionSuggestions();
@@ -2141,6 +2146,7 @@ export class HeoValueField extends LitElement {
    */
   seedDraft(text: string): void {
     this.draft = text;
+    this.#seed = text;
     this.highlight = -1;
     this.#highlightMoved = false;
   }
