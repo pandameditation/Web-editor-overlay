@@ -731,6 +731,29 @@
         engine.undo();
         await settle();
         const restoredPrint = chipKeys().includes('other:print');
+        /*
+         * A width not in effect at the previewed size: it used to be added and hidden at once (the
+         * bar leaves out what does not apply at the preview). Now the preview moves to it, and says so.
+         */
+        engine.setPreviewWidth(768);
+        await settle();
+        addButton()?.click();
+        await settle();
+        await wait(120);
+        Array.from(mlist()?.querySelectorAll('.option') ?? []).find((one) => /Custom width/.test(one.textContent))?.click();
+        await settle();
+        await wait(120);
+        cpop()?.querySelector('heo-value-field')?.dispatchEvent(
+          new CustomEvent('value-input', { detail: { value: '320px' }, bubbles: true, composed: true }));
+        await settle();
+        cpop()?.querySelector('[data-act="add-width"]')?.click();
+        await settle();
+        await wait(120);
+        const shownAtItsWidth = engine.store.value.previewWidth === 320 &&
+          bar()?.querySelector('[data-cond="other:(max-width: 320px)"]')?.getAttribute('aria-pressed') === 'true' &&
+          /Previewing 320px, where @media \(max-width: 320px\) is in effect\./.test(engine.store.value.toast?.message ?? '');
+        engine.setPreviewWidth(null);
+        await settle();
         // Back to Always for what follows.
         bar()?.querySelector('.base')?.click();
         await settle();
@@ -770,6 +793,7 @@
           theRemoveIsOnThePickedCondition: killOnPicked,
           anEmptyConditionGoesWithoutAsking: emptyGoesAtOnce && noDialogForEmpty,
           aConditionWithDeclarationsAsksFirst: askedToRemove && removedPrint && restoredPrint,
+          aWidthNotInEffectMovesThePreviewToIt: shownAtItsWidth,
           escapeGoesBackToTheSearch: backToSearch,
           aViewportSizeAddsAMaxWidthInOnePress: addedWidth,
           aMediaQueryShowsItsValueWithoutPreviewing: printPressed && printColour === '#000000',

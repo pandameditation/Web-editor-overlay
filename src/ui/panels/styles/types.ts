@@ -119,6 +119,11 @@ export interface StylesHost extends AdderHost {
   /** Whether a search narrows the panel, and the one predicate every surface filters with. */
   filtering: boolean;
   hit(...texts: Array<string | undefined>): boolean;
+  /**
+   * Run `then` (put a condition on a bar) where that condition shows: at once, or after moving the
+   * preview to a width it is in effect at, which a toast says.
+   */
+  showCondition(media: string | null, then: () => void): void;
   /** Focus a control inside the panel once the next render has landed. */
   focusSelector(selector: string): void;
   /** The strips' "Add a media query…" field: one is open at a time. */

@@ -19,7 +19,7 @@ import { mediaQuerySuggestions } from '../../suggestions.js';
 import type { ValueSuggestion } from '../../controls/value-field.js';
 import type { SegmentOption } from '../../controls/segmented.js';
 import '../../controls/segmented.js';
-import { mediaQueryProblem } from '../../../core/breakpoints.js';
+import { MAX_VIEWPORT, MIN_VIEWPORT, mediaQueryProblem, widthBound } from '../../../core/breakpoints.js';
 import { ADD_MEDIA_TITLE, addMediaLabel } from '../../create-offer.js';
 import { bestRow, renderSearchField, renderSearchPopover } from './search-popover.js';
 
@@ -266,7 +266,7 @@ export function renderConditionBar(spec: ConditionBarSpec): TemplateResult {
         title=${on ? `${chip.title}. Press again for Always` : chip.title}
         @click=${() => spec.onPick(on ? 'base' : chip.key)}
       >
-        ${chip.icon ? icon(chip.icon, 12) : nothing}${chip.label ? html`<span class="n">${chip.label}</span>` : nothing}<span class="c">${chip.count ? `+${chip.count}` : '+'}</span>
+        ${chip.icon ? icon(chip.icon, 12) : nothing}${chip.label ? html`<span class="n">${chip.label}</span>` : nothing}${chip.count ? html`<span class="c">+${chip.count}</span>` : nothing}
       </button>`;
     // The picked one carries its ×, as a class chip in the header does: the condition being read
     // is the one it would take off.
@@ -506,6 +506,23 @@ function focusWidthField(el?: Element): void {
   if (!(el instanceof HeoValueField) || el.dataset.focused) return;
   el.dataset.focused = '1';
   void el.updateComplete.then(() => requestAnimationFrame(() => el.focusInput()));
+}
+
+/**
+ * Where a media condition just added can be seen: `here` at the current preview, else the width to
+ * preview (one inside its bound), or null for Actual when no previewable width has it in effect.
+ *
+ * The bar leaves out what is not in effect at the previewed width, so a `(max-width: 320px)` added
+ * while previewing 768px used to land and vanish in the same moment.
+ */
+export function previewToShow(media: string, previewWidth: number | null): number | null | 'here' {
+  if (previewWidth === null || mediaApplies(media, previewWidth)) return 'here';
+  const bound = widthBound(media);
+  if (bound) {
+    const at = bound.side === 'max' ? Math.floor(bound.px) : Math.ceil(bound.px);
+    if (at >= MIN_VIEWPORT && at <= MAX_VIEWPORT && mediaApplies(media, at)) return at;
+  }
+  return null;
 }
 
 /** The issues the strip's media field is checked against. */

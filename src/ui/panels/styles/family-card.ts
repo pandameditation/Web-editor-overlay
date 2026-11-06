@@ -295,7 +295,10 @@ export function renderFamilyCard(
       label,
       reachText(uses),
       baseTarget ? { kind: 'target', target: baseTarget } : { kind: 'new-rule', selector: key, media },
-      writable ? toRecord(writable.declarations) : owned ? { ...owned.declarations } : {},
+      // What is already there to refuse a duplicate against: the rule at this size, else the class
+      // itself only at Always. A size with no rule yet has nothing; the class's own color is
+      // not "already set" under @media (max-width: 100px).
+      writable ? toRecord(writable.declarations) : slot === 'base' && owned ? { ...owned.declarations } : {},
       label,
     );
     const baseRows = base.flatMap((entry) => entry.declarations.filter(rowHit));
@@ -505,7 +508,7 @@ export function renderFamilyCard(
       onPick: pick,
       onMenu: (opened, refocus) => host.toggleMenu(`strip-${key}`, opened, refocus),
       onMediaDraft: (text) => host.patch({ mediaDraft: text === null ? null : { owner: key, text } }),
-      onAdd: (added) => {
+      onAdd: (added) => host.showCondition(slotMedia(model, added), () => {
         const parts = conditionParts(added);
         if (parts.state) {
           const refused = addState(parts.state, parts.media);
@@ -518,7 +521,7 @@ export function renderFamilyCard(
         const picks = new Map(host.ui.cardPicks);
         picks.set(key, added);
         host.patch({ otherSlots: waiting, cardPicks: picks });
-      },
+      }),
       keyForMedia: (typed) => mediaKeyFor(model, typed),
       onRemove: (removed) => removeCondition(host, {
         owner: key,

@@ -51,6 +51,7 @@ import {
   conditionOf,
   conditionParts,
   mediaKeyFor,
+  previewToShow,
   remainingConditions,
   renderConditionBar,
   sizeStripStyles,
@@ -654,6 +655,7 @@ export class HeoStylesPanel extends HeoElement {
       filtering: Boolean(this.ui.filter.trim()),
       hit: (...texts) => this.#hit(...texts),
       focusSelector: (selector) => this.#focusSelector(selector),
+      showCondition: (media, then) => this.#showCondition(media, then),
       mediaForm: this.mediaForm,
       toggleMenu: (id, open, refocus) => this.#toggleMenu(id, open, refocus),
       forkForm: this.forkForm,
@@ -926,12 +928,12 @@ export class HeoStylesPanel extends HeoElement {
       onMenu: (open, refocus) => this.#toggleMenu(menuId, open, refocus),
       onMediaDraft: (text) =>
         this.#patch({ mediaDraft: text === null ? null : { owner: EFFECTIVE_LIST_ID, text } }),
-      onAdd: (key) => {
+      onAdd: (key) => this.#showCondition(slotMedia(model, key), () => {
         // Only remembered here until a declaration is written under it: nothing empty is stored.
         const next = new Map(this.ui.otherSlots);
         next.set(EFFECTIVE_LIST_ID, [...new Set([...(next.get(EFFECTIVE_LIST_ID) ?? []), key])]);
         this.#patch({ otherSlots: next, effPick: key });
-      },
+      }),
       keyForMedia: (media) => mediaKeyFor(model, media),
       onRemove: (key) => removeCondition(host, {
         owner: EFFECTIVE_LIST_ID,
@@ -1853,6 +1855,24 @@ export class HeoStylesPanel extends HeoElement {
     } else {
       open();
     }
+  }
+
+  /**
+   * Put a condition on a bar where it can be seen. A preview width resets the bars' picks, so the
+   * pick is made once the new width has rendered.
+   */
+  #showCondition(media: string | null, then: () => void): void {
+    const was = this.editor.store.value.previewWidth;
+    const to = media === null ? 'here' : previewToShow(media, was);
+    if (to === 'here') {
+      then();
+      return;
+    }
+    this.editor.setPreviewWidth(to);
+    this.editor.notify(to === null
+      ? `Back to Actual: @media ${media} is not in effect at ${was}px, so the bar could not show it there.`
+      : `Previewing ${to}px, where @media ${media} is in effect.`, 'info');
+    void this.updateComplete.then(then);
   }
 
   /** The preview bar: the page's width, set with or without a selected element. */

@@ -1147,6 +1147,44 @@
            * States from the bar's "+", pseudo-elements from "+ Add pseudo-element"
            * (R24, §5.7, §15 M1): nothing is written until the first property lands.
            * ---------------------------------------------------------------- */
+          /*
+           * A size added to a class card, empty: its chip has no count, and a property the class sets
+           * at Always is not "already set" there. The adder used to check against the class's own
+           * declarations and refused `color` with ".intro-detail @media (max-width: 100px) already sets color."
+           */
+          progress.textContent = 'emptySize';
+          {
+            engine.classes.upsert({ name: 'intro-detail', declarations: { color: 'red' }, origin: 'user' });
+            target.classList.add('intro-detail');
+            await settle(300);
+            strip('.intro-detail')?.querySelector('.add')?.click();
+            await settle(250);
+            const search = sroot().querySelector('.menu.condpop heo-value-field')?.shadowRoot?.querySelector('input');
+            if (search) {
+              await typeInto(search, '(max-width: 100px)');
+              key(search, 'Enter');
+              await settle(300);
+            }
+            const chip = slotButton('.intro-detail', 'other:(max-width: 100px)');
+            const emptyChip = Boolean(chip) && !chip.querySelector('.c') && !/\+/.test(textOf(chip));
+            addButton(block('.intro-detail', 'base'))?.click();
+            await settle(200);
+            const input = () => block('.intro-detail', 'base')?.querySelector('.property-adder input');
+            const history = engine.history.size;
+            if (input()) {
+              await typeInto(input(), 'color');
+              key(input(), 'Enter');
+              await settle(300);
+            }
+            const refusal = textOf(block('.intro-detail', 'base')?.querySelector('.property-adder .field-error'));
+            const made = engine.classes.get('intro-detail') && engine.history.size === history + 1;
+            results.strip.anEmptySizeShowsNoPlus = emptyChip;
+            results.adder.aClassPropertyIsNotAlreadySetAtANewSize = !refusal && Boolean(made);
+            while (engine.history.size > history) engine.undo();
+            target.classList.remove('intro-detail');
+            engine.classes.remove('intro-detail');
+            await settle(300);
+          }
           progress.textContent = 'addState';
           const managed = () => document.getElementById('heo-design-rules')?.textContent ?? '';
           const stateAdd = (k) => body(k)?.querySelector(':scope > .block-add .add-prop');
