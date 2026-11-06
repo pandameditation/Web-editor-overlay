@@ -70,7 +70,7 @@ export interface StylesUiState {
   /** The header's "find or create a class" field is showing. */
   finderOpen: boolean;
   /** A strip menu's "Add a media query…" field, for one strip at a time. */
-  mediaDraft: { owner: string; text: string } | null;
+  mediaDraft: { owner: string; text: string; width?: { side: 'max' | 'min'; text: string } } | null;
   /**
    * Media queries added to a strip with nothing written at them yet, by strip owner. Held here
    * until a declaration lands, so nothing empty is ever stored to show a size.
@@ -124,7 +124,8 @@ export interface StylesHost extends AdderHost {
   /** The strips' "Add a media query…" field: one is open at a time. */
   mediaForm: FormErrors;
   /** Open or close one of the panel's menus; closing hands focus back to what opened it. */
-  toggleMenu(id: string, open: boolean): void;
+  /** Open or close a menu; closing hands focus back to its opener unless `refocus` is false. */
+  toggleMenu(id: string, open: boolean, refocus?: boolean): void;
   /** The Detach copy's name field. */
   forkForm: FormErrors;
   /** Open a card in Sources, scroll it into view and flash it. */

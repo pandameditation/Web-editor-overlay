@@ -1,3 +1,4 @@
+import { mediaQueryProblem } from './breakpoints.js';
 import { normalizeClassName } from './classes.js';
 import { isMutable } from './dom.js';
 import type { BlockExtraction, ClassExtraction, HtmlPaste, SourceEdit } from './editor.js';
@@ -150,5 +151,7 @@ export function mediaQueryIssues(field: string, raw: string): FieldIssue[] {
   if (text.length > 300 || (normalizeMedia(text) === 'not all' && text.toLowerCase() !== 'not all')) {
     return [{ field, message: "That isn't a media query this browser understands." }];
   }
-  return [];
+  // The browser keeps most nonsense as a query that never matches; this says what is wrong with it.
+  const problem = mediaQueryProblem(text);
+  return problem ? [{ field, message: problem }] : [];
 }

@@ -185,7 +185,7 @@
           .find((b) => b.textContent.trim() === '.card');
         chip?.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
         await wait(160);
-        const link = Array.from(panel.shadowRoot.querySelectorAll('.link'))
+        const link = Array.from(panel.shadowRoot.querySelectorAll('[data-act="detach"]'))
           .find((b) => b.textContent.includes('Detach styles from class'));
         link?.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
         await wait(160);

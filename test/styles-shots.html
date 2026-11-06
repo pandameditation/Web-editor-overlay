@@ -203,7 +203,7 @@
           shown = () => q('.egroup[data-egroup="size:phone"]');
           break;
         case 'detach':
-          need(q('.cls[data-card=".card"] .actions .link[data-act="detach"]'), 'detach link')?.click();
+          need(q('.cls[data-card=".card"] .actions [data-act="detach"]'), 'detach link')?.click();
           shown = () => q('.cls[data-card=".card"] .actions');
           break;
         case 'preview-menu':

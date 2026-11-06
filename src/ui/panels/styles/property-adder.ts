@@ -1,6 +1,5 @@
 import { css, html, nothing, type CSSResult, type TemplateResult } from 'lit';
 import { ref } from 'lit/directives/ref.js';
-import { EDITABLE_STATES } from '../../../core/breakpoints.js';
 import { searchProperties } from '../../../core/css.js';
 import { checkDeclaration } from '../../../core/declarations.js';
 import type { AddDestination } from '../../../core/save-plan.js';
@@ -55,7 +54,6 @@ export interface AdderDestination {
 export interface AdderSpec {
   /** Unique in the shadow root; also the `data-declarations` list the new field is focused in. */
   id: string;
-  mode: 'property' | 'state';
   /** At least one; the first is the default. */
   destinations: readonly AdderDestination[];
   /** The picked destination's key; the first destination when absent. */
@@ -77,10 +75,7 @@ export interface AdderSpec {
   onMenu?(open: boolean): void;
   /** The value a new property starts with at this destination. */
   seed(property: string, dest: AdderDestination): string;
-  /**
-   * Write it. In state mode `property` is the state (`:hover`, `::before`) and `value` is empty: the
-   * host decides what a new state block needs.
-   */
+  /** Write it. */
   commit(property: string, value: string, dest: AdderDestination): void;
 }
 
@@ -100,15 +95,8 @@ export function stylesDestination(
   return { key: `${dest.kind}:${label}`, label, reach, dest, existing, ownerLabel };
 }
 
-/** The state list offered while adding a state or pseudo-element. */
-function knownState(text: string): string | null {
-  const name = text.trim().startsWith(':') ? text.trim() : `:${text.trim()}`;
-  return EDITABLE_STATES.some((state) => state.name === name) ? name : null;
-}
-
 export function renderAdder(spec: AdderSpec, host: AdderHost): TemplateResult {
-  const state = spec.mode === 'state';
-  const label = state ? 'Add state or pseudo-element' : 'Add property';
+  const label = 'Add property';
   if (spec.disclosure && !spec.open) {
     return html`<button
       class="add-prop"
@@ -123,7 +111,7 @@ export function renderAdder(spec: AdderSpec, host: AdderHost): TemplateResult {
 
   const dest =
     spec.destinations.find((one) => one.key === spec.selected) ?? spec.destinations[0];
-  const listId = `heo-${state ? 'states' : 'props'}-${spec.id}`;
+  const listId = `heo-props-${spec.id}`;
   const name = `prop-add-${spec.id}`;
 
   const cancel = (): void => {
@@ -137,23 +125,6 @@ export function renderAdder(spec: AdderSpec, host: AdderHost): TemplateResult {
    */
   const commit = (left = false): void => {
     const typed = host.newProperty.trim();
-    if (state) {
-      if (!typed) {
-        if (!left) host.form.fail(name, 'Type a state like :hover or a pseudo-element like ::before.');
-        return;
-      }
-      const known = knownState(typed);
-      if (!known) {
-        const shown = typed.startsWith(':') ? typed : `:${typed}`;
-        host.form.fail(name, `${shown} is not a state or pseudo-element the editor knows.`, {
-          focus: !left,
-        });
-        return;
-      }
-      host.onNewProperty('');
-      spec.commit(known, '', dest);
-      return;
-    }
     if (!typed) {
       if (!left) host.form.fail(name, 'Type the property to add.');
       return;
@@ -194,10 +165,10 @@ export function renderAdder(spec: AdderSpec, host: AdderHost): TemplateResult {
           class="input mono"
           type="text"
           list=${listId}
-          placeholder=${state ? ':hover, ::before…' : 'property'}
+          placeholder="property"
           .value=${host.newProperty}
           spellcheck="false"
-          aria-label=${state ? 'New state or pseudo-element' : 'New property'}
+          aria-label="New property"
           @input=${(event: Event) => host.onNewProperty((event.target as HTMLInputElement).value)}
           @keydown=${(event: KeyboardEvent) => {
       if (event.key === 'Enter') {
@@ -226,8 +197,8 @@ export function renderAdder(spec: AdderSpec, host: AdderHost): TemplateResult {
         <button
           class="confirm"
           type="button"
-          title=${state ? 'Add this state or pseudo-element' : 'Add this property'}
-          aria-label=${state ? 'Add this state or pseudo-element' : 'Add this property'}
+          title="Add this property"
+          aria-label="Add this property"
           @pointerdown=${(event: Event) => event.preventDefault()}
           @click=${() => commit()}
         >
@@ -288,13 +259,7 @@ export function renderAdder(spec: AdderSpec, host: AdderHost): TemplateResult {
       })
       : nothing}
       <datalist id=${listId}>
-        ${state
-      ? EDITABLE_STATES.map(
-        (one) => html`<option value=${one.name}>${one.kind === 'state' ? 'state' : 'pseudo-element'}</option>`,
-      )
-      : searchProperties(host.newProperty, 20).map(
-        (meta) => html`<option value=${meta.name}></option>`,
-      )}
+        ${searchProperties(host.newProperty, 20).map((meta) => html`<option value=${meta.name}></option>`)}
       </datalist>
     </div>
   `;

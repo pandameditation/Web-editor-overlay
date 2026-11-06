@@ -20,6 +20,7 @@ import {
   VIEWPORT_PRESETS,
   widthBound,
 } from '../src/core/breakpoints.ts';
+import { mediaQueryProblem } from '../src/core/breakpoints.ts';
 import { pageViewportWidths, viewportEditsOf, viewportList, viewportSettingsOf } from '../src/core/viewports.ts';
 
 let passed = 0;
@@ -226,6 +227,35 @@ test('a list round-trips through its settings', () => {
 test('edits from a seed are rebuilt: out of range, duplicate and no-op entries go', () => {
   assert.deepEqual(viewportEditsOf([{ base: 768, hidden: true }, { base: 768, width: 900 }, { base: 50, hidden: true }, { base: 1024, width: 1024 }, { base: 1440, width: 99999, hidden: 'yes' }, 'x']), [{ base: 768, hidden: true }]);
   assert.equal(viewportEditsOf('nope'), null);
+});
+
+test('media queries that can match pass', () => {
+  for (const ok of ['print', 'screen', 'only screen and (min-width: 600px)', 'not print', '(max-width: 767px)',
+    '(min-width: 48em)', '(width >= 600px)', '(400px <= width <= 700px)', '(hover)', '(hover: hover)',
+    '(prefers-color-scheme: dark)', '(prefers-reduced-motion)', '((hover) or (pointer: fine))',
+    'print, (max-width: 600px)', '(aspect-ratio: 16/9)', '(min-resolution: 2dppx)', '@media (orientation: portrait)',
+    '(min-width: 600px) and (max-width: 900px)']) {
+    assert.equal(mediaQueryProblem(ok), null, ok);
+  }
+});
+
+test('media queries that cannot match say why', () => {
+  assert.match(mediaQueryProblem('dark') ?? '', /Did you mean \(prefers-color-scheme: dark\)\?/);
+  assert.match(mediaQueryProblem('hello') ?? '', /isn't a media type/);
+  assert.match(mediaQueryProblem('tv') ?? '', /No browser matches the tv media type/);
+  assert.match(mediaQueryProblem('(foo: bar)') ?? '', /foo isn't a media feature/);
+  assert.match(mediaQueryProblem('(prefers-color-scheme: purple)') ?? '', /prefers-color-scheme is light or dark, not purple/);
+  assert.match(mediaQueryProblem('(max-width: -5px)') ?? '', /goes from 1px to 10000px/);
+  assert.match(mediaQueryProblem('(max-width: 99999px)') ?? '', /goes from 1px to 10000px/);
+  assert.match(mediaQueryProblem('(max-width: 600)') ?? '', /needs a unit: 600px/);
+  assert.match(mediaQueryProblem('(max-width: abc)') ?? '', /takes a length/);
+  assert.match(mediaQueryProblem('(min-width: 800px) and (max-width: 600px)') ?? '', /never applies/);
+  assert.match(mediaQueryProblem('(width > 900px) and (width < 500px)') ?? '', /never applies/);
+  assert.match(mediaQueryProblem('(max-hover: none)') ?? '', /hover has no range/);
+  assert.match(mediaQueryProblem('(orientation: sideways)') ?? '', /portrait or landscape/);
+  assert.match(mediaQueryProblem('max-width: 600px') ?? '', /in parentheses/);
+  // Under `or`, either side is a way in, so bounds do not add up across it.
+  assert.equal(mediaQueryProblem('(min-width: 800px), (max-width: 600px)'), null);
 });
 
 if (failures.length) {

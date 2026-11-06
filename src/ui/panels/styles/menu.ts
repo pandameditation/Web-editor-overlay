@@ -6,9 +6,8 @@ import { anchoredStyle } from '../../place.js';
 /**
  * The Styles panel's menus: one look, one keyboard, one placement.
  *
- * Every "pick one of these" in the panel (where an added property is written, the preview's media
- * queries and sizes, a strip's other media queries) is the same thing, so it is drawn and driven by
- * one function. They used to be written per use, and the copies disagreed about which keys moved,
+ * Every "pick one of these" in the panel (where an added property is written) is the same thing,
+ * so it is drawn and driven by one function. They used to be written per use, and the copies disagreed about which keys moved,
  * whether Tab closed them and where focus went afterwards.
  *
  * A menu lives in the top layer, placed against the control that opened it. The dock clips its
@@ -16,7 +15,7 @@ import { anchoredStyle } from '../../place.js';
  */
 
 /*
- * Focus a field the moment it appears (an adder opening, a menu's inline field), with what it
+ * Focus a field the moment it appears (an adder opening), with what it
  * opened with selected: a draft it starts with (`content` in a new ::before) is a suggestion that
  * Enter accepts and typing replaces. A stable function, so Lit calls it once per new input rather
  * than on every render, which would pull focus back from wherever the user moved it.
@@ -41,15 +40,11 @@ export interface MenuItem {
   title?: string;
   disabled?: boolean;
   onSelect(): void;
-  /** A × beside the item that takes it out of the list (a custom viewport size). */
-  remove?: { label: string; onRemove(): void };
 }
 
 export interface MenuGroup {
   caption?: string;
   items: readonly MenuItem[];
-  /** Static content after the items, such as an inline field or a list of limits. */
-  after?: TemplateResult;
 }
 
 export interface MenuSpec {
@@ -75,14 +70,13 @@ export function renderMenu(spec: MenuSpec): TemplateResult {
         ${group.caption ? html`<p class="cap" aria-hidden="true">${group.caption}</p>` : nothing}
         ${group.items.map(
       (item) => renderItem(item, radio),
-    )}
-        ${group.after ?? nothing}`,
+    )}`,
   )}
   </div>`;
 }
 
 function renderItem(item: MenuItem, radio: boolean): TemplateResult {
-  const button = html`<button
+  return html`<button
             class="mi"
             type="button"
             role=${radio ? 'menuitemradio' : 'menuitem'}
@@ -100,22 +94,6 @@ function renderItem(item: MenuItem, radio: boolean): TemplateResult {
             </span>
             ${item.note ? html`<small>${item.note}</small>` : nothing}
           </button>`;
-  if (!item.remove) return button;
-  const remove = item.remove;
-  return html`<div class="mrow">
-    ${button}
-    <button
-      class="mi mx"
-      type="button"
-      role="menuitem"
-      aria-label=${remove.label}
-      title=${remove.label}
-      @pointerdown=${(event: Event) => event.preventDefault()}
-      @click=${() => remove.onRemove()}
-    >
-      ${icon('close', 10)}
-    </button>
-  </div>`;
 }
 
 /**
@@ -124,8 +102,6 @@ function renderItem(item: MenuItem, radio: boolean): TemplateResult {
  */
 export function menuKeydown(event: KeyboardEvent, onClose: () => void): void {
   const menu = event.currentTarget as HTMLElement;
-  // A field inside the menu (Add a viewport size…) keeps its own keys.
-  if ((event.target as HTMLElement).localName === 'input' && event.key !== 'Escape') return;
   const items = Array.from(menu.querySelectorAll<HTMLButtonElement>('.mi:not([disabled])'));
   const at = items.indexOf(event.target as HTMLButtonElement);
   const move = (to: number): void => {
@@ -297,21 +273,6 @@ export const menuStyles: CSSResult = css`
     font-family: var(--heo-font);
     font-size: 10px;
     white-space: nowrap;
-  }
-  .menu .mrow {
-    display: flex;
-    align-items: stretch;
-    gap: 1px;
-  }
-  .menu .mrow > .mi:first-child {
-    flex: 1 1 auto;
-    min-width: 0;
-  }
-  .menu .mx {
-    justify-content: center;
-    width: 24px;
-    padding: 0;
-    color: var(--heo-text-dim);
   }
   .menu .mi:focus-visible {
     outline: 2px solid var(--heo-focus-ring);

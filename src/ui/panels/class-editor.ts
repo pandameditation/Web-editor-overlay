@@ -672,7 +672,6 @@ export const ClassEditor = {
         ${renderAdder(
           {
             id: target.id,
-            mode: 'property',
             // Always open, with no destination line: the card it sits in is the destination.
             disclosure: false,
             destinations: [

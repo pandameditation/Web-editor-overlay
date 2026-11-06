@@ -1,9 +1,9 @@
 import { propertyMeta, type PropertyMeta } from '../core/css.js';
 import type { EditorEngine } from '../core/editor.js';
+import { EDITABLE_STATES } from '../core/breakpoints.js';
 import { normalizeMedia } from '../core/rules.js';
-import { countText } from '../core/save-plan.js';
 import type { DesignToken, TokenGroup } from '../core/types.js';
-import { collectPageMedia, mediaApplies } from '../core/viewport.js';
+import { mediaApplies } from '../core/viewport.js';
 import type { ValueKind, ValueSuggestion } from './controls/value-field.js';
 
 /**
@@ -277,24 +277,53 @@ function understood(media: string): boolean {
 }
 
 /**
- * Suggestions for the "Add a media query…" field. `taken` are the queries the strip already has,
- * which are left out.
+ * Width queries read out of a half-typed one: `max 600`, `< 600`, `below 600px`, `min-width 48em`,
+ * or a bare `600`, which offers both sides. Nothing for text with no number in it.
  */
-export function mediaQuerySuggestions(taken: readonly string[] = []): ValueSuggestion[] {
+function typedWidthQueries(typed: string): Array<[string, string]> {
+  const text = typed.trim().toLowerCase();
+  const number = /(\d+(?:\.\d+)?)\s*(px|em|rem)?/.exec(text);
+  if (!number) return [];
+  const unit = number[2] ?? 'px';
+  const at = `${number[1]}${unit}`;
+  const max = /\bmax|<|\bbelow\b|\bunder\b|\bup to\b|\bless\b|\bsmaller\b/.test(text);
+  const min = /\bmin|>|\babove\b|\bover\b|\bfrom\b|\bmore\b|\bwider\b|\blarger\b/.test(text);
+  const out: Array<[string, string]> = [];
+  if (max || !min) out.push([`(max-width: ${at})`, `up to ${at}`]);
+  if (min || !max) out.push([`(min-width: ${at})`, `from ${at}`]);
+  return out;
+}
+
+/**
+ * The media queries the conditions bar's "+" offers after its states: a width query read out of
+ * what is being typed ("max 600"), then the common queries that are not sizes. The page's own
+ * queries and "Custom width…" are added by the bar, which knows them.
+ */
+export function mediaQuerySuggestions(
+  taken: readonly string[] = [],
+  options: { typed?: string } = {},
+): ValueSuggestion[] {
   const skip = new Set(taken.map((one) => normalizeMedia(one)));
   const out: ValueSuggestion[] = [];
   const seen = new Set<string>();
-  const add = (value: string, hint: string, group: string): void => {
+  const add = (value: string, label: string, hint: string, group: string): void => {
     const key = normalizeMedia(value);
     if (seen.has(key) || skip.has(key) || !understood(value)) return;
     seen.add(key);
     const now = mediaApplies(value, null) ? ' · on now' : '';
-    out.push({ value, label: `@media ${value}`, hint: `${hint}${now}`, group });
+    out.push({ value, label, hint: `${hint}${now}`, group });
   };
-  // Every condition the page's own CSS uses, sizes included: picking one lands in the same rules.
-  for (const one of collectPageMedia()) add(one.media, countText(one.rules, 'rule'), 'On this page');
+  for (const [value, hint] of typedWidthQueries(options.typed ?? '')) add(value, `@media ${value}`, hint, 'Width');
   for (const { group, items } of MEDIA_GROUPS) {
-    for (const [value, hint] of items) add(value, hint, group);
+    for (const [value, hint] of items) add(value, `@media ${value}`, hint, group);
   }
   return out;
+}
+
+/** The pseudo-elements "+ Add pseudo-element" offers, with what each one styles; `present` left out. */
+export function pseudoElementSuggestions(present: readonly string[] = []): ValueSuggestion[] {
+  const skip = new Set(present);
+  return EDITABLE_STATES
+    .filter((one) => one.kind === 'pseudo-element' && !skip.has(one.name))
+    .map((one) => ({ value: one.name, label: one.name, hint: one.hint, icon: 'pseudo', group: 'Pseudo-elements' }));
 }

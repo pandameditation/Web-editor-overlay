@@ -590,11 +590,149 @@
         const chipKeys = () => Array.from(bar()?.querySelectorAll('[data-cond]') ?? []).map((one) => one.dataset.cond);
         const keysOnBar = chipKeys();
         const alwaysText = bar()?.querySelector('.base')?.textContent.replace(/\s+/g, ' ').trim() ?? '';
-        bar()?.querySelector('.more')?.click();
+        const addButton = () => bar()?.querySelector('.add');
+        const noMore = !bar()?.querySelector('.more');
+        // The "+" sits right after the bar's last condition, where what it adds will appear.
+        const addIsLast = bar()?.lastElementChild === addButton() && addButton()?.getAttribute('aria-label') === 'Add a state or media query';
+        /*
+         * "+" opens one popover, straight onto a search with its list showing, like the class finder:
+         * states first, then media queries, matched by words rather than exact syntax.
+         */
+        addButton()?.click();
         await settle();
-        const barMenu = () => root().querySelector('.menu[data-menu="strip-effective"]');
-        const menuKeys = Array.from(barMenu()?.querySelectorAll('.mi[data-key]') ?? []).map((one) => one.dataset.key);
-        barMenu()?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true, cancelable: true }));
+        await wait(150);
+        const cpop = () => root().querySelector('.menu.condpop[data-menu="strip-effective"]');
+        const mfield = () => cpop()?.querySelector('heo-value-field');
+        const mlist = () => mfield()?.shadowRoot?.querySelector('.popup');
+        const groupsShown = () => Array.from(mlist()?.querySelectorAll('.group') ?? []).map((one) => one.textContent.trim());
+        const optionValues = () => Array.from(mlist()?.querySelectorAll('.option') ?? []).map((one) => one.textContent.replace(/\s+/g, ' ').trim());
+        const firstGroups = groupsShown();
+        const firstOptions = optionValues();
+        const focusedOnOpen = root().activeElement === mfield();
+        const listIsInline = Boolean(mlist()?.classList.contains('inline'));
+        const box = () => cpop()?.getBoundingClientRect();
+        const searchBox = box();
+        // The shared box's height, or what this window has room for when that is less.
+        const fullHeight = () => Boolean(cpop()) && Math.abs(cpop().getBoundingClientRect().height -
+          Math.min(318, Number.parseFloat(cpop().style.maxHeight) || Infinity)) <= 1;
+        const searchFull = fullHeight();
+        const typeMedia = async (text) => {
+          const input = mfield()?.shadowRoot?.querySelector('input');
+          input.value = text;
+          input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+          await settle();
+          await wait(60);
+        };
+        await typeMedia('reduced motion');
+        const fuzzyWords = optionValues().some((one) => one.includes('(prefers-reduced-motion: reduce)'));
+        // A long option cannot widen the field past the popover's edge.
+        const fieldFits = (() => {
+          const wrap = mfield()?.shadowRoot?.querySelector('.wrap')?.getBoundingClientRect();
+          return Boolean(wrap && box()) && wrap.right <= box().right && cpop().scrollWidth <= cpop().clientWidth;
+        })();
+        // No "+" beside the search: a row is picked, or Enter takes what was typed.
+        const noAddButton = !mfield()?.shadowRoot?.querySelector('.action');
+        await typeMedia('max 600');
+        const fuzzyWidth = optionValues().some((one) => one.includes('(max-width: 600px)'));
+        await typeMedia('zzzz');
+        const offer = mlist()?.querySelector('[data-act="create"]')?.textContent.replace(/\s+/g, ' ').trim();
+        /*
+         * Checked before it is added: the browser keeps "(max-width: 600)" and a range that can
+         * never hold as queries that never match, so they used to land on the bar.
+         */
+        const enterMedia = async (text) => {
+          await typeMedia(text);
+          const input = mfield()?.shadowRoot?.querySelector('input');
+          input?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, composed: true, cancelable: true }));
+          await settle();
+          await wait(60);
+          return cpop()?.querySelector('.field-error')?.textContent.trim() ?? '';
+        };
+        const chipsBeforeRefusals = chipKeys().join(',');
+        const noUnit = await enterMedia('(max-width: 600)');
+        const never = await enterMedia('(min-width: 800px) and (max-width: 600px)');
+        const unknownValue = await enterMedia('(prefers-color-scheme: purple)');
+        const refusedAll = /needs a unit: 600px/.test(noUnit) && /never applies/.test(never) &&
+          /light or dark, not purple/.test(unknownValue) && Boolean(cpop()) && chipKeys().join(',') === chipsBeforeRefusals;
+        await typeMedia('');
+        /*
+         * "Custom width…": the same box turns into the width panel, the bar's viewport sizes as
+         * one-press widths, "Up to" first. One press adds it and closes.
+         */
+        Array.from(mlist()?.querySelectorAll('.option') ?? []).find((one) => /Custom width/.test(one.textContent))?.click();
+        await settle();
+        await wait(120);
+        const widthBox = box();
+        const sameBox = Boolean(searchBox && widthBox) && searchFull && fullHeight() &&
+          Math.abs(searchBox.width - widthBox.width) <= 1 && Math.abs(searchBox.left - widthBox.left) <= 1;
+        const segs = () => Array.from(cpop()?.querySelectorAll('heo-segmented') ?? []);
+        const segLabels = (seg) => Array.from(seg?.shadowRoot?.querySelectorAll('button') ?? []).map((one) => one.textContent.trim());
+        const sides = segLabels(segs()[0]);
+        const picks = segLabels(segs()[1]).map(Number);
+        const maxFirst = segs()[0]?.value === 'max';
+        const widthField = () => cpop()?.querySelector('heo-value-field[fixed-unit="px"]');
+        const hasField = Boolean(widthField());
+        const footer = Array.from(cpop()?.querySelectorAll('.cfoot .btn') ?? []).map((one) => one.textContent.trim());
+        // A viewport size fills the width; Add checks it and puts it on the bar.
+        segs()[1]?.shadowRoot?.querySelectorAll('button')[2]?.click();
+        await settle();
+        const filled = widthField()?.value === '1024px' && /\(max-width: 1024px\)/.test(cpop()?.querySelector('.cwill')?.textContent ?? '');
+        // An impossible width is refused on Add, with the reason, and nothing is added.
+        widthField()?.dispatchEvent(new CustomEvent('value-input', { detail: { value: '50000px' }, bubbles: true, composed: true }));
+        await settle();
+        cpop()?.querySelector('[data-act="add-width"]')?.click();
+        await settle();
+        const refusedWidth = /goes from 1px to 10000px/.test(cpop()?.querySelector('.field-error')?.textContent ?? '') && Boolean(cpop());
+        // Cancel goes back to the search.
+        Array.from(cpop()?.querySelectorAll('.cfoot .btn') ?? []).find((one) => one.textContent.trim() === 'Cancel')?.click();
+        await settle();
+        await wait(60);
+        const cancelBack = Boolean(mfield()) && !widthField();
+        Array.from(mlist()?.querySelectorAll('.option') ?? []).find((one) => /Custom width/.test(one.textContent))?.click();
+        await settle();
+        await wait(120);
+        // Escape steps back to the search, then closes.
+        cpop()?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true, cancelable: true }));
+        await settle();
+        await wait(60);
+        const backToSearch = Boolean(mfield()) && !cpop()?.querySelector('.cfoot');
+        Array.from(mlist()?.querySelectorAll('.option') ?? []).find((one) => /Custom width/.test(one.textContent))?.click();
+        await settle();
+        await wait(120);
+        const keysBefore = chipKeys().join(',');
+        segs()[1]?.shadowRoot?.querySelectorAll('button')[2]?.click();
+        await settle();
+        cpop()?.querySelector('[data-act="add-width"]')?.click();
+        await settle();
+        await wait(60);
+        const addedWidth = !cpop() && chipKeys().some((one) => one.includes('max-width: 1024px')) && keysBefore !== chipKeys().join(',');
+        /*
+         * The picked condition carries a ×: one added and never written goes at once; one with
+         * declarations asks first, and its removal is one undo step.
+         */
+        const pressedKill = () => bar()?.querySelector('.cchip-on .ckill');
+        const killOnPicked = Boolean(pressedKill()) && bar()?.querySelectorAll('.ckill').length === 1;
+        pressedKill()?.click();
+        await settle();
+        const emptyGoesAtOnce = !document.querySelector('heo-overlay') || !chipKeys().some((one) => one.includes('max-width: 1024px'));
+        const noDialogForEmpty = !deep('heo-confirm-dialog')?.shadowRoot?.querySelector('.btn.danger');
+        bar()?.querySelector('[data-cond="other:print"]')?.click();
+        await settle();
+        const historyAtRemove = engine.history.size;
+        pressedKill()?.click();
+        await settle();
+        await wait(60);
+        const confirmRoot = () => deep('heo-confirm-dialog')?.shadowRoot;
+        const askedToRemove = /Remove @media print\?/.test(confirmRoot()?.textContent ?? '') && Boolean(confirmRoot()?.querySelector('.btn.danger'));
+        confirmRoot()?.querySelector('.btn.danger')?.click();
+        await settle();
+        await wait(60);
+        const removedPrint = !chipKeys().includes('other:print') && engine.history.size === historyAtRemove + 1;
+        engine.undo();
+        await settle();
+        const restoredPrint = chipKeys().includes('other:print');
+        // Back to Always for what follows.
+        bar()?.querySelector('.base')?.click();
         await settle();
         // Under print, nobody previews: the group still shows what print declares, not what renders now.
         bar()?.querySelector('[data-cond="other:print"]')?.click();
@@ -612,9 +750,28 @@
             keysOnBar.includes('state::hover@tablet') &&
             !keysOnBar.includes('laptop') && !keysOnBar.includes('desktop') &&
             !keysOnBar.some((key) => key.includes('::before')),
-          moreListsOnlyWhatIsNotOnTheBar:
-            menuKeys.includes('laptop') && menuKeys.includes('state::focus') &&
-            !menuKeys.some((key) => keysOnBar.includes(key)),
+          // A "+" in place of ⋮, its menu States first and Media queries last, sizes not in it.
+          // A "+" in place of ⋮, opening a search with its list: States first, then media queries.
+          plusReplacesTheMoreButton: noMore && addIsLast,
+          // The page's own media queries first (its @media all), then widths, then states.
+          plusOpensASearchWithItsList:
+            focusedOnOpen && listIsInline &&
+            firstGroups.slice(0, 3).join('|') === 'Media queries on this page|Width|States' &&
+            firstOptions.some((one) => one.startsWith(':focus')) && !firstOptions.some((one) => one.startsWith(':hover')) &&
+            firstOptions.some((one) => /^Custom width/.test(one)) && !firstGroups.includes('Viewport sizes'),
+          impossibleQueriesAreRefusedWithTheReason: refusedAll,
+          addMediaQueryMatchesByWords: fuzzyWords && fuzzyWidth,
+          addMediaQueryFieldFitsItsScreen: fieldFits,
+          theSearchHasNoAddButton: noAddButton,
+          nothingMatchingOffersToAddIt: offer === 'Add "zzzz"',
+          customWidthIsTheSameBox: sameBox && maxFirst && hasField && sides.join(',') === 'Max.,Min.',
+          customWidthOffersTheViewportSizes: picks.join(',') === '320,768,1024,1440' && filled,
+          customWidthHasAddAndCancel: footer.join(',') === 'Cancel,Add' && refusedWidth && cancelBack,
+          theRemoveIsOnThePickedCondition: killOnPicked,
+          anEmptyConditionGoesWithoutAsking: emptyGoesAtOnce && noDialogForEmpty,
+          aConditionWithDeclarationsAsksFirst: askedToRemove && removedPrint && restoredPrint,
+          escapeGoesBackToTheSearch: backToSearch,
+          aViewportSizeAddsAMaxWidthInOnePress: addedWidth,
           aMediaQueryShowsItsValueWithoutPreviewing: printPressed && printColour === '#000000',
           pressingTheOnePickedGoesBackToAlways: backToAlways,
         };

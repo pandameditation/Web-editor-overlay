@@ -968,12 +968,19 @@
             fresh.length === 1 && engine.isAutomaticClass(fresh[0], target) && engine.history.size === before + 1;
           engine.undo();
           await settle(200);
-          // A size with no rule for the family yet: picked from ⋮, where empty sizes are, then the
-          // adder creates the media rule.
-          card('.featured')?.querySelector('.slots .more')?.click();
-          await settle(200);
-          sroot().querySelector('.menu[data-menu="strip-.featured"] .mi[data-key="phone"]')?.click();
-          await settle(200);
+          // A size with no rule for the family yet: its query typed into the bar's "+" lands on that
+          // size, then the adder creates the media rule.
+          card('.featured')?.querySelector('.slots .add')?.click();
+          await settle(250);
+          {
+            const search = sroot().querySelector('.menu.condpop[data-menu="strip-.featured"] heo-value-field');
+            const input = search?.shadowRoot?.querySelector('input');
+            if (input) {
+              await typeInto(input, '(max-width: 767px)');
+              key(input, 'Enter');
+              await settle(250);
+            }
+          }
           addButton(block('.featured', 'base'))?.click();
           await settle(200);
           const featuredAdder = () => block('.featured', 'base')?.querySelector('.property-adder');
@@ -1023,24 +1030,21 @@
             getComputedStyle(notNow).borderTopStyle === 'dashed' &&
             getComputedStyle(notNow).opacity === '1' &&
             getComputedStyle(notNow).color === getComputedStyle(nowButton).color;
-          // print declares something, so it is on the bar with its count; ⋮ lists only the rest.
-          const more = () => strip('.card')?.querySelector('.more');
+          // print declares something, so it is on the bar with its count; "+" offers only the rest.
+          const more = () => strip('.card')?.querySelector('.add');
           more()?.click();
           await settle(200);
           const stripMenu = () => sroot().querySelector('.menu[data-menu="strip-.card"]');
-          const menuKeys = Array.from(stripMenu()?.querySelectorAll('.mi[data-key]') ?? []).map((one) => one.dataset.key);
-          const onBar = Array.from(strip('.card')?.querySelectorAll('[data-cond]') ?? []).map((one) => one.dataset.cond);
+          const mediaField = () => stripMenu()?.querySelector('heo-value-field');
+          const listed = Array.from(mediaField()?.shadowRoot?.querySelectorAll('.option') ?? []).map((one) => textOf(one));
           results.strip.otherMediaIsOnTheBarAndMoreHasTheRest =
             textOf(slotButton('.card', 'other:print')) === 'print+1' &&
-            menuKeys.includes('laptop') && menuKeys.includes('state::focus') &&
-            !menuKeys.some((one) => onBar.includes(one));
-          Array.from(stripMenu()?.querySelectorAll('.mi') ?? []).find((one) => /Add a media query/.test(one.textContent))?.click();
-          await settle(200);
-          const mediaField = () => stripMenu()?.querySelector('.mfield heo-value-field');
+            listed.some((one) => one.startsWith(':focus')) && !listed.some((one) => one.startsWith(':hover')) &&
+            listed.some((one) => one.startsWith('Custom width')) && !listed.some((one) => /@media print\b/.test(one));
           const mediaInput = () => mediaField()?.shadowRoot?.querySelector('input');
           await settle(150);
           // Offered as it opens: the common queries that are not sizes, by what they answer, and
-          // nothing the strip already has (print is under ⋮ already, the widths are its buttons).
+          // nothing the strip already has (print); sizes are in "Custom width…", not listed here.
           const mediaOptions = () => Array.from(mediaField()?.shadowRoot?.querySelectorAll('.option') ?? [])
             .map((one) => one.textContent.replace(/\s+/g, ' ').trim());
           const openedWith = mediaOptions();
@@ -1049,15 +1053,16 @@
             openedWith.some((one) => one.includes('@media (prefers-reduced-motion: reduce)')) &&
             openedWith.some((one) => one.includes('@media (prefers-color-scheme: dark)')) &&
             !openedWith.some((one) => /@media print\b/.test(one)) &&
-            !openedWith.some((one) => one.includes('(max-width: 767px)'));
+            !openedWith.some((one) => one.includes('(max-width: 767px)')) &&
+            !openedWith.some((one) => /^(Phone|Laptop)/.test(one));
           await typeInto(mediaInput(), 'reduced');
           results.strip.addMediaQuerySuggestionsNarrowAsTyped =
-            mediaOptions().length >= 1 && mediaOptions().every((one) => /reduced/.test(one));
+            mediaOptions().length >= 1 && mediaOptions().every((one) => /reduced/i.test(one));
           before = engine.history.size;
           await typeInto(mediaInput(), 'screen and and');
           key(mediaInput(), 'Enter');
           await settle(200);
-          const refused = /isn't a media query this browser understands/.test(textOf(stripMenu()?.querySelector('.mfield')));
+          const refused = /isn't a media query this browser understands/.test(textOf(stripMenu()));
           await typeInto(mediaInput(), '(prefers-color-scheme: dark)');
           key(mediaInput(), 'Enter');
           await settle(200);
@@ -1123,7 +1128,7 @@
             tab('all'),
             cardHeader('.card'),
             slotButton('.card', 'phone'),
-            strip('.card')?.querySelector('.more'),
+            strip('.card')?.querySelector('.add'),
             rowIn(body('.card'), 'opacity')?.querySelector('.promote'),
             rowIn(body('.card'), 'opacity')?.querySelector('.kill'),
             addButton(block('.card', 'base')),
@@ -1139,23 +1144,44 @@
           if (!results.keys.focusRingOnEveryControl) results.keys.rings = rings;
           sroot().activeElement?.blur();
           /* ---------------------------------------------------------------- *
-           * "+ Add state or pseudo-element" (R24, §5.7, §15 M1): nothing is
-           * written until the first property lands.
+           * States from the bar's "+", pseudo-elements from "+ Add pseudo-element"
+           * (R24, §5.7, §15 M1): nothing is written until the first property lands.
            * ---------------------------------------------------------------- */
           progress.textContent = 'addState';
           const managed = () => document.getElementById('heo-design-rules')?.textContent ?? '';
           const stateAdd = (k) => body(k)?.querySelector(':scope > .block-add .add-prop');
-          const stateAdder = (k) => body(k)?.querySelector(':scope > .block-add .property-adder');
+          // "+ Add pseudo-element" opens the same search popover as the bar's "+".
+          const stateAdder = () => sroot().querySelector('.menu.searchpop.pseudopop');
+          const pseudoField = () => stateAdder()?.querySelector('heo-value-field');
+          const pseudoInput = () => pseudoField()?.shadowRoot?.querySelector('input');
           const openAdderOf = (scope) => scope?.querySelector('.property-adder');
           const addState = async (k, state) => {
-            stateAdd(k)?.click();
-            await settle(150);
-            await typeInto(stateAdder(k).querySelector('input'), state);
-            key(stateAdder(k).querySelector('input'), 'Enter');
+            if (state.startsWith('::')) {
+              stateAdd(k)?.click();
+              await settle(250);
+              await typeInto(pseudoInput(), state);
+              key(pseudoInput(), 'Enter');
+              await settle(250);
+              return;
+            }
+            // Picked already, with nothing under it: its empty block's "+ Add property".
+            const waitingBlock = body(k)?.querySelector(`.block[data-waiting="${CSS.escape(state)}"] .add-prop`);
+            if (waitingBlock) {
+              waitingBlock.click();
+              await settle(250);
+              return;
+            }
+            // A state is a condition: added from the bar's "+", under the condition picked.
+            strip(k)?.querySelector('.add')?.click();
+            await settle(200);
+            Array.from(sroot().querySelector(`.menu[data-menu="strip-${k}"] heo-value-field`)?.shadowRoot?.querySelectorAll('.option') ?? [])
+              .find((one) => one.querySelector('.label, span')?.textContent.trim() === state || textOf(one).split(' ')[0] === state)?.click();
             await settle(250);
           };
           const addProperty = async (scope, property) => {
             const input = openAdderOf(scope())?.querySelector('input');
+            // No adder open is a failed assertion below, not a crash that hides every other result.
+            if (!input) return;
             await typeInto(input, property);
             key(openAdderOf(scope())?.querySelector('input'), 'Enter');
             await settle(300);
@@ -1163,25 +1189,60 @@
           const beforeOf = (el, property) => getComputedStyle(el, '::before').getPropertyValue(property);
           results.addState = {};
           {
-            // Named in the state list, or refused with R24's two messages.
+            // "+ Add pseudo-element": pseudo-elements only, offered in a list with what each styles,
+            // narrowed as it is typed, and anything else refused with R24's two messages.
+            const label = textOf(stateAdd('.card'));
             stateAdd('.card')?.click();
+            await settle(250);
+            const options = () => Array.from(pseudoField()?.shadowRoot?.querySelectorAll('.option') ?? [])
+              .map((one) => one.textContent.replace(/\s+/g, ' ').trim());
+            const offered = options();
+            const focusedOnOpen = sroot().activeElement === pseudoField();
+            // The shared box's height, or what this window has room for when that is less.
+            const fullHeight = (el) => Math.abs(el.getBoundingClientRect().height -
+              Math.min(318, Number.parseFloat(el.style.maxHeight) || Infinity)) <= 1;
+            const pseudoBox = stateAdder()?.getBoundingClientRect();
+            const pseudoFull = Boolean(stateAdder()) && fullHeight(stateAdder());
+            // Typing narrows the list: it did not, because the field was handed back each keystroke.
+            await typeInto(pseudoInput(), 'mar');
+            const narrowed = options();
+            await typeInto(pseudoInput(), 'bullet');
+            const byWhatItStyles = options();
+            await typeInto(pseudoInput(), '');
+            key(pseudoInput(), 'Enter');
+            await settle(120);
+            const emptyMessage = textOf(stateAdder()?.querySelector('.field-error'));
+            await typeInto(pseudoInput(), ':hover');
+            const noneText = textOf(pseudoField()?.shadowRoot?.querySelector('.none'));
+            key(pseudoInput(), 'Enter');
+            await settle(120);
+            const unknown = textOf(stateAdder()?.querySelector('.field-error'));
+            key(pseudoInput(), 'Escape');
             await settle(150);
-            key(stateAdder('.card').querySelector('input'), 'Enter');
-            await settle(120);
-            const emptyMessage = textOf(stateAdder('.card')?.querySelector('.field-error'));
-            await typeInto(stateAdder('.card').querySelector('input'), ':hovr');
-            key(stateAdder('.card').querySelector('input'), 'Enter');
-            await settle(120);
-            const unknown = textOf(stateAdder('.card')?.querySelector('.field-error'));
-            const offered = Array.from(stateAdder('.card')?.querySelectorAll('datalist option') ?? [])
-              .map((one) => `${one.value} ${one.textContent.trim()}`);
-            key(stateAdder('.card')?.querySelector('input'), 'Escape');
-            await settle(120);
+            const focusBack = sroot().activeElement === stateAdd('.card');
+            // The same box as the bar's "+": its class, its width and its height.
+            strip('.card')?.querySelector('.add')?.click();
+            await settle(250);
+            const conditionPop = sroot().querySelector('.menu.searchpop.condpop');
+            const conditionBox = conditionPop?.getBoundingClientRect();
+            const conditionFull = Boolean(conditionPop) && fullHeight(conditionPop);
+            key(sroot().querySelector('.menu.searchpop.condpop heo-value-field')?.shadowRoot?.querySelector('input'), 'Escape');
+            await settle(150);
+            results.addState.pseudoElementsUseTheConditionsPopover =
+              focusedOnOpen && focusBack && Boolean(pseudoBox && conditionBox) && pseudoFull && conditionFull &&
+              Math.abs(pseudoBox.width - conditionBox.width) <= 1 && Math.abs(pseudoBox.left - conditionBox.left) <= 1;
+            results.addState.typingNarrowsThePseudoElements =
+              narrowed.length === 1 && narrowed[0].startsWith('::marker') &&
+              byWhatItStyles.length === 1 && byWhatItStyles[0].startsWith('::marker') &&
+              noneText === 'No pseudo-element by that name.';
             results.addState.rejectsUnknownNames =
-              emptyMessage === 'Type a state like :hover or a pseudo-element like ::before.' &&
-              unknown === ':hovr is not a state or pseudo-element the editor knows.' &&
-              offered.length === 11 && offered.includes(':hover state') && offered.includes('::marker pseudo-element') &&
-              !stateAdder('.card');
+              label === 'Add pseudo-element' &&
+              emptyMessage === 'Pick a pseudo-element, like ::before.' &&
+              unknown === '::hover is not a pseudo-element the editor knows.' &&
+              offered.length === 9 && offered.some((one) => one.startsWith('::marker')) &&
+              offered.some((one) => /::before.*generated content/.test(one)) &&
+              !offered.some((one) => /^:[a-z]/.test(one)) &&
+              !stateAdder();
           }
           {
             // A state with no rule: a block with its adder open, and nothing on the page yet.
@@ -1208,14 +1269,22 @@
               Boolean(rowIn(pendingBlock(), 'opacity'));
             engine.undo();
             await settle(200);
-            // A state that already has declarations opens that block's adder instead.
-            await addState('.card', ':hover');
-            results.addState.stateOpensItsAddProperty =
-              results.addState.stateOpensItsAddProperty &&
-              engine.history.size === history &&
-              !block('.card', ':hover')?.classList.contains('pending') &&
-              sroot().activeElement === openAdderOf(block('.card', ':hover'))?.querySelector('input');
-            key(sroot().activeElement, 'Escape');
+            // Not under a picked state: a pseudo-element is a block under Always or a media query.
+            slotButton('.card', 'state::hover')?.click();
+            await settle(200);
+            results.addState.noPseudoElementAdderUnderAState = !stateAdd('.card');
+            card('.card')?.querySelector('.slots .base')?.click();
+            await settle(200);
+            // A state that already declares something is a button on the bar, not in "+".
+            strip('.card')?.querySelector('.add')?.click();
+            await settle(200);
+            await settle(150);
+            results.addState.aStateOnTheBarIsNotOfferedAgain =
+              Boolean(slotButton('.card', 'state::hover')) &&
+              !Array.from(sroot().querySelector('.menu[data-menu="strip-.card"] heo-value-field')?.shadowRoot?.querySelectorAll('.option') ?? [])
+                .some((one) => textOf(one).split(' ')[0] === ':hover');
+            sroot().querySelector('.menu[data-menu="strip-.card"]')?.dispatchEvent(
+              new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true, cancelable: true }));
             await settle(150);
             // Pending blocks belong to the selection they were added for.
             await addState('.card', ':focus');
@@ -1332,8 +1401,7 @@
            * Detach styles from class (R22).
            * ---------------------------------------------------------------- */
           progress.textContent = 'detach';
-          const detachLink = () => Array.from(body('.card')?.querySelectorAll('.actions .link') ?? [])
-            .find((one) => one.dataset.act === 'detach');
+          const detachLink = () => body('.card')?.querySelector('.actions [data-act="detach"]');
           const panelText = (choice) => textOf(body('.card')?.querySelector(`.detach [data-choice="${choice}"]`));
           results.detach = {};
           {
@@ -1341,8 +1409,11 @@
             const closed = detachLink()?.getAttribute('aria-expanded') === 'false';
             detachLink()?.click();
             await settle(200);
+            // A button like the panel's other actions, not a link, with no way out to Tokens left.
             results.detach.linkIsRenamed =
               before === 'Detach styles from class' && closed &&
+              detachLink()?.classList.contains('btn') && !detachLink()?.classList.contains('link') &&
+              !/Manage in Tokens/.test(textOf(body('.card'))) &&
               textOf(detachLink()) === 'Never mind' && detachLink()?.getAttribute('aria-expanded') === 'true' &&
               !/Just this element/.test(textOf(sources()));
             results.detach.copyWarnsAboutRulesElsewhere =

@@ -1,9 +1,10 @@
 /**
  * The "create it" offer, worded once for every surface that makes it.
  *
- * A search that finds nothing is the moment someone decides to make the thing, so three places
+ * A search that finds nothing is the moment someone decides to make the thing, so four places
  * turn what was typed into an offer to create it: the Library panel's search and the `+` insert
- * picker (a block), and the Styles header's class finder (a class). They read their label, title
+ * picker (a block), the Styles header's class finder (a class) and the conditions bar's "Add a
+ * media query" (a media query). They read their label, title
  * and icon from here so they cannot drift into describing the same act differently.
  *
  * Rendering stays with each surface, because one is a button under a grid of cards, one an option
@@ -16,8 +17,13 @@
  * different promises, and the second one is the reason somebody is still reading.
  */
 export function createLabel(query: string, nothingTyped: string): string {
+  return offerLabel('Create', query, nothingTyped);
+}
+
+/** `Create "x"`, `Add "x"`: the act and what it applies to, or the generic offer before typing. */
+export function offerLabel(verb: string, query: string, nothingTyped: string): string {
   const seed = query.trim();
-  return seed ? `Create "${seed}"` : nothingTyped;
+  return seed ? `${verb} "${seed}"` : nothingTyped;
 }
 
 export const CREATE_ICON = 'plus';
@@ -37,3 +43,10 @@ export function createClassLabel(name: string): string {
 }
 
 export const CREATE_CLASS_TITLE = 'Define this class and add it to the element';
+
+/** `Add "print"`: a media query to put on the conditions bar, as it will be written. */
+export function addMediaLabel(query: string): string {
+  return offerLabel('Add', query.replace(/^\s*@media\s+/i, ''), 'Add a media query');
+}
+
+export const ADD_MEDIA_TITLE = 'Put this media query on the bar, to write styles under it';

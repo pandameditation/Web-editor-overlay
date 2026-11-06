@@ -25,6 +25,8 @@ export interface ValueSuggestion {
   group: string;
   /** Colour to show as a swatch. */
   swatch?: string;
+  /** An icon before the label, from the overlay set: a device, a state's cursor, an action's plus. */
+  icon?: string;
   /** Renders the token affordance and marks the value as design-system-backed. */
   token?: boolean;
   /**
@@ -509,6 +511,11 @@ export class HeoValueField extends LitElement {
       .option[aria-selected='true'] {
         background: var(--heo-hover);
       }
+      .option .ico {
+        display: inline-flex;
+        flex: 0 0 auto;
+        color: var(--heo-text-dim);
+      }
       .option[aria-selected='true'] {
         box-shadow: inset 0 0 0 1px var(--heo-accent-line);
       }
@@ -591,6 +598,13 @@ export class HeoValueField extends LitElement {
    * list are one box rather than a box and a second one hanging under it.
    */
   @property({ type: Boolean, attribute: 'inline-list' }) inlineList = false;
+  /**
+   * Match the list by words rather than by one exact run of text: every word typed has to appear
+   * somewhere in a row's value, label or hint, in any order. For a list of expressions with a fixed
+   * syntax nobody types exactly (media queries): "reduced motion" finds
+   * `(prefers-reduced-motion: reduce)`, "dark" finds the colour-scheme query.
+   */
+  @property({ type: Boolean }) fuzzy = false;
   /** Optional search-style leading icon for fields that name or filter an item. */
   @property({ type: String, attribute: 'leading-icon' }) leadingIcon = '';
   @property({ type: String }) value = '';
@@ -634,7 +648,15 @@ export class HeoValueField extends LitElement {
    */
   @property({ type: String, attribute: 'create-label' }) createLabel = '';
   @property({ type: String, attribute: 'create-title' }) createTitle = '';
+  /** What the list says when nothing matches, where the default wording does not fit. */
+  @property({ type: String, attribute: 'empty-text' }) emptyText = '';
   @property({ type: String, attribute: 'action-icon' }) actionIcon = 'plus';
+  /**
+   * Submit without the action button: Enter and a pick from the list submit, and nothing beside
+   * the field competes with the list for the click (the conditions bar's search, where the answer
+   * is always a row).
+   */
+  @property({ type: Boolean, attribute: 'action-hidden' }) actionHidden = false;
   /**
    * The declaration this field shows is `!important`.
    *
@@ -895,6 +917,11 @@ export class HeoValueField extends LitElement {
     if (!this.open && this.#canOpen) this.#openPopup();
   }
 
+  /** The rows the list shows for what is typed, in order: for a host taking the best match. */
+  get listMatches(): readonly ValueSuggestion[] {
+    return this.filtered;
+  }
+
   /** Whether this field's own suggestion list is up. Read by a composer hosting it. */
   get listIsOpen(): boolean {
     return this.open && !this.composer;
@@ -965,11 +992,13 @@ export class HeoValueField extends LitElement {
     const all = this.suggestions;
     if (!needle) return [...this.#computedSuggestion(), ...units, ...all, ...functions];
 
-    const scored = all.filter(
-      (item) =>
-        item.value.toLowerCase().includes(needle) ||
-        (item.label ?? '').toLowerCase().includes(needle),
-    );
+    const words = needle.split(/[^a-z0-9]+/).filter(Boolean);
+    const scored = all.filter((item) => {
+      if (item.value.toLowerCase().includes(needle) || (item.label ?? '').toLowerCase().includes(needle)) return true;
+      if (!this.fuzzy || !words.length) return false;
+      const text = `${item.value} ${item.label ?? ''} ${item.hint ?? ''}`.toLowerCase();
+      return words.every((word) => text.includes(word));
+    });
     // An exact-prefix match on the label is what the user is most likely after.
     scored.sort((a, b) => {
       const aHit = (a.label ?? a.value).toLowerCase().startsWith(needle) ? 1 : 0;
@@ -1146,7 +1175,7 @@ export class HeoValueField extends LitElement {
                 ${icon('chevronDown', 12)}
               </button>`
         : nothing}
-          ${this.action
+          ${this.action && !this.actionHidden
         ? html`<button
                 class=${`action${this.open && this.draft.trim() && !this.filtered.length ? ' ready' : ''}`}
                 type="button"
@@ -1472,9 +1501,9 @@ export class HeoValueField extends LitElement {
               </button>
             </div>`
           : html`<div class="none">
-              ${this.action
+              ${this.emptyText || (this.action
               ? 'No matching name. Press Enter to use what you typed.'
-              : 'No matching token. Press Enter to keep your own value.'}
+              : 'No matching token. Press Enter to keep your own value.')}
             </div>`}
       </div>`;
     }
@@ -1529,6 +1558,7 @@ export class HeoValueField extends LitElement {
                 ${item.swatch
               ? html`<span class="swatch" style=${swatchStyle(item.swatch)}></span>`
               : nothing}
+                ${item.icon ? html`<span class="ico">${icon(item.icon, 12)}</span>` : nothing}
                 <span class="name">${item.label ?? item.value}</span>
                 ${item.token ? html`<span class="tokenmark">${icon('droplet', 11)}</span>` : nothing}
                 ${item.hint ? html`<span class="meta">${item.hint}</span>` : nothing}

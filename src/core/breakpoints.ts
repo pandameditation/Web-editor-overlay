@@ -285,7 +285,7 @@ export function mediaNow(media: string, applies: boolean, width: number): string
 /* -------------------------------------------------------------------------- */
 
 /** The states and pseudo-elements offered by "Add state", in the order they are offered. */
-export const EDITABLE_STATES: readonly { name: string; kind: 'state' | 'pseudo-element' }[] =
+export const EDITABLE_STATES: readonly { name: string; kind: 'state' | 'pseudo-element'; hint?: string }[] =
   Object.freeze([
     { name: ':hover', kind: 'state' },
     { name: ':focus', kind: 'state' },
@@ -293,12 +293,22 @@ export const EDITABLE_STATES: readonly { name: string; kind: 'state' | 'pseudo-e
     { name: ':focus-within', kind: 'state' },
     { name: ':active', kind: 'state' },
     { name: ':disabled', kind: 'state' },
-    { name: '::before', kind: 'pseudo-element' },
-    { name: '::after', kind: 'pseudo-element' },
-    { name: '::placeholder', kind: 'pseudo-element' },
-    { name: '::marker', kind: 'pseudo-element' },
-    { name: '::selection', kind: 'pseudo-element' },
+    { name: '::before', kind: 'pseudo-element', hint: 'generated content, before' },
+    { name: '::after', kind: 'pseudo-element', hint: 'generated content, after' },
+    { name: '::marker', kind: 'pseudo-element', hint: "a list item's bullet or number" },
+    { name: '::placeholder', kind: 'pseudo-element', hint: "an input's placeholder text" },
+    { name: '::selection', kind: 'pseudo-element', hint: 'text the user selects' },
+    { name: '::first-line', kind: 'pseudo-element', hint: 'the first line of text' },
+    { name: '::first-letter', kind: 'pseudo-element', hint: 'the first letter' },
+    { name: '::file-selector-button', kind: 'pseudo-element', hint: "a file input's button" },
+    { name: '::backdrop', kind: 'pseudo-element', hint: 'behind a dialog or full screen' },
   ]);
+
+/** A pseudo-element the editor knows, typed with any number of colons (`before`, `::before`), or null. */
+export function pseudoElementNamed(text: string): string | null {
+  const name = `::${text.trim().replace(/^:+/, '').toLowerCase()}`;
+  return EDITABLE_STATES.some((one) => one.kind === 'pseudo-element' && one.name === name) ? name : null;
+}
 
 /**
  * Whether a state string draws a pseudo-element rather than styling the element in a state.
@@ -315,4 +325,250 @@ export function isPseudoElement(state: string): boolean {
  */
 export function needsGeneratedContent(state: string): boolean {
   return /(?:^|[^:])::?(?:before|after)$/i.test(state);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Checking a typed media query                                                */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * The browser keeps almost anything as a media query and answers it with "no": `dark` is an
+ * unknown media type, `(foo: bar)` an unknown feature, `(max-width: -5px)` and
+ * `(min-width: 800px) and (max-width: 600px)` simply never match. All of them read back unchanged,
+ * so the browser cannot be the judge of what was meant. This is.
+ */
+
+const MEDIA_TYPES = new Set(['all', 'screen', 'print']);
+/** Media types from CSS 2 that no browser matches any more. */
+const OLD_MEDIA_TYPES = new Set(['tv', 'handheld', 'projection', 'tty', 'braille', 'embossed', 'aural', 'speech']);
+
+type FeatureKind = 'length' | 'ratio' | 'resolution' | 'integer' | readonly string[];
+
+const FEATURES: Readonly<Record<string, FeatureKind>> = {
+  width: 'length',
+  height: 'length',
+  'device-width': 'length',
+  'device-height': 'length',
+  'aspect-ratio': 'ratio',
+  'device-aspect-ratio': 'ratio',
+  resolution: 'resolution',
+  color: 'integer',
+  'color-index': 'integer',
+  monochrome: 'integer',
+  grid: ['0', '1'],
+  orientation: ['portrait', 'landscape'],
+  hover: ['none', 'hover'],
+  'any-hover': ['none', 'hover'],
+  pointer: ['none', 'coarse', 'fine'],
+  'any-pointer': ['none', 'coarse', 'fine'],
+  'prefers-color-scheme': ['light', 'dark'],
+  'prefers-reduced-motion': ['no-preference', 'reduce'],
+  'prefers-contrast': ['no-preference', 'more', 'less', 'custom'],
+  'prefers-reduced-transparency': ['no-preference', 'reduce'],
+  'prefers-reduced-data': ['no-preference', 'reduce'],
+  'forced-colors': ['none', 'active'],
+  'inverted-colors': ['none', 'inverted'],
+  'display-mode': ['browser', 'fullscreen', 'minimal-ui', 'standalone', 'picture-in-picture', 'window-controls-overlay'],
+  'dynamic-range': ['standard', 'high'],
+  'video-dynamic-range': ['standard', 'high'],
+  'color-gamut': ['srgb', 'p3', 'rec2020'],
+  scripting: ['none', 'initial-only', 'enabled'],
+  update: ['none', 'slow', 'fast'],
+  'overflow-block': ['none', 'scroll', 'paged'],
+  'overflow-inline': ['none', 'scroll'],
+};
+
+/** The widest width or height a media query is checked against: 10000px. */
+const MAX_MEDIA_LENGTH = 10000;
+
+class MediaProblem extends Error { }
+
+/** `a, b or c` for a message. */
+function listWords(words: readonly string[]): string {
+  return words.length <= 2 ? words.join(' or ') : `${words.slice(0, -1).join(', ')} or ${words.at(-1)}`;
+}
+
+/** The feature a bare word is a value of, for "did you mean": `dark` → `(prefers-color-scheme: dark)`. */
+function featureFor(word: string): string | null {
+  for (const [name, kind] of Object.entries(FEATURES)) {
+    if (Array.isArray(kind) && kind.includes(word) && word !== 'none') return `(${name}: ${word})`;
+  }
+  return null;
+}
+
+/** A length in px, or a problem: `600` has no unit, `-5px` is no width. */
+function mediaLength(text: string, name: string): number {
+  const match = /^(-?\d*\.?\d+)(px|em|rem)?$/i.exec(text);
+  if (!match) throw new MediaProblem(`${name} takes a length, like 600px, not ${text}.`);
+  const value = Number(match[1]);
+  if (!match[2] && value !== 0) throw new MediaProblem(`${text} needs a unit: ${text}px.`);
+  const px = match[2] && /r?em/i.test(match[2]) ? value * 16 : value;
+  if (px <= 0 || px > MAX_MEDIA_LENGTH) {
+    throw new MediaProblem(`A ${name.replace(/^(?:min|max)-/, '')} in a media query goes from 1px to ${MAX_MEDIA_LENGTH}px.`);
+  }
+  return px;
+}
+
+function checkValue(name: string, kind: FeatureKind, text: string): number | null {
+  if (Array.isArray(kind)) {
+    if (!kind.includes(text.toLowerCase())) throw new MediaProblem(`${name} is ${listWords(kind)}, not ${text}.`);
+    return null;
+  }
+  if (kind === 'length') return mediaLength(text, name);
+  if (kind === 'ratio' && !/^\d*\.?\d+(?:\s*\/\s*\d*\.?\d+)?$/.test(text)) {
+    throw new MediaProblem(`${name} takes a ratio, like 16/9, not ${text}.`);
+  }
+  if (kind === 'resolution' && !/^\d*\.?\d+(?:dpi|dpcm|dppx|x)$/i.test(text)) {
+    throw new MediaProblem(`${name} takes a resolution, like 2dppx, not ${text}.`);
+  }
+  if (kind === 'integer' && !/^\d+$/.test(text)) throw new MediaProblem(`${name} takes a whole number, not ${text}.`);
+  return null;
+}
+
+/** Bounds a query holds a width or height to, to find one that can never be true. */
+interface Bounds {
+  low: Record<string, number>;
+  high: Record<string, number>;
+}
+
+function bound(bounds: Bounds | null, name: string, side: 'low' | 'high', px: number | null): void {
+  if (!bounds || px === null) return;
+  const at = bounds[side][name];
+  bounds[side][name] = at === undefined ? px : side === 'low' ? Math.max(at, px) : Math.min(at, px);
+}
+
+/** One feature in parentheses: `max-width: 600px`, `hover`, `width >= 600px`, `400px < width < 900px`. */
+function checkFeature(inner: string, bounds: Bounds | null): void {
+  const text = inner.trim();
+  const range = /^(?:(\S+)\s*(<=|>=|<|>|=)\s*)?([a-z-]+)(?:\s*(<=|>=|<|>|=)\s*(\S+))?$/i.exec(text);
+  if (range && (range[2] || range[4]) && !text.includes(':')) {
+    const name = range[3].toLowerCase();
+    const kind = FEATURES[name];
+    if (!kind) throw new MediaProblem(`${name} isn't a media feature.`);
+    if (Array.isArray(kind)) throw new MediaProblem(`${name} has no range: write (${name}: ${kind[0]}).`);
+    // `600px < width` reads as `width > 600px`.
+    const flip = { '<': '>', '>': '<', '<=': '>=', '>=': '<=', '=': '=' } as const;
+    const sides: Array<[string, string]> = [];
+    if (range[1]) sides.push([flip[range[2] as keyof typeof flip], range[1]]);
+    if (range[4]) sides.push([range[4], range[5]]);
+    for (const [op, value] of sides) {
+      const px = checkValue(name, kind, value);
+      if (kind !== 'length') continue;
+      if (op.startsWith('>') || op === '=') bound(bounds, name, 'low', px);
+      if (op.startsWith('<') || op === '=') bound(bounds, name, 'high', px);
+    }
+    return;
+  }
+  const colon = text.indexOf(':');
+  const rawName = (colon === -1 ? text : text.slice(0, colon)).trim().toLowerCase();
+  const value = colon === -1 ? '' : text.slice(colon + 1).trim();
+  if (!/^[a-z-]+$/.test(rawName)) throw new MediaProblem(`(${text}) isn't a media feature.`);
+  const prefixed = /^(min|max)-(.+)$/.exec(rawName);
+  const name = prefixed && FEATURES[prefixed[2]] ? prefixed[2] : rawName;
+  const kind = FEATURES[name];
+  if (!kind) throw new MediaProblem(`${rawName} isn't a media feature.`);
+  if (prefixed && name !== rawName && Array.isArray(kind)) {
+    throw new MediaProblem(`${name} has no range: write (${name}: ${kind[0]}).`);
+  }
+  if (colon === -1) {
+    if (prefixed && name !== rawName) throw new MediaProblem(`${rawName} needs a value, like (${rawName}: 600px).`);
+    return;
+  }
+  if (!value) throw new MediaProblem(`${rawName} needs a value after the colon.`);
+  const px = checkValue(rawName, kind, value);
+  if (kind === 'length' && prefixed && name !== rawName) bound(bounds, name, prefixed[1] === 'min' ? 'low' : 'high', px);
+  else if (kind === 'length') {
+    bound(bounds, name, 'low', px);
+    bound(bounds, name, 'high', px);
+  }
+}
+
+/** Split at the top level: `a, (b, c)` → `a`, `(b, c)`. */
+function splitTop(text: string, separator: RegExp): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let at = 0; at < text.length; at += 1) {
+    const char = text[at];
+    if (char === '(') depth += 1;
+    else if (char === ')') depth -= 1;
+    if (depth < 0) throw new MediaProblem('A closing parenthesis has no opening one.');
+    if (depth === 0) {
+      const match = separator.exec(text.slice(at));
+      if (match && match.index === 0) {
+        out.push(text.slice(start, at));
+        start = at + match[0].length;
+        at = start - 1;
+      }
+    }
+  }
+  if (depth !== 0) throw new MediaProblem('A parenthesis is not closed.');
+  out.push(text.slice(start));
+  return out.map((one) => one.trim());
+}
+
+/** A condition: `(a) and (b)`, `(a) or (b)`, `not (a)`, nested in parentheses as deep as it goes. */
+function checkCondition(text: string, bounds: Bounds | null): void {
+  let rest = text.trim();
+  if (/^not\s/i.test(rest)) {
+    checkCondition(rest.slice(3), null);
+    return;
+  }
+  const ands = splitTop(rest, /^\s+and\s+/i);
+  const ors = ands.length === 1 ? splitTop(rest, /^\s+or\s+/i) : [rest];
+  const parts = ands.length > 1 ? ands : ors;
+  // Bounds only add up across `and`: under `or`, each part is a way in of its own.
+  const scope = ands.length > 1 || ors.length === 1 ? bounds : null;
+  for (const part of parts) {
+    rest = part.trim();
+    if (!rest.startsWith('(') || !rest.endsWith(')')) {
+      throw new MediaProblem(`${rest || 'Something'} has to be in parentheses, like (${rest || 'max-width: 600px'}).`);
+    }
+    const inner = rest.slice(1, -1).trim();
+    if (inner.startsWith('(') || /^not\s/i.test(inner)) checkCondition(inner, scope);
+    else checkFeature(inner, scope);
+  }
+}
+
+/** One query of a list: `screen and (max-width: 600px)`, `print`, `(hover: hover)`. */
+function checkQuery(query: string): void {
+  if (!query) throw new MediaProblem('A comma has no query after it.');
+  const bounds: Bounds = { low: {}, high: {} };
+  const typed = /^(?:(only|not)\s+)?([a-z-]+)(?:\s+and\s+([\s\S]+))?$/i.exec(query);
+  if (typed && !query.startsWith('(') && typed[2].toLowerCase() !== 'not') {
+    const type = typed[2].toLowerCase();
+    if (OLD_MEDIA_TYPES.has(type)) throw new MediaProblem(`No browser matches the ${type} media type any more.`);
+    if (!MEDIA_TYPES.has(type)) {
+      const meant = featureFor(type);
+      throw new MediaProblem(meant
+        ? `${typed[2]} isn't a media type. Did you mean ${meant}?`
+        : `${typed[2]} isn't a media type: use print or screen, or a feature like (max-width: 600px).`);
+    }
+    if (typed[3]) checkCondition(typed[3], typed[1]?.toLowerCase() === 'not' ? null : bounds);
+  } else {
+    checkCondition(query, bounds);
+  }
+  for (const name of Object.keys(bounds.low)) {
+    const low = bounds.low[name];
+    const high = bounds.high[name];
+    if (high !== undefined && low > high) {
+      throw new MediaProblem(`This never applies: a ${name} of at least ${low}px and at most ${high}px.`);
+    }
+  }
+}
+
+/**
+ * What is wrong with a typed media query, or null when it is one that can match: a known media
+ * type, known features with values they take, widths in range, and bounds that can both hold.
+ */
+export function mediaQueryProblem(media: string): string | null {
+  const text = media.trim().replace(/^@media\s+/i, '');
+  if (!text) return 'Type a media query, like print or (max-width: 600px).';
+  try {
+    for (const query of splitTop(text, /^,/)) checkQuery(query);
+    return null;
+  } catch (error) {
+    if (error instanceof MediaProblem) return error.message;
+    throw error;
+  }
 }

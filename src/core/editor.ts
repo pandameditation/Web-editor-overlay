@@ -3793,6 +3793,21 @@ export class EditorEngine {
   }
 
   /**
+   * Remove several rules as one undo entry: what a condition taken off the bar had written under
+   * it. A managed rule is deleted, a page rule emptied, a read-only one left alone.
+   */
+  removeRules(targets: readonly WriteTarget[], label: string): void {
+    this.#asOneEntry(label, () => {
+      for (const target of targets) {
+        if (target.kind === 'design-rule') this.removeDesignRule(target.key);
+        else if (target.kind === 'class') this.removeClass(target.name);
+        else if (target.kind === 'live') {
+          for (const one of ruleDeclarations(target.rule)) this.setRuleDeclaration(target.rule, one.property, '');
+        }
+      }
+    });
+  }
+  /**
    * Remove a state or pseudo-element block: a managed rule is deleted, a page rule is emptied.
    *
    * Emptied rather than deleted, because nothing can take a rule out of a file: the save patches

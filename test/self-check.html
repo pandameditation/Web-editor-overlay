@@ -956,11 +956,11 @@
       await frame();
       // Renamed from "Just this element…" (R22), on the class card; no trace of the old name.
       check('detachLinkIsRenamed', () =>
-        Array.from(detachPanel().querySelectorAll('.cls[data-card=".detach-look"] .link'))
+        Array.from(detachPanel().querySelectorAll('.cls[data-card=".detach-look"] [data-act="detach"]'))
           .some((b) => b.textContent.trim() === 'Detach styles from class') &&
         !/Just this element/.test(detachPanel().textContent));
       check('theSharedClassNoticeOffersAWayOut', () => {
-        const link = Array.from(detachPanel().querySelectorAll('.link')).find((b) =>
+        const link = Array.from(detachPanel().querySelectorAll('[data-act="detach"]')).find((b) =>
           b.textContent.includes('Detach styles from class'),
         );
         if (!link) return 'missing';

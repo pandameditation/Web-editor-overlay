@@ -1,6 +1,6 @@
 import { css, html, nothing, type CSSResult, type TemplateResult } from 'lit';
 import { repeat } from 'lit/directives/repeat.js';
-import { EDITABLE_STATES, isPseudoElement, isWidthQuery, mediaNow, mediaShort, needsGeneratedContent } from '../../../core/breakpoints.js';
+import { EDITABLE_STATES, isPseudoElement, isWidthQuery, mediaNow, mediaShort, needsGeneratedContent, pseudoElementNamed } from '../../../core/breakpoints.js';
 import { classFamily, type Family, type RuleEntry, type WriteTarget } from '../../../core/cascade.js';
 import { simpleClassName } from '../../../core/classes.js';
 import { escapeRegExp } from '../../../core/css.js';
@@ -24,10 +24,14 @@ import {
   type DeclarationTarget,
 } from '../class-editor.js';
 import { renderAdder, stylesDestination, type AdderDestination } from './property-adder.js';
+import { bestRow, renderSearchField, renderSearchPopover } from './search-popover.js';
+import { pseudoElementSuggestions } from '../../suggestions.js';
+import type { HeoValueField } from '../../controls/value-field.js';
 import { previewSlot } from './property-row.js';
 import {
   barConditions,
   conditionKey,
+  conditionName,
   conditionOf,
   conditionParts,
   mediaKeyFor,
@@ -179,8 +183,8 @@ export function renderBlockHeader(
   </div>`;
 }
 /**
- * "+ Add property" (or "+ Add state or pseudo-element") under a block, with the places it can
- * write. One open at a time, through the panel's state; hidden while searching (R8).
+ * "+ Add property" under a block, with the places it can write. One open at a time, through the
+ * panel's state; hidden while searching (R8).
  */
 export function renderBlockAdder(
   host: StylesHost,
@@ -188,9 +192,6 @@ export function renderBlockAdder(
   destinations: AdderDestination[],
   state: string,
   options: {
-    mode?: 'property' | 'state';
-    /** State mode: what to do with the state named. */
-    onState?: (state: string, dest: AdderDestination) => void;
     /** After a property is written, with the engine's note when there is one; else it is notified. */
     onAdded?: (hint: string | null) => void;
   } = {},
@@ -203,7 +204,6 @@ export function renderBlockAdder(
     ${renderAdder(
     {
       id,
-      mode: options.mode ?? 'property',
       destinations,
       selected: open?.dest,
       disclosure: true,
@@ -227,10 +227,6 @@ export function renderBlockAdder(
       },
       seed: (property) => seedFor(el, state, property),
       commit: (property, value, dest) => {
-        if (options.mode === 'state') {
-          options.onState?.(property, dest);
-          return;
-        }
         if (!dest.dest) return;
         host.patch({ adder: null, menu: null });
         const { hint } = host.engine.addDeclaration(dest.dest, property, value);
@@ -335,6 +331,30 @@ export function renderFamilyCard(
     const pending = ui.pendingStates.filter((one) =>
       one.family === key && one.slot === slot && belongs(one.state) && !states.includes(one.state));
     const ordered = [...states, ...pending.map((one) => one.state)].sort((a, b) => order(a) - order(b));
+    /*
+     * A state picked on the bar with nothing under it (its declarations removed): its block, empty,
+     * with the way to write one. Nothing is recorded until "+ Add property" is pressed, which adds
+     * it as a pending state, and the first property writes it.
+     */
+    const emptyPicked = pickedState && !ordered.length && !host.filtering
+      ? html`<div class="block pending" data-waiting=${pickedState}>
+          ${renderBlockHeader('cursor', pickedState, 'state', nothing)}
+          <div class="decls"><p class="hint" style="margin:0">No declarations yet.</p></div>
+          <div class="block-add">
+            <button
+              class="add-prop"
+              type="button"
+              data-heo-part="adder"
+              @click=${() => {
+          const refused = addState(pickedState, slot);
+          if (refused) engine.notify(refused, 'info');
+        }}
+            >
+              ${icon('plus', 12)} Add property
+            </button>
+          </div>
+        </div>`
+      : nothing;
     const stateBlocks = ordered.map((state) => {
       const waiting = pending.find((one) => one.state === state);
       if (waiting) return host.filtering ? nothing : renderPendingBlock(waiting, `${key}${state}${short ? ` ${short}` : ''}`, uses, host);
@@ -381,21 +401,58 @@ export function renderFamilyCard(
       </div>`;
     });
 
-    // "+ Add state or pseudo-element": the same adder, naming a state instead of a property (R24).
-    const stateAdderId = `state|${key}|${slot}`;
-    const stateAdder = renderBlockAdder(
-      host,
-      stateAdderId,
-      [stylesDestination(label, reachText(uses), { kind: 'new-rule', selector: key, media }, {}, label)],
-      '',
-      {
-        mode: 'state',
-        onState: (state) => {
-          const refused = addState(state, slot);
-          if (refused) host.form.fail(`prop-add-${stateAdderId}`, refused);
-        },
-      },
-    );
+    /*
+     * "+ Add pseudo-element" (R24): the same search popover as the bar's "+", listing the
+     * pseudo-elements this card has no block for yet. Picking one adds its block, written as nothing
+     * until its first property. Not under a picked state: a pseudo-element is a block under Always
+     * or a media query, and one added there had no block to show in.
+     */
+    const pseudoMenu = `pseudo-${key}|${slot}`;
+    const pseudoField = `pseudo-add-${key}|${slot}`;
+    const pseudoOpen = ui.menu?.id === pseudoMenu;
+    const submitPseudo = (text: string, field: HeoValueField | null): void => {
+      const named = pseudoElementNamed(text) ?? pseudoElementNamed(bestRow(text, field)?.value ?? '');
+      if (!named) {
+        host.form.fail(pseudoField, text.trim()
+          ? `::${text.trim().replace(/^:+/, '')} is not a pseudo-element the editor knows.`
+          : 'Pick a pseudo-element, like ::before.');
+        return;
+      }
+      const refused = addState(named, slot);
+      if (refused) host.form.fail(pseudoField, refused);
+    };
+    const stateAdder = host.filtering || pickedState
+      ? nothing
+      : html`<div class="block-add" data-menu-place=${pseudoMenu}>
+          <button
+            class="add-prop"
+            type="button"
+            data-heo-part="adder"
+            aria-haspopup="dialog"
+            aria-expanded=${pseudoOpen ? 'true' : 'false'}
+            data-menu-anchor=${pseudoMenu}
+            @click=${() => {
+        host.form.reset();
+        host.toggleMenu(pseudoMenu, !pseudoOpen);
+      }}
+          >
+            ${icon('plus', 12)} Add pseudo-element
+          </button>
+        </div>
+        ${pseudoOpen
+          ? renderSearchPopover(
+            { id: pseudoMenu, kind: 'pseudopop', label: 'Add a pseudo-element', onEscape: () => host.toggleMenu(pseudoMenu, false) },
+            renderSearchField({
+              form: host.form,
+              name: pseudoField,
+              fieldLabel: 'Search pseudo-elements',
+              placeholder: 'before, marker, placeholder…',
+              suggestions: pseudoElementSuggestions(ordered.filter(isPseudoElement)),
+              emptyText: 'No pseudo-element by that name.',
+              onSubmit: submitPseudo,
+            }),
+          )
+          : nothing}`;
 
     const pick = (next: string): void => {
       const picks = new Map(host.ui.cardPicks);
@@ -438,12 +495,15 @@ export function renderFamilyCard(
       alwaysCount: view.count('base'),
       alwaysTitle: 'With no condition: at every size and in every state',
       chips: view.chips,
-      remaining: remainingConditions(model, view.chips.map((chip) => chip.key), host.previewWidth),
+      remaining: remainingConditions(model, view.chips.map((chip) => chip.key), host.previewWidth, picked),
       menuOpen: ui.menu?.id === `strip-${key}`,
       mediaDraft: ui.mediaDraft?.owner === key ? ui.mediaDraft.text : null,
+      widthDraft: ui.mediaDraft?.owner === key ? ui.mediaDraft.width ?? null : null,
+      onWidthDraft: (width) => host.patch({ mediaDraft: { owner: key, text: '', ...(width ? { width } : {}) } }),
+      viewports: engine.viewports().filter((one) => one.shown),
       mediaForm: host.mediaForm,
       onPick: pick,
-      onMenu: (opened) => host.toggleMenu(`strip-${key}`, opened),
+      onMenu: (opened, refocus) => host.toggleMenu(`strip-${key}`, opened, refocus),
       onMediaDraft: (text) => host.patch({ mediaDraft: text === null ? null : { owner: key, text } }),
       onAdd: (added) => {
         const parts = conditionParts(added);
@@ -460,10 +520,21 @@ export function renderFamilyCard(
         host.patch({ otherSlots: waiting, cardPicks: picks });
       },
       keyForMedia: (typed) => mediaKeyFor(model, typed),
+      onRemove: (removed) => removeCondition(host, {
+        owner: key,
+        key: removed,
+        entries: family.members,
+        onCleared: () => {
+          const picks = new Map(host.ui.cardPicks);
+          picks.set(key, 'base');
+          host.patch({ cardPicks: picks });
+        },
+      }),
     })}
       ${picked === 'base' ? nothing : html`<p class="hint slot-hint" style="margin:0 0 7px">${whenText}</p>`}
       ${pickedState ? nothing : baseBlock}
       ${stateBlocks}
+      ${emptyPicked}
       ${stateAdder}
       ${name && options.group === 'classes' && owned && host.element.classList.contains(name) && !host.filtering
         ? renderClassActions(name, host)
@@ -484,6 +555,55 @@ export function renderFamilyCard(
     ${open ? body() : away ? poppedNote() : nothing}
   </div>`;
 }
+/**
+ * Take a condition off a bar (its ×): what is written under it goes, as one undo entry, after
+ * asking when there is anything; one added from "+" and never written just leaves the bar. Rules
+ * the editor cannot write (another origin's sheet) stay, and the question says so.
+ */
+export function removeCondition(
+  host: StylesHost,
+  options: { owner: string; key: string; entries: readonly RuleEntry[]; onCleared(): void },
+): void {
+  const { engine, model } = host;
+  const { owner, key } = options;
+  const under = options.entries.filter((entry) => conditionOf(model, entry) === key && entry.declarations.length);
+  const writable = under.filter((entry) => entry.target.kind !== 'readonly');
+  const name = conditionName(model, key);
+  const clear = (): void => {
+    const waiting = new Map(host.ui.otherSlots);
+    waiting.set(owner, (waiting.get(owner) ?? []).filter((one) => one !== key));
+    host.patch({
+      otherSlots: waiting,
+      pendingStates: host.ui.pendingStates.filter((one) =>
+        !(one.family === owner && conditionKey(one.slot, one.state) === key)),
+    });
+    options.onCleared();
+  };
+  if (!under.length) {
+    clear();
+    return;
+  }
+  if (!writable.length) {
+    engine.notify(`${name} is written in a stylesheet the editor cannot change, so it stays.`, 'info');
+    return;
+  }
+  const declarations = writable.reduce((sum, entry) => sum + entry.declarations.length, 0);
+  const rules = [...new Set(writable.map((entry) => entry.selector))];
+  const kept = under.length - writable.length;
+  engine.askToConfirm({
+    title: `Remove ${name}?`,
+    message: `This removes ${countText(declarations, 'declaration')} written under ${name}, from ${rules.join(', ')}.`,
+    ...(kept ? { detail: `${countText(kept, 'rule')} in a stylesheet the editor cannot change stay.` } : {}),
+    confirmLabel: `Remove ${name}`,
+    tone: 'danger',
+    reversible: true,
+    run: () => {
+      engine.removeRules(writable.map((entry) => entry.target), `Remove ${name} from ${rules.join(', ')}`);
+      clear();
+    },
+  });
+}
+
 /** A card drawn in a popover, and how its header closes it there. */
 export interface Popped {
   onClose(): void;
@@ -556,23 +676,19 @@ function rulesElsewhere(name: string, host: StylesHost): string[] {
     .filter((family) => family !== `.${CSS.escape(name)}` && mention.test(family));
 }
 
-/** "Manage in Tokens" and "Detach styles from class", then the detach panel while it is open. */
+/**
+ * "Detach styles from class", then the detach panel while it is open: a button like the panel's
+ * other actions ("Extract into a class", "Paste CSS…"), with the Spacing editor's unlink icon, and
+ * "Never mind" while the panel is open. The class itself is edited right here, so there is no
+ * longer a way out to Tokens.
+ */
 function renderClassActions(name: string, host: StylesHost): TemplateResult {
   const { engine, ui } = host;
   const uses = engine.classes.usage().get(name) ?? 0;
   const open = ui.detachOpen === name;
   return html`<div class="actions">
       <button
-        class="link"
-        type="button"
-        title="Open this class in the design system panel"
-        @click=${() => engine.setDockTab('tokens')}
-      >
-        Manage in Tokens
-      </button>
-      <span class="spacer"></span>
-      <button
-        class="link"
+        class="btn sm"
         type="button"
         data-act="detach"
         aria-expanded=${open ? 'true' : 'false'}
@@ -584,7 +700,7 @@ function renderClassActions(name: string, host: StylesHost): TemplateResult {
       host.patch({ detachOpen: open ? null : name, forkDraft: '' });
     }}
       >
-        ${open ? 'Never mind' : 'Detach styles from class'}
+        ${icon(open ? 'close' : 'unlink', 12)} ${open ? 'Never mind' : 'Detach styles from class'}
       </button>
     </div>
     ${open ? renderDetach(name, host, uses) : nothing}`;
@@ -932,10 +1048,6 @@ export const sourcesStyles: CSSResult = css`
   .block-hint {
     margin: 4px 0 0;
   }
-  .cls .body .actions .spacer {
-    flex: 1 1 auto;
-  }
-
   /* Leaving a shared class, for one element. Two routes, each stating what it does to the class
      and to everything else wearing it: the question that decides between them. */
   .detach {

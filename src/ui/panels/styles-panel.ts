@@ -29,6 +29,7 @@ import {
   blockId,
   cardView,
   INLINE_LIST_ID,
+  removeCondition,
   renderBlockAdder,
   renderBlockHeader,
   renderFamilyCard,
@@ -59,6 +60,7 @@ import {
   type BarChip,
 } from './styles/size-strip.js';
 import { menuStyles, placeLayer } from './styles/menu.js';
+import { searchPopoverStyles } from './styles/search-popover.js';
 import { stylesDestination, type AdderDestination } from './styles/property-adder.js';
 import {
   isViewportDependent,
@@ -314,6 +316,7 @@ export class HeoStylesPanel extends HeoElement {
     headerStyles,
     previewBarStyles,
     sizeStripStyles,
+    searchPopoverStyles,
     sourcesStyles,
     css`
       :host {
@@ -652,7 +655,7 @@ export class HeoStylesPanel extends HeoElement {
       hit: (...texts) => this.#hit(...texts),
       focusSelector: (selector) => this.#focusSelector(selector),
       mediaForm: this.mediaForm,
-      toggleMenu: (id, open) => this.#toggleMenu(id, open),
+      toggleMenu: (id, open, refocus) => this.#toggleMenu(id, open, refocus),
       forkForm: this.forkForm,
       openCard: (key) => this.#openCard(key),
       // The adder's errors: one adder is open at a time, so one form.
@@ -874,12 +877,13 @@ export class HeoStylesPanel extends HeoElement {
   }
 
   /** Open or close one of the panel's menus; closing hands focus back to what opened it. */
-  #toggleMenu(id: string, open: boolean): void {
+  #toggleMenu(id: string, open: boolean, refocus = true): void {
     this.mediaForm.reset();
     this.#patch({ menu: open ? { id } : null, popover: null, mediaDraft: null });
-    // The viewport sizes panel is a dialog of fields, focused at its first; a menu at its first item.
-    const inside = id === 'preview' ? 'heo-viewport-sizes' : '.mi';
-    this.#focusSelector(
+    // A dialog of fields (the viewport sizes, a search popover) is focused at its first; a menu at
+    // its first item.
+    const inside = id === 'preview' ? 'heo-viewport-sizes' : ':is(heo-value-field, .mi)';
+    if (open || refocus) this.#focusSelector(
       open ? `.menu[data-menu="${CSS.escape(id)}"] ${inside}` : `[data-menu-anchor="${CSS.escape(id)}"]`,
       open,
     );
@@ -910,13 +914,16 @@ export class HeoStylesPanel extends HeoElement {
       alwaysCount: model.appliedProperties().length,
       alwaysTitle: 'What the element renders with now',
       chips,
-      remaining: remainingConditions(model, chips.map((chip) => chip.key), host.previewWidth),
+      remaining: remainingConditions(model, chips.map((chip) => chip.key), host.previewWidth, picked),
       menuOpen: this.ui.menu?.id === menuId,
       mediaDraft: this.ui.mediaDraft?.owner === EFFECTIVE_LIST_ID ? this.ui.mediaDraft.text : null,
+      widthDraft: this.ui.mediaDraft?.owner === EFFECTIVE_LIST_ID ? this.ui.mediaDraft.width ?? null : null,
+      onWidthDraft: (width) => this.#patch({ mediaDraft: { owner: EFFECTIVE_LIST_ID, text: '', ...(width ? { width } : {}) } }),
+      viewports: this.editor.viewports().filter((one) => one.shown),
       mediaForm: this.mediaForm,
       // A button is a toggle: the bar hands back `base` for the one already picked.
       onPick: (key) => this.#patch({ effPick: key }),
-      onMenu: (open) => this.#toggleMenu(menuId, open),
+      onMenu: (open, refocus) => this.#toggleMenu(menuId, open, refocus),
       onMediaDraft: (text) =>
         this.#patch({ mediaDraft: text === null ? null : { owner: EFFECTIVE_LIST_ID, text } }),
       onAdd: (key) => {
@@ -926,6 +933,12 @@ export class HeoStylesPanel extends HeoElement {
         this.#patch({ otherSlots: next, effPick: key });
       },
       keyForMedia: (media) => mediaKeyFor(model, media),
+      onRemove: (key) => removeCondition(host, {
+        owner: EFFECTIVE_LIST_ID,
+        key,
+        entries: model.entries,
+        onCleared: () => this.#patch({ effPick: 'base' }),
+      }),
     });
   }
 
