@@ -1011,15 +1011,15 @@
             // Nothing writes it yet, so inline is where it goes until another is picked.
             destSwitch()?.value === 'target:inline style';
           results.adder.theLineSaysWhatEachDoes =
-            explain() === 'Its style attribute · this element only, every size' &&
+            explain() === 'Adds inline style • impacting this element only' &&
             (destSwitch()?.options ?? []).map((one) => one.title).join(';') ===
-              'Its style attribute · this element only, every size;Edits .card · 4 elements, every size;' +
-              'Edits .featured · 1 element, every size;Makes a class for this element only';
+              'Adds inline style • impacting this element only;Adds .card • impacting 4 elements;' +
+              'Adds .featured • impacting this element only;Adds a new class • impacting this element only';
           // Alt+Right steps it from the field, the caret staying there.
           key(inputOf(effAdder()), 'ArrowRight', { altKey: true });
           await settle(200);
           results.adder.altArrowStepsTheSwitch =
-            destSwitch()?.value === 'target:.card' && explain() === 'Edits .card · 4 elements, every size';
+            destSwitch()?.value === 'target:.card' && explain() === 'Adds .card • impacting 4 elements';
           // Escape closes the list first, then the adder.
           key(inputOf(effAdder()), 'Escape');
           await settle(200);
@@ -1621,18 +1621,77 @@
               important?.important === true &&
               Boolean(important?.shadowRoot?.querySelector('.text .imp')) &&
               !important?.shadowRoot?.querySelector('.trailing .imp');
-            // No clear cross on a row; the trash resets to the value before this session.
-            effField('font-size')?.dispatchEvent(new CustomEvent('value-change', { detail: { value: '18px' }, bubbles: true, composed: true }));
+            // No clear cross on a row. The trash removes the declaration the row shows: the element's own
+            // at once, and one in a rule other elements wear only after a warning.
+            const trash = (property) => effRow(property)?.querySelector('.reset');
+            const trashLooks = !sroot().querySelector('.row heo-value-field[clearable]') &&
+              Boolean(trash('font-size')?.querySelector('svg path[d^="M2.8 4.5"]')) &&
+              trash('font-size')?.getAttribute('aria-label') === 'Remove font-size from inline style';
+            before = engine.history.size;
+            trash('font-size')?.click();
             await settle(250);
-            const trash = effRow('font-size')?.querySelector('.reset');
-            results.effective.theTrashIsTheOnlyRemove =
-              !sroot().querySelector('.row heo-value-field[clearable]') &&
-              Boolean(trash?.querySelector('svg path[d^="M2.8 4.5"]')) &&
-              trash?.getAttribute('aria-label') === 'Reset font-size';
-            trash?.click();
+            const inlineGoes = !target.style.fontSize && engine.history.size === before + 1 && !deep('heo-confirm-dialog');
+            engine.undo();
             await settle(250);
-            results.effective.theTrashIsTheOnlyRemove =
-              results.effective.theTrashIsTheOnlyRemove && target.style.fontSize === '16px';
+            trash('font-weight')?.click();
+            await settle(250);
+            const dialog = () => deep('heo-confirm-dialog');
+            const asked = Boolean(dialog()) && /\.card styles 4 elements/.test(textOf(dialog()?.shadowRoot)) &&
+              siteRule('.card')?.style.getPropertyValue('font-weight') === '600';
+            engine.resolveConfirm();
+            await settle(250);
+            const sharedGoes = siteRule('.card')?.style.getPropertyValue('font-weight') === '';
+            engine.undo();
+            await settle(250);
+            results.effective.theTrashRemovesTheShownDeclaration =
+              trashLooks && inlineGoes && target.style.fontSize === '16px' && asked && sharedGoes &&
+              siteRule('.card')?.style.getPropertyValue('font-weight') === '600';
+            // No line under an edited row: the switch's own line says where it goes.
+            results.effective.noWhereLineUnderARow = !sroot().querySelector('.prow .under, .prow .where');
+            /*
+             * A segmented row (text-align) has no value list, so the line sits under it while it is in
+             * use, its source a menu of the same destinations, the current one first chosen.
+             */
+            const alignRow = () => effRow('text-align')?.closest('.prow');
+            const line = () => alignRow()?.querySelector('.dest-line');
+            alignRow()?.querySelector('heo-segmented')?.shadowRoot?.querySelector('button')?.focus();
+            await settle(120);
+            const shownWhileInUse = line() && getComputedStyle(line()).display !== 'none';
+            const lineText = textOf(line());
+            line()?.querySelector('.dest-pick')?.click();
+            await settle(200);
+            const destMenu = () => sroot().querySelector('.menu[data-menu^="dest-"]');
+            const menuItems = Array.from(destMenu()?.querySelectorAll('.mi') ?? []).map((one) => textOf(one.querySelector('.lbl')));
+            const stillShown = line() && getComputedStyle(line()).display !== 'none';
+            Array.from(destMenu()?.querySelectorAll('.mi') ?? []).find((one) => textOf(one.querySelector('.lbl')) === 'inline style')?.click();
+            await settle(200);
+            const lineAfter = textOf(line());
+            before = engine.history.size;
+            Array.from(alignRow()?.querySelector('heo-segmented')?.shadowRoot?.querySelectorAll('button') ?? [])
+              .find((one) => textOf(one) === 'C')?.click();
+            await settle(250);
+            results.effective.aSegmentedRowSaysWhereUnderIt =
+              Boolean(shownWhileInUse) && lineText === 'Edits .card • impacting 4 elements' &&
+              menuItems.join(',') === 'inline style,.card,.featured,a new class' && Boolean(stillShown) &&
+              lineAfter === 'Adds inline style • impacting this element only' &&
+              target.style.textAlign === 'center' && engine.history.size === before + 1;
+            engine.undo();
+            await settle(250);
+            /* Under a media query, the switch names the rule alone: the bar already says which query. */
+            sroot().querySelector('[data-strip="effective"] [data-slot="tablet"]')?.click();
+            await settle(250);
+            const tabletPadding = sroot().querySelector('[data-egroup="size:tablet"] .row[data-property="padding"] heo-value-field');
+            tabletPadding?.focusInput();
+            tabletPadding?.openList();
+            await settle(200);
+            results.effective.underAMediaQueryTheSwitchNamesTheRule =
+              (switchOf(tabletPadding)?.options ?? []).map((one) => one.label).slice(0, 2).join(',') === '.card,.featured' &&
+              (switchOf(tabletPadding)?.options ?? []).every((one) => !/[≤≥(]/.test(one.label)) &&
+              textOf(tabletPadding?.shadowRoot?.querySelector('.list-head .explain')) ===
+                'Edits .card (min-width: 768px) • impacting 4 elements';
+            tabletPadding?.closePopup();
+            sroot().querySelector('[data-strip="effective"] .base')?.click();
+            await settle(250);
             /* The bar: a picked size shows that size's rows alone, as in a card. */
             sroot().querySelector('[data-strip="effective"] [data-slot="tablet"]')?.click();
             await settle(250);

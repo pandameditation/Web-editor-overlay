@@ -582,20 +582,17 @@
         results.bar.lineSaysPreviewing =
           engine.store.value.previewWidth === 320 && pressedSegs().join(',') === '320' &&
           line() === 'Previewing 320px.';
-        // A category section's row: it asks where a viewport-dependent value stays (Effective styles
-        // chooses in its value list instead).
+        // No question after Enter any more, anywhere: a value goes where its list's switch says.
         const padField = () =>
           root().querySelector('[data-declarations="spacing"] .row[data-property="padding"] heo-value-field');
         padField()?.focusInput();
         padField()?.dispatchEvent(new CustomEvent('value-change', { detail: { value: '7px 8px' }, bubbles: true, composed: true }));
         await settle();
-        const hadBox = Boolean(root().querySelector('.savebox'));
+        results.bar.noSaveBoxAfterEnter = !root().querySelector('.savebox');
+        engine.undo();
+        await settle();
         seg('Actual')?.click();
         await settle();
-        results.bar.changingPreviewCancelsAPendingSave =
-          hadBox && !root().querySelector('.savebox') && engine.store.value.previewWidth === null &&
-          !target.hasAttribute('data-heo-save-preview') && padding() === actualPadding;
-
         /* ---- the ⋮ panel: viewport sizes, for editing ---- */
         progress.textContent = 'barMenu';
         const more = () => root().querySelector('.sizes .more');

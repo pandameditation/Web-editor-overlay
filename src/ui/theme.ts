@@ -56,7 +56,7 @@ export const themeVariables = css`
     --heo-danger: oklch(78% 0.14 22);
     --heo-success: oklch(74% 0.15 155);
     --heo-warn: oklch(80% 0.14 85);
-    /* The two as small text, such as the save box's verdicts. The plain inks are bright enough on
+    /* The two as small text. The plain inks are bright enough on
        dark glass but read about 2.2:1 on light glass, so the light theme darkens them. */
     --heo-success-text: var(--heo-success);
     --heo-warn-text: var(--heo-warn);
@@ -523,8 +523,7 @@ export const baseStyles = css`
 `;
 
 /**
- * The framed box a form opens in where it was asked for: the save box and an opened
- * "+ Add property". Declarations only, so each keeps its own selector and spacing.
+ * The framed box a form opens in where it was asked for: an opened "+ Add property". Declarations only, so each keeps its own selector and spacing.
  */
 export const framedBox = css`
   border: 1px solid var(--heo-accent-line);

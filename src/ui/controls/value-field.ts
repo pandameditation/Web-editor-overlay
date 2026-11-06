@@ -255,11 +255,6 @@ export class HeoValueField extends LitElement {
         outline: 2px solid var(--heo-focus-ring);
         outline-offset: 1px;
       }
-      /* An edit waiting for "where to save": held in the engaged look until it is answered. */
-      :host([pending]) .wrap {
-        border-color: var(--heo-accent-line);
-        background: var(--heo-bg);
-      }
 
       /* Submit affordance, shown only when the field is used as an "add" control. */
       .action {
@@ -713,8 +708,6 @@ export class HeoValueField extends LitElement {
   importantRemovable = false;
   /** The tag's title when it is text: where the `!important` lives and how to change it. */
   @property({ type: String, reflect: true, attribute: 'important-title' }) importantTitle = '';
-  /** An edit waiting for "where to save": drawn engaged until it is saved or reverted. */
-  @property({ type: Boolean, reflect: true }) pending = false;
   /**
    * A host's control drawn at the head of the list, above the values: where Effective styles says
    * where the value goes. Pressing it keeps the caret in the field, and Alt+Left/Right ask the host

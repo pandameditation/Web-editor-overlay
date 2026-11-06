@@ -297,7 +297,6 @@
           root().querySelector(`[data-declarations="${list}"] .row[data-property="${property}"]`);
         const fieldIn = (list, property) => rowIn(list, property)?.querySelector('heo-value-field');
         const moons = (row) => row?.querySelectorAll('.dots .moon').length ?? -1;
-        const whereOf = (row) => row?.closest('.prow')?.querySelector('.under .where');
         // The cascade popover, not a card opened over the panel from one of its links.
         const pop = () => root().querySelector('.pop:not(.cardpop)');
         const openDot = async (list, property) => {
@@ -325,19 +324,30 @@
           // No clear button on a displayed row: its trash is the one way to remove or reset.
           noRowHasAClearButton: effectiveRows.every((row) => !row.querySelector('heo-value-field')?.hasAttribute('clearable')),
         };
+        // Where an edit goes is said once, by the switch at the head of the value's list, and it
+        // starts where the value is written now. No second line under the row repeats it.
+        const explainOf = async (property) => {
+          const field = fieldIn('effective', property);
+          // Opened without focusing, which would scroll the dock under the checks that follow.
+          field?.openList();
+          await settle();
+          const text = field?.shadowRoot?.querySelector('.list-head .explain')?.textContent.trim() ?? '';
+          field?.closePopup();
+          return text;
+        };
+        const padExplain = await explainOf('padding');
+        const bgExplain = await explainOf('background-color');
+        const sizeExplain = await explainOf('font-size');
+        // Focused, as a user would, which brings the padding row into view for the checks below.
         fieldIn('effective', 'padding')?.focusInput();
         await frames();
-        const padHintShown = getComputedStyle(whereOf(padRow)).display !== 'none';
         fieldIn('effective', 'padding')?.shadowRoot.querySelector('input').blur();
         await settle();
-        results.effective.focusHintSaysWhereItGoes =
-          padHintShown &&
-          // Where the edit goes now, which is where the value is written: the switch in the value's
-          // list says the same, and changes it.
-          whereOf(rowIn('effective', 'padding'))?.textContent.trim() === `Edits ${sideLabel} · 4 elements` &&
-          /^Edits \.card\.featured · 1 element/.test(whereOf(rowIn('effective', 'background-color'))?.textContent.trim()) &&
-          whereOf(rowIn('effective', 'font-size'))?.textContent.trim() === 'Its style attribute · this element only, every size';
-
+        results.effective.theSwitchSaysWhereItGoes =
+          new RegExp(`^Edits \\.card \\((max|min)-width: 76[78]px\\) • impacting 4 elements$`).test(padExplain) &&
+          bgExplain === 'Edits .card.featured • impacting this element only' &&
+          sizeExplain === 'Edits inline style • impacting this element only' &&
+          !root().querySelector('.prow .under, .prow .where');
         /* ---- the dot ---- */
         const dotsLabel = (row) => row?.querySelector('.dots')?.getAttribute('aria-label') ?? '';
         const allRows = Array.from(root().querySelectorAll('.row[data-heo-part="row"]'));
@@ -562,8 +572,8 @@
           /inherited from section\.promo \(\.promo\)/.test(inherited) &&
           /Typing a value adds it inline/.test(inherited);
         results.popover.explainsBrowserDefault = /the browser's default/.test(defaultText);
-        // While a width whose slot is not All sizes is previewed, typing in the row opens "Save …
-        // to…" rather than writing inline, so the popover must not promise an inline write.
+        // Nothing writes it, so an edit goes inline at any width: previewing a size changes nothing
+        // about that, and the popover says the same as at Actual.
         engine.setPreviewWidth(320);
         await settle();
         // The precondition: 320px picks a real size slot (the sample's max-width 767px), not All sizes.
@@ -574,10 +584,10 @@
         await closePop();
         engine.setPreviewWidth(null);
         await settle();
-        results.popover.noInlinePromiseWhilePreviewing =
+        results.popover.theInlinePromiseHoldsWhilePreviewing =
           previewedSlot &&
           /Nothing declares it for this element at 320px/.test(previewedText) &&
-          !/adds it inline/.test(previewedText);
+          /adds it inline/.test(previewedText);
 
         /*
          * ---- the conditions bar: Always, then what declares something ----
@@ -827,10 +837,11 @@
         const colourField = () => fieldIn('effective', 'color');
         results.field = {
           showsImportantTag: colourField()?.hasAttribute('important') === true,
-          // The row does not write .promo .card, so the tag says so instead of offering to remove it.
-          tagIsTextForARulesImportance:
-            colourField()?.shadowRoot.querySelector('.imp')?.localName === 'span' &&
-            /\.promo \.card/.test(colourField()?.getAttribute('important-title') ?? ''),
+          // The row writes where its value is written, .promo .card, so its tag removes that rule's
+          // !important, the same as the rule's own line in the popover.
+          tagRemovesTheImportanceItWrites:
+            colourField()?.shadowRoot.querySelector('.imp')?.localName === 'button' &&
+            colourField()?.hasAttribute('important-removable') === true,
         };
         fieldIn('effective', 'font-size')?.dispatchEvent(
           new CustomEvent('value-change', { detail: { value: '17px !important' }, bubbles: true, composed: true }));

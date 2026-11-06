@@ -1,6 +1,5 @@
-import { slotMedia } from './size-strip.js';
 import { css, html, nothing, type CSSResult, type TemplateResult } from 'lit';
-import { isPseudoElement, isWidthQuery, underMedia } from '../../../core/breakpoints.js';
+import { isPseudoElement } from '../../../core/breakpoints.js';
 import type {
   CascadeContext,
   CascadeList,
@@ -10,12 +9,12 @@ import type {
   WriteTarget,
 } from '../../../core/cascade.js';
 import { longhandsOf, splitImportant } from '../../../core/declaration-list.js';
-import { entryLabel, reachText, shortLabel, type SaveContext } from '../../../core/save-plan.js';
+import { entryLabel, reachText, shortLabel } from '../../../core/save-plan.js';
 import { mediaApplies } from '../../../core/viewport.js';
 import { icon } from '../../icons.js';
 import { buildSuggestions, valueKindFor } from '../../suggestions.js';
-import type { AdderDestination } from './property-adder.js';
-import { beginSave, cancelSave, renderSaveBox } from './save-box.js';
+import { destinationParts, explainDestination, type AdderDestination } from './property-adder.js';
+import { renderMenu } from './menu.js';
 import type { RowScope, StylesHost } from './types.js';
 
 /**
@@ -31,7 +30,7 @@ import type { RowScope, StylesHost } from './types.js';
  * state's own rule in a state group.
  *
  * The grid element keeps today's `div.row[data-property]` (fixtures find fields that way), inside
- * an attribute-less `div.prow` that also holds the focus hint or the save box under it.
+ * an attribute-less `div.prow` that also holds a segmented row's destination line under it.
  */
 
 /** Properties drawn as a segmented control instead of a text field. */
@@ -110,7 +109,7 @@ const isInline = (one: AdderDestination | null | undefined): boolean =>
 /* What a row shows                                                            */
 /* -------------------------------------------------------------------------- */
 
-/** Stable within one render: what popovers and save boxes name a row by. */
+/** Stable within one render: what popovers and destination picks name a row by. */
 export function scopeKey(scope: RowScope, selected: HTMLElement): string {
   switch (scope.kind) {
     case 'element':
@@ -166,24 +165,6 @@ export function previewSlot(model: ElementModel, width: number | null): string {
   return applying.at(-1)?.key ?? 'base';
 }
 
-/**
- * Whether an edit to this row depends on the viewport, and so asks where it should stay.
- *
- * True in a size group; while previewing a width whose slot is not All sizes; and at Actual when
- * the winning declaration sits in a media rule. Never in a state group, which writes its own rule.
- */
-export function isViewportDependent(
-  scope: RowScope,
-  model: ElementModel,
-  property: string,
-  previewWidth: number | null,
-): boolean {
-  if (scope.kind === 'size') return true;
-  if (scope.kind === 'state') return false;
-  if (previewWidth !== null) return previewSlot(model, previewWidth) !== 'base';
-  const winner = model.cascade(property).applying[0];
-  return winner?.source.kind === 'rule' && winner.source.entry.media !== null;
-}
 
 /** Where a value comes from, in full: `inline style`, `.card @media (min-width: 768px)`. */
 export function sourceLabel(contribution: Contribution): string {
@@ -261,26 +242,6 @@ export function readRow(spec: RowSpec): {
   return { list, winner, shown, stateTarget };
 }
 
-/** The save context for a value entered in a row. */
-export function saveContextFor(
-  spec: RowSpec,
-  declarations: Record<string, string>,
-  previewWidth: number | null,
-): SaveContext {
-  const { scope, model } = spec;
-  let slot: string | null = null;
-  if (scope.kind === 'size') slot = scope.slot;
-  else if (previewWidth !== null && previewSlot(model, previewWidth) !== 'base') {
-    slot = previewSlot(model, previewWidth);
-  } else {
-    const winner = model.cascade(Object.keys(declarations)[0] ?? '').applying[0];
-    if (winner?.source.kind === 'rule' && winner.source.entry.media !== null) {
-      slot = model.slotOf(winner.source.entry);
-    }
-  }
-  const width = scope.kind === 'size' ? slotWidth(model, scope.slot) ?? model.width : model.width;
-  return { element: spec.element, declarations, slot, width };
-}
 
 
 export function shorten(value: string, max = 22): string {
@@ -325,170 +286,223 @@ export function renderCascadeDot(spec: {
 /* The row                                                                     */
 /* -------------------------------------------------------------------------- */
 
-export function renderPropertyRow(spec: RowSpec, host: StylesHost): TemplateResult {
-  const { property, scope, element, model } = spec;
-  const engine = host.engine;
-  const rowId = rowIdOf(scope, property, host.element);
-  const { list, winner, shown, stateTarget } = readRow(spec);
-  const pending = host.ui.pending?.rowId === rowId ? host.ui.pending : null;
-  const writesInline = scope.kind === 'element' || scope.kind === 'section' || scope.kind === 'parent';
-  const pseudo = scope.kind === 'state' && isPseudoElement(scope.state);
-  const computed = (pseudo ? getComputedStyle(element, scope.state) : getComputedStyle(element))
-    .getPropertyValue(property)
-    .trim();
-  const value = pending ? pending.ctx.declarations[property] ?? '' : shownValue(shown);
-  const expanded = host.ui.popover?.rowId === rowId;
+/**
+ * Where a row's edit goes: the destinations offered for it, the one its value is written in now,
+ * and the one picked (the current one until the user picks another). The one question about
+ * where, asked the same way by a value list's switch, a segmented row's line and the box editor.
+ */
+export interface DestinationChoice {
+  offered: readonly AdderDestination[];
+  current: AdderDestination | null;
+  picked: AdderDestination;
+  pick(key: string): void;
+  /** Alt+Left/Right from a field: the next destination either way. */
+  step(delta: number): void;
+  /** The switch and its line, for a value list's head; null with one place to write. */
+  head: TemplateResult | null;
+}
 
-  /*
-   * Effective styles: the edit goes where the value is written now (inline when nothing writes
-   * it), until the switch at the head of the value's list says otherwise. That switch is the one
-   * question about where, so a row with it never opens the save box.
-   */
-  const offered = spec.destinations?.length ? spec.destinations : null;
-  const current = offered ? currentDestination(offered, shown, element) : null;
+export function destinationChoice(spec: RowSpec, host: StylesHost, rowId: string, shown: Contribution | undefined): DestinationChoice {
+  const offered = spec.destinations?.length ? spec.destinations : host.destinationsFor(spec);
+  const current = currentDestination(offered, shown, spec.element);
   const pickedKey = host.ui.rowDest?.rowId === rowId ? host.ui.rowDest.key : current?.key;
-  const picked = offered ? offered.find((one) => one.key === pickedKey) ?? current ?? offered[0] : null;
-  const asks = !offered && isViewportDependent(scope, model, property, host.previewWidth);
-  const pickDestination = (key: string): void => {
-    engine.cancelPreview();
-    host.patch({ rowDest: { rowId, key } });
+  const picked = offered.find((one) => one.key === pickedKey) ?? current ?? offered[0];
+  const pick = (key: string): void => {
+    host.engine.cancelPreview();
+    host.patch({ rowDest: { rowId, key }, menu: null });
   };
-  const head = offered && picked && offered.length > 1
+  const step = (delta: number): void => {
+    const keys = offered.map((one) => one.key);
+    pick(keys[(keys.indexOf(picked.key) + delta + keys.length) % keys.length]);
+  };
+  const head = offered.length > 1
     ? html`<heo-segmented
-        .options=${offered.map((one) => ({ value: one.key, label: one.short ?? one.label, title: one.explain ?? one.reach }))}
+        .options=${offered.map((one) => ({ value: one.key, label: one.short ?? one.label, title: explainDestination(one, spec.property) }))}
         .value=${picked.key}
         label="Where it goes"
         wrap
         @segment-change=${(event: CustomEvent<{ value: string }>) => {
-        if (event.detail.value) pickDestination(event.detail.value);
+        if (event.detail.value) pick(event.detail.value);
       }}
       ></heo-segmented>
-      <p class="explain">${picked.explain ?? picked.reach}</p>`
+      <p class="explain">${explainDestination(picked, spec.property)}</p>`
     : null;
+  return { offered, current, picked, pick, step, head };
+}
 
-  /*
-   * Who may drop a shown `!important` from the field's tag: only a row that writes the declaration
-   * it shows. A rule's importance shown on an element row is not this row's to change; the tag
-   * stays text and points to the popover, where that rule's own line has the toggle.
-   */
-  const tagWrites = shown
-    ? (writesInline && shown.source.kind === 'inline') ||
-      (scope.kind === 'state' && shown.source.kind === 'rule' && shown.source.entry.state === scope.state)
-    : false;
+/**
+ * Write one value where the choice says: the element's own value moves when another destination is
+ * picked for it, so the inline copy does not go on beating it. Empty removes the element's own
+ * value; a shared rule's declaration is removed with the trash, which asks first.
+ */
+export function writeChosen(
+  host: StylesHost,
+  spec: RowSpec,
+  choice: DestinationChoice,
+  shown: Contribution | undefined,
+  text: string,
+): void {
+  const { engine } = host;
+  const { property, element } = spec;
+  const { picked, current } = choice;
+  host.patch({ rowDest: null });
+  engine.cancelPreview();
+  const typed = splitImportant(text);
+  if (!typed.value) {
+    if (isInline(picked)) engine.overrideStyle(property, '', element);
+    return;
+  }
+  if (picked === current && shown && typed.important === null && shown.value === typed.value) return;
+  if (!picked.dest) return;
+  const moving = isInline(current) && !isInline(picked);
+  const { hint } = engine.writeDeclarationTo(picked.dest, property, text, moving ? { move: element } : {});
+  if (hint) engine.notify(hint, 'info');
+}
 
-  const preview = (text: string): void => {
-    if (host.ui.pending) cancelSave(host);
-    if (picked && !isInline(picked)) {
-      if (picked.dest?.kind === 'target') engine.previewDeclaration(picked.dest.target, property, text);
-      else engine.cancelPreview();
-      return;
-    }
-    if (scope.kind === 'state' && !picked) {
-      if (stateTarget) engine.previewDeclaration(stateTarget, property, text);
-      return;
-    }
-    if (scope.kind === 'size') {
-      engine.previewStyle(property, text, element);
-      return;
-    }
+/** Paint a value being typed where the choice would write it. */
+function previewChosen(host: StylesHost, spec: RowSpec, picked: AdderDestination, text: string): void {
+  const { engine } = host;
+  const { property, element, model } = spec;
+  if (isInline(picked)) {
     const typed = splitImportant(text);
     const strong = typed.important === null && typed.value && needsImportant(model, property);
     engine.previewStyle(property, strong ? `${typed.value} !important` : text, element);
-  };
+  } else if (picked.dest?.kind === 'target') {
+    engine.previewDeclaration(picked.dest.target, property, text);
+  } else {
+    // A rule or class not made yet shows once it is written.
+    engine.cancelPreview();
+  }
+}
 
-  /** The one path a committed value takes (R25), from typing, the value list or a segment. */
-  const commit = (text: string, event: Event): void => {
-    if (picked?.dest) {
-      const typed = splitImportant(text);
-      const moving = isInline(current) && !isInline(picked);
-      host.patch({ rowDest: null });
-      if (!typed.value) {
-        // Emptied: the element's own value goes. A shared rule's is not emptied from here; its
-        // card, or the trash for the element's own value, is where a declaration is removed.
-        if (isInline(picked)) engine.overrideStyle(property, '', element);
-        else engine.cancelPreview();
-        return;
-      }
-      if (picked === current && shown && typed.important === null && shown.value === typed.value) {
-        engine.cancelPreview();
-        return;
-      }
-      engine.cancelPreview();
-      const { hint } = engine.writeDeclarationTo(picked.dest, property, text, moving ? { move: element } : {});
-      if (hint) engine.notify(hint, 'info');
-      return;
-    }
-    if (scope.kind === 'state') {
-      if (stateTarget) engine.setDeclaration(stateTarget, property, text);
-      else engine.cancelPreview();
-      return;
-    }
-    const typed = splitImportant(text);
-    if (!typed.value) {
-      if (scope.kind === 'size') engine.cancelPreview();
-      else engine.overrideStyle(property, '', element);
-      return;
-    }
-    if (shown && typed.important === null && shown.value === typed.value) {
-      engine.cancelPreview();
-      return;
-    }
-    if (asks) {
-      // Focus goes to the box unless the value was committed by moving to another control.
-      const active = ((event.target as Element).getRootNode() as ShadowRoot).activeElement;
-      const left = active !== null && active !== event.target;
-      beginSave(host, rowId, property, saveContextFor(spec, { [property]: text }, host.previewWidth), !left);
-      return;
-    }
-    engine.overrideStyle(property, text, element);
-  };
+/**
+ * The trash: removes the declaration the row shows, where it is written. One the element alone
+ * wears goes at once; one in a rule other elements wear too asks first, since they change with it.
+ */
+function removeShown(host: StylesHost, spec: RowSpec, shown: Contribution): void {
+  const { engine, model } = host;
+  const declared = shown.via ?? spec.property;
+  if (shown.source.kind === 'inline') {
+    engine.overrideStyle(declared, '', spec.element);
+    return;
+  }
+  const entry = shown.source.entry;
+  const label = entryLabel(entry);
+  const reach = model.reach(entry.family);
+  const remove = (): void => engine.removeDeclaration(entry.target, declared);
+  if (reach <= 1) {
+    remove();
+    return;
+  }
+  engine.askToConfirm({
+    title: `Remove ${declared} from ${label}?`,
+    message: `${label} styles ${reachText(reach)}: removing ${declared} changes all of them, not only this one.`,
+    confirmLabel: `Remove ${declared}`,
+    tone: 'danger',
+    reversible: true,
+    run: remove,
+  });
+}
 
+export function renderPropertyRow(spec: RowSpec, host: StylesHost): TemplateResult {
+  const { property, scope, element } = spec;
+  const engine = host.engine;
+  const rowId = rowIdOf(scope, property, host.element);
+  const { list, winner, shown } = readRow(spec);
+  const pseudo = scope.kind === 'state' && isPseudoElement(scope.state);
+  const computed = (pseudo ? getComputedStyle(element, scope.state) : getComputedStyle(element))
+    .getPropertyValue(property)
+    .trim();
+  const value = shownValue(shown);
+  const expanded = host.ui.popover?.rowId === rowId;
+  const choice = destinationChoice(spec, host, rowId, shown);
+  const { picked, current } = choice;
+
+  /*
+   * Who may drop a shown `!important` from the field's tag: a row writing the declaration it shows.
+   * A rule's importance shown while another destination is picked is not this edit's to change; the
+   * tag stays text and points to the popover, where that rule's own line has the toggle.
+   */
+  const tagWrites = Boolean(shown && current && picked === current);
+  const commit = (text: string): void => writeChosen(host, spec, choice, shown, text);
   const removeImportant = (): void => {
-    if (scope.kind === 'state') {
-      if (stateTarget) engine.setImportance(stateTarget, property, false);
-      return;
-    }
-    engine.overrideStyle(property, shown?.value ?? '', element, { important: false });
+    if (!shown) return;
+    if (shown.source.kind === 'inline') engine.overrideStyle(property, shown.value, element, { important: false });
+    else engine.setImportance(shown.source.entry.target, shown.via ?? property, false);
   };
 
   const segments = SEGMENTED[property];
+  const menuId = `dest-${rowId}`;
+  const menuOpen = host.ui.menu?.id === menuId;
   const control = segments
     ? html`<heo-segmented
         .options=${segments}
         .value=${value || computed}
         clearable
         label=${property}
-        @segment-change=${(event: CustomEvent<{ value: string }>) => commit(event.detail.value, event)}
+        @segment-change=${(event: CustomEvent<{ value: string }>) => commit(event.detail.value)}
       ></heo-segmented>`
     : html`<heo-value-field
         data-property=${property}
         .value=${value}
-        ?important=${!pending && Boolean(shown?.important)}
+        ?important=${Boolean(shown?.important)}
         ?important-removable=${tagWrites}
         important-title=${shown && !tagWrites
       ? `!important in ${shortLabel(shown)}. Change it from the dot's popover.`
       : ''}
-        ?pending=${Boolean(pending)}
-        .head=${head}
-        @head-step=${(event: CustomEvent<{ delta: number }>) => {
-      if (!offered || !picked) return;
-      const keys = offered.map((one) => one.key);
-      pickDestination(keys[(keys.indexOf(picked.key) + event.detail.delta + keys.length) % keys.length]);
-    }}
+        .head=${choice.head}
+        @head-step=${(event: CustomEvent<{ delta: number }>) => choice.step(event.detail.delta)}
         .kind=${valueKindFor(property)}
         .property=${property}
         .computed=${computed}
         .suggestions=${buildSuggestions(engine, property, element)}
         placeholder=${spec.placeholder ?? shorten(computed)}
-        @value-input=${(event: CustomEvent<{ value: string }>) => preview(event.detail.value)}
+        @value-input=${(event: CustomEvent<{ value: string }>) => previewChosen(host, spec, picked, event.detail.value)}
         @value-revert=${() => engine.cancelPreview()}
-        @value-change=${(event: CustomEvent<{ value: string }>) => commit(event.detail.value, event)}
+        @value-change=${(event: CustomEvent<{ value: string }>) => commit(event.detail.value)}
         @important-change=${removeImportant}
       ></heo-value-field>`;
 
-  const resettable = writesInline && engine.canResetStyle(element, property);
-  const baseline = resettable ? engine.styleBaseline(element, property) : null;
+  const removable = shown && targetOf(shown, element).kind !== 'readonly' ? shown : null;
   const from = winner && winner.source.kind === 'rule' ? winner : null;
+
+  /*
+   * A segmented row has no value list to hold the switch, so its line sits under the row while the
+   * row is in use, the destination a menu in it. Focusable, so a press in the line keeps it open.
+   */
+  const parts = destinationParts(picked, property);
+  const destLine = segments && choice.offered.length > 1
+    ? html`<p class=${menuOpen || host.ui.rowDest?.rowId === rowId ? 'dest-line on' : 'dest-line'} tabindex="-1">
+        ${parts.verb}
+        <button
+          class="dest-pick"
+          type="button"
+          aria-haspopup="menu"
+          aria-expanded=${menuOpen ? 'true' : 'false'}
+          data-menu-anchor=${menuId}
+          title="Choose where it goes"
+          @click=${() => host.toggleMenu(menuId, !menuOpen)}
+        >${parts.name} ${icon('chevronDown', 10)}</button>
+        ${parts.media} • impacting ${parts.impact}
+      </p>
+      ${menuOpen
+        ? renderMenu({
+          id: menuId,
+          label: 'Where it goes',
+          groups: [{
+            caption: 'Where it goes',
+            items: choice.offered.map((one) => ({
+              key: one.key,
+              label: destinationParts(one, property).name,
+              note: destinationParts(one, property).impact,
+              checked: one.key === picked.key,
+              onSelect: () => choice.pick(one.key),
+            })),
+          }],
+          onClose: () => host.toggleMenu(menuId, false),
+        })
+        : nothing}`
+    : nothing;
 
   return html`<div class="prow">
     <div
@@ -514,56 +528,20 @@ export function renderPropertyRow(spec: RowSpec, host: StylesHost): TemplateResu
       : nothing}
       </span>
       ${control}
-      ${resettable
+      ${removable
       ? html`<button
             class="kill tight reset"
             type="button"
-            aria-label=${baseline ? `Reset ${property}` : `Remove ${property}`}
-            title=${baseline
-          ? `Back to ${baseline}, its value before this session`
-          : 'Remove this declaration, as it was before this session'}
-            @click=${() => engine.resetStyle(property, element)}
+            aria-label=${`Remove ${removable.via ?? property} from ${shortLabel(removable)}`}
+            title=${`Remove ${removable.via ?? property} from ${shortLabel(removable)}`}
+            @click=${() => removeShown(host, spec, removable)}
           >
             ${icon('trash', 11)}
           </button>`
       : nothing}
     </div>
-    <div class="under">
-      ${pending
-      ? renderSaveBox(pending, host)
-      : html`<span class="where">${picked ? picked.explain ?? picked.reach : whereHint(spec, winner, stateTarget, asks)}</span>`}
-    </div>
+    ${destLine}
   </div>`;
-}
-
-/** The one line under a focused row saying where an edit goes (R9). */
-function whereHint(
-  spec: RowSpec,
-  winner: Contribution | undefined,
-  stateTarget: WriteTarget | null,
-  asks: boolean,
-): TemplateResult {
-  if (spec.scope.kind === 'state') {
-    const state = spec.scope.state;
-    const entry = spec.model.entries.find((one) =>
-      one.target === stateTarget && one.state === state);
-    if (!entry) return html`Edits the <b>${state}</b> rule`;
-    const reach = spec.model.reach(entry.family);
-    return html`Edits <b>${entryLabel(entry)}</b> ·
-      ${reachText(reach)}`;
-  }
-  if (asks) {
-    // A size group under a query that is not a size (print, a preference) does not depend on the viewport.
-    const media = spec.scope.kind === 'size' ? slotMedia(spec.model, spec.scope.slot) : null;
-    return media !== null && !isWidthQuery(media)
-      ? html`Only ${underMedia(media)}: after Enter, choose where it stays`
-      : html`Depends on the viewport: after Enter, choose where it stays`;
-  }
-  if (winner && winner.source.kind === 'rule') {
-    return html`Overrides in the <b>inline style</b> · this element only · ${shortLabel(winner)} stays as is`;
-  }
-  if (winner) return html`Edits the <b>inline style</b> · this element only, at every size`;
-  return html`Adds it to the <b>inline style</b> · this element only, at every size`;
 }
 
 export const propertyRowStyles: CSSResult = css`
@@ -678,27 +656,40 @@ export const propertyRowStyles: CSSResult = css`
     opacity: 0.25;
   }
 
-  /* Under the row: where an edit goes, while the row has focus; or the save box. */
-  .under {
-    padding-left: 26px;
-  }
-  .under .where {
+  /* A segmented row's "where it goes", under the row while the row is in use. */
+  .dest-line {
     display: none;
+    margin: 4px 0 0 26px;
     color: var(--heo-text-dim);
-    font-size: 10px;
-    line-height: 1.4;
+    font-size: 10.5px;
+    line-height: 1.5;
+    outline: none;
   }
-  .prow:focus-within .under .where {
+  .prow:focus-within .dest-line,
+  .dest-line.on {
     display: block;
-    margin-top: 3px;
   }
-  .under .where b {
+  .dest-pick {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    height: 18px;
+    padding: 0 4px 0 6px;
+    border: 1px solid var(--heo-line-strong);
+    border-radius: 999px;
+    background: var(--heo-raised);
     color: var(--heo-text);
     font-family: var(--heo-mono);
-    font-size: 10px;
-    font-weight: 400;
+    font-size: 10.5px;
+    cursor: pointer;
   }
-
+  .dest-pick:hover {
+    border-color: var(--heo-accent-line);
+  }
+  .dest-pick:focus-visible {
+    outline: 2px solid var(--heo-focus-ring);
+    outline-offset: 1px;
+  }
   .flash {
     animation: heo-row-flash 1.2s ease-out;
   }

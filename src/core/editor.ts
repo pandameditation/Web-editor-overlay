@@ -39,16 +39,7 @@ import {
   type WriteTarget,
 } from './cascade.js';
 import { escapeRegExp } from './css.js';
-import {
-  contributionLabel,
-  planViewportSave as planSave,
-  reachText,
-  type AddDestination,
-  type SaveContext,
-  type SaveOption,
-  type SavePlan,
-} from './save-plan.js';
-import { ManagedStyleSheet } from './stylesheet.js';
+import { contributionLabel, type AddDestination } from './save-plan.js';
 import {
   authoredMediaText,
   authoredPrelude,
@@ -123,7 +114,6 @@ import {
   EDITABLE_STATES,
   MAX_CUSTOM_SIZES,
   MAX_VIEWPORT,
-  mediaShort,
   MIN_VIEWPORT,
   needsGeneratedContent,
   slotForMedia,
@@ -1018,8 +1008,6 @@ function mediaDetail(rule: Pick<DesignRule, 'media'>): { media?: string } {
   return rule.media ? { media: rule.media } : {};
 }
 
-/** The bookkeeping attribute a solo save option is previewed through (the journal skips `data-heo-*`). */
-const SAVE_PREVIEW_ATTR = 'data-heo-save-preview';
 
 
 /** Whether a selector names `.name` as a class token. */
@@ -1578,8 +1566,6 @@ export class EditorEngine {
     this.rules.destroy();
     this.library.destroy();
     this.ai.destroy();
-    this.#endSavePreview();
-    this.#savePreviewSheet.destroy();
     // Before the evaluator goes: putting the page back needs nothing from it, but the order reads.
     this.viewport.destroy();
     unbindViewport(this.#media);
@@ -1791,11 +1777,8 @@ export class EditorEngine {
   select(el: HTMLElement | null, options: { reveal?: boolean } = {}): void {
     const current = this.store.value.selected;
     // Selecting the primary of a multi-selection is how a group collapses to one element, so
-    // it is only a no-op when nothing else is selected alongside it. The panel keeps its save box
-    // open then, so its preview stays too.
+    // it is only a no-op when nothing else is selected alongside it.
     if (current === el && this.store.value.selection.length <= 1) return;
-    // A save box belongs to the element it was opened for.
-    this.#endSavePreview();
     // Whatever was being previewed belonged to the old selection's panel, and its
     // fields are about to be replaced; nothing would ever put the page back.
     this.cancelPreview();
@@ -3307,19 +3290,8 @@ export class EditorEngine {
   }
 
   /* ---------------------------------------------------------------------- */
-  /* Saving a viewport-dependent edit                                       */
+  /* Automatic classes                                                      */
   /* ---------------------------------------------------------------------- */
-
-  /**
-   * The save option being previewed, if any.
-   *
-   * `attribute` says the element carries `data-heo-save-preview` (a bookkeeping attribute, so the
-   * journal ignores it); `previews` says the paint went through the ordinary previews, which
-   * `cancelPreview` puts back.
-   */
-  #savePreview: { element: HTMLElement; attribute: boolean; previews: boolean } | null = null;
-  /** Where a save option that writes a rule is painted while it is only being looked at. */
-  readonly #savePreviewSheet = new ManagedStyleSheet('heo-save-preview', { internal: true });
 
   /**
    * Whether a class is one of the editor's automatic classes on this element (L6).
@@ -3378,151 +3350,6 @@ export class EditorEngine {
       if (!taken(candidate)) return { name: candidate, reuse: false };
     }
     return { name: `${base}-${Date.now().toString(36)}`, reuse: false };
-  }
-
-  /** Where a viewport-dependent edit could be saved, with a verdict for each option. */
-  planViewportSave(ctx: SaveContext): SavePlan {
-    return planSave(this.elementModel(ctx.element), ctx, {
-      autoClass: (el, suffix) => this.#autoClass(el, suffix),
-      inlineImportant: (el, property, value) =>
-        splitImportant(this.#inlineText(el, property, value)).important === true,
-      stemClass: (el) => this.#stemClass(el),
-    });
-  }
-
-  /**
-   * Show what saving with `option` would look like, without committing. Null clears.
-   *
-   * One property inline or into its existing rule goes through the ordinary previews. Anything
-   * else (an automatic class, a new rule, a batch) is one rule in an internal sheet: an automatic
-   * class as `[data-heo-save-preview]` on the element, which has a class's specificity, so the page
-   * shows what Save gives (I21). An option whose condition does not apply now paints nothing.
-   */
-  previewSaveOption(ctx: SaveContext, option: SaveOption | null): void {
-    this.#endSavePreview();
-    // The row's typing preview first, so the option is shown over the committed state.
-    this.cancelPreview();
-    if (!option) return;
-    const el = ctx.element;
-    const entries = Object.entries(ctx.declarations);
-    const apply = option.apply;
-    if (entries.length === 1 && (apply.kind === 'inline' || apply.kind === 'replace')) {
-      const [property, value] = entries[0];
-      if (apply.kind === 'inline') {
-        this.previewStyle(property, this.#inlineText(el, property, value, apply.important), el);
-      } else {
-        this.previewDeclaration(apply.target, property, value);
-      }
-      this.#savePreview = { element: el, attribute: false, previews: true };
-      return;
-    }
-    this.#savePreview = { element: el, attribute: false, previews: false };
-    if (!option.visibleNow) return;
-    let selector: string;
-    let important = false;
-    if (apply.kind === 'auto-class' || apply.kind === 'inline') {
-      el.setAttribute(SAVE_PREVIEW_ATTR, '');
-      this.#savePreview.attribute = true;
-      selector = `[${SAVE_PREVIEW_ATTR}]`;
-      // A batch shown inline: important stands in for the inline origin it cannot have here.
-      important = apply.kind === 'inline' ? true : apply.important;
-    } else if (apply.kind === 'new-rule') {
-      selector = apply.selector;
-    } else {
-      const target = apply.target;
-      selector =
-        target.kind === 'live'
-          ? target.rule.selectorText
-          : target.kind === 'class'
-            ? `.${CSS.escape(target.name)}`
-            : target.kind === 'design-rule'
-              ? (this.rules.get(target.key)?.selector ?? '')
-              : '';
-      if (!selector) return;
-    }
-    const body = entries
-      .map(([property, raw]) => {
-        const { value, important: typed } = splitImportant(raw);
-        return `${property}: ${value}${important || typed ? ' !important' : ''};`;
-      })
-      .join(' ');
-    this.#savePreviewSheet.write(`${selector} { ${body} }`);
-  }
-
-  /** Put back whatever a save option's preview painted. Called before anything is saved or exported. */
-  #endSavePreview(): void {
-    const preview = this.#savePreview;
-    this.#savePreview = null;
-    if (!preview) return;
-    if (preview.attribute) preview.element.removeAttribute(SAVE_PREVIEW_ATTR);
-    this.#savePreviewSheet.write('');
-    if (preview.previews) this.cancelPreview();
-  }
-
-  /** Save a viewport-dependent edit with the chosen option: one undo entry, and a notice that says where. */
-  saveViewportEdit(ctx: SaveContext, option: SaveOption): void {
-    this.#endSavePreview();
-    const el = ctx.element;
-    const entries = Object.entries(ctx.declarations);
-    if (!entries.length) return;
-    const apply = option.apply;
-    const what = entries.map(([property, value]) => `${property}: ${value}`).join('; ');
-    const label = `Save ${entries.length === 1 ? entries[0][0] : 'styles'}`;
-    let notice: string;
-    switch (apply.kind) {
-      case 'inline': {
-        if (entries.length === 1) {
-          this.overrideStyle(entries[0][0], entries[0][1], el, { important: apply.important });
-        } else {
-          this.setStyles(
-            Object.fromEntries(entries.map(([property, value]) =>
-              [property, this.#inlineText(el, property, value, apply.important)])),
-            label,
-            el,
-          );
-        }
-        notice = `Saved ${what} on this element, at every size.`;
-        break;
-      }
-      case 'replace': {
-        // Importance kept: the dispatcher's keep rule, never a promotion (§5.5).
-        this.#asOneEntry(label, () => {
-          for (const [property, value] of entries) this.setDeclaration(apply.target, property, value);
-        });
-        notice = `Saved ${what} in ${option.title.replace(/^The /, 'the ')}, for ${reachText(option.reach)}.`;
-        break;
-      }
-      case 'new-rule': {
-        const command = upsertRuleCommand(this, apply.selector, ctx.declarations, {
-          media: apply.media,
-          verb: 'Set',
-        });
-        if (command) {
-          this.history.commit({ ...command, label });
-          this.#bumpRevision();
-        }
-        notice =
-          `Saved ${what} in ${apply.selector}${apply.media ? ` at ${mediaShort(apply.media)}` : ''}, ` +
-          'for every element that has it.';
-        break;
-      }
-      case 'auto-class': {
-        const declarations = Object.fromEntries(entries.map(([property, raw]) => {
-          const { value, important: typed } = splitImportant(raw);
-          return [property, apply.important || typed ? `${value} !important` : value];
-        }));
-        const command = this.#autoClassCommand(el, apply.name, '', apply.media, declarations, label);
-        if (command) {
-          this.history.commit(command);
-          this.#bumpRevision();
-        }
-        notice =
-          `Saved ${what} in ${apply.reuse ? 'the automatic class' : 'a new class'} .${apply.name}` +
-          `${apply.media ? ` at ${mediaShort(apply.media)}` : ''}, added to this element only.`;
-        break;
-      }
-    }
-    this.notify(notice, 'success', { label: 'Undo', run: () => this.undo() });
   }
 
   /**
@@ -3697,6 +3524,31 @@ export class EditorEngine {
       write();
     }
     return { hint };
+  }
+
+  /**
+   * Several declarations, each where its own destination says, as one undo entry: a box-editor
+   * batch, whose sides can be written in different places. `move` takes an element's own inline
+   * value away in the same entry, as `writeDeclarationTo` does for one.
+   */
+  writeDeclarationsTo(
+    writes: ReadonlyArray<{ dest: AddDestination; property: string; value: string; move?: boolean }>,
+    label: string,
+    el: HTMLElement,
+  ): void {
+    const inline = writes.filter((one) => one.dest.kind === 'target' && one.dest.target.kind === 'inline');
+    const others = writes.filter((one) => !inline.includes(one));
+    this.#asOneEntry(label, () => {
+      if (inline.length) {
+        this.overrideStyles(Object.fromEntries(inline.map((one) => [one.property, one.value])), label, el);
+      }
+      for (const one of others) {
+        if (!splitImportant(one.value).value) continue;
+        if (one.move && this.#committedInlineText(el, one.property)) this.setStyle(one.property, '', el);
+        if (one.dest.kind === 'target') this.setDeclaration(one.dest.target, one.property, one.value);
+        else this.addDeclaration(one.dest, one.property, one.value);
+      }
+    });
   }
 
   /** An automatic class's suffix: its size, else `media`, else its state, else `own`. */
@@ -5767,8 +5619,6 @@ export class EditorEngine {
     if (width !== null && (!Number.isInteger(width) || width < MIN_VIEWPORT || width > MAX_VIEWPORT)) {
       return false;
     }
-    // A save box was opened for the old width's question (R27).
-    this.#endSavePreview();
     if (!this.viewport.set(width)) return false;
     this.store.patch({ previewWidth: this.viewport.width });
     return true;
@@ -9468,8 +9318,6 @@ export class EditorEngine {
    * the size of each change while it is still a proposal.
    */
   async previewWritePlan(): Promise<WritePlan | null> {
-    // A save option's preview is paint; it must never reach a file, an export or a prompt.
-    this.#endSavePreview();
     const host = this.#project;
     if (!host) return null;
     /*
@@ -9838,8 +9686,6 @@ export class EditorEngine {
    * enough to be worth a progress state.
    */
   async previewBundle(): Promise<BundlePlan | null> {
-    // A save option's preview is paint; it must never reach a file, an export or a prompt.
-    this.#endSavePreview();
     /*
      * Only the newest build gets to speak.
      *
@@ -9900,8 +9746,6 @@ export class EditorEngine {
    * That is the whole point of this route existing: a download is not a lesser save.
    */
   async writeBundle(): Promise<BundlePlan | null> {
-    // A save option's preview is paint; it must never reach a file, an export or a prompt.
-    this.#endSavePreview();
     const target = this.store.value.exportPrompt
       ? await pickSaveTarget(bundleName(this.exportFileName, this.bundleShape()))
       : ({ kind: 'unavailable' } as const);
@@ -10037,8 +9881,6 @@ export class EditorEngine {
   /* ---------------------------------------------------------------------- */
 
   buildSavePrompt(): string {
-    // A save option's preview is paint; it must never reach a file, an export or a prompt.
-    this.#endSavePreview();
     return buildPrompt({
       records: this.handoffRecords,
       tokens: this.tokens.export(),
@@ -10095,8 +9937,6 @@ export class EditorEngine {
    *   the HTML is the only place the design system can travel.
    */
   exportHTML(options: { designSystemInDocument?: boolean } = {}): string {
-    // A save option's preview is paint; it must never reach a file, an export or a prompt.
-    this.#endSavePreview();
     return exportHTML(inlineStyleEdits(this.history.appliedRecords), {
       generated: this.#generatedRegions(),
       // The one thing the target decides: whether the tokens and classes live in this file
@@ -10137,8 +9977,6 @@ export class EditorEngine {
   }
 
   async save(): Promise<boolean> {
-    // A save option's preview is paint; it must never reach a file, an export or a prompt.
-    this.#endSavePreview();
     const handoff = this.handoffRecords;
     if (!handoff.length) {
       this.notify(

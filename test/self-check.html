@@ -1305,9 +1305,13 @@
       check('rowNamesTheRuleItCameFrom', () =>
         rowFor('width')?.querySelector('.from')?.textContent.trim());
       check('rowCountsAsSet', () => rowFor('width')?.classList.contains('set'));
-      // Said by the line under the focused row (R9): an edit goes where the value is written.
+      // Said by the switch at the head of the value's list: an edit goes where the value is written.
+      rowFor('width')?.querySelector('heo-value-field')?.openList();
+      await frame();
       check('rowTooltipExplainsWhereTheEditGoes', () =>
-        /^Edits #declared-probe · /.test(rowFor('width')?.closest('.prow')?.querySelector('.where')?.textContent.trim() ?? ''));
+        /^Edits #declared-probe • impacting /.test(rowFor('width')?.querySelector('heo-value-field')
+          ?.shadowRoot?.querySelector('.list-head .explain')?.textContent.trim() ?? ''));
+      rowFor('width')?.querySelector('heo-value-field')?.closePopup();
 
       /* An inline style still wins, and is attributed to the element. */
       engine.setStyle('width', '120px', probeEl);
@@ -3191,7 +3195,11 @@
       check('valuePopupNotClippedByTheDock', () => {
         const popup = overflow.shadowRoot.querySelector('.popup').getBoundingClientRect();
         const anchor = overflow.getBoundingClientRect();
-        return Math.abs(popup.left - anchor.left) < 24 && popup.top > anchor.top;
+        // Wider and taller than it was, with the destination switch at its head: so it may start
+        // further left and open above the field. What matters is that it is whole, on screen,
+        // against its field.
+        return popup.left >= 0 && popup.right <= innerWidth + 1 && popup.top >= 0 && popup.bottom <= innerHeight + 1 &&
+          popup.left <= anchor.left + 1 && (popup.top >= anchor.bottom - 1 || popup.bottom <= anchor.top + 1);
       });
       check('keywordAutocomplete', () => optionsOf(overflow).join(','));
       await typeInto(overflow, '');

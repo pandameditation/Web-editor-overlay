@@ -201,6 +201,13 @@ export class HeoBoxEditor extends LitElement {
   @property({ attribute: false }) computed: Record<string, string> = {};
   /** Token suggestions offered when a side is opened for editing. */
   @property({ attribute: false }) suggestions: ValueSuggestion[] = [];
+  /**
+   * The host's destination switch for a side, shown at the head of that side's value list: the
+   * same question about where a value goes that every row's list asks. `step` answers Alt+arrows.
+   */
+  @property({ attribute: false }) headFor:
+    | ((property: string) => { head: TemplateResult | null; step(delta: number): void })
+    | null = null;
 
   @state() private linked = false;
   /** Which side, if any, is open in the token/unit editor. */
@@ -252,6 +259,7 @@ export class HeoBoxEditor extends LitElement {
   #renderSideEditor(property: string): TemplateResult {
     const value = this.declared[property] ?? '';
     const computed = this.computed[property] ?? '';
+    const choice = this.headFor?.(property) ?? null;
     return html`<div class="editor">
       <div class="editor-head">
         <span class="editor-name">${property}</span>
@@ -272,7 +280,11 @@ export class HeoBoxEditor extends LitElement {
         .property=${property}
         .suggestions=${this.suggestions}
         placeholder=${computed}
-        clearable
+        .head=${choice?.head ?? null}
+        @head-step=${(event: CustomEvent<{ delta: number }>) => {
+        event.stopPropagation();
+        choice?.step(event.detail.delta);
+      }}
         @value-change=${(event: CustomEvent<{ value: string }>) =>
         this.#emit(property, event.detail.value)}
       ></heo-value-field>

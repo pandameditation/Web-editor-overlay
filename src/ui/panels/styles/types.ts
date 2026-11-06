@@ -1,16 +1,17 @@
 import type { TemplateResult, nothing } from 'lit';
 import type { ElementModel, RuleEntry } from '../../../core/cascade.js';
 import type { EditorEngine } from '../../../core/editor.js';
-import type { AddDestination, SaveContext, SaveOption, SavePlan } from '../../../core/save-plan.js';
+import type { AddDestination } from '../../../core/save-plan.js';
 import type { FormErrors } from '../../form-errors.js';
-import type { AdderHost } from './property-adder.js';
+import type { AdderDestination, AdderHost } from './property-adder.js';
+import type { RowSpec } from './property-row.js';
 
 /**
  * The Styles panel's pieces program against these.
  *
  * One state object rather than a field per concern, because the pieces live in separate modules
- * and each needs to read and change what the others show: a press outside the popover closes it, a
- * new preview width cancels the save box, only one adder or menu may be open at once. Handing every
+ * and each needs to read and change what the others show: a press outside the popover closes it,
+ * only one adder or menu may be open at once. Handing every
  * piece the same `ui` and one `patch` keeps those rules in the panel instead of in six places.
  */
 
@@ -27,17 +28,6 @@ export type RowScope =
   | { kind: 'section'; id: string }
   /** In its parent: the element's own rows there, or the parent's controls. */
   | { kind: 'parent'; element: HTMLElement };
-
-/** A value that was entered and now waits for "where should this stay". */
-export interface PendingSave {
-  /** The row it was entered in: `${scope key}:${property}`, or `box:${scope key}` for a batch. */
-  rowId: string;
-  /** What the box names: the property, or `spacing` for a box-editor batch. */
-  label: string;
-  ctx: SaveContext;
-  plan: SavePlan;
-  selected: SaveOption['kind'];
-}
 
 export interface StylesUiState {
   /** What the panel is being filtered by. Empty shows everything. */
@@ -67,8 +57,6 @@ export interface StylesUiState {
   menu: { id: string } | null;
   /** The one open adder: its id, the draft, and the destination picked in it. */
   adder: { id: string; draft: string; dest: string } | null;
-  /** The one save box. */
-  pending: PendingSave | null;
   /** Effective styles' hand-picked size; null follows the preview (R13). */
   effPick: string | null;
   /** The header's "find or create a class" field is showing. */
@@ -106,6 +94,8 @@ export interface PendingState {
 }
 
 export interface StylesHost extends AdderHost {
+  /** Where a row's edit can go: the same places everywhere the panel shows a property. */
+  destinationsFor(spec: RowSpec): AdderDestination[];
   /** Flash a property's row in a list once it has rendered: where an add landed. */
   flashRow(property: string, listId: string): void;
   engine: EditorEngine;

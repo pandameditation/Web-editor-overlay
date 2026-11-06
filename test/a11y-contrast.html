@@ -707,23 +707,15 @@
         ], 'hover');
         engine.undo();
         /*
-         * The save box's verdicts. A colour typed in Typography while previewing 320px asks where it
-         * should stay (Effective styles chooses in its value list instead):
-         * the automatic class applies (it takes !important to beat the inline colour), and adding
-         * it to .card at that size won't show, because the inline colour wins. Both verdicts appear.
+         * The line under the destination switch, at the head of a value's list: what picking a place
+         * does. Small text, so the 4.5:1 a reading needs.
          */
         const colourField = () => deep((el) => el.localName === 'heo-value-field' && el.dataset.property === 'color' && Boolean(el.closest('[data-declarations="typography"]')) && inside('heo-styles-panel')(el));
-        await ui(() => engine.setPreviewWidth(320));
-        await ui(() => {
-          colourField()?.dispatchEvent(new CustomEvent('value-change', { detail: { value: 'rgb(0, 90, 0)' }, bubbles: true, composed: true }));
-        });
+        await ui(() => colourField()?.openList());
         await measure([
-          { name: 'styles.saveVerdict', control: 'styles.saveVerdict.applies', component: 'save-box', file: `${SP}/save-box.ts`, cat: 'styles', kind: 'text', min: 4.5, host: firstOf('.savebox .win') },
-          { name: 'styles.saveVerdict', control: 'styles.saveVerdict.wontShow', component: 'save-box', file: `${SP}/save-box.ts`, cat: 'styles', kind: 'text', min: 4.5, host: firstOf('.savebox .lose') },
+          { name: 'styles.destExplain', component: 'property-row', file: `${SP}/property-row.ts`, cat: 'styles', kind: 'text', min: 4.5, host: () => colourField()?.shadowRoot?.querySelector('.list-head .explain') ?? null },
         ], 'default');
-        await ui(() => {
-          deep((el) => el.localName === 'button' && el.closest('.savebox') && el.textContent.trim() === 'Cancel' && inside('heo-styles-panel')(el))?.click();
-        });
+        await ui(() => colourField()?.closePopup());
         await ui(() => engine.setPreviewWidth(null));
         if (engine.history.size !== historyBefore) notes.push(`stylesPanel left the history changed (${historyBefore} → ${engine.history.size})`);
         engine.classes.remove('card');
@@ -1254,15 +1246,7 @@
           stripCount: inBothThemes('styles.stripCount'),
           notNowStrip: inBothThemes('styles.notNowStrip'),
           cardMeta: inBothThemes('styles.cardMeta'),
-          saveVerdict: (() => {
-            // Both verdicts, "applies" and "won't show", each in both themes.
-            const both = ['styles.saveVerdict.applies', 'styles.saveVerdict.wontShow'].map((control) => {
-              const selected = rows.filter((r) => r.control === control);
-              const v = verdict(selected);
-              return { pass: v.pass && ['dark', 'light'].every((t) => selected.some((r) => r.theme === t)), failing: v.failing };
-            });
-            return { pass: both.every((one) => one.pass), failing: both.flatMap((one) => one.failing) };
-          })(),
+          destExplain: inBothThemes('styles.destExplain'),
           // Every new Styles control's focus ring, measured on the control's own outline.
           focusRing: (() => {
             const selected = rows.filter((r) => r.name.startsWith('styles.') && r.kind === 'focus');

@@ -10,7 +10,7 @@ import {
   sizeConstraints,
   type SizeConstraint,
 } from '../../core/css.js';
-import { splitImportant, toRecord } from '../../core/declaration-list.js';
+import { toRecord } from '../../core/declaration-list.js';
 import { normalizeProperty, propertyIsKnown } from '../../core/declarations.js';
 import { labelFor, selectableParent } from '../../core/dom.js';
 import { listen, unlisten } from '../../core/shield.js';
@@ -66,18 +66,16 @@ import { menuStyles, placeLayer } from './styles/menu.js';
 import { searchPopoverStyles } from './styles/search-popover.js';
 import { stylesDestination, valueStepDraft, type AdderDestination } from './styles/property-adder.js';
 import {
-  isViewportDependent,
   previewSlot,
   propertyRowStyles,
   readRow,
   renderPropertyRow,
   sameTarget,
-  saveContextFor,
-  scopeKey,
+  rowIdOf,
+  destinationChoice,
   shownValue,
   type RowSpec,
 } from './styles/property-row.js';
-import { beginSave, cancelSave, renderSaveBox, saveBoxStyles } from './styles/save-box.js';
 import type { RowScope, StylesHost, StylesUiState } from './styles/types.js';
 import type { HeoValueField } from '../controls/value-field.js';
 import '../controls/value-field.js';
@@ -280,7 +278,6 @@ const EMPTY_UI: StylesUiState = {
   effPseudo: null,
   menu: null,
   adder: null,
-  pending: null,
   finderOpen: false,
   rulesOpen: false,
   mediaDraft: null,
@@ -317,7 +314,6 @@ export class HeoStylesPanel extends HeoElement {
     selectionNoticeStyles,
     propertyRowStyles,
     popoverStyles,
-    saveBoxStyles,
     menuStyles,
     headerStyles,
     previewBarStyles,
@@ -361,9 +357,6 @@ export class HeoStylesPanel extends HeoElement {
         flex-wrap: wrap;
         gap: 6px;
         margin-top: 10px;
-      }
-      .spacing-save {
-        margin-top: 4px;
       }
       /* The cap notice keeps its own two-column row: a name and the owner's value. */
       .capped .row {
@@ -516,7 +509,6 @@ export class HeoStylesPanel extends HeoElement {
         effPseudo: null,
         menu: null,
         adder: null,
-        pending: null,
         finderOpen: false,
         mediaDraft: null,
         otherSlots: new Map(),
@@ -534,7 +526,6 @@ export class HeoStylesPanel extends HeoElement {
         cardPicks: new Map(),
         popover: null,
         menu: null,
-        pending: null,
               pendingStates: [],
         blockHint: null,
       };
@@ -678,6 +669,7 @@ export class HeoStylesPanel extends HeoElement {
         if (adder) this.#patch({ adder: { ...adder, draft: value } });
       },
       flashRow: (property, listId) => this.#flashRow(property, listId),
+      destinationsFor: (spec) => this.#rowDestinations(spec.element, spec.model, spec.property, spec.scope),
       openSource: (property, entry) => this.#openSource(property, entry),
       sourceCard: (key) => this.#poppedCard(el, model, host, key, {
         onClose: () => {
@@ -958,15 +950,22 @@ export class HeoStylesPanel extends HeoElement {
     if (entry && entry.target.kind !== 'readonly' &&
       !offered.some((one) => one.dest?.kind === 'target' && sameTarget(one.dest.target, entry.target))) {
       const label = entryLabel(entry);
+      const impact = model.reach(entry.family);
       offered.unshift(stylesDestination(
         label,
-        reachText(model.reach(entry.family)),
+        reachText(impact),
         { kind: 'target', target: entry.target },
         toRecord(entry.declarations),
         label,
+        { short: entry.family, name: `${entry.family}${entry.state}`, media: entry.media, impact },
       ));
     }
-    return offered;
+    // The switch names a rule by its family; two at once under different conditions say which.
+    const shorts = offered.map((one) => one.short);
+    return offered.map((one, at) =>
+      shorts.indexOf(one.short) !== at || shorts.lastIndexOf(one.short) !== at
+        ? { ...one, short: one.label }
+        : one);
   }
 
   /** Open or close one of the panel's menus; closing hands focus back to what opened it. */
@@ -1113,6 +1112,7 @@ export class HeoStylesPanel extends HeoElement {
           entry ? { kind: 'target', target: entry.target } : { kind: 'new-rule', selector: family.key, media },
           entry ? toRecord(entry.declarations) : {},
           `${family.key} ${short}`,
+          { short: family.key, media, impact: reach },
         );
       }),
       stylesDestination(
@@ -1121,6 +1121,7 @@ export class HeoStylesPanel extends HeoElement {
         { kind: 'auto-class', element: el, media, state: '' },
         {},
         `a new class ${short}`,
+        { media, impact: 1 },
       ),
     ];
   }
@@ -1134,6 +1135,7 @@ export class HeoStylesPanel extends HeoElement {
         { kind: 'target', target: { kind: 'inline', element: el } },
         toRecord(model.inline),
         'this element',
+        { impact: 1 },
       ),
     ];
     for (const name of Array.from(el.classList)) {
@@ -1157,6 +1159,7 @@ export class HeoStylesPanel extends HeoElement {
           target ? { kind: 'target', target } : { kind: 'new-rule', selector: `.${CSS.escape(name)}`, media: null },
           base ? toRecord(base.declarations) : owned ? { ...owned.declarations } : {},
           `.${name}`,
+          { impact: reach },
         ),
       );
     }
@@ -1167,6 +1170,7 @@ export class HeoStylesPanel extends HeoElement {
         { kind: 'auto-class', element: el, media: null, state: '' },
         {},
         'a new class',
+        { impact: 1 },
       ),
     );
     return destinations;
@@ -1197,6 +1201,7 @@ export class HeoStylesPanel extends HeoElement {
           entry ? { kind: 'target', target: entry.target } : { kind: 'new-rule', selector: `${key}${state}`, media },
           entry ? toRecord(entry.declarations) : {},
           label,
+          { short: key, name: `${key}${state}`, media, impact: reach },
         );
       }),
       stylesDestination(
@@ -1205,6 +1210,7 @@ export class HeoStylesPanel extends HeoElement {
         { kind: 'auto-class', element: el, media, state },
         {},
         `a new class${state}${short ? ` ${short}` : ''}`,
+        { media, impact: 1 },
       ),
     ];
   }
@@ -1268,9 +1274,7 @@ export class HeoStylesPanel extends HeoElement {
    *
    * `listen` and not `addEventListener`, for the reason the other popovers document: the event
    * shield suppresses `pointerdown` for the page, so a plain listener never hears the press that
-   * should close these. A save box is not closed this way: clicking elsewhere to read is allowed,
-   * and only a new edit, a new selection or a new preview width cancels it. An adder with a draft
-   * is left to its own blur, which adds what was typed.
+   * should close these. An adder with a draft is left to its own blur.
    */
   /** When the last press landed outside this panel: focus is not pulled back into it after one. */
   #pressedOutsideAt = 0;
@@ -1315,7 +1319,7 @@ export class HeoStylesPanel extends HeoElement {
     if (popover && !inside('.pop') && !inside(`.row[data-row="${CSS.escape(popover.rowId)}"] .dots`)) {
       next.popover = null;
     }
-    // Its own menus, adders, value lists and save box are inside it, so a press there keeps it.
+    // Its own menus, adders and value lists are inside it, so a press there keeps it.
     const cardPop = this.ui.cardPop;
     // A press on "Paste CSS…" keeps the card: the paste opens on its class, and the card shows
     // what landed in it.
@@ -1348,7 +1352,7 @@ export class HeoStylesPanel extends HeoElement {
 
   /*
    * Escape closes the innermost open thing, and goes no further: the global keymap reads Escape as
-   * "deselect". Menus, adders, value fields and the save box handle their own; this is for when
+   * "deselect". Menus, adders and value fields handle their own; this is for when
    * focus sits elsewhere in the panel.
    */
   #onKeydown = (event: KeyboardEvent): void => {
@@ -1370,11 +1374,7 @@ export class HeoStylesPanel extends HeoElement {
       const rowId = ui.popover.rowId;
       this.#patch({ popover: null });
       this.#focusSelector(`.row[data-row="${CSS.escape(rowId)}"] .dots`);
-    } else if (ui.pending) {
-      const el = this.editor.selected;
-      if (el) cancelSave(this.#host(el, this.#model(el)), true);
     } else if (ui.cardPop) {
-      // After the save box: one opened inside the card is closer in than the card itself.
       const anchor = ui.cardPop.anchor;
       this.#patch({ cardPop: null });
       // Back to what opened it: the class name, or the dot of the row a popover link came from.
@@ -1940,8 +1940,6 @@ export class HeoStylesPanel extends HeoElement {
     const shorthands = ['margin', 'padding'].filter((property) => hits.includes(property));
     const touched = longhands.filter((property) => declaredBox[property]).length;
     const scope: RowScope = { kind: 'section', id: 'spacing' };
-    const boxId = `box:${scopeKey(scope, el)}`;
-    const pending = this.ui.pending?.rowId === boxId ? this.ui.pending : null;
 
     return html`<heo-section
       heading="Spacing"
@@ -1955,10 +1953,14 @@ export class HeoStylesPanel extends HeoElement {
         .declared=${declaredBox}
         .computed=${computedBox}
         .suggestions=${buildSuggestions(this.editor, 'margin', el)}
+        .headFor=${(property: string) => {
+          const spec: RowSpec = { property, scope, element: el, model, listId: 'spacing' };
+          const choice = destinationChoice(spec, host, rowIdOf(scope, property, el), readRow(spec).shown);
+          return { head: choice.head, step: choice.step };
+        }}
         @box-change=${(event: CustomEvent<{ declarations: Record<string, string> }>) =>
-        this.#commitBox(event.detail.declarations, { property: '', scope, element: el, model, listId: 'spacing' }, boxId, host)}
+        this.#commitBox(event.detail.declarations, scope, el, model, host)}
       ></heo-box-editor>
-      ${pending ? html`<div class="spacing-save">${renderSaveBox(pending, host)}</div>` : nothing}
 
       ${shorthands.length
         ? html`<div class="rows" style="margin-top:10px" data-declarations="spacing">
@@ -1972,22 +1974,29 @@ export class HeoStylesPanel extends HeoElement {
     </heo-section>`;
   }
 
-  /** A box-editor batch: inline as one entry, or one save box when any side depends on the viewport. */
-  #commitBox(declarations: Record<string, string>, spec: RowSpec, boxId: string, host: StylesHost): void {
-    const previewWidth = host.previewWidth;
-    const dependent = Object.keys(declarations).filter((property) =>
-      splitImportant(declarations[property]).value && isViewportDependent(spec.scope, spec.model, property, previewWidth));
-    if (host.ui.pending) cancelSave(host);
-    if (!dependent.length) {
-      this.editor.overrideStyles(declarations, 'Adjust spacing', spec.element);
-      return;
-    }
-    // Led by a side that depends on the viewport, so the save context takes its size.
-    const ordered = Object.fromEntries([
-      ...dependent.map((property) => [property, declarations[property]]),
-      ...Object.entries(declarations).filter(([property]) => !dependent.includes(property)),
-    ]);
-    beginSave(host, boxId, 'spacing', saveContextFor(spec, ordered, previewWidth), true);
+  /**
+   * A box-editor batch, as one undo entry: each side where its value is written now, or where its
+   * editor's switch says, the same as a row (its value list carries the switch).
+   */
+  #commitBox(declarations: Record<string, string>, scope: RowScope, el: HTMLElement, model: ElementModel, host: StylesHost): void {
+    const writes = Object.entries(declarations).map(([property, value]) => {
+      const spec: RowSpec = { property, scope, element: el, model, listId: 'spacing' };
+      const { shown } = readRow(spec);
+      const choice = destinationChoice(spec, host, rowIdOf(scope, property, el), shown);
+      return { property, value, choice };
+    });
+    this.#patch({ rowDest: null });
+    this.editor.writeDeclarationsTo(
+      writes.map(({ property, value, choice }) => ({
+        dest: choice.picked.dest!,
+        property,
+        value,
+        move: choice.current?.dest?.kind === 'target' && choice.current.dest.target.kind === 'inline' &&
+          !(choice.picked.dest?.kind === 'target' && choice.picked.dest.target.kind === 'inline'),
+      })),
+      'Adjust spacing',
+      el,
+    );
   }
 
   #renderSection(

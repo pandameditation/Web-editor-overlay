@@ -41,10 +41,15 @@ export interface AdderDestination {
   label: string;
   /** How far it reaches: `this element only, every size`, `4 elements`. */
   reach: string;
-  /** The switch's own word for it, short: `Inline`, `.card`, `New class`. */
+  /** The switch's own word for it, short: `Inline`, `.card`, `New class`. The condition is not
+   * repeated there: the user picked it on the bar. */
   short?: string;
-  /** The line under the switch: what picking it does, in a few words. */
-  explain?: string;
+  /** What the line under the switch calls it: `.card:hover`, `inline style`. */
+  name?: string;
+  /** The media query it writes under, as written: `(max-width: 820px)`. */
+  media?: string | null;
+  /** How many elements it styles. */
+  impact?: number;
   /**
    * What `engine.addDeclaration` receives.
    *
@@ -100,6 +105,7 @@ export function stylesDestination(
   dest: AddDestination,
   existing: Record<string, string>,
   ownerLabel: string,
+  view: { short?: string; name?: string; media?: string | null; impact?: number } = {},
 ): AdderDestination {
   // Keyed by what the user picks between: two destinations an adder offers never share a label,
   // since the switch could not tell them apart either.
@@ -107,8 +113,10 @@ export function stylesDestination(
     key: `${dest.kind}:${label}`,
     label,
     reach,
-    short: shortDestination(dest, label),
-    explain: explainDestination(dest, label, reach),
+    short: view.short ?? shortDestination(dest, label),
+    name: view.name,
+    media: view.media ?? null,
+    impact: view.impact,
     dest,
     existing,
     ownerLabel,
@@ -118,15 +126,32 @@ export function stylesDestination(
 /** `inline style` → `Inline`, `a new class` → `New class`: the switch's words. */
 function shortDestination(dest: AddDestination, label: string): string {
   if (dest.kind === 'target' && dest.target.kind === 'inline') return 'Inline';
-  if (dest.kind === 'auto-class') return `New class${label.replace(/^a new class/, '')}`;
+  if (dest.kind === 'auto-class') return 'New class';
   return label;
 }
-/** The line under the switch, from what the destination is and how far it reaches. */
-function explainDestination(dest: AddDestination, label: string, reach: string): string {
-  if (dest.kind === 'target' && dest.target.kind === 'inline') return `Its style attribute · ${reach}`;
-  if (dest.kind === 'auto-class') return 'Makes a class for this element only';
-  if (dest.kind === 'new-rule') return `Adds a ${label} rule · ${reach}`;
-  return `Edits ${label} · ${reach}`;
+
+/**
+ * The line under the switch: `Edits .intro (max-width: 820px) • impacting 3 elements`. "Edits"
+ * when `property` is already declared there, "Adds" otherwise (and always for a new rule or class).
+ */
+export function explainDestination(one: AdderDestination, property?: string): string {
+  const parts = destinationParts(one, property);
+  return `${parts.verb} ${parts.name}${parts.media ? ` ${parts.media}` : ''} • impacting ${parts.impact}`;
+}
+/** The line's pieces, for a host that draws the name as a control of its own. */
+export function destinationParts(
+  one: AdderDestination,
+  property?: string,
+): { verb: 'Adds' | 'Edits'; name: string; media: string; impact: string } {
+  const dest = one.dest;
+  const inline = dest?.kind === 'target' && dest.target.kind === 'inline';
+  const name = inline ? 'inline style' : dest?.kind === 'auto-class' ? 'a new class' : one.name ?? one.short ?? one.label;
+  const edits = dest?.kind === 'target' && Boolean(property) && property!.toLowerCase() in lowerKeys(one.existing);
+  const impact = one.impact === undefined ? one.reach : one.impact === 1 ? 'this element only' : `${one.impact} elements`;
+  return { verb: edits ? 'Edits' : 'Adds', name, media: one.media ?? '', impact };
+}
+function lowerKeys(record: Record<string, string>): Record<string, true> {
+  return Object.fromEntries(Object.keys(record).map((key) => [key.toLowerCase(), true]));
 }
 
 /**
@@ -341,7 +366,7 @@ export function renderAdder(spec: AdderSpec, host: AdderHost): TemplateResult {
   };
   const head = several
     ? html`<heo-segmented
-        .options=${spec.destinations.map((one) => ({ value: one.key, label: one.short ?? one.label, title: one.explain ?? one.reach }))}
+        .options=${spec.destinations.map((one) => ({ value: one.key, label: one.short ?? one.label, title: explainDestination(one) }))}
         .value=${dest.key}
         label="Where it goes"
         wrap
@@ -349,7 +374,7 @@ export function renderAdder(spec: AdderSpec, host: AdderHost): TemplateResult {
         if (event.detail.value) pick(event.detail.value);
       }}
       ></heo-segmented>
-      <p class="explain">${dest.explain ?? dest.reach}</p>`
+      <p class="explain">${explainDestination(dest)}</p>`
     : null;
   const commitValue = (text: string, from: Element): void => {
     const value = text.trim();
