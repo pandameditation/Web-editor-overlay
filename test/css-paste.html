@@ -378,10 +378,8 @@ color: rebeccapurple;`;
         };
       });
 
-      /* The page rule's card must keep its body after the section opening tag is rendered.
-       * Sources replaced the CSS rules section, and its OTHER RULES cards hold page rules now
-       * (R17); the card is checked for its rows so an empty-body regression cannot pass by
-       * finding only the heading. */
+      /* The page rule's card must keep its body: the id chip's popover holds #target's rule,
+       * checked for its rows so an empty-body regression cannot pass on the heading alone. */
       api.select(target);
       api.openPanel('styles');
       await frames();
@@ -389,32 +387,25 @@ color: rebeccapurple;`;
       const stylesPanel = () => document.querySelector('html-editor-overlay > heo-overlay')
         ?.shadowRoot?.querySelector('heo-dock')
         ?.shadowRoot?.querySelector('heo-styles-panel');
-      const cssRulesSection = () => Array.from(
-        stylesPanel()?.shadowRoot?.querySelectorAll('heo-section') ?? [],
-      ).find((section) => section.heading === 'Sources');
-      const section = cssRulesSection();
-      if (section && !section.open) section.shadowRoot?.querySelector('.head')?.click();
-      await frames();
-      const targetRuleHeader = Array.from(section?.querySelectorAll('.cls > header') ?? [])
-        .find((header) => header.querySelector('.n')?.textContent?.trim() === '#target');
-      if (targetRuleHeader?.getAttribute('aria-expanded') !== 'true') targetRuleHeader?.click();
+      stylesPanel()?.shadowRoot?.querySelector('.ident .cchip.id .name')?.click();
       await frames();
       check('theStylesCSSRulesSectionRestoresItsRenderedRuleContent', () => {
-        const currentSection = cssRulesSection();
-        const selectors = Array.from(currentSection?.querySelectorAll('.cls .n') ?? [])
+        const pop = stylesPanel()?.shadowRoot?.querySelector('.cardpop');
+        const selectors = Array.from(pop?.querySelectorAll('.cls .n') ?? [])
           .map((element) => element.textContent?.trim());
-        const properties = Array.from(currentSection?.querySelectorAll('.cls .decl .p') ?? [])
+        const properties = Array.from(pop?.querySelectorAll('.cls .decl .p') ?? [])
           .map((element) => element.textContent?.trim());
         return {
-          ok: currentSection?.open === true &&
+          ok: Boolean(pop) &&
             selectors.includes('#target') &&
             properties.includes('color') &&
             properties.includes('margin'),
-          sectionOpen: currentSection?.open ?? false,
           selectors,
           properties,
         };
       });
+      stylesPanel()?.shadowRoot?.querySelector('.ident .cchip.id .name')?.click();
+      await frames();
 
       /* ------------------------------------------------------------------ *
        * Editing a rule already in a stylesheet keeps the CSSOM location in
@@ -1201,38 +1192,27 @@ color: rebeccapurple;`;
       };
       engine.cancelCssPaste();
       await frames();
-      /*
-       * Sources ends with the one Paste CSS of the Styles panel's write-where-it-is-written half:
-       * the rule context, with the suggested selector, as the CSS rules section's button did
-       * (R17). Classes have no paste of their own here any more (R20): the dialog offers a class
-       * destination, so a second button only duplicated it.
-       */
-      const sourcesSection = deepQuery('heo-styles-panel')?.shadowRoot
-        ?.querySelector('heo-section[heading="Sources"]');
-      const sourcesPaste = Array.from(sourcesSection?.querySelectorAll(':scope > .actions button') ?? [])
-        .filter((button) => /Paste CSS/.test(button.textContent ?? ''));
-      sourcesPaste[0]?.click();
-      await frames();
-      const pasted = engine.store.value.cssPaste;
-      results.sources = {
-        pasteOpensRuleContext:
-          sourcesPaste.length === 1 &&
-          sourcesPaste[0].textContent.trim() === 'Paste CSS…' &&
-          pasted?.context === 'rule' &&
-          pasted?.element === target &&
-          pasted?.selector === engine.suggestedRuleSelector(target),
-      };
-      engine.cancelCssPaste();
-      await frames();
-      // Effective styles' and Sources' general ones, outside the cards, and one at the end of each
-      // card, which opens on that card.
+      // One general Paste CSS outside the cards (Effective styles'), and one at the end of a
+      // popped card, which opens on that card's rule.
       const panelRoot = deepQuery('heo-styles-panel')?.shadowRoot;
       const everyPaste = Array.from(panelRoot?.querySelectorAll('button') ?? [])
         .filter((button) => /Paste CSS/.test(button.textContent ?? ''));
-      const cards = Array.from(panelRoot?.querySelectorAll('heo-section[heading="Sources"] .cls') ?? []);
-      results.sources.oneGeneralPasteAndOnePerCard =
-        everyPaste.filter((button) => !button.closest('.cls')).length === 2 &&
-        cards.every((one) => one.querySelectorAll(':scope > .body > .actions [data-act="paste-here"]').length === 1);
+      panelRoot?.querySelector('.ident .cchip.id .name')?.click();
+      await frames();
+      const cards = Array.from(panelRoot?.querySelectorAll('.cardpop > .cls') ?? []);
+      const here = cards[0]?.querySelector('[data-act="paste-here"]');
+      here?.click();
+      await frames();
+      const pasted = engine.store.value.cssPaste;
+      results.sources = {
+        oneGeneralPasteAndOnePerCard:
+          everyPaste.filter((button) => !button.closest('.cls')).length === 1 &&
+          cards.length > 0 &&
+          cards.every((one) => one.querySelectorAll('[data-act="paste-here"]').length === 1),
+        cardPasteOpensOnThatCard: Boolean(here) && pasted?.element === target,
+      };
+      engine.cancelCssPaste();
+      await frames();
 
       results.browserErrors = { ok: errors.length === 0, errors };
       const failed = Object.entries(results)

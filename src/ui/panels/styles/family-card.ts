@@ -86,10 +86,6 @@ export interface CardView {
   family: Family;
   /** Members in effect at the preview width; a state rule emptied by its trash is left out. */
   visible: RuleEntry[];
-  /** The search names the family itself, so every row is shown. */
-  familyHit: boolean;
-  /** Something in the card matches the search (always true without one). */
-  shown: boolean;
   /** `base` (Always) or a condition key. */
   picked: string;
   /** The conditions bar's buttons. */
@@ -101,10 +97,6 @@ export function cardView(family: Family, host: StylesHost): CardView {
   const { model, previewWidth, ui } = host;
   const visible = family.members.filter((entry) =>
     visibleAt(entry, previewWidth) && !(entry.state && !entry.declarations.length));
-  const familyHit = host.filtering && host.hit(family.key);
-  const rowHit = (entry: RuleEntry): boolean =>
-    entry.declarations.some((one) => host.hit(one.property, one.value));
-  const shown = !host.filtering || familyHit || visible.some(rowHit);
   // Picked from ⋮ or added as a state, with nothing written yet: on the bar until something is.
   const waiting = [
     ...(ui.otherSlots.get(family.key) ?? []),
@@ -113,15 +105,10 @@ export function cardView(family: Family, host: StylesHost): CardView {
       .map((one) => conditionKey(one.slot, one.state)),
   ];
   let picked = ui.cardPicks.get(family.key) ?? previewSlot(model, previewWidth);
-  // A card found by one of its declarations opens at a condition that holds one (R8).
-  if (host.filtering && !familyHit) {
-    const holding = [...new Set(visible.filter(rowHit).map((entry) => conditionOf(model, entry)))];
-    if (holding.length && !holding.includes(picked)) picked = holding[0];
-  }
   // The pick keeps its button while it is the pick, even empty: the size a preview follows, say.
   const { chips, count } = barConditions(model, visible, previewWidth, [...waiting, picked]);
   if (picked !== 'base' && !chips.some((chip) => chip.key === picked)) picked = 'base';
-  return { family, visible, familyHit, shown, picked, chips, count };
+  return { family, visible, picked, chips, count };
 }
 
 
@@ -249,23 +236,19 @@ export function renderBlockAdder(
  * pseudo-element at that size, each block with its own "+ Add property", then "+ Add state or
  * pseudo-element". A card for a class the element wears ends with its way out of the class.
  *
- * `group` is the Sources group it is drawn in. `popped` draws it in a popover (a class name's card,
- * or under a cascade popover's line): always open, and its header calls `onClose`. The Sources copy
- * of a popped card shows only its header, so the card exists once.
+ * Drawn in a popover, from a header chip or under a cascade popover's line: always open, and its
+ * header calls `popped.onClose`. `group` says whether it is one of the element's classes.
  */
 export function renderFamilyCard(
   view: CardView,
   host: StylesHost,
-  options: { group: 'classes' | 'rules'; popped?: Popped },
-): TemplateResult | typeof nothing {
-  if (!view.shown) return nothing;
+  options: { group: 'classes' | 'rules'; popped: Popped },
+): TemplateResult {
   const { family, visible, picked } = view;
   const { model, ui, engine } = host;
   const key = family.key;
   const name = family.isClass ? simpleClassName(key) : null;
   const owned = name ? engine.classes.get(name) : undefined;
-  const away = !options.popped && isPopped(host, key);
-  const open = Boolean(options.popped) || (!away && (host.filtering || !ui.closedCards.has(key)));
   const declarations = visible.reduce((sum, entry) => sum + entry.declarations.length, 0);
   const uses = model.reach(key);
   const lead = visible[0] ?? family.members[0];
@@ -277,7 +260,6 @@ export function renderFamilyCard(
     const short = slotName(model, picked);
     const media = slotMedia(model, picked);
     const label = `${key}${short ? ` ${short}` : ''}`;
-    const rowHit = (one: Declaration): boolean => !host.filtering || view.familyHit || host.hit(one.property, one.value);
     const hintFor = (id: string): TemplateResult | typeof nothing =>
       ui.blockHint?.block === id ? html`<p class="hint block-hint">${ui.blockHint.text}</p>` : nothing;
     const noteAdded = (id: string) => (hint: string | null): void =>
@@ -302,14 +284,14 @@ export function renderFamilyCard(
       writable ? toRecord(writable.declarations) : slot === 'base' && owned ? { ...owned.declarations } : {},
       label,
     );
-    const baseRows = base.flatMap((entry) => entry.declarations.filter(rowHit));
+    const baseRows = base.flatMap((entry) => entry.declarations);
     const baseBlock = html`<div class="block" data-block="base">
       <div class="decls" data-declarations=${baseId}>
         ${base.length && baseRows.length
         ? repeat(
           base,
           (entry) => entry.order,
-          (entry) => renderRows(entryTarget(entry, label, baseId, host), entry.declarations.filter(rowHit), host),
+          (entry) => renderRows(entryTarget(entry, label, baseId, host), entry.declarations, host),
         )
         : html`<p class="hint" style="margin:0">
               ${slot === 'base'
@@ -340,7 +322,7 @@ export function renderFamilyCard(
      * with the way to write one. Nothing is recorded until "+ Add property" is pressed, which adds
      * it as a pending state, and the first property writes it.
      */
-    const emptyPicked = pickedState && !ordered.length && !host.filtering
+    const emptyPicked = pickedState && !ordered.length
       ? html`<div class="block pending" data-waiting=${pickedState}>
           ${renderBlockHeader('cursor', pickedState, 'state', nothing)}
           <div class="decls"><p class="hint" style="margin:0">No declarations yet.</p></div>
@@ -361,10 +343,8 @@ export function renderFamilyCard(
       : nothing;
     const stateBlocks = ordered.map((state) => {
       const waiting = pending.find((one) => one.state === state);
-      if (waiting) return host.filtering ? nothing : renderPendingBlock(waiting, `${key}${state}${short ? ` ${short}` : ''}`, uses, host);
+      if (waiting) return renderPendingBlock(waiting, `${key}${state}${short ? ` ${short}` : ''}`, uses, host);
       const members = inSlot.filter((entry) => entry.state === state);
-      const rows = members.flatMap((entry) => entry.declarations.filter(rowHit));
-      if (host.filtering && !view.familyHit && !rows.length) return nothing;
       const id = blockId(key, slot, state);
       const stateLabel = `${key}${state}${short ? ` ${short}` : ''}`;
       const target = [...members].reverse().find((entry) => entry.target.kind !== 'readonly') ?? members.at(-1)!;
@@ -375,23 +355,21 @@ export function renderFamilyCard(
         pseudo ? 'pseudo' : 'cursor',
         state,
         pseudo ? 'pseudo-element' : 'state',
-        host.filtering
-          ? nothing
-          : renderKill({
-            label: `Remove ${target.selector}`,
-            title: live
-              ? `Remove ${state}'s declarations from ${target.selector} (the empty rule stays in ${target.sheetLabel})`
-              : `Remove ${target.selector}`,
-            tight: true,
-            size: 11,
-            onClick: () => engine.removeRule(target.target),
-          }),
+        renderKill({
+          label: `Remove ${target.selector}`,
+          title: live
+            ? `Remove ${state}'s declarations from ${target.selector} (the empty rule stays in ${target.sheetLabel})`
+            : `Remove ${target.selector}`,
+          tight: true,
+          size: 11,
+          onClick: () => engine.removeRule(target.target),
+        }),
       )}
         <div class="decls" data-declarations=${id}>
           ${repeat(
         members,
         (entry) => entry.order,
-        (entry) => renderRows(entryTarget(entry, stateLabel, id, host), entry.declarations.filter(rowHit), host),
+        (entry) => renderRows(entryTarget(entry, stateLabel, id, host), entry.declarations, host),
       )}
         </div>
         ${hintFor(id)}
@@ -425,7 +403,7 @@ export function renderFamilyCard(
       const refused = addState(named, slot);
       if (refused) host.form.fail(pseudoField, refused);
     };
-    const stateAdder = host.filtering || pickedState
+    const stateAdder = pickedState
       ? nothing
       : html`<div class="block-add" data-menu-place=${pseudoMenu}>
           <button
@@ -540,10 +518,8 @@ export function renderFamilyCard(
       ${stateBlocks}
       ${emptyPicked}
       ${stateAdder}
-      ${host.filtering
-        ? nothing
-        : renderCardActions(host, {
-          paste: name
+      ${renderCardActions(host, {
+        paste: name
             ? { context: 'class', element: host.element, className: name }
             : { context: 'rule', element: host.element, selector: key, liveRule: writable?.target.kind === 'live' ? writable.target.rule : null },
           detach: name && options.group === 'classes' && owned && host.element.classList.contains(name) ? name : null,
@@ -557,11 +533,11 @@ export function renderFamilyCard(
     meta: countText(declarations, 'rule'),
     uses,
     file,
-    expanded: open,
-    onToggle: () => (options.popped ? options.popped.onClose() : away ? closePopped(host) : toggleCard(host, key)),
+    expanded: true,
+    onToggle: () => options.popped.onClose(),
     sessionDot: Boolean(owned && owned.origin !== 'stylesheet'),
   })}
-    ${open ? body() : away ? poppedNote() : nothing}
+    ${body()}
   </div>`;
 }
 /**
@@ -617,21 +593,6 @@ export function removeCondition(
 export interface Popped {
   onClose(): void;
 }
-/** Whether a card is open in a popover: from a header chip, or under a cascade popover's line. */
-function isPopped(host: StylesHost, key: string): boolean {
-  const pop = host.ui.cardPop;
-  return Boolean(pop && (pop.cards ?? [pop.key]).includes(key)) || host.ui.popover?.source?.key === key;
-}
-/** The Sources copy's header, while its card is popped: put the card back here. */
-function closePopped(host: StylesHost): void {
-  const popover = host.ui.popover;
-  host.patch({ cardPop: null, popover: popover?.source ? { ...popover, source: null } : popover });
-}
-/** What a card's Sources place says while the card is open in a popover. */
-function poppedNote(): TemplateResult {
-  return html`<p class="hint popped-note">Open in a popover above.</p>`;
-}
-
 /**
  * A state or pseudo-element added to a card and not written yet (§5.7).
  *
@@ -850,13 +811,6 @@ function renderDetach(name: string, host: StylesHost, uses: number): TemplateRes
   </div>`;
 }
 
-function toggleCard(host: StylesHost, key: string): void {
-  const next = new Set(host.ui.closedCards);
-  if (next.has(key)) next.delete(key);
-  else next.add(key);
-  host.patch({ closedCards: next });
-}
-
 /**
  * The element's own style attribute, as a card (R21).
  *
@@ -865,15 +819,10 @@ function toggleCard(host: StylesHost, key: string): void {
  */
 export function renderInlineCard(
   host: StylesHost,
-  options: { popped?: Popped } = {},
-): TemplateResult | typeof nothing {
+  options: { popped: Popped },
+): TemplateResult {
   const { model, engine, element } = host;
   const all = model.inline;
-  const familyHit = host.filtering && host.hit('inline style');
-  const shown = host.filtering && !familyHit ? all.filter((one) => host.hit(one.property, one.value)) : all;
-  if (host.filtering && !familyHit && !shown.length) return nothing;
-  const away = !options.popped && isPopped(host, INLINE_LIST_ID);
-  const open = Boolean(options.popped) || (!away && (host.filtering || !host.ui.closedCards.has(INLINE_LIST_ID)));
   const target: WriteTarget = { kind: 'inline', element };
   const count = all.length;
   return html`<div class="cls" data-card=${INLINE_LIST_ID}>
@@ -881,20 +830,19 @@ export function renderInlineCard(
     name: 'Inline style',
     plain: true,
     meta: countText(count, 'rule'),
-    expanded: open,
-    onToggle: () => (options.popped ? options.popped.onClose() : away ? closePopped(host) : toggleCard(host, INLINE_LIST_ID)),
+    expanded: true,
+    onToggle: () => options.popped.onClose(),
     sessionDot: false,
   })}
-    ${open
-      ? html`<div class="body">
+    <div class="body">
           <p class="hint" style="margin:0 0 7px">
             On this element only, at every size. Wins over every rule unless one is
             <code class="mono">!important</code>.
           </p>
           <div class="block" data-block="base">
             <div class="decls" data-declarations=${INLINE_LIST_ID}>
-              ${shown.length
-          ? renderRows(writeTarget(target, all, '', 'inline style', INLINE_LIST_ID, host), shown, host)
+              ${all.length
+          ? renderRows(writeTarget(target, all, '', 'inline style', INLINE_LIST_ID, host), all, host)
           : html`<p class="hint" style="margin:0">Nothing is written on the element itself.</p>`}
             </div>
             ${renderBlockAdder(
@@ -904,9 +852,7 @@ export function renderInlineCard(
             '',
           )}
           </div>
-          ${host.filtering
-          ? nothing
-          : html`<div class="actions">
+          <div class="actions">
                 <button
                   class="btn sm"
                   type="button"
@@ -918,9 +864,8 @@ export function renderInlineCard(
                   ${icon('droplet', 12)} Extract ${count || ''} into a class
                 </button>
                 ${renderPasteButton(host, { context: 'inline', element })}
-              </div>`}
-        </div>`
-      : away ? poppedNote() : nothing}
+              </div>
+        </div>
   </div>`;
 }
 
@@ -931,21 +876,18 @@ export function renderInlineCard(
 export function renderUnknownCard(
   name: string,
   host: StylesHost,
-  options: { popped?: Popped } = {},
-): TemplateResult | typeof nothing {
+  options: { popped: Popped },
+): TemplateResult {
   const key = `.${CSS.escape(name)}`;
-  if (host.filtering && !host.hit(key)) return nothing;
-  const away = !options.popped && isPopped(host, key);
-  const open = Boolean(options.popped) || (!away && (host.filtering || !host.ui.closedCards.has(key)));
   return html`<div class="cls" data-card=${key} data-group="classes" data-unknown>
     ${renderCardHeader({
     name: key,
     meta: 'not defined',
-    expanded: open,
-    onToggle: () => (options.popped ? options.popped.onClose() : away ? closePopped(host) : toggleCard(host, key)),
+    expanded: true,
+    onToggle: () => options.popped.onClose(),
     sessionDot: false,
   })}
-    ${open ? ClassEditor.renderUnknownBody(name, host) : away ? poppedNote() : nothing}
+    ${ClassEditor.renderUnknownBody(name, host)}
   </div>`;
 }
 
@@ -971,72 +913,6 @@ export const sourcesStyles: CSSResult = css`
     justify-items: start;
     margin: 0;
     padding: 8px 9px 4px;
-  }
-  .popped-note {
-    margin: 0;
-    padding: 2px 10px 9px;
-  }
-  .src-tabs {
-    display: flex;
-    gap: 2px;
-    margin: 0 0 4px;
-    padding: 2px;
-    border: 1px solid var(--heo-line);
-    border-radius: var(--heo-r-md);
-    background: var(--heo-sunken);
-  }
-  .src-tabs [role='tab'] {
-    flex: 1 1 0;
-    height: 22px;
-    padding: 0 4px;
-    border: 0;
-    border-radius: var(--heo-r-sm);
-    background: transparent;
-    color: var(--heo-text-dim);
-    font-size: 11px;
-    cursor: pointer;
-  }
-  .src-tabs [role='tab']:hover {
-    background: var(--heo-hover);
-    color: var(--heo-text);
-  }
-  .src-tabs [role='tab'][aria-selected='true'] {
-    background: var(--heo-raised);
-    box-shadow: var(--heo-shadow-sm);
-    color: var(--heo-text);
-  }
-  .src-tabs [role='tab']:focus-visible {
-    outline: 2px solid var(--heo-focus-ring);
-    outline-offset: 1px;
-  }
-  .src-tabs .c {
-    margin-left: 1px;
-    color: var(--heo-text-dim);
-    font-family: var(--heo-mono);
-    font-size: 10px;
-  }
-  /* Groups by meaning, each under a captioned rule. */
-  .src-h {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin: 14px 0 7px;
-    color: var(--heo-text-dim);
-    font-size: 10.5px;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-  }
-  .src-h .c {
-    color: var(--heo-text-dim);
-    font-family: var(--heo-mono);
-    font-size: 10px;
-    font-weight: 400;
-  }
-  .src-h .rule-line {
-    flex: 1;
-    height: 1px;
-    background: var(--heo-line);
   }
   .cls .body {
     padding: 8px;
@@ -1076,9 +952,6 @@ export const sourcesStyles: CSSResult = css`
     align-items: center;
     gap: 6px;
     margin-top: 10px;
-  }
-  .cls.flash {
-    animation: heo-row-flash 1.2s ease-out;
   }
   .block-add {
     margin-top: 4px;

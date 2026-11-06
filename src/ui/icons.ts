@@ -113,8 +113,6 @@ const PATHS: Record<string, string> = {
   laptop: 'M3.6 3.8h8.8v6.6H3.6zM1.8 12.4h12.4',
   desktop: 'M2.2 2.8h11.6v7.8H2.2zM8 10.6v2.6M5.6 13.2h4.8',
   print: 'M4.5 6V2.8h7V6M4.5 11H3V6h10v5h-1.5M4.5 9.2h7v4h-7z',
-  /* Stacked sheets: the rules an element's styles are layered from (Sources). */
-  layers: 'M8 2.6l5.6 3L8 8.6 2.4 5.6zM2.4 8.2L8 11.2l5.6-3M2.4 10.8L8 13.8l5.6-3',
   /* A small box beside its element: a pseudo-element. */
   pseudo: 'M7 4.2h6.2v7.6H7zM2.8 6.2h2.6v3.6H2.8z',
 };

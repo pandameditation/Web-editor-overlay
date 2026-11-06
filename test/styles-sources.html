@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Sources, cards and the controls they share with Tokens</title>
+  <title>Styles cards and the controls they share with Tokens</title>
   <!--
     The shared sample (design §8): the prototype's model, as real CSS. Plus the §15 L3 list, so a
     class card has an li to add ::marker to.
@@ -281,7 +281,7 @@
             noStyleAttributeOrMediaChip: !/style=|@media|[≤≥]/.test(ident()?.textContent ?? ''),
           };
           /*
-           * "N rules": the other rules reaching the element, the same list as Sources' "Other rules".
+           * "N rules": the other rules reaching the element.
            * Pressed, it turns into their chips, which stay from selection to selection until the
            * panel closes; each opens its card like a class name, and has no cross.
            */
@@ -411,13 +411,27 @@
             wasOpen && !finderPop() && plus()?.getAttribute('aria-expanded') === 'false';
         }
         /* ------------------------------------------------------------------ *
-         * Sources: where the element's styles are written (R17–R21, R23, R29).
+         * The cards: where the element's styles are written (R17–R21, R23, R29).
          * ------------------------------------------------------------------ */
         progress.textContent = 'sources';
         {
           const sroot = () => deep('heo-styles-panel').shadowRoot;
-          const sources = () => sroot().querySelector('heo-section[heading="Sources"]');
-          const card = (key) => sources()?.querySelector(`.cls[data-card="${CSS.escape(key)}"]`);
+          // Every card opens from its chip in the element header, one at a time, in a popover.
+          const card = (key) => sroot().querySelector(`.cardpop .cls[data-card="${CSS.escape(key)}"]`);
+          const chipOf = (key) => {
+            if (key === 'inline') return sroot().querySelector('.ident .el-chip');
+            if (/^\.[\w-]+$/.test(key)) return sroot().querySelector(`.ident .cchip[data-class="${CSS.escape(key.slice(1))}"] .name`);
+            sroot().querySelector('.ident .cchip.rules')?.click();
+            return sroot().querySelector(`.ident .cchip.rule[data-rule="${CSS.escape(key)}"] .name`);
+          };
+          const pop = async (key) => {
+            if (card(key)) return card(key);
+            chipOf(key)?.click();
+            await settle(250);
+            if (!card(key)) chipOf(key)?.click();
+            await settle(150);
+            return card(key);
+          };
           const body = (key) => card(key)?.querySelector(':scope > .body');
           const blocks = (key) => Array.from(body(key)?.querySelectorAll(':scope > .block') ?? []);
           const block = (key, name) => body(key)?.querySelector(`:scope > .block[data-block="${CSS.escape(name)}"]`);
@@ -450,7 +464,7 @@
 
           /*
            * The header's class name opens its card in a popover under the name, editable there:
-           * jumping down to Sources and back up was a round trip for every class edit.
+           * the header is where every card opens from.
            */
           const chipName = () => sroot().querySelector('.ident .cchip[data-class="featured"] .name');
           chipName()?.click();
@@ -466,10 +480,6 @@
             // Right against the chip, on whichever side has the room: this window is short, and the
             // popover is placed above when there is no room below it.
             (Math.abs(popBox.top - chipBox.bottom) <= 8 || Math.abs(popBox.bottom - chipBox.top) <= 8);
-          // One copy of the card: the Sources place says where it went, and holds no rows.
-          results.header.theSourcesCopyStepsAside =
-            /Open in a popover above/.test(textOf(card('.featured'))) &&
-            !card('.featured')?.querySelector('heo-value-field');
           // Edited in place: a value typed there lands in the class's rule.
           const historyBefore = engine.history.size;
           popped()?.querySelector('heo-value-field[data-property="border"]')?.dispatchEvent(
@@ -483,7 +493,7 @@
           // With a class's card open from its chip, the general "Paste CSS…" opens on that class; a
           // real press arrives as a pointerdown first, which must not close the card under it.
           {
-            const general = sources()?.querySelector(':scope > .actions [data-act="paste"]');
+            const general = sroot().querySelector('heo-section[heading="Effective styles"] [data-act="paste"]');
             general?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, composed: true }));
             await settle(60);
             general?.click();
@@ -493,12 +503,11 @@
             engine.store.value.cssPaste?.destination === 'class' && engine.store.value.cssPaste?.className === 'featured';
           engine.cancelCssPaste();
           await settle(150);
-          // Escape closes it and gives focus back to the name; the Sources card is whole again.
+          // Escape closes it and gives focus back to the name.
           key(popped(), 'Escape');
           await settle(200);
           results.header.escapeClosesItBackToTheName =
-            !popped() && sroot().activeElement === chipName() &&
-            Boolean(card('.featured')?.querySelector('heo-value-field[data-property="border"]'));
+            !popped() && sroot().activeElement === chipName();
           // The name is a toggle: pressed while its card is open, it closes it.
           chipName()?.click();
           await settle(250);
@@ -561,8 +570,7 @@
             await settle(300);
             results.header.tagOpensTheInlineStyle =
               ownPop()?.matches(':popover-open') === true && tag()?.getAttribute('aria-expanded') === 'true' &&
-              Boolean(ownPop()?.querySelector('.cls[data-card="inline"] heo-value-field')) &&
-              /Open in a popover above/.test(textOf(card('inline'))) && !card('inline')?.querySelector('heo-value-field');
+              Boolean(ownPop()?.querySelector('.cls[data-card="inline"] heo-value-field'));
             key(ownPop(), 'Escape');
             await settle(200);
             results.header.tagIsAToggleAndEscapeReturnsToIt = !ownPop() && sroot().activeElement === tag();
@@ -597,64 +605,12 @@
             results.header.idCrossRemovesTheId = gone && target.id === 'target' && Boolean(idName());
           }
 
-          /* The section and its groups. */
-          const headings = Array.from(sroot().querySelectorAll('heo-section')).map((one) => one.heading);
-          const dividers = Array.from(sources()?.querySelectorAll('.src-h') ?? []).map((one) => textOf(one));
-          const cardKeys = (group) =>
-            Array.from(sources()?.querySelectorAll(`.cls[data-group="${group}"]`) ?? []).map((one) => one.dataset.card);
+          /* No Sources section: Effective styles, then the category sections. */
           results.sources = {
-            // Second, after Effective styles, and before every category section (R17).
-            directlyAfterEffectiveStyles:
-              headings[0] === 'Effective styles' && headings[1] === 'Sources',
-            // Inline, then classes, then the rest: .card (0,1,0) sits above .card.featured (0,2,0).
-            groupsByMeaningNotSpecificity:
-              dividers.join('|') === 'Inline style 1|Classes 2|Other rules 3' &&
-              cardKeys('classes').join(',') === '.card,.featured' &&
-              !/\b(inline|rule|class)\b/.test(textOf(sources()?.querySelector('.cls[data-card=".card"] > header'))),
-            classesInClassListOrder:
-              cardKeys('classes').join(',') === Array.from(target.classList).map((name) => `.${name}`).join(','),
-            otherRulesInFileOrder: cardKeys('rules').join(',') === '.card.featured,.promo .card,section p',
+            noSourcesSection:
+              !Array.from(sroot().querySelectorAll('heo-section')).some((one) => one.heading === 'Sources') &&
+              sroot().querySelector('heo-section')?.heading === 'Effective styles',
           };
-
-          /* Tabs: All · Inline · Classes · Rules, with counts. */
-          const tabs = () => Array.from(sources()?.querySelectorAll('.src-tabs [role="tab"]') ?? []);
-          const tab = (name) => sources()?.querySelector(`.src-tabs [data-tab="${name}"]`);
-          const labels = tabs().map((one) => textOf(one)).join('|');
-          tab('rules')?.click();
-          await settle(150);
-          const onlyRules = !card('inline') && cardKeys('classes').length === 0 && cardKeys('rules').length === 3 &&
-            tab('rules')?.getAttribute('aria-selected') === 'true';
-          tab('inline')?.click();
-          await settle(150);
-          const onlyInline = Boolean(card('inline')) && !cardKeys('classes').length && !cardKeys('rules').length;
-          tab('all')?.click();
-          await settle(150);
-          results.sources.tabsFilterAndCount =
-            labels === 'All|Inline 1|Classes 2|Rules 3' && onlyRules && onlyInline &&
-            cardKeys('classes').length === 2 && cardKeys('rules').length === 3;
-          // Roving: one tab in the tab order, the arrows and Home/End move and select.
-          tab('all').focus();
-          key(tab('all'), 'ArrowRight');
-          await settle(150);
-          const right = tab('inline')?.getAttribute('aria-selected') === 'true' && sroot().activeElement === tab('inline');
-          key(tab('inline'), 'End');
-          await settle(150);
-          const end = tab('rules')?.getAttribute('aria-selected') === 'true';
-          key(tab('rules'), 'ArrowRight');
-          await settle(150);
-          const wraps = tab('all')?.getAttribute('aria-selected') === 'true';
-          key(tab('all'), 'ArrowLeft');
-          await settle(150);
-          key(tab('rules'), 'Home');
-          await settle(150);
-          results.sources.tabsUseArrowKeys =
-            right && end && wraps &&
-            tab('all')?.getAttribute('aria-selected') === 'true' && sroot().activeElement === tab('all') &&
-            tabs().filter((one) => one.tabIndex === 0).length === 1;
-          // One Paste CSS, at the bottom of Sources, and none on a card (R17, R20).
-          const lastChild = sources()?.lastElementChild;
-          results.sources.onePasteButtonAtTheBottom =
-            lastChild?.matches('.actions') && textOf(lastChild) === 'Paste CSS…';
           /*
            * Every card ends with "Paste CSS", on the same line as "Detach styles from class" when
            * there is one, and the dialog opens on that card: its class (already applied, so the
@@ -663,6 +619,7 @@
           {
             const pasteDialog = () => deep('heo-css-paste-dialog')?.shadowRoot;
             const openPaste = async (k) => {
+              await pop(k);
               card(k)?.querySelector(':scope > .body > .actions [data-act="paste-here"]')?.click();
               await settle(200);
               const open = engine.store.value.cssPaste;
@@ -672,8 +629,11 @@
               await settle(150);
               return seen;
             };
-            const everyCard = ['inline', '.card', '.featured', '.card.featured', 'section p'].every((k) =>
-              Boolean(card(k)?.querySelector(':scope > .body > .actions [data-act="paste-here"]')));
+            let everyCard = true;
+            for (const k of ['inline', '.card', '.featured', '.card.featured', 'section p']) {
+              everyCard = everyCard && Boolean((await pop(k))?.querySelector(':scope > .body > .actions [data-act="paste-here"]'));
+            }
+            await pop('.card');
             const sameRow = Boolean(card('.card')?.querySelector(':scope > .body > .actions [data-act="paste-here"] ~ [data-act="detach"]'));
             const asClass = await openPaste('.card');
             const asRule = await openPaste('section p');
@@ -689,56 +649,67 @@
           /* Cards: the Tokens class card. */
           const cardHeader = (k) => card(k)?.querySelector(':scope > header');
           const meta = (k) => textOf(cardHeader(k)?.querySelector('.meta'));
+          const looks = {};
+          for (const k of ['.card', '.featured', '.promo .card', 'section p', 'inline']) {
+            await pop(k);
+            const pillEl = cardHeader(k)?.querySelector('.meta .uses');
+            looks[k] = {
+              named: Boolean(cardHeader(k)?.querySelector('.n')) && Boolean(cardHeader(k)?.querySelector('.meta')),
+              bg: cardHeader(k) ? getComputedStyle(cardHeader(k)).backgroundColor : '',
+              meta: meta(k),
+              pill: textOf(pillEl),
+              pillClass: pillEl ? Array.from(pillEl.classList).join(' ') : '',
+              pillBg: pillEl ? getComputedStyle(pillEl).backgroundColor : '',
+              pillRound: pillEl ? parseFloat(getComputedStyle(pillEl).borderTopLeftRadius) >= 7 && pillEl.getBoundingClientRect().height <= 15 : false,
+            };
+          }
           results.cards = {
+            /*
+             * The Tokens class card, by its header: the popover is the card's frame, so its header
+             * reads on the popover surface rather than Tokens' header band. Every card the same.
+             */
             useTheTokensClassCard:
-              ['.card', '.featured', 'section p', 'inline'].every((k) =>
-                Boolean(cardHeader(k)?.querySelector('.n')) && Boolean(cardHeader(k)?.querySelector('.meta')) &&
-                getComputedStyle(cardHeader(k)).backgroundColor === tokensHeaderBg),
+              ['.card', '.featured', 'section p', 'inline'].every((k) => looks[k].named) &&
+              new Set(['.card', '.featured', 'section p', 'inline'].map((k) => looks[k].bg)).size === 1 &&
+              Boolean(tokensHeaderBg),
             // N rules across what is in effect • N× elements the selector matches; none for inline.
             metaCountsRulesAndElements:
-              meta('.card') === `${familyDeclarations('.card')} rules • 4×` &&
-              meta('.featured') === `${familyDeclarations('.featured')} rules • 1×` &&
-              meta('.promo .card') === '1 rule • 4×' &&
-              meta('inline') === '2 rules',
+              looks['.card'].meta === `${familyDeclarations('.card')} rules • 4×` &&
+              looks['.featured'].meta === `${familyDeclarations('.featured')} rules • 1×` &&
+              looks['.promo .card'].meta === '1 rule • 4×' &&
+              looks.inline.meta === '2 rules',
           };
           /* The uses count is a pill, its colour read before its number: green for one, orange for more. */
-          const pill = (k) => cardHeader(k)?.querySelector('.meta .uses');
-          const pillBg = (k) => (pill(k) ? getComputedStyle(pill(k)).backgroundColor : '');
           results.cards.usesIsAPill =
-            textOf(pill('.card')) === '4×' && pill('.card').classList.contains('many') &&
-            textOf(pill('.featured')) === '1×' && pill('.featured').classList.contains('one') &&
-            !pill('inline') &&
-            parseFloat(getComputedStyle(pill('.card')).borderTopLeftRadius) >= 7 &&
-            pill('.card').getBoundingClientRect().height <= 15 &&
-            pillBg('.card') !== pillBg('.featured') && pillBg('.card') !== 'rgba(0, 0, 0, 0)';
+            looks['.card'].pill === '4×' && /\bmany\b/.test(looks['.card'].pillClass) &&
+            looks['.featured'].pill === '1×' && /\bone\b/.test(looks['.featured'].pillClass) &&
+            !looks.inline.pill && looks['.card'].pillRound &&
+            looks['.card'].pillBg !== looks['.featured'].pillBg && looks['.card'].pillBg !== 'rgba(0, 0, 0, 0)';
+          await pop('section p');
           const file = () => cardHeader('section p')?.querySelector('.file');
           const restDisplay = file() ? getComputedStyle(file()).display : 'missing';
           cardHeader('section p').focus();
           await settle(60);
           results.cards.fileOnlyOnHover =
             restDisplay === 'none' && getComputedStyle(file()).display !== 'none' && textOf(file()).length > 0;
-          // A disclosure: role button, in the tab order, Enter and Space toggle it.
-          const header = () => cardHeader('section p');
-          const operable = header()?.getAttribute('role') === 'button' && header()?.tabIndex === 0 &&
-            header()?.getAttribute('aria-expanded') === 'true';
-          key(header(), 'Enter');
+          // One card per selector family: the chips name families, never a state or size.
+          sroot().querySelector('.ident .cchip.rules')?.click();
           await settle(120);
-          const shut = header()?.getAttribute('aria-expanded') === 'false' && !body('section p');
-          key(header(), ' ');
-          await settle(120);
-          results.cards.headerIsKeyboardOperable =
-            operable && shut && header()?.getAttribute('aria-expanded') === 'true' && Boolean(body('section p'));
-          const allKeys = Array.from(sources()?.querySelectorAll('.cls[data-card]') ?? []).map((one) => one.dataset.card);
+          const allKeys = [
+            ...Array.from(sroot().querySelectorAll('.ident .cchip[data-class]')).map((one) => `.${one.dataset.class}`),
+            ...Array.from(sroot().querySelectorAll('.ident .cchip.rule')).map((one) => one.dataset.rule),
+          ];
+          await pop('.card');
           results.cards.oneCardPerSelectorFamily =
-            new Set(allKeys).size === allKeys.length &&
+            allKeys.length === 5 && new Set(allKeys).size === allKeys.length &&
             !allKeys.some((k) => /:/.test(k)) &&
             Boolean(card('.card')?.querySelector('.slots [data-cond="state::hover"]'));
           // A class no readable rule defines gets a card that offers to define it.
           target.classList.add('ghost');
           await settle(300);
-          const ghost = card('.ghost');
+          const ghost = await pop('.ghost');
           const define = Array.from(ghost?.querySelectorAll('button') ?? []).find((one) => /Define \.ghost/.test(one.textContent));
-          const offered = ghost?.dataset.group === 'classes' && ghost?.hasAttribute('data-unknown') && Boolean(define);
+          const offered = ghost?.hasAttribute('data-unknown') && Boolean(define);
           define?.click();
           await settle(300);
           results.cards.unknownClassOffersDefine =
@@ -750,6 +721,11 @@
           await settle(200);
 
           /* Card bodies. */
+          await pop('.featured');
+          const featuredBlocks = blocks('.featured').map((one) => one.dataset.block).join(',');
+          const featuredPseudo = textOf(block('.featured', '::before')?.querySelector('.kindtxt'));
+          const featuredFocus = Boolean(card('.featured')?.querySelector('.slots [data-cond="state::focus-within"]'));
+          await pop('.card');
           const cardBody = body('.card');
           results.cardBody = {
             // Straight into the declarations: strip, then the base block's rows, no selector label.
@@ -761,9 +737,7 @@
             // Under Always: the base block and its pseudo-elements; a state is a button on the bar.
             pseudoElementsFollowTheBaseAndStatesAreOnTheBar:
               blocks('.card').map((one) => one.dataset.block).join(',') === 'base' &&
-              blocks('.featured').map((one) => one.dataset.block).join(',') === 'base,::before' &&
-              textOf(block('.featured', '::before')?.querySelector('.kindtxt')) === 'pseudo-element' &&
-              Boolean(card('.featured')?.querySelector('.slots [data-cond="state::focus-within"]')),
+              featuredBlocks === 'base,::before' && featuredPseudo === 'pseudo-element' && featuredFocus,
           };
           // Picking a size says where it applies and how far it reaches.
           card('.card')?.querySelector('.slots [data-slot="tablet"]')?.click();
@@ -812,8 +786,9 @@
           await settle(150);
           /* Card rows write their own declaration. */
           results.cardRows = {
-            noDots: !sources()?.querySelector('.cls .dots, .cls .moon'),
+            noDots: !sroot().querySelector('.cardpop .cls .dots, .cardpop .cls .moon'),
           };
+          await pop('.promo .card');
           before = engine.history.size;
           const promoColor = () => rowIn(body('.promo .card'), 'color')?.querySelector('heo-value-field');
           promoColor()?.dispatchEvent(new CustomEvent('value-change', { detail: { value: '#123456' }, bubbles: true, composed: true }));
@@ -825,6 +800,7 @@
             target.style.color === 'rgb(185, 28, 28)';
           engine.undo();
           await settle(200);
+          await pop('.card');
           const second = document.querySelectorAll('.card')[1];
           const weight = () => rowIn(body('.card'), 'font-weight')?.querySelector('heo-value-field');
           weight()?.dispatchEvent(new CustomEvent('value-input', { detail: { value: '800' }, bubbles: true, composed: true }));
@@ -847,6 +823,7 @@
           await settle(200);
 
           /* The inline card (R21). */
+          await pop('inline');
           const inline = () => card('inline');
           const extract = () => Array.from(inline()?.querySelectorAll('.actions button') ?? []).find((one) => /Extract/.test(one.textContent));
           results.inlineCard = {
@@ -862,6 +839,7 @@
           engine.cancelExtraction();
           api.select(item);
           await settle(300);
+          await pop('inline');
           results.inlineCard.extractDisabledWhenEmpty =
             extract()?.disabled === true && !rowsOf(inline()).length &&
             Boolean(inline()?.querySelector('[data-heo-part="adder"]'));
@@ -869,13 +847,15 @@
           await settle(300);
 
           /* One adder everywhere (R23). */
+          const inlineHasAdder = Boolean((await pop('inline'))?.querySelector('[data-heo-part="adder"]'));
+          await pop('.card');
           const addButton = (scope) => scope?.querySelector(':scope > .block-add .add-prop, :scope .block-add .add-prop');
           results.adder = {
             oneComponentEverywhere:
               Boolean(sroot().querySelector('.block-add [data-heo-part="adder"][data-adder="effective"]')) &&
               Boolean(sroot().querySelector('.egroup [data-heo-part="adder"]')) &&
               Boolean(block('.card', 'base')?.querySelector('[data-heo-part="adder"]')) &&
-              Boolean(inline()?.querySelector('[data-heo-part="adder"]')) &&
+              inlineHasAdder &&
               tokensHasAdder,
           };
           addButton(block('.card', 'base'))?.click();
@@ -961,6 +941,7 @@
             await settle(200);
           }
           // Escape closes an adder and leaves nothing behind.
+          await pop('.card');
           addButton(block('.card', 'base'))?.click();
           await settle(200);
           await typeInto(cardAdder().querySelector('input'), 'margin');
@@ -1050,6 +1031,7 @@
           await settle(200);
           // A size with no rule for the family yet: its query typed into the bar's "+" lands on that
           // size, then the adder creates the media rule.
+          await pop('.featured');
           card('.featured')?.querySelector('.slots .add')?.click();
           await settle(250);
           {
@@ -1079,6 +1061,7 @@
           await settle(200);
 
           /* The size strip (R12). */
+          await pop('.card');
           const strip = (k) => card(k)?.querySelector('[data-heo-part="strip"]');
           const slotButton = (k, slot) => strip(k)?.querySelector(`[data-slot="${slot}"]`);
           // Counted per condition: a state under a size is its own, a pseudo-element counts with its size.
@@ -1160,7 +1143,12 @@
           await settle(200);
 
           /* The !important toggle (R29). */
-          const cardRowsAll = () => rowsOf(sources());
+          const promoRows = rowsOf(await pop('.promo .card'));
+          const promoColorToggle = rowIn(body('.promo .card'), 'color')?.querySelector('.promote');
+          const promoLabel = promoColorToggle?.getAttribute('aria-label');
+          const promoPressed = promoColorToggle?.getAttribute('aria-pressed');
+          const cardRowsAll = () => [...promoRows, ...rowsOf(card('.card'))];
+          await pop('.card');
           results.promote = {
             ...results.promote,
             isAToggleWithAriaPressed:
@@ -1168,17 +1156,18 @@
               cardRowsAll().every((row) =>
                 ['true', 'false'].includes(row.querySelector('button.promote')?.getAttribute('aria-pressed'))),
             namesPropertyAndSource:
-              rowIn(body('.promo .card'), 'color')?.querySelector('.promote')?.getAttribute('aria-label') === '!important on color in .promo .card' &&
-              rowIn(body('.promo .card'), 'color')?.querySelector('.promote')?.getAttribute('aria-pressed') === 'true',
+              promoLabel === '!important on color in .promo .card' && promoPressed === 'true',
           };
+          const everyCardRowHasOne = cardRowsAll().every((row) => row.querySelectorAll('.promote').length === 1);
           sroot().querySelector('.rows[data-declarations="effective"] .row[data-property="color"] .dots')?.click();
           await settle(250);
           const lines = Array.from(sroot().querySelectorAll('.pop .c-line'));
           results.promote.presentOnEveryCardRowAndPopoverLine =
-            cardRowsAll().every((row) => row.querySelectorAll('.promote').length === 1) &&
+            everyCardRowHasOne &&
             lines.length > 1 && lines.every((line) => line.querySelectorAll('.promote').length === 1);
           key(sroot().querySelector('.pop'), 'Escape');
           await settle(200);
+          await pop('.card');
           before = engine.history.size;
           rowIn(body('.card'), 'opacity')?.querySelector('.promote')?.click();
           await settle(200);
@@ -1191,35 +1180,29 @@
           await settle(200);
 
           /* Keys. */
+          await pop('.card');
           cardHeader('.card')?.focus();
           key(cardHeader('.card'), 'Escape');
           await settle(150);
           results.keys.escapeNeverDeselects = engine.selected === target;
-          key(cardHeader('.card'), 'Enter');
-          await settle(150);
-          const enterShut = cardHeader('.card')?.getAttribute('aria-expanded') === 'false';
-          key(cardHeader('.card'), 'Enter');
-          await settle(150);
-          results.keys.cardHeaderEnterToggles =
-            enterShut && cardHeader('.card')?.getAttribute('aria-expanded') === 'true';
-          // Every control Sources adds shows the focus ring when focused from the keyboard.
+          // Every control a card adds shows the focus ring when focused from the keyboard.
           const ring = getComputedStyle(sroot().host).getPropertyValue('--heo-focus-ring').trim();
-          const controls = [
-            tab('all'),
-            cardHeader('.card'),
+          const ringOn = (control) => {
+            if (!control) return 'missing';
+            control.focus();
+            const style = getComputedStyle(control);
+            return control.matches(':focus-visible') && style.outlineStyle === 'solid' && style.outlineWidth === '2px';
+          };
+          await pop('.card');
+          const rings = [
             slotButton('.card', 'phone'),
             strip('.card')?.querySelector('.add'),
             rowIn(body('.card'), 'opacity')?.querySelector('.promote'),
             rowIn(body('.card'), 'opacity')?.querySelector('.kill'),
             addButton(block('.card', 'base')),
-            block('.featured', '::before')?.querySelector('.blabel .kill'),
-          ];
-          const rings = controls.map((control) => {
-            if (!control) return 'missing';
-            control.focus();
-            const style = getComputedStyle(control);
-            return control.matches(':focus-visible') && style.outlineStyle === 'solid' && style.outlineWidth === '2px';
-          });
+          ].map(ringOn);
+          await pop('.featured');
+          rings.push(ringOn(block('.featured', '::before')?.querySelector('.blabel .kill')));
           results.keys.focusRingOnEveryControl = Boolean(ring) && rings.every((one) => one === true);
           if (!results.keys.focusRingOnEveryControl) results.keys.rings = rings;
           sroot().activeElement?.blur();
@@ -1237,6 +1220,7 @@
             engine.classes.upsert({ name: 'intro-detail', declarations: { color: 'red' }, origin: 'user' });
             target.classList.add('intro-detail');
             await settle(300);
+            await pop('.intro-detail');
             strip('.intro-detail')?.querySelector('.add')?.click();
             await settle(250);
             const search = sroot().querySelector('.menu.condpop heo-value-field')?.shadowRoot?.querySelector('input');
@@ -1306,6 +1290,7 @@
           };
           const beforeOf = (el, property) => getComputedStyle(el, '::before').getPropertyValue(property);
           results.addState = {};
+          await pop('.card');
           {
             // "+ Add pseudo-element": pseudo-elements only, offered in a list with what each styles,
             // narrowed as it is typed, and anything else refused with R24's two messages.
@@ -1364,6 +1349,7 @@
           }
           {
             // A state with no rule: a block with its adder open, and nothing on the page yet.
+            await pop('.card');
             const history = engine.history.size;
             const text = managed();
             await addState('.card', ':active');
@@ -1411,11 +1397,13 @@
             await settle(250);
             api.select(target);
             await settle(300);
+            await pop('.card');
             results.addState.pendingStateIsDroppedOnSelectionChange =
               there && !block('.card', ':focus') && engine.history.size === history;
           }
           {
             // An emptied page rule is reused, rather than a second .card:hover written elsewhere.
+            await pop('.card');
             card('.card')?.querySelector('.slots [data-cond="state::hover"]')?.click();
             await settle(150);
             block('.card', ':hover')?.querySelector('.blabel .kill')?.click();
@@ -1437,6 +1425,7 @@
           }
           {
             // In the card's current size: a phone :focus is written inside the phone media query.
+            await pop('.card');
             card('.card')?.querySelector('.slots [data-slot="phone"]')?.click();
             await settle(150);
             await addState('.card', ':focus');
@@ -1455,6 +1444,7 @@
              * Adding ::before to .card and then a colour must not add `content`, which would replace
              * the star on this element; the block says why.
              */
+            await pop('.card');
             const history = engine.history.size;
             await addState('.card', '::before');
             const draft = openAdderOf(block('.card', '::before'))?.querySelector('input');
@@ -1500,6 +1490,7 @@
             // ::marker: nothing written until a property, and never `content` (it hides the bullet).
             api.select(item);
             await settle(300);
+            await pop('.item');
             const history = engine.history.size;
             const text = managed();
             await addState('.item', '::marker');
@@ -1522,6 +1513,7 @@
           const detachLink = () => body('.card')?.querySelector('.actions [data-act="detach"]');
           const panelText = (choice) => textOf(body('.card')?.querySelector(`.detach [data-choice="${choice}"]`));
           results.detach = {};
+          await pop('.card');
           {
             const before = textOf(detachLink());
             const closed = detachLink()?.getAttribute('aria-expanded') === 'false';
@@ -1533,7 +1525,7 @@
               detachLink()?.classList.contains('btn') && !detachLink()?.classList.contains('link') &&
               !/Manage in Tokens/.test(textOf(body('.card'))) &&
               textOf(detachLink()) === 'Never mind' && detachLink()?.getAttribute('aria-expanded') === 'true' &&
-              !/Just this element/.test(textOf(sources()));
+              !/Just this element/.test(textOf(sroot().querySelector('heo-section')));
             results.detach.copyWarnsAboutRulesElsewhere =
               /Rules written for \.card elsewhere \(\.card\.featured, \.promo \.card\) stop applying here\./.test(panelText('copy')) &&
               /its states and sizes included/.test(panelText('copy'));
@@ -1558,13 +1550,14 @@
               engine.classes.get(fork)?.declarations.padding === '12px 16px' &&
               has(`.${fork}`, 'max-width') && has(`.${fork}`, 'min-width') && has(`.${fork}`, 'print') &&
               has(`.${fork}:hover`) && has(`.${fork}:hover`, 'min-width') &&
-              Boolean(card(`.${fork}`));
+              Boolean(card(`.${fork}`)) && sroot().querySelector('.cardpop')?.dataset.cardPop === `.${fork}`;
             results.detach.copySplitsSelectorLists =
               has(`.${fork}:active`) && has(`.${fork}:focus`) &&
               !rulesOf.some((rule) => rule.selector.includes(','));
             engine.undo();
             list.remove();
             await settle(300);
+            await pop('.card');
             // Move: only the unconditional declarations become inline; the class comes off.
             if (detachLink()?.getAttribute('aria-expanded') !== 'true') {
               detachLink()?.click();

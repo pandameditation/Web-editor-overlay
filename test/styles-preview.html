@@ -870,12 +870,18 @@
               `Phone, up to 767px, ${phoneCount} declarations`,
         };
 
-        /* ---- what Sources and the groups show depends on the preview (R7) ---- */
+        /* ---- what a card and the groups show depends on the preview (R7) ---- */
         progress.textContent = 'filter';
         engine.setPreviewWidth(null);
         await settle();
-        const sources = () => root().querySelector('heo-section[heading="Sources"]');
-        const card = (key) => sources()?.querySelector(`.cls[data-card="${CSS.escape(key)}"]`);
+        // A class's card, opened from its chip in the header, in the popover over the panel.
+        const card = (key) => root().querySelector(`.cardpop .cls[data-card="${CSS.escape(key)}"]`);
+        const show = async (key) => {
+          if (card(key)) return;
+          root().querySelector(`.ident .cchip[data-class="${CSS.escape(key.slice(1))}"] .name`)?.click();
+          await settle();
+        };
+        await show('.card');
         const slotsOf = (scope) => Array.from(scope?.querySelectorAll('.slots [data-slot]') ?? []).map((one) => one.dataset.slot);
         const metaOf = (key) => card(key)?.querySelector(':scope > header .meta')?.textContent.trim() ?? '';
         const pressedIn = (scope) =>
@@ -915,7 +921,7 @@
         engine.setPreviewWidth(320);
         await settle(300);
         const phoneMeta = metaOf('.card');
-        const phonePressed = [pressedIn(root().querySelector('heo-section[heading="Effective styles"]')), pressedIn(card('.card')), pressedIn(card('.featured'))];
+        const phonePressed = [pressedIn(root().querySelector('heo-section[heading="Effective styles"]')), pressedIn(card('.card'))];
         results.filter.previewHidesNonMatchingRules =
           phoneMeta === `${cardCount(320)} rules • 4×` && cardCount(320) < cardCount(null) &&
           !card('.card')?.querySelector('.block[data-block=":hover"] .decl .p[title="box-shadow"]');
@@ -924,6 +930,10 @@
           slotsOf(card('.card')).join(',') === 'phone,state::hover' &&
           slotsOf(root().querySelector('[data-strip="effective"]')?.parentElement).join(',') === 'phone,state::hover';
         const hoverAt320 = slotsOf(card('.card'));
+        // One card is open at a time: the other class's, for the same question.
+        await show('.featured');
+        phonePressed.push(pressedIn(card('.featured')));
+        await show('.card');
         engine.setPreviewWidth(1024);
         await settle(300);
         const hoverAt1024 = slotsOf(card('.card'));

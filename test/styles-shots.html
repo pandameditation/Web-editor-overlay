@@ -9,7 +9,7 @@
     reports ready, so `browser-check.mjs --shot` can capture it.
 
       ?state=actual | preview-320 | popover-padding | save-spacing | save-typography-320 |
-             sources | add-menu | detach | preview-menu | search-padding
+             add-menu | detach | preview-menu | search-padding
       &theme=dark | light
 
     `--shot` resizes the window to 1440x900 after the page reports, so the page re-places what it
@@ -191,9 +191,6 @@
             'value-change', { value: '18px' });
           shown = () => section('Typography');
           break;
-        case 'sources':
-          shown = () => section('Sources');
-          break;
         case 'add-menu':
           need(q('.slots[data-strip="effective"] button[data-slot="phone"]'), 'effective phone slot')?.click();
           await settle();
@@ -203,8 +200,10 @@
           shown = () => q('.egroup[data-egroup="size:phone"]');
           break;
         case 'detach':
-          need(q('.cls[data-card=".card"] .actions [data-act="detach"]'), 'detach link')?.click();
-          shown = () => q('.cls[data-card=".card"] .actions');
+          need(q('.ident .cchip[data-class="card"] .name'), 'card class chip')?.click();
+          await settle();
+          need(q('.cardpop .cls[data-card=".card"] .actions [data-act="detach"]'), 'detach link')?.click();
+          shown = () => q('.cardpop .cls[data-card=".card"] .actions');
           break;
         case 'preview-menu':
           need(q('[data-menu-anchor="preview"]'), 'preview menu button')?.click();

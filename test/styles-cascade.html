@@ -471,8 +471,8 @@
           under()?.parentElement === link()?.closest('.pl') &&
           under()?.previousElementSibling?.matches('.where') === true &&
           underBox.top >= linkBox.bottom &&
-          // One copy: the Sources card steps aside while this one is open.
-          !root().querySelector('heo-section[heading="Sources"] .cls[data-card=".card"] heo-value-field');
+          // One copy of the card in the panel: the one under the link.
+          root().querySelectorAll('.cls[data-card=".card"]').length === 1;
         results.popover.linkOpensTheCardAtTheRulesSize =
           Boolean(pop()) &&
           linkedCard?.querySelector(':scope > header')?.getAttribute('aria-expanded') === 'true' &&
@@ -488,7 +488,7 @@
         results.popover.theLinkIsAToggle =
           Boolean(pop()) && !under() && link()?.getAttribute('aria-expanded') === 'false' &&
           root().activeElement === link() &&
-          Boolean(root().querySelector('heo-section[heading="Sources"] .cls[data-card=".card"] heo-value-field'));
+          !root().querySelector('.cls[data-card=".card"]');
         // Escape folds an expanded card first, and only the next one closes the popover.
         link()?.click();
         await settle(300);

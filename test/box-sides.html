@@ -505,30 +505,12 @@
         await frames();
         await wait(300);
         {
-          const sectionNamed = (heading) =>
-            Array.from(panel.shadowRoot.querySelectorAll('heo-section')).find(
-              (s) => s.heading === heading,
-            );
-          const openSection = async (heading) => {
-            const s = sectionNamed(heading);
-            if (s && !s.open) s.shadowRoot.querySelector('.head')?.click();
-            await frames();
-            await wait(150);
-          };
-          await openSection('Sources');
-          // Expand .boxy, which declares margin-left, so two lists on screen can answer to the
-          // same property name. That is the whole precondition for the focus bug.
-          // The class chips are in the element header; a name opens its card in a popover, so the
-          // class's list sits over the panel while the rule's list is in Sources.
-          Array.from(panel.shadowRoot.querySelectorAll('.ident .cchip .name'))
-            .find((c) => c.textContent.includes('boxy'))
-            ?.click();
+          // The rule's card opens from the id chip. One card is open at a time, so the focus check
+          // below is against the rest of the panel: Effective styles lists margin-left too.
+          panel.shadowRoot.querySelector('.ident .cchip.id .name')?.click();
           await frames();
           await wait(250);
-
-          // The page rule is an OTHER RULES card, open by default.
-          const ruleList = () => sectionNamed('Sources')?.querySelector('.cls[data-card="#subject"]');
-          const boxyCard = () => panel.shadowRoot.querySelector('.cardpop .cls[data-card=".boxy"]');
+          const ruleList = () => panel.shadowRoot.querySelector('.cardpop .cls[data-card="#subject"]');
           const ruleRows = () =>
             Array.from(ruleList()?.querySelectorAll('heo-value-field') ?? []).map(
               (f) => f.dataset.property,
@@ -562,9 +544,6 @@
 
           results.addingASideToARule = {
             rowsBefore: ruleRows().join(','),
-            classIsExpanded: Boolean(
-              boxyCard()?.querySelector('heo-value-field[data-property="margin-left"]'),
-            ),
           };
 
           /* --- margin-left: the rule has no `margin`, so the row really appears. --- */
@@ -579,9 +558,6 @@
            */
           results.addingASideToARule.focusIsInTheRule = Boolean(
             afterMargin && ruleList()?.contains(afterMargin),
-          );
-          results.addingASideToARule.focusIsNotInTheClass = Boolean(
-            afterMargin && !boxyCard()?.contains(afterMargin),
           );
 
           /* --- padding-left, where the rule already declares `padding`. --- */
@@ -657,28 +633,20 @@
             await wait(320);
             // Re-queried each time: the dock rebuilds its panels, so a held reference goes stale.
             const live = deep('heo-styles-panel');
-            const section = Array.from(live.shadowRoot.querySelectorAll('heo-section')).find(
-              (s) => s.heading === 'Sources',
-            );
-            if (section && !section.open) section.shadowRoot.querySelector('.head')?.click();
-            await frames();
-            await wait(180);
-            // Cards start open, and a header is a toggle: only a shut one is clicked.
-            const header = Array.from(section?.querySelectorAll('.cls > header') ?? [])
-              .find((h) => h.textContent.includes(`#${id}`));
-            if (header?.getAttribute('aria-expanded') !== 'true') header?.click();
-            await frames();
-            await wait(280);
-            let block = Array.from(section?.querySelectorAll('.cls') ?? []).find((b) =>
-              b.querySelector('header')?.textContent.includes(`#${id}`),
-            );
+            const sel = `.cardpop .cls[data-card="${CSS.escape(`#${id}`)}"]`;
+            if (!live.shadowRoot.querySelector(sel)) {
+              live.shadowRoot.querySelector('.ident .cchip.id .name')?.click();
+              await frames();
+              await wait(280);
+            }
+            let block = live.shadowRoot.querySelector(sel);
             if (!block) return null;
             // A rule inside a media query is that condition of its card: a button on its bar.
             if (slot) {
               block.querySelector(`.slots [data-cond="${CSS.escape(slot)}"]`)?.click();
               await frames();
               await wait(200);
-              block = section.querySelector(`.cls[data-card="${CSS.escape(`#${id}`)}"]`);
+              block = live.shadowRoot.querySelector(sel);
             }
             return Array.from(block.querySelectorAll('.decl:not(.property-adder)')).map((row) => ({
               property: row.querySelector('.p')?.textContent?.trim() ?? '',

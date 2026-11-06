@@ -225,15 +225,19 @@
         extractIsNoLongerOnTheFirstLine: !Array.from(
           stylePanel.shadowRoot.querySelectorAll('.top button'),
         ).some((b) => /extract/i.test(b.textContent)),
-        extractIsInTheClassesSection: (() => {
-          const inline = stylePanel.shadowRoot.querySelector('heo-section[heading="Sources"] .cls[data-card="inline"]');
-          return Boolean(
-            inline && Array.from(inline.querySelectorAll('button')).some((b) => /extract/i.test(b.textContent)),
-          );
-        })(),
         sectionsBefore: headingsOf().length,
       };
-
+      // In the inline card, opened from the tag chip in the header (R21).
+      stylePanel.shadowRoot.querySelector('.ident .el-chip')?.click();
+      await frames(4);
+      {
+        const inline = stylePanel.shadowRoot.querySelector('.cardpop .cls[data-card="inline"]');
+        results.styles.extractIsInTheInlineCard = Boolean(
+          inline && Array.from(inline.querySelectorAll('button')).some((b) => /extract/i.test(b.textContent)),
+        );
+      }
+      stylePanel.shadowRoot.querySelector('.ident .el-chip')?.click();
+      await frames(4);
       // Named for what it covers: properties, values, classes and rules, of this element's styles.
       results.styles.saysWhatItSearches =
         filterField.getAttribute('label') === 'Search styles';
@@ -275,37 +279,20 @@
       await typeInto(filterField, 'padding', stylePanel);
       results.styles.findsPadding = headingsOf().includes('Spacing');
 
-      // Sources' cards, re-queried after every render.
-      const sourceCard = (key) =>
-        stylePanel.shadowRoot.querySelector(`heo-section[heading="Sources"] .cls[data-card="${CSS.escape(key)}"]`);
-      const cardRows = (key) =>
-        Array.from(sourceCard(key)?.querySelectorAll('.decl:not(.property-adder) .p') ?? []).map((p) => p.textContent.trim());
-
+      // Effective styles' rows, re-queried after every render: where a search finds a class's or a
+      // rule's declarations, by value or by the selector writing them.
+      const foundRows = () =>
+        Array.from(stylePanel.shadowRoot.querySelectorAll('[data-declarations="effective"] .row[data-property]'))
+          .map((row) => row.dataset.property);
       // A value, not a name. `.card` declares padding: 8px and nothing is called "8px".
       await typeInto(filterField, '8px', stylePanel);
-      results.styles.findsByValue =
-        headingsOf().includes('Sources') && sourceCard('.card')?.dataset.group === 'classes';
-      // Found by a declaration, a card shows only the rows that match (R8).
-      results.search.findsADeclarationInsideAClassCard = cardRows('.card').join(',') === 'padding';
-
-      // A class by name.
+      results.styles.findsByValue = foundRows().includes('padding');
+      // A class by name: what `.card` declares.
       await typeInto(filterField, 'card', stylePanel);
-      results.styles.findsAClass = headingsOf().includes('Sources') && Boolean(sourceCard('.card'));
-      // Found by its selector, a card shows everything it declares at the size it is on.
-      results.search.findsACardBySelector =
-        cardRows('.card').join(',') === 'padding' && !sourceCard('section p');
-
-      // A card holding the match only at another size opens at that size.
-      await typeInto(filterField, 'word-spacing', stylePanel);
-      results.search.switchesCardToTheMatchingSize =
-        sourceCard('.card')?.querySelector('.slots [aria-pressed="true"]')?.dataset.slot === 'laptop' &&
-        cardRows('.card').join(',') === 'word-spacing';
-
-      // A stylesheet rule by a value only it declares: `section p` is not one of the
-      // element's classes, so it is under OTHER RULES.
+      results.styles.findsAClass = foundRows().includes('padding');
+      // A stylesheet rule by a value only it declares: `section p`, not one of the element's classes.
       await typeInto(filterField, '0.013em', stylePanel);
-      results.styles.findsACssRule =
-        headingsOf().includes('Sources') && sourceCard('section p')?.dataset.group === 'rules' && !sourceCard('.card');
+      results.styles.findsACssRule = foundRows().length >= 1 && !foundRows().includes('padding');
 
       /* ---------------------------------------------------------------- *
        * Out of rows: the completions arrive in the panel, not in the popup.
@@ -621,7 +608,7 @@
       results.styles.ok =
         results.styles.filterIsOnTheFirstLine &&
         results.styles.extractIsNoLongerOnTheFirstLine &&
-        results.styles.extractIsInTheClassesSection &&
+        results.styles.extractIsInTheInlineCard &&
         results.styles.narrowsTheSections &&
         results.styles.keepsTheMatchingOne &&
         results.styles.saysWhatItSearches &&

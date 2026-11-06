@@ -169,6 +169,11 @@
       await settle(400);
       const stylesPanel = deep(document, 'heo-styles-panel');
       const panelText = () => textOf(stylesPanel);
+      // Its card opens from its rule chip, behind "N rules" in the element header.
+      stylesPanel.shadowRoot.querySelector('.ident .cchip.rules')?.click();
+      await settle(150);
+      stylesPanel.shadowRoot.querySelector('.ident .cchip.rule[data-rule=".sec h2"] .name')?.click();
+      await settle(300);
       check('theDescendantRuleIsListed', () => /\.sec h2/.test(panelText()));
       // Named by the file it came from rather than as "embedded", which is what a
       // `<style>` with no href would otherwise report.

@@ -53,7 +53,7 @@ export interface StylesUiState {
     source?: { key: string; order: number; slot: string; state: string } | null;
   } | null;
   /**
-   * Sources cards opened over the panel from the header. `key` is what opened it: a class's family,
+   * The element's cards opened over the panel from the header. `key` is what opened it: a class's family,
    * `element` (the tag chip: inline style and the id's rules) or `id` (the id chip: its rules).
    * `cards` are the cards shown, in order, when they are not just `key`'s. `anchor` selects what
    * it is placed against.
@@ -78,12 +78,8 @@ export interface StylesUiState {
    * until a declaration lands, so nothing empty is ever stored to show a size.
    */
   otherSlots: ReadonlyMap<string, readonly string[]>;
-  /** Which Sources groups are shown. */
-  tab: SourcesTab;
   /** A card's hand-picked size, by family key; cleared when the preview width changes (R13). */
   cardPicks: ReadonlyMap<string, string>;
-  /** Cards shut by hand this session, by family key (`inline` for the inline card). */
-  closedCards: ReadonlySet<string>;
   /**
    * States and pseudo-elements added to a card with nothing written yet (§5.7). Shown as blocks
    * until their first property lands; nothing empty is ever stored to show them.
@@ -104,8 +100,6 @@ export interface PendingState {
   state: string;
   dest: AddDestination;
 }
-
-export type SourcesTab = 'all' | 'inline' | 'classes' | 'rules';
 
 export interface StylesHost extends AdderHost {
   engine: EditorEngine;
@@ -135,7 +129,7 @@ export interface StylesHost extends AdderHost {
   toggleMenu(id: string, open: boolean, refocus?: boolean): void;
   /** The Detach copy's name field. */
   forkForm: FormErrors;
-  /** Open a card in Sources, scroll it into view and flash it. */
+  /** Open a card from its chip in the header. */
   openCard(key: string): void;
   /**
    * A popover line's link: expand the card the declaration is written in under that line, at its

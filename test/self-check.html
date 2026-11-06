@@ -1768,25 +1768,18 @@
         Array.from(stylesSection('Effective styles').querySelectorAll('.rows[data-declarations="effective"] .row'))
           .map((r) => r.dataset.property).sort().join(','));
 
-      // Sources replaced the CSS rules section: page rules that are not the element's own classes
-      // are its OTHER RULES cards, one per selector family (R17).
-      const cssRules = stylesSection('Sources');
-      check('theCssRulesSectionExists', () =>
-        Boolean(cssRules) && /Other rules/i.test(cssRules.querySelector('.src-h:last-of-type')?.textContent ?? ''));
-      // Open because it has rules in it — an empty section opening was the complaint.
-      check('theCssRulesSectionOpensWhenItHasContent', () => cssRules.open === true);
-      cssRules.shadowRoot.querySelector('.head').click();
+      // Page rules that are not the element's own classes are rule chips in the element header,
+      // behind "N rules", one per selector family (R17); each opens its card in a popover.
+      const stylesRoot = () => dockPanel('styles').shadowRoot;
+      stylesRoot().querySelector('.ident .cchip.rules')?.click();
       await frame();
-      const groupHeaders = () => Array.from(cssRules.querySelectorAll('.cls[data-group="rules"] > header'));
+      const ruleChips = () => Array.from(stylesRoot().querySelectorAll('.ident .cchip.rule'));
       // A family is its selector with states and sizes peeled off, so `.fig .ph` and its media rule
       // are one card, and `.ph:hover`/`.ph::before` live in the `.ph` class card.
       check('everySelectorReachingTheElementIsOffered', () =>
-        groupHeaders().map((h) => h.querySelector('.n').textContent.trim()).join(' | '));
+        ruleChips().map((c) => c.dataset.rule).join(' | '));
       check('itsOwnClassesAreNotRepeatedHere', () =>
-        !groupHeaders().some((h) => ['.ph', '.plain'].includes(h.querySelector('.n').textContent.trim())));
-      // Cards start open (R18): they are the Tokens class card, opened by default, shut by hand.
-      check('theCardsStartOpen', () =>
-        groupHeaders().every((h) => h.getAttribute('aria-expanded') === 'true'));
+        !ruleChips().some((c) => ['.ph', '.plain'].includes(c.dataset.rule)));
 
       /*
        * And an empty section stays shut. Selecting a plain element used to produce a
@@ -1800,16 +1793,12 @@
       await frame();
       await wait(120);
       check('emptySectionsStayClosed', () => {
-        const shut = ['Effective styles', 'Sources'].map((heading) => {
+        const shut = ['Effective styles'].map((heading) => {
           const section = stylesSection(heading);
           return `${heading}=${section ? section.open : 'missing'}`;
         });
         return shut.join(' ');
       });
-      // Opening one by hand still sticks, which is how you reach the affordance inside.
-      stylesSection('Sources').shadowRoot.querySelector('.head').click();
-      await frame();
-      check('openingAnEmptySectionSticks', () => stylesSection('Sources').open === true);
       bareEl.remove();
       api.select(rtarget);
       await frame();
@@ -1818,12 +1807,11 @@
       // Two rules share `.fig .ph`; the meta line is what tells them apart.
       // One card per family, at All sizes unless a size is picked: its media rule is a size there.
       const openRuleGroup = async (selector) => {
-        const card = cssRules.querySelector(`.cls[data-card="${CSS.escape(selector)}"]`);
-        const header = card?.querySelector(':scope > header');
-        if (!header) throw new Error(`no card for ${selector}`);
-        if (header.getAttribute('aria-expanded') !== 'true') header.click();
+        const chip = stylesRoot().querySelector(`.ident .cchip.rule[data-rule="${CSS.escape(selector)}"] .name`);
+        if (!chip) throw new Error(`no chip for ${selector}`);
+        chip.click();
         await frame();
-        return cssRules.querySelector(`.cls[data-card="${CSS.escape(selector)}"] .block[data-block="base"]`);
+        return stylesRoot().querySelector(`.cardpop .cls[data-card="${CSS.escape(selector)}"] .block[data-block="base"]`);
       };
       const figGroup = await openRuleGroup('.fig .ph');
       check('aRuleGroupOffersItsOwnDeclarations', () =>
@@ -1931,7 +1919,9 @@
       /* State and pseudo-element rules are reachable, and say what they are. */
       // In the `.ph` class card: the pseudo-element as a block after its own declarations (R19),
       // the state as a condition on the card's bar.
-      const phCard = () => cssRules.querySelector('.cls[data-card=".ph"]');
+      stylesRoot().querySelector('.ident .cchip[data-class="ph"] .name')?.click();
+      await frame();
+      const phCard = () => stylesRoot().querySelector('.cardpop .cls[data-card=".ph"]');
       check('stateAndPseudoElementRulesAreOffered', () =>
         `${Boolean(phCard()?.querySelector('.slots [data-cond="state::hover"]'))} ${Boolean(phCard()?.querySelector('.block[data-block="::before"]'))}`);
       phCard()?.querySelector('.slots [data-cond="state::hover"]')?.click();
@@ -1954,11 +1944,10 @@
       check('noStateValueEscapesIntoTheOtherSections', () => {
         const hoverColour = 'rgb(238,17,17)';
         return !Array.from(dockPanel('styles').shadowRoot.querySelectorAll('heo-value-field'))
-          .filter((f) => !cssRules.contains(f) && !f.closest('.egroup'))
+          .filter((f) => !f.closest('.cardpop') && !f.closest('.egroup'))
           .some((f) => (f.value || '').replace(/\s/g, '').toLowerCase() === hoverColour);
       });
 
-      cssRules.shadowRoot.querySelector('.head').click();
       fig.remove();
       ruleSheet.remove();
       engine.history.clear();
@@ -2006,7 +1995,12 @@
         .find((h) => h.querySelector('.n')?.textContent === '.card');
       tokensHeader.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
       await frame();
-      check('bothPanelsShareTheClassRowLayout', () => columnsIn('tokens') === stylesColumns);
+      // The same tracks; only the flexible value column differs, with the width each card is given
+      // (a Styles card fills its popover, a Tokens card sits inside its section).
+      const fixedTracks = (columns) => columns.split(' ').filter((_, at) => at !== 1).join(' ');
+      check('bothPanelsShareTheClassRowLayout', () =>
+        fixedTracks(columnsIn('tokens')) === fixedTracks(stylesColumns) &&
+        columnsIn('tokens').split(' ').length === stylesColumns.split(' ').length);
 
       /*
        * A class declaration commits the same way, and for the same reason.

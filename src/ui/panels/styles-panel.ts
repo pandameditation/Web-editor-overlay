@@ -280,9 +280,7 @@ const EMPTY_UI: StylesUiState = {
   rulesOpen: false,
   mediaDraft: null,
   otherSlots: new Map(),
-  tab: 'all',
   cardPicks: new Map(),
-  closedCards: new Set(),
   pendingStates: [],
   blockHint: null,
   detachOpen: null,
@@ -619,7 +617,7 @@ export class HeoStylesPanel extends HeoElement {
     if (cardPop) {
       const anchor = root.querySelector<HTMLElement>(cardPop.anchor);
       if (!anchor) this.ui = { ...this.ui, cardPop: null };
-      else placeLayer(root.querySelector<HTMLElement>('.cardpop'), anchor, { ...this.#cardPopFrame(cardPop.cards?.[0] ?? cardPop.key), source: anchor });
+      else placeLayer(root.querySelector<HTMLElement>('.cardpop'), anchor, { ...this.#cardPopFrame(), source: anchor });
     }
     const menu = this.ui.menu;
     if (menu) {
@@ -709,7 +707,7 @@ export class HeoStylesPanel extends HeoElement {
     const model = this.#model(el);
     const host = this.#host(el, model);
     this.#syncOwnCards(el, model, host);
-    const found = host.filtering ? this.#matchCount(el, model, computed, host) : -1;
+    const found = host.filtering ? this.#matchCount(model, computed) : -1;
     const popover = this.ui.popover;
     const popoverOn = popover?.scope.kind === 'parent' && popover.scope.element !== el
       ? popover.scope.element
@@ -752,7 +750,7 @@ export class HeoStylesPanel extends HeoElement {
           else this.#popCard(key, anchor);
         },
         onRemoveClass: (name) => this.editor.toggleClass(name, el),
-        // The same list as Sources' "Other rules": every other family reaching the element.
+        // Every other family reaching the element, as the cascade lists them.
         rules: this.#sourceCards(el, model, host).others.map((view) => view.family.key),
         rulesOpen: this.ui.rulesOpen,
         onShowRules: () => {
@@ -783,7 +781,6 @@ export class HeoStylesPanel extends HeoElement {
       </div>
 
       ${this.#renderEffective(el, model, host)}
-      ${this.#renderSources(el, model, host)}
       ${this.#renderSpacing(el, model, computed, host)}
       ${SECTIONS.filter((section) => !section.when || section.when(computed)).map((section) =>
       this.#renderSection(section, el, model, host),
@@ -1494,13 +1491,12 @@ export class HeoStylesPanel extends HeoElement {
   }
 
   /* ---------------------------------------------------------------------- */
-  /* Sources                                                                */
+  /* The element's cards                                                     */
   /* ---------------------------------------------------------------------- */
 
   /**
-   * The cards Sources shows, in its order: the element's classes in class-list order, then every
-   * other family reaching it in file order (R17). Worked out once per render, because the badge,
-   * the tabs, the search count and the section itself all read the same list.
+   * The element's cards, in their order: its classes in class-list order, then every other family
+   * reaching it in file order (R17). What the header's chips and the card popovers are built from.
    */
   #sourceCards(el: HTMLElement, model: ElementModel, host: StylesHost): {
     classes: Array<{ name: string; view: CardView | null }>;
@@ -1529,169 +1525,34 @@ export class HeoStylesPanel extends HeoElement {
   }
 
   /**
-   * Where the element's styles are written: its style attribute, its classes, every other rule
-   * reaching it. Grouped by what they are rather than by specificity, which is Effective styles'
-   * question; editing here changes the class or rule itself, for every element it styles.
-   */
-  #renderSources(el: HTMLElement, model: ElementModel, host: StylesHost): TemplateResult | typeof nothing {
-    const { classes, others } = this.#sourceCards(el, model, host);
-    const filtering = host.filtering;
-    const tab = this.ui.tab;
-    const inlineCount = model.inline.length ? 1 : 0;
-    const inline = tab === 'all' || tab === 'inline' ? renderInlineCard(host) : nothing;
-    const classCards = tab === 'all' || tab === 'classes'
-      ? classes.map(({ name, view }) =>
-        view
-          ? renderFamilyCard(view, host, { group: 'classes' })
-          : renderUnknownCard(name, host))
-        .filter((card) => card !== nothing)
-      : [];
-    const otherCards = tab === 'all' || tab === 'rules'
-      ? others.map((view) => renderFamilyCard(view, host, { group: 'rules' })).filter((card) => card !== nothing)
-      : [];
-    const empty = inline === nothing && !classCards.length && !otherCards.length;
-    if (filtering && empty) return nothing;
-
-    const tabs: Array<[typeof tab, string, number | null]> = [
-      ['all', 'All', null],
-      ['inline', 'Inline', inlineCount],
-      ['classes', 'Classes', classes.length],
-      ['rules', 'Rules', others.length],
-    ];
-    const pick = (next: typeof tab): void => {
-      this.#patch({ tab: next });
-      this.#focusSelector(`.src-tabs [data-tab="${next}"]`);
-    };
-    const badge = inlineCount + classes.length + others.length;
-    const head = (label: string, count: number): TemplateResult =>
-      html`<p class="src-h">${label} <span class="c">${count}</span><span class="rule-line"></span></p>`;
-
-    return html`<heo-section
-      heading="Sources"
-      glyph="layers"
-      badge=${badge ? String(badge) : ''}
-      ?open=${filtering ? true : sectionOpen('sources', badge > 0)}
-      @section-toggle=${(event: CustomEvent<{ open: boolean }>) => this.#remember('sources', event.detail.open)}
-    >
-      <p class="hint" style="margin:0 0 8px">
-        Where those styles are written. Editing here changes the class or rule itself.
-      </p>
-      <div
-        class="src-tabs"
-        role="tablist"
-        aria-label="Show sources"
-        @keydown=${(event: KeyboardEvent) => {
-        const keys = tabs.map(([key]) => key);
-        const at = keys.indexOf(tab);
-        const to = event.key === 'ArrowRight'
-          ? (at + 1) % keys.length
-          : event.key === 'ArrowLeft'
-            ? (at - 1 + keys.length) % keys.length
-            : event.key === 'Home'
-              ? 0
-              : event.key === 'End'
-                ? keys.length - 1
-                : -1;
-        if (to === -1) return;
-        event.preventDefault();
-        pick(keys[to]);
-      }}
-      >
-        ${tabs.map(([key, label, count]) => html`<button
-          type="button"
-          role="tab"
-          data-tab=${key}
-          aria-selected=${tab === key ? 'true' : 'false'}
-          tabindex=${tab === key ? '0' : '-1'}
-          @click=${() => pick(key)}
-        >
-          ${label}${count === null ? nothing : html` <span class="c">${count}</span>`}
-        </button>`)}
-      </div>
-      ${inline === nothing ? nothing : html`${head('Inline style', inlineCount)}${inline}`}
-      ${tab === 'all' || tab === 'classes'
-        ? classCards.length || !filtering
-          ? html`${head('Classes', classes.length)}${classCards.length
-            ? classCards
-            : html`<p class="hint" style="margin:0">No classes yet. Add one with + at the top.</p>`}`
-          : nothing
-        : nothing}
-      ${(tab === 'all' || tab === 'rules') && (otherCards.length || !filtering)
-        ? html`${head('Other rules', others.length)}${otherCards}`
-        : nothing}
-      ${empty ? html`<p class="hint" style="margin:10px 0 0">Nothing here matches.</p>` : nothing}
-      ${filtering
-        ? nothing
-        : html`<div class="actions">
-            <button
-              class="btn sm"
-              type="button"
-              data-act="paste"
-              title="Paste CSS and choose where it goes: inline, a class, a rule, a size"
-              @click=${() =>
-            this.editor.beginCssPaste(this.#pasteOptions(el, {
-              context: 'rule',
-              element: el,
-              selector: this.editor.suggestedRuleSelector(el),
-            }))}
-            >
-              ${icon('clipboard', 12)} Paste CSS…
-            </button>
-          </div>`}
-    </heo-section>`;
-  }
-
-  /**
-   * Open a card where it is written, scroll it into view and flash it; with a property, focus that
-   * declaration in the block at `slot` and `state`.
-   *
-   * Reached from the header's class names and from the popover's links. A hand-shut Sources
-   * section or card gives way, and nothing is recorded as a hand pick of the section.
+   * Open a card from its chip in the header, with a property focused when one is named: a class
+   * the element wears, or one of the other rules, whose chips are shown for it if they were folded.
+   * Reached from "Copy it for this element" (the new class) and from a popover's link to a rule
+   * that has no card under it.
    */
   #openCard(key: string, options: { slot?: string; state?: string; property?: string } = {}): void {
     const el = this.editor.selected;
-    const isClass = el ? Array.from(el.classList).some((name) => `.${name}` === key || `.${CSS.escape(name)}` === key) : false;
-    const tab = this.ui.tab;
-    const fits = tab === 'all' || (tab === 'classes' && isClass) || (tab === 'rules' && !isClass);
-    const closed = new Set(this.ui.closedCards);
-    closed.delete(key);
-    const picks = new Map(this.ui.cardPicks);
-    // The condition the declaration is under: its size, and its state when it is not a pseudo-element.
-    if (options.slot) picks.set(key, conditionKey(options.slot, isPseudoElement(options.state ?? '') ? '' : options.state ?? ''));
-    if (userToggled.get('sources') === false) userToggled.delete('sources');
-    this.#clearFilter();
-    this.#patch({ popover: null, cardPop: null, tab: fits ? tab : 'all', closedCards: closed, cardPicks: picks });
-    void this.updateComplete.then(() => requestAnimationFrame(() => {
-      const card = this.renderRoot.querySelector<HTMLElement>(`.cls[data-card="${CSS.escape(key)}"]`);
-      if (!card) return;
-      card.scrollIntoView({ block: 'nearest' });
-      card.classList.remove('flash');
-      // Restarted on a later frame, so a second open flashes again.
-      requestAnimationFrame(() => card.classList.add('flash'));
-      setTimeout(() => card.classList.remove('flash'), 1300);
-      if (options.property) {
-        focusDeclaration(this.renderRoot, options.property, blockId(key, options.slot ?? 'base', options.state ?? ''));
-      } else {
-        card.querySelector<HTMLElement>(':scope > header')?.focus({ preventScroll: true });
-      }
-    }));
+    if (!el) return;
+    // A class opens from its chip; any other rule from its own, shown for it if they were folded.
+    const name = Array.from(el.classList).find((one) => `.${CSS.escape(one)}` === key);
+    const anchor = name
+      ? `.ident .cchip[data-class="${CSS.escape(name)}"] .name`
+      : `.ident .cchip.rule[data-rule="${CSS.escape(key)}"] .name`;
+    if (!name) this.#patch({ rulesOpen: true });
+    this.#popCard(key, anchor, options);
   }
 
+
   /**
-   * Open a Sources card over the panel, against `anchor`: where it was asked for, so the class or
+   * Open a card over the panel, against `anchor`: where it was asked for, so the class or
    * rule is edited without leaving the row (or the header) and scrolling down to its card. With a
    * property, that declaration is focused in the block at `slot` and `state`.
-   *
-   * The Sources copy steps aside while it is open, so the card exists once: its adders, menus and
-   * focus targets are found by id, and two copies would answer to the same one.
    */
   #popCard(key: string, anchor: string, options: { slot?: string; state?: string; property?: string } = {}): void {
-    const closed = new Set(this.ui.closedCards);
-    closed.delete(key);
     const picks = new Map(this.ui.cardPicks);
     // The condition the declaration is under: its size, and its state when it is not a pseudo-element.
     if (options.slot) picks.set(key, conditionKey(options.slot, isPseudoElement(options.state ?? '') ? '' : options.state ?? ''));
-    this.#patch({ popover: null, menu: null, adder: null, cardPop: { key, anchor }, closedCards: closed, cardPicks: picks });
+    this.#patch({ popover: null, menu: null, adder: null, cardPop: { key, anchor }, cardPicks: picks });
     // Focus stays on the class name; Tab goes on into the card from there.
     if (!options.property) return;
     void this.updateComplete.then(() => requestAnimationFrame(() => {
@@ -1723,8 +1584,8 @@ export class HeoStylesPanel extends HeoElement {
    * Keep an open tag or id popover's cards in step with the rules: one written from it (its first
    * property, through the id popover's adder), or one edited away, joins or leaves it.
    *
-   * Assigned rather than patched, while rendering: the Sources copies drawn after read the list to
-   * step aside, so it has to be right in this same render, and nothing else needs to hear of it.
+   * Assigned rather than patched, while rendering: the popover drawn after reads the list, so it
+   * has to be right in this same render, and nothing else needs to hear of it.
    */
   #syncOwnCards(el: HTMLElement, model: ElementModel, host: StylesHost): void {
     const pop = this.ui.cardPop;
@@ -1733,7 +1594,7 @@ export class HeoStylesPanel extends HeoElement {
     if (cards.join('\n') !== (pop.cards ?? []).join('\n')) this.ui = { ...this.ui, cardPop: { ...pop, cards } };
   }
 
-  /** The rules written for the element's id (`#hero`, `main #hero > p`) that reach it, in Sources order. */
+  /** The rules written for the element's id (`#hero`, `main #hero > p`) that reach it, in file order. */
   #idCards(el: HTMLElement, model: ElementModel, host: StylesHost): CardView[] {
     if (!el.id) return [];
     const mention = new RegExp(`#${escapeRegExp(CSS.escape(el.id))}(?![\\w-])`);
@@ -1741,14 +1602,11 @@ export class HeoStylesPanel extends HeoElement {
   }
 
   /**
-   * Where the popped card goes across: over its own place in Sources, at that card's width, so it
-   * wraps and lines up exactly as it does there; only its height follows what opened it. The card
-   * keeps its place while popped (it shows a note there); with no place on screen (another tab),
-   * the panel's own column.
+   * Where a popped card goes across: over the panel's own column, at its width, so a card wraps
+   * the same whichever chip opened it; only its height follows what opened it.
    */
-  #cardPopFrame(key: string): { minWidth: number; gap: number; left?: number } {
-    const place = this.renderRoot.querySelector(`heo-section[heading="Sources"] .cls[data-card="${CSS.escape(key)}"]`)
-      ?? this.renderRoot.querySelector('heo-section');
+  #cardPopFrame(): { minWidth: number; gap: number; left?: number } {
+    const place = this.renderRoot.querySelector('heo-section');
     const box = place?.getBoundingClientRect();
     /*
      * The popover's frame is 3px of padding and 1px of border each side, and the popped card drops
@@ -1760,9 +1618,8 @@ export class HeoStylesPanel extends HeoElement {
   }
 
   /**
-   * One Sources card, drawn for a popover: the same card as in Sources, so it edits the same way,
-   * always open, and unfiltered, since a search narrows the panel, not the card asked for. Nothing
-   * when the element has no such card.
+   * One of the element's cards, drawn for a popover: always open, and unfiltered, since a search
+   * narrows the panel, not the card asked for. Nothing when the element has no such card.
    */
   #poppedCard(
     el: HTMLElement,
@@ -1837,8 +1694,8 @@ export class HeoStylesPanel extends HeoElement {
    * expanded. The popover stays open either way, so the cascade and the rule are edited together.
    *
    * A rule not in effect at the width being previewed has nothing to show at it, so the preview
-   * goes back to Actual first, and the popover is opened again there. A family the element has no
-   * card for (a parent's rule) still opens in Sources.
+   * goes back to Actual first, and the popover is opened again there. A parent's rule opens on the
+   * parent: it is selected, and the rule's card opens from its chip there.
    */
   #openSource(property: string, entry: RuleEntry): void {
     const popover = this.ui.popover;
@@ -1854,17 +1711,18 @@ export class HeoStylesPanel extends HeoElement {
     const known = model.families().classes.concat(model.families().others).some((one) => one.key === entry.family) ||
       Array.from(el.classList).some((name) => `.${CSS.escape(name)}` === entry.family);
     if (popover.scope.kind === 'parent' || !known) {
+      const owner = popover.scope.kind === 'parent' ? popover.scope.element : el;
       this.#patch({ popover: null });
-      this.#openCard(entry.family, { slot, state: entry.state, property });
+      if (owner !== el) this.editor.select(owner);
+      void this.updateComplete.then(() => this.#openCard(entry.family, { slot, state: entry.state, property }));
       return;
     }
     const source = { key: entry.family, order: entry.order, slot, state: entry.state };
     const open = (): void => {
       const picks = new Map(this.ui.cardPicks);
       picks.set(entry.family, conditionOf(model, entry));
-      const closed = new Set(this.ui.closedCards);
-      closed.delete(entry.family);
-      this.#patch({ popover: { ...popover, source }, cardPop: null, adder: null, menu: null, cardPicks: picks, closedCards: closed });
+
+      this.#patch({ popover: { ...popover, source }, cardPop: null, adder: null, menu: null, cardPicks: picks });
       void this.updateComplete.then(() => requestAnimationFrame(() => {
         const under = this.renderRoot.querySelector<HTMLElement>(`.pop:not(.cardpop):not(.finderpop) .srccard[data-order="${entry.order}"]`);
         if (under) focusDeclaration(under, property, blockId(entry.family, slot, entry.state));
@@ -2104,14 +1962,9 @@ export class HeoStylesPanel extends HeoElement {
    * Counted rather than inferred so the number beside the field and what is on screen cannot
    * disagree — which is the whole reason the count lives here and not in the control. Properties
    * are de-duplicated across surfaces because one property drawn in two sections is still one
-   * answer to "is this here"; a class and a rule each count once as themselves.
+   * answer to "is this here".
    */
-  #matchCount(
-    el: HTMLElement,
-    model: ElementModel,
-    computed: CSSStyleDeclaration,
-    host: StylesHost,
-  ): number {
+  #matchCount(model: ElementModel, computed: CSSStyleDeclaration): number {
     const properties = new Set<string>();
     const consider = (property: string): void => {
       if (this.#hit(property, shownValue(model.cascade(property).applying[0]))) properties.add(property);
@@ -2121,11 +1974,7 @@ export class HeoStylesPanel extends HeoElement {
     }
     for (const property of SPACING_PROPERTIES) consider(property);
     for (const property of model.appliedProperties()) consider(property);
-    // A card counts once as itself, whether its selector or one of its declarations matched.
-    const { classes, others } = this.#sourceCards(el, model, host);
-    const cards = classes.filter(({ name, view }) => (view ? view.shown : this.#hit(`.${name}`))).length +
-      others.filter((view) => view.shown).length;
-    return properties.size + cards;
+    return properties.size;
   }
 
   /** What the add action would do, named after what has been typed. */

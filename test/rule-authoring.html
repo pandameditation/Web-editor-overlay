@@ -177,6 +177,16 @@
             .find((rule) => rule.selectorText === selector);
 
         /** One rule group's rows, as `property=value` with a marker for a shadowed one. */
+        /** Opens a card from its header chip and returns it. */
+        const popCard = async (key) => {
+          const root = deep('heo-styles-panel').shadowRoot;
+          const sel = `.cardpop .cls[data-card="${CSS.escape(key)}"]`;
+          if (root.querySelector(sel)) return root.querySelector(sel);
+          root.querySelector(key === 'inline' ? '.ident .el-chip' : '.ident .cchip.id .name')?.click();
+          await frames();
+          await wait(250);
+          return deep('heo-styles-panel').shadowRoot.querySelector(sel);
+        };
         const rowsFor = async (id, slot = null) => {
           api.select(document.getElementById(id));
           engine.setDockTab('styles');
@@ -184,24 +194,7 @@
           await wait(320);
           // Re-queried every time: the dock rebuilds its panels, so a held reference goes stale.
           const panel = deep('heo-styles-panel');
-          // Page rules are Sources' OTHER RULES cards (R17), where the CSS rules section used to be.
-          const section = Array.from(panel.shadowRoot.querySelectorAll('heo-section')).find(
-            (s) => s.heading === 'Sources',
-          );
-          if (section && !section.open) section.shadowRoot.querySelector('.head')?.click();
-          await frames();
-          await wait(180);
-          const header = Array.from(section?.querySelectorAll('.cls > header') ?? []).find((h) =>
-            h.textContent.includes(`#${id}`),
-          );
-          // Only when shut. The header is a toggle, so clicking an open group closes it — which is
-          // what made a second look at the same rule read zero rows.
-          if (header && header.getAttribute('aria-expanded') !== 'true') header.click();
-          await frames();
-          await wait(280);
-          let block = Array.from(section?.querySelectorAll('.cls') ?? []).find((b) =>
-            b.querySelector('header')?.textContent.includes(`#${id}`),
-          );
+          let block = await popCard(`#${id}`);
           if (!block) return null;
           // A rule inside a media query is that condition of its card: it declares something, so
           // it has a button on the card's conditions bar.
@@ -209,7 +202,7 @@
             block.querySelector(`.slots [data-cond="${CSS.escape(slot)}"]`)?.click();
             await frames();
             await wait(200);
-            block = section.querySelector(`.cls[data-card="${CSS.escape(`#${id}`)}"]`);
+            block = panel.shadowRoot.querySelector(`.cardpop .cls[data-card="${CSS.escape(`#${id}`)}"]`);
           }
           return Array.from(block.querySelectorAll('.decl:not(.property-adder)'))
             .map((row) => {
@@ -356,10 +349,6 @@
             };
           };
           const panelRoot = () => deep('heo-styles-panel').shadowRoot;
-          const sectionNamed = (heading) =>
-            Array.from(panelRoot().querySelectorAll('heo-section')).find(
-              (s) => s.heading === heading,
-            );
 
           /* --- The element's own styles. --- */
           const el = document.getElementById('promote-inline');
@@ -367,8 +356,9 @@
           engine.setDockTab('styles');
           await frames();
           await wait(400);
+          await popCard('inline');
           const inlineFamily = () =>
-            familyIn(panelRoot().querySelector('.cls[data-card="inline"] .decls'));
+            familyIn(panelRoot().querySelector('.cardpop .cls[data-card="inline"] .decls'));
           const startedAt = inlineFamily();
           results.promoting = {
             inlineHasOneControlPerSide: startedAt?.controls === 2,
@@ -424,18 +414,9 @@
           api.select(document.getElementById('linked'));
           await frames();
           await wait(400);
-          const rules = sectionNamed('Sources');
-          if (rules && !rules.open) rules.shadowRoot.querySelector('.head')?.click();
-          await frames();
-          await wait(200);
-          const header = Array.from(rules?.querySelectorAll('.cls > header') ?? []).find((h) =>
-            h.textContent.includes('#linked'),
-          );
-          if (header?.getAttribute('aria-expanded') !== 'true') header?.click();
-          await frames();
-          await wait(350);
+          await popCard('#linked');
           const ruleFamily = () =>
-            familyIn(sectionNamed('Sources')?.querySelector('.cls[data-card="#linked"] .decls'));
+            familyIn(panelRoot().querySelector('.cardpop .cls[data-card="#linked"] .decls'));
           results.promoting.ruleHasOneControlPerSide = ruleFamily()?.controls === 2;
           const rulePressed = ruleFamily()?.pressed;
           ruleFamily()?.other?.click();
@@ -464,10 +445,6 @@
         progress.textContent = 'stableOrder';
         {
           const panelRoot = () => deep('heo-styles-panel').shadowRoot;
-          const sectionNamed = (heading) =>
-            Array.from(panelRoot().querySelectorAll('heo-section')).find(
-              (s) => s.heading === heading,
-            );
           /** Every row top to bottom, whichever container it sits in. */
           const visualOrder = (root) =>
             Array.from(root?.querySelectorAll('.decl:not(.property-adder), .row') ?? [])
@@ -510,19 +487,10 @@
           engine.setDockTab('styles');
           await frames();
           await wait(400);
-          const rules = sectionNamed('Sources');
-          if (rules && !rules.open) rules.shadowRoot.querySelector('.head')?.click();
-          await frames();
-          await wait(200);
-          const header = Array.from(rules?.querySelectorAll('.cls > header') ?? []).find((h) =>
-            h.textContent.includes('#between'),
-          );
-          if (header?.getAttribute('aria-expanded') !== 'true') header?.click();
-          await frames();
-          await wait(350);
+          await popCard('#between');
           results.stableOrder = {
             rule: await flipFourTimes(() =>
-              sectionNamed('Sources')?.querySelector('.cls[data-card="#between"] .decls'),
+              panelRoot().querySelector('.cardpop .cls[data-card="#between"] .decls'),
             ),
           };
 
@@ -530,8 +498,9 @@
           api.select(document.getElementById('between-inline'));
           await frames();
           await wait(450);
+          await popCard('inline');
           results.stableOrder.inline = await flipFourTimes(() =>
-            panelRoot().querySelector('.cls[data-card="inline"] .decls'),
+            panelRoot().querySelector('.cardpop .cls[data-card="inline"] .decls'),
           );
 
           /*
@@ -546,7 +515,8 @@
           api.select(document.getElementById('between'));
           await frames();
           await wait(450);
-          const kill = sectionNamed('Sources')?.querySelector('.cls[data-card="#between"] .decls .kill');
+          await popCard('#between');
+          const kill = panelRoot().querySelector('.cardpop .cls[data-card="#between"] .decls .kill');
           const killStyle = kill ? getComputedStyle(kill) : null;
           results.removeControl = {
             exists: Boolean(kill),
@@ -563,7 +533,7 @@
            * which read well under 3:1; and it used the up arrow the !important toggle now uses, so
            * one picture meant two things a few pixels apart. Measured on the rule card still open.
            */
-          const ruleList = sectionNamed('Sources')?.querySelector('.cls[data-card="#between"] .decls');
+          const ruleList = panelRoot().querySelector('.cardpop .cls[data-card="#between"] .decls');
           const fam = ruleList?.querySelector('.family');
           const sideControls = Array.from(fam?.querySelectorAll('.side-win') ?? []);
           const loser = fam?.querySelector('.side-win:not(.on) + .fam-rows');

@@ -6,7 +6,7 @@ import { countText } from '../../../core/save-plan.js';
  * The selected element, its id and its classes.
  *
  * The tag, the id and one chip per class, nothing else: the cascade lives in Effective styles and
- * the media queries in Sources, so restating them here only made the first line long. The tag opens
+ * the media queries in the cards, so restating them here only made the first line long. The tag opens
  * what is written for this element alone, its style attribute and its id's rules, in a popover
  * under the chips. The id and each class are two controls, because the two acts are not
  * comparable: the name opens and closes its rules in that popover, the cross takes it off this one
@@ -32,7 +32,7 @@ export interface HeaderSpec {
   idOpen: boolean;
   onOpenId(): void;
   onRemoveId(): void;
-  /** The other CSS rules reaching the element (`*`, `.prose p`), by family key, in Sources order. */
+  /** The other CSS rules reaching the element (`*`, `.prose p`), by family key, in file order. */
   rules: readonly string[];
   /** Their chips are showing in place of the "N rules" chip, until the panel is closed. */
   rulesOpen: boolean;
