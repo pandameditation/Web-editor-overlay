@@ -1224,12 +1224,15 @@ color: rebeccapurple;`;
       };
       engine.cancelCssPaste();
       await frames();
-      // Two in the whole panel: Effective styles' (inline) and Sources' (rule). None on a card.
-      const everyPaste = Array.from(deepQuery('heo-styles-panel')?.shadowRoot?.querySelectorAll('button') ?? [])
+      // Effective styles' and Sources' general ones, outside the cards, and one at the end of each
+      // card, which opens on that card.
+      const panelRoot = deepQuery('heo-styles-panel')?.shadowRoot;
+      const everyPaste = Array.from(panelRoot?.querySelectorAll('button') ?? [])
         .filter((button) => /Paste CSS/.test(button.textContent ?? ''));
-      results.sources.noClassPasteInStyles =
-        everyPaste.length === 2 &&
-        !everyPaste.some((button) => button.closest('.cls'));
+      const cards = Array.from(panelRoot?.querySelectorAll('heo-section[heading="Sources"] .cls') ?? []);
+      results.sources.oneGeneralPasteAndOnePerCard =
+        everyPaste.filter((button) => !button.closest('.cls')).length === 2 &&
+        cards.every((one) => one.querySelectorAll(':scope > .body > .actions [data-act="paste-here"]').length === 1);
 
       results.browserErrors = { ok: errors.length === 0, errors };
       const failed = Object.entries(results)

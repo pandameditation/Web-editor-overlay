@@ -42,6 +42,7 @@ import {
   type BarChip,
 } from './size-strip.js';
 import type { PendingState, StylesHost } from './types.js';
+import type { CssPasteOptions } from '../../../core/editor.js';
 
 /**
  * Where an element's styles are written, one card per place.
@@ -539,9 +540,14 @@ export function renderFamilyCard(
       ${stateBlocks}
       ${emptyPicked}
       ${stateAdder}
-      ${name && options.group === 'classes' && owned && host.element.classList.contains(name) && !host.filtering
-        ? renderClassActions(name, host)
-        : nothing}
+      ${host.filtering
+        ? nothing
+        : renderCardActions(host, {
+          paste: name
+            ? { context: 'class', element: host.element, className: name }
+            : { context: 'rule', element: host.element, selector: key, liveRule: writable?.target.kind === 'live' ? writable.target.rule : null },
+          detach: name && options.group === 'classes' && owned && host.element.classList.contains(name) ? name : null,
+        })}
     </div>`;
   };
 
@@ -680,17 +686,47 @@ function rulesElsewhere(name: string, host: StylesHost): string[] {
 }
 
 /**
- * "Detach styles from class", then the detach panel while it is open: a button like the panel's
- * other actions ("Extract into a class", "Paste CSS…"), with the Spacing editor's unlink icon, and
- * "Never mind" while the panel is open. The class itself is edited right here, so there is no
- * longer a way out to Tokens.
+ * "Paste CSS", at the end of a card: the paste dialog, opened on this card's class, rule or inline
+ * style, so what is pasted lands in it by default. The same button on every kind of card.
  */
-function renderClassActions(name: string, host: StylesHost): TemplateResult {
+export function renderPasteButton(host: StylesHost, paste: CssPasteOptions): TemplateResult {
+  return html`<button
+    class="btn sm"
+    type="button"
+    data-act="paste-here"
+    title="Paste CSS into this card"
+    @click=${() => host.engine.beginCssPaste(paste)}
+  >
+    ${icon('clipboard', 12)} Paste CSS
+  </button>`;
+}
+
+/**
+ * A card's actions row: "Paste CSS", and for a class the element wears "Detach styles from class"
+ * on the same line, then the detach panel while it is open.
+ */
+function renderCardActions(
+  host: StylesHost,
+  options: { paste: CssPasteOptions; detach: string | null },
+): TemplateResult {
+  return html`<div class="actions">
+      ${renderPasteButton(host, options.paste)}
+      ${options.detach ? renderDetachButton(options.detach, host) : nothing}
+    </div>
+    ${options.detach && host.ui.detachOpen === options.detach
+      ? renderDetach(options.detach, host, host.engine.classes.usage().get(options.detach) ?? 0)
+      : nothing}`;
+}
+
+/**
+ * "Detach styles from class": a button like the panel's other actions, with the Spacing editor's
+ * unlink icon, and "Never mind" while the detach panel is open.
+ */
+function renderDetachButton(name: string, host: StylesHost): TemplateResult {
   const { engine, ui } = host;
   const uses = engine.classes.usage().get(name) ?? 0;
   const open = ui.detachOpen === name;
-  return html`<div class="actions">
-      <button
+  return html`<button
         class="btn sm"
         type="button"
         data-act="detach"
@@ -704,9 +740,7 @@ function renderClassActions(name: string, host: StylesHost): TemplateResult {
     }}
       >
         ${icon(open ? 'close' : 'unlink', 12)} ${open ? 'Never mind' : 'Detach styles from class'}
-      </button>
-    </div>
-    ${open ? renderDetach(name, host, uses) : nothing}`;
+      </button>`;
 }
 
 /**
@@ -883,6 +917,7 @@ export function renderInlineCard(
                 >
                   ${icon('droplet', 12)} Extract ${count || ''} into a class
                 </button>
+                ${renderPasteButton(host, { context: 'inline', element })}
               </div>`}
         </div>`
       : away ? poppedNote() : nothing}

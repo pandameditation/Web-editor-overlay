@@ -480,6 +480,19 @@
             siteRule('.featured')?.style.getPropertyValue('border') === '2px solid rgb(165, 180, 252)';
           engine.undo();
           await settle(200);
+          // With a class's card open from its chip, the general "Paste CSS…" opens on that class; a
+          // real press arrives as a pointerdown first, which must not close the card under it.
+          {
+            const general = sources()?.querySelector(':scope > .actions [data-act="paste"]');
+            general?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, composed: true }));
+            await settle(60);
+            general?.click();
+          }
+          await settle(200);
+          results.header.generalPasteFollowsTheOpenClass =
+            engine.store.value.cssPaste?.destination === 'class' && engine.store.value.cssPaste?.className === 'featured';
+          engine.cancelCssPaste();
+          await settle(150);
           // Escape closes it and gives focus back to the name; the Sources card is whole again.
           key(popped(), 'Escape');
           await settle(200);
@@ -642,8 +655,36 @@
           const lastChild = sources()?.lastElementChild;
           results.sources.onePasteButtonAtTheBottom =
             lastChild?.matches('.actions') && textOf(lastChild) === 'Paste CSS…';
-          results.sources.noPerCardPaste =
-            !Array.from(sources()?.querySelectorAll('.cls button') ?? []).some((one) => /paste/i.test(one.textContent));
+          /*
+           * Every card ends with "Paste CSS", on the same line as "Detach styles from class" when
+           * there is one, and the dialog opens on that card: its class (already applied, so the
+           * box is ticked and off), its rule, or the inline style.
+           */
+          {
+            const pasteDialog = () => deep('heo-css-paste-dialog')?.shadowRoot;
+            const openPaste = async (k) => {
+              card(k)?.querySelector(':scope > .body > .actions [data-act="paste-here"]')?.click();
+              await settle(200);
+              const open = engine.store.value.cssPaste;
+              const box = pasteDialog()?.querySelector('.destination .check input');
+              const seen = { destination: open?.destination, className: open?.className, selector: open?.selector, applyClass: open?.applyClass, boxDisabled: box?.disabled, boxChecked: box?.checked, label: textOf(pasteDialog()?.querySelector('.destination .check')) };
+              engine.cancelCssPaste();
+              await settle(150);
+              return seen;
+            };
+            const everyCard = ['inline', '.card', '.featured', '.card.featured', 'section p'].every((k) =>
+              Boolean(card(k)?.querySelector(':scope > .body > .actions [data-act="paste-here"]')));
+            const sameRow = Boolean(card('.card')?.querySelector(':scope > .body > .actions [data-act="paste-here"] ~ [data-act="detach"]'));
+            const asClass = await openPaste('.card');
+            const asRule = await openPaste('section p');
+            const asInline = await openPaste('inline');
+            results.sources.everyCardHasPasteCss = everyCard && sameRow;
+            results.sources.aClassCardPastesIntoItsClass =
+              asClass.destination === 'class' && asClass.className === 'card' && asClass.applyClass === false &&
+              asClass.boxDisabled === true && asClass.boxChecked === true && /Already applied to/.test(asClass.label);
+            results.sources.aRuleCardPastesIntoItsRule = asRule.destination === 'rule' && asRule.selector === 'section p';
+            results.sources.theInlineCardPastesInline = asInline.destination === 'inline';
+          }
 
           /* Cards: the Tokens class card. */
           const cardHeader = (k) => card(k)?.querySelector(':scope > header');

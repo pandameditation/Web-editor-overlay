@@ -17,6 +17,7 @@ import { listen, unlisten } from '../../core/shield.js';
 import { resolvesOffsets } from '../../core/transform.js';
 import { normalizeClassName, simpleClassName } from '../../core/classes.js';
 import { reachText } from '../../core/save-plan.js';
+import type { CssPasteOptions } from '../../core/editor.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
@@ -884,8 +885,9 @@ export class HeoStylesPanel extends HeoElement {
             <button
               class="btn sm"
               type="button"
+              data-act="paste"
               title="Paste CSS and choose whether it belongs inline, in a class, or in a rule"
-              @click=${() => this.editor.beginCssPaste({ context: 'inline', element: el })}
+              @click=${() => this.editor.beginCssPaste(this.#pasteOptions(el, { context: 'inline', element: el }))}
             >
               ${icon('clipboard', 12)} Paste CSS…
             </button>
@@ -1235,7 +1237,9 @@ export class HeoStylesPanel extends HeoElement {
     }
     // Its own menus, adders, value lists and save box are inside it, so a press there keeps it.
     const cardPop = this.ui.cardPop;
-    if (cardPop && !inside('.cardpop') && !inside(cardPop.anchor)) next.cardPop = null;
+    // A press on "Paste CSS…" keeps the card: the paste opens on its class, and the card shows
+    // what landed in it.
+    if (cardPop && !inside('.cardpop') && !inside(cardPop.anchor) && !inside('[data-act="paste"]')) next.cardPop = null;
     const menu = this.ui.menu;
     if (menu && !inside(`.menu[data-menu="${CSS.escape(menu.id)}"]`) && !inside(`[data-menu-anchor="${CSS.escape(menu.id)}"]`)) {
       next.menu = null;
@@ -1625,11 +1629,11 @@ export class HeoStylesPanel extends HeoElement {
               data-act="paste"
               title="Paste CSS and choose where it goes: inline, a class, a rule, a size"
               @click=${() =>
-            this.editor.beginCssPaste({
+            this.editor.beginCssPaste(this.#pasteOptions(el, {
               context: 'rule',
               element: el,
               selector: this.editor.suggestedRuleSelector(el),
-            })}
+            }))}
             >
               ${icon('clipboard', 12)} Paste CSS…
             </button>
@@ -1890,6 +1894,16 @@ export class HeoStylesPanel extends HeoElement {
       ? `Back to Actual: @media ${media} is not in effect at ${was}px, so the bar could not show it there.`
       : `Previewing ${to}px, where @media ${media} is in effect.`, 'info');
     void this.updateComplete.then(then);
+  }
+
+  /**
+   * Where a general "Paste CSS…" opens: on a class of the element whose card is open over the panel
+   * (from its chip), since that is the class being worked on; else on `fallback`.
+   */
+  #pasteOptions(el: HTMLElement, fallback: CssPasteOptions): CssPasteOptions {
+    const key = this.ui.cardPop?.key;
+    const name = key ? Array.from(el.classList).find((one) => `.${CSS.escape(one)}` === key) : undefined;
+    return name ? { context: 'class', element: el, className: name } : fallback;
   }
 
   /** The preview bar: the page's width, set with or without a selected element. */

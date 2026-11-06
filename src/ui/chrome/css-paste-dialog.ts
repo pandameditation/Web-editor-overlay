@@ -469,6 +469,7 @@ export class HeoCssPasteDialog extends HeoElement {
     const destination = open.destination === 'inline' && !hasElement ? 'class' : open.destination;
     const normalizedClass = normalizeClassName(open.className);
     const existingClass = normalizedClass ? this.editor.classes.get(normalizedClass) : null;
+    const applied = this.#alreadyApplied(open, normalizedClass);
     const normalizedSelector = safeSelector(open.selector);
     const existingRule = normalizedSelector ? this.editor.rules.get(normalizedSelector) : null;
 
@@ -511,11 +512,14 @@ export class HeoCssPasteDialog extends HeoElement {
                     <span>
                       <input
                         type="checkbox"
-                        .checked=${open.applyClass}
+                        .checked=${applied || open.applyClass}
+                        ?disabled=${applied}
                         @change=${(event: Event) =>
                 this.editor.updateCssPaste({ applyClass: (event.target as HTMLInputElement).checked })}
                       />
-                      Apply this class to <code>${this.#elementLabel(open)}</code> now
+                      ${applied
+                ? html`Already applied to <code>${this.#elementLabel(open)}</code>`
+                : html`Apply this class to <code>${this.#elementLabel(open)}</code> now`}
                     </span>
                   </label>`
             : html`<div class="target field full">${icon('blocks', 12)} The class will be created in Tokens; apply it to elements there.</div>`}
@@ -948,7 +952,7 @@ export class HeoCssPasteDialog extends HeoElement {
         kind: 'class',
         name,
         element: open.element,
-        applyToElement: open.applyClass && Boolean(open.element?.isConnected),
+        applyToElement: open.applyClass && Boolean(open.element?.isConnected) && !this.#alreadyApplied(open, name),
       })) {
         this.editor.cancelCssPaste();
         this.editor.notify(`Upserted CSS into .${name}.`, 'success');
@@ -965,6 +969,11 @@ export class HeoCssPasteDialog extends HeoElement {
       this.editor.cancelCssPaste();
       this.editor.notify(`Upserted CSS into ${selector}.`, 'success');
     }
+  }
+
+  /** The class is on the pasted-for element already, so "apply it" has nothing to do. */
+  #alreadyApplied(open: NonNullable<typeof this.state.value.cssPaste>, name: string): boolean {
+    return Boolean(name && open.element?.isConnected && open.element.classList.contains(name));
   }
 }
 
