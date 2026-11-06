@@ -23,7 +23,7 @@ import {
   renderFamilies,
   type DeclarationTarget,
 } from '../class-editor.js';
-import { renderAdder, stylesDestination, type AdderDestination } from './property-adder.js';
+import { renderAdder, stylesDestination, valueStepDraft, type AdderDestination } from './property-adder.js';
 import { bestRow, renderSearchField, renderSearchPopover } from './search-popover.js';
 import { pseudoElementSuggestions } from '../../suggestions.js';
 import type { HeoValueField } from '../../controls/value-field.js';
@@ -182,10 +182,12 @@ export function renderBlockAdder(
   options: {
     /** After a property is written, with the engine's note when there is one; else it is notified. */
     onAdded?: (hint: string | null) => void;
+    /** Effective styles: the value's list offers the destinations as a switch. */
+    choose?: boolean;
   } = {},
 ): TemplateResult | typeof nothing {
   if (host.filtering) return nothing;
-  const { ui } = host;
+  const { ui, engine } = host;
   const open = ui.adder?.id === id ? ui.adder : null;
   const el = host.element;
   return html`<div class="block-add">
@@ -196,7 +198,7 @@ export function renderBlockAdder(
       selected: open?.dest,
       disclosure: true,
       open: Boolean(open),
-      menuOpen: ui.menu?.id === `dest-${id}`,
+      choose: options.choose,
       onOpen: () => {
         host.form.reset();
         host.patch({ adder: { id, draft: '', dest: '' }, menu: null, popover: null });
@@ -204,22 +206,32 @@ export function renderBlockAdder(
       onCancel: () => {
         host.form.reset();
         host.patch({ adder: null, menu: null });
+        host.focusSelector(`.add-prop[data-adder="${CSS.escape(id)}"]`);
       },
       onPick: (key) => {
         const adder = host.ui.adder;
         if (adder) host.patch({ adder: { ...adder, dest: key } });
       },
-      onMenu: (opened) => {
-        host.patch({ menu: opened ? { id: `dest-${id}` } : null });
-        if (opened) host.focusSelector(`.menu[data-menu="${CSS.escape(`dest-${id}`)}"] .mi[aria-checked="true"]`);
-      },
       seed: (property) => seedFor(el, state, property),
+      // The value being typed, shown where it would be written: inline and an existing rule have
+      // their previews; a rule or class not made yet shows once it is.
+      preview: (property, value, dest) => {
+        const to = dest.dest;
+        if (to?.kind === 'target' && to.target.kind === 'inline') engine.previewStyle(property, value, el);
+        else if (to?.kind === 'target') engine.previewDeclaration(to.target, property, value);
+        else engine.cancelPreview();
+      },
+      revert: () => engine.cancelPreview(),
+      computed: (property) =>
+        (isPseudoElement(state) ? getComputedStyle(el, state) : getComputedStyle(el)).getPropertyValue(property).trim(),
       commit: (property, value, dest) => {
         if (!dest.dest) return;
+        engine.cancelPreview();
         host.patch({ adder: null, menu: null });
-        const { hint } = host.engine.addDeclaration(dest.dest, property, value);
+        const { hint } = engine.addDeclaration(dest.dest, property, value);
+        host.flashRow(property, id);
         if (options.onAdded) options.onAdded(hint);
-        else if (hint) host.engine.notify(hint, 'info');
+        else if (hint) engine.notify(hint, 'info');
       },
     },
     host,
@@ -389,52 +401,13 @@ export function renderFamilyCard(
      * until its first property. Not under a picked state: a pseudo-element is a block under Always
      * or a media query, and one added there had no block to show in.
      */
-    const pseudoMenu = `pseudo-${key}|${slot}`;
-    const pseudoField = `pseudo-add-${key}|${slot}`;
-    const pseudoOpen = ui.menu?.id === pseudoMenu;
-    const submitPseudo = (text: string, field: HeoValueField | null): void => {
-      const named = pseudoElementNamed(text) ?? pseudoElementNamed(bestRow(text, field)?.value ?? '');
-      if (!named) {
-        host.form.fail(pseudoField, text.trim()
-          ? `::${text.trim().replace(/^:+/, '')} is not a pseudo-element the editor knows.`
-          : 'Pick a pseudo-element, like ::before.');
-        return;
-      }
-      const refused = addState(named, slot);
-      if (refused) host.form.fail(pseudoField, refused);
-    };
     const stateAdder = pickedState
       ? nothing
-      : html`<div class="block-add" data-menu-place=${pseudoMenu}>
-          <button
-            class="add-prop"
-            type="button"
-            data-heo-part="adder"
-            aria-haspopup="dialog"
-            aria-expanded=${pseudoOpen ? 'true' : 'false'}
-            data-menu-anchor=${pseudoMenu}
-            @click=${() => {
-        host.form.reset();
-        host.toggleMenu(pseudoMenu, !pseudoOpen);
-      }}
-          >
-            ${icon('plus', 12)} Add pseudo-element
-          </button>
-        </div>
-        ${pseudoOpen
-          ? renderSearchPopover(
-            { id: pseudoMenu, kind: 'pseudopop', label: 'Add a pseudo-element', onEscape: () => host.toggleMenu(pseudoMenu, false) },
-            renderSearchField({
-              form: host.form,
-              name: pseudoField,
-              fieldLabel: 'Search pseudo-elements',
-              placeholder: 'before, marker, placeholder…',
-              suggestions: pseudoElementSuggestions(ordered.filter(isPseudoElement)),
-              emptyText: 'No pseudo-element by that name.',
-              onSubmit: submitPseudo,
-            }),
-          )
-          : nothing}`;
+      : renderPseudoAdder(host, {
+        id: `${key}|${slot}`,
+        existing: ordered.filter(isPseudoElement),
+        onPick: (named) => addState(named, slot),
+      });
 
     const pick = (next: string): void => {
       const picks = new Map(host.ui.cardPicks);
@@ -459,7 +432,8 @@ export function renderFamilyCard(
         ]
         : host.ui.pendingStates;
       // A ::before or ::after renders nothing without content, so its adder offers that first.
-      const draft = result.kind === 'pending' && needsGeneratedContent(state) ? 'content' : '';
+      // Straight to its value, `""`, which Enter takes and typing replaces.
+      const draft = result.kind === 'pending' && needsGeneratedContent(state) ? valueStepDraft('content', '""') : '';
       const picks = new Map(host.ui.cardPicks);
       if (!isPseudoElement(state)) picks.set(key, conditionKey(under, state));
       host.form.reset();
@@ -539,6 +513,62 @@ export function renderFamilyCard(
   })}
     ${body()}
   </div>`;
+}
+/**
+ * "+ Add pseudo-element" (R24): the same search popover as the bar's "+", listing the
+ * pseudo-elements not offered yet. Picking one hands it to `onPick`, which adds its block, written
+ * as nothing until its first property, and says why when it refuses. Cards and Effective styles
+ * both draw this one. Not under a picked state: a pseudo-element is a block under Always or a
+ * media query, and one added there had no block to show in.
+ */
+export function renderPseudoAdder(
+  host: StylesHost,
+  options: { id: string; existing: readonly string[]; onPick(state: string): string | null },
+): TemplateResult {
+  const menu = `pseudo-${options.id}`;
+  const fieldName = `pseudo-add-${options.id}`;
+  const open = host.ui.menu?.id === menu;
+  const submit = (text: string, fieldEl: HeoValueField | null): void => {
+    const named = pseudoElementNamed(text) ?? pseudoElementNamed(bestRow(text, fieldEl)?.value ?? '');
+    if (!named) {
+      host.form.fail(fieldName, text.trim()
+        ? `::${text.trim().replace(/^:+/, '')} is not a pseudo-element the editor knows.`
+        : 'Pick a pseudo-element, like ::before.');
+      return;
+    }
+    const refused = options.onPick(named);
+    if (refused) host.form.fail(fieldName, refused);
+  };
+  return html`<div class="block-add" data-menu-place=${menu}>
+      <button
+        class="add-prop"
+        type="button"
+        data-heo-part="adder"
+        aria-haspopup="dialog"
+        aria-expanded=${open ? 'true' : 'false'}
+        data-menu-anchor=${menu}
+        @click=${() => {
+    host.form.reset();
+    host.toggleMenu(menu, !open);
+  }}
+      >
+        ${icon('plus', 12)} Add pseudo-element
+      </button>
+    </div>
+    ${open
+    ? renderSearchPopover(
+      { id: menu, kind: 'pseudopop', label: 'Add a pseudo-element', onEscape: () => host.toggleMenu(menu, false) },
+      renderSearchField({
+        form: host.form,
+        name: fieldName,
+        fieldLabel: 'Search pseudo-elements',
+        placeholder: 'before, marker, placeholder…',
+        suggestions: pseudoElementSuggestions([...options.existing]),
+        emptyText: 'No pseudo-element by that name.',
+        onSubmit: submit,
+      }),
+    )
+    : nothing}`;
 }
 /**
  * Take a condition off a bar (its ×): what is written under it goes, as one undo entry, after

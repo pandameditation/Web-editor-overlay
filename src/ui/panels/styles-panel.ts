@@ -1,6 +1,6 @@
 import { css, html, nothing, type PropertyValues, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
-import { isPseudoElement, isWidthQuery, mediaIcon, mediaKind, mediaNow } from '../../core/breakpoints.js';
+import { isPseudoElement, isWidthQuery, mediaIcon, mediaKind, mediaNow, needsGeneratedContent } from '../../core/breakpoints.js';
 import { rulesPass, type ElementModel, type RuleEntry, type WriteTarget } from '../../core/cascade.js';
 import {
   escapeRegExp,
@@ -16,7 +16,7 @@ import { labelFor, selectableParent } from '../../core/dom.js';
 import { listen, unlisten } from '../../core/shield.js';
 import { resolvesOffsets } from '../../core/transform.js';
 import { normalizeClassName, simpleClassName } from '../../core/classes.js';
-import { reachText } from '../../core/save-plan.js';
+import { entryLabel, reachText } from '../../core/save-plan.js';
 import type { CssPasteOptions } from '../../core/editor.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import { HeoElement } from '../context.js';
@@ -35,6 +35,7 @@ import {
   renderBlockHeader,
   renderFamilyCard,
   renderInlineCard,
+  renderPseudoAdder,
   renderUnknownCard,
   sourcesStyles,
   visibleAt,
@@ -63,12 +64,14 @@ import {
 } from './styles/size-strip.js';
 import { menuStyles, placeLayer } from './styles/menu.js';
 import { searchPopoverStyles } from './styles/search-popover.js';
-import { stylesDestination, type AdderDestination } from './styles/property-adder.js';
+import { stylesDestination, valueStepDraft, type AdderDestination } from './styles/property-adder.js';
 import {
   isViewportDependent,
   previewSlot,
   propertyRowStyles,
+  readRow,
   renderPropertyRow,
+  sameTarget,
   saveContextFor,
   scopeKey,
   shownValue,
@@ -273,6 +276,8 @@ const EMPTY_UI: StylesUiState = {
   effPick: null,
   popover: null,
   cardPop: null,
+  rowDest: null,
+  effPseudo: null,
   menu: null,
   adder: null,
   pending: null,
@@ -507,6 +512,8 @@ export class HeoStylesPanel extends HeoElement {
         ...this.ui,
         popover: null,
         cardPop: null,
+        rowDest: null,
+        effPseudo: null,
         menu: null,
         adder: null,
         pending: null,
@@ -670,7 +677,7 @@ export class HeoStylesPanel extends HeoElement {
         const adder = this.ui.adder;
         if (adder) this.#patch({ adder: { ...adder, draft: value } });
       },
-      onFocus: (property, scope) => this.#focusAfterRender(property, scope ?? ''),
+      flashRow: (property, listId) => this.#flashRow(property, listId),
       openSource: (property, entry) => this.#openSource(property, entry),
       sourceCard: (key) => this.#poppedCard(el, model, host, key, {
         onClose: () => {
@@ -835,6 +842,13 @@ export class HeoStylesPanel extends HeoElement {
     }).filter((group) => group.properties.length);
     if (filtering && !own.length && !groups.length) return nothing;
     const at = host.previewWidth;
+    const { picked } = this.#effectiveConditions(model, host.previewWidth);
+    // A pseudo-element just added from "+ Add pseudo-element": its group, empty, until its first
+    // property makes it real.
+    const pendingPseudo = this.ui.effPseudo && !groups.some((group) => group.state === this.ui.effPseudo)
+      && !model.groups().some((group) => group.state === this.ui.effPseudo)
+      ? this.ui.effPseudo
+      : null;
 
     return html`<heo-section
       heading="Effective styles"
@@ -849,33 +863,43 @@ export class HeoStylesPanel extends HeoElement {
         else declares a value.
       </p>
       ${this.#renderEffectiveStrip(model, host)}
-      <div class="rows" data-declarations=${EFFECTIVE_LIST_ID}>
-        ${own.map((property) =>
-      renderPropertyRow({ property, scope: { kind: 'element' }, element: el, model, listId: EFFECTIVE_LIST_ID }, host))}
-      </div>
-      ${own.length ? nothing : html`<p class="hint" style="margin:0">
-        ${filtering ? 'No property matches.' : 'Nothing declares anything for this element yet.'}
-      </p>`}
-      ${renderBlockAdder(host, EFFECTIVE_LIST_ID, this.#elementDestinations(el, model), '')}
-      ${this.#renderSizeGroup(el, model, host)}
-      ${groups.map((group) => {
-        const scope: RowScope = { kind: 'state', state: group.state };
-        const listId = `state-${group.state}`;
-        const pseudo = group.kind === 'pseudo-element';
-        return html`<div class="egroup" data-egroup=${group.state}>
-          ${renderBlockHeader(
-            pseudo ? 'pseudo' : 'cursor',
-            group.state,
-            pseudo ? 'pseudo-element' : 'state',
-            html`<span class="note">${pseudo ? 'its own box' : 'when it applies, over the above'}</span>`,
-          )}
-          <div class="rows" data-declarations=${listId}>
-            ${group.properties.map((property) =>
-          renderPropertyRow({ property, scope, element: el, model, listId }, host))}
-          </div>
-          ${renderBlockAdder(host, listId, this.#stateDestinations(el, model, group.state), group.state)}
-        </div>`;
-      })}
+      ${picked === 'base'
+        ? html`<div class="rows" data-declarations=${EFFECTIVE_LIST_ID}>
+              ${own.map((property) => {
+          const scope: RowScope = { kind: 'element' };
+          return renderPropertyRow({
+            property,
+            scope,
+            element: el,
+            model,
+            listId: EFFECTIVE_LIST_ID,
+            destinations: this.#rowDestinations(el, model, property, scope),
+          }, host);
+        })}
+            </div>
+            ${own.length ? nothing : html`<p class="hint" style="margin:0">
+              ${filtering ? 'No property matches.' : 'Nothing declares anything for this element yet.'}
+            </p>`}
+            ${renderBlockAdder(host, EFFECTIVE_LIST_ID, this.#elementDestinations(el, model), '', { choose: true })}
+            ${groups.map((group) => this.#renderPseudoGroup(el, model, host, group.state, group.properties))}
+            ${pendingPseudo ? this.#renderPseudoGroup(el, model, host, pendingPseudo, []) : nothing}
+            ${filtering
+          ? nothing
+          : renderPseudoAdder(host, {
+            id: EFFECTIVE_LIST_ID,
+            existing: [...groups.map((group) => group.state), ...(pendingPseudo ? [pendingPseudo] : [])],
+            onPick: (state) => {
+              const id = `state-${state}`;
+              host.form.reset();
+              this.#patch({
+                effPseudo: state,
+                menu: null,
+                adder: { id, draft: needsGeneratedContent(state) ? valueStepDraft('content', '""') : '', dest: '' },
+              });
+              return null;
+            },
+          })}`
+        : this.#renderSizeGroup(el, model, host)}
       ${filtering
         ? nothing
         : html`<div class="actions">
@@ -890,6 +914,59 @@ export class HeoStylesPanel extends HeoElement {
             </button>
           </div>`}
     </heo-section>`;
+  }
+
+  /** One pseudo-element's group under Always: its rows, written into its own rules, and its adder. */
+  #renderPseudoGroup(
+    el: HTMLElement,
+    model: ElementModel,
+    host: StylesHost,
+    state: string,
+    properties: readonly string[],
+  ): TemplateResult {
+    const scope: RowScope = { kind: 'state', state };
+    const listId = `state-${state}`;
+    return html`<div class="egroup" data-egroup=${state}>
+      ${renderBlockHeader('pseudo', state, 'pseudo-element', html`<span class="note">its own box</span>`)}
+      <div class="rows" data-declarations=${listId}>
+        ${properties.map((property) => renderPropertyRow({
+      property,
+      scope,
+      element: el,
+      model,
+      listId,
+      destinations: this.#rowDestinations(el, model, property, scope),
+    }, host))}
+      </div>
+      ${properties.length ? nothing : html`<p class="hint" style="margin:0">No declarations yet.</p>`}
+      ${renderBlockAdder(host, listId, this.#stateDestinations(el, model, state), state, { choose: true })}
+    </div>`;
+  }
+
+  /**
+   * Where an Effective row's edit can go: what its block's adder offers, and the rule the value is
+   * written in now when that is not among them (another family, another size), first.
+   */
+  #rowDestinations(el: HTMLElement, model: ElementModel, property: string, scope: RowScope): AdderDestination[] {
+    const offered = scope.kind === 'size'
+      ? this.#sizeDestinations(el, model, scope.slot, slotMedia(model, scope.slot) ?? '', slotName(model, scope.slot))
+      : scope.kind === 'state'
+        ? this.#stateDestinations(el, model, scope.state, scope.slot)
+        : this.#elementDestinations(el, model);
+    const { shown } = readRow({ property, scope, element: el, model, listId: '' });
+    const entry = shown?.source.kind === 'rule' ? shown.source.entry : null;
+    if (entry && entry.target.kind !== 'readonly' &&
+      !offered.some((one) => one.dest?.kind === 'target' && sameTarget(one.dest.target, entry.target))) {
+      const label = entryLabel(entry);
+      offered.unshift(stylesDestination(
+        label,
+        reachText(model.reach(entry.family)),
+        { kind: 'target', target: entry.target },
+        toRecord(entry.declarations),
+        label,
+      ));
+    }
+    return offered;
   }
 
   /** Open or close one of the panel's menus; closing hands focus back to what opened it. */
@@ -980,7 +1057,7 @@ export class HeoStylesPanel extends HeoElement {
     const name = conditionName(model, picked);
     const properties = [...names].sort().filter((property) => this.#hit(property, picked, name));
     const note = state
-      ? `when it applies, over the above${short ? ` · ${media !== null && !isWidthQuery(media) ? 'under' : 'at'} ${short}` : ''}`
+      ? `when it applies, over “Always”${short ? ` · ${media !== null && !isWidthQuery(media) ? 'under' : 'at'} ${short}` : ''}`
       : mediaNow(media ?? '', media !== null && mediaApplies(media, null), model.width);
     return html`<div class="egroup" data-egroup=${state ? `state:${picked.slice('state:'.length)}` : `size:${slot}`}>
       ${renderBlockHeader(
@@ -990,8 +1067,14 @@ export class HeoStylesPanel extends HeoElement {
         html`<span class="note">${note}</span>`,
       )}
       <div class="rows" data-declarations=${listId}>
-        ${properties.map((property) =>
-          renderPropertyRow({ property, scope, element: el, model, listId }, host))}
+        ${properties.map((property) => renderPropertyRow({
+      property,
+      scope,
+      element: el,
+      model,
+      listId,
+      destinations: this.#rowDestinations(el, model, property, scope),
+    }, host))}
       </div>
       ${properties.length
         ? nothing
@@ -1003,6 +1086,7 @@ export class HeoStylesPanel extends HeoElement {
         listId,
         state ? this.#stateDestinations(el, model, state, slot) : this.#sizeDestinations(el, model, slot, media ?? '', short),
         state,
+        { choose: true },
       )}
     </div>`;
   }
@@ -1138,15 +1222,15 @@ export class HeoStylesPanel extends HeoElement {
     if (userToggled.get('effective') === false) userToggled.delete('effective');
     this.adderForm.reset();
     this.#patch({ adder: { id: EFFECTIVE_LIST_ID, draft: property, dest: '' }, menu: null, popover: null });
-    this.#focusSelector(`.property-adder[data-adder="${EFFECTIVE_LIST_ID}"] input`);
+    this.#focusSelector(`.property-adder[data-adder="${EFFECTIVE_LIST_ID}"] heo-value-field`);
   }
 
   /* ---------------------------------------------------------------------- */
   /* Focus and the layers                                                   */
   /* ---------------------------------------------------------------------- */
 
-  /** Focus a property's value field in one list once the next render has landed, and flash its row. */
-  #focusAfterRender(property: string, listId: string): void {
+  /** Flash a property's row in one list once the next render has landed: where an add landed. */
+  #flashRow(property: string, listId: string): void {
     void this.updateComplete.then(() =>
       requestAnimationFrame(() => {
         const root = this.renderRoot;
@@ -1154,7 +1238,6 @@ export class HeoStylesPanel extends HeoElement {
         const list = listId ? root.querySelector(`[data-declarations="${CSS.escape(listId)}"]`) : null;
         const found = (list?.querySelector(selector) ?? root.querySelector(selector)) as HeoValueField | null;
         if (!found) return;
-        found.focusInput({ select: true });
         const row = found.closest('.prow') ?? found.closest('.decl');
         row?.classList.remove('flash');
         row?.classList.add('flash');
@@ -1445,7 +1528,6 @@ export class HeoStylesPanel extends HeoElement {
           .kind=${valueKindFor(cap.property)}
           .property=${cap.property}
           .suggestions=${buildSuggestions(this.editor, cap.property, owner)}
-          clearable
           @value-change=${(event: CustomEvent<{ value: string }>) =>
         this.editor.setStyle(cap.property, event.detail.value, owner)}
         ></heo-value-field>

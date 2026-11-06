@@ -1196,7 +1196,7 @@
         return Boolean(
           dialog?.shadowRoot.querySelector('#heo-style-dialog-title')
             ?.textContent.includes('promo-shell') &&
-          dialog.shadowRoot.querySelector('.property-adder .input'),
+          dialog.shadowRoot.querySelector('.property-adder heo-value-field'),
         );
       });
       // Still expanded underneath, so closing the dialog leaves the list showing what was
@@ -1305,9 +1305,9 @@
       check('rowNamesTheRuleItCameFrom', () =>
         rowFor('width')?.querySelector('.from')?.textContent.trim());
       check('rowCountsAsSet', () => rowFor('width')?.classList.contains('set'));
-      // Said by the line under the focused row now (R9), which replaced the name's tooltip.
-      check('rowTooltipExplainsTheOverride', () =>
-        /Overrides in the inline style/.test(rowFor('width')?.closest('.prow')?.querySelector('.where')?.textContent ?? ''));
+      // Said by the line under the focused row (R9): an edit goes where the value is written.
+      check('rowTooltipExplainsWhereTheEditGoes', () =>
+        /^Edits #declared-probe · /.test(rowFor('width')?.closest('.prow')?.querySelector('.where')?.textContent.trim() ?? ''));
 
       /* An inline style still wins, and is attributed to the element. */
       engine.setStyle('width', '120px', probeEl);
@@ -1976,18 +1976,19 @@
       // In Styles the adder waits behind "+ Add property" (R23), which opens today's row.
       dockPanel('styles').shadowRoot.querySelector(STYLES_CARD + ' .add-prop')?.click();
       await frame();
-      check('stylesAddPropertyIsVisible', () =>
-        Boolean(dockPanel('styles').shadowRoot
-          .querySelector(STYLES_CARD + ' .decl .pair input')?.getClientRects().length));
+      const stylesAdderField = () => dockPanel('styles').shadowRoot
+        .querySelector(STYLES_CARD + ' .property-adder heo-value-field');
+      check('stylesAddPropertyIsVisible', () => Boolean(stylesAdderField()?.getClientRects().length));
+      // Its way on, the arrow to the value, inside the name field.
       check('stylesConfirmIsVisible', () =>
-        Boolean(dockPanel('styles').shadowRoot
-          .querySelector(STYLES_CARD + ' .confirm')?.getClientRects().length));
+        Boolean(stylesAdderField()?.shadowRoot?.querySelector('.action')?.getClientRects().length));
+      // And its trash, on the same line as the field, where every row's trash is.
       check('stylesRemoveSitsOnTheSameRow', () => {
-        const row = dockPanel('styles').shadowRoot.querySelector(STYLES_CARD + ' .decl');
-        const drop = row?.querySelector('.drop');
+        const row = dockPanel('styles').shadowRoot.querySelector(STYLES_CARD + ' .property-adder');
+        const trash = row?.querySelector('.cancel');
         const field = row?.querySelector('heo-value-field');
-        if (!drop || !field) return 'missing';
-        return Math.abs(drop.getBoundingClientRect().top - field.getBoundingClientRect().top) < 12;
+        if (!trash || !field) return 'missing';
+        return Math.abs(trash.getBoundingClientRect().top - field.getBoundingClientRect().top) < 12;
       });
       api.openPanel('tokens');
       await frame();
@@ -2042,8 +2043,9 @@
         engine.classes.get('card').declarations.padding);
       engine.history.clear();
 
-      /* A newly added property arrives focused with its value preselected. */
-      const tokensAdder = dockPanel('tokens').shadowRoot.querySelector('.cls .decl .pair input');
+      /* A property named in the adder opens its value, focused and preselected. */
+      const tokensAdder = dockPanel('tokens').shadowRoot.querySelector('.cls .property-adder heo-value-field')
+        .shadowRoot.querySelector('input[type="text"]');
       tokensAdder.focus();
       tokensAdder.value = 'word-spacing';
       tokensAdder.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
@@ -2052,11 +2054,17 @@
       await wait(150);
       check('newValueIsPreselected', () => {
         const field = dockPanel('tokens').shadowRoot
-          .querySelector('heo-value-field[data-property="word-spacing"]');
+          .querySelector('.property-adder heo-value-field[data-property="word-spacing"]');
         const input = field?.shadowRoot.querySelector('input[type=text]');
         if (!input) return 'no field';
         return `${input.selectionStart}-${input.selectionEnd} of ${JSON.stringify(input.value)}`;
       });
+      // Escape leaves the value step: nothing was written.
+      press(dockPanel('tokens').shadowRoot.querySelector('.property-adder heo-value-field')
+        ?.shadowRoot.querySelector('input[type="text"]'), 'Escape');
+      await frame();
+      check('aNamedPropertyIsNotWrittenUntilItsValueIs', () =>
+        !('word-spacing' in (engine.classes.get('card')?.declarations ?? {})));
       engine.removeClassDeclaration('card', 'word-spacing');
       await frame();
       engine.history.clear();
@@ -2364,22 +2372,28 @@
       check('classHeaderIsOneLine', () => Math.round(clsHeader.getBoundingClientRect().height));
       clsHeader.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
       await frame();
-      const adder = tokensPanel.shadowRoot.querySelector('.cls .decl .pair input');
-      check('addPropertyHasAConfirmButton', () =>
-        Boolean(tokensPanel.shadowRoot.querySelector('.cls .confirm')));
+      // The adder's field, at either step (name, then value), and its real input.
+      const tokensAdderField = () => tokensPanel.shadowRoot.querySelector('.cls .property-adder heo-value-field');
+      const tokensAdderInput = () => tokensAdderField()?.shadowRoot.querySelector('input[type="text"]');
+      check('addPropertyHasAConfirmButton', () => Boolean(tokensAdderField()?.shadowRoot.querySelector('.action')));
+      const adder = tokensAdderInput();
       adder.focus();
       adder.value = 'letter-spacing';
       adder.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
       await frame();
-      adder.dispatchEvent(new KeyboardEvent('keydown', {
-        key: 'Enter', bubbles: true, composed: true, cancelable: true,
-      }));
+      press(adder, 'Enter');
+      await wait(140);
+      // The name opens its value, seeded; Enter writes it.
+      press(tokensAdderInput(), 'Enter');
       await wait(140);
       const newField = () =>
         tokensPanel.shadowRoot.querySelector('heo-value-field[data-property="letter-spacing"]');
       check('addedPropertyGetsAStartingValue', () =>
         engine.classes.get('card').declarations['letter-spacing']);
-      check('focusLandsInTheNewValueField', () => Boolean(newField()?.matches(':focus-within')));
+      // Back in the name field, for the next property.
+      check('focusReturnsToTheNameField', () =>
+        tokensPanel.shadowRoot.activeElement === tokensAdderField() &&
+        tokensAdderField()?.classList.contains('name-field'));
 
       newField().dispatchEvent(new CustomEvent('value-change', {
         detail: { value: '' }, bubbles: true, composed: true,
@@ -2416,7 +2430,8 @@
       const inlineSetSection = () =>
         Array.from(dockPanel('styles').shadowRoot.querySelectorAll('heo-section'))
           .find((s) => s.heading === 'Effective styles');
-      const inlineAdderInput = () => inlineSetSection()?.querySelector('.property-adder input');
+      const inlineAdderField = () => inlineSetSection()?.querySelector('.property-adder heo-value-field');
+      const inlineAdderInput = () => inlineAdderField()?.shadowRoot.querySelector('input[type="text"]');
       const sectionBeforeAdder = inlineSetSection();
       if (sectionBeforeAdder && !sectionBeforeAdder.open) {
         sectionBeforeAdder.shadowRoot.querySelector('.head')?.click();
@@ -2427,7 +2442,7 @@
       await frame();
       check('setSectionOffersAnElementPropertyAdder', () => Boolean(inlineAdderInput()));
       check('elementPropertyAdderHasAConfirmButton', () =>
-        Boolean(inlineSetSection()?.querySelector('.property-adder .confirm')));
+        Boolean(inlineAdderField()?.shadowRoot.querySelector('.action')));
 
       const duplicateInlineProperty = inlineAdderInput();
       duplicateInlineProperty.focus();
@@ -2446,14 +2461,19 @@
       await frame();
       press(inlineAdderInput(), 'Enter');
       await wait(140);
+      // Its value, seeded with what the element resolves to now; Enter writes it inline (no
+      // source writes letter-spacing for this element, so inline is where it goes).
+      const seededInline = inlineAdderInput()?.value;
+      press(inlineAdderInput(), 'Enter');
+      await wait(140);
       const inlineValueField = () =>
         inlineSetSection()?.querySelector(
           '.rows[data-declarations="effective"] .row[data-property="letter-spacing"] heo-value-field',
         );
       // Seeded with what the element resolves to now (R23), so adding it changes nothing until edited.
-      check('elementPropertyAdderSeedsAStartingValue', () => inlineValueField()?.value === 'normal');
-      check('elementPropertyAdderFocusesTheNewValueField', () =>
-        Boolean(inlineValueField()?.matches(':focus-within')));
+      check('elementPropertyAdderSeedsAStartingValue', () => seededInline === 'normal' && inlineValueField()?.value === 'normal');
+      check('elementPropertyAdderFocusesAddPropertyAgain', () =>
+        Boolean(dockPanel('styles').shadowRoot.activeElement?.matches('.add-prop[data-adder="effective"]')));
       check('elementPropertyAdderCommitsAnInlineDeclaration', () =>
         inlineAdderTarget.style.getPropertyValue('letter-spacing') === 'normal');
       check('elementPropertyAdderKeepsExistingInlineDeclarations', () =>

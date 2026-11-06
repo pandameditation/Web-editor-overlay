@@ -320,7 +320,9 @@
 
       // And taking one opens the Effective styles adder with it, so the completion is the whole gesture.
       const adderBox = () => stylePanel.shadowRoot.querySelector('.property-adder[data-adder="effective"]');
-      const adderInput = () => adderBox()?.querySelector('input');
+      // The adder's field (name, then value) and its real input.
+      const adderField = () => adderBox()?.querySelector('heo-value-field');
+      const adderInput = () => adderField()?.shadowRoot?.querySelector('input[type="text"]');
       const closeAdder = async () => {
         adderBox()?.querySelector('.cancel')?.click();
         await stylePanel.updateComplete;
@@ -360,8 +362,9 @@
       results.search.addOpensTheEffectiveAdder =
         results.styles.popupOpened &&
         results.styles.seededFromTheQuery &&
-        stylePanel.shadowRoot.activeElement === adderInput();
-      const commitBtn = () => adderBox()?.querySelector('.confirm');
+        stylePanel.shadowRoot.activeElement === adderField();
+      // The name field's way on to its value: what used to be the adder's confirm.
+      const commitBtn = () => adderField()?.shadowRoot?.querySelector('.action');
       /** Name a property in the open adder, through its real input, and press Enter. */
       const addNamed = async (property) => {
         if (!adderBox()) {
@@ -376,7 +379,14 @@
         adderInput().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, composed: true, cancelable: true }));
         await stylePanel.updateComplete;
         await frames();
-        await wait(120);
+        await wait(150);
+        // The name opens its value, seeded: Enter writes it.
+        if (adderBox()?.dataset.step === 'value') {
+          adderInput()?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, composed: true, cancelable: true }));
+          await stylePanel.updateComplete;
+          await frames();
+          await wait(150);
+        }
       };
       const changesBefore = engine.history.size;
       await addNamed('box-shadow');
@@ -411,7 +421,7 @@
 
       // Where the next keystroke goes: the adder's field, holding the name, so Enter adds it.
       results.styles.focusesTheMissingHalf =
-        stylePanel.shadowRoot.activeElement === adderInput() && adderInput()?.value === 'font-stretch';
+        stylePanel.shadowRoot.activeElement === adderField() && adderInput()?.value === 'font-stretch';
       results.styles.arrivesReadyToCommit = Boolean(commitBtn()) && commitBtn().disabled === false;
 
       // An empty name, confirmed: said under the field, with focus put back there.
@@ -429,8 +439,8 @@
         results.styles.saysWhyItCannotCommit =
           commitBtn().disabled === false &&
           /property to add/i.test(error) &&
-          adderInput().getAttribute('aria-invalid') === 'true' &&
-          stylePanel.shadowRoot.activeElement === adderInput() &&
+          adderField().getAttribute('aria-invalid') === 'true' &&
+          stylePanel.shadowRoot.activeElement === adderField() &&
           (target.getAttribute('style') ?? '') === styleBefore;
       }
 

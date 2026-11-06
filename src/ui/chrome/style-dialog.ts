@@ -9,7 +9,6 @@ import { icon } from '../icons.js';
 import { baseStyles, surfaceStyles } from '../theme.js';
 import {
   ClassEditor,
-  focusDeclaration,
   type ClassEditorHost,
 } from '../panels/class-editor.js';
 import { RuleEditor, type RuleEditorHost } from '../panels/rule-editor.js';
@@ -206,7 +205,7 @@ export class HeoStyleDialog extends HeoElement {
    * that is where the caret belongs. Landing on the close button instead would make the
    * user's next act a click on something they can already see.
    */
-  protected modal = new ModalController(this, { initialFocus: '.property-adder .input' });
+  protected modal = new ModalController(this, { initialFocus: '.property-adder heo-value-field' });
 
   /**
    * The add-a-property draft, owned here rather than shared with the panel.
@@ -336,7 +335,6 @@ export class HeoStyleDialog extends HeoElement {
       },
       // Deleted from inside its own dialog, so there is nothing left for the dialog to edit.
       onRemoved: () => this.editor.closeStyleEditor(),
-      onFocus: (property, scope) => focusDeclaration(this.renderRoot, property, scope),
     };
   }
 
@@ -350,7 +348,6 @@ export class HeoStyleDialog extends HeoElement {
         this.newProperty = value;
       },
       onRemoved: () => this.editor.closeStyleEditor(),
-      onFocus: (property, scope) => focusDeclaration(this.renderRoot, property, scope),
       editingKey: this.editingSelector,
       onEditSelector: (next) => {
         this.editingSelector = next;

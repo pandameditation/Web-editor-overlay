@@ -204,7 +204,8 @@
       // Opened at the step the composer was always a preamble to, rather than at a close button.
       results.filteredClass.andTheCaretIsInTheAddPropertyField = (() => {
         const focused = activeDeep();
-        const wanted = dialog()?.shadowRoot.querySelector('.property-adder .input');
+        const wanted = dialog()?.shadowRoot.querySelector('.property-adder heo-value-field')
+          ?.shadowRoot.querySelector('input[type="text"]');
         return Boolean(wanted) && focused === wanted;
       })();
 
@@ -227,14 +228,18 @@
         await frames();
         await wait(80);
       }
-      const adderInput = dialog().shadowRoot.querySelector('.property-adder .input');
+      const adderInput = dialog().shadowRoot.querySelector('.property-adder heo-value-field')
+        .shadowRoot.querySelector('input[type="text"]');
       await typeIntoPlain(adderInput, 'color', dialog());
       await pressOn(adderInput, 'Enter', dialog());
       await wait(120);
       await frames();
 
+      // The name opens its value in the same row, written once that value is confirmed.
       results.editing = {
-        theDeclarationWasAdded: 'color' in (engine.classes.get('new')?.declarations ?? {}),
+        theNameOpensItsValue:
+          dialog()?.shadowRoot.querySelector('.property-adder')?.dataset.step === 'value' &&
+          !('color' in (engine.classes.get('new')?.declarations ?? {})),
         andItsFieldTookFocus: (() => {
           const focused = activeDeep();
           const row = dialog()?.shadowRoot.querySelector('heo-value-field[data-property="color"]');

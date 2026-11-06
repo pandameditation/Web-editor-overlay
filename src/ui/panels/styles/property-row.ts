@@ -14,6 +14,7 @@ import { entryLabel, reachText, shortLabel, type SaveContext } from '../../../co
 import { mediaApplies } from '../../../core/viewport.js';
 import { icon } from '../../icons.js';
 import { buildSuggestions, valueKindFor } from '../../suggestions.js';
+import type { AdderDestination } from './property-adder.js';
 import { beginSave, cancelSave, renderSaveBox } from './save-box.js';
 import type { RowScope, StylesHost } from './types.js';
 
@@ -24,8 +25,10 @@ import type { RowScope, StylesHost } from './types.js';
  *
  * Left of the name sits a dot that is a button: it opens the cascade for the property, and its
  * crescents count the applying declarations the winner beats. The name says where the winning
- * value comes from; editing it writes an inline override by default, asks where it should stay
- * when the value depends on the viewport, and writes into the state's own rule in a state group.
+ * value comes from. In Effective styles an edit goes where the value is written now, or wherever
+ * the switch at the head of its value list says. Elsewhere it writes an inline override by
+ * default, asks where it should stay when the value depends on the viewport, and writes into the
+ * state's own rule in a state group.
  *
  * The grid element keeps today's `div.row[data-property]` (fixtures find fields that way), inside
  * an attribute-less `div.prow` that also holds the focus hint or the save box under it.
@@ -68,7 +71,40 @@ export interface RowSpec {
   placeholder?: string;
   /** The `data-declarations` id of the list the row sits in. */
   listId: string;
+  /**
+   * Effective styles: where an edit can go, offered as a switch at the head of the value's list.
+   * The row's current source is picked until another is, and the panel includes it.
+   */
+  destinations?: readonly AdderDestination[];
 }
+
+/** Whether two write targets are the same declaration block. */
+export function sameTarget(a: WriteTarget, b: WriteTarget): boolean {
+  switch (a.kind) {
+    case 'inline':
+      return b.kind === 'inline' && b.element === a.element;
+    case 'live':
+      return b.kind === 'live' && b.rule === a.rule;
+    case 'class':
+      return b.kind === 'class' && b.name === a.name;
+    case 'design-rule':
+      return b.kind === 'design-rule' && b.key === a.key;
+    case 'readonly':
+      return false;
+  }
+}
+
+/** The destination a row's value is written in now, among those offered, or null. */
+function currentDestination(
+  destinations: readonly AdderDestination[],
+  shown: Contribution | undefined,
+  element: HTMLElement,
+): AdderDestination | null {
+  const now: WriteTarget = shown ? targetOf(shown, element) : { kind: 'inline', element };
+  return destinations.find((one) => one.dest?.kind === 'target' && sameTarget(one.dest.target, now)) ?? null;
+}
+const isInline = (one: AdderDestination | null | undefined): boolean =>
+  one?.dest?.kind === 'target' && one.dest.target.kind === 'inline';
 
 /* -------------------------------------------------------------------------- */
 /* What a row shows                                                            */
@@ -296,14 +332,39 @@ export function renderPropertyRow(spec: RowSpec, host: StylesHost): TemplateResu
   const { list, winner, shown, stateTarget } = readRow(spec);
   const pending = host.ui.pending?.rowId === rowId ? host.ui.pending : null;
   const writesInline = scope.kind === 'element' || scope.kind === 'section' || scope.kind === 'parent';
-  const ownInline = model.inline.find((one) => one.property === property);
   const pseudo = scope.kind === 'state' && isPseudoElement(scope.state);
   const computed = (pseudo ? getComputedStyle(element, scope.state) : getComputedStyle(element))
     .getPropertyValue(property)
     .trim();
   const value = pending ? pending.ctx.declarations[property] ?? '' : shownValue(shown);
-  const asks = isViewportDependent(scope, model, property, host.previewWidth);
   const expanded = host.ui.popover?.rowId === rowId;
+
+  /*
+   * Effective styles: the edit goes where the value is written now (inline when nothing writes
+   * it), until the switch at the head of the value's list says otherwise. That switch is the one
+   * question about where, so a row with it never opens the save box.
+   */
+  const offered = spec.destinations?.length ? spec.destinations : null;
+  const current = offered ? currentDestination(offered, shown, element) : null;
+  const pickedKey = host.ui.rowDest?.rowId === rowId ? host.ui.rowDest.key : current?.key;
+  const picked = offered ? offered.find((one) => one.key === pickedKey) ?? current ?? offered[0] : null;
+  const asks = !offered && isViewportDependent(scope, model, property, host.previewWidth);
+  const pickDestination = (key: string): void => {
+    engine.cancelPreview();
+    host.patch({ rowDest: { rowId, key } });
+  };
+  const head = offered && picked && offered.length > 1
+    ? html`<heo-segmented
+        .options=${offered.map((one) => ({ value: one.key, label: one.short ?? one.label, title: one.explain ?? one.reach }))}
+        .value=${picked.key}
+        label="Where it goes"
+        wrap
+        @segment-change=${(event: CustomEvent<{ value: string }>) => {
+        if (event.detail.value) pickDestination(event.detail.value);
+      }}
+      ></heo-segmented>
+      <p class="explain">${picked.explain ?? picked.reach}</p>`
+    : null;
 
   /*
    * Who may drop a shown `!important` from the field's tag: only a row that writes the declaration
@@ -317,7 +378,12 @@ export function renderPropertyRow(spec: RowSpec, host: StylesHost): TemplateResu
 
   const preview = (text: string): void => {
     if (host.ui.pending) cancelSave(host);
-    if (scope.kind === 'state') {
+    if (picked && !isInline(picked)) {
+      if (picked.dest?.kind === 'target') engine.previewDeclaration(picked.dest.target, property, text);
+      else engine.cancelPreview();
+      return;
+    }
+    if (scope.kind === 'state' && !picked) {
       if (stateTarget) engine.previewDeclaration(stateTarget, property, text);
       return;
     }
@@ -332,6 +398,26 @@ export function renderPropertyRow(spec: RowSpec, host: StylesHost): TemplateResu
 
   /** The one path a committed value takes (R25), from typing, the value list or a segment. */
   const commit = (text: string, event: Event): void => {
+    if (picked?.dest) {
+      const typed = splitImportant(text);
+      const moving = isInline(current) && !isInline(picked);
+      host.patch({ rowDest: null });
+      if (!typed.value) {
+        // Emptied: the element's own value goes. A shared rule's is not emptied from here; its
+        // card, or the trash for the element's own value, is where a declaration is removed.
+        if (isInline(picked)) engine.overrideStyle(property, '', element);
+        else engine.cancelPreview();
+        return;
+      }
+      if (picked === current && shown && typed.important === null && shown.value === typed.value) {
+        engine.cancelPreview();
+        return;
+      }
+      engine.cancelPreview();
+      const { hint } = engine.writeDeclarationTo(picked.dest, property, text, moving ? { move: element } : {});
+      if (hint) engine.notify(hint, 'info');
+      return;
+    }
     if (scope.kind === 'state') {
       if (stateTarget) engine.setDeclaration(stateTarget, property, text);
       else engine.cancelPreview();
@@ -371,7 +457,6 @@ export function renderPropertyRow(spec: RowSpec, host: StylesHost): TemplateResu
         .options=${segments}
         .value=${value || computed}
         clearable
-        ?removable=${writesInline && Boolean(ownInline)}
         label=${property}
         @segment-change=${(event: CustomEvent<{ value: string }>) => commit(event.detail.value, event)}
       ></heo-segmented>`
@@ -384,12 +469,17 @@ export function renderPropertyRow(spec: RowSpec, host: StylesHost): TemplateResu
       ? `!important in ${shortLabel(shown)}. Change it from the dot's popover.`
       : ''}
         ?pending=${Boolean(pending)}
+        .head=${head}
+        @head-step=${(event: CustomEvent<{ delta: number }>) => {
+      if (!offered || !picked) return;
+      const keys = offered.map((one) => one.key);
+      pickDestination(keys[(keys.indexOf(picked.key) + event.detail.delta + keys.length) % keys.length]);
+    }}
         .kind=${valueKindFor(property)}
         .property=${property}
         .computed=${computed}
         .suggestions=${buildSuggestions(engine, property, element)}
         placeholder=${spec.placeholder ?? shorten(computed)}
-        ?clearable=${writesInline && Boolean(ownInline)}
         @value-input=${(event: CustomEvent<{ value: string }>) => preview(event.detail.value)}
         @value-revert=${() => engine.cancelPreview()}
         @value-change=${(event: CustomEvent<{ value: string }>) => commit(event.detail.value, event)}
@@ -426,20 +516,22 @@ export function renderPropertyRow(spec: RowSpec, host: StylesHost): TemplateResu
       ${control}
       ${resettable
       ? html`<button
-            class="reset"
+            class="kill tight reset"
             type="button"
-            aria-label=${`Reset ${property}`}
+            aria-label=${baseline ? `Reset ${property}` : `Remove ${property}`}
             title=${baseline
           ? `Back to ${baseline}, its value before this session`
           : 'Remove this declaration, as it was before this session'}
             @click=${() => engine.resetStyle(property, element)}
           >
-            ${icon('undo', 11)}
+            ${icon('trash', 11)}
           </button>`
       : nothing}
     </div>
     <div class="under">
-      ${pending ? renderSaveBox(pending, host) : html`<span class="where">${whereHint(spec, winner, stateTarget, asks)}</span>`}
+      ${pending
+      ? renderSaveBox(pending, host)
+      : html`<span class="where">${picked ? picked.explain ?? picked.reach : whereHint(spec, winner, stateTarget, asks)}</span>`}
     </div>
   </div>`;
 }
@@ -484,12 +576,12 @@ export const propertyRowStyles: CSSResult = css`
     border-radius: var(--heo-r-sm);
   }
   /*
-   * Dot slot · name · value · reset. The first two are fixed, so names line up with or without a
-   * dot; the reset column collapses when there is nothing to reset, giving the value its width.
+   * Dot slot · name · value · trash: a card's row with the dot in front. The trash column is kept
+   * when there is nothing to remove, so every value field in the panel ends at the same line.
    */
   .row {
     display: grid;
-    grid-template-columns: 20px 92px minmax(0, 1fr) auto;
+    grid-template-columns: 20px 92px minmax(0, 1fr) 18px;
     align-items: center;
     gap: 6px;
   }
@@ -523,23 +615,6 @@ export const propertyRowStyles: CSSResult = css`
     font-size: 9.5px;
     text-overflow: ellipsis;
   }
-  .reset {
-    display: grid;
-    place-items: center;
-    width: 20px;
-    height: 20px;
-    padding: 0;
-    border: 0;
-    border-radius: 5px;
-    background: transparent;
-    color: var(--heo-text-dim);
-    cursor: pointer;
-  }
-  .reset:hover {
-    background: var(--heo-hover);
-    color: var(--heo-accent);
-  }
-  .reset:focus-visible,
   .dots:focus-visible {
     outline: 2px solid var(--heo-focus-ring);
     outline-offset: 1px;

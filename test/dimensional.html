@@ -687,42 +687,14 @@
             groupsOf(list).has('Common values') && valuesOf(list).includes(needle);
         }
 
-        /* --- Clearing a value reopens the list, so the replacement is one click away. --- */
+        /* --- Emptying a value reopens the list, so the replacement is one click away. --- */
         progress.textContent = 'reopen';
         engine.setStyle('width', '120px', para);
         await frames();
         await wait(150);
-        /*
-         * The row in the Size section, not the first one found.
-         *
-         * Setting a property also lists it under Effective styles and in the Inline style card,
-         * deliberately -- the same declaration is editable in several places. Clearing it in the
-         * inline card destroys that row, so a reference
-         * to it goes stale and reopening its list would be pointless anyway. The section row is the
-         * one that survives, and the one where offering the alternatives is the point.
-         */
-        const sizeSection = Array.from(
-          panel.shadowRoot.querySelectorAll('heo-section'),
-        ).find((x) => x.heading === 'Size');
-        const clearable = Array.from(sizeSection.querySelectorAll('.row'))
-          .find((row) => row.dataset.property === 'width')
-          ?.querySelector('heo-value-field');
-        results.reopen = { foundTheSectionRow: Boolean(clearable) };
-        clearable.closePopup();
-        await frames();
-        clearable.shadowRoot.querySelector('[title="Clear"]')?.click();
-        await clearable.updateComplete;
-        await frames();
-        await wait(80);
-        // The cross used to leave an empty box and a closed list, so choosing the replacement meant
-        // reaching for the chevron straight afterwards.
-        results.reopen.clearingReopensTheList = Boolean(
-          clearable.shadowRoot.querySelector('.popup'),
-        );
-        results.reopen.andEmptiesTheValue = para.style.width === '';
-        clearable.closePopup();
-        await frames();
-        // Backspacing to empty does the same, through the input path.
+        // A displayed row has no clear button any more: its trash removes, and emptying is typing.
+        results.reopen = { rowsHaveNoClearButton: !fieldFor('width')?.shadowRoot.querySelector('[title="Clear"]') };
+        // Backspacing to empty reopens it, through the input path.
         const backspaced = fieldFor('width');
         const bi = backspaced.shadowRoot.querySelector('input[type="text"]');
         bi.focus();

@@ -454,7 +454,9 @@
           section()?.querySelector('.add-prop[data-adder="effective"]')?.click();
           await panel.updateComplete;
           await frames();
-          const adder = () => section()?.querySelector('.property-adder input');
+          // The name field and its list of property names.
+          const nameField = () => section()?.querySelector('.property-adder heo-value-field');
+          const adder = () => nameField()?.shadowRoot?.querySelector('input[type="text"]');
           const offeredFor = async (text) => {
             const input = adder();
             input.focus();
@@ -462,8 +464,10 @@
             input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
             await frames();
             await wait(100);
-            return Array.from(section()?.querySelectorAll('datalist option') ?? []).map(
-              (o) => o.value,
+            nameField()?.openList();
+            await frames();
+            return Array.from(nameField()?.shadowRoot?.querySelectorAll('.option .name') ?? []).map(
+              (o) => o.textContent.trim(),
             );
           };
 
@@ -515,8 +519,12 @@
             Array.from(ruleList()?.querySelectorAll('heo-value-field') ?? []).map(
               (f) => f.dataset.property,
             );
-          const ruleAdder = () => ruleList()?.querySelector('.property-adder input');
-          const add = async (name) => {
+          const ruleAdderEl = () => ruleList()?.querySelector('.property-adder');
+          const ruleAdder = () => ruleAdderEl()?.querySelector('heo-value-field')?.shadowRoot?.querySelector('input[type="text"]');
+          const enter = (input) => input?.dispatchEvent(
+            new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, composed: true }));
+          /** Name, Enter: its value, seeded; then `value` (or the seed) and Enter. The seed, back. */
+          const add = async (name, value = null) => {
             // Behind "+ Add property" in Styles (R23).
             if (!ruleAdder()) {
               ruleList()?.querySelector('.block[data-block="base"] .add-prop')?.click();
@@ -529,17 +537,26 @@
             input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
             await frames();
             await wait(80);
-            input.dispatchEvent(
-              new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, composed: true }),
-            );
+            enter(input);
+            await frames();
+            await wait(300);
+            const valueInput = ruleAdder();
+            const seed = valueInput?.value ?? null;
+            if (value !== null && valueInput) {
+              valueInput.value = value;
+              valueInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+              await frames();
+            }
+            enter(ruleAdder());
             await frames();
             await wait(350);
+            return seed;
           };
           /** The deepest focused node, walking down through shadow roots. */
           const focusedField = () => {
             let node = document.activeElement;
             while (node?.shadowRoot?.activeElement) node = node.shadowRoot.activeElement;
-            return node?.getRootNode?.()?.host ?? null;
+            return node;
           };
 
           results.addingASideToARule = {
@@ -561,18 +578,13 @@
           );
 
           /* --- padding-left, where the rule already declares `padding`. --- */
-          await add('padding-left');
-          const afterPadding = focusedField();
           /*
            * A new property starts at what the element resolves to (R23), 8px here, which changes
-           * nothing; the side is then set to 0, as a user would, so the rest has a side to see.
+           * nothing; the side is set to 0 before it is written, as a user would, so the rest has a
+           * side to see.
            */
-          const seededSide = afterPadding?.value;
-          afterPadding?.dispatchEvent(new CustomEvent('value-change', {
-            detail: { value: '0px' }, bubbles: true, composed: true,
-          }));
-          await frames();
-          await wait(250);
+          const seededSide = await add('padding-left', '0px');
+          const afterPadding = focusedField();
           results.addingASideToARule.seedsWhatTheElementResolvesTo = seededSide === '8px';
           const liveRule = Array.from(document.styleSheets)
             .flatMap((sheet) => {
@@ -612,11 +624,9 @@
           results.addingASideToARule.theSideGetsItsOwnRow = ruleRows().includes('padding-left');
           results.addingASideToARule.andTheShorthandKeepsItsOwn = ruleRows().includes('padding');
           // The caret is in the row that was just created, in this rule's own list.
-          results.addingASideToARule.focusLandsOnTheNewRow =
-            afterPadding?.dataset?.property === 'padding-left';
-          results.addingASideToARule.andItIsTheRuleOwnRow = Boolean(
-            afterPadding && ruleList()?.contains(afterPadding),
-          );
+          // Focus goes back to this rule's own "+ Add property", ready for the next one.
+          results.addingASideToARule.focusReturnsToTheRuleAddProperty =
+            Boolean(afterPadding?.matches?.('.add-prop')) && Boolean(ruleList()?.contains(afterPadding));
         }
 
         /* ------------------------------------------------------------------ *

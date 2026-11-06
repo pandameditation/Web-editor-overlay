@@ -83,16 +83,6 @@ export interface ClassEditorHost {
    * single element's panel is a much larger action than it looks.
    */
   actions?: 'all' | 'none';
-  /**
-   * Called with a property whose value field should take focus.
-   *
-   * The field does not exist yet at call time — it appears on the render the new
-   * declaration triggers — so the host has to do the focusing after that update.
-   *
-   * `scope` is the id of the declaration list that asked, and hosts should forward it:
-   * one panel shows several lists that can each hold a row for the same property.
-   */
-  onFocus?: (property: string, scope?: string) => void;
 }
 
 /**
@@ -374,7 +364,6 @@ export function renderDeclarationRow(
       .important=${important}
       .importantRemovable=${!target.readonly}
       .importantTitle=${target.readonly ?? ''}
-      clearable
       @value-input=${(event: CustomEvent<{ value: string }>) =>
       target.preview(property, event.detail.value)}
       @value-revert=${() => engine.cancelPreview()}
@@ -416,7 +405,7 @@ export const ClassEditor = {
     }
     .cls .decls {
       display: grid;
-      gap: 5px;
+      gap: 6px;
       padding: 7px 8px;
     }
     .cls .decl-tools {
@@ -509,9 +498,10 @@ export const ClassEditor = {
       border-left-style: dashed;
       border-left-color: var(--heo-line-strong);
     }
+    /* Written here, so read like a set row in Effective styles: the same face, size and ink. */
     .cls .decl .p {
       overflow: hidden;
-      color: var(--heo-text-dim);
+      color: var(--heo-text);
       font-family: var(--heo-mono);
       font-size: 10.5px;
       text-overflow: ellipsis;

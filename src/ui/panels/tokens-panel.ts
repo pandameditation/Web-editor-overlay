@@ -13,7 +13,7 @@ import { icon } from '../icons.js';
 import { classSuggestions } from '../suggestions.js';
 import { killStyles, renderKill } from '../kill.js';
 import { baseStyles } from '../theme.js';
-import { ClassEditor, focusDeclaration } from './class-editor.js';
+import { ClassEditor } from './class-editor.js';
 import { RuleEditor, type RuleEditorHost } from './rule-editor.js';
 import { DesignTransfer, type DesignTransferHost } from './design-transfer.js';
 import '../controls/section.js';
@@ -986,7 +986,6 @@ export class HeoTokensPanel extends HeoElement {
       onRenamed: (from, to) => {
         if (this.expandedRule === from) this.expandedRule = to;
       },
-      onFocus: (property, scope) => focusDeclaration(this.renderRoot, property, scope),
       editingKey: this.editingRuleSelector,
       onEditSelector: (next) => {
         this.editingRuleSelector = next;
@@ -1022,7 +1021,6 @@ export class HeoTokensPanel extends HeoElement {
         onRemoved: (name) => {
           if (this.expandedClass === name) this.expandedClass = null;
         },
-        onFocus: (property, scope) => focusDeclaration(this.renderRoot, property, scope),
       },
     });
   }

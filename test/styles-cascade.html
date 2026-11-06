@@ -322,10 +322,8 @@
           rowShowsSourceHintUnlessInline:
             padRow?.querySelector('.from')?.textContent.trim() === sideLabel &&
             !rowIn('effective', 'font-size')?.querySelector('.from'),
-          // Clearing removes the inline override, so it is offered only where there is one.
-          clearOnlyWhenInlineExists:
-            fieldIn('effective', 'font-size')?.hasAttribute('clearable') === true &&
-            fieldIn('effective', 'padding')?.hasAttribute('clearable') === false,
+          // No clear button on a displayed row: its trash is the one way to remove or reset.
+          noRowHasAClearButton: effectiveRows.every((row) => !row.querySelector('heo-value-field')?.hasAttribute('clearable')),
         };
         fieldIn('effective', 'padding')?.focusInput();
         await frames();
@@ -334,11 +332,11 @@
         await settle();
         results.effective.focusHintSaysWhereItGoes =
           padHintShown &&
-          /Depends on the viewport: after Enter, choose where it stays/.test(whereOf(rowIn('effective', 'padding'))?.textContent) &&
-          /Overrides in the inline style · this element only · \.card\.featured stays as is/.test(
-            whereOf(rowIn('effective', 'background-color'))?.textContent.replace(/\s+/g, ' ')) &&
-          /Edits the inline style · this element only, at every size/.test(
-            whereOf(rowIn('effective', 'font-size'))?.textContent.replace(/\s+/g, ' '));
+          // Where the edit goes now, which is where the value is written: the switch in the value's
+          // list says the same, and changes it.
+          whereOf(rowIn('effective', 'padding'))?.textContent.trim() === `Edits ${sideLabel} · 4 elements` &&
+          /^Edits \.card\.featured · 1 element/.test(whereOf(rowIn('effective', 'background-color'))?.textContent.trim()) &&
+          whereOf(rowIn('effective', 'font-size'))?.textContent.trim() === 'Its style attribute · this element only, every size';
 
         /* ---- the dot ---- */
         const dotsLabel = (row) => row?.querySelector('.dots')?.getAttribute('aria-label') ?? '';
@@ -886,8 +884,7 @@
         sizeAdderButton?.click();
         await settle();
         const sizeAdder = sizeGroup(otherSlot)?.querySelector('.property-adder');
-        const chip = sizeAdder?.querySelector('.dest button.chip');
-        const chipText = chip?.textContent.replace(/\s+/g, ' ').trim();
+        const namesFirst = sizeAdder?.dataset.step === 'name' && Boolean(sizeAdder?.querySelector('heo-value-field.name-field'));
         sizeAdder?.querySelector('.cancel')?.click();
         await settle();
         await pickSize(nowSlot);
@@ -901,8 +898,7 @@
             sizeCaption.includes(`at ${below768 ? 768 : 320}px`),
           saysInEffectOrNot: otherNote === `not at ${innerWidth}px` && nowNote === `in effect at ${innerWidth}px`,
           hasItsOwnAddProperty:
-            Boolean(sizeAdderButton) && chip?.getAttribute('aria-haspopup') === 'menu' &&
-            chipText === `.card ${below768 ? '≥768px' : '≤767px'}`,
+            Boolean(sizeAdderButton) && namesFirst,
         };
 
         const failed = Object.entries(results)

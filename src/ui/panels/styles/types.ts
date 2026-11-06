@@ -59,6 +59,10 @@ export interface StylesUiState {
    * it is placed against.
    */
   cardPop: { key: string; anchor: string; cards?: string[] } | null;
+  /** The destination picked in one Effective row's value list, until that edit is written. */
+  rowDest: { rowId: string; key: string } | null;
+  /** A pseudo-element added to Effective styles, shown empty until its first property. */
+  effPseudo: string | null;
   /** The one open menu, by id. */
   menu: { id: string } | null;
   /** The one open adder: its id, the draft, and the destination picked in it. */
@@ -102,6 +106,8 @@ export interface PendingState {
 }
 
 export interface StylesHost extends AdderHost {
+  /** Flash a property's row in a list once it has rendered: where an add landed. */
+  flashRow(property: string, listId: string): void;
   engine: EditorEngine;
   /** The selected element. */
   element: HTMLElement;

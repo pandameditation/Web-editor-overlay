@@ -144,9 +144,27 @@ export class HeoValueField extends LitElement {
         cursor: default;
       }
 
+      /* The text and its !important tag scroll together: the tag reads as the end of the value,
+         rather than a fixed block taking the room a long value needed. */
+      .text {
+        display: flex;
+        flex: 1 1 auto;
+        align-items: center;
+        min-width: 0;
+        overflow-x: auto;
+        overflow-y: hidden;
+        scrollbar-width: none;
+      }
+      .text::-webkit-scrollbar {
+        display: none;
+      }
+      .text.sized input {
+        flex: 1 0 auto;
+      }
       input {
         flex: 1 1 auto;
         min-width: 0;
+        height: 100%;
         padding: 0 6px;
         border: 0;
         background: transparent;
@@ -486,6 +504,20 @@ export class HeoValueField extends LitElement {
         font-size: 10px;
       }
 
+      /* A host's control at the head of the list (the Effective styles destination switch). */
+      .list-head {
+        display: grid;
+        gap: 5px;
+        margin: 0 0 4px;
+        padding: 4px 4px 7px;
+        border-bottom: 1px solid var(--heo-line);
+      }
+      .list-head .explain {
+        margin: 0 2px;
+        color: var(--heo-text-dim);
+        font-size: 10.5px;
+        line-height: 1.4;
+      }
       .group {
         padding: 6px 8px 3px;
         color: var(--heo-text-faint);
@@ -658,6 +690,11 @@ export class HeoValueField extends LitElement {
    */
   @property({ type: Boolean, attribute: 'action-hidden' }) actionHidden = false;
   /**
+   * No chevron: the list opens as the field is typed in or focused, and the action beside it is
+   * the one control (the property adder's name, whose arrow goes on to the value).
+   */
+  @property({ type: Boolean, attribute: 'chevron-hidden' }) chevronHidden = false;
+  /**
    * The declaration this field shows is `!important`.
    *
    * The value itself is passed without the flag, so the tag is the one place it shows. It used to
@@ -678,6 +715,12 @@ export class HeoValueField extends LitElement {
   @property({ type: String, reflect: true, attribute: 'important-title' }) importantTitle = '';
   /** An edit waiting for "where to save": drawn engaged until it is saved or reverted. */
   @property({ type: Boolean, reflect: true }) pending = false;
+  /**
+   * A host's control drawn at the head of the list, above the values: where Effective styles says
+   * where the value goes. Pressing it keeps the caret in the field, and Alt+Left/Right ask the host
+   * to step it (`head-step`), so the choice is reachable without leaving the value being typed.
+   */
+  @property({ attribute: false }) head: TemplateResult | null = null;
 
   @state() private draft = '';
   @state() private open = false;
@@ -932,11 +975,12 @@ export class HeoValueField extends LitElement {
    * it comes with the field, so a control to open it again has nothing to do.
    */
   get #canToggle(): boolean {
-    return this.#canOpen && !this.inlineList;
+    return this.#canOpen && !this.inlineList && !this.chevronHidden;
   }
 
   /** True when there is a list worth showing, i.e. when opening it does something. */
   get #canOpen(): boolean {
+    if (this.head) return true;
     if (this.fixedUnit) return this.suggestions.length > 0;
     return (
       this.suggestions.length > 0 || this.isNumeric || this.#computedSuggestion().length > 0
@@ -1117,8 +1161,10 @@ export class HeoValueField extends LitElement {
               ${this.label}
             </button>`
         : nothing}
+        <div class=${this.important ? 'text sized' : 'text'}>
         <input
           type="text"
+          style=${this.important ? `min-width:calc(${this.draft.length + 1}ch + 12px)` : ''}
           .value=${this.draft}
           placeholder=${this.placeholder || 'auto'}
           spellcheck="false"
@@ -1130,14 +1176,18 @@ export class HeoValueField extends LitElement {
           @input=${this.#onInput}
           @focus=${this.#onFocus}
           @keydown=${this.#onKeyDown}
+          @keyup=${this.#followCaret}
+          @click=${this.#followCaret}
+          @select=${this.#followCaret}
         />
+          ${this.#renderImportant()}
+        </div>
         <div
           class=${`trailing${this.#canToggle ? ' actionable' : ''}`}
           title=${this.#canToggle ? 'Show tokens and values' : ''}
           @pointerdown=${this.#onTrailingDown}
           @click=${this.#onTrailingClick}
         >
-          ${this.#renderImportant()}
           ${showUnit
         ? html`<button
                 class="unit"
@@ -1484,6 +1534,7 @@ export class HeoValueField extends LitElement {
         style=${this.inlineList ? '' : this.popupStyle}
         role="listbox"
       >
+        ${this.#renderHead()}
         ${this.action && this.createLabel
           ? html`<div class="none create">
               ${typed ? html`<p>Nothing matches <strong>${typed}</strong>.</p>` : nothing}
@@ -1523,6 +1574,7 @@ export class HeoValueField extends LitElement {
       style=${this.inlineList ? '' : this.popupStyle}
       role="listbox"
     >
+      ${this.#renderHead()}
       ${repeat(
       groups,
       (group) => group.name,
@@ -1570,9 +1622,40 @@ export class HeoValueField extends LitElement {
     </div>`;
   }
 
+  /** The host's head control, pressed without taking the caret out of the field. */
+  #renderHead(): TemplateResult | typeof nothing {
+    if (!this.head) return nothing;
+    return html`<div class="list-head" @pointerdown=${(event: Event) => event.preventDefault()}>${this.head}</div>`;
+  }
+
   /* ---------------------------------------------------------------------- */
   /* Interaction                                                            */
   /* ---------------------------------------------------------------------- */
+
+  /**
+   * Keep the caret in view when the text scrolls with its tag.
+   *
+   * The input is as wide as its text there, so it never scrolls itself: the box around it does,
+   * and nothing moves that box when the caret walks past its edge. The face is monospaced, so the
+   * caret's offset is its index times one character's width.
+   */
+  #followCaret = (): void => {
+    if (!this.important) return;
+    const box = this.renderRoot.querySelector<HTMLElement>('.text');
+    const input = this.textInput;
+    if (!box || !input) return;
+    const at = input.selectionEnd ?? input.value.length;
+    const x = 6 + at * this.#charWidth(input);
+    if (x < box.scrollLeft + 4) box.scrollLeft = Math.max(0, x - 12);
+    else if (x > box.scrollLeft + box.clientWidth - 4) box.scrollLeft = x - box.clientWidth + 12;
+  };
+  #measure: CanvasRenderingContext2D | null = null;
+  #charWidth(input: HTMLInputElement): number {
+    this.#measure ??= document.createElement('canvas').getContext('2d');
+    if (!this.#measure) return 7;
+    this.#measure.font = getComputedStyle(input).font;
+    return this.#measure.measureText('0').width || 7;
+  }
 
   #onInput(event: Event): void {
     this.draft = (event.target as HTMLInputElement).value;
@@ -1594,7 +1677,7 @@ export class HeoValueField extends LitElement {
   }
 
   #onFocus(): void {
-    if (this.filtered.length) this.#openPopup();
+    if (this.filtered.length || this.head) this.#openPopup();
   }
 
   /**
@@ -1700,6 +1783,18 @@ export class HeoValueField extends LitElement {
 
   #onKeyDown(event: KeyboardEvent): void {
     const items = this.filtered;
+
+    // The head's control, stepped from the field: the caret stays where it is.
+    if (this.head && event.altKey && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
+      event.preventDefault();
+      if (!this.open) this.#openPopup();
+      this.dispatchEvent(new CustomEvent('head-step', {
+        detail: { delta: event.key === 'ArrowLeft' ? -1 : 1 },
+        bubbles: true,
+        composed: true,
+      }));
+      return;
+    }
 
     if (event.key === 'Escape') {
       event.preventDefault();
@@ -1860,7 +1955,8 @@ export class HeoValueField extends LitElement {
     const style = this.#placer.style(this.renderRoot.querySelector<HTMLElement>('.popup'), {
       anchor: this.getBoundingClientRect(),
       // A composer is wider than a list: three labelled rows each holding a field of their own.
-      minWidth: this.composer ? 296 : 200,
+      // A head (the destination switch) needs room for its choices on one or two lines.
+      minWidth: this.composer ? 296 : this.head ? 280 : 200,
     });
     if (style !== null) this.popupStyle = style;
   }
@@ -2039,6 +2135,19 @@ export class HeoValueField extends LitElement {
     this.#lastCommitted = next.trim();
     this.draft = next;
     this.open = false;
+    this.highlight = -1;
+    this.#highlightMoved = false;
+  }
+
+  /**
+   * Put text in the box as an edit not yet committed, over a value that stays as it is.
+   *
+   * For a value being added (the property adder's value step): the seed is a suggestion, so Enter
+   * takes it as typed, which needs it to differ from the committed value. Through `reset` it would
+   * equal it, and Enter on an untouched seed would commit nothing.
+   */
+  seedDraft(text: string): void {
+    this.draft = text;
     this.highlight = -1;
     this.#highlightMoved = false;
   }

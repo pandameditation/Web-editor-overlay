@@ -616,7 +616,6 @@
         });
         await measureInteractive([
           { name: 'styles.classChip.kill', component: C, file: `${F}:1470`, cat: 'kill', kind: 'icon', min: 3, label: true, host: () => deep((el) => el.localName === 'button' && el.classList.contains('kill') && inside('heo-styles-panel')(el)) },
-          { name: 'valueField.clear', component: 'value-field', file: 'src/ui/controls/value-field.ts:1002', cat: 'kill', kind: 'icon', min: 3, label: true, host: () => deep((el) => el.localName === 'button' && el.classList.contains('mini') && el.getAttribute('title') === 'Clear' && inside('heo-value-field')(el) && inside('heo-styles-panel')(el)) },
         ]);
         // Disabled states the panel reaches only mid-edit: the component's own :disabled rule,
         // measured on the real control by setting disabled on it.
@@ -627,12 +626,12 @@
           await measure(specs, 'disabled');
           hosts.forEach((h, i) => { if (h) h.disabled = was[i]; });
         };
-        // The adder waits behind "+ Add property" in Styles (R23); open one to reach its confirm.
+        // The adder waits behind "+ Add property" in Styles (R23); open one to reach its way on.
         await ui(() => {
           deep((el) => el.localName === 'button' && el.classList.contains('add-prop') && inside('heo-styles-panel')(el))?.click();
         });
         await disabledOn([
-          { name: 'styles.adder.confirm', component: C, file: `${F}:627`, cat: 'control-disabled', kind: 'icon', min: 3, host: () => deep((el) => el.localName === 'button' && el.classList.contains('confirm') && inside('heo-styles-panel')(el)) },
+          { name: 'styles.adder.confirm', component: C, file: `${F}:627`, cat: 'control-disabled', kind: 'icon', min: 3, host: () => deep((el) => el.localName === 'button' && el.classList.contains('action') && inside('heo-value-field')(el) && inside('heo-styles-panel')(el)) },
           { name: 'searchField.go', component: 'search-field', file: 'src/ui/controls/search-field.ts:167', cat: 'control-disabled', kind: 'icon', min: 3, host: () => deep((el) => el.localName === 'button' && el.classList.contains('go') && inside('heo-search-field')(el) && inside('heo-styles-panel')(el)) },
         ]);
         /*
@@ -708,11 +707,12 @@
         ], 'hover');
         engine.undo();
         /*
-         * The save box's verdicts. A colour typed while previewing 320px asks where it should stay:
+         * The save box's verdicts. A colour typed in Typography while previewing 320px asks where it
+         * should stay (Effective styles chooses in its value list instead):
          * the automatic class applies (it takes !important to beat the inline colour), and adding
          * it to .card at that size won't show, because the inline colour wins. Both verdicts appear.
          */
-        const colourField = () => deep((el) => el.localName === 'heo-value-field' && el.dataset.property === 'color' && Boolean(el.closest('[data-declarations="effective"]')) && inside('heo-styles-panel')(el));
+        const colourField = () => deep((el) => el.localName === 'heo-value-field' && el.dataset.property === 'color' && Boolean(el.closest('[data-declarations="typography"]')) && inside('heo-styles-panel')(el));
         await ui(() => engine.setPreviewWidth(320));
         await ui(() => {
           colourField()?.dispatchEvent(new CustomEvent('value-change', { detail: { value: 'rgb(0, 90, 0)' }, bubbles: true, composed: true }));
@@ -832,7 +832,8 @@
         await measureInteractive([
           { name: 'classEditor.remove', component: 'class-editor', file: 'src/ui/panels/class-editor.ts:573', cat: 'danger', kind: 'text', min: 4.5, host: () => deep((el) => el.localName === 'button' && el.matches('.btn.danger') && inside('heo-style-dialog')(el)) },
         ]);
-        const confirm = () => deep((el) => el.localName === 'button' && el.classList.contains('confirm') && inside('heo-style-dialog')(el));
+        // The adder's way on, the name field's arrow: what used to be its confirm button.
+        const confirm = () => deep((el) => el.localName === 'button' && el.classList.contains('action') && inside('heo-value-field')(el) && inside('heo-style-dialog')(el));
         const was = confirm()?.disabled;
         if (confirm()) confirm().disabled = true;
         await measure([

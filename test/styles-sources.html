@@ -159,7 +159,7 @@
           results.tokens.classCardStillEditsAndApplies =
             edited &&
             applied &&
-            Boolean(card?.querySelector('.property-adder[data-heo-part="adder"] input[aria-label="New property"]')) &&
+            Boolean(card?.querySelector('.property-adder[data-heo-part="adder"] heo-value-field[field-label="New property"]')) &&
             engine.history.size === historyBefore + 2;
           while (engine.history.size > historyBefore) engine.undo();
           await settle();
@@ -439,8 +439,8 @@
             Array.from(scope?.querySelectorAll('.decl:not(.property-adder)') ?? []);
           const rowIn = (scope, property) =>
             rowsOf(scope).find((row) => row.querySelector('.p')?.textContent.trim() === property);
-          const key = (el, name) => el?.dispatchEvent(
-            new KeyboardEvent('keydown', { key: name, bubbles: true, composed: true, cancelable: true }));
+          const key = (el, name, extra = {}) => el?.dispatchEvent(
+            new KeyboardEvent('keydown', { key: name, bubbles: true, composed: true, cancelable: true, ...extra }));
           const typeInto = async (input, text) => {
             input.value = text;
             input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
@@ -861,10 +861,14 @@
           addButton(block('.card', 'base'))?.click();
           await settle(200);
           const cardAdder = () => block('.card', 'base')?.querySelector('.property-adder');
+          // An adder's field, at either step: the name, then the value.
+          const fieldOf = (adder) => adder?.querySelector('heo-value-field');
+          const inputOf = (adder) => fieldOf(adder)?.shadowRoot?.querySelector('input[type="text"]');
+          const stepOf = (adder) => adder?.dataset.step ?? null;
           // How an open adder looks, measured: Effective's used to show a stray "add" line above
           // its field, because only a card's row grid styled that label.
           const adderLook = (adder) => {
-            const input = adder?.querySelector('input');
+            const input = inputOf(adder);
             if (!adder || !input) return null;
             const box = adder.getBoundingClientRect();
             const field = input.getBoundingClientRect();
@@ -879,18 +883,17 @@
             };
           };
           const cardLook = adderLook(cardAdder());
-          results.adder.singleDestinationIsText =
-            textOf(cardAdder()?.querySelector('.dest .chip.fixed')) === '.card' &&
-            textOf(cardAdder()?.querySelector('.dest .reach')) === '· 4 elements' &&
-            !cardAdder()?.querySelector('.dest button.chip');
+          // The card is where it goes: its adder asks only for the property, then its value.
+          results.adder.aCardAdderAsksNoDestination =
+            stepOf(cardAdder()) === 'name' && !cardAdder()?.querySelector('.dest, .chip, heo-segmented');
           // Validated with today's messages, and nothing is written while it is refused.
           before = engine.history.size;
-          await typeInto(cardAdder().querySelector('input'), 'padding');
-          key(cardAdder().querySelector('input'), 'Enter');
+          await typeInto(inputOf(cardAdder()), 'padding');
+          key(inputOf(cardAdder()), 'Enter');
           await settle(150);
           const duplicate = textOf(cardAdder()?.querySelector('.field-error'));
-          await typeInto(cardAdder().querySelector('input'), '');
-          key(cardAdder().querySelector('input'), 'Enter');
+          await typeInto(inputOf(cardAdder()), '');
+          key(inputOf(cardAdder()), 'Enter');
           await settle(150);
           const emptyMessage = textOf(cardAdder()?.querySelector('.field-error'));
           results.adder.validatesWithTodaysMessages =
@@ -898,15 +901,38 @@
             emptyMessage === 'Type the property to add.' && engine.history.size === before;
           // Seeded with what the element resolves to (section p's 0.01em, here), focused and selected.
           const resolved = getComputedStyle(target).letterSpacing;
-          await typeInto(cardAdder().querySelector('input'), 'letter-spacing');
-          key(cardAdder().querySelector('input'), 'Enter');
+          await typeInto(inputOf(cardAdder()), 'letter-spacing');
+          key(inputOf(cardAdder()), 'Enter');
+          await settle(300);
+          // The name opens its value, seeded and nothing written yet; Enter writes it, once.
+          const valueStep = stepOf(cardAdder()) === 'value' && fieldOf(cardAdder())?.dataset.property === 'letter-spacing';
+          const seeded = inputOf(cardAdder())?.value;
+          const nothingYet = engine.history.size === before;
+          const noSwitch = !fieldOf(cardAdder())?.head;
+          key(inputOf(cardAdder()), 'Enter');
           await settle(300);
           const added = rowIn(block('.card', 'base'), 'letter-spacing')?.querySelector('heo-value-field');
+          results.adder.nameThenValueThenOneWrite = valueStep && nothingYet && noSwitch;
           results.adder.seedsTheResolvedValue =
+            seeded === resolved &&
             engine.history.size === before + 1 &&
             resolved !== 'normal' &&
             siteRule('.card')?.style.getPropertyValue('letter-spacing') === resolved && added?.value === resolved;
-          results.adder.focusesTheNewValue = Boolean(added) && sroot().activeElement === added;
+          // Then back to "+ Add property", for the next one.
+          await settle(100);
+          results.adder.focusReturnsToAddProperty = Boolean(added) && sroot().activeElement === addButton(block('.card', 'base'));
+          engine.undo();
+          await settle(200);
+          // A whole declaration typed as the name is written at once, as typed.
+          addButton(block('.card', 'base'))?.click();
+          await settle(200);
+          before = engine.history.size;
+          await typeInto(inputOf(cardAdder()), 'word-spacing: 3px');
+          key(inputOf(cardAdder()), 'Enter');
+          await settle(300);
+          results.adder.aWholeDeclarationIsWrittenAtOnce =
+            engine.history.size === before + 1 && siteRule('.card')?.style.getPropertyValue('word-spacing') === '3px' &&
+            !cardAdder();
           engine.undo();
           await settle(200);
           // Typing "!important" after the same value, then the promote toggle off: the field once
@@ -944,18 +970,20 @@
           await pop('.card');
           addButton(block('.card', 'base'))?.click();
           await settle(200);
-          await typeInto(cardAdder().querySelector('input'), 'margin');
+          await typeInto(inputOf(cardAdder()), 'margin');
           before = engine.history.size;
-          key(cardAdder().querySelector('input'), 'Escape');
+          // The first Escape closes the name list, the next the adder.
+          key(inputOf(cardAdder()), 'Escape');
+          await settle(120);
+          key(inputOf(cardAdder()), 'Escape');
           await settle(200);
           results.adder.escapeCancels =
             !cardAdder() && Boolean(addButton(block('.card', 'base'))) && engine.history.size === before &&
             engine.selected === target;
-          // Several destinations: a chip that opens "Write it in", every rule with its reach.
+          // Several destinations: a switch at the head of the value's list, each with what it does.
           sroot().querySelector('.block-add [data-adder="effective"]')?.click();
           await settle(200);
           const effAdder = () => sroot().querySelector('.property-adder[data-adder="effective"]');
-          const chip = () => effAdder()?.querySelector('.dest button.chip');
           const effLook = adderLook(effAdder());
           results.adder.looksTheSameInEffectiveAndCards =
             Boolean(cardLook) && Boolean(effLook) &&
@@ -966,28 +994,40 @@
             cardLook.background === effLook.background &&
             effLook.inputTop <= 10 && Math.abs(cardLook.inputTop - effLook.inputTop) <= 2 &&
             Math.abs(cardLook.inputLeft - effLook.inputLeft) <= 2;
-          const closedChip = chip()?.getAttribute('aria-haspopup') === 'menu' && chip()?.getAttribute('aria-expanded') === 'false';
-          chip()?.click();
+          // The name asks nothing about where.
+          const nameAsksNothing = !effAdder()?.querySelector('.dest, .chip, heo-segmented') && !fieldOf(effAdder())?.head;
+          await typeInto(inputOf(effAdder()), 'letter-spacing');
+          key(inputOf(effAdder()), 'Enter');
+          await settle(300);
+          fieldOf(effAdder())?.openList();
           await settle(200);
-          const menu = () => sroot().querySelector('.menu[data-menu="dest-effective"]');
-          const items = () => Array.from(menu()?.querySelectorAll('.mi') ?? []);
-          results.adder.severalDestinationsMakeAMenu =
-            closedChip && chip()?.getAttribute('aria-expanded') === 'true' &&
-            menu()?.getAttribute('role') === 'menu' &&
-            textOf(menu()?.querySelector('.cap')) === 'Write it in' &&
-            items().length > 1 && items().every((one) => one.getAttribute('role') === 'menuitemradio') &&
-            items()[0].getAttribute('aria-checked') === 'true';
-          results.adder.menuListsEveryRuleWithReach =
-            items().map((one) => `${textOf(one.querySelector('.lbl'))}|${textOf(one.querySelector('small'))}`).join(';') ===
-            'inline style|this element only, every size;.card|4 elements, every size;.featured|1 element, every size;a new class|this element only';
-          // Escape inside the menu closes the menu only; the next one closes the adder (keys).
-          key(items()[0], 'Escape');
+          const destSwitch = () => fieldOf(effAdder())?.shadowRoot?.querySelector('.list-head heo-segmented');
+          const explain = () => textOf(fieldOf(effAdder())?.shadowRoot?.querySelector('.list-head .explain'));
+          const switchButton = (label) => Array.from(destSwitch()?.shadowRoot?.querySelectorAll('button') ?? [])
+            .find((one) => textOf(one) === label);
+          results.adder.severalDestinationsAreASwitchInTheValueList =
+            nameAsksNothing && stepOf(effAdder()) === 'value' &&
+            (destSwitch()?.options ?? []).map((one) => one.label).join(',') === 'Inline,.card,.featured,New class' &&
+            // Nothing writes it yet, so inline is where it goes until another is picked.
+            destSwitch()?.value === 'target:inline style';
+          results.adder.theLineSaysWhatEachDoes =
+            explain() === 'Its style attribute · this element only, every size' &&
+            (destSwitch()?.options ?? []).map((one) => one.title).join(';') ===
+              'Its style attribute · this element only, every size;Edits .card · 4 elements, every size;' +
+              'Edits .featured · 1 element, every size;Makes a class for this element only';
+          // Alt+Right steps it from the field, the caret staying there.
+          key(inputOf(effAdder()), 'ArrowRight', { altKey: true });
           await settle(200);
-          const menuShutFirst = !menu() && Boolean(effAdder());
-          key(effAdder()?.querySelector('input'), 'Escape');
+          results.adder.altArrowStepsTheSwitch =
+            destSwitch()?.value === 'target:.card' && explain() === 'Edits .card · 4 elements, every size';
+          // Escape closes the list first, then the adder.
+          key(inputOf(effAdder()), 'Escape');
+          await settle(200);
+          const listShutFirst = !fieldOf(effAdder())?.listIsOpen && Boolean(effAdder());
+          key(inputOf(effAdder()), 'Escape');
           await settle(200);
           results.keys = {
-            escapeClosesInnermostFirst: menuShutFirst && !effAdder(),
+            escapeClosesInnermostFirst: listShutFirst && !effAdder(),
           };
           // A size group's adder: the same shared adder, so the same box. Pinned here too, since
           // only the element block's adder was compared before and a size group could drift alone.
@@ -1005,7 +1045,7 @@
             cardLook.background === sizeLook.background &&
             Math.abs(cardLook.inputTop - sizeLook.inputTop) <= 2 &&
             Math.abs(cardLook.inputLeft - sizeLook.inputLeft) <= 2;
-          key(sizeAdder()?.querySelector('input'), 'Escape');
+          key(inputOf(sizeAdder()), 'Escape');
           await settle(200);
           // Picking the size shown again goes back to All sizes, as the rest of this page expects.
           effSlot()?.click();
@@ -1015,14 +1055,16 @@
           // "a new class" makes an automatic class for this element.
           sroot().querySelector('.block-add [data-adder="effective"]')?.click();
           await settle(200);
-          chip()?.click();
+          await typeInto(inputOf(effAdder()), 'letter-spacing');
+          key(inputOf(effAdder()), 'Enter');
+          await settle(300);
+          fieldOf(effAdder())?.openList();
           await settle(200);
-          items().find((one) => textOf(one.querySelector('.lbl')) === 'a new class')?.click();
+          switchButton('New class')?.click();
           await settle(200);
-          await typeInto(effAdder().querySelector('input'), 'letter-spacing');
           const classesBefore = Array.from(target.classList);
           before = engine.history.size;
-          key(effAdder().querySelector('input'), 'Enter');
+          key(inputOf(effAdder()), 'Enter');
           await settle(300);
           const fresh = Array.from(target.classList).filter((name) => !classesBefore.includes(name));
           results.adder.newClassDestinationMakesAnAutomaticClass =
@@ -1046,14 +1088,15 @@
           addButton(block('.featured', 'base'))?.click();
           await settle(200);
           const featuredAdder = () => block('.featured', 'base')?.querySelector('.property-adder');
-          const featuredChip = textOf(featuredAdder()?.querySelector('.dest .chip.fixed'));
-          await typeInto(featuredAdder().querySelector('input'), 'outline-offset');
+          await typeInto(inputOf(featuredAdder()), 'outline-offset');
           before = engine.history.size;
-          key(featuredAdder().querySelector('input'), 'Enter');
+          key(inputOf(featuredAdder()), 'Enter');
+          await settle(300);
+          key(inputOf(featuredAdder()), 'Enter');
           await settle(300);
           const made = engine.rules.list().find((rule) => rule.selector === '.featured' && rule.media);
           results.adder.createsTheMediaRuleWhenMissing =
-            featuredChip === '.featured ≤767px' && engine.history.size === before + 1 &&
+            engine.history.size === before + 1 &&
             Boolean(made) && /max-width:\s*767px/.test(made.media) && 'outline-offset' in made.declarations &&
             Boolean(rowIn(block('.featured', 'base'), 'outline-offset'));
           engine.undo();
@@ -1233,10 +1276,10 @@
             const emptyChip = Boolean(chip) && !chip.querySelector('.c') && !/\+/.test(textOf(chip));
             addButton(block('.intro-detail', 'base'))?.click();
             await settle(200);
-            const input = () => block('.intro-detail', 'base')?.querySelector('.property-adder input');
+            const input = () => inputOf(block('.intro-detail', 'base')?.querySelector('.property-adder'));
             const history = engine.history.size;
             if (input()) {
-              await typeInto(input(), 'color');
+              await typeInto(input(), 'color: green');
               key(input(), 'Enter');
               await settle(300);
             }
@@ -1280,12 +1323,20 @@
               .find((one) => one.querySelector('.label, span')?.textContent.trim() === state || textOf(one).split(' ')[0] === state)?.click();
             await settle(250);
           };
+          /** Name, Enter, then Enter on its seeded value: the adder's two steps. */
           const addProperty = async (scope, property) => {
-            const input = openAdderOf(scope())?.querySelector('input');
+            // Opened on a value already (a new ::before offers `content`): back to the name.
+            if (stepOf(openAdderOf(scope())) === 'value') {
+              openAdderOf(scope())?.querySelector('.rename')?.click();
+              await settle(200);
+            }
+            const input = inputOf(openAdderOf(scope()));
             // No adder open is a failed assertion below, not a crash that hides every other result.
             if (!input) return;
             await typeInto(input, property);
-            key(openAdderOf(scope())?.querySelector('input'), 'Enter');
+            key(inputOf(openAdderOf(scope())), 'Enter');
+            await settle(300);
+            key(inputOf(openAdderOf(scope())), 'Enter');
             await settle(300);
           };
           const beforeOf = (el, property) => getComputedStyle(el, '::before').getPropertyValue(property);
@@ -1363,7 +1414,7 @@
               !/\.card:active/.test(exportedCss);
             results.addState.stateOpensItsAddProperty =
               Boolean(openAdderOf(pendingBlock())) &&
-              sroot().activeElement === openAdderOf(pendingBlock())?.querySelector('input');
+              sroot().activeElement === fieldOf(openAdderOf(pendingBlock()));
             await addProperty(pendingBlock, 'opacity');
             results.addState.pendingStateWritesNothingUntilAPropertyIsAdded =
               shown && nothingYet && engine.history.size === history + 1 &&
@@ -1412,7 +1463,7 @@
             const emptied = siteRule('.card:hover')?.style.length === 0 && !block('.card', ':hover');
             await addState('.card', ':hover');
             const waiting = block('.card', ':hover')?.classList.contains('pending') &&
-              sroot().activeElement === openAdderOf(block('.card', ':hover'))?.querySelector('input');
+              sroot().activeElement === fieldOf(openAdderOf(block('.card', ':hover')));
             await addProperty(() => block('.card', ':hover'), 'opacity');
             results.addState.reusesAnExistingEmptyRule =
               emptied && waiting && engine.history.size === history + 1 &&
@@ -1447,8 +1498,11 @@
             await pop('.card');
             const history = engine.history.size;
             await addState('.card', '::before');
-            const draft = openAdderOf(block('.card', '::before'))?.querySelector('input');
-            const prefilled = draft?.value === 'content' && draft.selectionStart === 0 && draft.selectionEnd === 7;
+            // Straight to the value of `content`, offered as "" and selected: Enter takes it.
+            const draft = inputOf(openAdderOf(block('.card', '::before')));
+            const prefilled = stepOf(openAdderOf(block('.card', '::before'))) === 'value' &&
+              fieldOf(openAdderOf(block('.card', '::before')))?.dataset.property === 'content' &&
+              draft?.value === '""' && draft.selectionStart === 0 && draft.selectionEnd === 2;
             const nothingYet = engine.history.size === history;
             await addProperty(() => block('.card', '::before'), 'color');
             const colour = rowIn(block('.card', '::before'), 'color')?.querySelector('heo-value-field');
@@ -1468,8 +1522,9 @@
             await settle(250);
             // Enter takes the offered `content`, which is what makes a new ::before render.
             const second = document.querySelectorAll('.card')[1];
+
             await addState('.card', '::before');
-            key(openAdderOf(block('.card', '::before'))?.querySelector('input'), 'Enter');
+            key(inputOf(openAdderOf(block('.card', '::before'))), 'Enter');
             await settle(300);
             results.addState.pseudoStartsWithEmptyContent =
               engine.history.size === history + 1 &&
@@ -1503,6 +1558,110 @@
               getComputedStyle(item, '::marker').content === 'normal';
             engine.undo();
             api.select(target);
+            await settle(300);
+          }
+
+          /* ---------------------------------------------------------------- *
+           * Effective styles: where a value goes, the bar, pseudo-elements, rows.
+           * ---------------------------------------------------------------- */
+          progress.textContent = 'effective';
+          results.effective = {};
+          {
+            api.select(target);
+            await settle(300);
+            const effList = () => sroot().querySelector('[data-declarations="effective"]');
+            const effRow = (property) => effList()?.querySelector(`.row[data-property="${property}"]`);
+            const effField = (property) => effRow(property)?.querySelector('heo-value-field');
+            const switchOf = (fieldEl) => fieldEl?.shadowRoot?.querySelector('.list-head heo-segmented');
+            const pressSwitch = (fieldEl, label) => Array.from(switchOf(fieldEl)?.shadowRoot?.querySelectorAll('button') ?? [])
+              .find((one) => textOf(one) === label)?.click();
+            /*
+             * A row's edit goes where its value is written now: font-weight is .card's, so the switch
+             * starts there, and writing changes .card rather than adding an inline override.
+             */
+            effField('font-weight')?.focusInput();
+            effField('font-weight')?.openList();
+            await settle(200);
+            const startsOnTheSource = switchOf(effField('font-weight'))?.value === 'target:.card';
+            let before = engine.history.size;
+            const weightInput = effField('font-weight')?.shadowRoot?.querySelector('input[type="text"]');
+            await typeInto(weightInput, '700');
+            key(weightInput, 'Enter');
+            await settle(250);
+            results.effective.aRowEditsWhereTheValueIsWritten =
+              startsOnTheSource && siteRule('.card')?.style.getPropertyValue('font-weight') === '700' &&
+              !target.style.fontWeight && engine.history.size === before + 1;
+            engine.undo();
+            await settle(250);
+            /*
+             * Picking another destination for the element's own value moves it there: font-size is
+             * inline, and written into .card it leaves the style attribute, as one undo entry.
+             */
+            effField('font-size')?.focusInput();
+            effField('font-size')?.openList();
+            await settle(200);
+            const inlineFirst = switchOf(effField('font-size'))?.value === 'target:inline style';
+            pressSwitch(effField('font-size'), '.card');
+            await settle(200);
+            before = engine.history.size;
+            const sizeInput = effField('font-size')?.shadowRoot?.querySelector('input[type="text"]');
+            await typeInto(sizeInput, '17px');
+            key(sizeInput, 'Enter');
+            await settle(250);
+            const moved = siteRule('.card')?.style.getPropertyValue('font-size') === '17px' && !target.style.fontSize;
+            const oneEntry = engine.history.size === before + 1;
+            engine.undo();
+            await settle(250);
+            results.effective.choosingAClassMovesTheInlineValueThere =
+              inlineFirst && moved && oneEntry &&
+              target.style.fontSize === '16px' && siteRule('.card')?.style.getPropertyValue('font-size') === '15px';
+            // The !important tag is part of the scrolling text, not a block fixed at its end.
+            const important = effField('color');
+            results.effective.importantScrollsWithTheText =
+              important?.important === true &&
+              Boolean(important?.shadowRoot?.querySelector('.text .imp')) &&
+              !important?.shadowRoot?.querySelector('.trailing .imp');
+            // No clear cross on a row; the trash resets to the value before this session.
+            effField('font-size')?.dispatchEvent(new CustomEvent('value-change', { detail: { value: '18px' }, bubbles: true, composed: true }));
+            await settle(250);
+            const trash = effRow('font-size')?.querySelector('.reset');
+            results.effective.theTrashIsTheOnlyRemove =
+              !sroot().querySelector('.row heo-value-field[clearable]') &&
+              Boolean(trash?.querySelector('svg path[d^="M2.8 4.5"]')) &&
+              trash?.getAttribute('aria-label') === 'Reset font-size';
+            trash?.click();
+            await settle(250);
+            results.effective.theTrashIsTheOnlyRemove =
+              results.effective.theTrashIsTheOnlyRemove && target.style.fontSize === '16px';
+            /* The bar: a picked size shows that size's rows alone, as in a card. */
+            sroot().querySelector('[data-strip="effective"] [data-slot="tablet"]')?.click();
+            await settle(250);
+            results.effective.aPickedConditionShowsOnlyItsRows =
+              !effList() && Boolean(sroot().querySelector('[data-egroup="size:tablet"] .row[data-property="padding"]')) &&
+              !sroot().querySelector('[data-egroup="::before"]');
+            sroot().querySelector('[data-strip="effective"] .base')?.click();
+            await settle(250);
+            results.effective.alwaysShowsAlwaysAgain = Boolean(effList()) && Boolean(sroot().querySelector('[data-egroup="::before"]'));
+            /* "+ Add pseudo-element", in Effective styles too: nothing written until a property is. */
+            const effPseudo = () => sroot().querySelector('heo-section[heading="Effective styles"] [data-menu-anchor="pseudo-effective"]');
+            const hadButton = Boolean(effPseudo());
+            effPseudo()?.click();
+            await settle(250);
+            before = engine.history.size;
+            await typeInto(pseudoInput(), '::after');
+            key(pseudoInput(), 'Enter');
+            await settle(300);
+            const group = () => sroot().querySelector('[data-egroup="::after"]');
+            const pendingShown = Boolean(group()) && engine.history.size === before;
+            const afterAdder = () => group()?.querySelector('.property-adder');
+            // ::after renders nothing without content, so its value step opens on `content: ""`.
+            const offersContent = fieldOf(afterAdder())?.dataset.property === 'content';
+            key(inputOf(afterAdder()), 'Enter');
+            await settle(300);
+            results.effective.addsAPseudoElementLikeACard =
+              hadButton && pendingShown && offersContent && engine.history.size === before + 1 &&
+              getComputedStyle(target, '::after').content === '""';
+            engine.undo();
             await settle(300);
           }
 

@@ -510,6 +510,10 @@
         results.ask = { neverForStateRows: !anyBox() };
         engine.undo();
         await settle();
+        // A picked condition shows only its own rows: back to Always for the rest.
+        root().querySelector('[data-strip="effective"] .base')?.click();
+        await settle();
+        results.edit.aPickedStateShowsOnlyItsRows = Boolean(rowIn('effective', 'background-color'));
 
         rowIn('effective', 'background-color')?.querySelector('.dots')?.click();
         await settle();
@@ -689,26 +693,27 @@
         await settle();
         engine.setPreviewWidth(320);
         await settle();
-        // `.card`'s font-size is the same at every size, so only the preview makes this ask.
+        // Effective styles never asks after Enter: where the value goes is its list's switch, which
+        // starts on where it is written now. A category section still asks while previewing.
         fieldIn('effective', 'font-size')?.focusInput();
         await send(fieldIn('effective', 'font-size'), 'value-change', '19px');
-        results.ask.whenPreviewingASize = Boolean(boxUnder('effective', 'font-size'));
+        results.ask.neverInEffectiveStyles = !anyBox();
+        engine.undo();
+        await settle();
+        fieldIn('typography', 'font-size')?.focusInput();
+        await send(fieldIn('typography', 'font-size'), 'value-change', '19px');
+        results.ask.whenPreviewingASize = Boolean(boxUnder('typography', 'font-size'));
         await key(anyBox(), 'Escape');
-        engine.setPreviewWidth(null);
+        engine.setPreviewWidth(768);
         await settle();
-        root().querySelector('[data-strip="effective"] [data-slot="tablet"]')?.click();
-        await settle();
-        fieldIn('size-tablet', 'padding')?.focusInput();
-        await send(fieldIn('size-tablet', 'padding'), 'value-change', '21px 29px');
-        const sizeBox = boxUnder('size-tablet', 'padding');
-        results.ask.whenInASizeGroup =
+        fieldIn('typography', 'font-size')?.focusInput();
+        await send(fieldIn('typography', 'font-size'), 'value-change', '21px');
+        const sizeBox = boxUnder('typography', 'font-size');
+        results.ask.atThePreviewedSize =
           Boolean(sizeBox) && /≥768px/.test(sizeBox?.querySelector('[role="radio"][aria-checked="true"]')?.textContent ?? '');
         // Saved at ≥768px from a 756px window: the page will not show it here, and the box says so.
-        results.box.saysWhenNotVisibleAtThisWidth =
-          (sizeBox?.querySelector('.notnow')?.textContent.replace(/\s+/g, ' ').trim() ?? '') ===
-          (innerWidth < 768 ? `Not visible at ${innerWidth}px. Preview 768 to see it.` : '');
         await key(anyBox(), 'Escape');
-        root().querySelector('[data-strip="effective"] [data-slot="tablet"]')?.click();
+        engine.setPreviewWidth(null);
         await settle();
 
         const failed = Object.entries(results)

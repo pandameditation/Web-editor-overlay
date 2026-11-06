@@ -3665,6 +3665,40 @@ export class EditorEngine {
     return { hint: seed.hint };
   }
 
+  /**
+   * Write one declaration where Effective styles' switch says, as one undo entry.
+   *
+   * `move` names the element whose inline declaration of the property goes in the same entry: the
+   * value was the element's own, and choosing a rule or a class for it is moving it there. Left
+   * inline, it would go on beating the rule it was moved to, and the edit would look like nothing.
+   */
+  writeDeclarationTo(
+    dest: AddDestination,
+    property: string,
+    value: string,
+    options: { move?: HTMLElement } = {},
+  ): { hint: string | null } {
+    let hint: string | null = null;
+    const write = (): void => {
+      if (dest.kind === 'target' && dest.target.kind === 'inline') {
+        this.overrideStyle(property, value, dest.target.element);
+        return;
+      }
+      if (dest.kind === 'target') this.setDeclaration(dest.target, property, value);
+      else hint = this.addDeclaration(dest, property, value).hint;
+    };
+    const from = options.move;
+    if (from && this.#committedInlineText(from, property)) {
+      this.#asOneEntry(`Move ${property}`, () => {
+        this.setStyle(property, '', from);
+        write();
+      });
+    } else {
+      write();
+    }
+    return { hint };
+  }
+
   /** An automatic class's suffix: its size, else `media`, else its state, else `own`. */
   #suffixFor(media: string | null, state: string): string {
     if (media) {
