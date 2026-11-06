@@ -17,6 +17,11 @@ import { countText } from '../../../core/save-plan.js';
 
 export interface HeaderSpec {
   element: HTMLElement;
+  /**
+   * How many elements a class or rule styles (the cards' N× pill), which orders the chips: what is
+   * only this element's first, what the whole page shares last. Ties keep their order.
+   */
+  reach(key: string): number;
   finderOpen: boolean;
   /** Open or close the class finder; `refocus` false leaves focus where the user took it. */
   onToggleFinder(open: boolean, refocus?: boolean): void;
@@ -47,7 +52,15 @@ export interface HeaderSpec {
 
 export function renderElementHeader(spec: HeaderSpec): TemplateResult {
   const el = spec.element;
-  const classes = Array.from(el.classList).filter((name) => !name.startsWith('heo-'));
+  const byReach = <T,>(items: readonly T[], key: (item: T) => string): T[] =>
+    items.map((item, at) => ({ item, at, n: spec.reach(key(item)) }))
+      .sort((a, b) => a.n - b.n || a.at - b.at)
+      .map((one) => one.item);
+  const classes = byReach(
+    Array.from(el.classList).filter((name) => !name.startsWith('heo-')),
+    (name) => `.${CSS.escape(name)}`,
+  );
+  const rules = byReach(spec.rules, (key) => key);
   return html`<div
     class="ident"
     @focusout=${(event: FocusEvent) => {
@@ -127,18 +140,18 @@ export function renderElementHeader(spec: HeaderSpec): TemplateResult {
           </button>
         </span>`,
   )}
-      ${spec.rules.length && !spec.rulesOpen
+      ${rules.length && !spec.rulesOpen
       ? html`<button
             class="cchip rules"
             type="button"
             title="Show the other CSS rules styling this element"
             @click=${() => spec.onShowRules()}
           >
-            ${countText(spec.rules.length, 'rule')} ${icon('chevronRight', 10)}
+            ${countText(rules.length, 'rule')} ${icon('chevronRight', 10)}
           </button>`
       : nothing}
       ${spec.rulesOpen
-      ? spec.rules.map((key) => html`<span class="cchip rule" data-rule=${key}>
+      ? rules.map((key) => html`<span class="cchip rule" data-rule=${key}>
                 <button
                   class="name"
                   type="button"

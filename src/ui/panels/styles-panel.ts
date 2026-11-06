@@ -718,6 +718,7 @@ export class HeoStylesPanel extends HeoElement {
       ${bar}
       ${renderElementHeader({
         element: el,
+        reach: (key) => model.reach(key),
         elementOpen: this.ui.cardPop?.key === ELEMENT_POP,
         onOpenElement: () => this.#popOwn(el, model, host, ELEMENT_POP),
         idOpen: this.ui.cardPop?.key === ID_POP,

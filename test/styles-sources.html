@@ -267,7 +267,10 @@
           const sroot = () => deep('heo-styles-panel').shadowRoot;
           const ident = () => sroot().querySelector('.ident');
           const chips = () => Array.from(ident()?.querySelectorAll('.cchip[data-class]') ?? []);
-          const own = Array.from(target.classList).filter((name) => !name.startsWith('heo-'));
+          // By how many elements each styles, fewest first; ties in class-list order.
+          const reachOf = (key) => engine.elementModel(target).reach(key);
+          const byReach = (keys) => keys.map((one, at) => [one, at]).sort((a, b) => reachOf(a[0]) - reachOf(b[0]) || a[1] - b[1]).map(([one]) => one);
+          const own = byReach(Array.from(target.classList).filter((name) => !name.startsWith('heo-')).map((name) => `.${name}`)).map((key) => key.slice(1));
           results.header = {
             // Tag chip, id chip, one chip per class in class-list order, "N rules" and "+".
             listsClassesOnly:
@@ -306,8 +309,11 @@
             api.select(target);
             await settle(300);
             const kept = !rulesChip() && ruleChips().length === 3;
+            results.header.chipsAreSortedByReach = own.map((name) => reachOf(`.${name}`)).every((n, at, all) => !at || all[at - 1] <= n) &&
+              own.join(',') === 'featured,card';
             results.header.rulesChipShowsTheOtherRules =
-              folded && chipGone && keys.join(',') === '.card.featured,.promo .card,section p' && styled && beforeAdd &&
+              folded && chipGone && keys.join(',') === byReach(['.card.featured', '.promo .card', 'section p']).join(',') &&
+              keys.map(reachOf).every((n, at, all) => !at || all[at - 1] <= n) && styled && beforeAdd &&
               popped && !sroot().querySelector('.cardpop') && kept;
           }
           const before = engine.history.size;
