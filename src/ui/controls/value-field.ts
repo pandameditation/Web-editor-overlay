@@ -538,6 +538,19 @@ export class HeoValueField extends LitElement {
       .option[aria-selected='true'] {
         background: var(--heo-hover);
       }
+      /*
+       * A group of short, plain values (0, 4px, auto) as a grid of cells rather than a row each:
+       * the same option look, three or four to a line, so a long list of common values does not
+       * make the list tall. A row with a hint, a swatch or an icon keeps its own line.
+       */
+      .cells {
+        display: grid;
+        grid-template-columns: repeat(var(--cols, 4), minmax(0, 1fr));
+        gap: 2px;
+      }
+      .option.cell {
+        padding: 5px 8px;
+      }
       .option .ico {
         display: inline-flex;
         flex: 0 0 auto;
@@ -1015,7 +1028,26 @@ export class HeoValueField extends LitElement {
     ];
   }
 
+  /**
+   * The rows in the order they are drawn: each group's rows together, groups in the order they
+   * first appear. The highlight indexes this list, so the arrow keys and the drawn list agree.
+   */
   private get filtered(): ValueSuggestion[] {
+    const groups: ValueSuggestion[][] = [];
+    const at = new Map<string, ValueSuggestion[]>();
+    for (const item of this.#matches()) {
+      let group = at.get(item.group);
+      if (!group) {
+        group = [];
+        at.set(item.group, group);
+        groups.push(group);
+      }
+      group.push(item);
+    }
+    return groups.flat();
+  }
+
+  #matches(): ValueSuggestion[] {
     /*
      * Filtering is for searching, and you are only searching once you have changed the text.
      *
@@ -1576,16 +1608,16 @@ export class HeoValueField extends LitElement {
       ${repeat(
       groups,
       (group) => group.name,
-      (group) => html`
-          <div class="group">${group.name}</div>
-          ${repeat(
+      (group) => {
+        const cols = gridColumns(group.items);
+        const rows = repeat(
         group.items,
         (item) => `${group.name}:${item.value}`,
         (item) => {
           index += 1;
           const current = index;
           return html`<button
-                class=${`option${item.info ? ' info' : ''}`}
+                class=${`option${item.info ? ' info' : ''}${cols ? ' cell' : ''}`}
                 type="button"
                 role="option"
                 aria-selected=${current === this.highlight}
@@ -1614,8 +1646,12 @@ export class HeoValueField extends LitElement {
                 ${item.hint ? html`<span class="meta">${item.hint}</span>` : nothing}
               </button>`;
         },
-      )}
-        `,
+      );
+        return html`
+          <div class="group">${group.name}</div>
+          ${cols ? html`<div class="cells" style=${`--cols:${cols}`}>${rows}</div>` : rows}
+        `;
+      },
     )}
     </div>`;
   }
@@ -1856,6 +1892,16 @@ export class HeoValueField extends LitElement {
         // Step over context rows: the resolved value of an expression is there to
         // read, and landing on it would make the arrows feel like they had stuck.
         let next = this.highlight;
+        // In a grid of cells, up and down move a line: to the cell above or below, or out of the
+        // grid past its first or last line, the way the rows around it go.
+        const cell = next >= 0 ? cellOf(items, next) : null;
+        const within = cell ? next + direction * cell.cols : -1;
+        if (cell && within >= cell.start && within < cell.end) {
+          this.highlight = within;
+          this.#highlightMoved = true;
+          return;
+        }
+        if (cell) next = direction > 0 ? cell.end - 1 : cell.start;
         for (let step = 0; step < items.length; step += 1) {
           next += direction;
           if (next < 0) next = items.length - 1;
@@ -2398,6 +2444,35 @@ export class HeoValueField extends LitElement {
  * layer, so there can be one open list. Nothing else in the overlay needs to know
  * about it, which is why this is not editor state.
  */
+/**
+ * How many cells a line holds for a group drawn as a grid, or 0 for a list of rows: only a group
+ * of plain, short values (no hint, swatch, icon, token or composer) is a grid. Four to a line when
+ * every value is as short as `48px`, three up to `flex-end`'s length.
+ */
+function gridColumns(items: readonly ValueSuggestion[]): number {
+  if (items.length < 4) return 0;
+  let longest = 0;
+  for (const item of items) {
+    if (item.hint || item.swatch || item.icon || item.token || item.info || item.opens) return 0;
+    longest = Math.max(longest, (item.label ?? item.value).length);
+  }
+  // Longer than `flex-end` does not fit a third of the list: those stay rows, never cut short.
+  if (longest > 9) return 0;
+  return longest <= 6 ? 4 : 3;
+}
+
+/** The grid the row at `index` is a cell of: its group's span in the list and its columns. */
+function cellOf(items: readonly ValueSuggestion[], index: number): { start: number; end: number; cols: number } | null {
+  const group = items[index]?.group;
+  if (group === undefined) return null;
+  let start = index;
+  while (start > 0 && items[start - 1].group === group) start -= 1;
+  let end = index + 1;
+  while (end < items.length && items[end].group === group) end += 1;
+  const cols = gridColumns(items.slice(start, end));
+  return cols ? { start, end, cols } : null;
+}
+
 const openFields = new Set<HeoValueField>();
 
 declare global {

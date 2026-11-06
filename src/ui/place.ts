@@ -146,11 +146,14 @@ function clamp(value: number, low: number, high: number): number {
  */
 export class PopoverPlacer {
   #content: number | null = null;
+  /** The width the content was measured at: a grid of cells is shorter once it is wider. */
+  #width: number | null = null;
   #placing = false;
 
   /** Forget the measurement: the content has changed, or the popover has just opened. */
   invalidate(): void {
     this.#content = null;
+    this.#width = null;
   }
 
   /**
@@ -163,14 +166,22 @@ export class PopoverPlacer {
     if (this.#placing) return null;
     this.#placing = true;
     try {
-      if (popup && this.#content === null) {
-        // The one layout read, taken while the popover is at whatever size it currently is. Because
-        // this is cached, the `max-height` written below can never change what it reported.
+      const box = popup?.getBoundingClientRect();
+      /*
+       * The one layout read, cached, so the `max-height` written below can never change what it
+       * reported. Read again only when the popover has since been given another width: the first
+       * read is taken at its natural width, before placement sets one, and content that wraps (a
+       * grid of value cells) is a different height at the width it is shown at. The width comes
+       * from the anchor, never from the content, so this happens once and cannot chase itself.
+       */
+      const rewidthed = box && this.#width !== null && Math.abs(box.width - this.#width) > 0.5;
+      if (popup && box && (this.#content === null || rewidthed)) {
         this.#content = popup.scrollHeight || null;
+        this.#width = box.width;
       }
       return anchoredStyle({
         ...request,
-        popup: popup?.getBoundingClientRect(),
+        popup: box,
         content: this.#content ?? undefined,
       });
     } finally {

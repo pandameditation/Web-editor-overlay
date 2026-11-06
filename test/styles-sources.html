@@ -1626,6 +1626,34 @@
             results.effective.choosingAClassMovesTheInlineValueThere =
               inlineFirst && moved && oneEntry &&
               target.style.fontSize === '16px' && siteRule('.card')?.style.getPropertyValue('font-size') === '15px';
+            /*
+             * Short plain values (margin's common values) are a grid of cells, four to a line, so the
+             * list is not one tall column; Down moves a line, out past the last line as rows do.
+             */
+            {
+              const margin = effField('margin');
+              margin?.focusInput();
+              margin?.openList();
+              await settle(200);
+              const cells = margin?.shadowRoot?.querySelector('.cells');
+              const cols = cells ? getComputedStyle(cells).gridTemplateColumns.split(' ').length : 0;
+              const input = margin?.shadowRoot?.querySelector('input[type="text"]');
+              const picked = () => textOf(margin?.shadowRoot?.querySelector('.option[aria-selected="true"] .name'));
+              const steps = [];
+              for (const name of ['ArrowDown', 'ArrowDown', 'ArrowUp']) {
+                key(input, name);
+                await settle(60);
+                steps.push(picked());
+              }
+              results.effective.commonValuesAreAGrid =
+                cols === 4 && cells.querySelectorAll('.option.cell').length >= 8 &&
+                steps.join(',') === '0,12px,0' &&
+                // Rows with a hint (the computed value) keep their own line.
+                !margin?.shadowRoot?.querySelector('.option.info.cell');
+              margin?.closePopup();
+              margin?.shadowRoot?.querySelector('input[type="text"]')?.blur();
+              await settle(200);
+            }
             // The !important tag is part of the scrolling text, not a block fixed at its end.
             const important = effField('color');
             results.effective.importantScrollsWithTheText =
