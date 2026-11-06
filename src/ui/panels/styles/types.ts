@@ -69,6 +69,8 @@ export interface StylesUiState {
   effPick: string | null;
   /** The header's "find or create a class" field is showing. */
   finderOpen: boolean;
+  /** The header's "N rules" chip is open on the rules' own chips. */
+  rulesOpen: boolean;
   /** A strip menu's "Add a media query…" field, for one strip at a time. */
   mediaDraft: { owner: string; text: string; width?: { side: 'max' | 'min'; text: string } } | null;
   /**

@@ -276,6 +276,7 @@ const EMPTY_UI: StylesUiState = {
   adder: null,
   pending: null,
   finderOpen: false,
+  rulesOpen: false,
   mediaDraft: null,
   otherSlots: new Map(),
   tab: 'all',
@@ -749,6 +750,19 @@ export class HeoStylesPanel extends HeoElement {
           else this.#popCard(key, anchor);
         },
         onRemoveClass: (name) => this.editor.toggleClass(name, el),
+        // The same list as Sources' "Other rules": every other family reaching the element.
+        rules: this.#sourceCards(el, model, host).others.map((view) => view.family.key),
+        rulesOpen: this.ui.rulesOpen,
+        onShowRules: () => {
+          this.#patch({ rulesOpen: true });
+          this.#focusSelector('.ident .cchip.rule .name');
+        },
+        openRule: this.ui.cardPop?.anchor.startsWith('.ident .cchip.rule') ? this.ui.cardPop.key : null,
+        onOpenRule: (key) => {
+          const anchor = `.ident .cchip.rule[data-rule="${CSS.escape(key)}"] .name`;
+          if (this.ui.cardPop?.key === key) this.#closeTo({ cardPop: null }, anchor);
+          else this.#popCard(key, anchor);
+        },
         finder: this.#renderFinder(el),
       })}
       ${selectionNotice(this.editor.selection.length, el)}
@@ -1309,6 +1323,8 @@ export class HeoStylesPanel extends HeoElement {
 
   override disconnectedCallback(): void {
     super.disconnectedCallback();
+    // The rules' chips stay shown from selection to selection, until the panel is closed.
+    this.ui = { ...this.ui, rulesOpen: false };
     unlisten(document, 'pointerdown', this.#onOutsidePress, true);
     unlisten(window, 'scroll', this.#onViewportChange, true);
     unlisten(window, 'resize', this.#onViewportChange);

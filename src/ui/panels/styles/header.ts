@@ -1,5 +1,6 @@
 import { css, html, nothing, type CSSResult, type TemplateResult } from 'lit';
 import { icon } from '../../icons.js';
+import { countText } from '../../../core/save-plan.js';
 
 /**
  * The selected element, its id and its classes.
@@ -26,6 +27,15 @@ export interface HeaderSpec {
   idOpen: boolean;
   onOpenId(): void;
   onRemoveId(): void;
+  /** The other CSS rules reaching the element (`*`, `.prose p`), by family key, in Sources order. */
+  rules: readonly string[];
+  /** Their chips are showing in place of the "N rules" chip, until the panel is closed. */
+  rulesOpen: boolean;
+  onShowRules(): void;
+  /** The rule whose card is open under the chips, if any. */
+  openRule: string | null;
+  /** Open that rule's card, or close it when it is the one open. */
+  onOpenRule(key: string): void;
   /** The class whose card is open under the chips, if any: its name reads as pressed. */
   openClass: string | null;
   /** Open that class's card, or close it when it is the one open. */
@@ -117,6 +127,29 @@ export function renderElementHeader(spec: HeaderSpec): TemplateResult {
           </button>
         </span>`,
   )}
+      ${spec.rules.length && !spec.rulesOpen
+      ? html`<button
+            class="cchip rules"
+            type="button"
+            title="Show the other CSS rules styling this element"
+            @click=${() => spec.onShowRules()}
+          >
+            ${countText(spec.rules.length, 'rule')} ${icon('chevronRight', 10)}
+          </button>`
+      : nothing}
+      ${spec.rulesOpen
+      ? spec.rules.map((key) => html`<span class="cchip rule" data-rule=${key}>
+                <button
+                  class="name"
+                  type="button"
+                  aria-expanded=${spec.openRule === key ? 'true' : 'false'}
+                  title=${spec.openRule === key ? `Close ${key}` : `Edit ${key}`}
+                  @click=${() => spec.onOpenRule(key)}
+                >
+                  ${key}
+                </button>
+              </span>`)
+      : nothing}
       <button
         class="cchip add"
         type="button"
@@ -232,6 +265,43 @@ export const headerStyles: CSSResult = css`
   /* The id: a class chip with a quiet tint, so it reads apart from the tag and the classes. */
   .cchip.id {
     background: color-mix(in oklab, var(--heo-id) 16%, transparent);
+  }
+  /*
+   * The other rules: "N rules" turns into their chips, in line. A rule is not the element's to take
+   * off, so its chip is a class chip's outline with no cross, in the orange the 2×-uses pill has,
+   * darkened: quieter than a class, still told apart from one.
+   */
+  .cchip.rules {
+    gap: 3px;
+    padding: 0 7px 0 9px;
+    border-style: dashed;
+    color: var(--heo-text-dim);
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .cchip.rules:focus-visible {
+    outline: 2px solid var(--heo-focus-ring);
+    outline-offset: 1px;
+  }
+  .cchip.rule {
+    max-width: 100%;
+    border-color: color-mix(in oklab, var(--heo-shared) 40%, transparent);
+  }
+  .cchip.rule:hover,
+  .cchip.rule:has(> .name[aria-expanded='true']) {
+    border-color: var(--heo-shared);
+  }
+  .cchip.rule .name {
+    color: var(--heo-shared-text);
+  }
+  .cchip.rule .name {
+    min-width: 0;
+    max-width: 180px;
+    padding-right: 9px;
+    border-radius: 999px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .cchip.add {
     justify-content: center;
