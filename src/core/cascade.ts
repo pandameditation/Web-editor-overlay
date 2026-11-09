@@ -134,6 +134,34 @@ export interface Family {
 export interface InlinePreview {
   property: string;
   before: string;
+  /**
+   * The whole style attribute when the preview started (`null`: there was none).
+   *
+   * What lets a reader put the previewed declaration back where it was. Emptying a field paints the
+   * declaration away, and re-adding it from `before` alone appended it at the end of the list, so
+   * the row jumped to the bottom of its block mid-edit and the restore after a cancel left a side
+   * declared after its shorthand, where it overrode every later shorthand edit.
+   */
+  attribute?: string | null;
+}
+
+/**
+ * The attribute text a preview painted over, when it is still the right answer.
+ *
+ * Only while the attribute differs from the snapshot in the previewed property alone. Anything
+ * else changed in between (a script, an edit that did not end the preview) and the snapshot would
+ * throw that change away, so the caller falls back to restoring the one property.
+ */
+export function attributeBeforePreview(el: HTMLElement, preview: InlinePreview): string | null | undefined {
+  if (preview.attribute === undefined) return undefined;
+  const without = (text: string): string => {
+    const list = parseDeclarations(text);
+    delete list[preview.property];
+    return JSON.stringify(Object.entries(list));
+  };
+  return without(el.getAttribute('style') ?? '') === without(preview.attribute ?? '')
+    ? preview.attribute
+    : undefined;
 }
 
 /** The engine's four in-flight previews, each subtracted from what the model reports. */
@@ -1067,8 +1095,11 @@ export function authoredInline(
   el: HTMLElement,
   preview: InlinePreview | null,
 ): Record<string, string> {
+  if (!preview) return inlineDeclarations(el);
+  // The snapshot keeps the declaration in its place; the per-property patch is the fallback.
+  const snapshot = attributeBeforePreview(el, preview);
+  if (snapshot !== undefined) return parseDeclarations(snapshot ?? '');
   const inline = inlineDeclarations(el);
-  if (!preview) return inline;
   if (preview.before) {
     // `before` is the authored text, so any `!important` is already in it.
     inline[preview.property] = preview.before;

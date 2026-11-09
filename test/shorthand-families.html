@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="utf-8">
   <title>Shorthand families across blocks</title>
@@ -8,14 +9,26 @@
     there, and the family control moves one last. Written in different blocks, the side is still
     listed under its shorthand, with a note saying which wins by the cascade.
   -->
-  <style id="site">.intro { color: #222; }</style>
-  <style id="rules">.box { padding: 8px; padding-left: 0; }</style>
+  <style id="site">
+    .intro {
+      color: #222;
+    }
+  </style>
+  <style id="rules">
+    .box {
+      padding: 8px;
+      padding-left: 0;
+    }
+  </style>
 </head>
+
 <body>
   <p id="t" class="intro" style="margin: 4px; margin-left: 20px">The element</p>
   <p id="b" class="box">A rule's family</p>
   <p id="p" style="padding: 8px; padding-left: 0">An inline family</p>
   <p id="d">Sides first, then the shorthand</p>
+  <p id="e" style="padding: 10px; padding-left: 1px; padding-right: 2px; padding-bottom: 3px; padding-top: 4px">Every
+    side, then one emptied</p>
   <pre id="progress">start</pre>
   <pre id="out">pending</pre>
   <script src="../dist/html-editor-overlay.iife.js"></script>
@@ -230,6 +243,52 @@
           engine.undo();
           await settle(300);
         }
+
+        progress.textContent = 'emptiedSide';
+        /*
+         * The reported case: padding-left emptied with Backspace in a family of all four sides. The
+         * preview had painted it away, so the row was re-read without it and re-added at the bottom,
+         * which took the field out from under the caret: nothing committed, and the restore put
+         * padding-left back after the others, where it overrode every later padding edit.
+         */
+        {
+          let seq = 0;
+          const waiters = new Map();
+          window.__heoKeysDone = (id) => { waiters.get(id)?.(); waiters.delete(id); };
+          const keys = (...names) => new Promise((resolve) => {
+            const id = ++seq;
+            waiters.set(id, resolve);
+            window.__heoPressKeys(JSON.stringify({ id, keys: names }));
+          });
+          const e = document.getElementById('e');
+          const written = e.getAttribute('style');
+          api.select(e);
+          await settle(400);
+          const rowOrder = () => Array.from(list()?.querySelectorAll('.row') ?? []).map((row) => row.dataset.property).join(',');
+          const fieldOf = (property) => list()?.querySelector(`.row[data-property="${property}"] heo-value-field`);
+          const order = rowOrder();
+          // Cancelled, an emptied side comes back exactly where it was written.
+          engine.previewStyle('padding-left', '', e);
+          engine.cancelPreview();
+          const cancelPutsItBackInPlace = e.getAttribute('style') === written;
+          fieldOf('padding-left')?.focusInput();
+          await settle(100);
+          await keys('Backspace', 'Backspace', 'Backspace', 'Backspace');
+          await settle(300);
+          const whileEmpty = { order: rowOrder(), field: fieldOf('padding-left') };
+          // Leave the field for the shorthand's, as the user did: the removal commits.
+          fieldOf('padding')?.focusInput();
+          await settle(400);
+          const removed = !/padding-left/.test(e.getAttribute('style'));
+          fieldOf('padding')?.dispatchEvent(new CustomEvent('value-change', { detail: { value: '20px' }, bubbles: true, composed: true }));
+          await settle(400);
+          results.emptiedSide = {
+            cancelPutsItBackInPlace,
+            theRowStaysInPlaceWhileEmpty: whileEmpty.order === order && whileEmpty.field?.draft === '',
+            leavingTheFieldRemovesTheSide: removed && !/padding-left/.test(rowOrder()),
+            thePaddingThenReachesThatSide: getComputedStyle(e).paddingLeft === '20px' && getComputedStyle(e).paddingRight === '2px',
+          };
+        }
       } catch (e) {
         results.threw = String((e && e.stack) || e);
       }
@@ -243,4 +302,5 @@
     })();
   </script>
 </body>
+
 </html>

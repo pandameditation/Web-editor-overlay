@@ -28,6 +28,7 @@ import {
 } from './constants.js';
 import {
   appliedRules,
+  attributeBeforePreview,
   buildElementModel,
   cascadedDeclarations,
   classFamily,
@@ -1235,7 +1236,7 @@ export class EditorEngine {
    * written. A separate priority read off the CSSOM would have been empty in exactly the case it
    * exists for, which is worse than not having it.
    */
-  #preview: { el: HTMLElement; property: string; before: string } | null = null;
+  #preview: { el: HTMLElement; property: string; before: string; attribute: string | null } | null = null;
   /** Declarations a class had before its live preview started. */
   #classPreview: { name: string; declarations: Record<string, string> } | null = null;
   /**
@@ -2159,6 +2160,8 @@ export class EditorEngine {
       // The authored value of this exact name, so a preview of `-webkit-transform` reverts to
       // what that declaration said rather than to whatever `transform` happens to hold.
       before: inlineAuthoredText(el, property),
+      // The whole attribute too, so ending the preview puts the declaration back in its place.
+      attribute: el.getAttribute('style'),
     };
     // Through the same list the commands edit, so a preview of an aliased name paints under that
     // name instead of adding a second declaration under the canonical one for the drag's duration.
@@ -2207,10 +2210,11 @@ export class EditorEngine {
     el: HTMLElement;
     property: string;
     before: string;
+    attribute: string | null;
   } | null {
     const preview = this.#preview;
     return preview
-      ? { el: preview.el, property: preview.property, before: preview.before }
+      ? { el: preview.el, property: preview.property, before: preview.before, attribute: preview.attribute }
       : null;
   }
 
@@ -2264,7 +2268,17 @@ export class EditorEngine {
     const preview = this.#preview;
     this.#preview = null;
     if (!preview) return;
-    previewInline(preview.el, preview.property, preview.before);
+    /*
+     * The attribute exactly as it was, when nothing but the preview touched it.
+     *
+     * A value-only restore re-adds a declaration the preview had removed (an emptied field) at the
+     * end of the list. For a side that means after its shorthand, so it then won over every later
+     * shorthand edit and could not be reached from the family any more.
+     */
+    const snapshot = attributeBeforePreview(preview.el, preview);
+    if (snapshot === undefined) previewInline(preview.el, preview.property, preview.before);
+    else if (snapshot === null) preview.el.removeAttribute('style');
+    else if (preview.el.getAttribute('style') !== snapshot) preview.el.setAttribute('style', snapshot);
   }
 
   /**
