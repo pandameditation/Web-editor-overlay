@@ -9,9 +9,12 @@
     listed under its shorthand, with a note saying which wins by the cascade.
   -->
   <style id="site">.intro { color: #222; }</style>
+  <style id="rules">.box { padding: 8px; padding-left: 0; }</style>
 </head>
 <body>
   <p id="t" class="intro" style="margin: 4px; margin-left: 20px">The element</p>
+  <p id="b" class="box">A rule's family</p>
+  <p id="p" style="padding: 8px; padding-left: 0">An inline family</p>
   <pre id="progress">start</pre>
   <pre id="out">pending</pre>
   <script src="../dist/html-editor-overlay.iife.js"></script>
@@ -109,6 +112,54 @@
           isOneFamilyAgain: familyRows() === 'margin,margin-left' && !elsewhereRows() &&
             /margin-left:\s*31px/.test(el.getAttribute('style') ?? ''),
         };
+
+        progress.textContent = 'shorthandValue';
+        /*
+         * Picking a common value for the shorthand sets the shorthand, nothing else: the sides its
+         * block declares after it stay, and keep winning. It used to move the shorthand last, which
+         * rewrote every side, and a rule's CSSOM paint of the shorthand wiped them even on preview.
+         */
+        const pickCommonValue = async (fieldOf, value) => {
+          fieldOf()?.focusInput();
+          fieldOf()?.openList();
+          await settle(200);
+          const option = Array.from(fieldOf()?.shadowRoot?.querySelectorAll('.popup .option') ?? [])
+            .find((one) => one.querySelector('.name')?.textContent.trim() === value);
+          // Hovering a row previews nothing; the pick commits it.
+          option?.click();
+          await settle(400);
+          return Boolean(option);
+        };
+        const paddingOf = (id) => () => list()?.querySelector('.row[data-property="padding"] heo-value-field');
+        const box = document.getElementById('b');
+        const boxRule = document.getElementById('rules').sheet.cssRules[0];
+        api.select(box);
+        await settle(400);
+        const pickedInRule = await pickCommonValue(paddingOf('b'), '4px');
+        results.shorthandValue = {
+          inARuleTheSideStays: pickedInRule && getComputedStyle(box).paddingLeft === '0px' &&
+            getComputedStyle(box).paddingTop === '4px' && familyRows() === 'padding,padding-left',
+        };
+        engine.undo();
+        await settle(300);
+        // Previewed and abandoned, the rule is what it was: its side was lost from the page before.
+        engine.previewDeclaration({ kind: 'live', rule: boxRule }, 'padding', '2px');
+        const previewKeepsTheSide = getComputedStyle(box).paddingLeft === '0px' && getComputedStyle(box).paddingTop === '2px';
+        engine.cancelPreview();
+        results.shorthandValue.aRulePreviewKeepsTheSide = previewKeepsTheSide &&
+          getComputedStyle(box).paddingLeft === '0px' && getComputedStyle(box).paddingTop === '8px';
+        const inline = document.getElementById('p');
+        api.select(inline);
+        await settle(400);
+        const pickedInline = await pickCommonValue(paddingOf('p'), '4px');
+        results.shorthandValue.inlineTheSideStays = pickedInline &&
+          inline.getAttribute('style').replace(/\s+/g, ' ').trim() === 'padding: 4px; padding-left: 0;';
+        // The family control is still how the shorthand is made to win.
+        list()?.querySelector('.family .side-win:not(.on)')?.click();
+        await settle(300);
+        results.shorthandValue.theControlStillPromotesTheShorthand =
+          /^padding-left: 0;\s*padding: 4px;$/.test(inline.getAttribute('style').trim()) &&
+          getComputedStyle(inline).paddingLeft === '4px';
       } catch (e) {
         results.threw = String((e && e.stack) || e);
       }

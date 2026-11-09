@@ -2,6 +2,7 @@ import { css, html, nothing, type CSSResult, type TemplateResult } from 'lit';
 import { repeat } from 'lit/directives/repeat.js';
 import { propertyMeta, resolveValue } from '../../core/css.js';
 import {
+  promotingTheShorthand,
   displayOrder,
   fromRecord,
   shorthandGroups,
@@ -149,7 +150,7 @@ export function renderFamilies(
       ? `${what} wins in this block (it comes last). Only one side can.`
       : `Make ${what} win in this block: it moves last.`}
     ?disabled=${active}
-    @click=${() => promote(property)}
+    @click=${() => promotingTheShorthand(() => promote(property))}
   >
     ${icon('promoteTop', 10)}
   </button>`;

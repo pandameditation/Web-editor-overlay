@@ -325,6 +325,34 @@ export function groupFor(
   );
 }
 
+/** Set while a family's order control asks for its shorthand to win: see `afterEdit`. */
+let promotingShorthand = false;
+/**
+ * Run `write` as the family control's "make the shorthand win": the one edit that moves a
+ * shorthand last. Synchronous, so the flag cannot leak into another edit.
+ */
+export function promotingTheShorthand<T>(write: () => T): T {
+  promotingShorthand = true;
+  try {
+    return write();
+  } finally {
+    promotingShorthand = false;
+  }
+}
+/**
+ * The block's order after setting `property` in it.
+ *
+ * Setting a side moves the sides last, so the side just set is the one that shows. Setting the
+ * shorthand leaves the order alone: its sides are the exceptions the author wrote over it, and a
+ * new value for the rest must not wipe them. It did, which read as the shorthand rewriting every
+ * side. Only the family control moves a shorthand last (`promotingTheShorthand`).
+ */
+export function afterEdit(list: readonly Declaration[], property: string): Declaration[] {
+  const group = groupFor(list, property);
+  if (group && same(group.shorthand, property) && !promotingShorthand) return list.map((one) => ({ ...one }));
+  return withPromotedSide(list, property);
+}
+
 /**
  * The list with the side this property belongs to moved last, so that side wins.
  *

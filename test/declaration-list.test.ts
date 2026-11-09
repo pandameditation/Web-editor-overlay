@@ -21,6 +21,8 @@ import {
   toRecord,
   valueOf,
   withPromotedSide,
+  afterEdit,
+  promotingTheShorthand,
   withValue,
   type Declaration,
 } from '../src/core/declaration-list.ts';
@@ -376,3 +378,19 @@ if (failures.length) {
   process.exit(1);
 }
 console.log(`declaration-list: ${passed} passing`);
+
+test('setting a shorthand keeps its sides in front of it', () => {
+  /*
+   * The reported link: picking a value for `padding` rewrote every side the block declared after
+   * it, because the edit moved the shorthand last. The sides are the exceptions written over it.
+   */
+  assert.equal(flat(afterEdit(block('padding=12px padding-left=0'), 'padding')), 'padding=12px padding-left=0');
+  // A side still moves last when it is the one set, so its value shows.
+  assert.equal(flat(afterEdit(block('padding-left=0 padding=12px'), 'padding-left')), 'padding=12px padding-left=0');
+});
+test('only the family control moves a shorthand last', () => {
+  const list = block('padding=12px padding-left=0');
+  assert.equal(flat(promotingTheShorthand(() => afterEdit(list, 'padding'))), 'padding-left=0 padding=12px');
+  // And the flag does not outlive the call.
+  assert.equal(flat(afterEdit(list, 'padding')), 'padding=12px padding-left=0');
+});

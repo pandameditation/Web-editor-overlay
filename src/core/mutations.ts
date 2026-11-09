@@ -4,7 +4,7 @@ import {
   fromRecord,
   toText,
   valueOf,
-  withPromotedSide,
+  afterEdit,
   withValue,
   type Declaration,
 } from './declaration-list.js';
@@ -313,7 +313,7 @@ function writeInline(
     const name = rawName.trim();
     if (!name) continue;
     list = withValue(list, name, rawValue);
-    if (promote) list = withPromotedSide(list, name);
+    if (promote) list = afterEdit(list, name);
   }
   const text = toText(list);
   if (text) el.setAttribute('style', text);

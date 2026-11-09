@@ -3,7 +3,7 @@ import { MIRROR_ATTR, RULE_STYLE_ID } from './constants.js';
 import {
   fromRecord,
   toRecord,
-  withPromotedSide,
+  afterEdit,
   withValue,
   type Declaration,
 } from './declaration-list.js';
@@ -437,7 +437,7 @@ export class RuleRegistry {
        */
       declarations: next
         ? toRecord(
-          withPromotedSide(withValue(fromRecord(entry.declarations), property, next), property),
+          afterEdit(withValue(fromRecord(entry.declarations), property, next), property),
         )
         : { ...entry.declarations, [property]: '' },
       /*

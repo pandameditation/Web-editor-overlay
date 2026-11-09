@@ -2,7 +2,7 @@ import { CLASS_STYLE_ID } from './constants.js';
 import {
   fromRecord,
   toRecord,
-  withPromotedSide,
+  afterEdit,
   withValue,
 } from './declaration-list.js';
 import { queryDeep } from './dom.js';
@@ -330,7 +330,7 @@ export class ClassRegistry {
      */
     const declarations = next
       ? toRecord(
-        withPromotedSide(withValue(fromRecord(entry.declarations), property, next), property),
+        afterEdit(withValue(fromRecord(entry.declarations), property, next), property),
       )
       : { ...entry.declarations, [property]: '' };
 

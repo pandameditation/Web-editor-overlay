@@ -249,7 +249,8 @@ import {
   splitImportant,
   toRecord,
   valueOf,
-  withPromotedSide,
+  afterEdit,
+  groupFor,
   withValue,
   type Declaration,
 } from './declaration-list.js';
@@ -3004,6 +3005,11 @@ export class EditorEngine {
     const { value: next, important: typed } = splitImportant(value);
     if (next) rule.style.setProperty(property, next, typed ? 'important' : this.#rulePreview.priority);
     else rule.style.removeProperty(property);
+    // A shorthand's paint writes all its longhands: the sides the block declares after it, painted again.
+    const list = ruleDeclarations(rule);
+    if (groupFor(list, property)) {
+      paintInOrder(rule, withValue(list, property, next, typed ?? this.#rulePreview.priority === 'important'));
+    }
     noteRuleEdited(rule);
   }
 
@@ -3016,6 +3022,9 @@ export class EditorEngine {
     } else {
       preview.rule.style.removeProperty(preview.property);
     }
+    // Putting a shorthand back writes all its longhands again: the block's own sides come back too.
+    const list = ruleDeclarations(preview.rule);
+    if (groupFor(list, preview.property)) paintInOrder(preview.rule, list);
     noteRuleEdited(preview.rule);
   }
 
@@ -3044,21 +3053,23 @@ export class EditorEngine {
      * Snapshotted before the write and recomputed rather than re-read, because the CSSOM cannot be
      * asked afterwards what names it was given.
      *
-     * `withPromotedSide` is what makes the edit the one that counts. When a block holds both a
-     * shorthand and one of its longhands, CSS decides between them by position — so the side the
-     * user just touched is moved last, and wins. Without it, adjusting `padding-left` on a block
-     * whose `padding` comes after it would change the file and change nothing on the page.
+     * `afterEdit` is what makes a side's edit the one that counts. When a block holds both a
+     * shorthand and one of its longhands, CSS decides between them by position — so a side the user
+     * just touched is moved last, and wins. Without it, adjusting `padding-left` on a block whose
+     * `padding` comes after it would change the file and change nothing on the page. A shorthand
+     * keeps its place, so its new value does not wipe the sides written after it.
      */
     const beforeList = ruleDeclarations(rule);
     const current =
       [...beforeList].reverse().find((one) => one.property.toLowerCase() === property.toLowerCase())
         ?.important ?? beforePriority === 'important';
     const priority = after && (important ?? typed ?? current) ? 'important' : '';
-    const afterList = withPromotedSide(
+    const afterList = afterEdit(
       withValue(beforeList, property, after, priority === 'important'),
       property,
     );
     const reordered = !sameOrder(withValue(beforeList, property, after), afterList);
+    const inFamily = Boolean(groupFor(afterList, property) ?? groupFor(beforeList, property));
     const selector = rule.selectorText;
     const target = this.store.value.selected;
 
@@ -3116,8 +3127,9 @@ export class EditorEngine {
         if (after) rule.style.setProperty(property, after, priority);
         else rule.style.removeProperty(property);
         // A promotion is a reorder, and the page only shows a reorder if the paint is replayed in
-        // the new order. Skipped when nothing moved, which is almost always.
-        if (reordered) paintInOrder(rule, afterList);
+        // the new order. So is a shorthand set before its sides: the CSSOM writes every longhand of
+        // it, wiping the sides the block declares after it, so the family is painted again in order.
+        if (reordered || inFamily) paintInOrder(rule, afterList);
         /*
          * The declaration list this edit produces, kept beside the rule.
          *
@@ -3133,7 +3145,7 @@ export class EditorEngine {
       revert: () => {
         if (before) rule.style.setProperty(property, before, beforePriority);
         else rule.style.removeProperty(property);
-        if (reordered) paintInOrder(rule, beforeList);
+        if (reordered || inFamily) paintInOrder(rule, beforeList);
         // Back to the exact list, not to a per-property undo: only the whole list can restore the
         // position of a declaration this edit appended or removed.
         rememberRuleDeclarations(rule, beforeList);
