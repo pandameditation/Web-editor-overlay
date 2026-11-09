@@ -345,11 +345,26 @@ export function promotingTheShorthand<T>(write: () => T): T {
  * Setting a side moves the sides last, so the side just set is the one that shows. Setting the
  * shorthand leaves the order alone: its sides are the exceptions the author wrote over it, and a
  * new value for the rest must not wipe them. It did, which read as the shorthand rewriting every
- * side. Only the family control moves a shorthand last (`promotingTheShorthand`).
+ * side. A shorthand the block did not declare yet (`before`) is placed in front of its sides. Only
+ * the family control moves a shorthand last (`promotingTheShorthand`).
  */
-export function afterEdit(list: readonly Declaration[], property: string): Declaration[] {
+export function afterEdit(
+  list: readonly Declaration[],
+  property: string,
+  before?: readonly Declaration[],
+): Declaration[] {
   const group = groupFor(list, property);
-  if (group && same(group.shorthand, property) && !promotingShorthand) return list.map((one) => ({ ...one }));
+  if (group && same(group.shorthand, property) && !promotingShorthand) {
+    /*
+     * A shorthand new to the block goes in front of its sides, not after them: appended, it came
+     * last and overrode sides the user had just set (padding-bottom and padding-left dragged in the
+     * box, then a padding picked), so every side read as the shorthand's value. In front, the sides
+     * keep winning, and the family control is how the shorthand is made to win.
+     */
+    const isNew = before !== undefined && !before.some((one) => same(one.property, property));
+    if (isNew && group.longhands.length) return withPromotedSide(list, group.longhands[0]);
+    return list.map((one) => ({ ...one }));
+  }
   return withPromotedSide(list, property);
 }
 

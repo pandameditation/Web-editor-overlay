@@ -534,15 +534,6 @@
         await settle();
         results.box.oneUndoTakesTheBatchBack =
           winnerRule.style.getPropertyValue('padding') === winnerPadBefore && phoneCard.style.getPropertyValue('padding') === phonePadBefore;
-        // A side's own editor carries the same switch in its value list.
-        boxEditor()?.shadowRoot?.querySelector('input[aria-label="padding left"]')?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, composed: true }));
-        await settle();
-        await wait(60);
-        const sideField = boxEditor()?.shadowRoot?.querySelector('.editor heo-value-field');
-        sideField?.openList();
-        await settle();
-        results.box.aSideEditorHasTheSwitch = Boolean(sideField?.shadowRoot?.querySelector('.list-head heo-segmented'));
-        sideField?.closePopup();
         // `#imp` has no rule for its margin at any size, so the same commit goes inline.
         api.select(imp);
         await frames();

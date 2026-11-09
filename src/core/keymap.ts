@@ -17,10 +17,24 @@ import type { PanelId } from './types.js';
  * 3. Navigation and structural keys, which only apply when the page has focus
  *    rather than an overlay input.
  */
+/**
+ * When Backspace or Delete was last typed into one of the overlay's own fields.
+ *
+ * Emptying a value with Backspace can take the field away under the caret: the panel re-renders,
+ * the row goes, and focus falls to the page. The next Backspace, meant for the field, then reached
+ * the page shortcut below and deleted the selected element, and holding the key deleted more.
+ */
+let lastFieldErase = -Infinity;
+/** A page Backspace this soon after a field one was meant for that field: it is ignored. */
+const ERASE_GRACE_MS = 1500;
+
 export function handleKeyDown(engine: EditorEngine, event: KeyboardEvent): void {
   const state = engine.store.value;
   const mod = event.metaKey || event.ctrlKey;
   const key = event.key;
+  if ((key === 'Backspace' || key === 'Delete') && fromOverlay(event) && isEditableTarget(event)) {
+    lastFieldErase = event.timeStamp || performance.now();
+  }
 
   if (matchesShortcut(event, engine.options.toggleShortcut ?? 'mod+e')) {
     event.preventDefault();
@@ -290,6 +304,12 @@ export function handleKeyDown(engine: EditorEngine, event: KeyboardEvent): void 
     case 'Backspace':
       if (!state.selected) return;
       event.preventDefault();
+      // Still erasing a field that went away under the caret: never the element (see lastFieldErase).
+      // A held key counts as erasing too, however long it is held.
+      if (event.repeat || (event.timeStamp || performance.now()) - lastFieldErase < ERASE_GRACE_MS) {
+        lastFieldErase = event.timeStamp || performance.now();
+        return;
+      }
       // The whole set: the one key that has an unambiguous meaning for every member (DP-4).
       if (state.selection.length > 1) engine.removeSelection();
       else engine.remove();

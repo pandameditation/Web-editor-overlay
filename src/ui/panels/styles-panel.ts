@@ -1282,7 +1282,10 @@ export class HeoStylesPanel extends HeoElement {
       const by = root.querySelector(opener);
       return (at && path.includes(at)) || (by && path[0] === by);
     });
-    if (!owner) return;
+    if (!owner) {
+      this.#keepFocusInPanel(path);
+      return;
+    }
     requestAnimationFrame(() => {
       if (performance.now() - this.#pressedOutsideAt < 400) return;
       const active = deepActive();
@@ -1293,6 +1296,32 @@ export class HeoStylesPanel extends HeoElement {
       back?.focus({ preventScroll: true });
     });
   };
+
+  /**
+   * A value field taken away under the caret (its row re-rendered, or went) leaves focus on the page,
+   * where the next Backspace, meant for the field, would delete the selected element. Focus goes to
+   * the same property's field when it is still drawn, else to the panel itself, never to the page.
+   */
+  #keepFocusInPanel(path: EventTarget[]): void {
+    const field = path.find((node): node is HTMLElement => node instanceof HTMLElement && node.localName === 'heo-value-field');
+    if (!field) return;
+    const property = field.dataset.property;
+    const list = field.closest('[data-declarations]')?.getAttribute('data-declarations');
+    requestAnimationFrame(() => {
+      if (field.isConnected) return;
+      if (performance.now() - this.#pressedOutsideAt < 400) return;
+      const active = deepActive();
+      if (active && active !== document.body) return;
+      const root = this.renderRoot;
+      const same = property
+        ? root.querySelector<HeoValueField>(`${list ? `[data-declarations="${CSS.escape(list)}"] ` : ''}heo-value-field[data-property="${CSS.escape(property)}"]`)
+          ?? root.querySelector<HeoValueField>(`heo-value-field[data-property="${CSS.escape(property)}"]`)
+        : null;
+      if (same) same.focusInput();
+      // Else the section's header, a button: focus is in the panel, where Backspace is not a page key.
+      else root.querySelector('heo-section')?.shadowRoot?.querySelector<HTMLElement>('.head')?.focus({ preventScroll: true });
+    });
+  }
 
   #onOutsidePress = (event: Event): void => {
     const path = event.composedPath();
@@ -1889,12 +1918,6 @@ export class HeoStylesPanel extends HeoElement {
       <heo-box-editor
         .declared=${declaredBox}
         .computed=${computedBox}
-        .suggestions=${buildSuggestions(this.editor, 'margin', el)}
-        .headFor=${(property: string) => {
-          const spec: RowSpec = { property, scope, element: el, model, listId: 'spacing' };
-          const choice = destinationChoice(spec, host, rowIdOf(scope, property, el), readRow(spec).shown);
-          return { head: choice.head, step: choice.step };
-        }}
         @box-change=${(event: CustomEvent<{ declarations: Record<string, string> }>) =>
         this.#commitBox(event.detail.declarations, scope, el, model, host)}
       ></heo-box-editor>

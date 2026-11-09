@@ -745,14 +745,13 @@
       await new Promise((r) => setTimeout(r, 150));
       check('trailingOpensPopup', () => !!colorField.shadowRoot.querySelector('.popup'));
 
-      /* Box editor carries token suggestions and opens a full side editor. */
+      /* The box editor's sides are dragged or typed: no separate side editor opens. */
       const boxEditor = stylesPanel().shadowRoot.querySelector('heo-box-editor');
-      check('boxEditorHasSuggestions', () => boxEditor.suggestions.length > 0);
       boxEditor.shadowRoot
         .querySelector('.side.top')
         .dispatchEvent(new MouseEvent('dblclick', { bubbles: true, composed: true }));
       await new Promise((r) => setTimeout(r, 120));
-      check('boxSideEditorOpens', () => !!boxEditor.shadowRoot.querySelector('.editor heo-value-field'));
+      check('boxHasNoSeparateSideEditor', () => !boxEditor.shadowRoot.querySelector('.editor, heo-value-field'));
       engine.history.clear();
       para.removeAttribute('style');
 

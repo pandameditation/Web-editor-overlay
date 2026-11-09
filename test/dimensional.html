@@ -709,27 +709,13 @@
         backspaced.closePopup();
         await frames();
 
-        /* --- The spacing box: opening a side offers that side's values. --- */
+        /* --- The spacing box: a side is dragged or typed, with no editor of its own any more. --- */
         progress.textContent = 'spacing box';
         const box = deep('heo-box-editor', panel.shadowRoot);
-        results.spacingBox = { found: Boolean(box) };
-        if (box) {
-          const side = box.shadowRoot.querySelector('.side.left');
-          side?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, composed: true }));
-          await box.updateComplete;
-          await frames();
-          await wait(150);
-          const sideField = box.shadowRoot.querySelector('.editor heo-value-field');
-          results.spacingBox.opensAnEditor = Boolean(sideField);
-          // Selecting a side asks "what else could this be", so the scale is what should arrive --
-          // not an empty focused box the user then has to open.
-          results.spacingBox.andOpensItsList = Boolean(
-            sideField?.shadowRoot.querySelector('.popup'),
-          );
-          results.spacingBox.editsTheRightSide =
-            box.shadowRoot.querySelector('.editor-name')?.textContent?.trim() === 'margin-left';
-        }
-
+        box?.shadowRoot.querySelector('.side.left')?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, composed: true }));
+        await box?.updateComplete;
+        await frames();
+        results.spacingBox = { found: Boolean(box), noSideEditor: !box?.shadowRoot.querySelector('.editor, heo-value-field') };
         /* ------------------------------------------------------------------ *
          * 7. Shift still means x10 where there is no scale to walk.
          * ------------------------------------------------------------------ */

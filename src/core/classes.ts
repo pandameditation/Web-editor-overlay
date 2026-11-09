@@ -330,7 +330,7 @@ export class ClassRegistry {
      */
     const declarations = next
       ? toRecord(
-        afterEdit(withValue(fromRecord(entry.declarations), property, next), property),
+        afterEdit(withValue(fromRecord(entry.declarations), property, next), property, fromRecord(entry.declarations)),
       )
       : { ...entry.declarations, [property]: '' };
 

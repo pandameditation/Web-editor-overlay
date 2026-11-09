@@ -3067,6 +3067,7 @@ export class EditorEngine {
     const afterList = afterEdit(
       withValue(beforeList, property, after, priority === 'important'),
       property,
+      beforeList,
     );
     const reordered = !sameOrder(withValue(beforeList, property, after), afterList);
     const inFamily = Boolean(groupFor(afterList, property) ?? groupFor(beforeList, property));

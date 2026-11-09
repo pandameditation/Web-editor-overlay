@@ -312,8 +312,9 @@ function writeInline(
   for (const [rawName, rawValue] of Object.entries(declarations)) {
     const name = rawName.trim();
     if (!name) continue;
+    const was = list;
     list = withValue(list, name, rawValue);
-    if (promote) list = afterEdit(list, name);
+    if (promote) list = afterEdit(list, name, was);
   }
   const text = toText(list);
   if (text) el.setAttribute('style', text);

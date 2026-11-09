@@ -15,6 +15,7 @@
   <p id="t" class="intro" style="margin: 4px; margin-left: 20px">The element</p>
   <p id="b" class="box">A rule's family</p>
   <p id="p" style="padding: 8px; padding-left: 0">An inline family</p>
+  <p id="d">Sides first, then the shorthand</p>
   <pre id="progress">start</pre>
   <pre id="out">pending</pre>
   <script src="../dist/html-editor-overlay.iife.js"></script>
@@ -160,6 +161,75 @@
         results.shorthandValue.theControlStillPromotesTheShorthand =
           /^padding-left: 0;\s*padding: 4px;$/.test(inline.getAttribute('style').trim()) &&
           getComputedStyle(inline).paddingLeft === '4px';
+
+        progress.textContent = 'sidesFirst';
+        /*
+         * The reported case: sides dragged in the box (padding-bottom 40px, padding-left 30px), then a
+         * common value picked for padding. The new shorthand used to be appended, so it came last and
+         * overrode both sides. It goes in front of them now: they keep their values and keep winning.
+         */
+        {
+          const d = document.getElementById('d');
+          api.select(d);
+          await settle(400);
+          const box = sroot().querySelector('heo-box-editor');
+          box.dispatchEvent(new CustomEvent('box-change', { detail: { declarations: { 'padding-bottom': '40px' } }, bubbles: true, composed: true }));
+          await settle();
+          box.dispatchEvent(new CustomEvent('box-change', { detail: { declarations: { 'padding-left': '30px' } }, bubbles: true, composed: true }));
+          await settle();
+          const spacingPadding = () => sroot().querySelector('[data-declarations="spacing"] .row[data-property="padding"] heo-value-field');
+          const picked = await pickCommonValue(spacingPadding, '12px');
+          const cs = getComputedStyle(d);
+          const pressed = Array.from(sroot().querySelectorAll('[data-declarations="spacing"] .family .side-win')).map((one) => one.getAttribute('aria-pressed')).join(',');
+          results.sidesFirst = {
+            theSidesKeepTheirValues: picked && cs.paddingTop === '12px' && cs.paddingBottom === '40px' && cs.paddingLeft === '30px',
+            theFamilyShowsTheSidesWinning: pressed === 'false,true',
+          };
+        }
+
+        progress.textContent = 'backspace';
+        /*
+         * Backspace emptying a field must never go on to delete the element. A field taken away
+         * under the caret left focus on the page, and the next Backspace, meant for the field,
+         * reached the page shortcut that removes the selection. Real key presses: synthetic ones
+         * are never handled as the page's own keys.
+         */
+        {
+          let seq = 0;
+          const waiters = new Map();
+          window.__heoKeysDone = (id) => { waiters.get(id)?.(); waiters.delete(id); };
+          const keys = (...names) => new Promise((resolve) => {
+            const id = ++seq;
+            waiters.set(id, resolve);
+            window.__heoPressKeys(JSON.stringify({ id, keys: names }));
+          });
+          const target = document.getElementById('t');
+          api.select(target);
+          await settle(400);
+          const field = list()?.querySelector('.row[data-property="color"] heo-value-field');
+          field?.focusInput();
+          await settle(100);
+          await keys('Backspace', 'Backspace');
+          // The field goes away under the caret, as a re-render can take it: focus falls to the page.
+          document.activeElement?.blur?.();
+          let node = document.activeElement;
+          while (node?.shadowRoot?.activeElement) node = node.shadowRoot.activeElement;
+          node?.blur?.();
+          await settle(50);
+          await keys('Backspace', 'Backspace');
+          await settle(200);
+          const kept = document.body.contains(target);
+          // Past the pause, a Backspace on the page is the page's again: the shortcut still works.
+          await settle(1700);
+          await keys('Backspace');
+          await settle(300);
+          results.backspace = {
+            erasingAFieldNeverDeletesTheElement: kept,
+            thePageShortcutStillWorksAfterAPause: !document.body.contains(target),
+          };
+          engine.undo();
+          await settle(300);
+        }
       } catch (e) {
         results.threw = String((e && e.stack) || e);
       }

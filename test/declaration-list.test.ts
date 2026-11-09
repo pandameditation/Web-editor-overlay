@@ -372,13 +372,6 @@ test('a map converts back in its own insertion order, with important parsed out 
 
 /* -------------------------------------------------------------------------- */
 
-if (failures.length) {
-  console.error(`\n${failures.length} failing, ${passed} passing\n`);
-  for (const failure of failures) console.error(`  ✗ ${failure}\n`);
-  process.exit(1);
-}
-console.log(`declaration-list: ${passed} passing`);
-
 test('setting a shorthand keeps its sides in front of it', () => {
   /*
    * The reported link: picking a value for `padding` rewrote every side the block declared after
@@ -394,3 +387,19 @@ test('only the family control moves a shorthand last', () => {
   // And the flag does not outlive the call.
   assert.equal(flat(afterEdit(list, 'padding')), 'padding=12px padding-left=0');
 });
+test('a shorthand new to the block goes in front of its sides', () => {
+  // padding-bottom and padding-left set first, then a padding picked: the sides must keep winning.
+  const before = block('padding-bottom=40px padding-left=30px');
+  const added = [...before, ...block('padding=12px')];
+  assert.equal(flat(afterEdit(added, 'padding', before)), 'padding=12px padding-bottom=40px padding-left=30px');
+  // Already there, it keeps its place, wherever that is (here, after its sides: it wins).
+  const declared = block('padding-left=30px padding=12px');
+  assert.equal(flat(afterEdit(declared, 'padding', declared)), 'padding-left=30px padding=12px');
+});
+if (failures.length) {
+  console.error(`\n${failures.length} failing, ${passed} passing\n`);
+  for (const failure of failures) console.error(`  ✗ ${failure}\n`);
+  process.exit(1);
+}
+console.log(`declaration-list: ${passed} passing`);
+
