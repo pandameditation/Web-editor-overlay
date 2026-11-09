@@ -78,6 +78,11 @@ export interface RowSpec {
   destinations?: readonly AdderDestination[];
   /** A line under the row: a side written in another block than its shorthand says which wins. */
   note?: TemplateResult;
+  /**
+   * Show what this block itself declares for the property, even where the block's own shorthand
+   * beats it. A family's side row: its value is the author's, not the shorthand's expansion.
+   */
+  ownIn?: WriteTarget;
 }
 
 /**
@@ -255,6 +260,15 @@ export function readRow(spec: RowSpec): {
         ? own.source.entry
         : [...model.entries].reverse().find((one) => mine(one) && one.target.kind !== 'readonly');
     stateTarget = entry?.target ?? null;
+  }
+  /*
+   * A side its block declares, under that block's shorthand: the side's own declaration, winning
+   * or not. Shown as the shorthand's expansion instead, promoting the shorthand made every side
+   * read as the shorthand's value, as though the sides had been rewritten; they had not.
+   */
+  const ownIn = spec.ownIn;
+  if (ownIn) {
+    shown = list.applying.find((one) => !one.via && sameTarget(targetOf(one, spec.element), ownIn)) ?? shown;
   }
   return { list, winner, shown, stateTarget };
 }
@@ -533,7 +547,9 @@ export function renderPropertyRows(
       const spec = specFor(name);
       const { shown } = readRow(spec);
       const beatenElsewhere = shown && !shown.via && !sameTarget(targetOf(shown, spec.element), block.target);
-      return renderRow(name, beatenElsewhere ? html`<b>${shortLabel(shown!)}</b> wins over this block by the cascade` : undefined);
+      const note = beatenElsewhere ? html`<b>${shortLabel(shown!)}</b> wins over this block by the cascade` : undefined;
+      // The side's own value in this block, whichever of the family wins.
+      return renderPropertyRow({ ...spec, ownIn: block.target, ...(note ? { note } : {}) }, host);
     };
     out.push(html`${renderFamilies([{ kind: 'family', group }], inBlockRow, promote, block.label)}${others}`);
   }
@@ -584,8 +600,8 @@ export function renderPropertyRow(spec: RowSpec, host: StylesHost): TemplateResu
         ?important=${Boolean(shown?.important)}
         ?important-removable=${tagWrites}
         important-title=${shown && !tagWrites
-      ? `!important in ${shortLabel(shown)}. Change it from the dot's popover.`
-      : ''}
+        ? `!important in ${shortLabel(shown)}. Change it from the dot's popover.`
+        : ''}
         .head=${choice.head}
         @head-step=${(event: CustomEvent<{ delta: number }>) => choice.step(event.detail.delta)}
         .kind=${valueKindFor(property)}
