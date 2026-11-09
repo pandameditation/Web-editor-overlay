@@ -487,6 +487,36 @@
           engine.setDockTab('styles');
           await frames();
           await wait(400);
+          /*
+           * Effective styles and Spacing show the same family, with the same control: #between
+           * writes padding and padding-left in one rule, so the two rows are one group there too,
+           * and pressing the losing side's control moves it last in that rule.
+           */
+          {
+            const effFamily = () => panelRoot().querySelector('[data-declarations="effective"] .family');
+            const spacingFamily = () => panelRoot().querySelector('[data-declarations="spacing"] .family');
+            const rowsOf = (fam) => Array.from(fam?.querySelectorAll('.row') ?? []).map((r) => r.dataset.property).join(',');
+            const before = pressedIn(effFamily());
+            const shapes = rowsOf(effFamily()) === 'padding,padding-left' && rowsOf(spacingFamily()) === 'padding,padding-left';
+            effFamily()?.querySelector('.side-win:not(.on)')?.click();
+            await frames();
+            await wait(350);
+            const after = pressedIn(effFamily());
+            // The rule's own card, opened after, reads the same winner.
+            await popCard('#between');
+            const cardSays = pressedIn(panelRoot().querySelector('.cardpop .cls[data-card="#between"] .decls'));
+            const rule = Array.from(document.styleSheets).flatMap((sheet) => { try { return Array.from(sheet.cssRules); } catch { return []; } })
+              .find((one) => one.selectorText === '#between');
+            results.familiesEverywhere = {
+              effectiveAndSpacingGroupTheFamily: shapes,
+              theControlFlipsTheWinnerThere: before !== 'neither' && after !== 'neither' && after !== before,
+              andTheCardAgrees: cardSays === after,
+              writtenInTheRule: Boolean(rule),
+            };
+            engine.undo();
+            await frames();
+            await wait(350);
+          }
           await popCard('#between');
           results.stableOrder = {
             rule: await flipFourTimes(() =>

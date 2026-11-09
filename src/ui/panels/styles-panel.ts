@@ -68,7 +68,7 @@ import {
   previewSlot,
   propertyRowStyles,
   readRow,
-  renderPropertyRow,
+  renderPropertyRows,
   sameTarget,
   rowIdOf,
   destinationChoice,
@@ -842,17 +842,17 @@ export class HeoStylesPanel extends HeoElement {
       ${this.#renderEffectiveStrip(model, host)}
       ${picked === 'base'
         ? html`<div class="rows" data-declarations=${EFFECTIVE_LIST_ID}>
-              ${own.map((property) => {
+              ${renderPropertyRows(own, (property) => {
           const scope: RowScope = { kind: 'element' };
-          return renderPropertyRow({
+          return {
             property,
             scope,
             element: el,
             model,
             listId: EFFECTIVE_LIST_ID,
             destinations: this.#rowDestinations(el, model, property, scope),
-          }, host);
-        })}
+          };
+        }, host)}
             </div>
             ${own.length ? nothing : html`<p class="hint" style="margin:0">
               ${filtering ? 'No property matches.' : 'Nothing declares anything for this element yet.'}
@@ -906,14 +906,14 @@ export class HeoStylesPanel extends HeoElement {
     return html`<div class="egroup" data-egroup=${state}>
       ${renderBlockHeader('pseudo', state, 'pseudo-element', html`<span class="note">its own box</span>`)}
       <div class="rows" data-declarations=${listId}>
-        ${properties.map((property) => renderPropertyRow({
+        ${renderPropertyRows(properties, (property) => ({
       property,
       scope,
       element: el,
       model,
       listId,
       destinations: this.#rowDestinations(el, model, property, scope),
-    }, host))}
+    }), host)}
       </div>
       ${properties.length ? nothing : html`<p class="hint" style="margin:0">No declarations yet.</p>`}
       ${renderBlockAdder(host, listId, this.#stateDestinations(el, model, state), state, { choose: true })}
@@ -1051,14 +1051,14 @@ export class HeoStylesPanel extends HeoElement {
         html`<span class="note">${note}</span>`,
       )}
       <div class="rows" data-declarations=${listId}>
-        ${properties.map((property) => renderPropertyRow({
+        ${renderPropertyRows(properties, (property) => ({
       property,
       scope,
       element: el,
       model,
       listId,
       destinations: this.#rowDestinations(el, model, property, scope),
-    }, host))}
+    }), host)}
       </div>
       ${properties.length
         ? nothing
@@ -1459,8 +1459,7 @@ export class HeoStylesPanel extends HeoElement {
       ${caps.length ? caps.map((cap) => this.#renderConstraint(cap)) : nothing}
 
       <div class="rows" data-declarations="parent-self">
-        ${own.map((property) =>
-          renderPropertyRow({ property, scope, element: el, model, listId: 'parent-self' }, host))}
+        ${renderPropertyRows(own, (property) => ({ property, scope, element: el, model, listId: 'parent-self' }), host)}
       </div>
 
       ${filtering
@@ -1546,8 +1545,7 @@ export class HeoStylesPanel extends HeoElement {
         These change the container, so every child moves with them.
       </p>
       <div class="rows" data-declarations="parent-up">
-        ${properties.map((property) =>
-      renderPropertyRow({ property, scope, element: parent, model, listId: 'parent-up' }, host))}
+        ${renderPropertyRows(properties, (property) => ({ property, scope, element: parent, model, listId: 'parent-up' }), host)}
       </div>
     </div>`;
   }
@@ -1869,7 +1867,14 @@ export class HeoStylesPanel extends HeoElement {
       this.#hit(property, shownValue(model.cascade(property).applying[0])),
     );
     if (!hits.length) return nothing;
+    // The shorthands, and each side declared for this element, under its shorthand: written in the
+    // same block they are one family, with its control for which comes last.
     const shorthands = ['margin', 'padding'].filter((property) => hits.includes(property));
+    const rowsShown = shorthands.flatMap((shorthand) => [
+      shorthand,
+      ...longhands.filter((side) => side.startsWith(`${shorthand}-`) && hits.includes(side) &&
+        model.cascade(side).applying.some((one) => !one.via)),
+    ]);
     const touched = longhands.filter((property) => declaredBox[property]).length;
     const scope: RowScope = { kind: 'section', id: 'spacing' };
 
@@ -1896,11 +1901,14 @@ export class HeoStylesPanel extends HeoElement {
 
       ${shorthands.length
         ? html`<div class="rows" style="margin-top:10px" data-declarations="spacing">
-            ${shorthands.map((property) =>
-          renderPropertyRow(
-            { property, scope, element: el, model, placeholder: 'all sides', listId: 'spacing' },
-            host,
-          ))}
+            ${renderPropertyRows(rowsShown, (property) => ({
+          property,
+          scope,
+          element: el,
+          model,
+          ...(property.includes('-') ? {} : { placeholder: 'all sides' }),
+          listId: 'spacing',
+        }), host)}
           </div>`
         : nothing}
     </heo-section>`;
@@ -1956,8 +1964,7 @@ export class HeoStylesPanel extends HeoElement {
     >
       ${section.note ? html`<p class="hint" style="margin:0 0 9px">${section.note}</p>` : nothing}
       <div class="rows" data-declarations=${section.id}>
-        ${properties.map((property) =>
-          renderPropertyRow({ property, scope, element: el, model, listId: section.id }, host))}
+        ${renderPropertyRows(properties, (property) => ({ property, scope, element: el, model, listId: section.id }), host)}
       </div>
     </heo-section>`;
   }

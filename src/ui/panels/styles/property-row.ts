@@ -8,7 +8,8 @@ import type {
   RuleEntry,
   WriteTarget,
 } from '../../../core/cascade.js';
-import { longhandsOf, splitImportant } from '../../../core/declaration-list.js';
+import { longhandsOf, shorthandGroups, splitImportant, type Declaration, type DisplayEntry } from '../../../core/declaration-list.js';
+import { renderFamilies } from '../class-editor.js';
 import { entryLabel, reachText, shortLabel } from '../../../core/save-plan.js';
 import { mediaApplies } from '../../../core/viewport.js';
 import { icon } from '../../icons.js';
@@ -407,6 +408,83 @@ function removeShown(host: StylesHost, spec: RowSpec, shown: Contribution): void
     reversible: true,
     run: remove,
   });
+}
+
+/**
+ * A list of rows, with a shorthand and its sides shown as one family when the same block declares
+ * them: the control cards use, which says which comes last and so wins, and moves the other last.
+ *
+ * Only within one block. Written in different places (`padding` in `.card`, `padding-left` inline)
+ * they do not compete by order but by the cascade, which the dot's popover shows and edits.
+ */
+export function renderPropertyRows(
+  properties: readonly string[],
+  specFor: (property: string) => RowSpec,
+  host: StylesHost,
+): TemplateResult {
+  type Block = { target: WriteTarget; label: string; declarations: readonly Declaration[]; names: string[] };
+  const blocks: Block[] = [];
+  const blockOf = new Map<string, Block>();
+  for (const property of properties) {
+    const spec = specFor(property);
+    const { list, shown: winner } = readRow(spec);
+    /*
+     * A side shown through its shorthand (the shorthand comes last and wins) still has its own
+     * declaration in that block, beaten: that is the one to place, or flipping the family back
+     * would have nothing to offer.
+     */
+    const shown = winner?.via
+      ? list.applying.find((one) => !one.via && sameTarget(targetOf(one, spec.element), targetOf(winner, spec.element)))
+      : winner;
+    if (!shown || shown.via) continue;
+    const target = targetOf(shown, spec.element);
+    if (target.kind === 'readonly') continue;
+    let block = blocks.find((one) => sameTarget(one.target, target));
+    if (!block) {
+      block = {
+        target,
+        label: shortLabel(shown),
+        declarations: shown.source.kind === 'rule' ? shown.source.entry.declarations : spec.model.inline,
+        names: [],
+      };
+      blocks.push(block);
+    }
+    block.names.push(property.toLowerCase());
+    blockOf.set(property.toLowerCase(), block);
+  }
+  const familyOf = new Map<string, { group: ReturnType<typeof shorthandGroups>[number]; block: Block }>();
+  for (const block of blocks) {
+    // The block's own order, narrowed to what these rows show: that order is what decides.
+    const listed = block.declarations.filter((one) => block.names.includes(one.property.toLowerCase()));
+    for (const group of shorthandGroups(listed)) {
+      for (const name of [group.shorthand, ...group.longhands]) familyOf.set(name.toLowerCase(), { group, block });
+    }
+  }
+  const done = new Set<string>();
+  const entries: Array<{ entry: DisplayEntry; block?: Block }> = [];
+  for (const property of properties) {
+    const key = property.toLowerCase();
+    if (done.has(key)) continue;
+    const family = familyOf.get(key);
+    if (!family) {
+      done.add(key);
+      entries.push({ entry: { kind: 'row', property } });
+      continue;
+    }
+    entries.push({ entry: { kind: 'family', group: family.group }, block: family.block });
+    for (const name of [family.group.shorthand, ...family.group.longhands]) done.add(name.toLowerCase());
+  }
+  const renderRow = (property: string): TemplateResult => renderPropertyRow(specFor(property), host);
+  return html`${entries.map(({ entry, block }) => {
+    if (entry.kind === 'row' || !block) return renderRow(entry.kind === 'row' ? entry.property : entry.group.shorthand);
+    // Writing a declaration again, as it is, moves it last in its block, which is what makes it win.
+    const promote = (property: string): void => {
+      const declared = [...block.declarations].reverse().find((one) => one.property.toLowerCase() === property.toLowerCase());
+      if (!declared) return;
+      host.engine.setDeclaration(block.target, property, `${declared.value}${declared.important ? ' !important' : ''}`);
+    };
+    return renderFamilies([entry], renderRow, promote, block.label);
+  })}`;
 }
 
 export function renderPropertyRow(spec: RowSpec, host: StylesHost): TemplateResult {
