@@ -78,6 +78,20 @@ export interface RowSpec {
   destinations?: readonly AdderDestination[];
 }
 
+/**
+ * One line per source: a block that declares both a shorthand and its side competes with itself
+ * by order, which its family control shows, so the cascade keeps only that block's winning line.
+ */
+export function onePerSource(contributions: readonly Contribution[]): Contribution[] {
+  const out: Contribution[] = [];
+  for (const one of contributions) {
+    const block = one.source.kind === 'inline' ? 'inline' : one.source.entry.rule;
+    if (out.some((kept) => (kept.source.kind === 'inline' ? 'inline' : kept.source.entry.rule) === block)) continue;
+    out.push(one);
+  }
+  return out;
+}
+
 /** Whether two write targets are the same declaration block. */
 export function sameTarget(a: WriteTarget, b: WriteTarget): boolean {
   switch (a.kind) {
@@ -267,7 +281,7 @@ export function renderCascadeDot(spec: {
   name?: TemplateResult;
 }): TemplateResult {
   const winner = spec.list.applying[0];
-  const beaten = Math.max(0, spec.list.applying.length - 1);
+  const beaten = Math.max(0, onePerSource(spec.list.applying).length - 1);
   const label = winner
     ? `${spec.property} from ${sourceLabel(winner)}${beaten ? `, ${beaten} overridden` : ''}. Show cascade`
     : `${spec.property} is not declared for this element. Show cascade`;

@@ -158,8 +158,12 @@ export class HeoValueField extends LitElement {
       .text::-webkit-scrollbar {
         display: none;
       }
+      /* As wide as the value, so the tag sits just after it; the box's empty end is still the field. */
       .text.sized input {
-        flex: 1 0 auto;
+        flex: 0 0 auto;
+      }
+      .text.sized {
+        cursor: text;
       }
       input {
         flex: 1 1 auto;
@@ -1191,10 +1195,10 @@ export class HeoValueField extends LitElement {
               ${this.label}
             </button>`
         : nothing}
-        <div class=${this.important ? 'text sized' : 'text'}>
+        <div class=${this.important ? 'text sized' : 'text'} @pointerdown=${this.#onTextDown}>
         <input
           type="text"
-          style=${this.important ? `min-width:calc(${this.draft.length + 1}ch + 12px)` : ''}
+          style=${this.important ? `width:calc(${Math.max(this.draft.length, 1) + 0.5}ch + 12px)` : ''}
           .value=${this.draft}
           placeholder=${this.placeholder || 'auto'}
           spellcheck="false"
@@ -1673,6 +1677,17 @@ export class HeoValueField extends LitElement {
    * and nothing moves that box when the caret walks past its edge. The face is monospaced, so the
    * caret's offset is its index times one character's width.
    */
+  /** A press in the empty end after the tag puts the caret at the end of the value, as a field's would. */
+  #onTextDown = (event: PointerEvent): void => {
+    if (event.target !== event.currentTarget) return;
+    event.preventDefault();
+    const input = this.textInput;
+    if (!input) return;
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+    this.#followCaret();
+  };
+
   #followCaret = (): void => {
     if (!this.important) return;
     const box = this.renderRoot.querySelector<HTMLElement>('.text');

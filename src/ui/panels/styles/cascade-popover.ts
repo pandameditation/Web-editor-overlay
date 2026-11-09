@@ -7,6 +7,7 @@ import { conditionKey, conditionName } from './size-strip.js';
 import { shortLabel } from '../../../core/save-plan.js';
 import { renderUses } from '../class-editor.js';
 import {
+  onePerSource,
   readRow,
   shownValue,
   slotWidth,
@@ -36,7 +37,9 @@ export function renderCascadePopover(
 ): TemplateResult {
   const { scope, property } = state;
   const spec: RowSpec = { property, scope, element, model, listId: '' };
-  const { list } = readRow(spec);
+  const { list: read } = readRow(spec);
+  // One line per source: a block's shorthand and side compete in its family control, not here.
+  const list = { ...read, applying: onePerSource(read.applying), idle: onePerSource(read.idle) };
   // The condition the row is read under: `≥768px`, `@media print`, `:hover`, `:hover ≥768px`.
   const ctx = scope.kind === 'state'
     ? conditionName(model, conditionKey(scope.slot ?? 'base', scope.state))

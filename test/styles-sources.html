@@ -99,7 +99,8 @@
             .find((rule) => rule instanceof CSSStyleRule && rule.selectorText === selector);
         const glyphOf = (button) => button?.querySelector('svg path')?.getAttribute('d') ?? null;
         const ARROW_UP = 'M8 13V3M4 7l4-4 4 4';
-        const ARROW_DOWN = 'M8 3v10M4 9l4 4 4-4';
+        // The shorthand/sides control's own up glyph: up to a bar, never the !important arrow.
+        const PROMOTE_TOP = 'M3.5 2.8h9M8 13.4V6M5 9l3-3 3 3';
 
         /* Tokens, re-queried after every render: the panel re-renders on every change. */
         const tokensRoot = () => deep('heo-tokens-panel')?.shadowRoot ?? null;
@@ -232,14 +233,14 @@
           const pressedAfter = after.findIndex((side) => side.getAttribute('aria-pressed') === 'true');
           const declarations = engine.classes.get('pair')?.declarations ?? {};
           /*
-           * Two controls, two glyphs, two jobs: the side control points down ("move last, so it
-           * wins") and is never marked as the promote part; the up-arrow toggle sits on each
+           * Two controls, two glyphs, two jobs: the side control is "up to the top" (promote: this
+           * side wins) and is never marked as the promote part; the up-arrow toggle sits on each
            * declaration row only; pressing a side flips the winner and adds no !important.
            */
           results.promote.sideControlIsNotThePromoteToggle =
             sides.length === 2 &&
             sides.every((side) =>
-              glyphOf(side) === ARROW_DOWN &&
+              glyphOf(side) === PROMOTE_TOP &&
               !side.matches('.promote, [data-heo-part="promote"]') &&
               !side.closest('.decl')) &&
             toggles.length === 2 &&
@@ -1659,7 +1660,15 @@
             results.effective.importantScrollsWithTheText =
               important?.important === true &&
               Boolean(important?.shadowRoot?.querySelector('.text .imp')) &&
-              !important?.shadowRoot?.querySelector('.trailing .imp');
+              !important?.shadowRoot?.querySelector('.trailing .imp') &&
+              // Right after the value, not pushed to the field's far end.
+              (() => {
+                const input = important?.shadowRoot?.querySelector('input[type="text"]')?.getBoundingClientRect();
+                const tag = important?.shadowRoot?.querySelector('.text .imp')?.getBoundingClientRect();
+                const box = important?.shadowRoot?.querySelector('.text')?.getBoundingClientRect();
+                // Where the field is narrow the two scroll together; either way nothing sits between them.
+                return Boolean(input && tag && box) && Math.abs(tag.left - input.right) < 4;
+              })();
             // No clear cross on a row. The trash removes the declaration the row shows: the element's own
             // at once, and one in a rule other elements wear only after a warning.
             const trash = (property) => effRow(property)?.querySelector('.reset');

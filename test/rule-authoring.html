@@ -496,6 +496,16 @@
             const effFamily = () => panelRoot().querySelector('[data-declarations="effective"] .family');
             const spacingFamily = () => panelRoot().querySelector('[data-declarations="spacing"] .family');
             const rowsOf = (fam) => Array.from(fam?.querySelectorAll('.row') ?? []).map((r) => r.dataset.property).join(',');
+            // Its cascade lists #between once: the rule's padding and padding-left compete in the
+            // family control, not as a line overriding another line of the same rule.
+            panelRoot().querySelector('[data-declarations="effective"] .row[data-property="padding-left"] .dots')?.click();
+            await frames();
+            await wait(200);
+            const cascadeSources = Array.from(panelRoot().querySelectorAll('.pop .c-line .src')).map((one) => one.textContent.trim());
+            const moonsOnTheSide = panelRoot().querySelectorAll('[data-declarations="effective"] .row[data-property="padding-left"] .moon').length;
+            panelRoot().querySelector('.pop')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true, cancelable: true }));
+            await frames();
+            await wait(150);
             const before = pressedIn(effFamily());
             const shapes = rowsOf(effFamily()) === 'padding,padding-left' && rowsOf(spacingFamily()) === 'padding,padding-left';
             effFamily()?.querySelector('.side-win:not(.on)')?.click();
@@ -512,6 +522,7 @@
               theControlFlipsTheWinnerThere: before !== 'neither' && after !== 'neither' && after !== before,
               andTheCardAgrees: cardSays === after,
               writtenInTheRule: Boolean(rule),
+              theCascadeListsTheRuleOnce: cascadeSources.filter((one) => one === '#between').length === 1 && moonsOnTheSide === 0,
             };
             engine.undo();
             await frames();
@@ -582,7 +593,8 @@
               sideControls.length === 2 &&
               sideControls.every(
                 (control) =>
-                  glyphOf(control) === 'M8 3v10M4 9l4 4 4-4' &&
+                  // "Up to the top", the side that wins: up, but not the !important arrow.
+                  glyphOf(control) === 'M3.5 2.8h9M8 13.4V6M5 9l3-3 3 3' &&
                   !control.matches('.promote, [data-heo-part="promote"]'),
               ) &&
               promotes.length > 0 &&

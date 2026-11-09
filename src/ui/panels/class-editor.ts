@@ -130,8 +130,9 @@ export function focusDeclaration(root: ParentNode, property: string, scope?: str
  * write goes through the shared model, which moves the touched side last. No separate command
  * exists, so there is nothing here to keep in step.
  *
- * Its glyph points down, "move last": the up arrow is the `!important` toggle's, and the two used to
- * share it a few pixels apart while meaning different things.
+ * Its glyph is "up to the top", the side that wins: CSS takes the last one, but "promote" is how it
+ * reads. Not the plain up arrow, which is the `!important` toggle's: the two used to share a glyph a
+ * few pixels apart while meaning different things.
  */
 export function renderFamilies(
   entries: readonly DisplayEntry[],
@@ -145,12 +146,12 @@ export function renderFamilies(
     aria-pressed=${active}
     aria-label=${active ? `${what} wins in ${label}` : `Make ${what} win in ${label}`}
     title=${active
-      ? `${what} comes last in this block, so it wins. Only one side can.`
-      : `Move ${what} last in this block so it wins over the other side.`}
+      ? `${what} wins in this block (it comes last). Only one side can.`
+      : `Make ${what} win in this block: it moves last.`}
     ?disabled=${active}
     @click=${() => promote(property)}
   >
-    ${icon('arrowDown', 10)}
+    ${icon('promoteTop', 10)}
   </button>`;
 
   return html`${repeat(

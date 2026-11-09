@@ -57,6 +57,8 @@ const PATHS: Record<string, string> = {
   grip: 'M6 3.4h.01M10 3.4h.01M6 8h.01M10 8h.01M6 12.6h.01M10 12.6h.01',
   dots: 'M8 4h.01M8 8h.01M8 12h.01',
   arrowUp: 'M8 13V3M4 7l4-4 4 4',
+  /** Up to a bar: "put this one on top", the shorthand/sides winner. Not the !important arrow. */
+  promoteTop: 'M3.5 2.8h9M8 13.4V6M5 9l3-3 3 3',
   arrowDown: 'M8 3v10M4 9l4 4 4-4',
   arrowLeft: 'M13 8H3M7 4L3 8l4 4',
   arrowRight: 'M3 8h10M9 4l4 4-4 4',
