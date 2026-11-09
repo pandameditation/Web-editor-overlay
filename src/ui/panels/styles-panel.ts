@@ -1,7 +1,7 @@
 import { css, html, nothing, type PropertyValues, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { isPseudoElement, isWidthQuery, mediaIcon, mediaKind, mediaNow, needsGeneratedContent } from '../../core/breakpoints.js';
-import { rulesPass, type ElementModel, type RuleEntry, type WriteTarget } from '../../core/cascade.js';
+import { rulesPass, type ElementModel, type WriteTarget } from '../../core/cascade.js';
 import {
   escapeRegExp,
   parentLayoutProperties,
@@ -38,7 +38,6 @@ import {
   renderPseudoAdder,
   renderUnknownCard,
   sourcesStyles,
-  visibleAt,
   type CardView,
   type Popped,
 } from './styles/family-card.js';
@@ -551,12 +550,6 @@ export class HeoStylesPanel extends HeoElement {
   #openers(): Array<{ layer: string; opener: string }> {
     const out: Array<{ layer: string; opener: string }> = [];
     const popover = this.ui.popover;
-    if (popover?.source) {
-      out.push({
-        layer: `.pop:not(.cardpop):not(.finderpop) .srccard[data-order="${popover.source.order}"]`,
-        opener: `.pop:not(.cardpop):not(.finderpop) .src[data-order="${popover.source.order}"]`,
-      });
-    }
     if (popover) out.push({ layer: '.pop:not(.cardpop):not(.finderpop)', opener: `.row[data-row="${CSS.escape(popover.rowId)}"] .dots` });
     if (this.ui.cardPop) out.push({ layer: '.cardpop', opener: this.ui.cardPop.anchor });
     if (this.ui.finderOpen) out.push({ layer: '.finderpop', opener: '.ident .cchip.add' });
@@ -670,14 +663,6 @@ export class HeoStylesPanel extends HeoElement {
       },
       flashRow: (property, listId) => this.#flashRow(property, listId),
       destinationsFor: (spec) => this.#rowDestinations(spec.element, spec.model, spec.property, spec.scope),
-      openSource: (property, entry) => this.#openSource(property, entry),
-      sourceCard: (key) => this.#poppedCard(el, model, host, key, {
-        onClose: () => {
-          const popover = this.ui.popover;
-          if (!popover?.source) return;
-          this.#closeTo({ popover: { ...popover, source: null } }, `.pop:not(.cardpop):not(.finderpop) .src[data-order="${popover.source.order}"]`);
-        },
-      }),
     };
     return host;
   }
@@ -1365,11 +1350,6 @@ export class HeoStylesPanel extends HeoElement {
     } else if (ui.adder) {
       this.adderForm.reset();
       this.#patch({ adder: null });
-    } else if (ui.popover?.source) {
-      // An expanded card collapses first, back to its line's link.
-      const order = ui.popover.source.order;
-      this.#patch({ popover: { ...ui.popover, source: null } });
-      this.#focusSelector(`.pop:not(.cardpop):not(.finderpop) .src[data-order="${order}"]`);
     } else if (ui.popover) {
       const rowId = ui.popover.rowId;
       this.#patch({ popover: null });
@@ -1768,54 +1748,6 @@ export class HeoStylesPanel extends HeoElement {
       '',
     )}
     </div>`;
-  }
-
-  /**
-   * A popover line's link, as a toggle: expand the card the declaration is written in under that
-   * line, at the rule's size and with the declaration focused, or collapse it when it is the one
-   * expanded. The popover stays open either way, so the cascade and the rule are edited together.
-   *
-   * A rule not in effect at the width being previewed has nothing to show at it, so the preview
-   * goes back to Actual first, and the popover is opened again there. A parent's rule opens on the
-   * parent: it is selected, and the rule's card opens from its chip there.
-   */
-  #openSource(property: string, entry: RuleEntry): void {
-    const popover = this.ui.popover;
-    const el = this.editor.selected;
-    if (!popover || !el) return;
-    if (popover.source?.order === entry.order) {
-      this.#patch({ popover: { ...popover, source: null } });
-      this.#focusSelector(`.pop:not(.cardpop):not(.finderpop) .src[data-order="${entry.order}"]`);
-      return;
-    }
-    const model = this.#model(el);
-    const slot = model.slotOf(entry);
-    const known = model.families().classes.concat(model.families().others).some((one) => one.key === entry.family) ||
-      Array.from(el.classList).some((name) => `.${CSS.escape(name)}` === entry.family);
-    if (popover.scope.kind === 'parent' || !known) {
-      const owner = popover.scope.kind === 'parent' ? popover.scope.element : el;
-      this.#patch({ popover: null });
-      if (owner !== el) this.editor.select(owner);
-      void this.updateComplete.then(() => this.#openCard(entry.family, { slot, state: entry.state, property }));
-      return;
-    }
-    const source = { key: entry.family, order: entry.order, slot, state: entry.state };
-    const open = (): void => {
-      const picks = new Map(this.ui.cardPicks);
-      picks.set(entry.family, conditionOf(model, entry));
-
-      this.#patch({ popover: { ...popover, source }, cardPop: null, adder: null, menu: null, cardPicks: picks });
-      void this.updateComplete.then(() => requestAnimationFrame(() => {
-        const under = this.renderRoot.querySelector<HTMLElement>(`.pop:not(.cardpop):not(.finderpop) .srccard[data-order="${entry.order}"]`);
-        if (under) focusDeclaration(under, property, blockId(entry.family, slot, entry.state));
-      }));
-    };
-    if (!visibleAt(entry, this.editor.store.value.previewWidth)) {
-      this.editor.setPreviewWidth(null);
-      void this.updateComplete.then(open);
-    } else {
-      open();
-    }
   }
 
   /**

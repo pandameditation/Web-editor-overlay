@@ -598,7 +598,11 @@ export const propertyRowStyles: CSSResult = css`
     outline-offset: 1px;
   }
 
-  /* The dot, and the applying declarations it beats as crescents behind it. */
+  /*
+   * The dot, and the declarations it beats behind it: the winner a plain accent dot, each override
+   * an empty grey circle tucked under its right edge, at most three. Nothing rings the dot: the
+   * row's own surface shows around it.
+   */
   .dots {
     display: inline-flex;
     align-items: center;
@@ -609,11 +613,9 @@ export const propertyRowStyles: CSSResult = css`
     border-radius: 5px;
     background: transparent;
     cursor: pointer;
-    --ring: var(--heo-bg);
   }
   .dots:hover,
   .dots[aria-expanded='true'] {
-    --ring: var(--heo-hover);
     background: var(--heo-hover);
   }
   .dot,
@@ -623,16 +625,14 @@ export const propertyRowStyles: CSSResult = css`
     width: 6px;
     height: 6px;
     border-radius: 999px;
-    background: var(--heo-accent);
-    box-shadow: 0 0 0 1.5px var(--ring);
   }
   .dot {
     z-index: 4;
+    background: var(--heo-accent);
   }
   /* Nothing declares it: nothing at rest, a dim ring when the row is hovered, focused or open. */
   .dot.none {
     background: transparent;
-    box-shadow: none;
   }
   .prow:hover .dot.none,
   .dots:focus-visible .dot.none,
@@ -641,21 +641,18 @@ export const propertyRowStyles: CSSResult = css`
   }
   /* Decorative: what they say is in the dot's name. */
   .moon {
-    margin-left: -3.5px;
+    margin-left: -3px;
+    box-shadow: inset 0 0 0 1px var(--heo-text-faint);
   }
   .moon:nth-child(2) {
     z-index: 3;
-    opacity: 0.6;
   }
   .moon:nth-child(3) {
     z-index: 2;
-    opacity: 0.4;
   }
   .moon:nth-child(4) {
     z-index: 1;
-    opacity: 0.25;
   }
-
   /* A segmented row's "where it goes", under the row while the row is in use. */
   .dest-line {
     display: none;

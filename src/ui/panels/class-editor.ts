@@ -238,7 +238,7 @@ export function renderCardHeader(spec: {
  * How many elements a rule styles right now, as a small pill whose colour reads before the number:
  * grey for none, green for one, orange for several, where an edit reaches past this element.
  */
-function renderUses(uses: number): TemplateResult {
+export function renderUses(uses: number): TemplateResult {
   const tone = uses === 0 ? 'none' : uses === 1 ? 'one' : 'many';
   const title = uses === 0
     ? 'Nothing on this page uses it'
@@ -291,22 +291,25 @@ export const cardHeaderStyles: CSSResult = css`
     font-size: 9.5px;
     white-space: nowrap;
   }
-  /* A bar rather than a button-sized chip: it is read, never pressed. */
-  .card-head .uses {
+  /* A bar rather than a button-sized chip: it is read, never pressed. The same pill wherever a
+     reach is shown: a card's header and a cascade line. */
+  .uses {
+    flex: 0 0 auto;
+    font-size: 9.5px;
     padding: 0 5px;
     border-radius: 999px;
     line-height: 14px;
     font-variant-numeric: tabular-nums;
   }
-  .card-head .uses.none {
+  .uses.none {
     background: color-mix(in oklab, var(--heo-text-dim) 16%, transparent);
     color: var(--heo-text-dim);
   }
-  .card-head .uses.one {
+  .uses.one {
     background: color-mix(in oklab, var(--heo-success) 20%, transparent);
     color: var(--heo-success-text);
   }
-  .card-head .uses.many {
+  .uses.many {
     background: color-mix(in oklab, var(--heo-shared) 20%, transparent);
     color: var(--heo-shared-text);
   }

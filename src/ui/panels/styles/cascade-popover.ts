@@ -2,10 +2,10 @@ import { css, html, nothing, type CSSResult, type TemplateResult } from 'lit';
 import { isPseudoElement, mediaShort } from '../../../core/breakpoints.js';
 import type { Contribution, ElementModel } from '../../../core/cascade.js';
 import { buildSuggestions, valueKindFor } from '../../suggestions.js';
-import { icon } from '../../icons.js';
 import { renderPromote } from './promote.js';
 import { conditionKey, conditionName } from './size-strip.js';
-import { reachText, shortLabel } from '../../../core/save-plan.js';
+import { shortLabel } from '../../../core/save-plan.js';
+import { renderUses } from '../class-editor.js';
 import {
   readRow,
   shownValue,
@@ -111,8 +111,6 @@ function renderLine(
   const target = targetOf(one, element);
   const entry = one.source.kind === 'rule' ? one.source.entry : null;
   const label = sourceLabel(one);
-  // The link is a toggle: its rule's card opens under this line, and closes again.
-  const expanded = Boolean(entry) && host.ui.popover?.source?.order === entry?.order;
   const reach = entry ? model.reach(entry.family) : 1;
   const why = entry && kind === 'idle'
     ? entry.state
@@ -134,18 +132,10 @@ function renderLine(
         aria-hidden="true"
         title=${kind === 'win' ? 'Applies' : kind === 'lost' ? 'Overridden' : why.trim()}
       ></span>
-      ${entry
-      ? html`<button
-            class="src"
-            type="button"
-            data-order=${entry.order}
-            aria-expanded=${expanded ? 'true' : 'false'}
-            title=${expanded ? `Close ${label}` : `Edit ${label}${why}`}
-            @click=${() => host.openSource(property, entry)}
-          >
-            <span>${shortLabel(one)}</span>${icon(expanded ? 'chevronDown' : 'chevronRight', 10)}
-          </button>`
-      : html`<span class="src"><span>inline style</span></span>`}
+      <span class="srcgroup">
+        <span class="src" title=${`${label}${why}`}><span>${entry ? shortLabel(one) : 'inline style'}</span></span>
+        ${renderUses(reach)}
+      </span>
       <heo-value-field
         data-property=${property}
         .value=${shownValue(one)}
@@ -169,14 +159,6 @@ function renderLine(
         onToggle: (next) => engine.setImportance(target, property, next),
       })}
     </div>
-    <span class="where">
-      Edits <b>${label}</b> · ${entry ? reachText(reach) : 'this element only'}${entry?.media
-      ? `, at ${mediaShort(entry.media)}`
-      : ''}
-    </span>
-    ${expanded && entry
-      ? html`<div class="srccard" data-order=${entry.order}>${host.sourceCard(entry.family)}</div>`
-      : nothing}
   </div>`;
 }
 
@@ -221,7 +203,6 @@ export const popoverStyles: CSSResult = css`
     background: var(--heo-raised);
     box-shadow: var(--heo-shadow-lg);
     color: var(--heo-text);
-    --ring: var(--heo-raised);
   }
   .pop:focus {
     outline: none;
@@ -269,7 +250,7 @@ export const popoverStyles: CSSResult = css`
   }
   .c-line {
     display: grid;
-    grid-template-columns: 6px minmax(0, 0.9fr) minmax(0, 1.6fr) 18px;
+    grid-template-columns: 6px minmax(0, 1fr) minmax(0, 1.4fr) 18px;
     gap: 3px 7px;
     align-items: center;
   }
@@ -287,12 +268,12 @@ export const popoverStyles: CSSResult = css`
     background: transparent;
     box-shadow: inset 0 0 0 1px var(--heo-text-dim);
   }
-  /* Into the popover's side padding: the card's own rows need the room more than the gutter does. */
-  .pl .srccard {
-    margin: 6px -6px 2px;
-  }
-  .pl .srccard > .cls {
-    margin: 0;
+  /* The source and its reach, one cell: the pill sits right after the name, not at the cell's end. */
+  .c-line .srcgroup {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
   }
   .c-line .src {
     display: inline-flex;
@@ -312,36 +293,11 @@ export const popoverStyles: CSSResult = css`
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .c-line button.src {
-    border-radius: 4px;
-    cursor: pointer;
-  }
-  .c-line button.src:hover {
-    color: var(--heo-text);
-  }
-  .c-line button.src:focus-visible {
-    outline: 2px solid var(--heo-focus-ring);
-    outline-offset: 1px;
-  }
   /* Overridden: struck through, in the dim ink (never fainter, so it stays readable). */
   .c-line.lost .src span {
     text-decoration: line-through;
   }
   .c-line.idle .src span {
     font-style: italic;
-  }
-  .pop .pl > .where {
-    display: none;
-    padding-left: 13px;
-    color: var(--heo-text-dim);
-    font-size: 10px;
-  }
-  .pop .pl:focus-within > .where {
-    display: block;
-  }
-  .pop .pl > .where b {
-    color: var(--heo-text);
-    font-family: var(--heo-mono);
-    font-weight: 400;
   }
 `;
