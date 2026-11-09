@@ -101,11 +101,9 @@ export function buildSuggestions(
  * used as a gap — though not the reverse: nothing good comes of offering `--space-md` for a
  * `font-size`.
  *
- * `border` used to be widened to `['border', 'color']` here, for the sake of the `border` shorthand
- * needing both. That was the wrong place to say it: the widening applies to every property in the
- * group, so `border-width` — which takes a length and nothing else — was offered the whole colour
- * palette. A shorthand that genuinely takes several kinds now says so itself, through
- * `PropertyMeta.tokenGroups`.
+ * `border` takes border tokens only. Colours are not compatible with it: `border-width` takes a
+ * length and nothing else, and a colour alone as `border` or `outline` draws nothing (see
+ * `PropertyMeta.tokens`).
  */
 const COMPATIBLE_GROUPS: Record<TokenGroup, TokenGroup[]> = {
   color: ['color'],
@@ -137,9 +135,6 @@ function filterGroups(tokens: DesignToken[], groups: TokenGroup[]): DesignToken[
  * the point — there is no token spelling of `hidden` or `700`.
  */
 function tokenGroupsFor(meta: PropertyMeta): TokenGroup[] {
-  // A shorthand that takes several kinds says so itself, and wins over both the single group and the
-  // control-type guess.
-  if (meta.tokenGroups?.length) return meta.tokenGroups;
   if (meta.tokens) return [meta.tokens];
   switch (meta.control) {
     case 'color':

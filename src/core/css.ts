@@ -42,16 +42,16 @@ export interface PropertyMeta {
   control: ControlType;
   /** Allowed keywords, offered first in the autocomplete list. */
   keywords?: string[];
-  /** Token group whose values make sense here. */
-  tokens?: TokenGroup;
   /**
-   * Several token groups, for a shorthand that genuinely takes more than one kind.
+   * Token group whose values make sense here.
    *
-   * `border` wants a width *and* a colour. `tokens` cannot say that, and widening the whole `border`
-   * group to include colours instead — which is what this replaced — leaked colour tokens onto
-   * `border-width`, a property that takes only a length.
+   * One group: what a token can be on its own as the whole value. A shorthand such as `border` or
+   * `outline` takes a colour among its parts, but `var(--brand)` alone sets no style, so it draws
+   * nothing: picking one from the list looked like an edit and changed nothing. It offers
+   * its own group (`--border: 1px solid #ddd`, `--border-width: 2px`) and no colour tokens. A colour
+   * goes in `border-color` or `outline-color`, which offer the palette.
    */
-  tokenGroups?: TokenGroup[];
+  tokens?: TokenGroup;
   /**
    * Ready-made values for this property, shown under "Common values".
    *
@@ -234,7 +234,7 @@ export const CSS_PROPERTIES: PropertyMeta[] = [
     group: 'border',
     control: 'text',
     hint: '1px solid var(--border)',
-    tokenGroups: ['border', 'color'],
+    tokens: 'border',
     literals: ['none', '1px solid', '1px solid currentColor', '2px solid', '1px dashed', '1px solid transparent'],
   },
   {
@@ -242,7 +242,7 @@ export const CSS_PROPERTIES: PropertyMeta[] = [
     group: 'border',
     control: 'text',
     hint: '2px solid',
-    tokenGroups: ['border', 'color'],
+    tokens: 'border',
     literals: ['none', '1px solid', '2px solid currentColor', '2px dashed', '2px solid transparent'],
   },
   { name: 'outline-offset', group: 'border', control: 'length' },
@@ -253,10 +253,10 @@ export const CSS_PROPERTIES: PropertyMeta[] = [
    * `top` or `bottom` as a length — so `border-bottom` would have been handed a length control and
    * the spacing token scale, for a property whose value is `2px solid currentColor`.
    */
-  { name: 'border-top', group: 'border', control: 'text', hint: '1px solid var(--border)', tokenGroups: ['border', 'color'], literals: ['none', '1px solid', '1px solid currentColor', '2px solid', '1px dashed'], longhand: true },
-  { name: 'border-right', group: 'border', control: 'text', hint: '1px solid var(--border)', tokenGroups: ['border', 'color'], literals: ['none', '1px solid', '1px solid currentColor', '2px solid', '1px dashed'], longhand: true },
-  { name: 'border-bottom', group: 'border', control: 'text', hint: '1px solid var(--border)', tokenGroups: ['border', 'color'], literals: ['none', '1px solid', '1px solid currentColor', '2px solid', '1px dashed'], longhand: true },
-  { name: 'border-left', group: 'border', control: 'text', hint: '1px solid var(--border)', tokenGroups: ['border', 'color'], literals: ['none', '1px solid', '1px solid currentColor', '2px solid', '1px dashed'], longhand: true },
+  { name: 'border-top', group: 'border', control: 'text', hint: '1px solid var(--border)', tokens: 'border', literals: ['none', '1px solid', '1px solid currentColor', '2px solid', '1px dashed'], longhand: true },
+  { name: 'border-right', group: 'border', control: 'text', hint: '1px solid var(--border)', tokens: 'border', literals: ['none', '1px solid', '1px solid currentColor', '2px solid', '1px dashed'], longhand: true },
+  { name: 'border-bottom', group: 'border', control: 'text', hint: '1px solid var(--border)', tokens: 'border', literals: ['none', '1px solid', '1px solid currentColor', '2px solid', '1px dashed'], longhand: true },
+  { name: 'border-left', group: 'border', control: 'text', hint: '1px solid var(--border)', tokens: 'border', literals: ['none', '1px solid', '1px solid currentColor', '2px solid', '1px dashed'], longhand: true },
   // A width takes the border scale, not the size scale that a trailing `width` would infer.
   { name: 'border-top-width', group: 'border', control: 'length', tokens: 'border', longhand: true },
   { name: 'border-right-width', group: 'border', control: 'length', tokens: 'border', longhand: true },

@@ -665,12 +665,18 @@
           borderWidthHasNoColours: !(borderWidth ?? []).some(
             (x) => x.swatch || /color/i.test(x.group),
           ),
-          // The shorthand still gets both, because it genuinely takes a width and a colour.
-          borderShorthandTakesBoth: await (async () => {
-            const list = await suggestionsFor('border');
-            return /* it asks for both groups explicitly now */ Array.isArray(list);
-          })(),
         };
+        /*
+         * Nor does a border or outline shorthand take a colour token: `var(--brand)` alone sets no
+         * style, so it draws nothing. The colour goes in `border-color`, which keeps the palette.
+         */
+        for (const property of ['border', 'outline']) {
+          const list = await suggestionsFor(property);
+          results.offers[`${property}HasNoColourTokens`] =
+            Array.isArray(list) && !list.some((x) => x.value === 'var(--brand)');
+        }
+        results.offers.borderColorKeepsTheColourTokens =
+          valuesOf(await suggestionsFor('border-color')).includes('var(--brand)');
 
         /*
          * Common values for the properties whose syntax nobody remembers. All four are `text`
