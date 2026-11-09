@@ -8,7 +8,7 @@ import type {
   RuleEntry,
   WriteTarget,
 } from '../../../core/cascade.js';
-import { longhandsOf, shorthandGroups, splitImportant, type Declaration, type DisplayEntry } from '../../../core/declaration-list.js';
+import { longhandsOf, shorthandChain, shorthandGroups, splitImportant, type Declaration } from '../../../core/declaration-list.js';
 import { renderFamilies } from '../class-editor.js';
 import { entryLabel, reachText, shortLabel } from '../../../core/save-plan.js';
 import { mediaApplies } from '../../../core/viewport.js';
@@ -76,6 +76,8 @@ export interface RowSpec {
    * The row's current source is picked until another is, and the panel includes it.
    */
   destinations?: readonly AdderDestination[];
+  /** A line under the row: a side written in another block than its shorthand says which wins. */
+  note?: TemplateResult;
 }
 
 /**
@@ -425,80 +427,117 @@ function removeShown(host: StylesHost, spec: RowSpec, shown: Contribution): void
 }
 
 /**
- * A list of rows, with a shorthand and its sides shown as one family when the same block declares
- * them: the control cards use, which says which comes last and so wins, and moves the other last.
+ * A list of rows, with each shorthand and its sides together.
  *
- * Only within one block. Written in different places (`padding` in `.card`, `padding-left` inline)
- * they do not compete by order but by the cascade, which the dot's popover shows and edits.
+ * A family is the shorthand's own block (where its winning value is written) and every side that
+ * block declares too: they compete by order there, and the control cards use says which comes
+ * last and moves the other last. Whether a side's overall winner is that block or another (an
+ * important class rule, say) does not decide this: the block still holds both, in an order.
+ *
+ * A side written only in another block (`margin` inline, `margin-right` in a class) is listed under
+ * its shorthand too, with no order control, since order does not decide between two blocks: its
+ * note says which wins by the cascade, and its dot is where that is changed.
  */
 export function renderPropertyRows(
   properties: readonly string[],
   specFor: (property: string) => RowSpec,
   host: StylesHost,
 ): TemplateResult {
-  type Block = { target: WriteTarget; label: string; declarations: readonly Declaration[]; names: string[] };
-  const blocks: Block[] = [];
+  type Block = { target: WriteTarget; label: string; declarations: readonly Declaration[] };
+  const names = properties.map((one) => one.toLowerCase());
+  const declares = (block: Block, property: string): boolean =>
+    block.declarations.some((one) => one.property.toLowerCase() === property);
+  // The shorthand a side is listed under: its outermost one among these rows.
+  const ownerOf = (property: string): string | undefined =>
+    shorthandChain(property).filter((name) => names.includes(name)).pop();
+
+  /* Each shorthand's block, from its winning declaration. */
   const blockOf = new Map<string, Block>();
-  for (const property of properties) {
+  for (const property of names) {
+    if (!longhandsOf(property).length) continue;
     const spec = specFor(property);
-    const { list, shown: winner } = readRow(spec);
-    /*
-     * A side shown through its shorthand (the shorthand comes last and wins) still has its own
-     * declaration in that block, beaten: that is the one to place, or flipping the family back
-     * would have nothing to offer.
-     */
-    const shown = winner?.via
-      ? list.applying.find((one) => !one.via && sameTarget(targetOf(one, spec.element), targetOf(winner, spec.element)))
-      : winner;
+    const { shown } = readRow(spec);
     if (!shown || shown.via) continue;
     const target = targetOf(shown, spec.element);
     if (target.kind === 'readonly') continue;
-    let block = blocks.find((one) => sameTarget(one.target, target));
-    if (!block) {
-      block = {
-        target,
-        label: shortLabel(shown),
-        declarations: shown.source.kind === 'rule' ? shown.source.entry.declarations : spec.model.inline,
-        names: [],
-      };
-      blocks.push(block);
-    }
-    block.names.push(property.toLowerCase());
-    blockOf.set(property.toLowerCase(), block);
+    blockOf.set(property, {
+      target,
+      label: shortLabel(shown),
+      declarations: shown.source.kind === 'rule' ? shown.source.entry.declarations : spec.model.inline,
+    });
   }
-  const familyOf = new Map<string, { group: ReturnType<typeof shorthandGroups>[number]; block: Block }>();
-  for (const block of blocks) {
-    // The block's own order, narrowed to what these rows show: that order is what decides.
-    const listed = block.declarations.filter((one) => block.names.includes(one.property.toLowerCase()));
-    for (const group of shorthandGroups(listed)) {
-      for (const name of [group.shorthand, ...group.longhands]) familyOf.set(name.toLowerCase(), { group, block });
-    }
+  /* Its sides among these rows: in its block, or written elsewhere. */
+  const sidesOf = new Map<string, { inBlock: string[]; elsewhere: string[] }>();
+  for (const property of names) {
+    const owner = ownerOf(property);
+    if (!owner) continue;
+    const block = blockOf.get(owner);
+    const sides = sidesOf.get(owner) ?? { inBlock: [], elsewhere: [] };
+    if (block && declares(block, property)) sides.inBlock.push(property);
+    else sides.elsewhere.push(property);
+    sidesOf.set(owner, sides);
   }
+
+  const renderRow = (property: string, note?: TemplateResult): TemplateResult =>
+    renderPropertyRow({ ...specFor(property), ...(note ? { note } : {}) }, host);
+  /** Under its shorthand, from another block: which of the two wins, by the cascade. */
+  const elsewhereNote = (side: string, shorthand: string): TemplateResult => {
+    const block = blockOf.get(shorthand);
+    const { shown } = readRow(specFor(side));
+    const from = block?.label ?? shorthand;
+    const sideWins = Boolean(shown) && !shown!.via;
+    return sideWins
+      ? html`Wins over <b>${shorthand}</b> in <b>${from}</b> by the cascade`
+      : html`Overridden by <b>${shorthand}</b> in <b>${from}</b>`;
+  };
+
   const done = new Set<string>();
-  const entries: Array<{ entry: DisplayEntry; block?: Block }> = [];
+  const out: TemplateResult[] = [];
   for (const property of properties) {
     const key = property.toLowerCase();
     if (done.has(key)) continue;
-    const family = familyOf.get(key);
-    if (!family) {
+    const owner = sidesOf.has(key) ? key : ownerOf(key);
+    if (!owner || !sidesOf.has(owner)) {
       done.add(key);
-      entries.push({ entry: { kind: 'row', property } });
+      out.push(renderRow(property));
       continue;
     }
-    entries.push({ entry: { kind: 'family', group: family.group }, block: family.block });
-    for (const name of [family.group.shorthand, ...family.group.longhands]) done.add(name.toLowerCase());
-  }
-  const renderRow = (property: string): TemplateResult => renderPropertyRow(specFor(property), host);
-  return html`${entries.map(({ entry, block }) => {
-    if (entry.kind === 'row' || !block) return renderRow(entry.kind === 'row' ? entry.property : entry.group.shorthand);
+    const shorthand = properties.find((one) => one.toLowerCase() === owner) ?? owner;
+    const { inBlock, elsewhere } = sidesOf.get(owner)!;
+    const block = blockOf.get(owner);
+    for (const name of [owner, ...inBlock, ...elsewhere]) done.add(name);
+    const display = (name: string): string => properties.find((one) => one.toLowerCase() === name) ?? name;
+    const others = elsewhere.length
+      ? html`<div class="fam-elsewhere">${elsewhere.map((side) => renderRow(display(side), elsewhereNote(side, owner)))}</div>`
+      : nothing;
+    if (!inBlock.length || !block) {
+      out.push(html`<div class="family-loose">${renderRow(shorthand)}${others}</div>`);
+      continue;
+    }
+    // The block's own order, narrowed to what these rows show: that order is what decides.
+    const listed = block.declarations.filter((one) => [owner, ...inBlock].includes(one.property.toLowerCase()));
+    const group = shorthandGroups(listed).find((one) => one.shorthand.toLowerCase() === owner);
+    if (!group) {
+      out.push(html`<div class="family-loose">${renderRow(shorthand)}${inBlock.map((side) => renderRow(display(side)))}${others}</div>`);
+      continue;
+    }
     // Writing a declaration again, as it is, moves it last in its block, which is what makes it win.
-    const promote = (property: string): void => {
-      const declared = [...block.declarations].reverse().find((one) => one.property.toLowerCase() === property.toLowerCase());
+    const promote = (name: string): void => {
+      const declared = [...block.declarations].reverse().find((one) => one.property.toLowerCase() === name.toLowerCase());
       if (!declared) return;
-      host.engine.setDeclaration(block.target, property, `${declared.value}${declared.important ? ' !important' : ''}`);
+      host.engine.setDeclaration(block.target, name, `${declared.value}${declared.important ? ' !important' : ''}`);
     };
-    return renderFamilies([entry], renderRow, promote, block.label);
-  })}`;
+    // A side its block declares, beaten by another block anyway (an important class rule): the order
+    // here still decides within the block, and its note says what wins over both.
+    const inBlockRow = (name: string): TemplateResult => {
+      const spec = specFor(name);
+      const { shown } = readRow(spec);
+      const beatenElsewhere = shown && !shown.via && !sameTarget(targetOf(shown, spec.element), block.target);
+      return renderRow(name, beatenElsewhere ? html`<b>${shortLabel(shown!)}</b> wins over this block by the cascade` : undefined);
+    };
+    out.push(html`${renderFamilies([{ kind: 'family', group }], inBlockRow, promote, block.label)}${others}`);
+  }
+  return html`${out}`;
 }
 
 export function renderPropertyRow(spec: RowSpec, host: StylesHost): TemplateResult {
@@ -636,6 +675,7 @@ export function renderPropertyRow(spec: RowSpec, host: StylesHost): TemplateResu
           </button>`
       : nothing}
     </div>
+    ${spec.note ? html`<p class="side-note">${spec.note}</p>` : nothing}
     ${destLine}
   </div>`;
 }
@@ -762,6 +802,33 @@ export const propertyRowStyles: CSSResult = css`
   }
   .moon:nth-child(4) {
     z-index: 1;
+  }
+  /*
+   * A side written in another block than its shorthand: under it, indented and ruled like a family's
+   * sides, but solid-free (dotted) and with no order control, since the cascade decides, not order.
+   */
+  .fam-elsewhere,
+  .family-loose > .fam-elsewhere {
+    display: grid;
+    gap: 6px;
+    margin-left: 23px;
+    padding-left: 7px;
+    border-left: 2px dotted var(--heo-line-strong);
+  }
+  .family-loose {
+    display: grid;
+    gap: 6px;
+  }
+  .side-note {
+    margin: 2px 0 0 26px;
+    color: var(--heo-text-dim);
+    font-size: 10px;
+    line-height: 1.4;
+  }
+  .side-note b {
+    color: var(--heo-text);
+    font-family: var(--heo-mono);
+    font-weight: 400;
   }
   /* A segmented row's "where it goes", under the row while the row is in use. */
   .dest-line {

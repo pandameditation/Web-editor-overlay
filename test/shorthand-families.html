@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Shorthand families across blocks</title>
+  <!--
+    A shorthand and its side are one family where one block declares both: they compete by order
+    there, and the family control moves one last. Written in different blocks, the side is still
+    listed under its shorthand, with a note saying which wins by the cascade.
+  -->
+  <style id="site">.intro { color: #222; }</style>
+</head>
+<body>
+  <p id="t" class="intro" style="margin: 4px; margin-left: 20px">The element</p>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const results = {};
+      const errors = [];
+      addEventListener('error', (event) => errors.push('error: ' + event.message));
+      const progress = document.getElementById('progress');
+      const settle = (ms = 300) => new Promise((resolve) => setTimeout(resolve, ms));
+      const deep = (selector, root = document) => {
+        const direct = root.querySelector?.(selector);
+        if (direct) return direct;
+        for (const el of root.querySelectorAll?.('*') ?? []) {
+          if (!el.shadowRoot) continue;
+          const found = deep(selector, el.shadowRoot);
+          if (found) return found;
+        }
+        return null;
+      };
+      try {
+        const api = window.HtmlEditorOverlay.mount({ theme: 'dark', presets: false, detectScriptContent: false });
+        const engine = api.engine;
+        api.setEditing(true);
+        await engine.whenReady();
+        engine.setDockTab('styles');
+        const el = document.getElementById('t');
+        const site = document.getElementById('site');
+        api.select(el);
+        await settle(500);
+        const sroot = () => deep('heo-styles-panel').shadowRoot;
+        const list = () => sroot().querySelector('[data-declarations="effective"]');
+        const familyRows = () => Array.from(list()?.querySelectorAll('.family .row') ?? []).map((row) => row.dataset.property).join(',');
+        const elsewhereRows = () => Array.from(list()?.querySelectorAll('.fam-elsewhere .row') ?? []).map((row) => row.dataset.property).join(',');
+        const noteText = (selector) => list()?.querySelector(selector)?.textContent.replace(/\s+/g, ' ').trim() ?? '';
+        const key = (input, name) => input.dispatchEvent(new KeyboardEvent('keydown', { key: name, bubbles: true, composed: true, cancelable: true }));
+        /** margin-left's value list: pick a destination on its switch, type a value, Enter. */
+        const writeVia = async (label, value) => {
+          const field = () => list()?.querySelector('.row[data-property="margin-left"] heo-value-field');
+          field()?.focusInput();
+          field()?.openList();
+          await settle(200);
+          const seg = field()?.shadowRoot?.querySelector('.list-head heo-segmented');
+          Array.from(seg?.shadowRoot?.querySelectorAll('button') ?? []).find((one) => one.textContent.trim() === label)?.click();
+          await settle(200);
+          const input = field()?.shadowRoot?.querySelector('input[type="text"]');
+          input.focus();
+          input.value = value;
+          input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+          await settle(100);
+          key(input, 'Enter');
+          await settle(400);
+          input.blur();
+          await settle(300);
+        };
+
+        progress.textContent = 'sameBlock';
+        // Both inline: one family, with the order control.
+        results.sameBlock = {
+          isOneFamily: familyRows() === 'margin,margin-left' && !elsewhereRows(),
+          hasTheOrderControl: list()?.querySelectorAll('.family .side-win').length === 2,
+        };
+
+        progress.textContent = 'beatenElsewhere';
+        /*
+         * The reported case: a class's important margin-left beats the inline one. Inline still holds
+         * margin and margin-left, in an order, so they are still one family; the side's note says what
+         * wins over the block. It used to be split off, as though it were not inline at all.
+         */
+        site.textContent += '\n.intro { margin-left: 9px !important; }';
+        await settle(500);
+        results.beatenElsewhere = {
+          staysOneFamily: familyRows() === 'margin,margin-left' && !elsewhereRows(),
+          saysWhatWinsOverTheBlock: noteText('.family .side-note') === '.intro wins over this block by the cascade',
+        };
+        site.textContent = '.intro { color: #222; }';
+        await settle(500);
+
+        progress.textContent = 'moved';
+        // Moved to a new class: two blocks, so no order control, but listed under margin with a note.
+        await writeVia('New class', '21px');
+        results.moved = {
+          writtenInTheClass: !/margin-left/.test(el.getAttribute('style') ?? '') && el.classList.length === 2,
+          listedUnderItsShorthand: !familyRows() && elsewhereRows() === 'margin-left' &&
+            Boolean(list()?.querySelector('.family-loose .fam-elsewhere')),
+          noOrderControlAcrossBlocks: !list()?.querySelector('.side-win'),
+          // Inline beats a class, so the moved value does not show: said, not left silent.
+          saysWhichWins: noteText('.fam-elsewhere .side-note') === 'Overridden by margin in inline style',
+        };
+
+        progress.textContent = 'back';
+        // Back inline, over the class: one block again, one family again.
+        await writeVia('Inline', '31px');
+        results.back = {
+          isOneFamilyAgain: familyRows() === 'margin,margin-left' && !elsewhereRows() &&
+            /margin-left:\s*31px/.test(el.getAttribute('style') ?? ''),
+        };
+      } catch (e) {
+        results.threw = String((e && e.stack) || e);
+      }
+      results.browserErrors = { ok: errors.length === 0, errors };
+      const failed = Object.entries(results)
+        .filter(([, group]) => group && typeof group === 'object')
+        .filter(([, group]) => Object.values(group).some((value) => value === false))
+        .map(([name]) => name);
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify({ ...results, failed: results.threw ? ['threw', ...failed] : failed }, null, 2) + ':END';
+    })();
+  </script>
+</body>
+</html>
