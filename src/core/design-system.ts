@@ -31,6 +31,7 @@ import { safeSelector } from './selectors.js';
 import { portableSettings, type SettingsRegistry } from './settings.js';
 import type { TokenRegistry } from './tokens.js';
 import type {
+  CaptureInfo,
   DesignClass,
   DesignRule,
   DesignSystemDocument,
@@ -523,6 +524,35 @@ export function restoreDesignSystem(
   if (registries.settings && snapshot.settings) registries.settings.set(snapshot.settings);
 }
 
+/**
+ * A block's capture provenance, rebuilt field by field or dropped.
+ *
+ * The capture dialog prints the source URL and capture width, and later code reads
+ * `warnings` as a list, so a malformed `capture` from an untrusted seed would otherwise
+ * render as "undefined" or throw on `.map`. Anything that is not the right shape is
+ * removed rather than repaired.
+ */
+function normalizeCapture(block: LibraryBlock): LibraryBlock {
+  if (!('capture' in block)) return block;
+  const raw = block.capture as unknown;
+  const { capture: _dropped, ...rest } = block;
+  if (!raw || typeof raw !== 'object') return rest;
+  const entry = raw as Record<string, unknown>;
+  if (
+    typeof entry.url !== 'string' ||
+    typeof entry.viewport !== 'number' ||
+    !Number.isFinite(entry.viewport) ||
+    typeof entry.capturedAt !== 'string'
+  ) {
+    return rest;
+  }
+  const capture: CaptureInfo = { url: entry.url, viewport: entry.viewport, capturedAt: entry.capturedAt };
+  if (Array.isArray(entry.warnings)) {
+    capture.warnings = entry.warnings.filter((warning): warning is string => typeof warning === 'string');
+  }
+  return { ...rest, capture };
+}
+
 /** Validate and normalise an untrusted design system document. */
 export function parseDesignSystem(input: unknown): DesignSystemDocument {
   const raw: unknown = typeof input === 'string' ? JSON.parse(input) : input;
@@ -598,9 +628,9 @@ export function parseDesignSystem(input: unknown): DesignSystemDocument {
         entry.declarations &&
         typeof entry.declarations === 'object',
     ),
-    blocks: (doc.blocks ?? []).filter(
-      (block) => block && typeof block.name === 'string' && typeof block.html === 'string',
-    ),
+    blocks: (doc.blocks ?? [])
+      .filter((block) => block && typeof block.name === 'string' && typeof block.html === 'string')
+      .map(normalizeCapture),
     ai,
     aiKeys,
     ...(settings ? { settings } : {}),

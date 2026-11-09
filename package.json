@@ -92,6 +92,7 @@
     "check:edgescroll": "node scripts/browser-check.mjs test/edge-scroll.html 150000",
     "check:paste": "node scripts/browser-check.mjs test/paste-html.html 45000",
     "check:csspaste": "node scripts/browser-check.mjs test/css-paste.html 45000",
+    "check:capturepaste": "node scripts/browser-check.mjs test/capture-paste.html 60000",
     "check:dsscope": "node scripts/browser-check.mjs test/design-scope.html 45000",
     "check:move": "node scripts/browser-check.mjs test/transform-move.html 90000",
     "check:pin": "node scripts/browser-check.mjs test/position-pin.html 90000",
@@ -110,7 +111,8 @@
     "check:searchfield": "node scripts/browser-check.mjs test/search-field.html 60000",
     "check:ornament": "node scripts/browser-check.mjs test/ornament-divider.html 60000",
     "check:popover": "node scripts/browser-check.mjs test/popover-settle.html 60000",
-    "check:firefox": "node scripts/firefox-check.mjs test/popover-settle.html 90000"
+    "check:firefox": "node scripts/firefox-check.mjs test/popover-settle.html 90000",
+    "check:firefox:capture": "node scripts/firefox-check.mjs test/capture-paste.html 90000"
   },
   "dependencies": {
     "lit": "3.3.3"

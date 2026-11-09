@@ -52,7 +52,12 @@ import {
   unbindViewport,
   ViewportPreview,
 } from './viewport.js';
-import { addClassToBlockElements, applyBlockInlineRules, blockIdsReferencedByCSS } from './block-css.js';
+import {
+  addClassToBlockElements,
+  applyBlockInlineRules,
+  blockIdsReferencedByCSS,
+  vetCapturedCSS,
+} from './block-css.js';
 import {
   parsePastedCSS,
   pastedDeclarationCount,
@@ -299,6 +304,7 @@ import {
   decodeSeedSync,
   encodeSeed,
   encodeSeedSync,
+  isSeed,
   seedStats,
   type SeedStats,
 } from './seed.js';
@@ -405,6 +411,23 @@ export interface HtmlPaste {
   /** What the user has written so far. */
   draft: string;
   /** Why it cannot be inserted yet, when it cannot. */
+  error: string;
+}
+
+/**
+ * A block copied out of another site (a single-block seed on the clipboard), waiting for the
+ * user to say whether it goes into the page, into the library, or both.
+ */
+export interface CapturePaste {
+  /** The block as it will be inserted or saved: fresh id, captured origin, vetted CSS. */
+  block: LibraryBlock;
+  /** Where an insert lands. Changeable from inside the dialog. */
+  anchor: InsertAnchor;
+  insert: boolean;
+  save: boolean;
+  /** CSS taken out because it was unsafe, for the dialog to report. */
+  removed: string[];
+  /** Why it cannot be committed yet, when it cannot. */
   error: string;
 }
 
@@ -783,6 +806,8 @@ export interface EditorState {
    * position be changed from inside the dialog without reopening anything.
    */
   htmlPaste: HtmlPaste | null;
+  /** A captured block pasted from the clipboard, held until the user picks insert and/or save. */
+  capturePaste: CapturePaste | null;
   /** A CSS buffer waiting for an explicit destination and an atomic commit. */
   cssPaste: CssPaste | null;
   /**
@@ -1306,6 +1331,7 @@ export class EditorEngine {
       aiBusy: false,
       aiContextScope: { ...DEFAULT_AI_CONTEXT_SCOPE },
       htmlPaste: null,
+      capturePaste: null,
       cssPaste: null,
       // Everything, by default: leaving something out is the deliberate act, and a save that
       // quietly dropped part of the vocabulary would be the worse surprise.
@@ -6812,6 +6838,117 @@ export class EditorEngine {
   }
 
   /* ---------------------------------------------------------------------- */
+  /* Pasting a captured block                                               */
+  /* ---------------------------------------------------------------------- */
+
+  /**
+   * Open the capture paste dialog for one block that arrived on the clipboard.
+   *
+   * The block gets a fresh id every time. A capture's keyframes and font faces are renamed
+   * after its id, so two pastes of the same capture sharing one id would also share one
+   * `fade--hero`, and editing one would restyle the other. "Taken" includes ids the library
+   * does not know: an insert-only paste never joins the library, but it owns a CSS chunk and
+   * elements on the page.
+   *
+   * The CSS is vetted here, because a clipboard is untrusted whatever produced it, and the
+   * dialog reports what was removed.
+   */
+  beginCapturePaste(block: LibraryBlock, anchor?: InsertAnchor): boolean {
+    const target = anchor ?? this.store.value.insertAnchor ?? this.#defaultAnchor();
+    if (!target) return false;
+    const id = this.library.uniqueId(block.name || block.id || 'captured', (candidate) => {
+      if (this.library.hasCSS(candidate)) return true;
+      const value = candidate.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      return Boolean(document.querySelector(`[${BLOCK_ATTR}="${value}"], [${BLOCK_PART_ATTR}="${value}"]`));
+    });
+    const vetted = vetCapturedCSS(block.css ?? '');
+    const next: LibraryBlock = {
+      ...block,
+      id,
+      css: vetted.css.trim() ? vetted.css : undefined,
+      ...(block.capture ? { origin: 'captured' as const, category: 'Captured' } : {}),
+    };
+    this.endTextEdit(true);
+    this.store.patch({
+      capturePaste: { block: next, anchor: target, insert: true, save: false, removed: vetted.removed, error: '' },
+      insertAnchor: null,
+      quickMenuOpen: false,
+    });
+    return true;
+  }
+
+  updateCapturePaste(
+    patch: Partial<Pick<CapturePaste, 'insert' | 'save' | 'error' | 'anchor'>>,
+  ): void {
+    const open = this.store.value.capturePaste;
+    if (!open) return;
+    this.store.patch({ capturePaste: { ...open, ...patch } });
+  }
+
+  cancelCapturePaste(): void {
+    if (!this.store.value.capturePaste) return;
+    this.store.patch({ capturePaste: null });
+  }
+
+  /**
+   * Insert the captured block, save it to the library, or both.
+   *
+   * Saving goes through `upsertBlock`, so it is undoable and a save can see it. Inserting
+   * inserts the saved block when there is one, so the instance links to the library entry.
+   */
+  async commitCapturePaste(): Promise<{ inserted: HTMLElement | null; saved: LibraryBlock | null } | null> {
+    const open = this.store.value.capturePaste;
+    if (!open) return null;
+    if (!open.insert && !open.save) {
+      this.updateCapturePaste({ error: 'Choose insert, save, or both.' });
+      return null;
+    }
+    if (open.insert && !open.anchor.reference.isConnected) {
+      this.updateCapturePaste({ error: 'The element this was going next to is no longer in the page.' });
+      return null;
+    }
+    let saved: LibraryBlock | null = null;
+    if (open.save) {
+      try {
+        saved = this.upsertBlock(open.block);
+      } catch (error) {
+        this.updateCapturePaste({ error: error instanceof Error ? error.message : String(error) });
+        return null;
+      }
+    }
+    let inserted: HTMLElement | null = null;
+    if (open.insert) {
+      const block = saved ?? open.block;
+      inserted = await this.insertBlock(block, this.library.defaultProps(block), open.anchor);
+      if (!inserted) {
+        // Saved already, when asked; untick it so a retry does not save it a second time.
+        this.updateCapturePaste({ save: false, error: 'That block could not be inserted.' });
+        return null;
+      }
+    }
+    this.store.patch({ capturePaste: null });
+    if (saved && !inserted) {
+      this.notify(`Saved ${saved.name} to the library.`, 'success', { label: 'Undo', run: () => this.undo() });
+    }
+    return { inserted, saved };
+  }
+
+  /**
+   * A seed pasted onto the canvas: a single block opens the capture dialog.
+   *
+   * Only exactly one block and nothing else. A seed with tokens, classes or rules is a design
+   * system, and importing one is a decision for the transfer panel, so it stays a no-op here
+   * as it always was.
+   */
+  async #pasteSeed(text: string): Promise<void> {
+    const doc = await this.decodeSeedText(text);
+    if (!doc || doc.blocks.length !== 1) return;
+    if (doc.tokens.length || doc.classes.length || doc.rules?.length) return;
+    if (!this.editing || this.store.value.capturePaste) return;
+    this.beginCapturePaste(doc.blocks[0]);
+  }
+
+  /* ---------------------------------------------------------------------- */
   /* Pasting CSS                                                            */
   /* ---------------------------------------------------------------------- */
 
@@ -10712,9 +10849,20 @@ export class EditorEngine {
        * semantics. Parsing before opening the modal also means ordinary text pasted on the canvas
        * is left entirely alone.
        */
-      if (!this.editing || this.store.value.cssPaste) return;
+      if (!this.editing || this.store.value.cssPaste || this.store.value.capturePaste) return;
       if (isOverlayEvent(event) || isNativeInputEvent(event)) return;
       const text = event.clipboardData?.getData('text/plain') ?? '';
+      /*
+       * A seed on the clipboard is a block copied by the capture extension (or the transfer
+       * panel). Claimed before the CSS parse, which would otherwise read the base64 as nothing
+       * and leave the paste to the browser.
+       */
+      if (isSeed(text)) {
+        event.preventDefault();
+        event.stopPropagation();
+        void this.#pasteSeed(text);
+        return;
+      }
       const parsed = parsePastedCSS(text);
       if (!pastedDeclarationCount(parsed)) return;
 

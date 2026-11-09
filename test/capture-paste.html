@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Pasting a block captured from another site</title>
+</head>
+
+<body>
+  <main id="stage">
+    <!-- Wears the capture's class names, so any leak out of the scoped CSS lands on it. -->
+    <p id="page-para" class="hero-title cta">Page paragraph AAA</p>
+  </main>
+
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const results = {};
+      const errors = [];
+      addEventListener('error', (event) => errors.push('error: ' + event.message));
+      addEventListener('unhandledrejection', (event) => errors.push('rejection: ' + String(event.reason)));
+
+      const progress = document.getElementById('progress');
+      const step = (name) => { progress.textContent = name; };
+      const frames = () => new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      async function until(predicate, limit = 120) {
+        for (let n = 0; n < limit; n += 1) {
+          if (predicate()) return true;
+          await frames();
+        }
+        return false;
+      }
+
+      function deepQuery(selector, root = document) {
+        const found = root.querySelector?.(selector);
+        if (found) return found;
+        for (const element of root.querySelectorAll?.('*') ?? []) {
+          if (!element.shadowRoot) continue;
+          const hit = deepQuery(selector, element.shadowRoot);
+          if (hit) return hit;
+        }
+        return null;
+      }
+      const dialogRoot = () => deepQuery('heo-capture-paste-dialog')?.shadowRoot ?? null;
+      const click = (element) =>
+        element?.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+      const pasteText = (target, text) => {
+        const clipboard = new DataTransfer();
+        clipboard.setData('text/plain', text);
+        const event = new ClipboardEvent('paste', {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          clipboardData: clipboard,
+        });
+        // Firefox gives a constructed ClipboardEvent a fresh, empty DataTransfer (measured), so
+        // the text is set on the event's own one; without this no paste ever reached the editor.
+        if (event.clipboardData && event.clipboardData.getData('text/plain') !== text) {
+          event.clipboardData.setData('text/plain', text);
+        }
+        return target.dispatchEvent(event);
+      };
+
+      /** A plain-codec seed, built by hand the way the capture extension builds one. */
+      const toSeed = (doc) => {
+        const bytes = new TextEncoder().encode(JSON.stringify(doc));
+        let binary = '';
+        for (const byte of bytes) binary += String.fromCharCode(byte);
+        return 'heo1p.' + btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+      };
+
+      /*
+       * A one-glyph TrueType font, family "Probe": "A" is a 2em-wide box, so text set in it is
+       * measurably wider than any fallback. Inlined because Firefox will not fetch a sibling
+       * file:// file. Made once with fontTools FontBuilder (glyph order .notdef + A, cmap
+       * U+0041, unitsPerEm 1000, advance 2000) in a throwaway venv that was deleted afterwards.
+       */
+      const FONT_B64 = 'AAEAAAAKAIAAAwAgT1MvMkUhRr8AAAEoAAAAYGNtYXAADACUAAABkAAAADRnbHlmb9Fb6AAAAcwAAAAaaGVhZDUV/gwAAACsAAAANmhoZWEK8gdvAAAA5AAAACRobXR4CcQAZAAAAYgAAAAIbG9jYQANAAAAAAHEAAAABm1heHAABAAGAAABCAAAACBuYW1lOQw10QAAAegAAABacG9zdAAoAAAAAAJEAAAAJgABAAAAAQAANXje/18PPPUAAwPoAAAAAOcX3TgAAAAA5xfdOABkAAAHbAK8AAAAAwACAAAAAAAAAAEAAAMg/zgAAAfQAGQAZAdsAAEAAAAAAAAAAAAAAAAAAAACAAEAAAACAAQAAQAAAAAAAgAAAAAAAAAAAAAAAAAAAAAAAwTiAZAABQAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAPz8/PwAAAEEAQQMg/zgAAAMgAMgAAAAAAAAAAAAAAAAAAAAgAAAB9AAAB9AAZAAAAAIAAAADAAAAFAADAAEAAAAUAAQAIAAAAAQABAABAAAAQf//AAAAQf///8AAAQAAAAAAAAAAAA0AAAABAGQAAAdsArwAAwAAMxEhEWQHCAK8/UQAAAAAAAAEADYAAQAAAAAAAQAFAAAAAQAAAAAAAgAHAAUAAwABBAkAAQAKAAwAAwABBAkAAgAOABZQcm9iZVJlZ3VsYXIAUAByAG8AYgBlAFIAZQBnAHUAbABhAHIAAAACAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIAAAAkAAA=';
+      const FONT = `data:font/ttf;base64,${FONT_B64}`;
+      // A 1x1 PNG.
+      const IMG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+      const CAPTURE = {
+        url: 'https://example.com/landing',
+        viewport: 1280,
+        capturedAt: '2026-11-09T10:00:00.000Z',
+        warnings: ['1 image stayed remote'],
+      };
+
+      const HERO_CSS = [
+        // Written without a selector: defaults for the block root.
+        'padding: 7px;',
+        // The colour the element inherited on its own site.
+        'body { color: rgb(10, 20, 30); }',
+        '.hero-grid { display: flex; flex-direction: row; }',
+        '@media (max-width: 600px) { .hero-grid { flex-direction: column; } }',
+        '.hero-title { font-family: Probe, sans-serif; animation: fade 1s; }',
+        '.probe-text { font-size: 16px; white-space: nowrap; }',
+        '.cta { background-color: rgb(0, 0, 255); }',
+        '.cta:hover { background-color: rgb(255, 0, 0); }',
+        // Unsafe: has to be removed on the way in, and reported.
+        '.bad { background-image: url("javascript:alert(1)"); }',
+        '@keyframes fade { from { opacity: 0.5; } to { opacity: 1; } }',
+        `@font-face { font-family: Probe; src: url(${FONT}) format("truetype"); }`,
+      ].join('\n');
+
+      const HERO_HTML = [
+        '<section class="hero" aria-label="Hero">',
+        '  <div class="hero-grid">',
+        '    <h2 class="hero-title"><span class="probe-text">AAA</span></h2>',
+        '    <a class="cta" href="#go">Go</a>',
+        '  </div>',
+        `  <img class="pic" src="${IMG}" alt="">`,
+        `  <picture><source srcset="${IMG} 1x, ${IMG} 2x" type="image/png"><img class="pic2" src="${IMG}" alt=""></picture>`,
+        `  <img class="fontimg" src="${FONT}" alt="">`,
+        '  <svg class="icon" width="10" height="10" viewBox="0 0 10 10"><symbol id="cap-icon" viewBox="0 0 10 10"><rect width="10" height="10"></rect></symbol><use href="#cap-icon"></use></svg>',
+        '  <p class="styled bad" style="margin-top: 3px">Styled</p>',
+        '</section>',
+      ].join('\n');
+
+      const heroBlock = {
+        id: 'hero', name: 'Hero', kind: 'component', category: 'Captured', origin: 'captured',
+        html: HERO_HTML, css: HERO_CSS, capture: CAPTURE,
+      };
+      const docOf = (blocks, extra = {}) => ({ name: 'Capture', version: 1, tokens: [], classes: [], blocks, ...extra });
+      const heroSeed = toSeed(docOf([heroBlock]));
+
+      const api = window.HtmlEditorOverlay.mount({
+        theme: 'dark',
+        detectScriptContent: false,
+        fileName: 'capture-paste.html',
+        presets: false,
+      });
+      const engine = api.engine;
+      const stage = document.getElementById('stage');
+      const pagePara = document.getElementById('page-para');
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+
+      const instances = () => Array.from(stage.querySelectorAll(':scope > [data-heo-block]'));
+      async function openPaste(seed) {
+        pasteText(pagePara, seed);
+        await until(() => engine.store.value.capturePaste && dialogRoot()?.querySelector('.dialog'));
+        engine.updateCapturePaste({ anchor: { reference: stage, position: 'lastChild' } });
+        await frames();
+        return engine.store.value.capturePaste;
+      }
+
+      /* ------------------------------------------------------------------ */
+      /* seed                                                                */
+      /* ------------------------------------------------------------------ */
+      step('seed');
+      const decoded = await engine.decodeSeedText(heroSeed);
+      const malformed = await engine.decodeSeedText(toSeed(docOf([{ ...heroBlock, capture: { url: 5, viewport: 'wide' } }])));
+
+      // A multi-block seed is a design system, which the transfer panel imports; pasting it on the canvas does nothing.
+      pasteText(pagePara, toSeed(docOf([heroBlock, { ...heroBlock, id: 'hero-b', name: 'Hero B' }])));
+      await frames();
+      await frames();
+      const multiOpened = Boolean(engine.store.value.capturePaste);
+
+      const first = await openPaste(heroSeed);
+      results.seed = {
+        // The parse side: parseDesignSystem used to keep extra fields only by accident; capture is normalised now.
+        theSeedKeepsCaptureMetadata: JSON.stringify(decoded?.blocks[0]?.capture) === JSON.stringify(CAPTURE),
+        // A capture field of the wrong shape would render "undefined" in the dialog.
+        aMalformedCaptureIsDropped: Boolean(malformed?.blocks[0]) && !('capture' in malformed.blocks[0]),
+        aSeedPasteOpensTheCaptureDialog: Boolean(first) && Boolean(dialogRoot()?.querySelector('.dialog')),
+        aMultiBlockSeedDoesNotOpenIt: !multiOpened,
+      };
+
+      /* ------------------------------------------------------------------ */
+      /* dialog (the first paste is open)                                    */
+      /* ------------------------------------------------------------------ */
+      step('dialog');
+      const licence = dialogRoot()?.querySelector('.licence')?.textContent?.replace(/\s+/g, ' ') ?? '';
+      const removedNote = dialogRoot()?.querySelector('.removed')?.textContent ?? '';
+      const sourceLine = dialogRoot()?.querySelector('.source')?.textContent?.replace(/\s+/g, ' ') ?? '';
+      const unsafeRemoved = first?.removed.length === 1 && /javascript/.test(first.removed[0]) &&
+        !first.block.css.includes('javascript') && /javascript/.test(removedNote);
+
+      // Unticking insert with save off leaves nothing to do; the commit has to say so rather than close.
+      click(dialogRoot()?.querySelector('input[name="insert"]'));
+      await frames();
+      click(dialogRoot()?.querySelector('footer .btn.primary'));
+      await frames();
+      await frames();
+      const refusal = engine.store.value.capturePaste;
+      const refusalText = dialogRoot()?.querySelector('footer .fine')?.textContent ?? '';
+      results.dialog = {
+        // Embedded fonts and images belong to someone; the note is the only place that says so.
+        theLicensingNoteShowsForEmbeddedAssets: /1 font/.test(licence) && /1 image/.test(licence) && /example\.com/.test(licence),
+        theSourceUrlAndWidthAreShown: sourceLine.includes(CAPTURE.url) && /1280 px/.test(sourceLine),
+        neitherBoxTickedRefuses: Boolean(refusal) && /Choose insert, save, or both/.test(refusal?.error ?? '') &&
+          /Choose insert, save, or both/.test(refusalText) && instances().length === 0,
+      };
+      click(dialogRoot()?.querySelector('input[name="insert"]'));
+      await frames();
+
+      /* ------------------------------------------------------------------ */
+      /* scoping: the same capture pasted twice, insert only                 */
+      /* ------------------------------------------------------------------ */
+      step('scoping');
+      click(dialogRoot()?.querySelector('footer .btn.primary'));
+      await until(() => !engine.store.value.capturePaste && instances().length === 1);
+      const secondOpen = await openPaste(heroSeed);
+      const secondResult = secondOpen ? await engine.commitCapturePaste() : null;
+      await frames();
+      const [one, two] = instances();
+      const idOne = one?.getAttribute('data-heo-block') ?? '';
+      const idTwo = two?.getAttribute('data-heo-block') ?? '';
+      const titleOf = (root) => root?.querySelector('.hero-title');
+      const style = (element) => (element ? getComputedStyle(element) : null);
+      const css = engine.library.css;
+      results.scoping = {
+        bothInstancesAreScoped: Boolean(one && two) && css.includes(`/* block: ${idOne} */`) &&
+          css.includes(`/* block: ${idTwo} */`) && style(one).paddingTop === '7px' && style(two).paddingTop === '7px',
+        // Two pastes sharing an id would share keyframe and font names, and restyle each other.
+        theTwoPastesHaveDifferentBlockIds: Boolean(idOne && idTwo) && idOne !== idTwo && secondResult?.saved === null,
+        keyframeNamesAreSuffixedAndDistinct: style(titleOf(one))?.animationName === `fade--${idOne}` &&
+          style(titleOf(two))?.animationName === `fade--${idTwo}`,
+        fontFamiliesArePrefixedAndDistinct: (style(titleOf(one))?.fontFamily ?? '').includes(`${idOne}--Probe`) &&
+          (style(titleOf(two))?.fontFamily ?? '').includes(`${idTwo}--Probe`),
+        // body { color } could never match inside a block; mapped to the root, it is inherited inside.
+        bodyRuleLandsOnTheBlockRoot: style(one)?.color === 'rgb(10, 20, 30)' && style(titleOf(one))?.color === 'rgb(10, 20, 30)',
+        nothingLeaksToThePageParagraph: style(pagePara).color === 'rgb(0, 0, 0)' &&
+          getComputedStyle(document.body).color === 'rgb(0, 0, 0)' &&
+          !/Probe/.test(style(pagePara).fontFamily) && style(pagePara).animationName === 'none' &&
+          style(pagePara).backgroundColor === 'rgba(0, 0, 0, 0)' && style(pagePara).paddingTop === '0px',
+      };
+
+      /* ------------------------------------------------------------------ */
+      /* responsive: the scoped CSS and the instance at two widths           */
+      /* ------------------------------------------------------------------ */
+      step('responsive');
+      async function renderAt(width) {
+        const frame = document.createElement('iframe');
+        frame.style.cssText = `width: ${width}px; height: 300px; border: 0; position: absolute; left: -5000px; top: 0;`;
+        const loaded = new Promise((resolve) => frame.addEventListener('load', resolve, { once: true }));
+        frame.srcdoc = `<!doctype html><meta charset="utf-8"><style>body { margin: 0; }</style><style>${css}</style>${one?.outerHTML ?? ''}`;
+        document.body.append(frame);
+        await loaded;
+        await frames();
+        const grid = frame.contentDocument.querySelector('.hero-grid');
+        const direction = grid ? frame.contentWindow.getComputedStyle(grid).flexDirection : null;
+        frame.remove();
+        return direction;
+      }
+      const narrow = await renderAt(360);
+      const wide = await renderAt(1200);
+      results.responsive = {
+        theMediaRuleAppliesAtANarrowViewport: narrow === 'column',
+        andNotAtAWideOne: wide === 'row',
+      };
+
+      /* ------------------------------------------------------------------ */
+      /* assets                                                              */
+      /* ------------------------------------------------------------------ */
+      step('assets');
+      const allRules = (list, out = []) => {
+        for (const rule of Array.from(list ?? [])) {
+          out.push(rule);
+          if (rule.cssRules && !(rule instanceof CSSKeyframesRule)) allRules(rule.cssRules, out);
+        }
+        return out;
+      };
+      const pageRules = Array.from(document.styleSheets).flatMap((sheet) => {
+        try { return allRules(sheet.cssRules); } catch { return []; }
+      });
+      const animationName = style(titleOf(one))?.animationName;
+      const pic = one?.querySelector('.pic');
+      await pic?.decode().catch(() => { });
+      const family = `${idOne}--Probe`;
+      const faces = await document.fonts.load(`16px "${family}"`, 'A').catch(() => []);
+      await frames();
+      const probeWidth = one?.querySelector('.probe-text')?.getBoundingClientRect().width ?? 0;
+      const cta = one?.querySelector('.cta');
+      const hover = pageRules.find((rule) => rule instanceof CSSStyleRule &&
+        rule.selectorText.includes(':hover') && rule.selectorText.includes(`"${idOne}"`));
+      const unhovered = hover ? hover.selectorText.replace(/:hover/g, '') : '';
+      results.assets = {
+        animationNameResolvesToADefinedKeyframes: Boolean(animationName) && pageRules.some(
+          (rule) => rule instanceof CSSKeyframesRule && rule.name === animationName),
+        theDataUrlImageLoads: Boolean(pic?.complete) && pic?.naturalWidth === 1,
+        // Three 2em glyphs at 16px are 96px wide; any fallback face is about a third of that.
+        theDataUrlFontLoads: faces.length > 0 && document.fonts.check(`16px "${family}"`, 'A') && probeWidth > 80,
+        theHoverRuleTargetsTheButton: Boolean(hover) && Boolean(cta?.matches(unhovered)) &&
+          !pagePara.matches(unhovered) && hover.style.backgroundColor === 'rgb(255, 0, 0)',
+      };
+
+      /* ------------------------------------------------------------------ */
+      /* sanitiser                                                           */
+      /* ------------------------------------------------------------------ */
+      step('sanitiser');
+      const pic2 = one?.querySelector('.pic2');
+      await pic2?.decode().catch(() => { });
+      const srcset = one?.querySelector('picture source')?.getAttribute('srcset') ?? '';
+      results.sanitiser = {
+        aDataFontUrlSurvivesInCss: css.includes(`data:font/ttf;base64,${FONT_B64.slice(0, 24)}`),
+        aDataFontSrcOnAnImageIsStillRefused: Boolean(one?.querySelector('.fontimg')) &&
+          !one.querySelector('.fontimg').hasAttribute('src'),
+        pictureSourceSrcsetSurvives: srcset.length > 0,
+        // A comma split cut the data URL at "base64," and kept a candidate pointing at nothing.
+        aDataUrlSrcsetIsNotCorrupted: srcset === `${IMG} 1x, ${IMG} 2x` && pic2?.currentSrc === IMG,
+        svgSymbolAndUseSurvive: Boolean(one?.querySelector('symbol#cap-icon')) &&
+          one?.querySelector('use')?.getAttribute('href') === '#cap-icon',
+        styleAttributesSurvive: (one?.querySelector('.styled')?.getAttribute('style') ?? '').includes('margin-top: 3px'),
+        anUnsafeCssUrlIsRemovedAndReported: unsafeRemoved && !css.includes('javascript:'),
+      };
+
+      /* ------------------------------------------------------------------ */
+      /* library: save only, then reinsert from the library, then undo       */
+      /* ------------------------------------------------------------------ */
+      step('library');
+      const before = instances().length;
+      await openPaste(heroSeed);
+      engine.updateCapturePaste({ insert: false, save: true });
+      await frames();
+      const saveResult = await engine.commitCapturePaste();
+      await frames();
+      const savedId = saveResult?.saved?.id ?? '';
+      const saved = engine.library.get(savedId);
+
+      engine.setSaveBlockLibrary(true);
+      const libraryDoc = await engine.decodeSeedText(engine.blockLibrarySeed());
+      const travelled = libraryDoc?.blocks.find((block) => block.id === savedId);
+      // The compact side: compactDesignSystem dropped origin and unknown fields, so a library save lost both.
+      results.seed.andALibrarySeedCarriesItBack = Boolean(travelled) && travelled.origin === 'captured' &&
+        travelled.capture?.url === CAPTURE.url;
+
+      const again = saved
+        ? await engine.insertBlock(saved, engine.library.defaultProps(saved), { reference: stage, position: 'lastChild' })
+        : null;
+      await frames();
+      const strip = (name, id) => (name ?? '').replace(`--${id}`, '');
+      const reinserted = Boolean(again) && again.innerHTML === one.innerHTML &&
+        style(again).color === style(one).color &&
+        style(titleOf(again)).animationName === `fade--${savedId}` &&
+        strip(style(titleOf(again)).animationName, savedId) === strip(style(titleOf(one)).animationName, idOne);
+
+      engine.undo();
+      await frames();
+      const reinsertUndone = again ? !again.isConnected : false;
+      const stillSaved = Boolean(engine.library.get(savedId));
+      engine.undo();
+      await frames();
+      results.library = {
+        saveAddsACapturedBlock: Boolean(saved) && saved.category === 'Captured' && saved.origin === 'captured' &&
+          saved.capture?.url === CAPTURE.url,
+        itReinsertsIdentically: reinserted,
+        saveOnlyInsertsNothing: saveResult?.inserted === null && before === 2 && instances().length === 2,
+        undoRemovesTheSavedBlock: reinsertUndone && stillSaved && !engine.library.get(savedId),
+      };
+
+      /* ------------------------------------------------------------------ */
+      /* dialog, a capture without embedded assets                           */
+      /* ------------------------------------------------------------------ */
+      step('dialog-plain');
+      await openPaste(toSeed(docOf([{
+        id: 'plain', name: 'Plain', kind: 'component', html: '<p class="plain">Plain</p>',
+        css: '.plain { color: rgb(1, 1, 1); }', capture: CAPTURE,
+      }])));
+      results.dialog.andNotForABlockWithoutAny = Boolean(dialogRoot()?.querySelector('.dialog')) &&
+        !dialogRoot()?.querySelector('.licence');
+      engine.cancelCapturePaste();
+      await frames();
+
+      results.page = { noUncaughtErrors: errors.length === 0 };
+
+      const failed = Object.entries(results)
+        .filter(([, group]) => group && typeof group === 'object')
+        .filter(([, group]) => Object.values(group).some((value) => value === false))
+        .map(([name]) => name);
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify({ failed, ...results, errors }, null, 1) + ':END';
+    })().catch((error) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"ok":false,"failed":["fatal"],"__fatal":' + JSON.stringify(String((error && error.stack) || error)) + '}:END';
+    });
+  </script>
+</body>
+
+</html>

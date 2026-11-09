@@ -4,6 +4,17 @@
 <head>
   <meta charset="utf-8">
   <title>A seed the page carries in its markup, on the loader-tag path</title>
+  <!--
+    Saved block CSS for a block the seed does not carry: a capture pasted "insert only" is never
+    in the library. Regenerating this sheet from library blocks alone used to drop the chunk on
+    the next library write, and the instance below lost its styles after save + reload.
+  -->
+  <style id="heo-block-styles">
+    /* block: captured-old */
+    :where(:is([data-heo-block="captured-old"], [data-heo-block-part="captured-old"])) {
+      color: rgb(1, 2, 3);
+    }
+  </style>
 </head>
 
 <body>
@@ -14,6 +25,8 @@
       <h3>Saved</h3>
       <p>Round trip.</p>
     </div>
+    <!-- An insert-only capture from a previous session: its CSS is only in the saved sheet. -->
+    <p id="captured" data-heo-block="captured-old">Captured earlier</p>
   </main>
 
   <pre id="progress">start</pre>
@@ -72,7 +85,16 @@
         openedWithNoPendingChanges: engine.records.length === 0,
       };
 
+      // Any library write regenerates the claimed sheet; this one adds an unrelated block.
+      engine.library.upsert({ id: 'other', name: 'Other', kind: 'component', html: '<p>x</p>', css: 'p { color: red; }' });
+      await frames();
+      const sheetText = document.getElementById('heo-block-styles')?.textContent ?? '';
+      results.aSavedChunkForABlockNotInTheLibrarySurvivesTheNextLibraryWrite =
+        sheetText.includes('/* block: captured-old */') &&
+        getComputedStyle(document.getElementById('captured')).color === 'rgb(1, 2, 3)';
+
       results.ok =
+        results.aSavedChunkForABlockNotInTheLibrarySurvivesTheNextLibraryWrite &&
         results.libraryHasTheSeededBlock &&
         results.blockName === 'Promo card' &&
         results.hasComponentSection &&

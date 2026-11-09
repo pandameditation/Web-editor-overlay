@@ -7,7 +7,14 @@
  *     npm run test:blockcss
  */
 import assert from 'node:assert/strict';
-import { blockIdsReferencedByCSS, splitTopLevel } from '../src/core/block-css.ts';
+import {
+  blockIdsReferencedByCSS,
+  renameAnimationNames,
+  renameFontFamilies,
+  renameInDeclarations,
+  rootSubjectsToScope,
+  splitTopLevel,
+} from '../src/core/block-css.ts';
 import {
   BLOCK_STYLE_END,
   BLOCK_STYLE_START,
@@ -167,6 +174,68 @@ test('a page with no region, or a region with no block chunk, is left alone', ()
   assert.equal(stripBlockChunksFromDesignSystemRegion(PAGE), PAGE);
   const tokensOnly = designRegion(':root { --gap: 8px; }');
   assert.equal(stripBlockChunksFromDesignSystemRegion(tokensOnly), tokensOnly);
+});
+
+/* -------------------------------------------------------------------------- */
+/* Captured CSS renames                                                        */
+/* -------------------------------------------------------------------------- */
+
+const keyframes = new Map([['fade', 'fade--hero']]);
+const fonts = new Map([['probe', 'hero--Probe'], ['probe sans', 'hero--Probe Sans']]);
+
+test('a keyframes name is renamed in the shorthand and in the longhand', () => {
+  // Two pastes of one capture shared `@keyframes fade`, so the later one animated both.
+  assert.equal(renameAnimationNames(' fade 1s ease-in', keyframes), ' fade--hero 1s ease-in');
+  assert.equal(renameAnimationNames('1s linear 0s infinite fade', keyframes), '1s linear 0s infinite fade--hero');
+  assert.equal(renameAnimationNames('fade, spin 2s', keyframes), 'fade--hero, spin 2s');
+  assert.equal(
+    renameInDeclarations('animation-name: fade; animation: 1s fade;', { keyframes, fonts: new Map() }),
+    'animation-name: fade--hero; animation: 1s fade--hero;',
+  );
+});
+
+test('a name that only appears as a substring is not renamed', () => {
+  assert.equal(renameAnimationNames('fade-in 1s, fader 2s, xfade', keyframes), 'fade-in 1s, fader 2s, xfade');
+  // Nor inside a timing function's arguments.
+  assert.equal(renameAnimationNames('1s steps(4, fade) spin', keyframes), '1s steps(4, fade) spin');
+  // Nor in a property that is not an animation.
+  assert.equal(
+    renameInDeclarations('transition-property: fade; color: red', { keyframes, fonts: new Map() }),
+    'transition-property: fade; color: red',
+  );
+});
+
+test('quoted and unquoted families are renamed in font and font-family', () => {
+  assert.equal(renameFontFamilies('Probe, sans-serif', fonts), '"hero--Probe", sans-serif');
+  assert.equal(renameFontFamilies('"Probe Sans", serif', fonts), '"hero--Probe Sans", serif');
+  assert.equal(renameFontFamilies(" 'probe'", fonts), ' "hero--Probe"');
+  assert.equal(renameFontFamilies('italic 700 16px/1.4 Probe Sans, serif', fonts, true), 'italic 700 16px/1.4 "hero--Probe Sans", serif');
+  assert.equal(renameFontFamilies('16px "Probe"', fonts, true), '16px "hero--Probe"');
+  assert.equal(
+    renameInDeclarations('font-family: Probe !important; font: 12px Probe', { keyframes: new Map(), fonts }),
+    'font-family: "hero--Probe" !important; font: 12px "hero--Probe"',
+  );
+});
+
+test('a family that merely contains a known one is not renamed', () => {
+  assert.equal(renameFontFamilies('Probe Mono, Probes', fonts), 'Probe Mono, Probes');
+});
+
+test('body, html body .x and :root map to :scope', () => {
+  // A capture's `body { color }` could never match inside a block, so the paste lost its colour.
+  assert.equal(rootSubjectsToScope('body'), ':scope');
+  assert.equal(rootSubjectsToScope('html body .x'), ':scope .x');
+  assert.equal(rootSubjectsToScope('html > body > main'), ':scope > main');
+  assert.equal(rootSubjectsToScope(':root'), ':scope');
+  assert.equal(rootSubjectsToScope('html'), ':scope');
+  assert.equal(rootSubjectsToScope('body.dark p'), ':scope.dark p');
+});
+
+test('.body and bodyx are untouched', () => {
+  assert.equal(rootSubjectsToScope('.body'), '.body');
+  assert.equal(rootSubjectsToScope('bodyx'), 'bodyx');
+  assert.equal(rootSubjectsToScope('htmlish p'), 'htmlish p');
+  assert.equal(rootSubjectsToScope('main body'), 'main body');
 });
 
 if (failures.length) {

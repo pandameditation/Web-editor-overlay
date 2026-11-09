@@ -63,6 +63,7 @@ export const FIXTURES = [
   /* About 50 s alone: some 540 rows, each settled, over two themes and two page colours. */
   { page: 'test/a11y-contrast.html', budget: 180000, weight: 50000 },
   { page: 'test/css-paste.html', budget: 45000, weight: 2800, fast: true },
+  { page: 'test/capture-paste.html', budget: 60000, weight: 3000, fast: true },
   { page: 'test/opaque-origin.html', budget: 45000, strict: true, weight: 3000 },
   { page: 'test/link-newtab.html', budget: 45000, weight: 3000 },
   { page: 'test/element-clipboard.html', budget: 45000, weight: 2500 },

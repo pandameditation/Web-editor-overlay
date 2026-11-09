@@ -1,4 +1,4 @@
-import { BLOCK_STYLE_ID } from './constants.js';
+import { BLOCK_ATTR, BLOCK_PART_ATTR, BLOCK_STYLE_ID } from './constants.js';
 import { scopeBlockCSS } from './block-css.js';
 import { allPresets } from './presets.js';
 import { renameTemplateProps, renderBlockTemplate, sanitizeFragment, templatePropNames } from './sanitize.js';
@@ -16,6 +16,17 @@ export class BlockLibrary {
   #blocks = new Map<string, LibraryBlock>();
   #sheet = new ManagedStyleSheet(BLOCK_STYLE_ID);
   #injectedCSS = new Map<string, string>();
+  /** Ids whose CSS is scoped as captured CSS (renamed keyframes and fonts, root mapping). */
+  #captured = new Set<string>();
+  /**
+   * Already-scoped chunks of a claimed saved sheet whose block the library does not know.
+   *
+   * A capture pasted "insert only" is not a library block, so a page that also carries a seed
+   * regenerated its saved sheet from library blocks alone and the instance lost its styles on
+   * the next library write. These are carried through verbatim while the page still has an
+   * element of that block.
+   */
+  #foreignChunks = new Map<string, string>();
   #listeners = new Set<() => void>();
   /** Names of legacy web component blocks skipped by `import`, until `takeDroppedLegacy`. */
   #droppedLegacy: string[] = [];
@@ -53,14 +64,22 @@ export class BlockLibrary {
    * Extracting a block called "Card" must not silently replace the built-in card
    * preset, which is what a bare slug would do.
    */
-  uniqueId(base: string): string {
+  uniqueId(base: string, taken?: (id: string) => boolean): string {
+    // `taken` widens what counts as used: a capture pasted "insert only" is never in the
+    // library, yet its id still owns a CSS chunk and elements on the page.
+    const used = (id: string): boolean => this.#blocks.has(id) || Boolean(taken?.(id));
     const root = slugify(base) || 'block';
-    if (!this.#blocks.has(root)) return root;
+    if (!used(root)) return root;
     for (let n = 2; n < 1000; n += 1) {
       const candidate = `${root}-${n}`;
-      if (!this.#blocks.has(candidate)) return candidate;
+      if (!used(candidate)) return candidate;
     }
     return `${root}-${Date.now().toString(36)}`;
+  }
+
+  /** Whether this id has a CSS slot in the managed sheet, library block or not. */
+  hasCSS(id: string): boolean {
+    return this.#injectedCSS.has(id) || this.#foreignChunks.has(id);
   }
 
   search(query: string): LibraryBlock[] {
@@ -77,6 +96,7 @@ export class BlockLibrary {
     if (!id) throw new Error('A block needs an id or a name.');
     const next: LibraryBlock = { ...block, id, origin: block.origin ?? 'user' };
     this.#blocks.set(id, next);
+    this.#noteOrigin(next);
     // The CSS may have changed, so allow it to be re-injected. If this block was already
     // used on the page, rewrite its existing slot immediately rather than waiting for a
     // later instance to make the edit visible.
@@ -91,6 +111,7 @@ export class BlockLibrary {
     if (!block) return undefined;
     this.#blocks.delete(id);
     this.#injectedCSS.delete(id);
+    this.#captured.delete(id);
     this.#writeCSS();
     this.#notify();
     return block;
@@ -108,7 +129,9 @@ export class BlockLibrary {
       const id = slugify(block.id || block.name);
       if (!id) continue;
       if (!options.overwrite && this.#blocks.has(id)) continue;
-      this.#blocks.set(id, { ...block, id, origin: block.origin ?? 'imported' });
+      const next: LibraryBlock = { ...block, id, origin: block.origin ?? 'imported' };
+      this.#blocks.set(id, next);
+      this.#noteOrigin(next);
       count += 1;
     }
     this.#notify();
@@ -197,7 +220,11 @@ export class BlockLibrary {
    * holds is about to be loaded, and the library's first write regenerates it in place.
    */
   claimSavedStyle(): void {
-    this.#sheet.claimExisting();
+    // Read before claiming: the first write replaces the text, and with it any chunk for a
+    // block this library will never load (see #foreignChunks).
+    const saved = document.getElementById(BLOCK_STYLE_ID)?.textContent ?? '';
+    if (!this.#sheet.claimExisting()) return;
+    for (const [id, css] of savedBlockChunks(saved)) this.#foreignChunks.set(id, css);
   }
 
   /** The CSS the library has injected so far, for the save prompt. */
@@ -208,11 +235,20 @@ export class BlockLibrary {
   destroy(): void {
     this.#sheet.destroy();
     this.#injectedCSS.clear();
+    this.#captured.clear();
+    this.#foreignChunks.clear();
     this.#listeners.clear();
+  }
+
+  #noteOrigin(block: LibraryBlock): void {
+    if (block.origin === 'captured') this.#captured.add(block.id);
+    else this.#captured.delete(block.id);
   }
 
   #applyCSS(block: LibraryBlock): void {
     if (this.#injectedCSS.has(block.id)) return;
+    // Insert-only captures reach here without ever being upserted.
+    if (block.origin === 'captured') this.#captured.add(block.id);
     // Keep an empty slot too: a block first used without CSS can gain styles later,
     // and the next upsert must then have a managed slot to rewrite.
     const css = block.css ?? '';
@@ -225,7 +261,20 @@ export class BlockLibrary {
   #writeCSS(): void {
     const parts = [...this.#injectedCSS.entries()]
       .filter(([, css]) => css.trim())
-      .map(([id, css]) => `/* block: ${id} */\n${scopeBlockCSS(css, id)}`);
+      .map(([id, css]) => `/* block: ${id} */\n${scopeBlockCSS(css, id, { captured: this.#captured.has(id) })}`);
+    /*
+     * Saved chunks for blocks the library does not know, carried through verbatim (they are
+     * already scoped) while an element of that block is still on the page. The library's own
+     * chunk wins once the id is known, so a later upsert is never shadowed by a stale copy.
+     */
+    for (const [id, css] of this.#foreignChunks) {
+      if (this.#injectedCSS.has(id) || this.#blocks.has(id)) {
+        this.#foreignChunks.delete(id);
+        continue;
+      }
+      if (!blockIdInPage(id)) continue;
+      parts.push(`/* block: ${id} */\n${css}`);
+    }
     this.#sheet.write(parts.join('\n\n'));
   }
 
@@ -238,6 +287,27 @@ export class BlockLibrary {
       }
     }
   }
+}
+
+/** The per-block chunks of a managed block sheet's text (each under a "block: id" comment), by id. */
+function savedBlockChunks(text: string): Map<string, string> {
+  const chunks = new Map<string, string>();
+  // Indentation allowed: a saved page may be pretty-printed, which indents the sheet's text.
+  const header = /^[ \t]*\/\* block: (.+?) \*\/[ \t]*$/gm;
+  const found = [...text.matchAll(header)];
+  found.forEach((match, index) => {
+    const start = (match.index ?? 0) + match[0].length;
+    const end = index + 1 < found.length ? (found[index + 1].index ?? text.length) : text.length;
+    const css = text.slice(start, end).trim();
+    if (css) chunks.set(match[1], css);
+  });
+  return chunks;
+}
+
+/** Whether an element of this block is still on the page. */
+function blockIdInPage(id: string): boolean {
+  const value = id.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  return Boolean(document.querySelector(`[${BLOCK_ATTR}="${value}"], [${BLOCK_PART_ATTR}="${value}"]`));
 }
 
 function firstOption(spec: PropSpec): string | undefined {

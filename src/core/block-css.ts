@@ -1,5 +1,5 @@
 import { splitCssPriority, type PastedCssRule } from './css-paste.js';
-import { formatHTML, sanitizeFragment } from './sanitize.js';
+import { formatHTML, safeCssValue, sanitizeFragment } from './sanitize.js';
 import { withParsedSheet } from './sheets.js';
 
 /**
@@ -130,21 +130,43 @@ const warnedUnparsed = new Set<string>();
  * for the top-level element(s). CSS that cannot be parsed produces nothing rather than leaking
  * unscoped into the page.
  */
-export function scopeBlockCSS(source: string, blockId: string): string {
+export function scopeBlockCSS(
+  source: string,
+  blockId: string,
+  options: { captured?: boolean } = {},
+): string {
   const text = String(source ?? '').trim();
   if (!text || !blockId) return '';
 
   const hooks = blockHooks(blockId);
   const split = splitTopLevel(text);
-  const context = { hooks, dropped: split.droppedCharset || split.droppedImports };
+  const context: ScopeContext = {
+    hooks,
+    dropped: split.droppedCharset || split.droppedImports,
+    captured: options.captured ? { keyframes: new Map(), fonts: new Map() } : null,
+  };
   const out: string[] = [];
 
-  const bare = split.declarations.trim()
+  /*
+   * Rules are read before the bare declarations because a captured block's renames are
+   * collected from its rules, and a bare `animation: fade 1s` has to use the same new name.
+   */
+  const rules = split.rules.trim()
+    ? withParsedSheet(split.rules, (sheet) => {
+      if (context.captured) collectCapturedNames(sheet.cssRules, blockId, context.captured);
+      return Array.from(sheet.cssRules)
+        .map((rule) => rewriteRule(rule, context))
+        .filter((rule) => rule !== null);
+    })
+    : [];
+
+  const bareText = split.declarations.trim()
     ? withParsedSheet(`heo-bare { ${split.declarations} }`, (sheet) => {
       const rule = sheet.cssRules[0];
       return rule instanceof CSSStyleRule ? rule.style.cssText : '';
     })
     : '';
+  const bare = bareText && context.captured ? renameInDeclarations(bareText, context.captured) : bareText;
   /*
    * `:where(S)` adds nothing, so the bare rule weighs (1,1,0) and comes first: any authored rule
    * targeting the same element is at least as specific and later, so it wins for the properties
@@ -153,11 +175,6 @@ export function scopeBlockCSS(source: string, blockId: string): string {
   if (bare) out.push(`:where(${hooks.scope})${hooks.term} { ${bare} }`);
 
   if (split.rules.trim()) {
-    const rules = withParsedSheet(split.rules, (sheet) =>
-      Array.from(sheet.cssRules)
-        .map((rule) => rewriteRule(rule, context))
-        .filter((rule) => rule !== null),
-    );
     if (rules === null) {
       // Failing closed: returning the raw text here used to inject it unscoped into the page.
       if (!warnedUnparsed.has(blockId)) {
@@ -179,7 +196,48 @@ export function scopeBlockCSS(source: string, blockId: string): string {
   return out.join('\n\n');
 }
 
-function rewriteRule(rule: CSSRule, context: { hooks: BlockHooks; dropped: boolean }): string | null {
+/** What a captured block's CSS renames: keyframes by name, font faces by family. */
+export interface CapturedRenames {
+  keyframes: Map<string, string>;
+  fonts: Map<string, string>;
+}
+
+interface ScopeContext {
+  hooks: BlockHooks;
+  dropped: boolean;
+  /** Set for captured blocks only; authored blocks keep their global names. */
+  captured: CapturedRenames | null;
+}
+
+/**
+ * Give a captured block's keyframes and font faces names of their own.
+ *
+ * A capture brings CSS written for a whole site, where `fade` and `Inter` are global names.
+ * Pasted as-is, two captures (or a capture and the page) would fight over the same
+ * `@keyframes fade`, and whichever came last would animate both. Suffixing by block id makes
+ * every paste self-contained. Walked recursively, so a keyframes rule inside `@media` counts.
+ */
+function collectCapturedNames(rules: CSSRuleList, blockId: string, renames: CapturedRenames): void {
+  for (const rule of Array.from(rules)) {
+    if (rule instanceof CSSKeyframesRule) {
+      if (rule.name && !renames.keyframes.has(rule.name)) {
+        renames.keyframes.set(rule.name, cssIdent(`${rule.name}--${blockId}`));
+      }
+      continue;
+    }
+    if (rule instanceof CSSFontFaceRule) {
+      const family = unquote(rule.style.getPropertyValue('font-family'));
+      if (family && !renames.fonts.has(family.toLowerCase())) {
+        renames.fonts.set(family.toLowerCase(), `${blockId}--${family}`);
+      }
+      continue;
+    }
+    const children = (rule as CSSRule & { cssRules?: CSSRuleList }).cssRules;
+    if (children?.length) collectCapturedNames(children, blockId, renames);
+  }
+}
+
+function rewriteRule(rule: CSSRule, context: ScopeContext): string | null {
   /*
    * Dropped by type. In the joined managed sheet an @import is only valid before every other
    * rule, so it would work or not depending on block order, and it would load unscoped CSS.
@@ -187,6 +245,13 @@ function rewriteRule(rule: CSSRule, context: { hooks: BlockHooks; dropped: boole
   if (rule instanceof CSSImportRule || rule instanceof CSSNamespaceRule) {
     context.dropped = true;
     return null;
+  }
+  // A captured block's keyframes and font faces are re-emitted under their block-local names.
+  if (context.captured && rule instanceof CSSKeyframesRule) {
+    return renameKeyframesRule(rule.cssText, context.captured.keyframes.get(rule.name));
+  }
+  if (context.captured && rule instanceof CSSFontFaceRule) {
+    return renameFontFaceRule(rule.cssText, context.captured.fonts);
   }
   // Keyframe and font names are global by nature; their bodies hold no selectors.
   if (rule instanceof CSSKeyframesRule || rule instanceof CSSFontFaceRule) return rule.cssText;
@@ -201,8 +266,10 @@ function rewriteRule(rule: CSSRule, context: { hooks: BlockHooks; dropped: boole
     : [];
 
   if (rule instanceof CSSStyleRule) {
-    const selector = scopeSelectorList(rule.selectorText, context.hooks);
-    const declarations = rule.style.cssText;
+    const selector = scopeSelectorList(rule.selectorText, context.hooks, Boolean(context.captured));
+    const declarations = context.captured
+      ? renameInDeclarations(rule.style.cssText, context.captured)
+      : rule.style.cssText;
     /*
      * Nested rules (CSS nesting) are scoped the same way, from their own read-back selector.
      * Copying them verbatim would keep `& + div` able to style a page element next to the block.
@@ -221,11 +288,274 @@ function rewriteRule(rule: CSSRule, context: { hooks: BlockHooks; dropped: boole
   return `${prelude} {\n${nested.map(indent).join('\n')}\n}`;
 }
 
-function scopeSelectorList(selectorText: string, hooks: BlockHooks): string {
+function scopeSelectorList(selectorText: string, hooks: BlockHooks, captured = false): string {
   return splitSelectorList(selectorText)
-    .map((part) => scopeSelector(part, hooks))
+    .map((part) => scopeSelector(captured ? rootSubjectsToScope(part) : part, hooks))
     .filter(Boolean)
     .join(', ');
+}
+
+/*
+ * Captured CSS helpers.
+ *
+ * Pure string functions, so the node tests can pin them. They run only on blocks whose
+ * origin is `captured`: an authored block's `fade` may be the page's own keyframes on purpose.
+ */
+
+/** The leading document-root compounds a captured page's CSS hangs its base styles on. */
+const ROOT_SUBJECT = /^(?:(?:html|:root)\s*>\s*body|(?:html|:root)\s+body|html|body|:root)(?![\w-])/i;
+
+/**
+ * Map a leading `:root`, `html`, `body`, `html body` or `html > body` to `:scope`.
+ *
+ * A capture's `body { color: … }` is the colour the element inherited on its own site. Scoped
+ * as written, `body` can never match inside a block, so the rule did nothing and the paste
+ * came out in the host page's colour. As `:scope` it lands on the block's root, where it is
+ * inherited by everything inside. `.body` and `bodyx` are other selectors and stay as they are.
+ */
+export function rootSubjectsToScope(selector: string): string {
+  const trimmed = selector.trim();
+  return trimmed.replace(ROOT_SUBJECT, ':scope');
+}
+
+/** Rename keyframes references in an `animation` or `animation-name` value. */
+export function renameAnimationNames(value: string, map: ReadonlyMap<string, string>): string {
+  if (!map.size) return value;
+  let out = '';
+  let depth = 0;
+  let index = 0;
+  while (index < value.length) {
+    const ch = value[index];
+    if (ch === '"' || ch === "'") {
+      const end = skipString(value, index);
+      const inner = value.slice(index + 1, end - 1);
+      // A quoted keyframes name is still a name; it comes back as an identifier.
+      const renamed = depth === 0 ? map.get(inner) : undefined;
+      out += renamed ?? value.slice(index, end);
+      index = end;
+      continue;
+    }
+    if (ch === '(') depth += 1;
+    else if (ch === ')') depth = Math.max(0, depth - 1);
+    const ident = /^-?[A-Za-z_\u00a0-\uffff][\w\u00a0-\uffff-]*/.exec(value.slice(index));
+    // Not the tail of a longer token (`1s`, `ease-in`), and not the `important` of `!important`.
+    if (ident && (index === 0 || !/[\w!-]/.test(value[index - 1]))) {
+      const word = ident[0];
+      out += depth === 0 && map.has(word) ? (map.get(word) as string) : word;
+      index += word.length;
+      continue;
+    }
+    out += ch;
+    index += 1;
+  }
+  return out;
+}
+
+/**
+ * Rename font families in a `font-family` value, or in the family list of a `font` shorthand.
+ *
+ * `map` is keyed by the lower-cased family, because family matching is case-insensitive.
+ * Quoted and unquoted spellings both count; the new name is always written quoted. Only a
+ * whole family is renamed: `Probe` is not found inside `Probe Sans`.
+ */
+export function renameFontFamilies(
+  value: string,
+  map: ReadonlyMap<string, string>,
+  shorthand = false,
+): string {
+  if (!map.size) return value;
+  const segments = splitTopLevelOn(value, ',');
+  return segments
+    .map((segment, index) => {
+      const lead = /^\s*/.exec(segment)?.[0] ?? '';
+      const tail = /\s*$/.exec(segment)?.[0] ?? '';
+      const body = segment.trim();
+      // In the shorthand, the first family follows the size, so only the end of it is a name.
+      const prefixed = shorthand && index === 0;
+      const quoted = /(["'])((?:\\.|(?!\1).)*)\1$/.exec(body);
+      if (quoted && (!prefixed ? quoted.index === 0 : true)) {
+        const renamed = map.get(quoted[2].toLowerCase());
+        if (!renamed) return segment;
+        return `${lead}${body.slice(0, quoted.index)}${quoteFamily(renamed)}${tail}`;
+      }
+      if (!prefixed) {
+        const renamed = map.get(body.replace(/\s+/g, ' ').toLowerCase());
+        return renamed ? `${lead}${quoteFamily(renamed)}${tail}` : segment;
+      }
+      // Unquoted after the size: try the longest run of trailing identifiers that is a known family.
+      const words = body.split(/\s+/);
+      for (let take = words.length - 1; take >= 1; take -= 1) {
+        const family = words.slice(words.length - take).join(' ');
+        const renamed = map.get(family.toLowerCase());
+        if (renamed) {
+          return `${lead}${words.slice(0, words.length - take).join(' ')} ${quoteFamily(renamed)}${tail}`;
+        }
+      }
+      return segment;
+    })
+    .join(',');
+}
+
+/** Apply a captured block's renames to a declaration list, leaving everything else as written. */
+export function renameInDeclarations(cssText: string, renames: CapturedRenames): string {
+  if (!renames.keyframes.size && !renames.fonts.size) return cssText;
+  return splitTopLevelOn(cssText, ';')
+    .map((declaration) => {
+      const colon = declaration.indexOf(':');
+      if (colon < 0) return declaration;
+      const property = declaration.slice(0, colon).trim().toLowerCase();
+      const raw = declaration.slice(colon + 1);
+      // The priority is not part of the value; a family list ending in it would not match.
+      const priority = /\s*!\s*important\s*$/i.exec(raw)?.[0] ?? '';
+      const value = raw.slice(0, raw.length - priority.length);
+      let next = value;
+      if (/^(?:-webkit-)?animation(?:-name)?$/.test(property)) {
+        next = renameAnimationNames(value, renames.keyframes);
+      } else if (property === 'font-family') {
+        next = renameFontFamilies(value, renames.fonts);
+      } else if (property === 'font') {
+        next = renameFontFamilies(value, renames.fonts, true);
+      }
+      return next === value ? declaration : `${declaration.slice(0, colon + 1)}${next}${priority}`;
+    })
+    .join(';');
+}
+
+/**
+ * Captured CSS with every unsafe value taken out, and a list of what went.
+ *
+ * A capture arrives through the clipboard, so its CSS is untrusted however it was made. Block
+ * CSS is otherwise authored here and never vetted, which left `background: url(javascript:…)`
+ * in a pasted capture free to reach the page. Each style property, and each `@font-face src`,
+ * goes through `safeCssValue`; a font face whose `src` is refused is dropped whole, since it
+ * cannot load anything. When nothing is removed the text comes back exactly as given.
+ * Browser-only: it needs the CSS parser.
+ */
+export function vetCapturedCSS(css: string): { css: string; removed: string[] } {
+  const source = String(css ?? '');
+  const removed: string[] = [];
+  const split = splitTopLevel(source);
+
+  const vetStyle = (style: CSSStyleDeclaration, where: string): void => {
+    for (const property of Array.from(style)) {
+      const verdict = safeCssValue(style.getPropertyValue(property));
+      if (!verdict) continue;
+      style.removeProperty(property);
+      removed.push(`${where} { ${property} } (${shorten(verdict.unsafe)})`);
+    }
+  };
+  const vetRules = (list: CSSRuleList, owner: { deleteRule(index: number): void }): void => {
+    for (let index = list.length - 1; index >= 0; index -= 1) {
+      const rule = list[index];
+      if (rule instanceof CSSFontFaceRule) {
+        const verdict = safeCssValue(rule.style.getPropertyValue('src'));
+        if (verdict) {
+          owner.deleteRule(index);
+          removed.push(`@font-face { src } (${shorten(verdict.unsafe)})`);
+        }
+        continue;
+      }
+      if (rule instanceof CSSStyleRule) vetStyle(rule.style, rule.selectorText);
+      else if (rule instanceof CSSKeyframeRule) vetStyle(rule.style, rule.keyText);
+      const children = (rule as CSSRule & { cssRules?: CSSRuleList }).cssRules;
+      if (children?.length) {
+        const parent = rule as unknown as { deleteRule?(index: number): void };
+        vetRules(children, {
+          deleteRule: (at) => parent.deleteRule?.(at),
+        });
+      }
+    }
+  };
+
+  const bare = split.declarations.trim()
+    ? withParsedSheet(`heo-bare { ${split.declarations} }`, (sheet) => {
+      const rule = sheet.cssRules[0];
+      if (!(rule instanceof CSSStyleRule)) return '';
+      vetStyle(rule.style, '(no selector)');
+      return rule.style.cssText;
+    })
+    : '';
+  const rules = split.rules.trim()
+    ? withParsedSheet(split.rules, (sheet) => {
+      vetRules(sheet.cssRules, sheet);
+      return Array.from(sheet.cssRules).map((rule) => rule.cssText).join('\n');
+    })
+    : '';
+
+  if (!removed.length) return { css: source, removed };
+  return { css: [bare ?? '', rules ?? ''].filter((part) => part.trim()).join('\n'), removed };
+}
+
+function shorten(text: string): string {
+  return text.length > 60 ? `${text.slice(0, 57)}…` : text;
+}
+
+/** `@keyframes fade { … }` re-emitted as `@keyframes <name> { … }`. */
+function renameKeyframesRule(cssText: string, name: string | undefined): string {
+  if (!name) return cssText;
+  const open = cssText.indexOf('{');
+  if (open < 0) return cssText;
+  const at = /^@[\w-]*keyframes/i.exec(cssText)?.[0] ?? '@keyframes';
+  return `${at} ${name} ${cssText.slice(open)}`;
+}
+
+/** `@font-face { font-family: X; … }` re-emitted with the block-local family. */
+function renameFontFaceRule(cssText: string, fonts: ReadonlyMap<string, string>): string {
+  const open = cssText.indexOf('{');
+  const close = cssText.lastIndexOf('}');
+  if (open < 0 || close < open) return cssText;
+  const body = splitTopLevelOn(cssText.slice(open + 1, close), ';')
+    .map((declaration) => {
+      const colon = declaration.indexOf(':');
+      if (colon < 0 || declaration.slice(0, colon).trim().toLowerCase() !== 'font-family') return declaration;
+      const renamed = fonts.get(unquote(declaration.slice(colon + 1)).toLowerCase());
+      return renamed ? `${declaration.slice(0, colon + 1)} ${quoteFamily(renamed)}` : declaration;
+    })
+    .join(';');
+  return `${cssText.slice(0, open + 1)}${body}${cssText.slice(close)}`;
+}
+
+/** Split on a delimiter at paren depth 0, outside strings, keeping every segment's own text. */
+function splitTopLevelOn(text: string, delimiter: string): string[] {
+  const parts: string[] = [];
+  let start = 0;
+  let depth = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    const ch = text[index];
+    if (ch === '\\') {
+      index += 1;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      index = skipString(text, index) - 1;
+      continue;
+    }
+    if (ch === '(') depth += 1;
+    else if (ch === ')') depth = Math.max(0, depth - 1);
+    else if (ch === delimiter && depth === 0) {
+      parts.push(text.slice(start, index));
+      start = index + 1;
+    }
+  }
+  parts.push(text.slice(start));
+  return parts;
+}
+
+function unquote(value: string): string {
+  const trimmed = value.trim();
+  const quoted = /^(["'])((?:\\.|(?!\1).)*)\1$/.exec(trimmed);
+  return (quoted ? quoted[2].replace(/\\(.)/g, '$1') : trimmed).replace(/\s+/g, ' ');
+}
+
+function quoteFamily(name: string): string {
+  return `"${name.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+/** A keyframes name as an identifier, escaped when it is not already one. */
+function cssIdent(name: string): string {
+  if (/^-?[A-Za-z_][\w-]*$/.test(name)) return name;
+  const escape = (globalThis as { CSS?: { escape?: (value: string) => string } }).CSS?.escape;
+  return escape ? escape(name) : name.replace(/[^\w-]/g, '_');
 }
 
 /** Constrain one complex selector's subject compound to the block. */

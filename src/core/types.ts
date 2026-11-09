@@ -133,7 +133,26 @@ export interface LibraryBlock {
 
   /** Blocks that accept children get `+` affordances inside them. */
   slots?: boolean;
-  origin?: 'preset' | 'user' | 'imported';
+  /**
+   * `captured` marks a block copied out of another site by the capture extension. Its CSS
+   * is scoped harder than an authored block's (keyframes and font faces renamed, `body`
+   * rules mapped to the block root), because it was written for a whole page, not a block.
+   */
+  origin?: 'preset' | 'user' | 'imported' | 'captured';
+  /** Where a captured block came from. Present only on captured blocks. */
+  capture?: CaptureInfo;
+}
+
+/** Provenance of a block copied out of a live page by the capture extension. */
+export interface CaptureInfo {
+  /** The page the element was copied from. */
+  url: string;
+  /** The viewport width at capture time, in CSS pixels. */
+  viewport: number;
+  /** ISO timestamp of the capture. */
+  capturedAt: string;
+  /** What the capture could not carry over (remote assets, unreadable sheets, rem drift). */
+  warnings?: string[];
 }
 
 /** A portable design system: tokens, classes, rules and blocks in one document. */

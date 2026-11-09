@@ -1,3 +1,4 @@
+import { srcsetCandidates } from './srcset.js';
 import type { PropSpec } from './types.js';
 
 /**
@@ -12,6 +13,14 @@ import type { PropSpec } from './types.js';
  */
 
 const SAFE_DATA_URL = /^data:image\/(?:gif|jpeg|jpg|png|webp|avif|svg\+xml)[;,]/i;
+/**
+ * Embedded fonts, allowed in CSS values only.
+ *
+ * A captured block carries its web fonts as data URLs inside `@font-face src`, and refusing
+ * them left the block rendering in a fallback face. A font reaches nothing and runs nothing.
+ * Kept out of `safeURL` on purpose: an `<img src>` or `<a href>` has no business holding one.
+ */
+const SAFE_DATA_FONT = /^data:(?:font\/(?:woff2|woff|ttf|otf)|application\/font-woff2?)[;,]/i;
 const SAFE_PROTOCOL = /^(?:https?:|mailto:|tel:|blob:|file:)$/;
 /**
  * Attributes whose value is a URL, and therefore has to be vetted.
@@ -78,13 +87,18 @@ export function safeCssValue(value: string): { value: string; unsafe: string } |
   for (const target of cssURLs(text)) {
     // Data images are allowed here for the same reason they are on an `<img src>`: the
     // page is already showing them and they reach nothing.
-    if (target && !safeURL(target, true)) return { value: '', unsafe: target };
+    if (target && !safeCssURL(target)) return { value: '', unsafe: target };
   }
   // `javascript:` outside a `url()` cannot navigate anything, but it cannot mean anything
   // either, so its only plausible purpose is to slip past a naive check.
   return /(?:^|[\s:,(])(?:javascript|vbscript)\s*:/i.test(text)
     ? { value: '', unsafe: text.trim() }
     : null;
+}
+
+/** A `url()` target inside CSS: what `safeURL` allows, plus embedded fonts. */
+function safeCssURL(target: string): boolean {
+  return SAFE_DATA_FONT.test(target.trim()) || Boolean(safeURL(target, true));
 }
 
 /**
@@ -209,10 +223,12 @@ export function scrubElement(root: ParentNode): SanitizeReport {
       if (URL_ATTRIBUTES.has(name)) {
         const allowData = MEDIA_TAGS.test(el.tagName);
         if (name === 'srcset') {
-          const candidates = value.split(',').map((entry) => entry.trim()).filter(Boolean);
-          const kept = candidates.filter((entry) =>
-            safeURL(entry.split(/\s+/)[0] ?? '', allowData),
-          );
+          // Parsed the way the HTML spec does, not split on commas: a comma split cut
+          // `data:image/png;base64,…` in two and kept a candidate pointing at `data:image/png;base64`.
+          const candidates = srcsetCandidates(value);
+          const kept = candidates
+            .filter((entry) => safeURL(entry.url, allowData))
+            .map((entry) => (entry.descriptor ? `${entry.url} ${entry.descriptor}` : entry.url));
           if (kept.length) el.setAttribute(attr.name, kept.join(', '));
           else el.removeAttribute(attr.name);
           if (kept.length !== candidates.length) report.urls += 1;

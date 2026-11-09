@@ -20,6 +20,7 @@ import './chrome/code-workspace.js';
 import './chrome/extract-dialog.js';
 import './chrome/confirm-dialog.js';
 import './chrome/paste-dialog.js';
+import './chrome/capture-paste-dialog.js';
 import './chrome/css-paste-dialog.js';
 import './chrome/style-dialog.js';
 import './chrome/source-dialog.js';
@@ -82,6 +83,7 @@ export class HeoOverlay extends HeoElement {
         s.savePreview,
         s.extraction,
         s.htmlPaste,
+        s.capturePaste,
         s.cssPaste,
         s.styleEdit,
         s.sourceEdit,
@@ -130,6 +132,7 @@ export class HeoOverlay extends HeoElement {
       ${state.savePreview != null ? html`<heo-save-dialog></heo-save-dialog>` : nothing}
       ${state.extraction ? html`<heo-extract-dialog></heo-extract-dialog>` : nothing}
       ${state.htmlPaste ? html`<heo-paste-dialog></heo-paste-dialog>` : nothing}
+      ${state.capturePaste ? html`<heo-capture-paste-dialog></heo-capture-paste-dialog>` : nothing}
       ${state.cssPaste ? html`<heo-css-paste-dialog></heo-css-paste-dialog>` : nothing}
       <!--
         Before the CSS paste dialog in z-order, and it has to be: the declaration list inside

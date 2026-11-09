@@ -59,7 +59,9 @@ export function isSeed(text: string): boolean {
  * Three kinds of weight come off here. Provenance (`origin`) is about where the
  * data came from in *this* session, which is not true of the page importing it —
  * and dropping it is not only smaller but more correct, since the import marks
- * everything `imported`. Labels are derived from names, so any label that matches
+ * everything `imported`. The one exception is a block's `origin: 'captured'`, which
+ * changes how its CSS is scoped and so travels with it, along with `capture`.
+ * Labels are derived from names, so any label that matches
  * what the target would generate anyway is noise. And `createdAt`/`$schema` are
  * rebuilt on the way in.
  *
@@ -111,6 +113,15 @@ export function compactDesignSystem(doc: DesignSystemDocument): DesignSystemDocu
     if (block.css) next.css = block.css;
     if (block.icon) next.icon = block.icon;
     if (block.slots) next.slots = block.slots;
+    /*
+     * Captured blocks keep their provenance, the one exception to dropping `origin`.
+     * `captured` is not about this session: it decides how the block's CSS is scoped
+     * (keyframes and font faces renamed, `body` mapped to the block root), so a library
+     * save and reload that dropped it would re-scope the block as authored CSS and let
+     * its animation names collide with the page's.
+     */
+    if (block.origin === 'captured') next.origin = 'captured';
+    if (block.capture) next.capture = block.capture;
     return next;
   });
 

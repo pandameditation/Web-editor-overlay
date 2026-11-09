@@ -51,6 +51,8 @@ export function handleKeyDown(engine: EditorEngine, event: KeyboardEvent): void 
   // `code-submit` on Cmd+Enter, and a page shortcut firing underneath it would act on a
   // selection the user cannot see.
   if (state.htmlPaste) return;
+  // And the capture paste dialog: Escape there closes it, never the selection behind it.
+  if (state.capturePaste) return;
   // CSS paste has its own modal boundary too. Escape from the page must dismiss that
   // modal, never unwind menus, selection, or edit mode underneath it.
   if (state.cssPaste) return;
@@ -389,6 +391,7 @@ export function handleKeyUp(engine: EditorEngine, event: KeyboardEvent): void {
   if (
     state.extraction ||
     state.htmlPaste ||
+    state.capturePaste ||
     state.cssPaste ||
     state.aiSettingsOpen ||
     state.confirm ||
