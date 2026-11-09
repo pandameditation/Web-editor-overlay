@@ -812,6 +812,22 @@
           const dotEl = colourRow?.querySelector('.dots .dot');
           const moonEls = Array.from(colourRow?.querySelectorAll('.dots .moon') ?? []);
           const transparent = (value) => value === 'rgba(0, 0, 0, 0)' || value === 'transparent';
+          // The dot, the name and its source are one button: pressing the name opens the cascade,
+          // and the one tooltip on all of it says where the value comes from and what it beats.
+          const button = colourRow?.querySelector('.dots');
+          const nameInside = Boolean(button?.querySelector('.name .pn')) && Boolean(button?.querySelector('.name .from'));
+          const tip = button?.getAttribute('title') ?? '';
+          const nameBox = button?.querySelector('.name')?.getBoundingClientRect();
+          const noInnerTitles = !colourRow?.querySelector('.name [title]');
+          button?.querySelector('.name .pn')?.click();
+          await settle();
+          const openedFromTheName = Boolean(pop()) && button?.getAttribute('aria-expanded') === 'true';
+          await closePop();
+          results.dotTarget = {
+            theNameAndSourceAreInTheButton: nameInside && (nameBox?.width ?? 0) > 60,
+            pressingTheNameOpensTheCascade: openedFromTheName,
+            oneTooltipCoversItAll: /^color from \.promo \.card, \d+ overridden\. Show cascade$/.test(tip) && noInnerTitles,
+          };
           results.dotLook = {
             theDotHasNoRing: Boolean(dotEl) && getComputedStyle(dotEl).boxShadow === 'none' && !transparent(getComputedStyle(dotEl).backgroundColor),
             overridesAreEmptyGreyCircles: moonEls.length >= 1 && moonEls.every((one) =>

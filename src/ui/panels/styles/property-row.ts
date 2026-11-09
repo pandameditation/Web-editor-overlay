@@ -262,6 +262,8 @@ export function renderCascadeDot(spec: {
   list: CascadeList;
   expanded: boolean;
   onToggle(): void;
+  /** Drawn inside the button after the dot: the property's name and where its value comes from. */
+  name?: TemplateResult;
 }): TemplateResult {
   const winner = spec.list.applying[0];
   const beaten = Math.max(0, spec.list.applying.length - 1);
@@ -277,8 +279,11 @@ export function renderCascadeDot(spec: {
     title=${label}
     @click=${() => spec.onToggle()}
   >
-    <span class=${winner ? 'dot' : 'dot none'} aria-hidden="true"></span>
-    ${Array.from({ length: Math.min(beaten, 3) }, () => html`<span class="moon" aria-hidden="true"></span>`)}
+    <span class="marks" aria-hidden="true">
+      <span class=${winner ? 'dot' : 'dot none'}></span>
+      ${Array.from({ length: Math.min(beaten, 3) }, () => html`<span class="moon"></span>`)}
+    </span>
+    ${spec.name ?? nothing}
   </button>`;
 }
 
@@ -520,13 +525,12 @@ export function renderPropertyRow(spec: RowSpec, host: StylesHost): TemplateResu
       // Closed by its dot, focus is on the dot: Safari does not focus a pressed button by itself.
       if (expanded) host.focusSelector(`.row[data-row="${CSS.escape(rowId)}"] .dots`);
     },
+    // The name and its source open the cascade too: one target, with the dot's tooltip over all of it.
+    name: html`<span class="name">
+        <span class="pn">${property}</span>
+        ${from ? html`<span class="from">${shortLabel(from)}</span>` : nothing}
+      </span>`,
   })}
-      <span class="name">
-        <span class="pn" title=${property}>${property}</span>
-        ${from
-      ? html`<span class="from" title=${`From ${sourceLabel(from)}`}>${shortLabel(from)}</span>`
-      : nothing}
-      </span>
       ${control}
       ${removable
       ? html`<button
@@ -563,7 +567,7 @@ export const propertyRowStyles: CSSResult = css`
     align-items: center;
     gap: 6px;
   }
-  .row > .name {
+  .row .name {
     display: flex;
     align-items: center;
     gap: 4px;
@@ -574,7 +578,7 @@ export const propertyRowStyles: CSSResult = css`
     font-size: 10.5px;
     white-space: nowrap;
   }
-  .row.set > .name {
+  .row.set .name {
     color: var(--heo-text);
   }
   /* The name keeps its room; the source hint takes what is left, and goes first when there is none. */
@@ -603,16 +607,30 @@ export const propertyRowStyles: CSSResult = css`
    * an empty grey circle tucked under its right edge, at most three. Nothing rings the dot: the
    * row's own surface shows around it.
    */
+  /*
+   * The cascade's button spans the dot's slot and the name's column: the dot, the property and its
+   * source are one target, so the cascade opens from anywhere on the left of the row.
+   */
   .dots {
-    display: inline-flex;
+    display: grid;
+    grid-column: 1 / span 2;
+    grid-template-columns: 20px minmax(0, 1fr);
     align-items: center;
-    width: 20px;
-    height: 18px;
-    padding: 0 3px;
+    gap: 6px;
+    min-width: 0;
+    height: 24px;
+    margin: 0 -2px;
+    padding: 0 2px;
     border: 0;
     border-radius: 5px;
     background: transparent;
+    text-align: left;
     cursor: pointer;
+  }
+  .dots .marks {
+    display: inline-flex;
+    align-items: center;
+    padding: 0 3px;
   }
   .dots:hover,
   .dots[aria-expanded='true'] {
