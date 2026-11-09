@@ -675,8 +675,12 @@
           results.offers[`${property}HasNoColourTokens`] =
             Array.isArray(list) && !list.some((x) => x.value === 'var(--brand)');
         }
-        results.offers.borderColorKeepsTheColourTokens =
-          valuesOf(await suggestionsFor('border-color')).includes('var(--brand)');
+        // The border's colour is edited in the Border section's editor, which keeps the palette.
+        results.offers.borderColorKeepsTheColourTokens = (() => {
+          const editor = panel.shadowRoot.querySelector('heo-border-editor');
+          const colour = editor?.shadowRoot?.querySelector('heo-value-field[data-property="border-color"]');
+          return valuesOf(colour?.suggestions).includes('var(--brand)');
+        })();
 
         /*
          * Common values for the properties whose syntax nobody remembers. All four are `text`

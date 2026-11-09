@@ -74,6 +74,8 @@ const PATHS: Record<string, string> = {
   // Panels
   styles: 'M2.6 4.6h10.8M2.6 8h10.8M2.6 11.4h10.8M6 3.2v2.8M10.4 6.6v2.8M4.8 10v2.8',
   droplet: 'M8 2.2S3.8 6.4 3.8 9.2a4.2 4.2 0 008.4 0C12.2 6.4 8 2.2 8 2.2z',
+  /* The Border section: a line drawn round a box, and the outline round that. */
+  frame: 'M4.5 2h7A2.5 2.5 0 0114 4.5v7a2.5 2.5 0 01-2.5 2.5h-7A2.5 2.5 0 012 11.5v-7A2.5 2.5 0 014.5 2zM6 5h4a1 1 0 011 1v4a1 1 0 01-1 1H6a1 1 0 01-1-1V6a1 1 0 011-1z',
   tree: 'M3 3.6h4M3 8h6M3 12.4h6M9.6 3.6h3.4M11.3 3.6v8.8M11.3 8h1.7M11.3 12.4h1.7',
   blocks: 'M2.6 2.6h4.8v4.8H2.6zM8.6 2.6h4.8v4.8H8.6zM2.6 8.6h4.8v4.8H2.6zM8.6 8.6h4.8v4.8H8.6z',
   sliders: 'M3 5h4M11 5h2M3 11h2M9 11h4M8.4 3.4v3.2M6.4 9.4v3.2',

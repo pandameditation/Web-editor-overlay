@@ -67,12 +67,15 @@ import { stylesDestination, valueStepDraft, type AdderDestination } from './styl
 import {
   previewSlot,
   propertyRowStyles,
+  previewChosen,
   readRow,
   renderPropertyRows,
+  writeChosen,
   sameTarget,
   rowIdOf,
   destinationChoice,
   shownValue,
+  targetOf,
   type RowSpec,
 } from './styles/property-row.js';
 import type { RowScope, StylesHost, StylesUiState } from './styles/types.js';
@@ -80,6 +83,9 @@ import type { HeoValueField } from '../controls/value-field.js';
 import '../controls/value-field.js';
 import '../controls/search-field.js';
 import '../controls/box-editor.js';
+import '../controls/border-editor.js';
+import type { BorderFieldSpec, LineView } from '../controls/border-editor.js';
+import { composeLine, LINE_PARTS, parseLine, type LineKind, type LinePart, type LineParts } from '../../core/border.js';
 import '../controls/segmented.js';
 import '../controls/section.js';
 import { classNameIssues, forkNameIssues } from '../../core/validation.js';
@@ -188,20 +194,10 @@ const SECTIONS: SectionSpec[] = [
   },
   {
     id: 'surface',
-    heading: 'Background & border',
+    heading: 'Background',
     glyph: 'droplet',
-    properties: [
-      'background-color',
-      'background-image',
-      'background-size',
-      'background-position',
-      'border-radius',
-      'border',
-      'border-width',
-      'border-style',
-      'border-color',
-      'outline',
-    ],
+    // Borders and outlines have their own section and editor: see BORDER_PROPERTIES.
+    properties: ['background-color', 'background-image', 'background-size', 'background-position'],
   },
   {
     id: 'effects',
@@ -238,6 +234,19 @@ const SPACING_PROPERTIES = [
   'padding-bottom',
   'padding-left',
 ];
+
+/**
+ * What the Border section covers, for the same reason as SPACING_PROPERTIES: it is drawn by hand.
+ *
+ * The parts are here for the search, not as rows. The editor reads and writes them as one `border`
+ * or `outline` shorthand, so they are listed as rows only where a block declares one on its own,
+ * which is when there is a real declaration for a row to show. Listed always, a part supplied by
+ * the shorthand sat under it as though it were another declaration, and its trash removed the
+ * whole shorthand.
+ */
+const BORDER_SHORTHANDS = ['border', 'outline'] as const;
+const BORDER_PARTS = ['border-width', 'border-style', 'border-color', 'outline-width', 'outline-style', 'outline-color'];
+const BORDER_PROPERTIES = [...BORDER_SHORTHANDS, 'border-radius', ...BORDER_PARTS];
 
 /** The Effective styles element block: its rows' list and its adder share the id. */
 const EFFECTIVE_LIST_ID = 'effective';
@@ -525,7 +534,7 @@ export class HeoStylesPanel extends HeoElement {
         cardPicks: new Map(),
         popover: null,
         menu: null,
-              pendingStates: [],
+        pendingStates: [],
         blockHint: null,
       };
     }
@@ -700,55 +709,55 @@ export class HeoStylesPanel extends HeoElement {
     return html`
       ${bar}
       ${renderElementHeader({
-        element: el,
-        reach: (key) => model.reach(key),
-        elementOpen: this.ui.cardPop?.key === ELEMENT_POP,
-        onOpenElement: () => this.#popOwn(el, model, host, ELEMENT_POP),
-        idOpen: this.ui.cardPop?.key === ID_POP,
-        onOpenId: () => this.#popOwn(el, model, host, ID_POP),
-        onRemoveId: () => {
-          if (this.ui.cardPop?.key === ID_POP) this.#patch({ cardPop: null });
-          this.editor.setAttribute('id', null, el);
-          this.#focusSelector('.ident .el-chip');
-        },
-        finderOpen: this.ui.finderOpen,
-        onToggleFinder: (open, refocus = true) => {
-          this.classForm.reset();
-          this.#patch({ finderOpen: open, ...(open ? { popover: null, cardPop: null, menu: null } : {}) });
-          if (open) {
-            this.#focusSelector('.finderpop heo-value-field');
-            // The list comes with the field: the "+" asks which class, and the answers are the list.
-            void this.updateComplete.then(() => requestAnimationFrame(() =>
-              this.renderRoot.querySelector<HeoValueField>('.finderpop heo-value-field')?.openList()));
-          } else if (refocus) this.#focusSelector('.ident .cchip.add');
-        },
-        openClass: (() => {
-          const key = this.ui.cardPop?.key;
-          return Array.from(el.classList).find((name) => `.${CSS.escape(name)}` === key) ?? null;
-        })(),
-        // A toggle: the open class's name closes its card.
-        onOpenClass: (name) => {
-          const key = `.${CSS.escape(name)}`;
-          const anchor = `.ident .cchip[data-class="${CSS.escape(name)}"] .name`;
-          if (this.ui.cardPop?.key === key) this.#closeTo({ cardPop: null }, anchor);
-          else this.#popCard(key, anchor);
-        },
-        onRemoveClass: (name) => this.editor.toggleClass(name, el),
-        // Every other family reaching the element, as the cascade lists them.
-        rules: this.#sourceCards(el, model, host).others.map((view) => view.family.key),
-        rulesOpen: this.ui.rulesOpen,
-        onShowRules: () => {
-          this.#patch({ rulesOpen: true });
-          this.#focusSelector('.ident .cchip.rule .name');
-        },
-        openRule: this.ui.cardPop?.anchor.startsWith('.ident .cchip.rule') ? this.ui.cardPop.key : null,
-        onOpenRule: (key) => {
-          const anchor = `.ident .cchip.rule[data-rule="${CSS.escape(key)}"] .name`;
-          if (this.ui.cardPop?.key === key) this.#closeTo({ cardPop: null }, anchor);
-          else this.#popCard(key, anchor);
-        },
-        finder: this.#renderFinder(el),
-      })}
+      element: el,
+      reach: (key) => model.reach(key),
+      elementOpen: this.ui.cardPop?.key === ELEMENT_POP,
+      onOpenElement: () => this.#popOwn(el, model, host, ELEMENT_POP),
+      idOpen: this.ui.cardPop?.key === ID_POP,
+      onOpenId: () => this.#popOwn(el, model, host, ID_POP),
+      onRemoveId: () => {
+        if (this.ui.cardPop?.key === ID_POP) this.#patch({ cardPop: null });
+        this.editor.setAttribute('id', null, el);
+        this.#focusSelector('.ident .el-chip');
+      },
+      finderOpen: this.ui.finderOpen,
+      onToggleFinder: (open, refocus = true) => {
+        this.classForm.reset();
+        this.#patch({ finderOpen: open, ...(open ? { popover: null, cardPop: null, menu: null } : {}) });
+        if (open) {
+          this.#focusSelector('.finderpop heo-value-field');
+          // The list comes with the field: the "+" asks which class, and the answers are the list.
+          void this.updateComplete.then(() => requestAnimationFrame(() =>
+            this.renderRoot.querySelector<HeoValueField>('.finderpop heo-value-field')?.openList()));
+        } else if (refocus) this.#focusSelector('.ident .cchip.add');
+      },
+      openClass: (() => {
+        const key = this.ui.cardPop?.key;
+        return Array.from(el.classList).find((name) => `.${CSS.escape(name)}` === key) ?? null;
+      })(),
+      // A toggle: the open class's name closes its card.
+      onOpenClass: (name) => {
+        const key = `.${CSS.escape(name)}`;
+        const anchor = `.ident .cchip[data-class="${CSS.escape(name)}"] .name`;
+        if (this.ui.cardPop?.key === key) this.#closeTo({ cardPop: null }, anchor);
+        else this.#popCard(key, anchor);
+      },
+      onRemoveClass: (name) => this.editor.toggleClass(name, el),
+      // Every other family reaching the element, as the cascade lists them.
+      rules: this.#sourceCards(el, model, host).others.map((view) => view.family.key),
+      rulesOpen: this.ui.rulesOpen,
+      onShowRules: () => {
+        this.#patch({ rulesOpen: true });
+        this.#focusSelector('.ident .cchip.rule .name');
+      },
+      openRule: this.ui.cardPop?.anchor.startsWith('.ident .cchip.rule') ? this.ui.cardPop.key : null,
+      onOpenRule: (key) => {
+        const anchor = `.ident .cchip.rule[data-rule="${CSS.escape(key)}"] .name`;
+        if (this.ui.cardPop?.key === key) this.#closeTo({ cardPop: null }, anchor);
+        else this.#popCard(key, anchor);
+      },
+      finder: this.#renderFinder(el),
+    })}
       ${selectionNotice(this.editor.selection.length, el)}
       <div class="top">
         <heo-search-field
@@ -766,6 +775,7 @@ export class HeoStylesPanel extends HeoElement {
 
       ${this.#renderEffective(el, model, host)}
       ${this.#renderSpacing(el, model, computed, host)}
+      ${this.#renderBorder(el, model, computed, host)}
       ${SECTIONS.filter((section) => !section.when || section.when(computed)).map((section) =>
       this.#renderSection(section, el, model, host),
     )}
@@ -861,21 +871,21 @@ export class HeoStylesPanel extends HeoElement {
             ${groups.map((group) => this.#renderPseudoGroup(el, model, host, group.state, group.properties))}
             ${pendingPseudo ? this.#renderPseudoGroup(el, model, host, pendingPseudo, []) : nothing}
             ${filtering
-          ? nothing
-          : renderPseudoAdder(host, {
-            id: EFFECTIVE_LIST_ID,
-            existing: [...groups.map((group) => group.state), ...(pendingPseudo ? [pendingPseudo] : [])],
-            onPick: (state) => {
-              const id = `state-${state}`;
-              host.form.reset();
-              this.#patch({
-                effPseudo: state,
-                menu: null,
-                adder: { id, draft: needsGeneratedContent(state) ? valueStepDraft('content', '""') : '', dest: '' },
-              });
-              return null;
-            },
-          })}`
+            ? nothing
+            : renderPseudoAdder(host, {
+              id: EFFECTIVE_LIST_ID,
+              existing: [...groups.map((group) => group.state), ...(pendingPseudo ? [pendingPseudo] : [])],
+              onPick: (state) => {
+                const id = `state-${state}`;
+                host.form.reset();
+                this.#patch({
+                  effPseudo: state,
+                  menu: null,
+                  adder: { id, draft: needsGeneratedContent(state) ? valueStepDraft('content', '""') : '', dest: '' },
+                });
+                return null;
+              },
+            })}`
         : this.#renderSizeGroup(el, model, host)}
       ${filtering
         ? nothing
@@ -1045,11 +1055,11 @@ export class HeoStylesPanel extends HeoElement {
       : mediaNow(media ?? '', media !== null && mediaApplies(media, null), model.width);
     return html`<div class="egroup" data-egroup=${state ? `state:${picked.slice('state:'.length)}` : `size:${slot}`}>
       ${renderBlockHeader(
-        state ? 'cursor' : mediaIcon(media ?? ''),
-        state || short,
-        state ? 'state' : mediaKind(media ?? ''),
-        html`<span class="note">${note}</span>`,
-      )}
+      state ? 'cursor' : mediaIcon(media ?? ''),
+      state || short,
+      state ? 'state' : mediaKind(media ?? ''),
+      html`<span class="note">${note}</span>`,
+    )}
       <div class="rows" data-declarations=${listId}>
         ${renderPropertyRows(properties, (property) => ({
       property,
@@ -1066,12 +1076,12 @@ export class HeoStylesPanel extends HeoElement {
             Nothing ${state ? `on ${state}` : media !== null && isWidthQuery(media) ? 'changes at this size' : 'changes under this media query'} yet.
           </p>`}
       ${renderBlockAdder(
-        host,
-        listId,
-        state ? this.#stateDestinations(el, model, state, slot) : this.#sizeDestinations(el, model, slot, media ?? '', short),
-        state,
-        { choose: true },
-      )}
+          host,
+          listId,
+          state ? this.#stateDestinations(el, model, state, slot) : this.#sizeDestinations(el, model, slot, media ?? '', short),
+          state,
+          { choose: true },
+        )}
     </div>`;
   }
   /** Where a size group's adder writes: every family at that size, then a new class of its own. */
@@ -1315,7 +1325,7 @@ export class HeoStylesPanel extends HeoElement {
       const root = this.renderRoot;
       const same = property
         ? root.querySelector<HeoValueField>(`${list ? `[data-declarations="${CSS.escape(list)}"] ` : ''}heo-value-field[data-property="${CSS.escape(property)}"]`)
-          ?? root.querySelector<HeoValueField>(`heo-value-field[data-property="${CSS.escape(property)}"]`)
+        ?? root.querySelector<HeoValueField>(`heo-value-field[data-property="${CSS.escape(property)}"]`)
         : null;
       if (same) same.focusInput();
       // Else the section's header, a button: focus is in the panel, where Backspace is not a page key.
@@ -1832,15 +1842,15 @@ export class HeoStylesPanel extends HeoElement {
         .suggestions=${classSuggestions(this.editor, this.classDraft)}
         placeholder="find or create a class"
         @value-input=${(event: CustomEvent<{ value: string }>) => {
-      this.classDraft = event.detail.value;
-    }}
+        this.classDraft = event.detail.value;
+      }}
         @value-change=${(event: CustomEvent<{ value: string }>) => {
-      this.classDraft = event.detail.value;
-    }}
+        this.classDraft = event.detail.value;
+      }}
         @value-submit=${(event: CustomEvent<{ value: string }>) => {
-      this.classDraft = event.detail.value;
-      if (this.classForm.submit()) this.#addClass(el, event.detail.value, event.target as HeoValueField);
-    }}
+        this.classDraft = event.detail.value;
+        if (this.classForm.submit()) this.#addClass(el, event.detail.value, event.target as HeoValueField);
+      }}
       ></heo-value-field>
       ${this.classForm.error('class-add')}`;
   }
@@ -1962,6 +1972,161 @@ export class HeoStylesPanel extends HeoElement {
     );
   }
 
+  /**
+   * Border: the outline-border-content editor, plus `border`, `outline` and `border-radius` as rows.
+   *
+   * The editor edits a line by its parts and writes it as one shorthand, where the shorthand's row
+   * writes (its destination switch). The parts a block declares on their own are rows under their
+   * shorthand, as a family, since then they are real declarations; supplied by the shorthand they
+   * are not rows at all (BORDER_PROPERTIES).
+   */
+  #renderBorder(
+    el: HTMLElement,
+    model: ElementModel,
+    computed: CSSStyleDeclaration,
+    host: StylesHost,
+  ): TemplateResult | typeof nothing {
+    const hits = BORDER_PROPERTIES.filter((property) =>
+      this.#hit(property, shownValue(model.cascade(property).applying[0])));
+    if (!hits.length) return nothing;
+    const scope: RowScope = { kind: 'section', id: 'border' };
+    const specOf = (property: string): RowSpec => ({ property, scope, element: el, model, listId: 'border' });
+    const choiceOf = (property: string) => {
+      const spec = specOf(property);
+      const { shown } = readRow(spec);
+      return { spec, shown, choice: destinationChoice(spec, host, rowIdOf(scope, property, el), shown) };
+    };
+
+    const lines = { border: this.#lineView('border', model, computed), outline: this.#lineView('outline', model, computed) };
+    const fields: Record<string, BorderFieldSpec> = {};
+    for (const kind of BORDER_SHORTHANDS) {
+      const head = choiceOf(kind).choice.head;
+      for (const part of LINE_PARTS) {
+        fields[`${kind}-${part}`] = { suggestions: buildSuggestions(this.editor, `${kind}-${part}`, el), head };
+      }
+    }
+    fields['border-radius'] = { suggestions: buildSuggestions(this.editor, 'border-radius', el), head: choiceOf('border-radius').choice.head };
+    const radius = { value: shownValue(model.cascade('border-radius').applying[0]), computed: computed.borderRadius };
+
+    // Each shorthand, then the parts a block declares on their own (a real declaration to show).
+    const rowsShown = [
+      ...BORDER_SHORTHANDS.flatMap((kind) => [
+        kind,
+        ...BORDER_PARTS.filter((part) => part.startsWith(`${kind}-`) &&
+          model.cascade(part).applying.some((one) => !one.via)),
+      ]),
+      'border-radius',
+    ].filter((property) => hits.includes(property));
+    const touched = BORDER_PROPERTIES.filter((property) => model.cascade(property).applying.some((one) => !one.via)).length;
+
+    /** The shorthand a part's edit writes, or null for the radius, which is its own property. */
+    const lineOf = (property: string): { kind: LineKind; part: LinePart } | null => {
+      const [kind, part] = property.split('-') as [LineKind, LinePart];
+      return (kind === 'border' || kind === 'outline') && LINE_PARTS.includes(part) ? { kind, part } : null;
+    };
+    const preview = (property: string, value: string): void => {
+      const line = lineOf(property);
+      const { spec, choice } = choiceOf(line ? line.kind : property);
+      previewChosen(host, spec, choice.picked, line ? composeLine(this.#lineBase(lines[line.kind]), line.part, value) : value);
+    };
+    const commit = (property: string, value: string): void => {
+      const line = lineOf(property);
+      if (!line) {
+        const { spec, shown, choice } = choiceOf(property);
+        writeChosen(host, spec, choice, shown, value);
+        return;
+      }
+      this.#commitLine(line.kind, composeLine(this.#lineBase(lines[line.kind]), line.part, value), choiceOf(line.kind).choice, el, model);
+    };
+
+    return html`<heo-section
+      heading="Border"
+      glyph="frame"
+      badge=${touched ? String(touched) : ''}
+      ?open=${host.filtering ? true : sectionOpen('border', true)}
+      @section-toggle=${(event: CustomEvent<{ open: boolean }>) => this.#remember('border', event.detail.open)}
+    >
+      <heo-border-editor
+        .lines=${lines}
+        .radius=${radius}
+        .fields=${fields}
+        @line-input=${(event: CustomEvent<{ property: string; value: string }>) => preview(event.detail.property, event.detail.value)}
+        @line-change=${(event: CustomEvent<{ property: string; value: string }>) => commit(event.detail.property, event.detail.value)}
+        @line-revert=${() => this.editor.cancelPreview()}
+      ></heo-border-editor>
+      ${rowsShown.length
+        ? html`<div class="rows" style="margin-top:10px" data-declarations="border">
+            ${renderPropertyRows(rowsShown, specOf, host)}
+          </div>`
+        : nothing}
+    </heo-section>`;
+  }
+
+  /**
+   * One line as the editor shows it: each part as written, read through whichever declaration
+   * supplies it (the part's own, or the shorthand's text), and the parts the page draws.
+   */
+  #lineView(kind: LineKind, model: ElementModel, computed: CSSStyleDeclaration): LineView {
+    const parts: LineParts = { width: '', style: '', color: '' };
+    let token = '';
+    for (const part of LINE_PARTS) {
+      const winner = model.cascade(`${kind}-${part}`).applying[0];
+      if (!winner) continue;
+      if (!winner.via) parts[part] = winner.value;
+      else if (winner.via === kind) {
+        const read = parseLine(winner.value);
+        parts[part] = read[part];
+        token ||= read.token;
+      }
+    }
+    const sides = kind === 'border' ? ['top', 'right', 'bottom', 'left'] : [null];
+    const drawn: LineParts = { width: '', style: '', color: '' };
+    const mixed: LineView['mixed'] = {};
+    for (const part of LINE_PARTS) {
+      const values = sides.map((side) => computed.getPropertyValue(side ? `${kind}-${side}-${part}` : `${kind}-${part}`).trim());
+      drawn[part] = values[0] ?? '';
+      mixed[part] = new Set(values).size > 1;
+    }
+    return { parts, token, computed: drawn, mixed };
+  }
+
+  /**
+   * The parts an edit starts from: as written, or as drawn when the line is written as one token
+   * (`var(--border)`), since a part of a token cannot be changed and the rest kept otherwise.
+   */
+  #lineBase(line: LineView): LineParts {
+    if (!line.token) return line.parts;
+    const style = line.computed.style;
+    return /^(?:none|hidden)$/i.test(style) ? { width: '', style: '', color: '' } : { ...line.computed };
+  }
+
+  /**
+   * Write a line as one shorthand where its row writes, and fold away the parts the same block
+   * declares on their own: kept, they would compete with the new shorthand by order, which is how
+   * `border-width` came to override a border just set. One undo entry.
+   */
+  #commitLine(kind: LineKind, value: string, choice: ReturnType<typeof destinationChoice>, el: HTMLElement, model: ElementModel): void {
+    const dest = choice.picked.dest;
+    if (!dest) return;
+    this.editor.cancelPreview();
+    this.#patch({ rowDest: null });
+    const into = dest.kind === 'target' ? dest.target : null;
+    const folded = into
+      ? LINE_PARTS.map((part) => `${kind}-${part}`).filter((property) =>
+        model.cascade(property).applying.some((one) =>
+          !one.via && sameTarget(targetOf(one, el), into)))
+      : [];
+    const moving = choice.current?.dest?.kind === 'target' && choice.current.dest.target.kind === 'inline' && into?.kind !== 'inline';
+    this.editor.writeDeclarationsTo(
+      [
+        { dest, property: kind, value, move: moving, remove: !value },
+        ...folded.map((property) => ({ dest, property, value: '', remove: true })),
+      ],
+      value ? `Set ${kind}` : `Remove ${kind}`,
+      el,
+    );
+  }
+
   #renderSection(
     section: SectionSpec,
     el: HTMLElement,
@@ -2026,6 +2191,7 @@ export class HeoStylesPanel extends HeoElement {
       for (const property of section.properties) consider(property);
     }
     for (const property of SPACING_PROPERTIES) consider(property);
+    for (const property of BORDER_PROPERTIES) consider(property);
     for (const property of model.appliedProperties()) consider(property);
     return properties.size;
   }

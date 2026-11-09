@@ -396,7 +396,7 @@ export function writeChosen(
 }
 
 /** Paint a value being typed where the choice would write it. */
-function previewChosen(host: StylesHost, spec: RowSpec, picked: AdderDestination, text: string): void {
+export function previewChosen(host: StylesHost, spec: RowSpec, picked: AdderDestination, text: string): void {
   const { engine } = host;
   const { property, element, model } = spec;
   if (isInline(picked)) {

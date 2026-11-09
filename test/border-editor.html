@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Border and outline editor</title>
+  <!--
+    The Border section edits a border and an outline by their parts (width, style, colour) and the
+    corner radius, in an outline-border-content diagram that draws them, and writes each line as one
+    shorthand. The parts are rows only where a block declares one on its own.
+  -->
+  <style id="site">
+    :root {
+      --brand: #ff3355;
+    }
+
+    .c {
+      border: 2px solid green;
+    }
+  </style>
+</head>
+
+<body>
+  <p id="a">No border yet</p>
+  <p id="b" style="border: 1px solid red; border-color: blue">A border and a part</p>
+  <p id="c" class="c">A rule's border</p>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const results = {};
+      const errors = [];
+      addEventListener('error', (event) => errors.push('error: ' + event.message));
+      const progress = document.getElementById('progress');
+      const settle = (ms = 300) => new Promise((resolve) => setTimeout(resolve, ms));
+      const deep = (selector, root = document) => {
+        const direct = root.querySelector?.(selector);
+        if (direct) return direct;
+        for (const el of root.querySelectorAll?.('*') ?? []) {
+          if (!el.shadowRoot) continue;
+          const found = deep(selector, el.shadowRoot);
+          if (found) return found;
+        }
+        return null;
+      };
+      try {
+        const api = window.HtmlEditorOverlay.mount({ theme: 'dark', presets: false, detectScriptContent: false });
+        const engine = api.engine;
+        api.setEditing(true);
+        await engine.whenReady();
+        engine.setDockTab('styles');
+        const sroot = () => deep('heo-styles-panel').shadowRoot;
+        const editor = () => sroot().querySelector('heo-border-editor');
+        const field = (property) => editor()?.shadowRoot?.querySelector(`heo-value-field[data-property="${property}"]`);
+        const send = async (property, type, value) => {
+          field(property)?.dispatchEvent(new CustomEvent(type, { detail: { value }, bubbles: true, composed: true }));
+          await settle(300);
+        };
+        const rows = (id) => Array.from(sroot().querySelectorAll(`[data-declarations="${id}"] .row`)).map((row) => row.dataset.property).join(',');
+        const style = (el) => (el.getAttribute('style') ?? '').replace(/\s+/g, ' ').trim();
+        const select = async (id) => {
+          const el = document.getElementById(id);
+          api.select(el);
+          await settle(500);
+          return el;
+        };
+
+        progress.textContent = 'layout';
+        const a = await select('a');
+        {
+          const shadow = editor()?.shadowRoot;
+          const outline = shadow?.querySelector('.frame.outline');
+          const border = outline?.querySelector(':scope > .frame.border');
+          const core = border?.querySelector(':scope > .core');
+          const fieldsIn = (frame) => Array.from(frame?.querySelectorAll(':scope > .fields heo-value-field') ?? []).map((one) => one.dataset.property).join(',');
+          results.layout = {
+            outlineHoldsBorderHoldsContent: Boolean(core),
+            eachLineHasItsThreeParts: fieldsIn(outline) === 'outline-width,outline-style,outline-color' &&
+              fieldsIn(border) === 'border-width,border-style,border-color',
+            theRadiusIsOnTheContent: Boolean(core?.querySelector('heo-value-field[data-property="border-radius"]')),
+            theFieldsAreNamed: field('outline-color')?.getAttribute('field-label') === 'Outline color',
+            // The parts are not rows when nothing declares them on their own.
+            rowsAreTheShorthands: rows('border') === 'border,outline,border-radius',
+            backgroundHasNoBorderRows: !/border|outline/.test(rows('surface')),
+          };
+        }
+
+        progress.textContent = 'preview';
+        // Exploring a colour paints the page and commits nothing; leaving it puts the page back.
+        {
+          const entries = engine.history.size;
+          await send('border-color', 'value-input', 'lime');
+          const painted = getComputedStyle(a).borderTopColor === 'rgb(0, 255, 0)' && getComputedStyle(a).borderTopStyle === 'solid';
+          const diagram = editor()?.shadowRoot?.querySelector('.frame.border');
+          const drawn = diagram && getComputedStyle(diagram).borderTopColor === 'rgb(0, 255, 0)';
+          await send('border-color', 'value-revert', '');
+          editor()?.shadowRoot?.querySelector('heo-value-field[data-property="border-color"]')
+            ?.dispatchEvent(new CustomEvent('value-revert', { bubbles: true, composed: true }));
+          await settle(300);
+          results.preview = {
+            thePagePaintsTheLine: painted,
+            theDiagramDrawsItToo: Boolean(drawn),
+            nothingCommitted: engine.history.size === entries,
+            leavingPutsThePageBack: getComputedStyle(a).borderTopStyle === 'none' && !style(a),
+          };
+        }
+
+        progress.textContent = 'compose';
+        {
+          // A colour for a line that is not there: one shorthand, drawn solid and 1px.
+          await send('border-color', 'value-change', 'var(--brand)');
+          const first = style(a);
+          // Past the history's merge window, so the next edit to the same line is its own entry.
+          await settle(2700);
+          await send('border-width', 'value-change', '3px');
+          const second = style(a);
+          await send('outline-style', 'value-change', 'dashed');
+          await send('border-radius', 'value-change', '6px');
+          results.compose = {
+            aColourDrawsAHairline: first === 'border: 1px solid var(--brand);',
+            aWidthKeepsTheOtherParts: second === 'border: 3px solid var(--brand);' && getComputedStyle(a).borderTopWidth === '3px',
+            theOutlineIsItsOwnShorthand: /outline: dashed;/.test(style(a)) && getComputedStyle(a).outlineStyle === 'dashed',
+            theRadiusIsWritten: /border-radius: 6px;/.test(style(a)),
+            theFieldsShowTheParts: field('border-width')?.value === '3px' && field('border-color')?.value === 'var(--brand)' &&
+              field('border-style')?.value === 'solid',
+            // Each edit is one undo entry: radius, outline, then the width alone.
+            undoTakesOnePartBack: (() => {
+              const seen = [];
+              for (let i = 0; i < 3; i++) { engine.undo(); seen.push(style(a)); }
+              return seen.join(' | ') ===
+                'border: 3px solid var(--brand); outline: dashed; | border: 3px solid var(--brand); | border: 1px solid var(--brand);';
+            })(),
+          };
+        }
+
+        progress.textContent = 'fold';
+        /*
+         * A part the block declares on its own is a real declaration: a row, in the border's family.
+         * Editing through the editor writes the line as one shorthand and folds the part into it, so
+         * the two no longer compete by order.
+         */
+        {
+          const b = await select('b');
+          const listedAsFamily = rows('border').startsWith('border,border-color,outline');
+          await send('border-width', 'value-change', '4px');
+          results.fold = {
+            thePartIsARowInTheFamily: listedAsFamily,
+            oneShorthandWithThePartFolded: style(b) === 'border: 4px solid blue;',
+            thePageKeepsTheColour: getComputedStyle(b).borderTopColor === 'rgb(0, 0, 255)' && getComputedStyle(b).borderTopWidth === '4px',
+            thePartRowIsGone: rows('border') === 'border,outline,border-radius',
+          };
+        }
+
+        progress.textContent = 'rule';
+        // A rule's border is edited where it is written, and its parts are not listed as rows: their
+        // trash used to remove the whole shorthand.
+        {
+          const c = await select('c');
+          const rule = document.getElementById('site').sheet.cssRules[1];
+          const noPartRows = rows('border') === 'border,outline,border-radius';
+          const shown = field('border-color')?.value === 'green' && field('border-width')?.value === '2px';
+          await send('border-color', 'value-change', 'blue');
+          results.rule = {
+            noPartRows,
+            theFieldsReadTheRule: shown,
+            writtenInTheRule: !c.getAttribute('style') && rule.style.borderTopColor === 'blue' && rule.style.borderTopWidth === '2px',
+          };
+        }
+
+        progress.textContent = 'search';
+        {
+          engine.store.value; // keep the selection
+          const search = sroot().querySelector('heo-search-field');
+          search?.dispatchEvent(new CustomEvent('search-input', { detail: { value: 'outline' }, bubbles: true, composed: true }));
+          await settle(400);
+          results.search = {
+            findsTheBorderSection: Boolean(editor()) && rows('border').includes('outline'),
+          };
+          search?.dispatchEvent(new CustomEvent('search-input', { detail: { value: '' }, bubbles: true, composed: true }));
+          await settle(300);
+        }
+      } catch (e) {
+        results.threw = String((e && e.stack) || e);
+      }
+      results.browserErrors = { ok: errors.length === 0, errors };
+      const failed = Object.entries(results)
+        .filter(([, group]) => group && typeof group === 'object')
+        .filter(([, group]) => Object.values(group).some((value) => value === false))
+        .map(([name]) => name);
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify({ ...results, failed: results.threw ? ['threw', ...failed] : failed }, null, 2) + ':END';
+    })();
+  </script>
+</body>
+
+</html>

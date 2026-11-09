@@ -26,6 +26,7 @@ import {
   withValue,
   type Declaration,
 } from '../src/core/declaration-list.ts';
+import { composeLine, parseLine } from '../src/core/border.ts';
 
 let passed = 0;
 const failures: string[] = [];
@@ -395,6 +396,38 @@ test('a shorthand new to the block goes in front of its sides', () => {
   // Already there, it keeps its place, wherever that is (here, after its sides: it wins).
   const declared = block('padding-left=30px padding=12px');
   assert.equal(flat(afterEdit(declared, 'padding', declared)), 'padding-left=30px padding=12px');
+});
+
+/* -------------------------------------------------------------------------- */
+/* A border or outline as its three parts                                      */
+/* -------------------------------------------------------------------------- */
+
+test('a line is read into width, style and colour in any order', () => {
+  const p = (value: string): string => { const one = parseLine(value); return `${one.width}|${one.style}|${one.color}|${one.token}`; };
+  assert.equal(p('1px solid #ddd'), '1px|solid|#ddd|');
+  assert.equal(p('dashed rgb(0 0 0 / 50%) thick'), 'thick|dashed|rgb(0 0 0 / 50%)|');
+  assert.equal(p('2px solid var(--brand) !important'), '2px|solid|var(--brand)|');
+  assert.equal(p('var(--border-width) solid currentColor'), 'var(--border-width)|solid|currentColor|');
+  // One token for the whole line is none of the parts.
+  assert.equal(p('var(--border)'), '|||var(--border)');
+  assert.equal(p('none'), '|none||');
+});
+
+test('changing one part keeps the others and writes one shorthand', () => {
+  const base = { width: '1px', style: 'solid', color: '#ddd' };
+  assert.equal(composeLine(base, 'width', '3px'), '3px solid #ddd');
+  assert.equal(composeLine(base, 'color', 'var(--brand)'), '1px solid var(--brand)');
+  assert.equal(composeLine(base, 'style', 'dashed'), '1px dashed #ddd');
+});
+
+test('a width or colour on an undrawn line gives it a style, and none is just none', () => {
+  const empty = { width: '', style: '', color: '' };
+  // Without a style CSS draws nothing, so the edit would change nothing on the page.
+  assert.equal(composeLine(empty, 'color', 'red'), '1px solid red');
+  assert.equal(composeLine({ width: '2px', style: 'none', color: '' }, 'width', '4px'), '4px solid');
+  assert.equal(composeLine({ width: '1px', style: 'solid', color: 'red' }, 'style', 'none'), 'none');
+  // Emptying the last part removes the declaration.
+  assert.equal(composeLine({ width: '2px', style: '', color: '' }, 'width', ''), '');
 });
 if (failures.length) {
   console.error(`\n${failures.length} failing, ${passed} passing\n`);

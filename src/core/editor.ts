@@ -3559,7 +3559,7 @@ export class EditorEngine {
    * value away in the same entry, as `writeDeclarationTo` does for one.
    */
   writeDeclarationsTo(
-    writes: ReadonlyArray<{ dest: AddDestination; property: string; value: string; move?: boolean }>,
+    writes: ReadonlyArray<{ dest: AddDestination; property: string; value: string; move?: boolean; remove?: boolean }>,
     label: string,
     el: HTMLElement,
   ): void {
@@ -3570,6 +3570,15 @@ export class EditorEngine {
         this.overrideStyles(Object.fromEntries(inline.map((one) => [one.property, one.value])), label, el);
       }
       for (const one of others) {
+        /*
+         * An empty value is skipped, so a cleared box side in a rule does not take a shared rule's
+         * declaration away unasked; `remove` says the removal is the point (a longhand folded into
+         * the shorthand the Border editor writes beside it in the same block).
+         */
+        if (one.remove && one.dest.kind === 'target' && !splitImportant(one.value).value) {
+          this.removeDeclaration(one.dest.target, one.property);
+          continue;
+        }
         if (!splitImportant(one.value).value) continue;
         if (one.move && this.#committedInlineText(el, one.property)) this.setStyle(one.property, '', el);
         if (one.dest.kind === 'target') this.setDeclaration(one.dest.target, one.property, one.value);
