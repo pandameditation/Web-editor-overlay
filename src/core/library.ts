@@ -16,6 +16,8 @@ export class BlockLibrary {
   #blocks = new Map<string, LibraryBlock>();
   #sheet = new ManagedStyleSheet(BLOCK_STYLE_ID);
   #injectedCSS = new Map<string, string>();
+  /** Names of blocks that have CSS here, library entry or not: what a notice calls a pasted copy. */
+  #names = new Map<string, string>();
   /** Ids whose CSS is scoped as captured CSS (renamed keyframes and fonts, root mapping). */
   #captured = new Set<string>();
   /**
@@ -75,6 +77,38 @@ export class BlockLibrary {
       if (!used(candidate)) return candidate;
     }
     return `${root}-${Date.now().toString(36)}`;
+  }
+
+  /**
+   * A block's source CSS as the page is using it, library block or insert-only paste; undefined
+   * when this library never wrote CSS for the id (a saved chunk carried through for a block it
+   * does not know has no source to edit).
+   */
+  sourceCSS(id: string): string | undefined {
+    if (this.#injectedCSS.has(id)) return this.#injectedCSS.get(id);
+    return this.#blocks.has(id) ? this.#blocks.get(id)?.css ?? '' : undefined;
+  }
+
+  /** The block's name: its library entry's, or the one it was inserted under. */
+  nameOf(id: string): string | undefined {
+    return this.#blocks.get(id)?.name ?? this.#names.get(id);
+  }
+
+  /** Whether the id's CSS is scoped as a capture's (keyframes and fonts renamed). */
+  isCaptured(id: string): boolean {
+    return this.#captured.has(id) || this.#blocks.get(id)?.origin === 'captured';
+  }
+
+  /**
+   * Replace a block's source CSS and re-scope it: its library entry when it has one, and the CSS
+   * every instance on the page is drawn with either way.
+   */
+  setSourceCSS(id: string, css: string): void {
+    const block = this.#blocks.get(id);
+    if (block) this.#blocks.set(id, { ...block, css: css.trim() ? css : undefined });
+    if (this.#injectedCSS.has(id) || block) this.#injectedCSS.set(id, css);
+    this.#writeCSS();
+    this.#notify();
   }
 
   /** Whether this id has a CSS slot in the managed sheet, library block or not. */
@@ -249,6 +283,7 @@ export class BlockLibrary {
   destroy(): void {
     this.#sheet.destroy();
     this.#injectedCSS.clear();
+    this.#names.clear();
     this.#captured.clear();
     this.#foreignChunks.clear();
     this.#listeners.clear();
@@ -267,6 +302,7 @@ export class BlockLibrary {
     // and the next upsert must then have a managed slot to rewrite.
     const css = block.css ?? '';
     this.#injectedCSS.set(block.id, css);
+    if (block.name) this.#names.set(block.id, block.name);
     // An empty slot changes nothing in the joined sheet. Writing anyway would turn the first
     // CSS-less instance met during hydration into write(''), removing the claimed saved style.
     if (css.trim()) this.#writeCSS();

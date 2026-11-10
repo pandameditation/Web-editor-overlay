@@ -15,6 +15,7 @@ import {
   fontFamiliesIn,
   hasContainerGroup,
   pickDependencies,
+  hoistUrls,
   joinCompounds,
   preferFontSource,
   remToPx,
@@ -208,6 +209,13 @@ test('embedded bytes get their MIME type from their magic number when the server
   assert.equal(sniffMime('T1RUTwAJAIAA', ''), 'font/otf');
   assert.equal(sniffMime('iVBORw0KGgoAAAA', 'application/octet-stream'), 'image/png');
   assert.equal(sniffMime('PHN2ZyB4bWxucz0', 'image/svg+xml'), 'image/svg+xml');
+});
+test('long or repeated urls are written once, as custom properties', () => {
+  const long = `data:image/png;base64,${'A'.repeat(200)}`;
+  const out = hoistUrls(`.a { background: url("${long}") } .b { background-image: url(${long}); } .c { mask: url(x.svg) } .d { list-style-image: url('y.png'), url("y.png") }`);
+  assert.deepEqual(out.declarations, [`--cap-url-1: url("${long}")`, '--cap-url-2: url("y.png")']);
+  assert.equal(out.css, '.a { background: var(--cap-url-1) } .b { background-image: var(--cap-url-1); } .c { mask: url(x.svg) } .d { list-style-image: var(--cap-url-2), var(--cap-url-2) }');
+  assert.deepEqual(hoistUrls('.a { color: red }'), { css: '.a { color: red }', declarations: [] });
 });
 if (failures.length) {
   console.error(`capture-collect: ${failures.length} failed, ${passed} passed\n  ${failures.join('\n  ')}`);

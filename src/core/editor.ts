@@ -136,6 +136,7 @@ import {
   isLegacyElementBlock,
   LEGACY_BLOCK_MESSAGE,
   mergeInstanceText,
+  slugify,
   type BlockPropRow,
 } from './library.js';
 import {
@@ -179,6 +180,7 @@ import {
 import { buildPrompt } from './prompt.js';
 import { formatHTML, previewMarkup, sanitizeFragment } from './sanitize.js';
 import { formatBlockMarkup } from './block-preview.js';
+import { editBlockCSS, leanBlockSelector } from './block-rule-edit.js';
 import {
   connectDirectory,
   connectServer,
@@ -2318,6 +2320,7 @@ export class EditorEngine {
   cancelPreview(): void {
     this.#endPreview();
     this.#endRulePreview();
+    this.#restoreBlockPreview();
     const classPreview = this.#classPreview;
     this.#classPreview = null;
     if (classPreview) {
@@ -2761,6 +2764,135 @@ export class EditorEngine {
   }
 
   /** Change one declaration on a rule. An empty value keeps the row and drops the CSS. */
+  /* ---------------------------------------------------------------------- */
+  /* Block CSS, edited where it shows                                       */
+  /* ---------------------------------------------------------------------- */
+
+  /** A block's source CSS before a preview touched it, so the commit and the cancel know it. */
+  #blockPreview: { id: string; css: string } | null = null;
+  /** Blocks whose reach has been said once this session, so editing ten values is one notice. */
+  #blockReachSaid = new Set<string>();
+
+  /** Who an edit to this block's CSS reaches: its library entry and its instances, or one paste. */
+  #blockReach(id: string): { name: string; inLibrary: boolean; instances: number } {
+    const block = this.library.get(id);
+    const value = id.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const instances = document.querySelectorAll(`[${BLOCK_ATTR}="${value}"]`).length;
+    return { name: this.library.nameOf(id) ?? id, inLibrary: Boolean(block), instances };
+  }
+
+  /** What the Styles panel says about a block rule's reach, for its rows. */
+  blockReachText(id: string): string {
+    const { name, inLibrary, instances } = this.#blockReach(id);
+    if (inLibrary) {
+      return `Edits the ${name} block: its library entry and ${instances} ${instances === 1 ? 'copy' : 'copies'} on this page.`;
+    }
+    return instances > 1
+      ? `Edits all ${instances} pasted copies of ${name}. It is not in the library.`
+      : `Edits only this pasted ${name}. It is not in the library.`;
+  }
+
+  #restoreBlockPreview(): void {
+    const preview = this.#blockPreview;
+    this.#blockPreview = null;
+    if (preview) this.library.setSourceCSS(preview.id, preview.css);
+  }
+
+  /** The block's CSS with one declaration set (or, for an empty value, removed); null when it cannot be. */
+  #editedBlockCSS(
+    target: Extract<WriteTarget, { kind: 'block' }>,
+    source: string,
+    property: string,
+    value: string,
+    important: boolean | undefined,
+  ): string | null {
+    const { value: text, important: typed } = splitImportant(value);
+    return editBlockCSS(source, target.locator, this.library.isCaptured(target.locator.blockId), (style) => {
+      if (!text.trim()) {
+        style.removeProperty(property);
+        return;
+      }
+      const was = style.getPropertyPriority(property) === 'important';
+      style.setProperty(property, text, (important ?? typed ?? was) ? 'important' : '');
+    });
+  }
+
+  /** Paint a value into a block's rule without history; `cancelPreview()` puts it back. */
+  previewBlockRuleDeclaration(target: Extract<WriteTarget, { kind: 'block' }>, property: string, value: string): void {
+    const id = target.locator.blockId;
+    const source = this.#blockPreview?.id === id ? this.#blockPreview.css : this.library.sourceCSS(id);
+    if (source === undefined) return;
+    const next = this.#editedBlockCSS(target, source, property, value, undefined);
+    if (next === null) return;
+    if (this.#blockPreview?.id !== id) {
+      this.#restoreBlockPreview();
+      this.#blockPreview = { id, css: source };
+    }
+    this.library.setSourceCSS(id, next);
+  }
+
+  /**
+   * Set or remove one declaration of a block's rule, as one undo entry.
+   *
+   * Written to the block's source CSS: its library entry when it has one (every instance follows),
+   * and the CSS of an insert-only paste otherwise. The first edit of a block in a session says
+   * which of the two it is, because the panel shows both kinds of rule the same way.
+   */
+  setBlockRuleDeclaration(
+    target: Extract<WriteTarget, { kind: 'block' }>,
+    property: string,
+    value: string,
+    important?: boolean,
+    label?: string,
+  ): void {
+    const id = target.locator.blockId;
+    const preview = this.#blockPreview?.id === id ? this.#blockPreview : null;
+    this.#restoreBlockPreview();
+    const source = preview?.css ?? this.library.sourceCSS(id);
+    if (source === undefined) {
+      this.notify('This block came with the saved page, and its source CSS did not. Paste or insert it again to edit it.', 'info');
+      return;
+    }
+    const next = this.#editedBlockCSS(target, source, property, value, important);
+    if (next === null) {
+      this.notify('That rule is no longer in the block. Select the element again.', 'error');
+      return;
+    }
+    if (next === source) return;
+    const reach = this.#blockReach(id);
+    const selector = leanBlockSelector(target.rule.selectorText);
+    const removing = !splitImportant(value).value.trim();
+    this.history.commit({
+      label: label ?? `${removing ? 'Remove' : 'Set'} ${property} on ${selector} in ${reach.name}`,
+      mergeKey: `block-css:${id}:${selector}:${property}`,
+      subject: `block-css:${id}`,
+      record: {
+        id: nextChangeId(),
+        kind: 'token-rule',
+        summary: `${removing ? 'Remove' : 'Set'} ${property} on ${selector} in the ${reach.name} block`,
+        target: `[${BLOCK_ATTR}="${id}"]`,
+        group: `block-rule:${id}`,
+        before: source || undefined,
+        after: next || undefined,
+        detail: {
+          selector: `[${BLOCK_ATTR}="${id}"]`,
+          block: reach.name,
+          source: 'block-css-edit',
+          css: next,
+          property,
+        },
+        at: Date.now(),
+      },
+      apply: () => this.library.setSourceCSS(id, next),
+      revert: () => this.library.setSourceCSS(id, source),
+    });
+    this.#bumpRevision();
+    if (!this.#blockReachSaid.has(id)) {
+      this.#blockReachSaid.add(id);
+      this.notify(this.blockReachText(id), reach.inLibrary && reach.instances > 1 ? 'info' : 'success');
+    }
+  }
+
   setDesignRuleDeclaration(
     ruleKey: string,
     property: string,
@@ -3253,6 +3385,9 @@ export class EditorEngine {
       case 'design-rule':
         this.setDesignRuleDeclaration(target.key, property, value, important, label);
         return;
+      case 'block':
+        this.setBlockRuleDeclaration(target, property, value, important, label);
+        return;
       case 'readonly':
         this.notify(target.reason, 'info');
     }
@@ -3277,6 +3412,9 @@ export class EditorEngine {
       case 'design-rule':
         this.previewDesignRuleDeclaration(target.key, property, value);
         return;
+      case 'block':
+        this.previewBlockRuleDeclaration(target, property, value);
+        return;
       case 'readonly':
     }
   }
@@ -3298,9 +3436,11 @@ export class EditorEngine {
         ? labelFor(target.element)
         : target.kind === 'live'
           ? target.rule.selectorText
-          : target.kind === 'class'
-            ? `.${target.name}`
-            : target.key;
+          : target.kind === 'block'
+            ? leanBlockSelector(target.rule.selectorText)
+            : target.kind === 'class'
+              ? `.${target.name}`
+              : target.key;
     const label = important
       ? `Add !important to ${property} in ${where}`
       : `Remove !important from ${property} in ${where}`;
@@ -3322,6 +3462,9 @@ export class EditorEngine {
       case 'design-rule':
         this.removeDesignRuleDeclaration(target.key, property);
         return;
+      case 'block':
+        this.setBlockRuleDeclaration(target, property, '');
+        return;
       case 'readonly':
         this.notify(target.reason, 'info');
     }
@@ -3338,6 +3481,8 @@ export class EditorEngine {
         return splitImportant(this.classes.get(target.name)?.declarations[property] ?? '').value;
       case 'design-rule':
         return splitImportant(this.rules.get(target.key)?.declarations[property] ?? '').value;
+      case 'block':
+        return valueOf(ruleDeclarations(target.rule), property) ?? '';
       case 'readonly':
         return '';
     }
@@ -3633,6 +3778,7 @@ export class EditorEngine {
       case 'target': {
         const target = dest.target;
         if (target.kind === 'live') return peelPseudos(target.rule.selectorText).pseudo;
+        if (target.kind === 'block') return peelPseudos(leanBlockSelector(target.rule.selectorText)).pseudo;
         if (target.kind === 'design-rule') return peelPseudos(this.rules.get(target.key)?.selector ?? '').pseudo;
         return '';
       }
@@ -3691,7 +3837,7 @@ export class EditorEngine {
       }
       case 'target': {
         const target = dest.target;
-        if (target.kind === 'live') return ruleDeclarations(target.rule).some((one) => one.value.trim());
+        if (target.kind === 'live' || target.kind === 'block') return ruleDeclarations(target.rule).some((one) => one.value.trim());
         if (target.kind === 'design-rule') return nonEmpty(this.rules.get(target.key)?.declarations);
         if (target.kind === 'class') return nonEmpty(this.classes.get(target.name)?.declarations);
         return true;
@@ -3752,6 +3898,8 @@ export class EditorEngine {
         else if (target.kind === 'class') this.removeClass(target.name);
         else if (target.kind === 'live') {
           for (const one of ruleDeclarations(target.rule)) this.setRuleDeclaration(target.rule, one.property, '');
+        } else if (target.kind === 'block') {
+          for (const one of ruleDeclarations(target.rule)) this.setBlockRuleDeclaration(target, one.property, '');
         }
       }
     });
@@ -3779,6 +3927,14 @@ export class EditorEngine {
       case 'class':
         this.removeClass(target.name);
         return;
+      case 'block': {
+        const declarations = ruleDeclarations(target.rule);
+        if (!declarations.length) return;
+        this.#asOneEntry(`Remove the declarations of ${leanBlockSelector(target.rule.selectorText)}`, () => {
+          for (const one of declarations) this.setBlockRuleDeclaration(target, one.property, '');
+        });
+        return;
+      }
       case 'readonly':
         this.notify(target.reason, 'info');
         return;
@@ -6854,14 +7010,25 @@ export class EditorEngine {
    * The CSS is vetted here, because a clipboard is untrusted whatever produced it, and the
    * dialog reports what was removed.
    */
-  beginCapturePaste(block: LibraryBlock, anchor?: InsertAnchor): boolean {
-    const target = anchor ?? this.store.value.insertAnchor ?? this.#defaultAnchor();
-    if (!target) return false;
-    const id = this.library.uniqueId(block.name || block.id || 'captured', (candidate) => {
+  /**
+   * An id for a pasted block: its name slugged and kept short, unique among library entries, CSS
+   * chunks and instances on the page. Short, because the id is written six times into every
+   * scoped selector of the block; `except` is the id the block already holds.
+   */
+  #freshBlockId(name: string, except?: string): string {
+    const base = slugify(name).slice(0, 24).replace(/-+$/, '') || 'block';
+    return this.library.uniqueId(base, (candidate) => {
+      if (candidate === except) return false;
       if (this.library.hasCSS(candidate)) return true;
       const value = candidate.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
       return Boolean(document.querySelector(`[${BLOCK_ATTR}="${value}"], [${BLOCK_PART_ATTR}="${value}"]`));
     });
+  }
+
+  beginCapturePaste(block: LibraryBlock, anchor?: InsertAnchor): boolean {
+    const target = anchor ?? this.store.value.insertAnchor ?? this.#defaultAnchor();
+    if (!target) return false;
+    const id = this.#freshBlockId(block.name || block.id || 'captured');
     const vetted = vetCapturedCSS(block.css ?? '');
     const next: LibraryBlock = {
       ...block,
@@ -6990,14 +7157,7 @@ export class EditorEngine {
     if (!open) return;
     const trimmed = name.trim();
     const current = open.block.id;
-    const id = trimmed
-      ? this.library.uniqueId(trimmed, (candidate) => {
-        if (candidate === current) return false;
-        if (this.library.hasCSS(candidate)) return true;
-        const value = candidate.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-        return Boolean(document.querySelector(`[${BLOCK_ATTR}="${value}"], [${BLOCK_PART_ATTR}="${value}"]`));
-      })
-      : current;
+    const id = trimmed ? this.#freshBlockId(trimmed, current) : current;
     this.store.patch({ capturePaste: { ...open, block: { ...open.block, name, id }, error: '' } });
   }
 

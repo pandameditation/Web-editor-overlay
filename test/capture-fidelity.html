@@ -37,6 +37,8 @@
      * The paste target is hostile in the ordinary ways: 62.5% root, border-box everywhere,
      * reset margins and lists, its own font, colour and line height, `img { height: auto }`.
      */
+    // A CSS background image long enough to be worth naming once (a 1x1 GIF padded with a comment block).
+    const THUMB = 'data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH+' + 'QQ'.repeat(120) + 'ACwAAAAAAQABAAACAkQBADs=';
     const SOURCE = `<!doctype html><html class="theme"><head><meta charset="utf-8"><style>
       html { font-size: 10px; }
       body { margin: 0; background: rgb(30, 40, 60); color: rgb(240, 240, 240); font-family: Verdana, sans-serif; font-size: 1.4rem; }
@@ -52,6 +54,7 @@
       .ico::before { font: var(--icon-font); content: "\\e900"; }
       .page .card img { width: 4.8rem; height: 4.8rem; display: block; }
       .page .card .go { color: rgb(120, 180, 255); text-decoration: none; }
+      .page .card .thumb { width: 20px; height: 20px; background-image: url("${THUMB}"); background-size: cover; }
       .page .card .go:hover { text-decoration: underline; }
       @media (max-width: 600px) {
         .page .grid { grid-template-columns: 1fr; }
@@ -66,6 +69,7 @@
           <ul data-probe="ul"><li>one</li><li data-probe="li2">two</li></ul>
           <img data-probe="img" alt="" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=">
           <a class="go" data-probe="go" href="#x">Read more</a>
+          <div class="thumb" data-probe="thumb"></div>
         </article>
         <article class="card"><h3 class="title">Two</h3></article>
         <article class="card"><h3 class="title">Three</h3></article>
@@ -150,6 +154,12 @@
         anNthChildInsideThePickSurvives: /(^|\n)\.card li:nth-child\(2\) \{/.test(css),
         remIsWrittenAsSourcePixels: !/\d(?:\.\d+)?rem\b/.test(css.replace(/@media[^{]*/g, '')),
         theIconFontIsEmbeddedAsAFont: /@font-face \{[^}]*ProbeIcons[^}]*url\("?data:font\/woff2;base64,/.test(css),
+        // The image is written once, on the block root, however many rules name it.
+        anEmbeddedImageAppearsOnce: css.split(THUMB).length - 1 === 1 && /--cap-url-\d+: url\("data:image\/gif/.test(css),
+        // A value a captured rule always sets is not pinned again underneath it.
+        theFloorDoesNotRepeatWhatARuleSets: !/:where\(\[data-cap-s="\d+"\]\) \{[^}]*font-size: 24px/.test(css) &&
+          !/:where\(\[data-cap-s="\d+"\]\) \{[^}]*border-top-left-radius: 8px/.test(css),
+        theFloorStaysLean: (css.match(/:where\(\[data-cap-s="\d+"\]\) \{[^}]*\}/g) ?? []).every((rule) => rule.split(';').length < 40),
         theVariableThatSetsTheIconFontComesAlong: /--icon-font: normal 400 16px\/1 "?ProbeIcons"?/.test(css),
       };
 
@@ -158,6 +168,8 @@
         theCopyIsFramed: /^<div data-cap-frame=""[^>]*><article class="card"/.test(html),
         everyElementHasAFloor: (html.match(/data-cap-s="/g) ?? []).length >= 8,
         noEditorInternalAttributes: !/data-heo-/.test(html),
+        // No hostname in the name: it ended up in the id, repeated in every scoped selector.
+        theNameIsShortAndHostFree: block.name === 'Card title' && !/—/.test(block.name),
       };
 
       step('paste');
@@ -178,6 +190,7 @@
         ul: ['padding-left', 'list-style-type', 'margin-top'],
         li2: ['color'],
         img: ['width', 'height'],
+        thumb: ['background-image', 'width', 'background-size'],
         go: ['color', 'text-decoration-line'],
       };
       const read = (view, doc) => {

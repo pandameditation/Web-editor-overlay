@@ -1101,7 +1101,9 @@ function isDocumentChange(
 
 /** A block-scoped rule authored in a library definition, rather than injected from an instance. */
 function isAuthoredBlockCSSRecord(record: ChangeRecord): boolean {
-  return record.kind === 'token-rule' && record.detail?.source === 'block-css-paste';
+  // A rule edited in place on a block's scoped CSS (`block-css-edit`) is the same payload.
+  return record.kind === 'token-rule' &&
+    (record.detail?.source === 'block-css-paste' || record.detail?.source === 'block-css-edit');
 }
 
 /**

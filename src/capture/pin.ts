@@ -19,6 +19,8 @@
  * - grid templates, which read back as pixel track lists;
  * - inherited values that only repeat the parent's, unless the element is one host pages restyle
  *   (links, buttons, headings, form controls);
+ * - properties a captured rule without conditions already sets on the element: that rule applies
+ *   at every width, outweighs the host page, and is the value the reader should see;
  * - properties an animation or transition is driving right now, and properties a captured
  *   `:hover`/`:focus` rule sets on an element in that state: those values are a moment, not the
  *   element's resting look.
@@ -63,6 +65,18 @@ const RESTYLED = new Set([
   'a', 'button', 'input', 'select', 'textarea', 'label', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p',
   'small', 'strong', 'b', 'em', 'i', 'code', 'pre', 'kbd', 'th', 'td', 'li', 'ul', 'ol', 'summary',
   'blockquote', 'figure', 'hr', 'sup', 'sub', 'table',
+]);
+
+/** On restyled elements, the inherited values host pages set on them directly. */
+const RESTYLED_INHERITED = new Set([
+  'color', 'font-family', 'font-size', 'font-weight', 'font-style', 'line-height', 'letter-spacing',
+  'text-transform', 'text-align', 'list-style-type', 'white-space',
+]);
+/** On restyled elements, the box values host resets change. */
+const RESTYLED_BOX = new Set([
+  'display', 'border-top-style', 'border-right-style', 'border-bottom-style', 'border-left-style',
+  'border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width',
+  'text-decoration-line', 'background-color', 'vertical-align', 'max-width',
 ]);
 
 /** Elements whose size is their own, not the layout's. */
@@ -163,7 +177,12 @@ export interface PinResult {
  * `map` is live element to copy, as `cloneFlattened` returns it; `stateful` is the property
  * names that captured `:hover`/`:focus` rules declare.
  */
-export function pinRendered(root: Element, map: Map<Element, Element>, stateful: Iterable<string>): PinResult {
+export function pinRendered(
+  root: Element,
+  map: Map<Element, Element>,
+  stateful: Iterable<string>,
+  explained: (element: Element) => readonly string[] = () => [],
+): PinResult {
   const doc = root.ownerDocument;
   const view = doc.defaultView ?? window;
   const live = new Map<Element, Element>();
@@ -196,7 +215,9 @@ export function pinRendered(root: Element, map: Map<Element, Element>, stateful:
         inState = false;
       }
       const moving = animatedProperties(source);
+      const covered = explained(source);
       const skip = (name: string): boolean =>
+        covered.some((declared) => sets(declared, name)) ||
         moving.some((animated) => sets(animated, name)) ||
         (inState && stateNames.some((declared) => sets(declared, name)));
 
@@ -209,7 +230,7 @@ export function pinRendered(root: Element, map: Map<Element, Element>, stateful:
       } else {
         for (const name of INHERITED) {
           const value = style.getPropertyValue(name);
-          if (restyled || !parent || parent.getPropertyValue(name) !== value) add(name, value);
+          if ((restyled && RESTYLED_INHERITED.has(name)) || !parent || parent.getPropertyValue(name) !== value) add(name, value);
         }
         const bordered = (side: string): boolean => style.getPropertyValue(`border-${side}-style`) !== 'none';
         for (const name of BOX) {
@@ -217,7 +238,7 @@ export function pinRendered(root: Element, map: Map<Element, Element>, stateful:
           const side = /^border-(top|right|bottom|left)-(?:width|color)$/.exec(name)?.[1];
           if (side && !bordered(side)) continue;
           if (name.startsWith('outline-') && name !== 'outline-style' && style.getPropertyValue('outline-style') === 'none') continue;
-          if (restyled || ALWAYS.has(name) || value !== reference[name]) add(name, value);
+          if ((restyled && RESTYLED_BOX.has(name)) || ALWAYS.has(name) || value !== reference[name]) add(name, value);
         }
         if (REPLACED.has(tag)) {
           add('width', style.getPropertyValue('width'));

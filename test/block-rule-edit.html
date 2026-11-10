@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>A block's scoped rules are edited from the Styles panel, in the block's own CSS</title>
+</head>
+<body>
+  <main id="stage">
+    <p id="page-para">Page paragraph</p>
+  </main>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    /*
+     * The report: editing or removing a property of a rule like
+     * `.title:is(:is([data-heo-block="card"], …) …)` said "Block CSS: edit it in the Library", for a
+     * block that was pasted and never saved, so it was in no library. The rule is the block's own
+     * scoped CSS and should be editable where it shows, saying whom the edit reaches.
+     */
+    (async () => {
+      const results = {};
+      const diagnostics = {};
+      const errors = [];
+      addEventListener('error', (event) => errors.push('error: ' + event.message));
+      addEventListener('unhandledrejection', (event) => errors.push('rejection: ' + String(event.reason)));
+      const step = (name) => { document.getElementById('progress').textContent = name; };
+      const frames = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const deep = (tag, root = document) => {
+        for (const el of root.querySelectorAll('*')) {
+          if (el.localName === tag) return el;
+          if (el.shadowRoot) {
+            const found = deep(tag, el.shadowRoot);
+            if (found) return found;
+          }
+        }
+        return null;
+      };
+      const deepText = (root) => {
+        let text = '';
+        for (const node of root.querySelectorAll('*')) {
+          if (node.shadowRoot) text += deepText(node.shadowRoot);
+          if (!node.children.length) text += ` ${node.textContent ?? ''}`;
+          for (const attr of ['title', 'aria-label']) if (node.getAttribute(attr)) text += ` ${node.getAttribute(attr)}`;
+        }
+        return text;
+      };
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark', detectScriptContent: false, fileName: 'block-rule-edit.html', presets: false });
+      const engine = api.engine;
+      const stage = document.getElementById('stage');
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+
+      const BLOCK = {
+        id: 'card', name: 'Card', kind: 'component', origin: 'captured',
+        capture: { url: 'https://example.com/', viewport: 1200, capturedAt: '2026-11-09T00:00:00.000Z', warnings: [] },
+        html: '<div class="card"><h3 class="title">Title</h3><p class="body">Body</p></div>',
+        css: 'padding: 5px;\n.title { color: rgb(1, 2, 3); font-size: 20px; }\n@media (max-width: 99999px) { .body { color: rgb(4, 5, 6); } }',
+      };
+      const style = (el) => getComputedStyle(el);
+      const blockEntry = (el, lean, media = null) => engine.elementModel(el).entries.find((entry) =>
+        entry.target.kind === 'block' && entry.media === media && entry.selector.includes(lean.replace(':scope', '')) &&
+        (lean !== ':scope' || entry.selector.startsWith(':where(')));
+
+      /* ------------------------------------------------------------------ */
+      step('insert-only');
+      engine.beginCapturePaste(BLOCK, { reference: stage, position: 'lastChild' });
+      const pasted = await engine.commitCapturePaste();
+      await frames();
+      const one = pasted?.inserted;
+      const id = one?.getAttribute('data-heo-block') ?? '';
+      const title = one?.querySelector('.title');
+      const body = one?.querySelector('.body');
+      const titleEntry = blockEntry(title, '.title');
+      diagnostics.kinds = engine.elementModel(title).entries.map((entry) => entry.target.kind);
+
+      engine.setDeclaration(titleEntry.target, 'color', 'rgb(9, 9, 9)');
+      await frames();
+      const recolored = style(title).color;
+      const sourceAfterSet = engine.library.sourceCSS(id) ?? '';
+      const insertOnlyNotice = engine.store.value.toast?.message ?? '';
+
+      engine.removeDeclaration(blockEntry(title, '.title').target, 'font-size');
+      await frames();
+      const sizeAfterRemove = style(title).fontSize;
+      const sourceAfterRemove = engine.library.sourceCSS(id) ?? '';
+
+      const bodyEntry = blockEntry(body, '.body', '(max-width: 99999px)');
+      engine.setDeclaration(bodyEntry.target, 'color', 'rgb(7, 7, 7)');
+      await frames();
+      const mediaColor = style(body).color;
+      const sourceAfterMedia = engine.library.sourceCSS(id) ?? '';
+
+      const rootEntry = blockEntry(one, ':scope');
+      engine.setDeclaration(rootEntry.target, 'padding', '9px');
+      await frames();
+      const rootPadding = style(one).paddingTop;
+      const sourceAfterRoot = engine.library.sourceCSS(id) ?? '';
+
+      engine.undo();
+      await frames();
+      const paddingUndone = style(one).paddingTop;
+      engine.undo();
+      engine.undo();
+      engine.undo();
+      await frames();
+      const allUndone = style(title).color === 'rgb(1, 2, 3)' && style(title).fontSize === '20px' && style(body).color === 'rgb(4, 5, 6)';
+
+      results.insertOnly = {
+        aBlockRuleIsAWritableTarget: Boolean(titleEntry) && titleEntry.target.kind === 'block' &&
+          !engine.elementModel(title).entries.some((entry) => entry.target.kind === 'readonly' && /Library/.test(entry.target.reason ?? '')),
+        settingAValueEditsTheBlocksOwnCss: recolored === 'rgb(9, 9, 9)' && /\.title \{[^}]*color: rgb\(9, 9, 9\)/.test(sourceAfterSet),
+        removingAValueTakesItOut: sizeAfterRemove !== '20px' && !/font-size/.test(sourceAfterRemove),
+        aRuleUnderAMediaQueryIsEditedThere: mediaColor === 'rgb(7, 7, 7)' && /@media \(max-width: 99999px\) \{[^@]*\.body \{ color: rgb\(7, 7, 7\)/.test(sourceAfterMedia),
+        theBlockRootRuleIsEditable: Boolean(rootEntry) && rootPadding === '9px' && /^padding: 9px;/.test(sourceAfterRoot),
+        undoPutsItBack: paddingUndone === '5px' && allUndone,
+        // An insert-only paste: the notice says only this copy changes.
+        theNoticeSaysOnlyThisPaste: /only this pasted Card\b/.test(insertOnlyNotice) && /not in the library/i.test(insertOnlyNotice),
+        itStaysOutOfTheLibrary: !engine.library.get(id),
+      };
+
+      /* ------------------------------------------------------------------ */
+      step('library');
+      engine.beginCapturePaste({ ...BLOCK, name: 'Shared card' }, { reference: stage, position: 'lastChild' });
+      engine.updateCapturePaste({ insert: true, save: true });
+      const saved = await engine.commitCapturePaste();
+      await frames();
+      const libraryId = saved?.saved?.id ?? '';
+      const second = await engine.insertBlock(engine.library.get(libraryId), {}, { reference: stage, position: 'lastChild' });
+      await frames();
+      const firstTitle = saved?.inserted?.querySelector('.title');
+      engine.setDeclaration(blockEntry(firstTitle, '.title').target, 'color', 'rgb(0, 128, 0)');
+      await frames();
+      const libraryNotice = engine.store.value.toast?.message ?? '';
+      results.library = {
+        aLibraryBlockEditReachesEveryCopy: style(firstTitle).color === 'rgb(0, 128, 0)' &&
+          style(second.querySelector('.title')).color === 'rgb(0, 128, 0)',
+        theLibraryEntryIsUpdated: /color: rgb\(0, 128, 0\)/.test(engine.library.get(libraryId)?.css ?? ''),
+        theNoticeSaysItReachesTheLibraryAndAllCopies: /library entry and 2 copies/.test(libraryNotice),
+        theOtherBlockIsUntouched: style(title).color === 'rgb(1, 2, 3)',
+      };
+
+      /* ------------------------------------------------------------------ */
+      step('panel');
+      api.select(firstTitle);
+      engine.setDockTab('styles');
+      await frames();
+      await wait(300);
+      const panel = deep('heo-styles-panel');
+      const panelText = panel ? deepText(panel.shadowRoot) : '';
+      results.panel = {
+        // The rule is named as written, not with the block id six times over.
+        theRuleIsNamedAsWritten: panelText.includes('.title') && !panelText.includes('data-heo-block'),
+      };
+
+      results.page = { noUncaughtErrors: errors.length === 0 };
+      const failed = Object.entries(results)
+        .filter(([, group]) => group && typeof group === 'object')
+        .filter(([, group]) => Object.values(group).some((value) => value === false))
+        .map(([name]) => name);
+      if (failed.length) {
+        Object.assign(diagnostics, { insertOnlyNotice, libraryNotice, sourceAfterSet, sourceAfterMedia, panelText: panelText.slice(0, 1500) });
+      }
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify({ failed, ...results, errors, diagnostics: failed.length ? diagnostics : undefined }, null, 1) + ':END';
+    })().catch((error) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"ok":false,"failed":["fatal"],"__fatal":' + JSON.stringify(String((error && error.stack) || error)) + '}:END';
+    });
+  </script>
+</body>
+</html>

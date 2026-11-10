@@ -1,3 +1,4 @@
+import { leanBlockSelector } from '../../../core/block-rule-edit.js';
 import { css, html, nothing, type CSSResult, type TemplateResult } from 'lit';
 import { isPseudoElement } from '../../../core/breakpoints.js';
 import type {
@@ -110,6 +111,9 @@ export function sameTarget(a: WriteTarget, b: WriteTarget): boolean {
       return b.kind === 'class' && b.name === a.name;
     case 'design-rule':
       return b.kind === 'design-rule' && b.key === a.key;
+    case 'block':
+      return b.kind === 'block' && b.locator.blockId === a.locator.blockId && b.locator.selector === a.locator.selector &&
+        b.locator.occurrence === a.locator.occurrence && b.locator.conditions.join('\n') === a.locator.conditions.join('\n');
     case 'readonly':
       return false;
   }
@@ -192,7 +196,7 @@ export function previewSlot(model: ElementModel, width: number | null): string {
 export function sourceLabel(contribution: Contribution): string {
   if (contribution.source.kind === 'inline') return 'inline style';
   const entry = contribution.source.entry;
-  return `${entry.selector}${entry.media ? ` @media ${entry.media}` : ''}`;
+  return `${leanBlockSelector(entry.selector)}${entry.media ? ` @media ${entry.media}` : ''}`;
 }
 
 

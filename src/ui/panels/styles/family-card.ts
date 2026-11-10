@@ -1,3 +1,4 @@
+import { leanBlockSelector } from '../../../core/block-rule-edit.js';
 import { css, html, nothing, type CSSResult, type TemplateResult } from 'lit';
 import { repeat } from 'lit/directives/repeat.js';
 import { EDITABLE_STATES, isPseudoElement, isWidthQuery, mediaNow, mediaShort, needsGeneratedContent, pseudoElementNamed } from '../../../core/breakpoints.js';
@@ -503,7 +504,7 @@ export function renderFamilyCard(
 
   return html`<div class="cls" data-card=${key} data-group=${options.group}>
     ${renderCardHeader({
-    name: key,
+    name: leanBlockSelector(key),
     meta: countText(declarations, 'rule'),
     uses,
     file,
@@ -911,7 +912,7 @@ export function renderUnknownCard(
   const key = `.${CSS.escape(name)}`;
   return html`<div class="cls" data-card=${key} data-group="classes" data-unknown>
     ${renderCardHeader({
-    name: key,
+    name: leanBlockSelector(key),
     meta: 'not defined',
     expanded: true,
     onToggle: () => options.popped.onClose(),

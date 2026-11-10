@@ -546,3 +546,36 @@ export function sniffMime(base64: string, declared: string): string {
   if (head.startsWith('UklGR') && !type.startsWith('image/')) return 'image/webp';
   return declared || 'application/octet-stream';
 }
+
+/**
+ * Long or repeated `url()`s written once, as custom properties, and referred to by `var()`.
+ *
+ * A captured image is a data URL tens of kilobytes long, and the same one can be named by the
+ * rule that set it, by the pinned floor under it and by a hover rule: three copies of the same
+ * blob, which is most of what a reader saw in the block's CSS. Hoisted, each URL appears once on
+ * the block root (custom properties inherit to every element and pseudo-element inside), and the
+ * rules read `background-image: var(--cap-url-1)`. Short URLs named once stay where they are.
+ *
+ * Not for `@font-face`: a descriptor cannot take `var()`. Pass the rules only.
+ */
+export function hoistUrls(css: string, options: { minLength?: number; prefix?: string } = {}): {
+  css: string;
+  declarations: string[];
+} {
+  const minLength = options.minLength ?? 120;
+  const prefix = options.prefix ?? '--cap-url-';
+  const pattern = /url\(\s*(["']?)([^"')]*)\1\s*\)/gi;
+  const counts = new Map<string, number>();
+  for (const match of css.matchAll(pattern)) counts.set(match[2], (counts.get(match[2]) ?? 0) + 1);
+  const names = new Map<string, string>();
+  for (const [url, count] of counts) {
+    if (url && (url.length >= minLength || count > 1)) names.set(url, `${prefix}${names.size + 1}`);
+  }
+  if (!names.size) return { css, declarations: [] };
+  const out = css.replace(pattern, (whole, _quote: string, url: string) => {
+    const name = names.get(url);
+    return name ? `var(${name})` : whole;
+  });
+  const declarations = [...names].map(([url, name]) => `${name}: url("${url.replace(/"/g, '%22')}")`);
+  return { css: out, declarations };
+}

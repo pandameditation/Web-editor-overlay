@@ -10,6 +10,7 @@ import {
 } from './declaration-list.js';
 import { EDITABLE_STATES, isPseudoElement, slotForMedia, slotsWith, type SizeSlot } from './breakpoints.js';
 import { styleMirrorFor } from './mirror.js';
+import { locateBlockRule, type BlockRuleLocator } from './block-rule-edit.js';
 import { designRuleKey } from './rules.js';
 import { CONSTRUCTED_SHEET_REASON, ruleDeclarations } from './sheets.js';
 import {
@@ -54,6 +55,11 @@ export type WriteTarget =
   | { kind: 'class'; name: string }
   /** A RuleRegistry-owned rule, by its registry key. */
   | { kind: 'design-rule'; key: string }
+  /**
+   * A rule of a block's scoped CSS: edited in the block's source CSS, which re-scopes it. `rule`
+   * is the scoped rule as found, for reading; the locator is what survives the rewrite.
+   */
+  | { kind: 'block'; rule: CSSStyleRule; locator: BlockRuleLocator }
   | { kind: 'readonly'; reason: string };
 
 /** One style rule that reaches the element through one part of its selector list. */
@@ -541,6 +547,11 @@ export function targetFor(rule: CSSStyleRule): WriteTarget {
     if (name) return { kind: 'class', name };
   }
   if (owner.id === RULE_STYLE_ID) return { kind: 'design-rule', key: managedRuleKey(rule) };
+  if (owner.id === BLOCK_STYLE_ID) {
+    const locator = locateBlockRule(rule);
+    // The engine checks the block still has source CSS to edit; a stray chunk says so there.
+    if (locator) return { kind: 'block', rule, locator };
+  }
   if (owner.hasAttribute('data-heo-generated')) {
     return {
       kind: 'readonly',

@@ -3,7 +3,7 @@ import type { DesignSystemDocument, LibraryBlock } from '../core/types.js';
 import { collectRules } from './collect.js';
 import { FRAME_ATTR, readContext } from './context.js';
 import { pinRendered } from './pin.js';
-import { serializeRuleTree, styleNodesIn } from './css-text.js';
+import { hoistUrls, serializeRuleTree, styleNodesIn, type RuleNode } from './css-text.js';
 import type { CaptureHost } from './host.js';
 import { applyAssets, fetchAssets, listAssetUrls, type CssParts } from './inline-assets.js';
 import { CLIPBOARD_TOTAL_CAP, PER_ASSET_CAP, XWAYLAND_BRIDGE_LIMIT } from './limits.js';
@@ -41,15 +41,17 @@ export interface CaptureOptions {
 const encoder = new TextEncoder();
 const bytesOf = (text: string): number => encoder.encode(text).length;
 
-/** `<aria-label | first heading | tag.class> — <hostname>`, at most 60 characters. */
+/**
+ * `<aria-label | first heading | tag.class>`, at most 40 characters.
+ *
+ * No hostname: the source URL travels in the capture metadata and the import screen shows it.
+ * In the name it became part of the block id, which HEO repeats in every scoped selector.
+ */
 function blockName(root: Element): string {
   const heading = root.querySelector('h1, h2, h3, h4, h5, h6')?.textContent;
   const label = (root.getAttribute('aria-label') || heading || '').replace(/\s+/g, ' ').trim() ||
     `${root.localName}${root.classList[0] ? `.${root.classList[0]}` : ''}`;
-  const hostname = root.ownerDocument.defaultView?.location.hostname || 'page';
-  const room = Math.max(8, 60 - hostname.length - 3);
-  const short = label.length > room ? `${label.slice(0, room - 1).trimEnd()}…` : label;
-  return `${short} — ${hostname}`.slice(0, 60);
+  return label.length > 40 ? `${label.slice(0, 39).trimEnd()}…` : label;
 }
 
 /** `captured-<label>-<time><random>`: readable, and unique per capture. */
@@ -57,6 +59,31 @@ function captureId(root: Element): string {
   const label = (root.classList[0] || root.localName).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 24);
   const stamp = Date.now().toString(36) + Math.floor(Math.random() * 36 ** 3).toString(36).padStart(3, '0');
   return `captured-${label || 'block'}-${stamp}`;
+}
+
+/**
+ * The properties captured rules set on an element at every width and in every state: the top-level
+ * style rules (no `@media` or other condition) whose selector matches it as it is.
+ */
+function explainedBy(kept: RuleNode[]): (element: Element) => string[] {
+  const plain = kept
+    .filter((node): node is Extract<RuleNode, { kind: 'style' }> => node.kind === 'style')
+    .filter((node) => !/:(?:hover|focus|focus-within|focus-visible|active|visited)\b|::?(?:before|after|first-line|first-letter|marker|placeholder|selection)\b/i.test(node.selector))
+    .map((node) => ({
+      selector: node.selector,
+      names: [...node.declarations.matchAll(/(?:^|;)\s*([\w-]+)\s*:/g)].map((match) => match[1].toLowerCase()),
+    }));
+  return (element) => {
+    const out: string[] = [];
+    for (const rule of plain) {
+      try {
+        if (element.matches(rule.selector)) out.push(...rule.names);
+      } catch {
+        /* a selector this browser cannot match explains nothing */
+      }
+    }
+    return out;
+  };
 }
 
 /** No closing tag inside the style element, whatever a string in the CSS says. */
@@ -73,7 +100,7 @@ export async function captureElement(root: Element, options: CaptureOptions): Pr
   const { clone: picked, map } = cloneFlattened(root, { cssText: keptText });
   const waapi = collectWaapi(root, map);
   // Read before anything else changes on the page: the floor is what was on screen at the pick.
-  const pinned = pinRendered(root, map, collected.stateful);
+  const pinned = pinRendered(root, map, collected.stateful, explainedBy(collected.kept));
   // The frame stands in for the source parent; it is the block root HEO puts the bare values on.
   const clone = root.ownerDocument.createElement('div');
   clone.setAttribute(FRAME_ATTR, '');
@@ -114,7 +141,11 @@ export async function captureElement(root: Element, options: CaptureOptions): Pr
 
   const assemble = async (embedded: Map<string, string>) => {
     const applied = applyAssets(clone, parts, embedded);
-    const bareText = bare.length ? `${bare.join(';\n')};` : '';
+    // Each long or repeated URL once, on the block root; see hoistUrls.
+    const hoisted = hoistUrls(applied.css.rules);
+    applied.css.rules = hoisted.css;
+    const rootDeclarations = [...bare, ...hoisted.declarations];
+    const bareText = rootDeclarations.length ? `${rootDeclarations.join(';\n')};` : '';
     block.css = [bareText, applied.css.fonts, applied.css.rules].filter(Boolean).join('\n');
     block.html = serializeMarkup(applied.clone);
     // Built compact already, so it goes straight to the codec (the parser behind encodeSeed is 20 KB).

@@ -1,3 +1,4 @@
+import { leanBlockSelector } from './block-rule-edit.js';
 import { mediaLabel } from './breakpoints.js';
 import type { Contribution, RuleEntry, WriteTarget } from './cascade.js';
 /**
@@ -18,7 +19,8 @@ export function shortLabel(by: Contribution): string {
 }
 /** A rule entry, short: `.card`, `.card ≥768px`. */
 export function entryLabel(entry: Pick<RuleEntry, 'selector' | 'media'>): string {
-  return `${entry.selector}${entry.media ? ` ${mediaLabel(entry.media)}` : ''}`;
+  // A block's scoped selector is named as its author wrote it, not with the block id six times.
+  return `${leanBlockSelector(entry.selector)}${entry.media ? ` ${mediaLabel(entry.media)}` : ''}`;
 }
 /** A person-readable name for what wins: `.promo .card !important`, `.card ≥768px`, `inline style`. */
 export function contributionLabel(by: Contribution): string {
