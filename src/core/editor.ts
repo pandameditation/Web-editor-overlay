@@ -178,6 +178,7 @@ import {
 } from './mutations.js';
 import { buildPrompt } from './prompt.js';
 import { formatHTML, previewMarkup, sanitizeFragment } from './sanitize.js';
+import { formatBlockMarkup } from './block-preview.js';
 import {
   connectDirectory,
   connectServer,
@@ -6903,6 +6904,14 @@ export class EditorEngine {
       this.updateCapturePaste({ error: 'Choose insert, save, or both.' });
       return null;
     }
+    if (!open.block.name.trim()) {
+      this.updateCapturePaste({ error: 'Give the block a name.' });
+      return null;
+    }
+    if (open.block.name !== open.block.name.trim()) {
+      this.store.patch({ capturePaste: { ...open, block: { ...open.block, name: open.block.name.trim() } } });
+      return this.commitCapturePaste();
+    }
     if (open.insert && !open.anchor.reference.isConnected) {
       this.updateCapturePaste({ error: 'The element this was going next to is no longer in the page.' });
       return null;
@@ -6941,11 +6950,55 @@ export class EditorEngine {
    * as it always was.
    */
   async #pasteSeed(text: string): Promise<void> {
-    const doc = await this.decodeSeedText(text);
-    if (!doc || doc.blocks.length !== 1) return;
-    if (doc.tokens.length || doc.classes.length || doc.rules?.length) return;
-    if (!this.editing || this.store.value.capturePaste) return;
-    this.beginCapturePaste(doc.blocks[0]);
+    await this.openSeedImport(text);
+  }
+
+  /**
+   * Open the import screen for a seed that holds exactly one block, from wherever it was pasted.
+   *
+   * The canvas and the transfer panel's import field both come here, so a block seed gets the
+   * same screen either way: a preview on a neutral canvas, a name to change, insert and/or save.
+   * Before this, the transfer panel imported it straight into the library under whatever name and
+   * id it carried. The markup is indented on the way in (see `formatBlockMarkup`), so the block's
+   * HTML is readable in the code panel without a single change to how it renders.
+   *
+   * Returns false, opening nothing, for anything else: a seed with tokens, classes or rules is a
+   * design system and stays with the transfer panel.
+   */
+  async openSeedImport(text: string): Promise<boolean> {
+    let doc: DesignSystemDocument | null = null;
+    try {
+      doc = await this.decodeSeedText(text);
+    } catch {
+      return false;
+    }
+    if (!doc || doc.blocks.length !== 1) return false;
+    if (doc.tokens.length || doc.classes.length || doc.rules?.length) return false;
+    if (this.store.value.capturePaste) return false;
+    const incoming = doc.blocks[0];
+    const html = await formatBlockMarkup(incoming, incoming.capture?.viewport);
+    if (this.store.value.capturePaste) return false;
+    return this.beginCapturePaste({ ...incoming, html });
+  }
+
+  /**
+   * Rename the block on the import screen. Its id follows the name, kept unique, because the id is
+   * what the library lists and what the block's CSS is scoped and its keyframes renamed by.
+   */
+  renameCapturePaste(name: string): void {
+    const open = this.store.value.capturePaste;
+    if (!open) return;
+    const trimmed = name.trim();
+    const current = open.block.id;
+    const id = trimmed
+      ? this.library.uniqueId(trimmed, (candidate) => {
+        if (candidate === current) return false;
+        if (this.library.hasCSS(candidate)) return true;
+        const value = candidate.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+        return Boolean(document.querySelector(`[${BLOCK_ATTR}="${value}"], [${BLOCK_PART_ATTR}="${value}"]`));
+      })
+      : current;
+    this.store.patch({ capturePaste: { ...open, block: { ...open.block, name, id }, error: '' } });
   }
 
   /* ---------------------------------------------------------------------- */
@@ -10849,20 +10902,24 @@ export class EditorEngine {
        * semantics. Parsing before opening the modal also means ordinary text pasted on the canvas
        * is left entirely alone.
        */
-      if (!this.editing || this.store.value.cssPaste || this.store.value.capturePaste) return;
-      if (isOverlayEvent(event) || isNativeInputEvent(event)) return;
+      if (this.store.value.cssPaste || this.store.value.capturePaste) return;
+      if (isNativeInputEvent(event)) return;
       const text = event.clipboardData?.getData('text/plain') ?? '';
       /*
        * A seed on the clipboard is a block copied by the capture extension (or the transfer
        * panel). Claimed before the CSS parse, which would otherwise read the base64 as nothing
-       * and leave the paste to the browser.
+       * and leave the paste to the browser. Over the editor's own panels as well as the page, and
+       * outside edit mode too: a seed means nothing to the page, and wherever the user pasted it,
+       * the import screen is what they were after. Text fields keep their own paste; the transfer
+       * panel's field claims block seeds itself.
        */
-      if (isSeed(text)) {
+      if (isSeed(text.trim())) {
         event.preventDefault();
         event.stopPropagation();
-        void this.#pasteSeed(text);
+        void this.#pasteSeed(text.trim());
         return;
       }
+      if (!this.editing || isOverlayEvent(event)) return;
       const parsed = parsePastedCSS(text);
       if (!pastedDeclarationCount(parsed)) return;
 

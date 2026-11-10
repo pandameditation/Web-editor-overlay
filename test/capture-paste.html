@@ -404,6 +404,61 @@
         theSameCaptureTwiceIsNotDuplicated: afterRepeat.length === afterSecond.length,
       };
 
+      /* ------------------------------------------------------------------ */
+      /* the import screen: preview, name, formatted markup                   */
+      /* ------------------------------------------------------------------ */
+      step('import-screen');
+      const FORMAT_HTML = '<section class="fmt"><div class="a">A {{ notaprop }}</div><div class="b"><span>1</span><span>2</span></div>' +
+        '<ul class="row"><li>x</li><li>y</li></ul><ul class="inl"><li>p</li><li>q</li></ul><p>Text <b>bold</b><i>it</i></p></section>';
+      const FORMAT_CSS = '.row { display: flex; } .inl li { display: inline-block; }';
+      const formatSeed = toSeed(docOf([{
+        id: 'captured', name: 'Format me', kind: 'component', origin: 'captured', capture: CAPTURE,
+        html: FORMAT_HTML.replace('{{', '&#123;&#123;'), css: FORMAT_CSS,
+      }]));
+      // The transfer panel's Load and its field's paste both come through here.
+      const opened = await engine.openSeedImport(formatSeed);
+      await until(() => dialogRoot()?.querySelector('.dialog iframe'));
+      const screen = engine.store.value.capturePaste;
+      const formatted = screen?.block.html ?? '';
+      const nameInput = dialogRoot()?.querySelector('input[name="block-name"]');
+      const initialName = nameInput?.value;
+      const previewFrame = dialogRoot()?.querySelector('.preview iframe');
+      await until(() => previewFrame?.contentDocument?.body?.children.length);
+      const previewBg = previewFrame?.contentWindow?.getComputedStyle(previewFrame.contentDocument.body).backgroundColor;
+
+      engine.renameCapturePaste('');
+      engine.updateCapturePaste({ insert: false, save: true });
+      await frames();
+      const refusedEmpty = (await engine.commitCapturePaste()) === null && /name/i.test(engine.store.value.capturePaste?.error ?? '');
+      engine.renameCapturePaste('My Pricing Card ');
+      await frames();
+      const renamedId = engine.store.value.capturePaste?.block.id;
+      const shownId = dialogRoot()?.querySelector('.field.name code')?.textContent;
+      const savedRenamed = await engine.commitCapturePaste();
+      await frames();
+      const libraryEntry = engine.library.get('my-pricing-card');
+      results.importScreen = {
+        aBlockSeedOpensTheImportScreen: opened === true && Boolean(screen) && initialName === 'Format me',
+        // A design system is still the transfer panel's business.
+        aDesignSystemSeedDoesNot: (await engine.openSeedImport(toSeed(docOf([heroBlock], {
+          tokens: [{ name: 'x', value: '1px', type: 'size' }],
+        })))) === false,
+        thePreviewIsOnANeutralCanvas: previewFrame?.getAttribute('sandbox') === 'allow-same-origin' && previewBg === 'rgb(241, 241, 243)',
+        theNameCanBeChangedAndTheIdFollows: renamedId === 'my-pricing-card' && shownId === 'my-pricing-card' &&
+          Boolean(savedRenamed?.saved) && libraryEntry?.name === 'My Pricing Card',
+        anEmptyNameIsRefused: refusedEmpty,
+        // Indented where whitespace cannot show: between blocks, and inside a flex row.
+        theMarkupIsIndented: /<section class="fmt">\n {2}<div class="a">/.test(formatted) &&
+          /<ul class="row">\n {4}<li>x<\/li>\n {4}<li>y<\/li>\n {2}<\/ul>/.test(formatted) && /\n<\/section>$/.test(formatted),
+        // Never where it would be a space on screen: inline siblings, inline-block items, mixed text.
+        noWhitespaceIsAddedBetweenInlineContent: formatted.includes('<span>1</span><span>2</span>') &&
+          formatted.includes('<li>p</li><li>q</li>') && formatted.includes('<p>Text <b>bold</b><i>it</i></p>'),
+        capturedPageTextBracesStayEscaped: formatted.includes('&#123;&#123; notaprop') && !formatted.includes('{{'),
+      };
+      if (Object.values(results.importScreen).includes(false)) results.importScreen.formattedMarkup = formatted;
+      engine.undo();
+      await frames();
+
       results.page = { noUncaughtErrors: errors.length === 0 };
 
       const failed = Object.entries(results)

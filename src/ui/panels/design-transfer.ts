@@ -10,6 +10,7 @@ import {
   compactDesignSystem,
   decodeSeed,
   encodeSeed,
+  isSeed,
   recommendedTarget,
   seedSnippets,
   seedStats,
@@ -521,10 +522,10 @@ export const DesignTransfer = {
     ): TemplateResult => html`<label
       class=${`part${count === 0 ? ' empty' : ''}`}
       title=${count === 0
-      ? `No ${many} to send.`
-      : selection[field]
-        ? `Leave the ${many} out of the seed`
-        : `Put the ${many} back in the seed`}
+        ? `No ${many} to send.`
+        : selection[field]
+          ? `Leave the ${many} out of the seed`
+          : `Put the ${many} back in the seed`}
     >
       <input
         type="checkbox"
@@ -633,17 +634,17 @@ export const DesignTransfer = {
       ${stats
         ? html`<div class="targets" role="group" aria-label="Where the seed is going">
               ${snippets.map(
-              (one) => html`<button
+          (one) => html`<button
                   type="button"
                   aria-pressed=${one.id === target}
                   title=${one.id === best ? `${one.note} Recommended for this size.` : one.note}
                   @click=${() => host.onTarget(one.id)}
                 >
                   ${one.label}${one.id === best
-                  ? html` <span class="star" aria-label="Recommended">*</span>`
-                  : nothing}
+              ? html` <span class="star" aria-label="Recommended">*</span>`
+              : nothing}
                 </button>`,
-            )}
+        )}
             </div>
 
             <div class="snippet">
@@ -698,6 +699,17 @@ export const DesignTransfer = {
           placeholder="Paste a seed (heo1z.…) or design system JSON here"
           @input=${(event: Event) =>
         host.onIncoming((event.target as HTMLTextAreaElement).value)}
+          @paste=${(event: ClipboardEvent) => {
+        // A seed holding one block (what the capture extension copies) opens the import
+        // screen at once; the field keeps anything else for Load as before.
+        const pasted = event.clipboardData?.getData('text/plain')?.trim() ?? '';
+        if (!isSeed(pasted)) return;
+        void host.engine.openSeedImport(pasted).then((opened) => {
+          if (!opened) return;
+          host.onIncoming('');
+          host.form.reset();
+        });
+      }}
           @keydown=${(event: KeyboardEvent) => {
         // Enter alone would be a newline in a textarea, so the commit key is the
         // one that means "done" everywhere else in the overlay.
@@ -770,6 +782,12 @@ async function load(host: DesignTransferHost): Promise<void> {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     host.form.fail('seed-incoming', `This cannot be loaded: ${message}`);
+    return;
+  }
+  // One block and nothing else: the import screen, where it can be previewed and named.
+  if (await host.engine.openSeedImport(text)) {
+    host.onIncoming('');
+    host.form.reset();
     return;
   }
   if (await host.engine.importDesignSystemText(text, host.overwrite)) {

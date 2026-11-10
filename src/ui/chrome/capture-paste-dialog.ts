@@ -1,6 +1,6 @@
 import { css, html, nothing, type TemplateResult } from 'lit';
 import { customElement } from 'lit/decorators.js';
-import { splitTopLevel } from '../../core/block-css.js';
+import { blockPreviewDocument } from '../../core/block-preview.js';
 import { acceptsChildren, isMutable, labelFor } from '../../core/dom.js';
 import type { InsertAnchor } from '../../core/editor.js';
 import { ModalController } from '../../core/modal.js';
@@ -8,6 +8,7 @@ import { INSERT_POSITION_LABELS, type InsertPosition } from '../../core/mutation
 import { sanitizeFragment } from '../../core/sanitize.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import type { LibraryBlock } from '../../core/types.js';
+import { fieldLabel } from '../form-errors.js';
 import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
 import { baseStyles, surfaceStyles } from '../theme.js';
@@ -39,15 +40,6 @@ function sanitisedMarkup(block: LibraryBlock): string {
   return holder.innerHTML;
 }
 
-/** The preview document: the capture's own CSS, unscoped, around its sanitised markup. */
-function previewDocument(block: LibraryBlock, markup: string): string {
-  const split = splitTopLevel(block.css ?? '');
-  // Declarations written without a selector are defaults for the block's top-level elements.
-  const bare = split.declarations.trim() ? `body > * { ${split.declarations} }\n` : '';
-  // A closing style tag inside the CSS would end the element early and spill the rest as markup.
-  const sheet = `${bare}${split.rules}`.replace(/<\/style/gi, '<\\/style');
-  return `<!doctype html><meta charset="utf-8"><style>body { margin: 0; }</style><style>${sheet}</style>${markup}`;
-}
 
 function hostOf(url: string): string {
   try {
@@ -57,9 +49,13 @@ function hostOf(url: string): string {
   }
 }
 
-/** The preview renders at the capture width and is scaled down to the dialog. */
-const PREVIEW_WIDTH = 680;
-const PREVIEW_HEIGHT = 520;
+/** The preview renders at the chosen page width and is scaled to the box, measured once drawn. */
+const PREVIEW_WIDTH = 722;
+/** Tallest the preview frame is drawn (before scaling); taller blocks scroll inside it. */
+const PREVIEW_MAX_HEIGHT = 560;
+const PREVIEW_MIN_HEIGHT = 160;
+/** Widths offered besides the capture's own. */
+const PREVIEW_WIDTHS = [1280, 768, 390];
 
 /**
  * Pasting a block captured from another site.
@@ -136,10 +132,11 @@ export class HeoCapturePasteDialog extends HeoElement {
       /* The preview frame is drawn at the capture width and scaled to fit. */
       .preview {
         position: relative;
+        flex: 0 0 auto;
         overflow: hidden;
         border: 1px solid var(--heo-line);
         border-radius: var(--heo-r-sm);
-        background: white;
+        background: #f1f1f3;
       }
       .preview iframe {
         position: absolute;
@@ -147,7 +144,28 @@ export class HeoCapturePasteDialog extends HeoElement {
         left: 0;
         border: 0;
         transform-origin: 0 0;
-        background: white;
+        background: #f1f1f3;
+      }
+      .field.name {
+        display: grid;
+        gap: 4px;
+      }
+      .field.name .id {
+        color: var(--heo-text-faint);
+        font-size: 10.5px;
+      }
+      .field.name code {
+        font-family: var(--heo-mono);
+        color: var(--heo-text-dim);
+      }
+      .preview-bar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .preview-bar .hint {
+        color: var(--heo-text-faint);
+        font-size: 10.5px;
       }
 
       .choices {
@@ -246,30 +264,71 @@ export class HeoCapturePasteDialog extends HeoElement {
 
   protected modal = new ModalController(this, { initialFocus: 'button.primary' });
 
-  /** The markup and preview last built, so a checkbox toggle does not reload the frame. */
-  #previewFor: LibraryBlock | null = null;
+  /** The markup and preview last built, keyed by content, so renaming or a toggle does not reload the frame. */
+  #previewKey = '';
   #markup = '';
   #preview = '';
+  /** The page width the preview renders at; null is the capture's own width. */
+  #width: number | null = null;
+  /** The preview document's height at that width, measured once it has loaded. */
+  #contentHeight = 0;
+  /** The preview box's inner width in the dialog. */
+  #available = PREVIEW_WIDTH;
+
+  #resize: ResizeObserver | null = null;
+  #observed: Element | null = null;
+
+  protected override updated(): void {
+    const box = this.renderRoot.querySelector<HTMLElement>('.preview');
+    if (box && box !== this.#observed && typeof ResizeObserver !== 'undefined') {
+      // The dialog narrows with the window; the preview's scale has to follow it.
+      this.#resize ??= new ResizeObserver(() => this.#fit());
+      if (this.#observed) this.#resize.unobserve(this.#observed);
+      this.#resize.observe(box);
+      this.#observed = box;
+    }
+    this.#fit();
+  }
+
+  override disconnectedCallback(): void {
+    super.disconnectedCallback();
+    this.#resize?.disconnect();
+    this.#resize = null;
+    this.#observed = null;
+  }
+
+  #fit(): void {
+    const available = this.renderRoot.querySelector<HTMLElement>('.preview')?.clientWidth ?? 0;
+    if (available > 0 && Math.abs(available - this.#available) > 1) {
+      this.#available = available;
+      this.requestUpdate();
+    }
+  }
 
   override render(): TemplateResult | typeof nothing {
     const open = this.state.value.capturePaste;
     if (!open) return nothing;
     const { block } = open;
-    if (this.#previewFor !== block) {
-      this.#previewFor = block;
+    const key = `${block.html}\u0000${block.css ?? ''}`;
+    if (this.#previewKey !== key) {
+      this.#previewKey = key;
       this.#markup = sanitisedMarkup(block);
-      this.#preview = previewDocument(block, this.#markup);
+      this.#preview = blockPreviewDocument(block, this.#markup);
+      this.#contentHeight = 0;
     }
     const capture = block.capture;
-    const width = Math.max(320, Math.round(capture?.viewport || 1200));
-    const scale = Math.min(1, PREVIEW_WIDTH / width);
+    const native = Math.max(320, Math.round(capture?.viewport || 1200));
+    const width = this.#width ?? native;
+    const scale = Math.min(1, this.#available / width);
+    const frameHeight = Math.min(PREVIEW_MAX_HEIGHT, Math.max(PREVIEW_MIN_HEIGHT, this.#contentHeight || PREVIEW_MAX_HEIGHT));
+    const widths = [native, ...PREVIEW_WIDTHS.filter((value) => Math.abs(value - native) > 40)];
     const verb = open.insert && open.save ? 'Insert and save' : open.save ? 'Save to library' : 'Insert';
 
     return html`<div
       class="dialog surface"
       role="dialog"
       aria-modal="true"
-      aria-label="Paste captured block"
+      aria-label="Import block"
       @pointerdown=${(event: Event) => event.stopPropagation()}
       @keydown=${(event: KeyboardEvent) => {
         // The page keymap and the engine's capture handlers must not act behind the dialog.
@@ -281,7 +340,7 @@ export class HeoCapturePasteDialog extends HeoElement {
     >
       <header>
         <div class="body">
-          <h2>Paste ${block.name}</h2>
+          <h2>Import block</h2>
           <p class="source">
             ${capture
         ? html`Captured from <a href=${capture.url} target="_blank" rel="noopener noreferrer">${capture.url}</a>
@@ -300,12 +359,50 @@ export class HeoCapturePasteDialog extends HeoElement {
       </header>
 
       <div class="content">
-        <div class="preview" style=${`height: ${Math.round(PREVIEW_HEIGHT * scale)}px`}>
+        <div class="field name">
+          ${fieldLabel('Name', { required: true })}
+          <input
+            class="input"
+            type="text"
+            name="block-name"
+            aria-label="Block name"
+            spellcheck="false"
+            .value=${block.name}
+            @input=${(event: Event) => this.editor.renameCapturePaste((event.target as HTMLInputElement).value)}
+            @keydown=${(event: KeyboardEvent) => {
+        if (event.key !== 'Enter') return;
+        event.preventDefault();
+        void this.editor.commitCapturePaste();
+      }}
+          />
+          <span class="id">Saved as <code>${block.id}</code></span>
+        </div>
+
+        <div class="preview-bar">
+          <heo-segmented
+            label="Preview width"
+            .options=${widths.map((value, index) => ({
+        value: String(value),
+        label: `${value}`,
+        title: index === 0 && capture ? `Preview at ${value} px, the width it was captured at` : `Preview at ${value} px wide`,
+      }))}
+            .value=${String(width)}
+            @segment-change=${(event: CustomEvent<{ value: string }>) => {
+        const next = Number(event.detail.value) || native;
+        this.#width = next === native ? null : next;
+        this.#contentHeight = 0;
+        this.requestUpdate();
+      }}
+          ></heo-segmented>
+          <span class="hint">${width === native && capture ? 'px, as captured' : 'px'}</span>
+        </div>
+        <div class="preview" style=${`height: ${Math.round(frameHeight * scale)}px`}>
           <iframe
-            title="Preview of the captured block"
-            sandbox=""
+            title="Preview of the block on a neutral background"
+            sandbox="allow-same-origin"
             .srcdoc=${this.#preview}
-            style=${`width: ${width}px; height: ${PREVIEW_HEIGHT}px; transform: scale(${scale})`}
+            style=${`width: ${width}px; height: ${frameHeight}px; transform: scale(${scale})`}
+            @load=${(event: Event) => this.#measure(event.target as HTMLIFrameElement)}
           ></iframe>
         </div>
 
@@ -351,6 +448,22 @@ export class HeoCapturePasteDialog extends HeoElement {
         </div>
       </footer>
     </div>`;
+  }
+
+  /**
+   * Size the frame to the block. Scripts never run in it (no `allow-scripts`); `allow-same-origin`
+   * is only there so its height can be read.
+   */
+  #measure(frame: HTMLIFrameElement): void {
+    const doc = frame.contentDocument;
+    if (!doc?.body) return;
+    // The canvas is at least a viewport tall; the block is what sets the useful height.
+    const blocks = Array.from(doc.body.children);
+    const bottom = blocks.reduce((max, element) => Math.max(max, element.getBoundingClientRect().bottom), 0);
+    const height = Math.ceil(bottom + 24);
+    if (Math.abs(height - this.#contentHeight) < 2) return;
+    this.#contentHeight = height;
+    this.requestUpdate();
   }
 
   /** The position switch, gated as the insert menu and the HTML paste dialog gate it. */
