@@ -101,6 +101,7 @@
     "check:captureroundtrip": "node scripts/browser-check.mjs test/capture-roundtrip.html 60000",
     "check:capturefidelity": "node scripts/browser-check.mjs test/capture-fidelity.html 60000",
     "check:blockruleedit": "node scripts/browser-check.mjs test/block-rule-edit.html 60000",
+    "check:blockcssperf": "node scripts/browser-check.mjs test/block-css-perf.html 90000",
     "check:dsscope": "node scripts/browser-check.mjs test/design-scope.html 45000",
     "check:move": "node scripts/browser-check.mjs test/transform-move.html 90000",
     "check:pin": "node scripts/browser-check.mjs test/position-pin.html 90000",

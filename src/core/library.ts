@@ -283,6 +283,7 @@ export class BlockLibrary {
   destroy(): void {
     this.#sheet.destroy();
     this.#injectedCSS.clear();
+    this.#scoped.clear();
     this.#names.clear();
     this.#captured.clear();
     this.#foreignChunks.clear();
@@ -308,10 +309,30 @@ export class BlockLibrary {
     if (css.trim()) this.#writeCSS();
   }
 
+  /**
+   * Each block's scoped CSS, kept until its source or its capture flag changes.
+   *
+   * Every write rebuilds the whole sheet, and scoping is the costly half of that: an edit or a
+   * preview keystroke in one block re-scoped every block on the page. Same input, same output, so
+   * only the block that changed is scoped again.
+   */
+  #scoped = new Map<string, { css: string; captured: boolean; out: string }>();
+
+  #scopedFor(id: string, css: string): string {
+    const captured = this.#captured.has(id);
+    const known = this.#scoped.get(id);
+    if (known && known.css === css && known.captured === captured) return known.out;
+    const out = scopeBlockCSS(css, id, { captured });
+    this.#scoped.set(id, { css, captured, out });
+    return out;
+  }
+
   #writeCSS(): void {
+    // Blocks gone from the sheet do not keep their scoped text alive.
+    for (const id of this.#scoped.keys()) if (!this.#injectedCSS.has(id)) this.#scoped.delete(id);
     const parts = [...this.#injectedCSS.entries()]
       .filter(([, css]) => css.trim())
-      .map(([id, css]) => `/* block: ${id} */\n${scopeBlockCSS(css, id, { captured: this.#captured.has(id) })}`);
+      .map(([id, css]) => `/* block: ${id} */\n${this.#scopedFor(id, css)}`);
     /*
      * Saved chunks for blocks the library does not know, carried through verbatim (they are
      * already scoped) while an element of that block is still on the page. The library's own

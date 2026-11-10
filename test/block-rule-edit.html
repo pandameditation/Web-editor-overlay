@@ -77,6 +77,15 @@
       const titleEntry = blockEntry(title, '.title');
       diagnostics.kinds = engine.elementModel(title).entries.map((entry) => entry.target.kind);
 
+      // A family a capture renames goes through the block's source, not a direct paint.
+      engine.previewDeclaration(titleEntry.target, 'font-family', 'monospace');
+      const familyPreviewed = style(title).fontFamily === 'monospace';
+      engine.cancelPreview();
+      const familyCancelled = style(title).fontFamily !== 'monospace';
+      engine.previewDeclaration(blockEntry(title, '.title').target, 'color', 'rgb(5, 5, 5)');
+      const colorPreviewed = style(title).color === 'rgb(5, 5, 5)';
+      engine.cancelPreview();
+      const colorCancelled = style(title).color === 'rgb(1, 2, 3)';
       engine.setDeclaration(titleEntry.target, 'color', 'rgb(9, 9, 9)');
       await frames();
       const recolored = style(title).color;
@@ -117,6 +126,7 @@
         aRuleUnderAMediaQueryIsEditedThere: mediaColor === 'rgb(7, 7, 7)' && /@media \(max-width: 99999px\) \{[^@]*\.body \{ color: rgb\(7, 7, 7\)/.test(sourceAfterMedia),
         theBlockRootRuleIsEditable: Boolean(rootEntry) && rootPadding === '9px' && /^padding: 9px;/.test(sourceAfterRoot),
         undoPutsItBack: paddingUndone === '5px' && allUndone,
+        previewsShowAndCancelBothWays: familyPreviewed && familyCancelled && colorPreviewed && colorCancelled,
         // An insert-only paste: the notice says only this copy changes.
         theNoticeSaysOnlyThisPaste: /only this pasted Card\b/.test(insertOnlyNotice) && /not in the library/i.test(insertOnlyNotice),
         itStaysOutOfTheLibrary: !engine.library.get(id),

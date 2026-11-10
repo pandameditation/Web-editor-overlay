@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>A large pasted block stays quick to inspect and edit</title>
+</head>
+<body>
+  <main id="stage"><p id="page-para">Page paragraph</p></main>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    /*
+     * The report: big captures made HEO slow. Measured before the caching: on this block (2,000
+     * rules, a third with two-selector lists, 500 more under @media, 400 elements) reading one
+     * element's rules took 31 ms in Chrome and 389 ms in Firefox, almost all of it locating each
+     * matching block rule by walking the whole sheet; a live-preview keystroke took 43 ms, most of
+     * it re-scoping and parsing the whole block. Budgets are loose (machines differ), but far
+     * under the old Firefox figures, and the edits must still land where they did.
+     */
+    (async () => {
+      const results = {};
+      const timings = {};
+      const errors = [];
+      addEventListener('error', (event) => errors.push('error: ' + event.message));
+      addEventListener('unhandledrejection', (event) => errors.push('rejection: ' + String(event.reason)));
+      const step = (name) => { document.getElementById('progress').textContent = name; };
+      const frames = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const median = async (run, n = 5) => {
+        const times = [];
+        for (let i = 0; i < n; i += 1) {
+          const start = performance.now();
+          await run();
+          times.push(performance.now() - start);
+        }
+        times.sort((a, b) => a - b);
+        return Math.round(times[n >> 1] * 10) / 10;
+      };
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark', detectScriptContent: false, fileName: 'block-css-perf.html', presets: false });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+
+      const big = (name) => {
+        let html = '<div class="root">';
+        for (let i = 0; i < 400; i += 1) html += `<div class="c${i % 80}"><span class="s${i % 20}">x</span></div>`;
+        html += '</div>';
+        let css = 'color: rgb(1, 1, 1);\n';
+        for (let i = 0; i < 2000; i += 1) {
+          const one = `.c${i % 80} .s${i % 20}`;
+          css += `${i % 3 ? one : `${one}, .c${i % 80}:hover`} { color: rgb(${i % 255}, 1, 1); padding: ${i % 9}px; }\n`;
+        }
+        css += '@media (max-width: 99999px) {\n';
+        for (let i = 0; i < 500; i += 1) css += `.c${i % 80} { margin: ${i % 7}px; }\n`;
+        css += '}';
+        return { name, kind: 'component', origin: 'captured', capture: { url: 'https://example.com/', viewport: 1200, capturedAt: '', warnings: [] }, html, css };
+      };
+      const paste = async (block) => {
+        engine.beginCapturePaste(block, { reference: document.getElementById('stage'), position: 'lastChild' });
+        return (await engine.commitCapturePaste()).inserted;
+      };
+
+      step('paste');
+      const first = await paste(big('Big one'));
+      // A second big block: reading the first block's rules must not cost the second one's again.
+      await paste(big('Big two'));
+      await frames();
+      const span = first.querySelector('.c3 .s3');
+      const div = first.querySelector('.c3');
+
+      step('read');
+      timings.elementModelMs = await median(() => engine.elementModel(span).entries.length);
+      timings.cascadeMs = await median(() => engine.elementModel(span).cascade('color'));
+
+      step('preview');
+      const target = () => engine.elementModel(span).entries.filter((entry) => entry.target.kind === 'block').at(-1).target;
+      const live = target();
+      // The first keystroke maps this version of the block once; the rest reuse the map.
+      engine.previewDeclaration(live, 'color', 'rgb(200, 0, 0)');
+      let n = 0;
+      timings.previewKeystrokeMs = await median(() => engine.previewDeclaration(live, 'color', `rgb(${(n += 1)}, 9, 9)`));
+      engine.previewDeclaration(live, 'color', 'rgb(7, 8, 9)');
+      const previewed = getComputedStyle(span).color;
+      engine.cancelPreview();
+      const cancelled = getComputedStyle(span).color;
+
+      step('edit');
+      engine.setDeclaration(target(), 'color', 'rgb(1, 2, 3)');
+      await frames();
+      const afterFirstEdit = getComputedStyle(span).color;
+      // A second edit on the new version, on another rule, under @media.
+      const mediaTarget = engine.elementModel(div).entries.filter((entry) => entry.target.kind === 'block' && entry.media).at(-1).target;
+      timings.editMs = await median(async () => {
+        engine.setDeclaration(mediaTarget.kind ? engine.elementModel(div).entries.filter((entry) => entry.target.kind === 'block' && entry.media).at(-1).target : mediaTarget, 'margin', '11px');
+      }, 1);
+      await frames();
+      const afterMediaEdit = getComputedStyle(div).marginTop;
+      engine.undo();
+      await frames();
+      const undone = getComputedStyle(div).marginTop !== '11px' && getComputedStyle(span).color === 'rgb(1, 2, 3)';
+
+      results.speed = {
+        readingAnElementsRulesIsQuick: timings.elementModelMs < 120,
+        aCascadeIsQuick: timings.cascadeMs < 120,
+        aPreviewKeystrokeIsQuick: timings.previewKeystrokeMs < 30,
+      };
+      results.correctness = {
+        thePreviewShowsAndCancels: previewed === 'rgb(7, 8, 9)' && cancelled !== 'rgb(7, 8, 9)',
+        anEditLands: afterFirstEdit === 'rgb(1, 2, 3)',
+        anEditOnTheNextVersionLandsToo: afterMediaEdit === '11px',
+        undoPutsItBack: undone,
+      };
+      results.page = { noUncaughtErrors: errors.length === 0 };
+      const failed = Object.entries(results)
+        .filter(([, group]) => Object.values(group).some((value) => value === false))
+        .map(([name]) => name);
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify({ failed, ...results, timings, errors }, null, 1) + ':END';
+    })().catch((error) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"ok":false,"failed":["fatal"],"__fatal":' + JSON.stringify(String((error && error.stack) || error)) + '}:END';
+    });
+  </script>
+</body>
+</html>

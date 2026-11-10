@@ -2768,8 +2768,16 @@ export class EditorEngine {
   /* Block CSS, edited where it shows                                       */
   /* ---------------------------------------------------------------------- */
 
-  /** A block's source CSS before a preview touched it, so the commit and the cancel know it. */
-  #blockPreview: { id: string; css: string } | null = null;
+  /**
+   * A block preview in flight. Painted straight into the scoped rule on the page when it can be
+   * (`paint`), which costs what a page rule preview costs; through the block's source CSS when the
+   * value is one a capture renames (fonts, animations, variables), which re-scopes the block.
+   * Either way the commit and the cancel put the rule back from here.
+   */
+  #blockPreview:
+    | { mode: 'paint'; id: string; rule: CSSStyleRule; property: string; before: string; priority: string }
+    | { mode: 'source'; id: string; css: string }
+    | null = null;
   /** Blocks whose reach has been said once this session, so editing ten values is one notice. */
   #blockReachSaid = new Set<string>();
 
@@ -2795,7 +2803,13 @@ export class EditorEngine {
   #restoreBlockPreview(): void {
     const preview = this.#blockPreview;
     this.#blockPreview = null;
-    if (preview) this.library.setSourceCSS(preview.id, preview.css);
+    if (!preview) return;
+    if (preview.mode === 'source') {
+      this.library.setSourceCSS(preview.id, preview.css);
+      return;
+    }
+    if (preview.before) preview.rule.style.setProperty(preview.property, preview.before, preview.priority);
+    else preview.rule.style.removeProperty(preview.property);
   }
 
   /** The block's CSS with one declaration set (or, for an empty value, removed); null when it cannot be. */
@@ -2820,14 +2834,36 @@ export class EditorEngine {
   /** Paint a value into a block's rule without history; `cancelPreview()` puts it back. */
   previewBlockRuleDeclaration(target: Extract<WriteTarget, { kind: 'block' }>, property: string, value: string): void {
     const id = target.locator.blockId;
-    const source = this.#blockPreview?.id === id ? this.#blockPreview.css : this.library.sourceCSS(id);
+    const rule = target.rule;
+    // A rule still on the page (the sheet has not been rewritten since), for a property no capture renames.
+    const paintable = Boolean(rule.parentStyleSheet?.ownerNode?.isConnected) &&
+      !/^(?:font|font-family|animation|animation-name|-webkit-animation(?:-name)?)$|^--/i.test(property);
+    const current = this.#blockPreview;
+    if (paintable) {
+      if (current && !(current.mode === 'paint' && current.rule === rule && current.property === property)) {
+        this.#restoreBlockPreview();
+      }
+      this.#blockPreview ??= {
+        mode: 'paint',
+        id,
+        rule,
+        property,
+        before: rule.style.getPropertyValue(property),
+        priority: rule.style.getPropertyPriority(property),
+      };
+      const preview = this.#blockPreview as Extract<typeof current, { mode: 'paint' }>;
+      const { value: text, important: typed } = splitImportant(value);
+      if (text) rule.style.setProperty(property, text, typed ? 'important' : preview.priority);
+      else rule.style.removeProperty(property);
+      return;
+    }
+    if (current && !(current.mode === 'source' && current.id === id)) this.#restoreBlockPreview();
+    const pending = this.#blockPreview;
+    const source = pending?.mode === 'source' ? pending.css : this.library.sourceCSS(id);
     if (source === undefined) return;
     const next = this.#editedBlockCSS(target, source, property, value, undefined);
     if (next === null) return;
-    if (this.#blockPreview?.id !== id) {
-      this.#restoreBlockPreview();
-      this.#blockPreview = { id, css: source };
-    }
+    this.#blockPreview ??= { mode: 'source', id, css: source };
     this.library.setSourceCSS(id, next);
   }
 
@@ -2846,9 +2882,9 @@ export class EditorEngine {
     label?: string,
   ): void {
     const id = target.locator.blockId;
-    const preview = this.#blockPreview?.id === id ? this.#blockPreview : null;
+    const preview = this.#blockPreview;
     this.#restoreBlockPreview();
-    const source = preview?.css ?? this.library.sourceCSS(id);
+    const source = (preview?.mode === 'source' && preview.id === id ? preview.css : undefined) ?? this.library.sourceCSS(id);
     if (source === undefined) {
       this.notify('This block came with the saved page, and its source CSS did not. Paste or insert it again to edit it.', 'info');
       return;
