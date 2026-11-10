@@ -396,6 +396,23 @@ export function renameFontFamilies(
     .join(',');
 }
 
+/**
+ * Rename keyframes and families in a custom property's value.
+ *
+ * A capture carries resolved variables as bare `--x: value` declarations, and Tailwind v4
+ * (`--animate-*`, `--font-*`) or next/font route names through them, so `animation: var(--x)`
+ * would point at the old name. The value's use is unknown, so each comma segment that is a
+ * whole renamed family takes the font rename; any other segment takes the keyframes rename,
+ * which only touches whole top-level identifiers.
+ */
+function renameInCustomProperty(value: string, renames: CapturedRenames): string {
+  return splitTopLevelOn(value, ',')
+    .map((segment) => {
+      const family = renameFontFamilies(segment, renames.fonts);
+      return family !== segment ? family : renameAnimationNames(segment, renames.keyframes);
+    })
+    .join(',');
+}
 /** Apply a captured block's renames to a declaration list, leaving everything else as written. */
 export function renameInDeclarations(cssText: string, renames: CapturedRenames): string {
   if (!renames.keyframes.size && !renames.fonts.size) return cssText;
@@ -415,6 +432,8 @@ export function renameInDeclarations(cssText: string, renames: CapturedRenames):
         next = renameFontFamilies(value, renames.fonts);
       } else if (property === 'font') {
         next = renameFontFamilies(value, renames.fonts, true);
+      } else if (property.startsWith('--')) {
+        next = renameInCustomProperty(value, renames);
       }
       return next === value ? declaration : `${declaration.slice(0, colon + 1)}${next}${priority}`;
     })

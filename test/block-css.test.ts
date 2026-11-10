@@ -221,6 +221,21 @@ test('a family that merely contains a known one is not renamed', () => {
   assert.equal(renameFontFamilies('Probe Mono, Probes', fonts), 'Probe Mono, Probes');
 });
 
+test('custom-property values carry the keyframes and font renames', () => {
+  // Tailwind v4 and next/font route names through variables; left as written, they pointed at nothing.
+  const renames = { keyframes, fonts };
+  assert.equal(
+    renameInDeclarations('--animate-fade: fade 1s linear infinite; --font-sans: Probe, sans-serif', renames),
+    '--animate-fade: fade--hero 1s linear infinite; --font-sans: "hero--Probe", sans-serif',
+  );
+  assert.equal(renameInDeclarations('--name: fade', renames), '--name: fade--hero');
+  assert.equal(renameInDeclarations("--font: 'Probe Sans' !important", renames), '--font: "hero--Probe Sans" !important');
+  // Only whole identifiers and whole families: substrings and function arguments stay.
+  assert.equal(
+    renameInDeclarations('--x: fade-in 1s, steps(4, fade); --y: Probe Mono, Probes', renames),
+    '--x: fade-in 1s, steps(4, fade); --y: Probe Mono, Probes',
+  );
+});
 test('body, html body .x and :root map to :scope', () => {
   // A capture's `body { color }` could never match inside a block, so the paste lost its colour.
   assert.equal(rootSubjectsToScope('body'), ':scope');

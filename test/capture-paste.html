@@ -93,12 +93,16 @@
       const HERO_CSS = [
         // Written without a selector: defaults for the block root.
         'padding: 7px;',
+        // Resolved custom properties arrive bare too (Tailwind v4 --animate-*, next/font --font-*).
+        '--hero-animate: fade 2s linear;',
+        '--hero-font: Probe, serif;',
         // The colour the element inherited on its own site.
         'body { color: rgb(10, 20, 30); }',
         '.hero-grid { display: flex; flex-direction: row; }',
         '@media (max-width: 600px) { .hero-grid { flex-direction: column; } }',
         '.hero-title { font-family: Probe, sans-serif; animation: fade 1s; }',
         '.probe-text { font-size: 16px; white-space: nowrap; }',
+        '.var-driven { animation: var(--hero-animate); font-family: var(--hero-font); }',
         '.cta { background-color: rgb(0, 0, 255); }',
         '.cta:hover { background-color: rgb(255, 0, 0); }',
         // Unsafe: has to be removed on the way in, and reported.
@@ -112,6 +116,7 @@
         '  <div class="hero-grid">',
         '    <h2 class="hero-title"><span class="probe-text">AAA</span></h2>',
         '    <a class="cta" href="#go">Go</a>',
+        '    <span class="var-driven">Var</span>',
         '  </div>',
         `  <img class="pic" src="${IMG}" alt="">`,
         `  <picture><source srcset="${IMG} 1x, ${IMG} 2x" type="image/png"><img class="pic2" src="${IMG}" alt=""></picture>`,
@@ -225,6 +230,10 @@
           style(titleOf(two))?.animationName === `fade--${idTwo}`,
         fontFamiliesArePrefixedAndDistinct: (style(titleOf(one))?.fontFamily ?? '').includes(`${idOne}--Probe`) &&
           (style(titleOf(two))?.fontFamily ?? '').includes(`${idTwo}--Probe`),
+        // `animation: var(--x)` and `font-family: var(--y)` read the renamed names through the variable.
+        varDrivenAnimationAndFontResolveToTheRenamedRules:
+          style(one?.querySelector('.var-driven'))?.animationName === `fade--${idOne}` &&
+          (style(one?.querySelector('.var-driven'))?.fontFamily ?? '').includes(`${idOne}--Probe`),
         // body { color } could never match inside a block; mapped to the root, it is inherited inside.
         bodyRuleLandsOnTheBlockRoot: style(one)?.color === 'rgb(10, 20, 30)' && style(titleOf(one))?.color === 'rgb(10, 20, 30)',
         nothingLeaksToThePageParagraph: style(pagePara).color === 'rgb(0, 0, 0)' &&
