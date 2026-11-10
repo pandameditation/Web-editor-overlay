@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Capture an element from a page and paste it into HEO</title>
+  <style>
+    /* The source sits in an iframe, so nothing here can make a comparison pass by accident. */
+    #source { width: 1000px; height: 900px; border: 0; display: block; }
+  </style>
+</head>
+<body>
+  <main id="stage">
+    <p id="page-para">Page paragraph</p>
+  </main>
+  <iframe id="source" title="source page"></iframe>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    /*
+     * The source page. Everything a capture has to carry is in it once:
+     *   responsive grid and flex under @media, an @container card whose container is an ancestor,
+     *   a :hover rule, @keyframes in use and one unused, a WAAPI animation, a var() defined on body,
+     *   colour and font inherited from body, an open-shadow-root widget with a slot, a <use> sprite,
+     *   a typed input value, a blob: image, a script and an inline handler.
+     */
+    const SOURCE = `<!doctype html><html><head><meta charset="utf-8"><style>
+      body { margin: 0; color: rgb(20, 30, 40); font-family: Georgia, serif; --accent: rgb(200, 10, 10); }
+      .page-only { color: rgb(1, 2, 3); }
+      .outer { container-type: inline-size; }
+      .hero { padding: 12px; background-color: var(--accent); }
+      .grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+      .row { display: flex; flex-direction: row; }
+      @media (max-width: 600px) {
+        .grid { grid-template-columns: 1fr; }
+        .row { flex-direction: column; }
+      }
+      .card { font-size: 20px; padding-top: 6px; }
+      @container (max-width: 500px) { .card { font-size: 12px; } }
+      .btn { background-color: rgb(0, 0, 255); padding: 4px; }
+      .btn:hover { background-color: rgb(255, 0, 0); }
+      .title { animation: pop 2s infinite; font-size: 24px; }
+      @keyframes pop { from { opacity: 0.5; } to { opacity: 1; } }
+      @keyframes unusedanim { from { opacity: 0; } }
+      .pic { width: 32px; height: 32px; display: block; }
+    </style></head><body>
+      <div class="outer">
+        <section class="hero" data-probe="hero" aria-label="Probe hero">
+          <h2 class="title" data-probe="title">Title {{ notaprop }}</h2>
+          <div class="grid" data-probe="grid"><div data-probe="cell">a</div><div>b</div><div>c</div></div>
+          <div class="row" data-probe="row"><span>1</span><span>2</span></div>
+          <div class="card" data-probe="card">Card</div>
+          <button class="btn" data-probe="btn" onclick="window.clicked = 1">Go</button>
+          <x-widget><span class="slotted">Slotted text</span></x-widget>
+          <svg class="icon" width="16" height="16"><use href="#icon"></use></svg>
+          <input class="field" value="">
+          <img class="pic" alt="">
+          <div class="waapi">W</div>
+          <script>window.leak = 1<\/script>
+        </section>
+      </div>
+      <svg style="display: none"><symbol id="icon" viewBox="0 0 16 16"><rect class="icon-rect" width="16" height="16"></rect></symbol></svg>
+      <p class="page-only">outside</p>
+      <script>
+        customElements.define('x-widget', class extends HTMLElement {
+          constructor() {
+            super();
+            this.attachShadow({ mode: 'open' }).innerHTML =
+              '<style>.inner { color: rgb(0, 128, 0); }</style><div class="inner">Inner <slot></slot></div>';
+          }
+        });
+        document.querySelector('.field').value = 'typed';
+        document.querySelector('.waapi').animate([{ opacity: 0.2 }, { opacity: 1 }], { duration: 100000, iterations: Infinity });
+        // A noisy 48x48 PNG, so the image is a few kilobytes and a reduced cap can exclude it.
+        const canvas = document.createElement('canvas');
+        canvas.width = canvas.height = 48;
+        const context = canvas.getContext('2d');
+        const pixels = context.createImageData(48, 48);
+        for (let i = 0; i < pixels.data.length; i += 1) pixels.data[i] = (i * 7919) % 251;
+        context.putImageData(pixels, 0, 0);
+        canvas.toBlob((blob) => {
+          window.blobUrl = URL.createObjectURL(blob);
+          const img = document.querySelector('.pic');
+          img.onload = () => { window.sampleReady = true; };
+          img.src = window.blobUrl;
+        }, 'image/png');
+      <\/script>
+      <script src="../dist/heo-capture.js"><\/script>
+    </body></html>`;
+
+    (async () => {
+      const results = {};
+      const diagnostics = {};
+      const errors = [];
+      addEventListener('error', (event) => errors.push('error: ' + event.message));
+      addEventListener('unhandledrejection', (event) => errors.push('rejection: ' + String(event.reason)));
+      const progress = document.getElementById('progress');
+      const step = (name) => { progress.textContent = name; };
+      const frames = (win = window) => new Promise((resolve) =>
+        win.requestAnimationFrame(() => win.requestAnimationFrame(resolve)));
+      async function until(predicate, limit = 200) {
+        for (let n = 0; n < limit; n += 1) {
+          if (predicate()) return true;
+          await frames();
+        }
+        return false;
+      }
+      function deepQuery(selector, root = document) {
+        const found = root.querySelector?.(selector);
+        if (found) return found;
+        for (const element of root.querySelectorAll?.('*') ?? []) {
+          if (!element.shadowRoot) continue;
+          const hit = deepQuery(selector, element.shadowRoot);
+          if (hit) return hit;
+        }
+        return null;
+      }
+      const pasteText = (target, text) => {
+        const clipboard = new DataTransfer();
+        clipboard.setData('text/plain', text);
+        const event = new ClipboardEvent('paste', { bubbles: true, cancelable: true, composed: true, clipboardData: clipboard });
+        // Firefox gives a constructed ClipboardEvent a fresh, empty DataTransfer.
+        if (event.clipboardData && event.clipboardData.getData('text/plain') !== text) {
+          event.clipboardData.setData('text/plain', text);
+        }
+        return target.dispatchEvent(event);
+      };
+
+      step('source');
+      const frame = document.getElementById('source');
+      const loaded = new Promise((resolve) => frame.addEventListener('load', resolve, { once: true }));
+      frame.srcdoc = SOURCE;
+      await loaded;
+      const win = frame.contentWindow;
+      const sdoc = frame.contentDocument;
+      await until(() => win.sampleReady && win.HeoCapture);
+      const HeoCapture = win.HeoCapture;
+      const root = sdoc.querySelector('.hero');
+
+      step('capture');
+      const capture = await HeoCapture.captureElement(root, { host: HeoCapture.pageHost() });
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark', detectScriptContent: false, fileName: 'capture-roundtrip.html', presets: false });
+      const engine = api.engine;
+      const stage = document.getElementById('stage');
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+      const decoded = await engine.decodeSeedText(capture.seed);
+      const block = decoded?.blocks?.[0] ?? { html: '', css: '' };
+      const css = block.css ?? '';
+      const html = block.html ?? '';
+      const bareText = css.slice(0, css.lastIndexOf(';', css.indexOf('{')) + 1);
+      diagnostics.bare = bareText;
+      diagnostics.stats = capture.stats;
+      diagnostics.warnings = capture.warnings;
+
+      /* ------------------------------------------------------------------ */
+      step('rules');
+      const stubHost = { fetchText: async (url) => (url.endsWith('/imp.css') ? { text: '.btn { border-top-width: 3px; }' } : null) };
+      const fetchedNodes = await HeoCapture.__test.parseFetchedSheet(
+        '@import "imp.css";\n.card { outline-width: 2px; }\n.nomatch { color: red; }',
+        'https://cdn.example/site/main.css',
+        stubHost,
+      );
+      const fetchedKept = HeoCapture.__test.keptFor(fetchedNodes, root);
+      results.rules = {
+        aHoverRuleIsKept: css.includes('.btn:hover'),
+        aRuleForAnUnrelatedElementIsDropped: !css.includes('.page-only') && !css.includes('rgb(1, 2, 3)'),
+        mediaAndContainerWrappersAreKept: css.includes('@media (max-width: 600px)') && /@container \(max-width: 500px\)/.test(css),
+        // A cross-origin sheet is fetched as text and filtered by the same matcher, imports first.
+        aFetchedSheetIsFilteredTheSameWay: fetchedKept.includes('.card') && !fetchedKept.includes('.nomatch') &&
+          fetchedKept.indexOf('.btn') >= 0 && fetchedKept.indexOf('.btn') < fetchedKept.indexOf('.card'),
+      };
+
+      step('dependencies');
+      results.dependencies = {
+        usedKeyframesComeAlong: css.includes('@keyframes pop'),
+        unusedKeyframesDoNot: !css.includes('unusedanim'),
+        aVarFromAnAncestorIsResolved: /--accent: rgb\(200, 10, 10\)/.test(bareText),
+      };
+
+      step('context');
+      sdoc.documentElement.style.fontSize = '20px';
+      const remCapture = await HeoCapture.captureElement(root, { host: HeoCapture.pageHost() });
+      sdoc.documentElement.style.fontSize = '';
+      results.context = {
+        // body's colour and font reach the root through the bare declarations HEO puts on the block root.
+        inheritedColourAndFontReachTheRoot: bareText.includes('color: rgb(20, 30, 40)') && bareText.includes('font-family: Georgia, serif'),
+        containerTypeIsAdded: bareText.includes('container-type: inline-size'),
+        noFixedWidthIsSet: !/(^|[;\s])(?:width|min-width|max-width)\s*:/.test(bareText),
+        remWarningOnlyWhenRootFontIsNot16px: !capture.warnings.some((w) => /root font size/.test(w)) &&
+          remCapture.warnings.some((w) => /root font size is 20px/.test(w)),
+      };
+
+      step('waapi');
+      results.waapi = {
+        aWaapiAnimationBecomesKeyframes: css.includes('@keyframes heo-waapi-1') &&
+          /\[data-heo-anim="1"\] \{ animation: heo-waapi-1 100000ms linear 0ms infinite/.test(css) &&
+          /class="waapi"[^>]*data-heo-anim="1"|data-heo-anim="1"[^>]*class="waapi"/.test(html),
+      };
+
+      step('markup');
+      results.markup = {
+        shadowContentIsFlattened: html.includes('class="inner"') && !/<style/i.test(html),
+        slotContentIsInlined: /class="inner">Inner <span class="slotted">Slotted text<\/span>/.test(html) && !/<slot/i.test(html),
+        useIsReplacedBySymbolCopy: !/<use/i.test(html) && html.includes('icon-rect') && /<svg[^>]*viewBox="0 0 16 16"/.test(html),
+        noScriptsOrHandlers: !/<script/i.test(html) && !/onclick/i.test(html) && !html.includes('leak'),
+        typedValueIsKept: /class="field"[^>]*value="typed"|value="typed"[^>]*class="field"/.test(html),
+        // {{ in page text would otherwise become a block prop that does not exist, and the text would vanish.
+        templateBracesAreEscaped: html.includes('&#123;&#123; notaprop') && !html.includes('{{'),
+      };
+
+      step('assets');
+      const pngBytes = capture.html.match(/data:image\/png;base64,[A-Za-z0-9+/=]+/)?.[0].length ?? 0;
+      // Room for everything but the image: the capture has to give it back its URL to fit.
+      const tightCap = capture.stats.bytes - Math.floor(pngBytes / 2);
+      const tight = await HeoCapture.captureElement(root, { host: HeoCapture.pageHost(), cap: tightCap });
+      diagnostics.tight = { cap: tightCap, bytes: tight.stats.bytes, remote: tight.remoteAssets };
+      results.assets = {
+        blobImageIsEmbedded: /<img class="pic"[^>]*src="data:image\/png;base64,/.test(html) && capture.stats.assets === 1 &&
+          capture.remoteAssets.length === 0,
+        overCapAssetKeepsItsUrlAndIsListed: tight.remoteAssets.includes(win.blobUrl) && tight.html.includes(win.blobUrl) &&
+          tight.stats.assets === 0 && tight.stats.bytes <= tightCap,
+      };
+
+      /* ------------------------------------------------------------------ */
+      step('paste');
+      pasteText(document.getElementById('page-para'), capture.seed);
+      await until(() => engine.store.value.capturePaste);
+      const open = engine.store.value.capturePaste;
+      engine.updateCapturePaste({ anchor: { reference: stage, position: 'lastChild' } });
+      await frames();
+      const committed = open ? await engine.commitCapturePaste() : null;
+      await frames();
+      const instance = committed?.inserted ?? null;
+      const blockId = instance?.getAttribute('data-heo-block') ?? '';
+      diagnostics.removedOnPaste = open?.removed ?? null;
+
+      const PROPS = ['display', 'grid-template-columns', 'flex-direction', 'color', 'background-color', 'font-size', 'padding-top', 'width'];
+      const readProbes = (view, doc) => Object.fromEntries(Array.from(doc.querySelectorAll('[data-probe]')).map((el) => {
+        const style = view.getComputedStyle(el);
+        return [el.getAttribute('data-probe'), Object.fromEntries(PROPS.map((name) => [name, style.getPropertyValue(name)]))];
+      }));
+      async function renderPaste(width, markup) {
+        const target = document.createElement('iframe');
+        target.style.cssText = `width: ${width}px; height: 900px; border: 0; position: absolute; left: -5000px; top: 0;`;
+        const done = new Promise((resolve) => target.addEventListener('load', resolve, { once: true }));
+        target.srcdoc = markup;
+        document.body.append(target);
+        await done;
+        await frames(target.contentWindow);
+        return target;
+      }
+      async function compareAt(width) {
+        frame.style.width = `${width}px`;
+        await frames(win);
+        await frames(win);
+        const source = readProbes(win, sdoc);
+        const pasted = await renderPaste(width,
+          `<!doctype html><meta charset="utf-8"><style>body { margin: 0; }</style><style>${engine.library.css}</style>${instance?.outerHTML ?? ''}`);
+        const copy = readProbes(pasted.contentWindow, pasted.contentDocument);
+        const titleName = pasted.contentWindow.getComputedStyle(pasted.contentDocument.querySelector('.title')).animationName;
+        pasted.remove();
+        const mismatches = [];
+        for (const [probe, props] of Object.entries(source)) {
+          for (const [name, value] of Object.entries(props)) {
+            if (copy[probe]?.[name] !== value) mismatches.push(`${probe} ${name}: ${value} vs ${copy[probe]?.[name]}`);
+          }
+        }
+        return { mismatches, count: Object.keys(source).length, titleName, source };
+      }
+      step('roundtrip-360');
+      const at360 = await compareAt(360);
+      step('roundtrip-1200');
+      const at1200 = await compareAt(1200);
+      frame.style.width = '';
+      diagnostics.mismatches = { at360: at360.mismatches, at1200: at1200.mismatches };
+      const standalone = await renderPaste(1200, capture.html);
+      const sHero = standalone.contentDocument.querySelector('.hero');
+      const sGrid = standalone.contentDocument.querySelector('.grid');
+      const standaloneOk = Boolean(sHero) &&
+        standalone.contentWindow.getComputedStyle(sHero).backgroundColor === 'rgb(200, 10, 10)' &&
+        standalone.contentWindow.getComputedStyle(sGrid).gridTemplateColumns.split(' ').length === 3 &&
+        standalone.contentWindow.getComputedStyle(sHero).color === 'rgb(20, 30, 40)';
+      standalone.remove();
+      const utf8 = (text) => new TextEncoder().encode(text).length;
+      results.roundtrip = {
+        thePasteInsertedTheBlock: Boolean(instance) && Boolean(blockId) && (open?.removed ?? []).length === 0,
+        // Responsive: the grid collapses to one column at 360 and keeps three at 1200, in the paste as in the source.
+        computedStylesMatchAt360: at360.count >= 7 && at360.mismatches.length === 0 &&
+          at360.source.grid['grid-template-columns'].split(' ').length === 1 && at360.source.row['flex-direction'] === 'column',
+        computedStylesMatchAt1200: at1200.count >= 7 && at1200.mismatches.length === 0 &&
+          at1200.source.grid['grid-template-columns'].split(' ').length === 3 && at1200.source.card['font-size'] === '20px',
+        animationNameMatches: at1200.titleName === `pop--${blockId}` &&
+          win.getComputedStyle(sdoc.querySelector('.title')).animationName === 'pop',
+        theSeedIsUnderTheCap: capture.stats.bytes === utf8(capture.seed) + utf8(capture.html) &&
+          capture.stats.bytes <= HeoCapture.CLIPBOARD_TOTAL_CAP,
+        theHtmlCopyIsStandalone: capture.html.startsWith('<meta charset="utf-8"><style>') &&
+          capture.html.includes('[data-heo-capture-root]') && standaloneOk,
+      };
+
+      /* ------------------------------------------------------------------ */
+      step('picker');
+      const seen = { pointermove: 0, keydown: 0, click: 0 };
+      for (const type of Object.keys(seen)) {
+        sdoc.addEventListener(type, () => { seen[type] += 1; });
+        win.addEventListener(type, () => { seen[type] += 1; });
+      }
+      const autoStarted = Boolean(sdoc.querySelector('heo-capture-picker'));
+      const handle = HeoCapture.startPicker(HeoCapture.pageHost());
+      const card = sdoc.querySelector('.card');
+      const rect = card.getBoundingClientRect();
+      card.dispatchEvent(new win.PointerEvent('pointermove', {
+        bubbles: true, composed: true, clientX: rect.left + 5, clientY: rect.top + rect.height / 2,
+      }));
+      const box = handle?.outline();
+      const followed = handle?.target === card && box?.visible &&
+        Math.abs(box.left - rect.left) < 1 && Math.abs(box.width - rect.width) < 1 && Math.abs(box.top - rect.top) < 1;
+      sdoc.body.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
+      const parentSelected = handle?.target === root;
+      const uiPresent = Boolean(sdoc.querySelector('heo-capture-picker'));
+      sdoc.body.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      const uiGone = !sdoc.querySelector('heo-capture-picker') && !win.__heoCapturePicker;
+      HeoCapture.startPicker(HeoCapture.pageHost());
+      const secondStart = HeoCapture.startPicker(HeoCapture.pageHost());
+      diagnostics.seen = seen;
+      results.picker = {
+        theOutlineFollowsThePointer: Boolean(followed),
+        arrowUpSelectsTheParent: parentSelected,
+        // Captured on window and stopped, so neither the page's window nor its document listeners fire.
+        pageListenersSeeNothing: seen.pointermove === 0 && seen.keydown === 0 && seen.click === 0,
+        escapeRemovesTheUi: uiPresent && uiGone,
+        aSecondStartTogglesItOff: secondStart === null && !sdoc.querySelector('heo-capture-picker'),
+        itNeverStartsByItselfOutsideTheExtension: !autoStarted,
+      };
+
+      results.page = { noUncaughtErrors: errors.length === 0 };
+      const failed = Object.entries(results)
+        .filter(([, group]) => group && typeof group === 'object')
+        .filter(([, group]) => Object.values(group).some((value) => value === false))
+        .map(([name]) => name);
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify({ failed, ...results, errors, diagnostics: failed.length ? diagnostics : undefined }, null, 1) + ':END';
+    })().catch((error) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"ok":false,"failed":["fatal"],"__fatal":' + JSON.stringify(String((error && error.stack) || error)) + '}:END';
+    });
+  </script>
+</body>
+</html>

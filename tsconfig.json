@@ -31,6 +31,7 @@
     "src",
     "vite.config.ts",
     "vite.demo.config.ts",
-    "vite.plugin.config.ts"
+    "vite.plugin.config.ts",
+    "vite.capture.config.ts"
   ]
 }
