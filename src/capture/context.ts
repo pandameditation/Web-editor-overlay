@@ -1,4 +1,5 @@
 import { hasContainerGroup, type RuleNode } from './css-text.js';
+import { isInitial } from './defaults.js';
 
 /**
  * What the picked element got from its surroundings, carried by a frame around the copy.
@@ -27,6 +28,11 @@ const INHERITED = [
   'hyphens', 'tab-size', 'list-style-type', 'list-style-position', 'quotes', 'cursor', 'visibility',
   'direction', 'writing-mode', 'color-scheme', 'accent-color', 'caret-color', 'fill', 'stroke',
 ];
+
+/** Inherited values host pages commonly set on `html` or `body`, so the frame always carries them. */
+const HOST_SET = new Set(['color', 'font-family', 'font-size', 'font-weight', 'line-height']);
+/** Inherited values the frame leaves to the elements they act on (pinned there when they matter). */
+const FRAME_SKIPPED = new Set(['list-style-type', 'list-style-position', 'quotes', 'tab-size', 'accent-color']);
 
 const seeThrough = (value: string): boolean => {
   const text = value.replace(/\s+/g, '');
@@ -61,9 +67,24 @@ export function readContext(root: Element, kept: RuleNode[]): CaptureContext {
   const parent = root.parentElement ?? (own instanceof ShadowRoot ? own.host : null);
   if (parent) {
     const style = view.getComputedStyle(parent);
+    const hasSvg = Boolean(root.querySelector('svg')) || root.localName === 'svg';
     for (const name of INHERITED) {
       const value = style.getPropertyValue(name);
-      if (value) declarations.push(`${name}: ${value}`);
+      if (!value) continue;
+      /*
+       * What host pages set on `html` and `body` is written whatever it is, defaults included:
+       * a `line-height: normal` copy pasted under `body { line-height: 2 }` would otherwise double
+       * its spacing. Everything else only when it is not the default, and only where it can act:
+       * list styles are pinned on the list items themselves, fills only matter to SVG, a caret
+       * colour equal to the text colour is the default.
+       */
+      if (!HOST_SET.has(name)) {
+        if (isInitial(name, value)) continue;
+        if (FRAME_SKIPPED.has(name)) continue;
+        if ((name === 'fill' || name === 'stroke') && !hasSvg) continue;
+        if (name === 'caret-color' && value === style.color) continue;
+      }
+      declarations.push(`${name}: ${value}`);
     }
   }
 

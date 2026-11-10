@@ -1,3 +1,5 @@
+import { canAffect, isInitial } from './defaults.js';
+
 /**
  * A floor of rendered values under the captured rules, so the paste looks like the source.
  *
@@ -54,7 +56,10 @@ const BOX = [
   'outline-style', 'outline-width', 'outline-color',
 ];
 
-/** Always pinned: what host-page resets change most. */
+/**
+ * Pinned whenever they can act, even at the browser default: what host-page resets change most.
+ * `* { box-sizing: border-box }` and `p, ul { margin: 0; padding: 0 }` are in most pages.
+ */
 const ALWAYS = new Set([
   'box-sizing', 'margin-top', 'margin-right', 'margin-bottom', 'margin-left',
   'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
@@ -67,11 +72,23 @@ const RESTYLED = new Set([
   'blockquote', 'figure', 'hr', 'sup', 'sub', 'table',
 ]);
 
-/** On restyled elements, the inherited values host pages set on them directly. */
-const RESTYLED_INHERITED = new Set([
-  'color', 'font-family', 'font-size', 'font-weight', 'font-style', 'line-height', 'letter-spacing',
-  'text-transform', 'text-align', 'list-style-type', 'white-space',
-]);
+/**
+ * Inherited values host pages set on particular tags (`a { color }`, `h2 { font-size }`), so they
+ * are pinned on those tags even when they only repeat the parent's.
+ */
+const HEADING = ['color', 'font-family', 'font-size', 'font-weight', 'line-height', 'letter-spacing', 'text-transform'];
+const CONTROL = [...HEADING, 'text-align'];
+const RESTYLED_INHERITED: Readonly<Record<string, readonly string[]>> = {
+  a: ['color'],
+  h1: HEADING, h2: HEADING, h3: HEADING, h4: HEADING, h5: HEADING, h6: HEADING,
+  button: CONTROL, input: CONTROL, select: CONTROL, textarea: CONTROL,
+  p: ['line-height'],
+  li: ['list-style-type'],
+  code: ['font-family', 'font-size'], pre: ['font-family', 'font-size', 'white-space'], kbd: ['font-family', 'font-size'],
+  small: ['font-size'], sub: ['font-size'], sup: ['font-size'],
+  strong: ['font-weight'], b: ['font-weight'], th: ['font-weight', 'text-align'], td: ['text-align'],
+  em: ['font-style'], i: ['font-style'],
+};
 /** On restyled elements, the box values host resets change. */
 const RESTYLED_BOX = new Set([
   'display', 'border-top-style', 'border-right-style', 'border-bottom-style', 'border-left-style',
@@ -226,19 +243,39 @@ export function pinRendered(
         if (value && !skip(name)) declarations.push(`${name}: ${value}`);
       };
       if (isSvg && tag !== 'svg') {
-        for (const name of SVG_PROPS) add(name, style.getPropertyValue(name));
-      } else {
-        for (const name of INHERITED) {
+        for (const name of SVG_PROPS) {
           const value = style.getPropertyValue(name);
-          if ((restyled && RESTYLED_INHERITED.has(name)) || !parent || parent.getPropertyValue(name) !== value) add(name, value);
+          // Inherited from the icon's own svg or set here: only what differs from the parent.
+          if (!parent || parent.getPropertyValue(name) !== value) add(name, value);
+        }
+      } else {
+        const placement = { tag, style, parent, replaced: REPLACED.has(tag) };
+        const forTag = RESTYLED_INHERITED[tag] ?? [];
+        for (const name of INHERITED) {
+          if (!canAffect(name, placement)) continue;
+          const value = style.getPropertyValue(name);
+          // What it got from its parent travels by inheritance; only a change, or a tag hosts restyle.
+          if (!parent || parent.getPropertyValue(name) !== value || forTag.includes(name)) add(name, value);
         }
         const bordered = (side: string): boolean => style.getPropertyValue(`border-${side}-style`) !== 'none';
         for (const name of BOX) {
+          if (!canAffect(name, placement)) continue;
           const value = style.getPropertyValue(name);
           const side = /^border-(top|right|bottom|left)-(?:width|color)$/.exec(name)?.[1];
           if (side && !bordered(side)) continue;
           if (name.startsWith('outline-') && name !== 'outline-style' && style.getPropertyValue('outline-style') === 'none') continue;
-          if ((restyled && RESTYLED_BOX.has(name)) || ALWAYS.has(name) || value !== reference[name]) add(name, value);
+          // A colour that is the text colour is what the border or decoration gets by default.
+          if (/-color$/.test(name) && name !== 'background-color' && value === style.color) continue;
+          const initial = isInitial(name, value);
+          const differs = value !== reference[name] && !(initial && isInitial(name, reference[name] ?? ''));
+          /*
+           * Written when it is not what this tag gets by default (the author changed it), or when
+           * it is a non-default the host may reset (`p` margins, `ul` padding, a button's border).
+           * A default that the tag also has by default is the same everywhere: left out.
+           */
+          if (differs) add(name, value);
+          else if (!initial && (ALWAYS.has(name) || (restyled && RESTYLED_BOX.has(name)))) add(name, value);
+          else if (name === 'box-sizing') add(name, value);
         }
         if (REPLACED.has(tag)) {
           add('width', style.getPropertyValue('width'));
@@ -255,8 +292,12 @@ export function pinRendered(
           if (!content || content === 'none' || content === 'normal') continue;
           const parts = PSEUDO_PROPS
             .map((name) => [name, generated.getPropertyValue(name)] as const)
-            .filter(([name, value]) => value && !(name === 'background-color' && transparent(value)) &&
-              !(name === 'background-image' && value === 'none'))
+            .filter(([name, value]) => {
+              if (!value || name === 'content') return Boolean(value);
+              // A pseudo-element inherits from its element: repeating the element's value says nothing.
+              if (INHERITED.includes(name) || name === 'color') return value !== style.getPropertyValue(name);
+              return !isInitial(name, value) && !(name === 'background-color' && transparent(value));
+            })
             .map(([name, value]) => `${name}: ${value}`);
           pseudos.push(`${pseudo}|${parts.join('; ')}`);
         }

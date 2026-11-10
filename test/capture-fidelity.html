@@ -159,6 +159,11 @@
         // A value a captured rule always sets is not pinned again underneath it.
         theFloorDoesNotRepeatWhatARuleSets: !/:where\(\[data-cap-s="\d+"\]\) \{[^}]*font-size: 24px/.test(css) &&
           !/:where\(\[data-cap-s="\d+"\]\) \{[^}]*border-top-left-radius: 8px/.test(css),
+        // Defaults that act on nothing are noise: no `list-style-type: disc` or `tab-size` on the frame,
+        // no `padding: 0px` or `letter-spacing: normal` pinned on a div that has them by default.
+        theFrameCarriesNoInertDefaults: !/(?:^|;)\s*(?:list-style-type|tab-size|quotes|hyphens|cursor|writing-mode|direction|font-kerning|word-break): /.test(css.slice(0, css.indexOf('@font-face'))),
+        thePinnedLayerCarriesNoInertDefaults: !(css.match(/:where\(\[data-cap-s="\d+"\]\)[^{]*\{[^}]*\}/g) ?? [])
+          .some((rule) => /(?:padding-top: 0px|max-width: none|border-top-style: none|background-color: rgba\(0, 0, 0, 0\)|vertical-align: baseline|text-indent: 0px)/.test(rule)),
         theFloorStaysLean: (css.match(/:where\(\[data-cap-s="\d+"\]\) \{[^}]*\}/g) ?? []).every((rule) => rule.split(';').length < 40),
         theVariableThatSetsTheIconFontComesAlong: /--icon-font: normal 400 16px\/1 "?ProbeIcons"?/.test(css),
       };
@@ -187,8 +192,9 @@
         card: ['padding-top', 'padding-left', 'border-top-width', 'border-top-left-radius', 'box-sizing', 'font-family', 'font-size', 'color'],
         title: ['font-size', 'color', 'margin-top', 'margin-bottom', 'font-family'],
         p: ['line-height', 'margin-top', 'margin-bottom', 'font-size', 'font-family', 'color'],
-        ul: ['padding-left', 'list-style-type', 'margin-top'],
-        li2: ['color'],
+        ul: ['padding-left', 'margin-top'],
+        // On the item, where a list style shows; on the ul it is inert and the copy leaves it out.
+        li2: ['color', 'list-style-type'],
         img: ['width', 'height'],
         thumb: ['background-image', 'width', 'background-size'],
         go: ['color', 'text-decoration-line'],

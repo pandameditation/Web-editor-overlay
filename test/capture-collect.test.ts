@@ -26,6 +26,7 @@ import {
   waapiToCss,
   type RuleNode,
 } from '../src/capture/css-text.ts';
+import { canAffect, isInitial } from '../src/capture/defaults.ts';
 
 let passed = 0;
 const failures: string[] = [];
@@ -216,6 +217,37 @@ test('long or repeated urls are written once, as custom properties', () => {
   assert.deepEqual(out.declarations, [`--cap-url-1: url("${long}")`, '--cap-url-2: url("y.png")']);
   assert.equal(out.css, '.a { background: var(--cap-url-1) } .b { background-image: var(--cap-url-1); } .c { mask: url(x.svg) } .d { list-style-image: var(--cap-url-2), var(--cap-url-2) }');
   assert.deepEqual(hoistUrls('.a { color: red }'), { css: '.a { color: red }', declarations: [] });
+});
+const styleOf = (values: Record<string, string>) => ({
+  ...values,
+  getPropertyValue: (name: string) => values[name] ?? '',
+}) as unknown as CSSStyleDeclaration;
+test('a default value is recognised as one, in the forms the CSSOM writes it', () => {
+  assert.equal(isInitial('line-height', 'normal'), true);
+  assert.equal(isInitial('font-weight', '400'), true);
+  assert.equal(isInitial('padding-top', '0px'), true);
+  assert.equal(isInitial('background-color', 'rgba(0, 0, 0, 0)'), true);
+  assert.equal(isInitial('padding-top', '4px'), false);
+  assert.equal(isInitial('list-style-type', 'square'), false);
+  assert.equal(isInitial('made-up', 'normal'), false);
+});
+test('a property is kept only where it can act on the element', () => {
+  const at = (own: Record<string, string>, parent: Record<string, string> = { display: 'block' }, tag = 'div', replaced = false) =>
+    ({ tag, style: styleOf(own), parent: styleOf(parent), replaced });
+  assert.equal(canAffect('list-style-type', at({ display: 'block' })), false);
+  assert.equal(canAffect('list-style-type', at({ display: 'list-item' }, { display: 'block' }, 'li')), true);
+  assert.equal(canAffect('justify-content', at({ display: 'block' })), false);
+  assert.equal(canAffect('justify-content', at({ display: 'flex' })), true);
+  assert.equal(canAffect('flex-grow', at({ display: 'block' }, { display: 'flex' })), true);
+  assert.equal(canAffect('flex-grow', at({ display: 'block' })), false);
+  assert.equal(canAffect('object-fit', at({ display: 'inline' }, undefined, 'img', true)), true);
+  assert.equal(canAffect('object-fit', at({ display: 'block' })), false);
+  assert.equal(canAffect('text-decoration-color', at({ textDecorationLine: 'none' } as Record<string, string>)), false);
+  // box-sizing only changes anything with padding or a border.
+  assert.equal(canAffect('box-sizing', at({ 'padding-top': '0px', 'border-top-style': 'none' })), false);
+  assert.equal(canAffect('box-sizing', at({ 'padding-top': '8px' })), true);
+  assert.equal(canAffect('tab-size', at({ whiteSpace: 'normal' } as Record<string, string>)), false);
+  assert.equal(canAffect('color', at({ display: 'block' })), true);
 });
 if (failures.length) {
   console.error(`capture-collect: ${failures.length} failed, ${passed} passed\n  ${failures.join('\n  ')}`);
