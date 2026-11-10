@@ -4,7 +4,7 @@ import { waapiToCss } from './css-text.js';
  * Script-started animations (`element.animate(...)`) turned into CSS on the copy.
  *
  * Only plain `Animation`s: CSS animations and transitions already come along with their rules.
- * Each one marks its element's clone with `data-heo-anim="n"` and adds a rule playing the
+ * Each one marks its element's clone with `data-cap-anim="n"` and adds a rule playing the
  * converted keyframes on it. Animations that finished without `fill` are gone by the time the
  * user picks, so an entrance animation driven that way is only kept while it is still running or
  * filled.
@@ -34,8 +34,8 @@ export function collectWaapi(root: Element, map: Map<Element, Element>): { css: 
       fill: timing.fill,
       easing: timing.easing,
     });
-    copy.setAttribute('data-heo-anim', String(count));
-    parts.push(converted.keyframes, `[data-heo-anim="${count}"] { animation: ${converted.animation}; }`);
+    copy.setAttribute('data-cap-anim', String(count));
+    parts.push(converted.keyframes, `[data-cap-anim="${count}"] { animation: ${converted.animation}; }`);
   }
   return { css: parts.join('\n'), count };
 }

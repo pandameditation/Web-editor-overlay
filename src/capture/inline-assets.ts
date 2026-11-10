@@ -1,5 +1,6 @@
 import { rewriteCssUrls } from '../core/css-urls.js';
 import { srcsetCandidates } from '../core/srcset.js';
+import { sniffMime } from './css-text.js';
 import type { CaptureHost } from './host.js';
 
 /**
@@ -20,7 +21,7 @@ export interface CssParts {
 
 type Visit = (url: string, rank: number) => string | null;
 
-const EMBEDDABLE = /^(?:https?|blob):/i;
+const EMBEDDABLE = /^(?:https?|blob|file):/i;
 const SVG_IMAGE = new Set(['image', 'feimage']);
 
 export function visitAssetUrls(clone: Element, css: CssParts, visit: Visit): CssParts {
@@ -90,7 +91,7 @@ export async function fetchAssets(urls: string[], host: CaptureHost, perAssetCap
       const result = await host.fetchAsset(url, perAssetCap);
       // base64 is 4/3 of the bytes, so the cap is checked on the encoded length.
       if (result && 'base64' in result && result.base64.length * 0.75 <= perAssetCap) {
-        data.set(url, `data:${result.mime};base64,${result.base64}`);
+        data.set(url, `data:${sniffMime(result.base64, result.mime)};base64,${result.base64}`);
       } else {
         remote.push(url);
         if (result && 'error' in result && result.error === 'needs-permission') needsHostPermission = true;

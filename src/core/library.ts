@@ -126,9 +126,23 @@ export class BlockLibrary {
         this.#droppedLegacy.push(String(block.name || block.id || 'unnamed block'));
         continue;
       }
-      const id = slugify(block.id || block.name);
+      let id = slugify(block.id || block.name);
       if (!id) continue;
-      if (!options.overwrite && this.#blocks.has(id)) continue;
+      if (!options.overwrite && this.#blocks.has(id)) {
+        /*
+         * A taken id means "already here" for authored blocks, which share ids on purpose across
+         * pages. A capture is different: every capture is a new component, and seeds from the
+         * extension's first build all carried the id `captured`, so after one import every later
+         * capture was skipped as a duplicate. A captured block is skipped only when it really is
+         * the same one; otherwise it comes in under an id of its own.
+         */
+        const captured = block.origin === 'captured' || Boolean(block.capture);
+        if (!captured) continue;
+        const same = [...this.#blocks.values()].some((existing) =>
+          existing.html === block.html && (existing.css ?? '') === (block.css ?? ''));
+        if (same) continue;
+        id = this.uniqueId(block.name || id, (candidate) => this.hasCSS(candidate));
+      }
       const next: LibraryBlock = { ...block, id, origin: block.origin ?? 'imported' };
       this.#blocks.set(id, next);
       this.#noteOrigin(next);

@@ -10,7 +10,8 @@ import { captureElement, type CaptureResult } from './output.js';
  * captured on window and stopped, so the page reacts to none of them (a picked link does not
  * navigate, a menu does not open); wheel is passive and only stopped, so the page still scrolls.
  *
- * Arrows walk the tree (up: parent, down: first child, left/right: siblings), Enter or a click
+ * Arrows walk the tree (up: parent, down: back to where you came up from, else the first child;
+ * left/right: siblings), Enter or a click
  * captures, Escape leaves. Injecting the script a second time toggles the picker off.
  */
 
@@ -93,6 +94,30 @@ export function startPicker(host: CaptureHost): PickerHandle | null {
     draw();
   };
 
+  /*
+   * The way back down, as in HEO's own arrow navigation. Going up to see whether the parent is the
+   * better pick and then down again used to land on the parent's first child, not on the element
+   * you came from. Each step up remembers where it came from; a step down returns there while that
+   * element is still inside the target. Pointing somewhere or stepping sideways starts afresh.
+   */
+  let trail: Element[] = [];
+  const up = (): void => {
+    const parent = target?.parentElement ?? null;
+    if (!target || !parent || parent === document.documentElement) return;
+    trail.push(target);
+    select(parent);
+  };
+  const down = (): void => {
+    const back = trail[trail.length - 1];
+    if (target && back && back !== target && back.isConnected && target.contains(back)) {
+      trail.pop();
+      select(back);
+      return;
+    }
+    trail = [];
+    select(target?.firstElementChild ?? null);
+  };
+
   const pick = (x: number, y: number): Element | null =>
     document.elementsFromPoint(x, y).find((hit) => hit !== element && hit !== document.documentElement) ?? null;
 
@@ -170,7 +195,9 @@ export function startPicker(host: CaptureHost): PickerHandle | null {
     if (event.type !== 'wheel' && event.cancelable) event.preventDefault();
     if (event.type === 'pointermove') {
       const move = event as PointerEvent;
-      select(pick(move.clientX, move.clientY));
+      const hit = pick(move.clientX, move.clientY);
+      if (hit && hit !== target) trail = [];
+      select(hit);
     } else if (event.type === 'click') {
       const click = event as MouseEvent;
       select(pick(click.clientX, click.clientY) ?? target);
@@ -179,10 +206,15 @@ export function startPicker(host: CaptureHost): PickerHandle | null {
       const key = (event as KeyboardEvent).key;
       if (key === 'Escape') stop();
       else if (key === 'Enter') capture();
-      else if (key === 'ArrowUp') select(target?.parentElement ?? null);
-      else if (key === 'ArrowDown') select(target?.firstElementChild ?? null);
-      else if (key === 'ArrowLeft') select(target?.previousElementSibling ?? null);
-      else if (key === 'ArrowRight') select(target?.nextElementSibling ?? null);
+      else if (key === 'ArrowUp') up();
+      else if (key === 'ArrowDown') down();
+      else if (key === 'ArrowLeft') {
+        trail = [];
+        select(target?.previousElementSibling ?? null);
+      } else if (key === 'ArrowRight') {
+        trail = [];
+        select(target?.nextElementSibling ?? null);
+      }
     }
   };
   const onScroll = (): void => draw();

@@ -1,7 +1,8 @@
 import { encodeSeedJson } from '../core/seed-codec.js';
 import type { DesignSystemDocument, LibraryBlock } from '../core/types.js';
 import { collectRules } from './collect.js';
-import { readContext } from './context.js';
+import { FRAME_ATTR, readContext } from './context.js';
+import { pinRendered } from './pin.js';
 import { serializeRuleTree, styleNodesIn } from './css-text.js';
 import type { CaptureHost } from './host.js';
 import { applyAssets, fetchAssets, listAssetUrls, type CssParts } from './inline-assets.js';
@@ -51,6 +52,13 @@ function blockName(root: Element): string {
   return `${short} — ${hostname}`.slice(0, 60);
 }
 
+/** `captured-<label>-<time><random>`: readable, and unique per capture. */
+function captureId(root: Element): string {
+  const label = (root.classList[0] || root.localName).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 24);
+  const stamp = Date.now().toString(36) + Math.floor(Math.random() * 36 ** 3).toString(36).padStart(3, '0');
+  return `captured-${label || 'block'}-${stamp}`;
+}
+
 /** No closing tag inside the style element, whatever a string in the CSS says. */
 const styleText = (css: string): string => css.replace(/<\/style/gi, '<\\/style');
 
@@ -62,12 +70,19 @@ export async function captureElement(root: Element, options: CaptureOptions): Pr
   const collected = await collectRules(root, options.host);
   const context = readContext(root, collected.kept);
   const keptText = serializeRuleTree(collected.kept);
-  const { clone, map } = cloneFlattened(root, { cssText: keptText });
+  const { clone: picked, map } = cloneFlattened(root, { cssText: keptText });
   const waapi = collectWaapi(root, map);
+  // Read before anything else changes on the page: the floor is what was on screen at the pick.
+  const pinned = pinRendered(root, map, collected.stateful);
+  // The frame stands in for the source parent; it is the block root HEO puts the bare values on.
+  const clone = root.ownerDocument.createElement('div');
+  clone.setAttribute(FRAME_ATTR, '');
+  clone.append(picked);
   const bare = [...context.declarations, ...collected.variables];
   const parts: CssParts = {
     fonts: serializeRuleTree(collected.dependencies),
-    rules: [keptText, waapi.css].filter(Boolean).join('\n'),
+    // The floor first: every captured rule comes later and weighs at least as much, so it wins.
+    rules: [pinned.css, keptText, waapi.css].filter(Boolean).join('\n'),
   };
 
   const warnings = [...context.warnings];
@@ -80,7 +95,8 @@ export async function captureElement(root: Element, options: CaptureOptions): Pr
   const remote = [...fetched.remote];
 
   const block: LibraryBlock = {
-    id: 'captured',
+    // Every capture is its own component: a shared id made imports skip all but the first.
+    id: captureId(root),
     name: blockName(root),
     kind: 'component',
     category: 'Captured',
@@ -152,7 +168,7 @@ export async function captureElement(root: Element, options: CaptureOptions): Pr
     seed: output.seed,
     html: output.html,
     stats: {
-      elements: 1 + clone.querySelectorAll('*').length,
+      elements: 1 + picked.querySelectorAll('*').length,
       rules: styleNodesIn(collected.kept).length + waapi.count,
       assets: embedded.size,
       bytes: output.bytes,

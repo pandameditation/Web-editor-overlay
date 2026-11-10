@@ -406,9 +406,16 @@ export function renameFontFamilies(
  * which only touches whole top-level identifiers.
  */
 function renameInCustomProperty(value: string, renames: CapturedRenames): string {
+  /*
+   * A variable can hold a whole `font` shorthand, which is how icon kits set their face
+   * (`--fa-font-solid: normal 900 1em/1 "Font Awesome 6 Free"`, used as `font: var(--fa-font-solid)`).
+   * Read as a bare family list its first family is not at the start, so it was left unrenamed and
+   * the icons pointed at a face the paste no longer had. The first segment is tried as a shorthand too.
+   */
   return splitTopLevelOn(value, ',')
-    .map((segment) => {
-      const family = renameFontFamilies(segment, renames.fonts);
+    .map((segment, index) => {
+      let family = renameFontFamilies(segment, renames.fonts);
+      if (family === segment && index === 0) family = renameFontFamilies(segment, renames.fonts, true);
       return family !== segment ? family : renameAnimationNames(segment, renames.keyframes);
     })
     .join(',');

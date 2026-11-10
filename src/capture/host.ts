@@ -93,15 +93,26 @@ export function extensionHost(): CaptureHost {
       return null;
     }
   };
+  /*
+   * Cross-origin URLs are tried from the page first. CDNs (cdnjs, jsDelivr, unpkg, Google Fonts)
+   * answer `Access-Control-Allow-Origin: *`, so their stylesheets and fonts can be read without
+   * the optional host permission. Before, they all went to the background, which cannot fetch
+   * them without that permission: a site's whole icon-font sheet was lost unless the user had
+   * found the "Allow other sites" button.
+   */
+  const ok = <T extends object>(result: T | { error: string } | null): result is T =>
+    result !== null && !('error' in result);
   return {
-    fetchAsset: (url, max = PER_ASSET_CAP) =>
-      isLocal(url)
-        ? local.fetchAsset(url, max)
-        : send<AssetResult>({ type: 'heo-capture:fetch', url, as: 'base64', max }),
-    fetchText: (url) =>
-      isLocal(url)
-        ? local.fetchText(url)
-        : send<TextResult>({ type: 'heo-capture:fetch', url, as: 'text', max: TEXT_CAP }),
+    fetchAsset: async (url, max = PER_ASSET_CAP) => {
+      const direct = await local.fetchAsset(url, max);
+      if (isLocal(url) || ok(direct) || (direct && 'error' in direct && direct.error === 'too-large')) return direct;
+      return send<AssetResult>({ type: 'heo-capture:fetch', url, as: 'base64', max });
+    },
+    fetchText: async (url) => {
+      const direct = await local.fetchText(url);
+      if (isLocal(url) || ok(direct)) return direct;
+      return send<TextResult>({ type: 'heo-capture:fetch', url, as: 'text', max: TEXT_CAP });
+    },
     requestHosts: () => {
       void send({ type: 'heo-capture:request-hosts' });
     },

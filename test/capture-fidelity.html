@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>A captured card looks the same pasted into a page with its own CSS</title>
+  <style>
+    #source {
+      width: 1000px;
+      height: 900px;
+      border: 0;
+      display: block;
+    }
+  </style>
+</head>
+
+<body>
+  <main id="stage">
+    <p id="page-para">Page paragraph</p>
+  </main>
+  <iframe id="source" title="source page"></iframe>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    /*
+     * The user report: "it doesn't look like it did in its original context once pasted. Icon fonts
+     * were not transferred, sizes look off, the background is not kept." A typical site card has
+     * every cause of that at once:
+     *   - its rules hang off ancestors that do not come along (`.page .grid > .card`, `html.theme`);
+     *   - the root font size is 10px and everything is in rem;
+     *   - it is see-through, painted over the body's dark background;
+     *   - its width comes from a three-column grid;
+     *   - its icon is an icon font set through `font: var(--icon-font)` on `::before`, with the
+     *     variable defined on :root;
+     *   - its grid placement and an `@media` rule must still respond after the paste.
+     * The paste target is hostile in the ordinary ways: 62.5% root, border-box everywhere,
+     * reset margins and lists, its own font, colour and line height, `img { height: auto }`.
+     */
+    const SOURCE = `<!doctype html><html class="theme"><head><meta charset="utf-8"><style>
+      html { font-size: 10px; }
+      body { margin: 0; background: rgb(30, 40, 60); color: rgb(240, 240, 240); font-family: Verdana, sans-serif; font-size: 1.4rem; }
+      @font-face { font-family: "ProbeIcons"; src: url(nested/probe.woff2) format("woff2"); }
+      :root { --icon-font: normal 400 1.6rem/1 "ProbeIcons"; }
+      .page .band { padding: 2rem; }
+      .page .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
+      .page .grid > .card { padding: 1.2rem; border-radius: 0.8rem; background: none; border: 1px solid rgb(90, 100, 120); }
+      html.theme .card .title { font-size: 2.4rem; color: rgb(255, 200, 0); margin: 0 0 0.6rem; }
+      .page .card p { line-height: 1.5; margin: 0 0 1rem; }
+      .page .card li:nth-child(2) { color: rgb(0, 200, 120); }
+      .page .card ul { padding-left: 2rem; margin: 0; }
+      .ico::before { font: var(--icon-font); content: "\\e900"; }
+      .page .card img { width: 4.8rem; height: 4.8rem; display: block; }
+      .page .card .go { color: rgb(120, 180, 255); text-decoration: none; }
+      .page .card .go:hover { text-decoration: underline; }
+      @media (max-width: 600px) {
+        .page .grid { grid-template-columns: 1fr; }
+        .page .grid > .card { padding: 0.6rem; }
+      }
+    </style></head><body>
+      <div class="page"><section class="band"><div class="grid">
+        <article class="card" data-probe="card">
+          <h3 class="title" data-probe="title">Card title</h3>
+          <i class="ico" data-probe="ico"></i>
+          <p data-probe="p">Some body text for the card.</p>
+          <ul data-probe="ul"><li>one</li><li data-probe="li2">two</li></ul>
+          <img data-probe="img" alt="" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=">
+          <a class="go" data-probe="go" href="#x">Read more</a>
+        </article>
+        <article class="card"><h3 class="title">Two</h3></article>
+        <article class="card"><h3 class="title">Three</h3></article>
+      </div></section></div>
+      <script src="../dist/heo-capture.js"><\/script>
+    </body></html>`;
+
+    /* What HEO pages commonly carry. Nothing here may change how the pasted card looks. */
+    const HOSTILE = `
+      html { font-size: 62.5%; }
+      *, *::before, *::after { box-sizing: border-box; }
+      body { margin: 0; background: rgb(255, 255, 255); color: rgb(17, 17, 17); font-family: monospace; line-height: 2; }
+      h3 { margin: 2rem 0; font-size: 3rem; color: rgb(0, 0, 0); }
+      p { margin: 1.5rem 0; line-height: 1.2; }
+      ul { padding: 0; list-style: none; }
+      img { max-width: 100%; height: auto; }
+      a { color: rgb(255, 0, 0); text-decoration: underline; }
+      i { font-style: normal; }
+    `;
+
+    (async () => {
+      const results = {};
+      const diagnostics = {};
+      const errors = [];
+      addEventListener('error', (event) => errors.push('error: ' + event.message));
+      addEventListener('unhandledrejection', (event) => errors.push('rejection: ' + String(event.reason)));
+      const progress = document.getElementById('progress');
+      const step = (name) => { progress.textContent = name; };
+      const frames = (win = window) => new Promise((resolve) =>
+        win.requestAnimationFrame(() => win.requestAnimationFrame(resolve)));
+      async function until(predicate, limit = 200) {
+        for (let n = 0; n < limit; n += 1) {
+          if (predicate()) return true;
+          await frames();
+        }
+        return false;
+      }
+      const pasteText = (target, text) => {
+        const clipboard = new DataTransfer();
+        clipboard.setData('text/plain', text);
+        const event = new ClipboardEvent('paste', { bubbles: true, cancelable: true, composed: true, clipboardData: clipboard });
+        if (event.clipboardData && event.clipboardData.getData('text/plain') !== text) {
+          event.clipboardData.setData('text/plain', text);
+        }
+        return target.dispatchEvent(event);
+      };
+
+      step('source');
+      const frame = document.getElementById('source');
+      const loaded = new Promise((resolve) => frame.addEventListener('load', resolve, { once: true }));
+      frame.srcdoc = SOURCE;
+      await loaded;
+      const win = frame.contentWindow;
+      const sdoc = frame.contentDocument;
+      await until(() => win.HeoCapture);
+      const HeoCapture = win.HeoCapture;
+      const root = sdoc.querySelector('.card');
+
+      step('capture');
+      const capture = await HeoCapture.captureElement(root, { host: HeoCapture.pageHost() });
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark', detectScriptContent: false, fileName: 'capture-fidelity.html', presets: false });
+      const engine = api.engine;
+      const stage = document.getElementById('stage');
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+      const decoded = await engine.decodeSeedText(capture.seed);
+      const block = decoded?.blocks?.[0] ?? { html: '', css: '' };
+      const css = block.css ?? '';
+      const html = block.html ?? '';
+      diagnostics.stats = capture.stats;
+      diagnostics.warnings = capture.warnings;
+
+      step('captured-css');
+      results.capturedCss = {
+        // `.page .grid > .card` would never match again after paste; as `.card` it does.
+        ancestorCompoundsAreTakenOff: /(^|\n)\.card \{[^}]*border-top-left-radius|(^|\n)\.card \{[^}]*border-radius/.test(css) &&
+          !css.includes('.page') && !css.includes('html.theme'),
+        aMediaRuleIsRebasedToo: /@media \(max-width: 600px\) \{[\s\S]*?\n\.card \{ padding: 6px; \}/.test(css),
+        // nth-child inside the pick still selects the same element, so it survives rebasing.
+        anNthChildInsideThePickSurvives: /(^|\n)\.card li:nth-child\(2\) \{/.test(css),
+        remIsWrittenAsSourcePixels: !/\d(?:\.\d+)?rem\b/.test(css.replace(/@media[^{]*/g, '')),
+        theIconFontIsEmbeddedAsAFont: /@font-face \{[^}]*ProbeIcons[^}]*url\("?data:font\/woff2;base64,/.test(css),
+        theVariableThatSetsTheIconFontComesAlong: /--icon-font: normal 400 16px\/1 "?ProbeIcons"?/.test(css),
+      };
+
+      step('markup');
+      results.markup = {
+        theCopyIsFramed: /^<div data-cap-frame=""[^>]*><article class="card"/.test(html),
+        everyElementHasAFloor: (html.match(/data-cap-s="/g) ?? []).length >= 8,
+        noEditorInternalAttributes: !/data-heo-/.test(html),
+      };
+
+      step('paste');
+      pasteText(document.getElementById('page-para'), capture.seed);
+      await until(() => engine.store.value.capturePaste);
+      const open = engine.store.value.capturePaste;
+      engine.updateCapturePaste({ anchor: { reference: stage, position: 'lastChild' } });
+      await frames();
+      const committed = open ? await engine.commitCapturePaste() : null;
+      await frames();
+      const instance = committed?.inserted ?? null;
+      const blockId = instance?.getAttribute('data-heo-block') ?? '';
+
+      const PROPS = {
+        card: ['padding-top', 'padding-left', 'border-top-width', 'border-top-left-radius', 'box-sizing', 'font-family', 'font-size', 'color'],
+        title: ['font-size', 'color', 'margin-top', 'margin-bottom', 'font-family'],
+        p: ['line-height', 'margin-top', 'margin-bottom', 'font-size', 'font-family', 'color'],
+        ul: ['padding-left', 'list-style-type', 'margin-top'],
+        li2: ['color'],
+        img: ['width', 'height'],
+        go: ['color', 'text-decoration-line'],
+      };
+      const read = (view, doc) => {
+        const out = {};
+        for (const [probe, names] of Object.entries(PROPS)) {
+          const element = doc.querySelector(`[data-probe="${probe}"]`);
+          const style = element ? view.getComputedStyle(element) : null;
+          out[probe] = Object.fromEntries(names.map((name) => [name, style?.getPropertyValue(name) ?? 'missing']));
+        }
+        const ico = doc.querySelector('[data-probe="ico"]');
+        const before = ico ? view.getComputedStyle(ico, '::before') : null;
+        out.icon = { content: before?.content ?? 'missing', 'font-size': before?.fontSize ?? 'missing' };
+        out.cardWidth = Math.round(doc.querySelector('[data-probe="card"]')?.getBoundingClientRect().width ?? 0);
+        return out;
+      };
+      async function renderPaste(width) {
+        const target = document.createElement('iframe');
+        target.style.cssText = `width: ${width}px; height: 900px; border: 0; position: absolute; left: -5000px; top: 0;`;
+        const done = new Promise((resolve) => target.addEventListener('load', resolve, { once: true }));
+        target.srcdoc = `<!doctype html><meta charset="utf-8"><style>${HOSTILE}</style><style>${engine.library.css}</style>` +
+          `<main>${instance?.outerHTML ?? ''}</main>`;
+        document.body.append(target);
+        await done;
+        await frames(target.contentWindow);
+        return target;
+      }
+      async function compareAt(width) {
+        frame.style.width = `${width}px`;
+        await frames(win);
+        await frames(win);
+        const source = read(win, sdoc);
+        const pasted = await renderPaste(width);
+        const pwin = pasted.contentWindow;
+        const pdoc = pasted.contentDocument;
+        const copy = read(pwin, pdoc);
+        const icoFamily = pwin.getComputedStyle(pdoc.querySelector('[data-probe="ico"]'), '::before').fontFamily;
+        const frameBg = pwin.getComputedStyle(pdoc.querySelector('[data-cap-frame]')).backgroundColor;
+        pasted.remove();
+        const mismatches = [];
+        for (const [probe, props] of Object.entries(source)) {
+          if (probe === 'cardWidth') continue;
+          for (const [name, value] of Object.entries(props)) {
+            if (copy[probe]?.[name] !== value) mismatches.push(`${probe} ${name}: ${value} vs ${copy[probe]?.[name]}`);
+          }
+        }
+        return { mismatches, source, copy, icoFamily, frameBg };
+      }
+      step('compare-1000');
+      const wide = await compareAt(1000);
+      step('compare-400');
+      const narrow = await compareAt(400);
+      frame.style.width = '';
+      diagnostics.mismatches = { wide: wide.mismatches, narrow: narrow.mismatches };
+      diagnostics.widths = { sourceWide: wide.source.cardWidth, pasteWide: wide.copy.cardWidth, sourceNarrow: narrow.source.cardWidth, pasteNarrow: narrow.copy.cardWidth };
+      diagnostics.icon = { family: wide.icoFamily, source: wide.source.icon, copy: wide.copy.icon };
+
+      results.paste = {
+        thePasteInsertedTheBlock: Boolean(instance) && Boolean(blockId),
+        computedStylesMatchOnAHostilePageWide: wide.mismatches.length === 0,
+        computedStylesMatchOnAHostilePageNarrow: narrow.mismatches.length === 0,
+        // The responsive rule still answers: padding drops to 6px under 600px, after the paste too.
+        theMediaRuleStillResponds: wide.copy.card['padding-top'] === '12px' && narrow.copy.card['padding-top'] === '6px',
+        // The grid made the card a third of the row; the frame keeps it that wide, not the whole page.
+        theCardKeepsItsGridWidth: Math.abs(wide.copy.cardWidth - wide.source.cardWidth) <= 2,
+        // A maximum, not a width: on a narrow page the copy still narrows.
+        theCardStillNarrows: narrow.copy.cardWidth <= 400,
+        theBackgroundItWasSeenOnComesAlong: wide.frameBg === 'rgb(30, 40, 60)',
+        theIconUsesTheEmbeddedFont: wide.icoFamily.includes(`${blockId}--ProbeIcons`) &&
+          wide.copy.icon.content === wide.source.icon.content && wide.copy.icon['font-size'] === '16px',
+      };
+
+      step('picker');
+      const handle = HeoCapture.startPicker(HeoCapture.pageHost());
+      const press = (key) => sdoc.body.dispatchEvent(new win.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+      const p = sdoc.querySelector('[data-probe="p"]');
+      const rect = p.getBoundingClientRect();
+      p.dispatchEvent(new win.PointerEvent('pointermove', { bubbles: true, composed: true, clientX: rect.left + 2, clientY: rect.top + 2 }));
+      const startedOnP = handle?.target === p;
+      press('ArrowUp');
+      const upIsTheCard = handle?.target === root;
+      press('ArrowUp');
+      press('ArrowDown');
+      press('ArrowDown');
+      const backToP = handle?.target === p;
+      press('ArrowUp');
+      press('ArrowRight');
+      press('ArrowLeft');
+      press('ArrowDown');
+      const sideStepClears = handle?.target === root.firstElementChild;
+      press('ArrowDown');
+      const noTrailFirstChild = handle?.target === root.firstElementChild.firstElementChild || handle?.target === root.firstElementChild;
+      handle?.stop();
+      results.picker = {
+        // The reported annoyance: Down after Up went to the parent's first child, not back.
+        upThenDownReturnsToWhereYouCameFrom: startedOnP && upIsTheCard && backToP && root.firstElementChild !== p,
+        aSidewaysStepStartsAFreshTrail: sideStepClears,
+        downWithNoTrailStillGoesToTheFirstChild: noTrailFirstChild,
+      };
+
+      results.page = { noUncaughtErrors: errors.length === 0 };
+      const failed = Object.entries(results)
+        .filter(([, group]) => group && typeof group === 'object')
+        .filter(([, group]) => Object.values(group).some((value) => value === false))
+        .map(([name]) => name);
+      if (failed.length) {
+        const libraryCss = engine.library.css.replace(/base64,[^)"]+/g, 'base64,…');
+        diagnostics.iconLines = [...libraryCss.matchAll(/ProbeIcons|icon-font/g)]
+          .map((match) => libraryCss.slice(Math.max(0, match.index - 160), match.index + 60));
+      }
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify({ failed, ...results, errors, diagnostics: failed.length ? diagnostics : undefined }, null, 1) + ':END';
+    })().catch((error) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"ok":false,"failed":["fatal"],"__fatal":' + JSON.stringify(String((error && error.stack) || error)) + '}:END';
+    });
+  </script>
+</body>
+
+</html>

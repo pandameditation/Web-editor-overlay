@@ -253,6 +253,21 @@ test('.body and bodyx are untouched', () => {
   assert.equal(rootSubjectsToScope('main body'), 'main body');
 });
 
+test('a variable holding a whole font shorthand gets the captured family renamed', () => {
+  // Icon kits set their face this way; unrenamed, the icons asked for a face the paste did not have.
+  const fonts = new Map([['probeicons', 'hero--ProbeIcons'], ['probe sans', 'hero--Probe Sans']]);
+  const renames = { keyframes: new Map<string, string>(), fonts };
+  assert.equal(
+    renameInDeclarations('--icon-font: normal 900 16px/1 "ProbeIcons"', renames),
+    '--icon-font: normal 900 16px/1 "hero--ProbeIcons"',
+  );
+  assert.equal(
+    renameInDeclarations("--body: italic 14px 'Probe Sans', serif", renames),
+    '--body: italic 14px "hero--Probe Sans", serif',
+  );
+  // A plain family list behaves as before.
+  assert.equal(renameInDeclarations('--font-sans: Probe Sans, sans-serif', renames), '--font-sans: "hero--Probe Sans", sans-serif');
+});
 if (failures.length) {
   console.error(`\n${failures.length} failing, ${passed} passing\n`);
   for (const failure of failures) console.error(`  ✗ ${failure}\n`);

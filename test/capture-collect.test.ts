@@ -15,8 +15,12 @@ import {
   fontFamiliesIn,
   hasContainerGroup,
   pickDependencies,
+  joinCompounds,
   preferFontSource,
+  remToPx,
   serializeRuleTree,
+  sniffMime,
+  splitCompounds,
   stripUserActionPseudos,
   waapiToCss,
   type RuleNode,
@@ -183,6 +187,28 @@ test('{{ in page text is escaped so it cannot become a block prop', () => {
   assert.equal(escapeTemplateBraces('<p>{a} {{{x}}}</p>'), '<p>{a} &#123;&#123;&#123;x}}}</p>');
 });
 
+test('a complex selector splits into compounds and combinators at the top level only', () => {
+  const split = splitCompounds('.page  >  .grid .card:hover:is(.a .b) + [title="x > y"]~p');
+  assert.deepEqual(split.compounds, ['.page', '.grid', '.card:hover:is(.a .b)', '[title="x > y"]', 'p']);
+  assert.deepEqual(split.combinators, ['>', ' ', '+', '~']);
+  assert.equal(joinCompounds(split, 2), '.card:hover:is(.a .b) + [title="x > y"] ~ p');
+  assert.equal(joinCompounds(splitCompounds('a\\ b .c'), 0), 'a\\ b .c');
+});
+test('rem lengths become source pixels, outside strings and url()', () => {
+  assert.equal(remToPx('padding: 1.2rem 0.5rem; margin: -2rem', 10), 'padding: 12px 5px; margin: -20px');
+  assert.equal(remToPx('content: "1rem"; background: url(a-1rem.png)', 10), 'content: "1rem"; background: url(a-1rem.png)');
+  // Not a rem length: part of another word or unit.
+  assert.equal(remToPx('--premium: 1; width: 3vw', 10), '--premium: 1; width: 3vw');
+  assert.equal(remToPx('font: 700 1.6rem/1 X', 16), 'font: 700 25.6px/1 X');
+});
+test('embedded bytes get their MIME type from their magic number when the server named it badly', () => {
+  assert.equal(sniffMime('d09GMgABAAAAA', 'binary/octet-stream'), 'font/woff2');
+  assert.equal(sniffMime('d09GRgABAAAAA', 'application/x-font-woff'), 'font/woff');
+  assert.equal(sniffMime('AAEAAAALAIAA', 'application/x-font-ttf'), 'font/ttf');
+  assert.equal(sniffMime('T1RUTwAJAIAA', ''), 'font/otf');
+  assert.equal(sniffMime('iVBORw0KGgoAAAA', 'application/octet-stream'), 'image/png');
+  assert.equal(sniffMime('PHN2ZyB4bWxucz0', 'image/svg+xml'), 'image/svg+xml');
+});
 if (failures.length) {
   console.error(`capture-collect: ${failures.length} failed, ${passed} passed\n  ${failures.join('\n  ')}`);
   process.exit(1);

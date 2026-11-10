@@ -392,3 +392,157 @@ export function preferFontSource(fontFace: string): string {
     return `${lead}${chosen}`;
   });
 }
+
+/* -------------------------------------------------------------------------- */
+/* Rebasing selectors onto the picked element                                 */
+/* -------------------------------------------------------------------------- */
+
+export interface ComplexSelector {
+  /** Compound selectors, left to right (`.page`, `.card:hover`). */
+  compounds: string[];
+  /** The combinator before each compound after the first: ' ', '>', '+' or '~'. */
+  combinators: string[];
+}
+
+/**
+ * One complex selector as compounds and combinators, at the top level only.
+ *
+ * `.page > .card :is(.a .b)` is three compounds; the descendant space inside `:is()` belongs to
+ * the third. Strings, attribute brackets and escapes are skipped over, so `[title="a > b"]` stays
+ * one compound. Used to drop the compounds that matched outside the picked element: on the source
+ * page `.page .card` matched because `.page` was an ancestor, and after paste `.page` is gone.
+ */
+export function splitCompounds(selector: string): ComplexSelector {
+  const compounds: string[] = [];
+  const combinators: string[] = [];
+  let current = '';
+  let pending: string | null = null;
+  let at = 0;
+  const text = selector.trim();
+  const flush = (): void => {
+    if (!current) return;
+    if (compounds.length) combinators.push(pending ?? ' ');
+    compounds.push(current);
+    current = '';
+    pending = null;
+  };
+  while (at < text.length) {
+    const ch = text[at];
+    if (ch === '"' || ch === "'") {
+      const end = skipString(text, at);
+      current += text.slice(at, end);
+      at = end;
+      continue;
+    }
+    if (ch === '\\') {
+      current += text.slice(at, at + 2);
+      at += 2;
+      continue;
+    }
+    if (ch === '(') {
+      const end = skipParens(text, at);
+      current += text.slice(at, end);
+      at = end;
+      continue;
+    }
+    if (ch === '[') {
+      let end = at + 1;
+      while (end < text.length && text[end] !== ']') {
+        end = text[end] === '"' || text[end] === "'" ? skipString(text, end) : end + 1;
+      }
+      current += text.slice(at, end + 1);
+      at = end + 1;
+      continue;
+    }
+    if (/\s/.test(ch) || ch === '>' || ch === '+' || ch === '~') {
+      // Whitespace alone is the descendant combinator; a `>`, `+` or `~` around it wins.
+      flush();
+      if (!/\s/.test(ch)) pending = ch;
+      at += 1;
+      continue;
+    }
+    current += ch;
+    at += 1;
+  }
+  flush();
+  return { compounds, combinators };
+}
+
+/** The selector made of compounds `from` onwards, with their combinators. */
+export function joinCompounds(selector: ComplexSelector, from = 0): string {
+  let out = selector.compounds[from] ?? '';
+  for (let index = from + 1; index < selector.compounds.length; index += 1) {
+    const combinator = selector.combinators[index - 1] ?? ' ';
+    out += combinator === ' ' ? ` ${selector.compounds[index]}` : ` ${combinator} ${selector.compounds[index]}`;
+  }
+  return out;
+}
+
+/** Split a selector list on its top-level commas. */
+export function splitSelectorList(selector: string): string[] {
+  return splitTopLevelCommas(selector);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Units and bytes                                                             */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `rem` lengths as pixels at the source page's root font size.
+ *
+ * A `rem` means the root font size of whatever page it lands on, and HEO pages set their own
+ * (`62.5%` is common), so a captured `1.5rem` came out at a different size. Written as pixels it
+ * means what it meant on the source. Strings and `url()` are left alone. Media query preludes are
+ * not passed through here: a `rem` in a media query is always the initial 16px.
+ */
+export function remToPx(text: string, rootPx: number): string {
+  if (!/rem\b/i.test(text) || !(rootPx > 0)) return text;
+  let out = '';
+  let at = 0;
+  while (at < text.length) {
+    const ch = text[at];
+    if (ch === '"' || ch === "'") {
+      const end = skipString(text, at);
+      out += text.slice(at, end);
+      at = end;
+      continue;
+    }
+    if (/^url\(/i.test(text.slice(at, at + 4))) {
+      const end = skipParens(text, at + 3);
+      out += text.slice(at, end);
+      at = end;
+      continue;
+    }
+    const number = /^([-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?)rem(?![\w-])/i.exec(text.slice(at));
+    if (number && (at === 0 || !/[\w.-]/.test(text[at - 1]))) {
+      const px = Math.round(parseFloat(number[1]) * rootPx * 1000) / 1000;
+      out += `${px}px`;
+      at += number[0].length;
+      continue;
+    }
+    out += ch;
+    at += 1;
+  }
+  return out;
+}
+
+/**
+ * The MIME type of embedded bytes, read from their first bytes when the server's answer is useless.
+ *
+ * Fonts are where this matters: CDNs and S3 buckets serve woff2 as `binary/octet-stream`,
+ * `application/x-font-woff2` and other names no sanitiser can allow-list, and an icon font
+ * embedded under one of them was refused on paste and the icons fell back to boxes.
+ */
+export function sniffMime(base64: string, declared: string): string {
+  const head = base64.slice(0, 16);
+  if (head.startsWith('d09GMg')) return 'font/woff2';
+  if (head.startsWith('d09GRg')) return 'font/woff';
+  if (head.startsWith('T1RUTw')) return 'font/otf';
+  if (head.startsWith('AAEAAA') || head.startsWith('dHJ1ZQ')) return 'font/ttf';
+  if (head.startsWith('iVBORw0KGgo')) return 'image/png';
+  if (head.startsWith('/9j/')) return 'image/jpeg';
+  if (head.startsWith('R0lGOD')) return 'image/gif';
+  const type = declared.toLowerCase();
+  if (head.startsWith('UklGR') && !type.startsWith('image/')) return 'image/webp';
+  return declared || 'application/octet-stream';
+}

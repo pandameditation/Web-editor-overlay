@@ -378,6 +378,32 @@
       engine.cancelCapturePaste();
       await frames();
 
+      /* ------------------------------------------------------------------ */
+      /* importing captures one after another                                 */
+      /* ------------------------------------------------------------------ */
+      step('import-twice');
+      // The reported bug: every capture seed carried the id `captured`, so the second import said
+      // "Nothing new … everything was already here" and the new component never arrived.
+      const capturedBlock = (text) => ({
+        id: 'captured', name: 'Captured card', kind: 'component', category: 'Captured', origin: 'captured',
+        html: `<p class="cap">${text}</p>`, css: '.cap { color: rgb(9, 9, 9); }', capture: CAPTURE,
+      });
+      const capturedIds = () => engine.library.list().filter((block) => block.origin === 'captured').map((block) => block.id);
+      const beforeImports = capturedIds().length;
+      await engine.importDesignSystemText(toSeed(docOf([capturedBlock('First')])));
+      const afterFirst = capturedIds();
+      await engine.importDesignSystemText(toSeed(docOf([capturedBlock('Second')])));
+      const afterSecond = capturedIds();
+      await engine.importDesignSystemText(toSeed(docOf([capturedBlock('Second')])));
+      const afterRepeat = capturedIds();
+      const htmlOf = (id) => engine.library.get(id)?.html ?? '';
+      results.importTwice = {
+        aSecondDifferentCaptureIsImported: afterFirst.length === beforeImports + 1 && afterSecond.length === beforeImports + 2 &&
+          afterSecond.some((id) => htmlOf(id).includes('First')) && afterSecond.some((id) => htmlOf(id).includes('Second')),
+        // Still not a duplicate when it really is the same capture.
+        theSameCaptureTwiceIsNotDuplicated: afterRepeat.length === afterSecond.length,
+      };
+
       results.page = { noUncaughtErrors: errors.length === 0 };
 
       const failed = Object.entries(results)

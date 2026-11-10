@@ -35,7 +35,7 @@
         .grid { grid-template-columns: 1fr; }
         .row { flex-direction: column; }
       }
-      .card { font-size: 20px; padding-top: 6px; }
+      .card { font-size: 20px; padding-top: 6px; margin-bottom: 0.5rem; }
       @container (max-width: 500px) { .card { font-size: 12px; } }
       .btn { background-color: rgb(0, 0, 255); padding: 4px; }
       .btn:hover { background-color: rgb(255, 0, 0); }
@@ -189,21 +189,22 @@
         inheritedColourAndFontReachTheRoot: bareText.includes('color: rgb(20, 30, 40)') && bareText.includes('font-family: Georgia, serif'),
         containerTypeIsAdded: bareText.includes('container-type: inline-size'),
         noFixedWidthIsSet: !/(^|[;\s])(?:width|min-width|max-width)\s*:/.test(bareText),
-        remWarningOnlyWhenRootFontIsNot16px: !capture.warnings.some((w) => /root font size/.test(w)) &&
-          remCapture.warnings.some((w) => /root font size is 20px/.test(w)),
+        // rem means the paste target's root size, so it is written as the source's pixels instead.
+        remIsWrittenAsSourcePixels: /\.card \{[^}]*margin-bottom: 8px/.test(capture.html) &&
+          /\.card \{[^}]*margin-bottom: 10px/.test(remCapture.html) && !/\.card \{[^}]*rem/.test(remCapture.html),
       };
 
       step('waapi');
       results.waapi = {
         aWaapiAnimationBecomesKeyframes: css.includes('@keyframes heo-waapi-1') &&
-          /\[data-heo-anim="1"\] \{ animation: heo-waapi-1 100000ms linear 0ms infinite/.test(css) &&
-          /class="waapi"[^>]*data-heo-anim="1"|data-heo-anim="1"[^>]*class="waapi"/.test(html),
+          /\[data-cap-anim="1"\] \{ animation: heo-waapi-1 100000ms linear 0ms infinite/.test(css) &&
+          /class="waapi"[^>]*data-cap-anim="1"|data-cap-anim="1"[^>]*class="waapi"/.test(html),
       };
 
       step('markup');
       results.markup = {
         shadowContentIsFlattened: html.includes('class="inner"') && !/<style/i.test(html),
-        slotContentIsInlined: /class="inner">Inner <span class="slotted">Slotted text<\/span>/.test(html) && !/<slot/i.test(html),
+        slotContentIsInlined: /class="inner"[^>]*>Inner <span class="slotted"[^>]*>Slotted text<\/span>/.test(html) && !/<slot/i.test(html),
         useIsReplacedBySymbolCopy: !/<use/i.test(html) && html.includes('icon-rect') && /<svg[^>]*viewBox="0 0 16 16"/.test(html),
         noScriptsOrHandlers: !/<script/i.test(html) && !/onclick/i.test(html) && !html.includes('leak'),
         typedValueIsKept: /class="field"[^>]*value="typed"|value="typed"[^>]*class="field"/.test(html),

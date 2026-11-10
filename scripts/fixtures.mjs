@@ -65,6 +65,7 @@ export const FIXTURES = [
   { page: 'test/css-paste.html', budget: 45000, weight: 2800, fast: true },
   { page: 'test/capture-paste.html', budget: 60000, weight: 3000, fast: true },
   { page: 'test/capture-roundtrip.html', budget: 60000, weight: 4000 },
+  { page: 'test/capture-fidelity.html', budget: 60000, weight: 4000 },
   { page: 'test/opaque-origin.html', budget: 45000, strict: true, weight: 3000 },
   { page: 'test/link-newtab.html', budget: 45000, weight: 3000 },
   { page: 'test/element-clipboard.html', budget: 45000, weight: 2500 },

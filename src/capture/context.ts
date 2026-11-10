@@ -1,66 +1,53 @@
 import { hasContainerGroup, type RuleNode } from './css-text.js';
 
 /**
- * What the picked element got from outside itself, written so it travels with the copy.
+ * What the picked element got from its surroundings, carried by a frame around the copy.
  *
- * An element inherits its colour and font from `body` and further up, and those rules are not
- * kept (they do not match the element). The values that reach it are therefore read from its
- * parent and emitted as bare declarations, which HEO applies to the block root. Only the ones that
- * differ from a fresh document's defaults: a `color: rgb(0, 0, 0)` that is merely the default is
- * the paste target's business.
+ * The copy is wrapped in `<div data-cap-frame>`, which becomes the pasted block's root and stands
+ * in for the source parent. HEO applies the bare declarations returned here to it:
+ *
+ * - every inherited value the parent passed down, whatever it is. Leaving out the ones that equal
+ *   a blank page's defaults (as this used to) assumed the paste target is a blank page; a dark HEO
+ *   page then turned black source text white;
+ * - the background the element was seen on, when the element is see-through itself. Backgrounds do
+ *   not inherit, so a white card on a dark band pasted as a white card on nothing;
+ * - its rendered width as a `max-width`, when the parent's layout decided it (a card in a
+ *   three-column grid). The frame is a plain block, and without it the card filled the whole row.
+ *   A maximum, not a width, so the copy still narrows;
+ * - `container-type`, when a kept rule is an `@container` query: the source's container stays
+ *   behind, and the frame (an ancestor of the copy, as the container was) answers instead.
  */
+export const FRAME_ATTR = 'data-cap-frame';
+
 const INHERITED = [
-  'color',
-  'font-family',
-  'font-size',
-  'font-style',
-  'font-weight',
-  'line-height',
-  'letter-spacing',
-  'word-spacing',
-  'text-align',
-  'text-transform',
-  'white-space',
-  'direction',
-  'writing-mode',
+  'color', 'font-family', 'font-size', 'font-style', 'font-weight', 'font-stretch', 'font-variant-caps',
+  'font-variant-ligatures', 'font-feature-settings', 'font-variation-settings', 'font-kerning',
+  'line-height', 'letter-spacing', 'word-spacing', 'text-align', 'text-indent', 'text-transform',
+  'text-shadow', 'text-rendering', '-webkit-font-smoothing', 'white-space', 'word-break', 'overflow-wrap',
+  'hyphens', 'tab-size', 'list-style-type', 'list-style-position', 'quotes', 'cursor', 'visibility',
+  'direction', 'writing-mode', 'color-scheme', 'accent-color', 'caret-color', 'fill', 'stroke',
 ];
 
-/** What a default element looks like, when no reference frame can be made. */
-const FALLBACK: Record<string, string> = {
-  color: 'rgb(0, 0, 0)',
-  'font-size': '16px',
-  'font-style': 'normal',
-  'font-weight': '400',
-  'line-height': 'normal',
-  'letter-spacing': 'normal',
-  'word-spacing': '0px',
-  'text-align': 'start',
-  'text-transform': 'none',
-  'white-space': 'normal',
-  direction: 'ltr',
-  'writing-mode': 'horizontal-tb',
+const seeThrough = (value: string): boolean => {
+  const text = value.replace(/\s+/g, '');
+  return text === 'transparent' || /^rgba\(\d+,\d+,\d+,0(?:\.0+)?\)$/.test(text);
 };
 
-function referenceStyle(doc: Document): Record<string, string> {
-  const frame = doc.createElement('iframe');
-  frame.style.cssText = 'position: fixed; width: 0; height: 0; border: 0; visibility: hidden;';
-  try {
-    doc.documentElement.append(frame);
-    const inner = frame.contentDocument;
-    const view = frame.contentWindow;
-    if (!inner?.body || !view) return FALLBACK;
-    const probe = inner.createElement('div');
-    inner.body.append(probe);
-    const style = view.getComputedStyle(probe);
-    return Object.fromEntries(INHERITED.map((name) => [name, style.getPropertyValue(name)]));
-  } catch {
-    return FALLBACK;
-  } finally {
-    frame.remove();
+/** The background colour the element was painted over: the nearest ancestor's that is not clear. */
+function backdrop(start: Element | null, view: Window): string {
+  for (let element = start; element;) {
+    const color = view.getComputedStyle(element).backgroundColor;
+    if (color && !seeThrough(color)) return color;
+    const own = element.getRootNode();
+    element = element.parentElement ?? (own instanceof ShadowRoot ? own.host : null);
   }
+  // Nothing painted: the canvas, which is white unless the page asks for a dark scheme.
+  const scheme = view.getComputedStyle(start?.ownerDocument.documentElement ?? document.documentElement).colorScheme;
+  return /^dark\b/.test(scheme ?? '') ? 'rgb(18, 18, 18)' : 'rgb(255, 255, 255)';
 }
 
 export interface CaptureContext {
+  /** Bare declarations for the frame. */
   declarations: string[];
   viewport: number;
   warnings: string[];
@@ -73,22 +60,35 @@ export function readContext(root: Element, kept: RuleNode[]): CaptureContext {
   const own = root.getRootNode();
   const parent = root.parentElement ?? (own instanceof ShadowRoot ? own.host : null);
   if (parent) {
-    const reference = referenceStyle(doc);
     const style = view.getComputedStyle(parent);
     for (const name of INHERITED) {
       const value = style.getPropertyValue(name);
-      if (value && value !== reference[name]) declarations.push(`${name}: ${value}`);
+      if (value) declarations.push(`${name}: ${value}`);
+    }
+  }
+
+  const rootStyle = view.getComputedStyle(root);
+  if (seeThrough(rootStyle.backgroundColor) && rootStyle.backgroundImage === 'none') {
+    declarations.push(`background-color: ${backdrop(parent, view)}`);
+  }
+
+  if (parent) {
+    const parentStyle = view.getComputedStyle(parent);
+    const layout = parentStyle.display;
+    const rect = root.getBoundingClientRect();
+    const inner = parent.clientWidth -
+      (parseFloat(parentStyle.paddingLeft) || 0) - (parseFloat(parentStyle.paddingRight) || 0);
+    const margins = (parseFloat(rootStyle.marginLeft) || 0) + (parseFloat(rootStyle.marginRight) || 0);
+    const outer = rect.width + Math.max(0, margins);
+    const placedByParent = /flex|grid/.test(layout) || outer < inner - 1;
+    if (placedByParent && rect.width > 0 && !/^inline/.test(rootStyle.display)) {
+      declarations.push(`max-width: ${Math.ceil(outer)}px`);
     }
   }
   /*
-   * A kept `@container` rule queried some ancestor that does not come along. Making the root a
-   * container gives the query something to measure; without it the rule never applies at all.
+   * A kept `@container` rule queried some ancestor that does not come along. The frame is an
+   * ancestor of the copy, as that container was, so it can answer the query.
    */
   if (hasContainerGroup(kept)) declarations.push('container-type: inline-size');
-  const warnings: string[] = [];
-  const rootFont = view.getComputedStyle(doc.documentElement).fontSize;
-  if (rootFont && rootFont !== '16px') {
-    warnings.push(`The source page's root font size is ${rootFont}; rem sizes will follow the page it is pasted into.`);
-  }
-  return { declarations, viewport: view.innerWidth, warnings };
+  return { declarations, viewport: view.innerWidth, warnings: [] };
 }

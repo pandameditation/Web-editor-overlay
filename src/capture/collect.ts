@@ -5,12 +5,17 @@ import {
   filterRuleTree,
   fontFamiliesIn,
   fontFamiliesInDeclarations,
+  joinCompounds,
   pickDependencies,
   preferFontSource,
+  remToPx,
   serializeRuleTree,
+  splitCompounds,
+  splitSelectorList,
   stripUserActionPseudos,
   styleNodesIn,
   unquote,
+  type ComplexSelector,
   type RuleNode,
 } from './css-text.js';
 import type { CaptureHost } from './host.js';
@@ -61,6 +66,7 @@ export function readSheetTree(sheet: CSSStyleSheet, base: string, unreadable: st
   }
   const nodes = readRules(rules, sheet.href ?? base, unreadable);
   // A `<link media="print">` is a sheet-level condition; keep it as one.
+  // (Rules are read as written; `collectRules` rebases and converts them afterwards.)
   const media = sheet.media?.mediaText ?? '';
   return media && media !== 'all' ? [{ kind: 'group', prelude: `@media ${media}`, children: nodes }] : nodes;
 }
@@ -154,6 +160,134 @@ export function matcherFor(root: Element): (selector: string) => boolean {
   };
 }
 
+/**
+ * Kept selectors with the compounds that matched outside the picked element taken off.
+ *
+ * `.page .card .title` matched on the source because `.page` was an ancestor of the pick. After
+ * paste there is no `.page`, so as written the rule never applies again: this, more than anything,
+ * is why pasted copies lost their sizes and colours. Every compound the outside supplied is equally
+ * true of everything inside, so it can go, as long as what remains still picks out exactly the
+ * same elements of the subtree. That is tested, not assumed: each shorter form is matched against
+ * a copy of the subtree with no ancestors at all, and the first that selects the same elements as
+ * the original did on the page replaces it. A selector no shorter form reproduces
+ * (`h2 + p` where the `h2` stays behind) is kept as written and left to the pinned floor.
+ *
+ * List members that match nothing in the subtree are dropped, as whole rules already were.
+ */
+export function rebaseRuleTree(nodes: RuleNode[], root: Element): { nodes: RuleNode[]; rebased: number } {
+  const detached = root.ownerDocument.implementation.createHTMLDocument('');
+  // Imported into a document with no registry, so custom element constructors do not run.
+  const probe = detached.importNode(root, true) as Element;
+  // In a fragment, not under `body`: after paste `body > x` and `div x` have nothing to match.
+  const holder = detached.createDocumentFragment();
+  holder.append(probe);
+  const live = [root, ...Array.from(root.querySelectorAll('*'))];
+  const copy = [probe, ...Array.from(probe.querySelectorAll('*'))];
+  const index = (elements: Element[]) => new Map(elements.map((element, at) => [element, at]));
+  const liveIndex = index(live);
+  const copyIndex = index(copy);
+  const shadows = openShadowRoots(root);
+  const select = (scope: Element, at: Map<Element, number>, selector: string): Set<number> | null => {
+    try {
+      const out = new Set<number>();
+      if (scope.matches(selector)) out.add(0);
+      for (const element of Array.from(scope.querySelectorAll(selector))) {
+        const position = at.get(element);
+        if (position !== undefined) out.add(position);
+      }
+      return out;
+    } catch {
+      return null;
+    }
+  };
+  const same = (a: Set<number>, b: Set<number> | null): boolean =>
+    b !== null && a.size === b.size && [...a].every((value) => b.has(value));
+  let rebased = 0;
+
+  const rewrite = (selector: string): string => {
+    const members: string[] = [];
+    for (const member of splitSelectorList(selector)) {
+      const original = splitCompounds(member);
+      const stripped: ComplexSelector = {
+        compounds: original.compounds.map((compound) => stripUserActionPseudos(compound)),
+        combinators: original.combinators,
+      };
+      const onPage = select(root, liveIndex, joinCompounds(stripped));
+      if (onPage === null) {
+        members.push(member);
+        continue;
+      }
+      if (!onPage.size) {
+        // Only a shadow tree inside the pick may still need it.
+        const inShadow = shadows.some((shadow) => {
+          try {
+            return shadow.querySelector(joinCompounds(stripped)) !== null;
+          } catch {
+            return false;
+          }
+        });
+        if (inShadow) members.push(member);
+        continue;
+      }
+      let chosen = member;
+      if (!same(onPage, select(probe, copyIndex, joinCompounds(stripped)))) {
+        for (let from = 1; from < original.compounds.length; from += 1) {
+          if (same(onPage, select(probe, copyIndex, joinCompounds(stripped, from)))) {
+            chosen = joinCompounds(original, from);
+            rebased += 1;
+            break;
+          }
+        }
+      }
+      members.push(chosen);
+    }
+    return [...new Set(members)].join(', ');
+  };
+
+  const walk = (list: RuleNode[]): RuleNode[] => {
+    const out: RuleNode[] = [];
+    for (const node of list) {
+      if (node.kind === 'style') {
+        const selector = rewrite(node.selector);
+        if (selector) out.push({ ...node, selector });
+      } else if (node.kind === 'group') {
+        const children = walk(node.children);
+        if (children.length) out.push({ ...node, children });
+      } else {
+        out.push(node);
+      }
+    }
+    return out;
+  };
+  return { nodes: walk(nodes), rebased };
+}
+
+/** Declarations and keyframes with `rem` lengths written as source pixels. Preludes are not touched. */
+function remTree(nodes: RuleNode[], rootPx: number): RuleNode[] {
+  return nodes.map((node) => {
+    switch (node.kind) {
+      case 'style':
+        return { ...node, declarations: remToPx(node.declarations, rootPx) };
+      case 'group':
+        return { ...node, children: remTree(node.children, rootPx) };
+      case 'keyframes':
+        return { ...node, text: remToPx(node.text, rootPx) };
+      default:
+        return node;
+    }
+  });
+}
+
+/** Property names declared by captured rules that only apply while hovered, focused or pressed. */
+export function statefulProperties(nodes: RuleNode[]): string[] {
+  const out = new Set<string>();
+  for (const node of styleNodesIn(nodes)) {
+    if (!/:(?:hover|focus|focus-within|focus-visible|active)\b/i.test(node.selector)) continue;
+    for (const match of node.declarations.matchAll(/(?:^|;)\s*([\w-]+)\s*:/g)) out.add(match[1].toLowerCase());
+  }
+  return [...out];
+}
+
 export interface CollectedRules {
   /** Style rules that apply, inside their groups. */
   kept: RuleNode[];
@@ -164,6 +298,10 @@ export interface CollectedRules {
   /** Cross-origin sheets that could not be fetched either. */
   unreadable: string[];
   needsHostPermission: boolean;
+  /** Selectors that had outside compounds taken off. */
+  rebased: number;
+  /** Properties set by captured `:hover`/`:focus`/`:active` rules. */
+  stateful: string[];
 }
 
 export async function collectRules(root: Element, host: CaptureHost): Promise<CollectedRules> {
@@ -182,12 +320,14 @@ export async function collectRules(root: Element, host: CaptureHost): Promise<Co
       if (fetched?.error === 'needs-permission') needsHostPermission = true;
     }
   }
-  const kept = filterRuleTree(all, matcherFor(root));
+  const view = doc.defaultView ?? window;
+  const rootPx = parseFloat(view.getComputedStyle(doc.documentElement).fontSize) || 16;
+  const rebased = rebaseRuleTree(filterRuleTree(all, matcherFor(root)), root);
+  const kept = remTree(rebased.nodes, rootPx);
   const declarations = styleNodesIn(kept).map((node) => node.declarations).join('; ');
 
   const animations = new Set(animationNamesIn(declarations));
   const families = new Set(fontFamiliesInDeclarations(declarations));
-  const view = doc.defaultView ?? window;
   const styleAttributes: string[] = [];
   for (const element of elementsIn(root)) {
     const style = view.getComputedStyle(element);
@@ -205,7 +345,7 @@ export async function collectRules(root: Element, host: CaptureHost): Promise<Co
     const inline = element.getAttribute('style');
     if (inline) styleAttributes.push(inline);
   }
-  const dependencies = pickDependencies(all, { animationNames: animations, fontFamilies: families });
+  const dependencies = remTree(pickDependencies(all, { animationNames: animations, fontFamilies: families }), rootPx);
 
   // Custom properties defined above the root: resolved there and carried as bare declarations.
   const used = customPropertiesIn(
@@ -215,6 +355,14 @@ export async function collectRules(root: Element, host: CaptureHost): Promise<Co
   const variables = used
     .map((name) => [name, rootStyle.getPropertyValue(name).trim()] as const)
     .filter(([, value]) => value)
-    .map(([name, value]) => `${name}: ${value}`);
-  return { kept, dependencies, variables, unreadable: failed, needsHostPermission };
+    .map(([name, value]) => `${name}: ${remToPx(value, rootPx)}`);
+  return {
+    kept,
+    dependencies,
+    variables,
+    unreadable: failed,
+    needsHostPermission,
+    rebased: rebased.rebased,
+    stateful: statefulProperties(kept),
+  };
 }
