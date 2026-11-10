@@ -15,7 +15,7 @@ import { entryLabel, reachText, shortLabel } from '../../../core/save-plan.js';
 import { mediaApplies } from '../../../core/viewport.js';
 import { icon } from '../../icons.js';
 import { buildSuggestions, valueKindFor } from '../../suggestions.js';
-import { destinationParts, explainDestination, type AdderDestination } from './property-adder.js';
+import { destinationParts, displayName, explainDestination, type AdderDestination } from './property-adder.js';
 import { renderMenu } from './menu.js';
 import type { RowScope, StylesHost } from './types.js';
 
@@ -357,7 +357,7 @@ export function destinationChoice(spec: RowSpec, host: StylesHost, rowId: string
   };
   const head = offered.length > 1
     ? html`<heo-segmented
-        .options=${offered.map((one) => ({ value: one.key, label: one.short ?? one.label, title: explainDestination(one, spec.property) }))}
+        .options=${offered.map((one) => ({ value: one.key, label: displayName(one.short ?? one.label, 24), title: explainDestination(one, spec.property, true) }))}
         .value=${picked.key}
         label="Where it goes"
         wrap
@@ -365,7 +365,7 @@ export function destinationChoice(spec: RowSpec, host: StylesHost, rowId: string
         if (event.detail.value) pick(event.detail.value);
       }}
       ></heo-segmented>
-      <p class="explain">${explainDestination(picked, spec.property)}</p>`
+      <p class="explain" title=${explainDestination(picked, spec.property, true)}>${explainDestination(picked, spec.property)}</p>`
     : null;
   return { offered, current, picked, pick, step, head };
 }
@@ -636,7 +636,7 @@ export function renderPropertyRow(spec: RowSpec, host: StylesHost): TemplateResu
           aria-haspopup="menu"
           aria-expanded=${menuOpen ? 'true' : 'false'}
           data-menu-anchor=${menuId}
-          title="Choose where it goes"
+          title=${`Choose where it goes. Now: ${parts.fullName}`}
           @click=${() => host.toggleMenu(menuId, !menuOpen)}
         >${parts.name} ${icon('chevronDown', 10)}</button>
         ${parts.media} • impacting ${parts.impact}
@@ -650,6 +650,7 @@ export function renderPropertyRow(spec: RowSpec, host: StylesHost): TemplateResu
             items: choice.offered.map((one) => ({
               key: one.key,
               label: destinationParts(one, property).name,
+              title: destinationParts(one, property).fullName,
               note: destinationParts(one, property).impact,
               checked: one.key === picked.key,
               onSelect: () => choice.pick(one.key),
@@ -852,6 +853,7 @@ export const propertyRowStyles: CSSResult = css`
   }
   /* A segmented row's "where it goes", under the row while the row is in use. */
   .dest-line {
+    overflow-wrap: anywhere;
     display: none;
     margin: 4px 0 0 26px;
     color: var(--heo-text-dim);
@@ -864,6 +866,9 @@ export const propertyRowStyles: CSSResult = css`
     display: block;
   }
   .dest-pick {
+    max-width: 100%;
+    overflow: hidden;
+    white-space: nowrap;
     display: inline-flex;
     align-items: center;
     gap: 3px;

@@ -1,3 +1,4 @@
+import { displayName } from './property-adder.js';
 import { css, html, nothing, type CSSResult, type TemplateResult } from 'lit';
 import { isPseudoElement, mediaShort } from '../../../core/breakpoints.js';
 import type { Contribution, ElementModel } from '../../../core/cascade.js';
@@ -136,7 +137,7 @@ function renderLine(
         title=${kind === 'win' ? 'Applies' : kind === 'lost' ? 'Overridden' : why.trim()}
       ></span>
       <span class="srcgroup">
-        <span class="src" title=${`${label}${why}`}><span>${entry ? shortLabel(one) : 'inline style'}</span></span>
+        <span class="src" title=${`${label}${why}`}><span>${entry ? displayName(shortLabel(one), 40) : 'inline style'}</span></span>
         ${renderUses(reach)}
       </span>
       <heo-value-field

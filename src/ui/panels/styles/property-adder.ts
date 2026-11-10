@@ -1,3 +1,4 @@
+import { leanBlockSelector } from '../../../core/block-rule-edit.js';
 import { css, html, nothing, type CSSResult, type TemplateResult } from 'lit';
 import { ref } from 'lit/directives/ref.js';
 import { searchProperties } from '../../../core/css.js';
@@ -123,6 +124,24 @@ export function stylesDestination(
   };
 }
 
+/** How long a destination's name may be where it is shown inline; the full name is in its tooltip. */
+export const SOURCE_NAME_MAX = 32;
+
+/**
+ * A source or destination name short enough for a switch, a line or a menu.
+ *
+ * A block's scoped selector is named as its author wrote it (`.title`, not the hooks repeated six
+ * times), and anything still longer is cut in the middle: the start says where the rule is, the
+ * end is the element it styles, and both matter more than the part between.
+ */
+export function displayName(name: string, max = SOURCE_NAME_MAX): string {
+  const lean = leanBlockSelector(name).replace(/\s+/g, ' ').trim();
+  if (lean.length <= max) return lean;
+  const head = Math.ceil((max - 1) * 0.4);
+  const tail = max - 1 - head;
+  return `${lean.slice(0, head).trimEnd()}…${lean.slice(lean.length - tail).trimStart()}`;
+}
+
 /** `inline style` → `Inline`, `a new class` → `New class`: the switch's words. */
 function shortDestination(dest: AddDestination, label: string): string {
   if (dest.kind === 'target' && dest.target.kind === 'inline') return 'Inline';
@@ -134,21 +153,24 @@ function shortDestination(dest: AddDestination, label: string): string {
  * The line under the switch: `Edits .intro (max-width: 820px) • impacting 3 elements`. "Edits"
  * when `property` is already declared there, "Adds" otherwise (and always for a new rule or class).
  */
-export function explainDestination(one: AdderDestination, property?: string): string {
+export function explainDestination(one: AdderDestination, property?: string, full = false): string {
   const parts = destinationParts(one, property);
-  return `${parts.verb} ${parts.name}${parts.media ? ` ${parts.media}` : ''} • impacting ${parts.impact}`;
+  const name = full ? parts.fullName : parts.name;
+  return `${parts.verb} ${name}${parts.media ? ` ${parts.media}` : ''} • impacting ${parts.impact}`;
 }
 /** The line's pieces, for a host that draws the name as a control of its own. */
 export function destinationParts(
   one: AdderDestination,
   property?: string,
-): { verb: 'Adds' | 'Edits'; name: string; media: string; impact: string } {
+): { verb: 'Adds' | 'Edits'; name: string; fullName: string; media: string; impact: string } {
   const dest = one.dest;
   const inline = dest?.kind === 'target' && dest.target.kind === 'inline';
-  const name = inline ? 'inline style' : dest?.kind === 'auto-class' ? 'a new class' : one.name ?? one.short ?? one.label;
+  const raw = inline ? 'inline style' : dest?.kind === 'auto-class' ? 'a new class' : one.name ?? one.short ?? one.label;
+  const fullName = leanBlockSelector(raw);
+  const name = displayName(raw);
   const edits = dest?.kind === 'target' && Boolean(property) && property!.toLowerCase() in lowerKeys(one.existing);
   const impact = one.impact === undefined ? one.reach : one.impact === 1 ? 'this element only' : `${one.impact} elements`;
-  return { verb: edits ? 'Edits' : 'Adds', name, media: one.media ?? '', impact };
+  return { verb: edits ? 'Edits' : 'Adds', name, fullName, media: one.media ?? '', impact };
 }
 function lowerKeys(record: Record<string, string>): Record<string, true> {
   return Object.fromEntries(Object.keys(record).map((key) => [key.toLowerCase(), true]));
@@ -366,7 +388,7 @@ export function renderAdder(spec: AdderSpec, host: AdderHost): TemplateResult {
   };
   const head = several
     ? html`<heo-segmented
-        .options=${spec.destinations.map((one) => ({ value: one.key, label: one.short ?? one.label, title: explainDestination(one) }))}
+        .options=${spec.destinations.map((one) => ({ value: one.key, label: displayName(one.short ?? one.label, 24), title: explainDestination(one, undefined, true) }))}
         .value=${dest.key}
         label="Where it goes"
         wrap
@@ -374,7 +396,7 @@ export function renderAdder(spec: AdderSpec, host: AdderHost): TemplateResult {
         if (event.detail.value) pick(event.detail.value);
       }}
       ></heo-segmented>
-      <p class="explain">${explainDestination(dest)}</p>`
+      <p class="explain" title=${explainDestination(dest, undefined, true)}>${explainDestination(dest)}</p>`
     : null;
   const commitValue = (text: string, from: Element): void => {
     const value = text.trim();

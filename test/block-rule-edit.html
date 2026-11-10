@@ -3,6 +3,12 @@
 <head>
   <meta charset="utf-8">
   <title>A block's scoped rules are edited from the Styles panel, in the block's own CSS</title>
+  <style>
+    /* A page rule with a long selector, so the destination switch has a long name to shorten. */
+    #stage div.card > h3.title:not(.a-really-long-negated-class-name-one):not(.a-really-long-negated-class-name-two) {
+      box-sizing: border-box;
+    }
+  </style>
 </head>
 <body>
   <main id="stage">
@@ -161,9 +167,22 @@
       await wait(300);
       const panel = deep('heo-styles-panel');
       const panelText = panel ? deepText(panel.shadowRoot) : '';
+      const picks = [];
+      const collect = (root) => {
+        for (const node of root.querySelectorAll('*')) {
+          if (node.classList?.contains('dest-pick')) picks.push({ text: node.textContent.trim(), title: node.getAttribute('title') ?? '' });
+          if (node.shadowRoot) collect(node.shadowRoot);
+        }
+      };
+      if (panel) collect(panel.shadowRoot);
+      diagnostics.picks = picks;
       results.panel = {
         // The rule is named as written, not with the block id six times over.
         theRuleIsNamedAsWritten: panelText.includes('.title') && !panelText.includes('data-heo-block'),
+        // The line under a segmented row (box-sizing) names where the edit goes, short, with the
+        // whole name a hover away: a 120-character selector used to push the row apart.
+        theDestinationNameIsShort: picks.length > 0 && picks.every((one) => one.text.length <= 34 && !one.text.includes('data-heo-block')),
+        theFullNameIsInTheTooltip: picks.some((one) => /a-really-long-negated-class-name-two/.test(one.title) && one.text.includes('…')),
       };
 
       results.page = { noUncaughtErrors: errors.length === 0 };
