@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>HEO Capture: allow other sites</title>
+  <style>
+    body { font: 15px/1.5 system-ui, sans-serif; max-width: 34rem; margin: 3rem auto; padding: 0 1rem; color: #1a1a1a; }
+    button { font: inherit; padding: 0.5rem 1rem; border-radius: 6px; border: 1px solid #1a56db; background: #1a56db; color: #fff; cursor: pointer; }
+    button:focus-visible { outline: 3px solid #93b4f5; outline-offset: 2px; }
+    #status { min-height: 1.5em; }
+  </style>
+</head>
+<body>
+  <h1>Allow images and stylesheets from other sites</h1>
+  <p>
+    Pages often load images, icons, fonts and stylesheets from other domains (CDNs). To copy those
+    into a capture, HEO Capture needs permission to read from any site. It only fetches them when
+    you capture an element, without your cookies.
+  </p>
+  <p>Without it, those assets keep their original URLs in the pasted block.</p>
+  <button id="allow" type="button">Allow other sites</button>
+  <p id="status" role="status" aria-live="polite"></p>
+  <script src="permissions.js"></script>
+</body>
+</html>
