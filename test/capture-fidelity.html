@@ -180,6 +180,8 @@
       step('paste');
       pasteText(document.getElementById('page-para'), capture.seed);
       await until(() => engine.store.value.capturePaste);
+      // The full version, whose test hooks (data-probe) the comparison needs; capture-lean covers lean.
+      engine.chooseCaptureVariant('full');
       const open = engine.store.value.capturePaste;
       engine.updateCapturePaste({ anchor: { reference: stage, position: 'lastChild' } });
       await frames();

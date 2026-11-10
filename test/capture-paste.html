@@ -150,6 +150,8 @@
       async function openPaste(seed) {
         pasteText(pagePara, seed);
         await until(() => engine.store.value.capturePaste && dialogRoot()?.querySelector('.dialog'));
+        // These assertions are about the block as captured; the lean version has its own fixture.
+        engine.chooseCaptureVariant('full');
         engine.updateCapturePaste({ anchor: { reference: stage, position: 'lastChild' } });
         await frames();
         return engine.store.value.capturePaste;
@@ -417,6 +419,8 @@
       }]));
       // The transfer panel's Load and its field's paste both come through here.
       const opened = await engine.openSeedImport(formatSeed);
+      // Formatting is checked on the markup as captured (lean would take the unused classes out).
+      engine.chooseCaptureVariant('full');
       await until(() => dialogRoot()?.querySelector('.dialog iframe'));
       const screen = engine.store.value.capturePaste;
       const formatted = screen?.block.html ?? '';

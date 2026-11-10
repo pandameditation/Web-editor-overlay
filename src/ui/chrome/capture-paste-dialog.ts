@@ -2,7 +2,7 @@ import { css, html, nothing, type TemplateResult } from 'lit';
 import { customElement } from 'lit/decorators.js';
 import { blockPreviewDocument } from '../../core/block-preview.js';
 import { acceptsChildren, isMutable, labelFor } from '../../core/dom.js';
-import type { InsertAnchor } from '../../core/editor.js';
+import type { CapturePaste, InsertAnchor } from '../../core/editor.js';
 import { ModalController } from '../../core/modal.js';
 import { INSERT_POSITION_LABELS, type InsertPosition } from '../../core/mutations.js';
 import { sanitizeFragment } from '../../core/sanitize.js';
@@ -157,6 +157,16 @@ export class HeoCapturePasteDialog extends HeoElement {
       .field.name code {
         font-family: var(--heo-mono);
         color: var(--heo-text-dim);
+      }
+      .variant {
+        display: grid;
+        gap: 6px;
+      }
+      .variant .hint {
+        margin: 0;
+        color: var(--heo-text-faint);
+        font-size: 10.5px;
+        line-height: 1.5;
       }
       .preview-bar {
         display: flex;
@@ -378,6 +388,8 @@ export class HeoCapturePasteDialog extends HeoElement {
           <span class="id">Saved as <code>${block.id}</code></span>
         </div>
 
+        ${this.#renderVariant(open)}
+
         <div class="preview-bar">
           <heo-segmented
             label="Preview width"
@@ -464,6 +476,47 @@ export class HeoCapturePasteDialog extends HeoElement {
     if (Math.abs(height - this.#contentHeight) < 2) return;
     this.#contentHeight = height;
     this.requestUpdate();
+  }
+
+  /**
+   * Full or lean: the copy as captured, or with what changes nothing taken out. Lean is the default;
+   * the preview shows whichever is picked, so switching is how the two are compared.
+   */
+  #renderVariant(open: NonNullable<CapturePaste>): TemplateResult | typeof nothing {
+    const variants = open.variants;
+    if (!variants) return nothing;
+    const { report } = variants;
+    const kb = (bytes: number): string => (bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(bytes < 10240 ? 1 : 0)} KB`);
+    const parts = [
+      [report.removedRules + report.removedStateRules, 'rule', 'rules'],
+      [report.removedVariables, 'variable', 'variables'],
+      [report.removedKeyframes + report.removedFonts, 'unused keyframe or font', 'unused keyframes and fonts'],
+      [report.removedWrappers, 'wrapper element', 'wrapper elements'],
+      [report.removedAttributes + report.removedClasses, 'attribute or class', 'attributes and classes'],
+    ].filter(([count]) => (count as number) > 0)
+      .map(([count, one, many]) => `${count} ${count === 1 ? one : many}`);
+    const saved = Math.round((1 - report.leanBytes / Math.max(1, report.fullBytes)) * 100);
+    return html`<div class="variant">
+      <heo-segmented
+        label="Version"
+        .options=${[
+        { value: 'lean', label: `Lean · ${kb(report.leanBytes)}`, title: 'Only what changes how the block looks and behaves' },
+        { value: 'full', label: `Full · ${kb(report.fullBytes)}`, title: 'Everything the capture brought, as it was' },
+      ]}
+        .value=${open.variant ?? 'lean'}
+        @segment-change=${(event: CustomEvent<{ value: string }>) =>
+        this.editor.chooseCaptureVariant(event.detail.value === 'full' ? 'full' : 'lean')}
+      ></heo-segmented>
+      <p class="hint">
+        ${open.variant === 'full'
+        ? html`Everything the capture brought. Lean is ${saved}% smaller and looks the same.`
+        : html`${saved}% smaller: ${parts.join(', ') || 'nothing'} taken out. Each cleanup was
+            checked against the full version at the capture width and at phone width, and put back
+            if anything looked different.${report.reverted.length
+            ? html` Kept as captured: ${report.reverted.join(', ')}.`
+            : nothing}`}
+      </p>
+    </div>`;
   }
 
   /** The position switch, gated as the insert menu and the HTML paste dialog gate it. */

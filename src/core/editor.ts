@@ -180,6 +180,7 @@ import {
 import { buildPrompt } from './prompt.js';
 import { formatHTML, previewMarkup, sanitizeFragment } from './sanitize.js';
 import { formatBlockMarkup } from './block-preview.js';
+import { leanBlock, type LeanReport } from './lean-block.js';
 import { editBlockCSS, leanBlockSelector } from './block-rule-edit.js';
 import {
   connectDirectory,
@@ -432,6 +433,12 @@ export interface CapturePaste {
   removed: string[];
   /** Why it cannot be committed yet, when it cannot. */
   error: string;
+  /**
+   * The full and lean versions, when a lean one was made and is smaller. `block` is the chosen one,
+   * under the name and id the dialog shows; switching keeps both.
+   */
+  variants?: { full: LibraryBlock; lean: LibraryBlock; report: LeanReport };
+  variant?: 'full' | 'lean';
 }
 
 /**
@@ -7061,24 +7068,56 @@ export class EditorEngine {
     });
   }
 
-  beginCapturePaste(block: LibraryBlock, anchor?: InsertAnchor): boolean {
+  beginCapturePaste(
+    block: LibraryBlock,
+    anchor?: InsertAnchor,
+    options: { lean?: { block: LibraryBlock; report: LeanReport } } = {},
+  ): boolean {
     const target = anchor ?? this.store.value.insertAnchor ?? this.#defaultAnchor();
     if (!target) return false;
     const id = this.#freshBlockId(block.name || block.id || 'captured');
-    const vetted = vetCapturedCSS(block.css ?? '');
-    const next: LibraryBlock = {
-      ...block,
-      id,
-      css: vetted.css.trim() ? vetted.css : undefined,
-      ...(block.capture ? { origin: 'captured' as const, category: 'Captured' } : {}),
+    const prepare = (one: LibraryBlock): { block: LibraryBlock; removed: string[] } => {
+      const vetted = vetCapturedCSS(one.css ?? '');
+      return {
+        block: {
+          ...one,
+          id,
+          name: block.name,
+          css: vetted.css.trim() ? vetted.css : undefined,
+          ...(block.capture ? { origin: 'captured' as const, category: 'Captured' } : {}),
+        },
+        removed: vetted.removed,
+      };
     };
+    const full = prepare(block);
+    const lean = options.lean ? prepare(options.lean.block) : null;
     this.endTextEdit(true);
     this.store.patch({
-      capturePaste: { block: next, anchor: target, insert: true, save: false, removed: vetted.removed, error: '' },
+      capturePaste: {
+        block: lean ? lean.block : full.block,
+        anchor: target,
+        insert: true,
+        save: false,
+        removed: full.removed,
+        error: '',
+        ...(lean && options.lean
+          ? { variants: { full: full.block, lean: lean.block, report: options.lean.report }, variant: 'lean' as const }
+          : {}),
+      },
       insertAnchor: null,
       quickMenuOpen: false,
     });
     return true;
+  }
+
+  /** Switch the import screen between the full block and the lean one, keeping its name and id. */
+  chooseCaptureVariant(variant: 'full' | 'lean'): void {
+    const open = this.store.value.capturePaste;
+    if (!open?.variants || open.variant === variant) return;
+    const chosen = open.variants[variant];
+    this.store.patch({
+      capturePaste: { ...open, variant, block: { ...chosen, name: open.block.name, id: open.block.id }, error: '' },
+    });
   }
 
   updateCapturePaste(
@@ -7179,9 +7218,20 @@ export class EditorEngine {
     if (doc.tokens.length || doc.classes.length || doc.rules?.length) return false;
     if (this.store.value.capturePaste) return false;
     const incoming = doc.blocks[0];
-    const html = await formatBlockMarkup(incoming, incoming.capture?.viewport);
+    const width = incoming.capture?.viewport;
+    // Made from the markup as it came, then both are indented; offered only when it saves something.
+    let lean: { block: LibraryBlock; report: LeanReport } | null = null;
+    try {
+      lean = await leanBlock(incoming, width);
+    } catch {
+      lean = null;
+    }
+    const html = await formatBlockMarkup(incoming, width);
+    const leanOffer = lean && lean.report.leanBytes < lean.report.fullBytes
+      ? { block: { ...lean.block, html: await formatBlockMarkup(lean.block, width) }, report: lean.report }
+      : undefined;
     if (this.store.value.capturePaste) return false;
-    return this.beginCapturePaste({ ...incoming, html });
+    return this.beginCapturePaste({ ...incoming, html }, undefined, leanOffer ? { lean: leanOffer } : {});
   }
 
   /**

@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The import screen offers a lean version of a capture that looks the same</title>
+  <style>#source { width: 1000px; height: 700px; border: 0; display: block; }</style>
+</head>
+<body>
+  <main id="stage"><p id="page-para">Page paragraph</p></main>
+  <iframe id="source" title="source page"></iframe>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    /*
+     * The report: captures import a lot that has no effect: variables, states, wrapper divs, tokens,
+     * attributes. The source has each kind, the way real sites have them:
+     *   - a Tailwind-style `*, ::before, ::after { --tw-…: … }` reset defining variables nothing reads;
+     *   - a `:focus` rule on a div nothing can focus, and a `:hover` rule that sets the colour it has;
+     *   - keyframes and a font face for another component;
+     *   - three wrapper divs around one paragraph, and class names and attributes nothing selects;
+     * and things that must survive: a used variable, a hover that changes something, a `.wrap > p`
+     * rule that needs its wrapper, aria and alt, an `@media` rule.
+     */
+    const SOURCE = `<!doctype html><html><head><meta charset="utf-8"><style>
+      *, ::before, ::after { --tw-ring-offset-width: 0px; --tw-ring-color: rgb(59 130 246 / 0.5); --tw-shadow: 0 0 #0000;
+        --tw-blur: ; --tw-brightness: ; --tw-contrast: ; --tw-grayscale: ; --tw-scroll-snap-strictness: proximity; }
+      body { margin: 0; font-family: Verdana, sans-serif; }
+      .card { --accent: rgb(200, 30, 30); --unused-token: 12px; padding: 12px; border: 2px solid var(--accent); }
+      .card:focus { outline: 3px solid rgb(0, 0, 255); }
+      .title { color: rgb(10, 20, 30); font-size: 22px; }
+      .title:hover { color: rgb(10, 20, 30); }
+      .go { color: rgb(0, 100, 0); }
+      .go:hover { color: rgb(0, 200, 0); }
+      .wrap > p { margin: 0; color: rgb(90, 0, 90); }
+      @keyframes spin { to { transform: rotate(1turn); } }
+      @font-face { font-family: "OtherFace"; src: url(nested/probe.woff2) format("woff2"); }
+      .elsewhere { animation: spin 1s; font-family: OtherFace; }
+      @media (max-width: 600px) { .title { font-size: 16px; } }
+    </style></head><body>
+      <article class="card u-reset js-card" data-testid="card" jsaction="click:open" data-v-1a2b3c="" data-probe="card" aria-label="Pricing">
+        <h3 class="title js-title" data-track="h" data-probe="title">Plan</h3>
+        <div class="outer-wrapper" data-v-1a2b3c=""><div><div><p class="desc" data-probe="desc">Wrapped text</p></div></div></div>
+        <div class="wrap"><p data-probe="kept">Needs its wrapper</p></div>
+        <img src="data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==" alt="Logo" loading="lazy" decoding="async" data-probe="img" width="10" height="10">
+        <a class="go" href="#x" data-ga="cta" data-probe="go">Buy</a>
+      </article>
+      <script src="../dist/heo-capture.js"><\/script>
+    </body></html>`;
+
+    (async () => {
+      const results = {};
+      const diagnostics = {};
+      const errors = [];
+      addEventListener('error', (event) => errors.push('error: ' + event.message));
+      addEventListener('unhandledrejection', (event) => errors.push('rejection: ' + String(event.reason)));
+      const step = (name) => { document.getElementById('progress').textContent = name; };
+      const frames = (win = window) => new Promise((resolve) => win.requestAnimationFrame(() => win.requestAnimationFrame(resolve)));
+      async function until(predicate, limit = 300) {
+        for (let n = 0; n < limit; n += 1) {
+          if (predicate()) return true;
+          await frames();
+        }
+        return false;
+      }
+      const deep = (match, root = document) => {
+        for (const el of root.querySelectorAll('*')) {
+          if (match(el)) return el;
+          if (el.shadowRoot) {
+            const found = deep(match, el.shadowRoot);
+            if (found) return found;
+          }
+        }
+        return null;
+      };
+
+      step('capture');
+      const frame = document.getElementById('source');
+      const loaded = new Promise((resolve) => frame.addEventListener('load', resolve, { once: true }));
+      frame.srcdoc = SOURCE;
+      await loaded;
+      const win = frame.contentWindow;
+      await until(() => win.HeoCapture);
+      const capture = await win.HeoCapture.captureElement(frame.contentDocument.querySelector('.card'), { host: win.HeoCapture.pageHost() });
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark', detectScriptContent: false, fileName: 'capture-lean.html', presets: false });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+
+      step('open');
+      const opened = await engine.openSeedImport(capture.seed);
+      const open = engine.store.value.capturePaste;
+      const variants = open?.variants;
+      const lean = variants?.lean ?? { html: '', css: '' };
+      const full = variants?.full ?? { html: '', css: '' };
+      const report = variants?.report ?? {};
+      diagnostics.report = report;
+
+      /* Render both in hidden frames, at two widths, and compare every probed element. */
+      const PROPS = ['color', 'font-size', 'padding-top', 'border-top-width', 'border-top-color', 'margin-top', 'outline-style', 'width', 'height'];
+      async function render(block, width) {
+        const target = document.createElement('iframe');
+        target.style.cssText = `width: ${width}px; height: 600px; border: 0; position: absolute; left: -5000px; top: 0;`;
+        const done = new Promise((resolve) => target.addEventListener('load', resolve, { once: true }));
+        const bareEnd = block.css.indexOf('{') < 0 ? block.css.length : block.css.lastIndexOf(';', block.css.indexOf('{')) + 1;
+        target.srcdoc = `<!doctype html><meta charset="utf-8"><style>body { margin: 0; } body > * { ${block.css.slice(0, bareEnd)} }\n${block.css.slice(bareEnd)}</style>${block.html}`;
+        document.body.append(target);
+        await done;
+        await frames(target.contentWindow);
+        const out = {};
+        for (const el of target.contentDocument.querySelectorAll('[data-probe]')) {
+          const style = target.contentWindow.getComputedStyle(el);
+          const rect = el.getBoundingClientRect();
+          out[el.getAttribute('data-probe')] = [...PROPS.map((name) => style.getPropertyValue(name)), Math.round(rect.left), Math.round(rect.top), Math.round(rect.width)].join('|');
+        }
+        target.remove();
+        return out;
+      }
+      // data-probe is itself an attribute nothing selects, so lean removes it: compare by element order instead.
+      const probeOrder = (html) => html.replace(/ data-probe="[^"]*"/g, '');
+      const tagProbes = (block) => {
+        const holder = document.createElement('template');
+        holder.innerHTML = full.html;
+        const text = (el) => el.textContent.replace(/\s+/g, ' ').trim();
+        const names = Array.from(holder.content.querySelectorAll('[data-probe]')).map((el) => [el.getAttribute('data-probe'), el.localName, text(el)]);
+        const mine = document.createElement('template');
+        mine.innerHTML = block.html;
+        for (const [name, tag, wanted] of names) {
+          const match = Array.from(mine.content.querySelectorAll(tag)).find((el) => el.textContent.replace(/\s+/g, ' ').trim() === wanted && !el.hasAttribute('data-probe'));
+          match?.setAttribute('data-probe', name);
+        }
+        return { ...block, html: mine.innerHTML };
+      };
+      step('compare');
+      const mismatches = [];
+      for (const width of [1000, 390]) {
+        const a = await render(full, width);
+        const b = await render(tagProbes(lean), width);
+        for (const [key, value] of Object.entries(a)) if (b[key] !== value) mismatches.push(`${width} ${key}: ${value} vs ${b[key]}`);
+      }
+      diagnostics.mismatches = mismatches;
+
+      results.lean = {
+        aLeanVersionIsOffered: opened && Boolean(variants) && open.variant === 'lean' && open.block.html === lean.html,
+        itLooksTheSameAtBothWidths: mismatches.length === 0,
+        // A small sample with an embedded image; real captures carry far more of what lean drops.
+        itIsMuchSmaller: report.leanBytes < report.fullBytes * 0.8,
+        unreadVariablesAreGone: !/--tw-/.test(lean.css) && !/--unused-token/.test(lean.css) && /--tw-/.test(full.css),
+        aUsedVariableStays: /--accent: rgb\(200, 30, 30\)/.test(lean.css),
+        aFocusRuleNothingCanFocusIsGone: !/\.card:focus/.test(lean.css),
+        aHoverThatChangesNothingIsGone: !/\.title:hover/.test(lean.css),
+        aHoverThatChangesSomethingStays: /\.go:hover \{ color: rgb\(0, 200, 0\)/.test(lean.css),
+        theMediaRuleStays: /@media \(max-width: 600px\)/.test(lean.css),
+        wrappersAreCollapsed: report.removedWrappers >= 2 && !/<div><div>/.test(lean.html.replace(/\s+/g, '')),
+        aWrapperARuleNeedsStays: /<div class="wrap">\s*<p[^>]*>Needs its wrapper<\/p>\s*<\/div>/.test(lean.html),
+        noEmptyAttributesAreLeft: !/ style=""/.test(lean.html),
+        hooksAndUnusedClassesAreGone: !/data-testid|jsaction|data-v-1a2b3c|data-track|data-ga|js-card|js-title|u-reset|loading=|decoding=/.test(lean.html),
+        meaningfulAttributesStay: /aria-label="Pricing"/.test(lean.html) && /alt="Logo"/.test(lean.html) && /href="#x"/.test(lean.html) &&
+          /width="10"/.test(lean.html) && /class="title"/.test(lean.html),
+      };
+
+      step('dialog');
+      const dialog = deep((el) => el.localName === 'heo-capture-paste-dialog');
+      await until(() => dialog?.shadowRoot?.querySelector('.variant heo-segmented'));
+      const hint = dialog?.shadowRoot?.querySelector('.variant .hint')?.textContent ?? '';
+      engine.chooseCaptureVariant('full');
+      await frames();
+      const switched = engine.store.value.capturePaste?.block.html === full.html;
+      engine.renameCapturePaste('Pricing card');
+      engine.chooseCaptureVariant('lean');
+      await frames();
+      const keptName = engine.store.value.capturePaste?.block.name === 'Pricing card' && engine.store.value.capturePaste?.block.id === 'pricing-card';
+      engine.updateCapturePaste({ anchor: { reference: document.getElementById('stage'), position: 'lastChild' } });
+      const committed = await engine.commitCapturePaste();
+      await frames();
+      const inserted = committed?.inserted;
+      results.dialog = {
+        theScreenSaysWhatLeanTookOut: /smaller/.test(hint) && /variable/.test(hint) && /wrapper/.test(hint),
+        switchingShowsTheFullVersion: switched,
+        theNameAndIdSurviveASwitch: keptName,
+        theLeanVersionIsWhatIsInserted: Boolean(inserted) && !inserted.outerHTML.includes('data-testid') && !inserted.outerHTML.includes('outer-wrapper'),
+      };
+
+      results.page = { noUncaughtErrors: errors.length === 0 };
+      const failed = Object.entries(results)
+        .filter(([, group]) => Object.values(group).some((value) => value === false))
+        .map(([name]) => name);
+      if (failed.length) Object.assign(diagnostics, { lean: lean.html, leanCss: lean.css.slice(0, 3000), hint });
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify({ failed, ...results, errors, diagnostics }, null, 1) + ':END';
+    })().catch((error) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"ok":false,"failed":["fatal"],"__fatal":' + JSON.stringify(String((error && error.stack) || error)) + '}:END';
+    });
+  </script>
+</body>
+</html>
