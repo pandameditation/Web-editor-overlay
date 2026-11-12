@@ -320,7 +320,8 @@
       const box = handle?.outline();
       const followed = handle?.target === card && box?.visible &&
         Math.abs(box.left - rect.left) < 1 && Math.abs(box.width - rect.width) < 1 && Math.abs(box.top - rect.top) < 1;
-      sdoc.body.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
+      // HEO's keys: left is the parent.
+      sdoc.body.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true, cancelable: true }));
       const parentSelected = handle?.target === root;
       const uiPresent = Boolean(sdoc.querySelector('heo-capture-picker'));
       sdoc.body.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
@@ -330,7 +331,7 @@
       diagnostics.seen = seen;
       results.picker = {
         theOutlineFollowsThePointer: Boolean(followed),
-        arrowUpSelectsTheParent: parentSelected,
+        arrowLeftSelectsTheParent: parentSelected,
         // Captured on window and stopped, so neither the page's window nor its document listeners fire.
         pageListenersSeeNothing: seen.pointermove === 0 && seen.keydown === 0 && seen.click === 0,
         escapeRemovesTheUi: uiPresent && uiGone,

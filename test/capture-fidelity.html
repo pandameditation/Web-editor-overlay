@@ -74,6 +74,7 @@
         <article class="card"><h3 class="title">Two</h3></article>
         <article class="card"><h3 class="title">Three</h3></article>
       </div></section></div>
+      <div style="height: 2400px"></div>
       <script src="../dist/heo-capture.js"><\/script>
     </body></html>`;
 
@@ -271,26 +272,135 @@
       };
 
       step('picker');
+      const nameOf = (el) => el ? `${el.localName}${el.id ? `#${el.id}` : ''}${el.classList[0] ? `.${el.classList[0]}` : ''}` : '';
       const handle = HeoCapture.startPicker(HeoCapture.pageHost());
       const press = (key) => sdoc.body.dispatchEvent(new win.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
       const p = sdoc.querySelector('[data-probe="p"]');
       const rect = p.getBoundingClientRect();
       p.dispatchEvent(new win.PointerEvent('pointermove', { bubbles: true, composed: true, clientX: rect.left + 2, clientY: rect.top + 2 }));
       const startedOnP = handle?.target === p;
-      press('ArrowUp');
+      press('ArrowLeft');
       const upIsTheCard = handle?.target === root;
-      press('ArrowUp');
-      press('ArrowDown');
-      press('ArrowDown');
-      const backToP = handle?.target === p;
-      press('ArrowUp');
+      press('ArrowLeft');
       press('ArrowRight');
+      press('ArrowRight');
+      const backToP = handle?.target === p;
       press('ArrowLeft');
       press('ArrowDown');
+      press('ArrowUp');
+      press('ArrowRight');
       const sideStepClears = handle?.target === root.firstElementChild;
-      press('ArrowDown');
+      press('ArrowRight');
       const noTrailFirstChild = handle?.target === root.firstElementChild.firstElementChild || handle?.target === root.firstElementChild;
+      // The tree panel, linked to the pick.
+      const rowsNow = handle?.rows() ?? [];
+      const legend = handle?.panel().legend ?? '';
+      const currentRow = rowsNow.find((row) => row.current);
+      // Rows: body, div.page, section.band, div.grid, then the cards with the current one's children.
+      const pathShown = rowsNow[0]?.label === 'body' && rowsNow.some((row) => row.label === 'div.grid') &&
+        currentRow?.label === nameOf(handle.target);
+      const rowIndex = (match) => (handle?.rows() ?? []).findIndex(match);
+      // An ancestor row: the card, two levels up the path.
+      handle?.clickRow(rowIndex((row) => row.label === 'article.card'));
+      const clickedAncestorSelected = handle?.target === root;
+      // Its children are listed under it now: a child row.
+      const card = handle?.rows().find((row) => row.current);
+      handle?.clickRow(rowIndex((row) => row.depth === (card?.depth ?? -9) + 1 && row.label === 'p'));
+      const clickedChildSelected = handle?.target === sdoc.querySelector('[data-probe="p"]');
+      // A sibling row, at the same depth as the pick.
+      handle?.clickRow(rowIndex((row) => row.label === 'ul'));
+      const clickedSiblingSelected = handle?.target === sdoc.querySelector('[data-probe="ul"]');
+      // Up the path to the grid.
+      handle?.clickRow(rowIndex((row) => row.label === 'div.grid'));
+      const clickedGridSelected = handle?.target === sdoc.querySelector('.grid');
+      // Pointing at the page moves the tree along.
+      p.dispatchEvent(new win.PointerEvent('pointermove', { bubbles: true, composed: true, clientX: rect.left + 2, clientY: rect.top + 2 }));
+      const treeFollowsPointer = handle?.rows().find((row) => row.current)?.label === 'p';
+      // Docked and left there: the pointer near the panel does not move it.
+      const before = handle?.panel();
+      sdoc.body.dispatchEvent(new win.PointerEvent('pointermove', { bubbles: true, composed: true, clientX: win.innerWidth - 10, clientY: 10 }));
+      const stays = handle?.panel().rect.left === before?.rect.left && handle?.panel().rect.top === before?.rect.top;
+      // It covers a strip, not the page: narrow, and well short of the window's height.
+      const box = handle?.panel().rect;
+      const compact = Boolean(box) && box.width <= 320 && box.height <= win.innerHeight * 0.65 && box.right <= win.innerWidth;
+      // Dragged by its header, and it stays where it is dropped.
+      const start = handle?.panel().rect;
+      handle?.dragBy(-200, 100);
+      const moved = handle?.panel().rect;
+      const dragged = Boolean(start && moved) && Math.abs(moved.left - (start.left - 200)) < 2 && Math.abs(moved.top - (start.top + 100)) < 2;
+      handle?.dragBy(200, -100);
+      // Resized from its corner, so the whole tree can be opened up in it.
+      const resizable = handle?.panel().resizable === true;
+      // Collapsed, it is a floating button; the button opens it again.
+      handle?.press('collapse');
+      const collapsedToButton = handle?.panel().collapsed === true && handle?.panel().visible === false;
+      handle?.press('fab');
+      const reopened = handle?.panel().collapsed === false && handle?.panel().visible === true;
+      // After a click on a row the focus is in the panel; the arrows still walk the page.
+      handle?.clickRow((handle?.rows() ?? []).findIndex((row) => row.label === 'div.grid'));
+      press('ArrowRight');
+      const keysAfterRowClick = handle?.target !== sdoc.querySelector('.grid') && sdoc.querySelector('.grid').contains(handle?.target);
+      // A click on the page copies and locks: the pointer moving on does not move the pick.
+      const pageClick = (el) => {
+        const box = el.getBoundingClientRect();
+        el.dispatchEvent(new win.MouseEvent('click', { bubbles: true, cancelable: true, composed: true, clientX: box.left + 2, clientY: box.top + 2 }));
+      };
+      const copiesBefore = handle?.copies ?? 0;
+      pageClick(p);
+      const lockedOnP = handle?.panel().locked === true && handle?.target === p && handle?.copies === copiesBefore + 1;
+      const title = sdoc.querySelector('[data-probe="title"]');
+      const titleBox = title.getBoundingClientRect();
+      title.dispatchEvent(new win.PointerEvent('pointermove', { bubbles: true, composed: true, clientX: titleBox.left + 2, clientY: titleBox.top + 2 }));
+      const holdsWhileLocked = handle?.target === p;
+      // Copying keeps the picker and its tree open (the Copy button too).
+      handle?.press('copy');
+      const stillOpenAfterCopy = handle?.panel().visible === true && Boolean(sdoc.querySelector('heo-capture-picker')) &&
+        handle?.copies === copiesBefore + 2;
+      // The arrows still adjust a locked pick, and it stays locked.
+      press('ArrowLeft');
+      const keysMoveALockedPick = handle?.target === p.parentElement && handle?.panel().locked === true;
+      // Escape unlocks, and does not quit while locked.
+      press('Escape');
+      const escapeUnlocks = handle?.panel().locked === false && Boolean(sdoc.querySelector('heo-capture-picker'));
+      title.dispatchEvent(new win.PointerEvent('pointermove', { bubbles: true, composed: true, clientX: titleBox.left + 2, clientY: titleBox.top + 2 }));
+      const followsAgain = handle?.target === title;
+      // A click on a tree row unlocks too, and selects that row.
+      pageClick(p);
+      handle?.clickRow((handle?.rows() ?? []).findIndex((row) => row.label === 'div.grid'));
+      const rowClickUnlocks = handle?.panel().locked === false && handle?.target === sdoc.querySelector('.grid');
+      // A row chosen in the tree is brought into view on the page, as pointing at it would.
+      win.scrollTo(0, sdoc.documentElement.scrollHeight);
+      await frames(win);
+      handle?.clickRow((handle?.rows() ?? []).findIndex((row) => row.label === 'article.card'));
+      await frames(win);
+      const cardBox = root.getBoundingClientRect();
+      const revealed = handle?.target === root && cardBox.bottom > 0 && cardBox.top < win.innerHeight;
+      win.scrollTo(0, 0);
+      await frames(win);
+      diagnostics.tree = { rows: rowsNow, legend };
       handle?.stop();
+      results.tree = {
+        theTreeShowsThePathToThePick: pathShown,
+        // HEO's keys, written on the panel: ← parent, → child, ↑↓ siblings.
+        theKeysAreWrittenOnThePanel: /← parent/.test(legend) && /→ child/.test(legend) && /↑↓ siblings/.test(legend) &&
+          /click: copy and lock/.test(legend) && /Enter copy/.test(legend) && /Esc unlock, then quit/.test(legend),
+        clickingAnAncestorRowSelectsIt: clickedAncestorSelected && clickedGridSelected,
+        clickingAChildRowSelectsIt: clickedChildSelected,
+        clickingASiblingRowSelectsIt: clickedSiblingSelected,
+        theTreeFollowsThePointer: treeFollowsPointer,
+        thePanelStaysWhereItIsDocked: stays,
+        thePanelCoversAStripNotThePage: compact,
+        itIsDraggedByItsHeader: dragged,
+        itIsResizable: resizable,
+        aClickOnThePageCopiesAndLocks: lockedOnP && holdsWhileLocked,
+        copyingKeepsThePickerOpen: stillOpenAfterCopy,
+        theArrowsAdjustALockedPick: keysMoveALockedPick,
+        escapeUnlocksBeforeItQuits: escapeUnlocks && followsAgain,
+        aTreeRowClickUnlocksAndSelects: rowClickUnlocks,
+        aTreeRowIsBroughtIntoView: revealed,
+        itCollapsesToAFloatingButtonAndBack: collapsedToButton && reopened,
+        theArrowsStillWorkAfterClickingARow: keysAfterRowClick,
+      };
       results.picker = {
         // The reported annoyance: Down after Up went to the parent's first child, not back.
         upThenDownReturnsToWhereYouCameFrom: startedOnP && upIsTheCard && backToP && root.firstElementChild !== p,
