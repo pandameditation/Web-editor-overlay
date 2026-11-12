@@ -663,10 +663,11 @@ export class HeoCssPasteDialog extends HeoElement {
                     @change=${(event: Event) =>
             this.editor.updateCssPaste({ applyClass: (event.target as HTMLInputElement).checked })}
                   />
-                  Apply this class to block markup
+                  Apply to block's top element
                 </span>
               </label>
-              <div class="field full">
+              ${!open.applyClass
+            ? html`<div class="field full">
                 <label>Element selector <span class="required">(required)</span></label>
                 <heo-selector-field
                   ${field(this.form, 'css-selector', { required: true })}
@@ -676,12 +677,13 @@ export class HeoCssPasteDialog extends HeoElement {
                   action="Use this element"
                   placeholder="choose an element in this block"
                   @selector-input=${(event: CustomEvent<{ value: string }>) =>
-            this.editor.updateCssPaste({ selector: event.detail.value, selectorExplicit: true })}
+                this.editor.updateCssPaste({ selector: event.detail.value, selectorExplicit: true })}
                   @selector-submit=${(event: CustomEvent<{ value: string }>) =>
-            this.editor.updateCssPaste({ selector: event.detail.value, selectorExplicit: true })}
+                this.editor.updateCssPaste({ selector: event.detail.value, selectorExplicit: true })}
                 ></heo-selector-field>
                 ${this.form.error('css-selector')}
-              </div>
+              </div>`
+            : nothing}
               <div class="target field full">
                 ${icon('cursor', 12)}
                 ${open.applyClass
@@ -874,7 +876,7 @@ export class HeoCssPasteDialog extends HeoElement {
       if (open.destination === 'block-inline' && parsed.rules.length <= 1) blockSelectorIssue();
       if (open.destination === 'block-class') {
         classIssue();
-        if (open.applyClass) blockSelectorIssue();
+        if (!open.applyClass) blockSelectorIssue();
       }
       if (open.destination === 'block-rule' && (!parsed.rules.length || open.selectorExplicit)) {
         blockSelectorIssue();

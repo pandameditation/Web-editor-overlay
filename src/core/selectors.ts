@@ -364,12 +364,15 @@ export function completeSelector(
     if (vocabulary.scope && (!needle || vocabulary.scope.value.toLowerCase().includes(needle))) {
       offer(
         vocabulary.scope.value,
-        'Block root',
+        "Block's top element",
         'the encompassing block root',
-        'Block root',
+        "Block's top element",
       );
     }
-    offerTerms(vocabulary.tags, head ? 'Tags inside this' : 'Tags in this page');
+    offerTerms(
+      vocabulary.tags,
+      head ? 'Tags inside this' : vocabulary.scope ? 'Tags in this block' : 'Tags in this page',
+    );
     offerTerms(vocabulary.classes, 'Classes in this page');
     offerTerms(vocabulary.ids, 'Ids in this page');
     offerPseudos();

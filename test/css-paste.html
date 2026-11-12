@@ -517,12 +517,21 @@ color: rebeccapurple;`;
       engine.updateCssPaste({ destination: 'block-inline' });
       await frames();
       const blockInlineField = () => dialogRoot()?.querySelector('.destination heo-selector-field');
-      blockInlineField()?.shadowRoot?.querySelector('input')?.focus();
+      {
+        // Open the completion list the way a user does: focus then type the :scope draft back in,
+        // so the autocomplete populates reliably (a bare focus() does not open it headlessly).
+        const input = blockInlineField()?.shadowRoot?.querySelector('input');
+        if (input) {
+          input.focus();
+          input.value = ':scope';
+          input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        }
+      }
       await frames();
       check('selectorlessBlockInlinePasteDefaultsToTheEncompassingRoot', () => {
         const field = blockInlineField();
         const rootOption = Array.from(field?.shadowRoot?.querySelectorAll('.option') ?? [])
-          .find((element) => element.querySelector('.name')?.textContent?.trim() === 'Block root');
+          .find((element) => element.querySelector('.name')?.textContent?.trim() === "Block's top element");
         const footer = dialogRoot()?.querySelector('footer .fine')?.textContent
           ?.replace(/\s+/g, ' ').trim() ?? '';
         return {
@@ -648,6 +657,46 @@ color: rebeccapurple;`;
         className: 'module-border',
       });
       await frames();
+      // Item 1: the checkbox now reads "Apply to block's top element", not "block markup".
+      check('theBlockClassApplyCheckboxReadsApplyToTopElement', () => {
+        const label = dialogRoot()?.querySelector('label.check.field.full');
+        const text = label?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+        return {
+          ok: text.includes("Apply to block's top element") && !/block markup/.test(text),
+          text,
+        };
+      });
+      // Item 2: block paste starts with the checkbox ON (apply to the block's top element).
+      check('theBlockClassApplyCheckboxIsOnByDefault', () => {
+        const input = dialogRoot()?.querySelector('label.check.field.full input[type="checkbox"]');
+        return {
+          ok: engine.store.value.cssPaste?.applyClass === true && input?.checked === true,
+          applyClass: engine.store.value.cssPaste?.applyClass ?? null,
+          checked: input?.checked ?? null,
+        };
+      });
+      // Item 3: while Apply is ON the element-selector field is hidden (the class lands on the
+      // block's top element via the :scope default, no selector input needed).
+      check('theBlockClassSelectorFieldIsHiddenWhenApplyIsOn', () => {
+        const field = dialogRoot()?.querySelector('heo-selector-field');
+        return {
+          ok: field === null,
+          fieldTag: field?.tagName ?? 'absent',
+        };
+      });
+      // Item 3: unchecking Apply reveals the element-selector field again.
+      engine.updateCssPaste({ applyClass: false });
+      await frames();
+      check('uncheckingApplyRevealsTheElementSelectorField', () => {
+        const field = dialogRoot()?.querySelector('heo-selector-field');
+        return {
+          ok: field?.tagName === 'HEO-SELECTOR-FIELD',
+          fieldTag: field?.tagName ?? null,
+        };
+      });
+      // Restore the default (ON) state so the rest of this draft matches the shipping default.
+      engine.updateCssPaste({ applyClass: true });
+      await frames();
       const blockClassField = () => dialogRoot()?.querySelector('heo-value-field');
       const blockClassInput = () => blockClassField()?.shadowRoot?.querySelector('input');
       const blockClassQuery = blockClassInput();
@@ -684,6 +733,10 @@ color: rebeccapurple;`;
       });
       const blockClassSelectorField = () => dialogRoot()?.querySelector('heo-selector-field');
       const blockClassSelectorInput = () => blockClassSelectorField()?.shadowRoot?.querySelector('input');
+      // Apply is ON by default now and the selector field is hidden until unchecked, so uncheck
+      // first to reveal the markup-selector autocomplete this assertion exercises.
+      engine.updateCssPaste({ applyClass: false });
+      await frames();
       const blockSelectorQuery = blockClassSelectorInput();
       if (blockSelectorQuery) {
         blockSelectorQuery.focus();
@@ -701,6 +754,29 @@ color: rebeccapurple;`;
             Boolean(option),
           fieldTag: field?.tagName ?? null,
           rootSuggestion: option?.textContent?.trim() ?? null,
+        };
+      });
+      // Item 4: the block selector autocomplete labels read "Block's top element" and
+      // "Tags in this block"; the old "Block root" / "Tags in this page" copy is gone.
+      const freshSelectorInput = blockClassSelectorInput();
+      if (freshSelectorInput) {
+        freshSelectorInput.focus();
+        freshSelectorInput.value = '';
+        freshSelectorInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      }
+      await frames();
+      check('theBlockSelectorAutocompleteUsesTopElementAndBlockLabels', () => {
+        const field = blockClassSelectorField();
+        const text = Array.from(field?.shadowRoot?.querySelectorAll('.option, .group, h4, .head') ?? [])
+          .map((element) => element.textContent?.replace(/\s+/g, ' ').trim() ?? '')
+          .join(' | ');
+        const full = field?.shadowRoot?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+        return {
+          ok: full.includes("Block's top element") &&
+            full.includes('Tags in this block') &&
+            !/Block root/.test(full) &&
+            !/Tags in this page/.test(full),
+          text,
         };
       });
       const targetInput = blockClassSelectorInput();
@@ -733,6 +809,35 @@ color: rebeccapurple;`;
           rootClass: root?.getAttribute('class') ?? null,
           paragraphClass: paragraph?.getAttribute('class') ?? null,
           live,
+        };
+      });
+
+      // Item 2+3: with the default-ON checkbox and no selector typed, pasting applies the class
+      // to the block's top element (the :scope default) — no element-selector input required.
+      const defaultOnClass = 'block-top-default';
+      await openPaste({ context: 'block' }, 'background-color: olive;');
+      engine.updateCssPaste({
+        destination: 'block-class',
+        className: defaultOnClass,
+      });
+      await frames();
+      await applyPaste();
+      check('defaultOnBlockClassPasteAppliesToTheBlockTopElementWithoutSelectorInput', () => {
+        const pending = engine.store.value.extraction;
+        const staged = pending?.mode === 'block' ? pending.globalClasses[defaultOnClass] : undefined;
+        const doc = pending?.mode === 'block'
+          ? new DOMParser().parseFromString(pending.html, 'text/html')
+          : null;
+        const root = doc?.body.firstElementChild;
+        const paragraph = doc?.querySelector('.block-copy');
+        return {
+          ok: pending?.mode === 'block' &&
+            staged?.['background-color'] === 'olive' &&
+            root?.classList.contains(defaultOnClass) === true &&
+            paragraph?.classList.contains(defaultOnClass) === false,
+          staged,
+          rootClass: root?.getAttribute('class') ?? null,
+          paragraphClass: paragraph?.getAttribute('class') ?? null,
         };
       });
 
