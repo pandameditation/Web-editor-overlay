@@ -8,11 +8,13 @@ import {
   nextUnit,
   parseCssFunction,
   parseLength,
-  toHexColor,
 } from '../../core/css.js';
 import { splitImportant } from '../../core/declaration-list.js';
 import { listen, unlisten } from '../../core/shield.js';
 import { PopoverPlacer } from '../place.js';
+import { contrastTargetFor, type ContrastTarget } from '../contrast.js';
+import type { ColorSwatch } from './color-picker.js';
+import './color-picker.js';
 import { icon } from '../icons.js';
 import { baseStyles, swatchStyle } from '../theme.js';
 
@@ -390,6 +392,11 @@ export class HeoValueField extends LitElement {
       :host([inline-list]) {
         display: block;
       }
+      /* The colour picker, in place of the list. */
+      .popup.picker {
+        max-height: none;
+        padding: 10px;
+      }
       @keyframes pop {
         from {
           opacity: 0;
@@ -753,7 +760,10 @@ export class HeoValueField extends LitElement {
   } | null = null;
 
   @query('input[type="text"]') private textInput!: HTMLInputElement;
-  @query('input[type="color"]') private colorInput?: HTMLInputElement;
+  /** The popup is the colour picker rather than the list. */
+  @state() private picking = false;
+  /** What the picker measures contrast against, read when it opens. */
+  @state() private pickerContrast: ContrastTarget | null = null;
 
   #scrubStart = { x: 0, value: 0, unit: 'px' };
   /**
@@ -790,6 +800,7 @@ export class HeoValueField extends LitElement {
     if (!this.open) return;
     if (event.composedPath().includes(this)) return;
     this.open = false;
+    this.picking = false;
     this.highlight = -1;
     // Abandoning a composer by pressing elsewhere discards it, and the live preview it painted has
     // to go with it — this field's own value never changed.
@@ -936,6 +947,8 @@ export class HeoValueField extends LitElement {
   #focusKeepsListOpen(): boolean {
     const active = this.shadowRoot?.activeElement;
     if (!active) return false;
+    // The picker is a dialog of the field's own: anywhere inside the field keeps it up.
+    if (this.picking) return true;
     if (active === this.textInput) return true;
     const popup = this.renderRoot.querySelector('.popup');
     return Boolean(popup && (active === popup || popup.contains(active)));
@@ -980,7 +993,74 @@ export class HeoValueField extends LitElement {
    * gradient bar draws its stops. Does nothing for a field that is not a colour.
    */
   pickColor(): void {
-    this.colorInput?.click();
+    if (this.kind === 'color') this.#openPicker();
+  }
+
+  /** Open the colour picker in the popup, with the contrast it is to be measured against. */
+  #openPicker(): void {
+    this.composer = null;
+    this.picking = true;
+    this.pickerContrast = this.property ? contrastTargetFor(this.property) : null;
+    if (!this.open) this.#openPopup();
+    // Measured again once the picker has drawn itself: it renders a frame after the popup does,
+    // and a popup measured empty was capped short of it and scrolled.
+    void this.updateComplete
+      .then(() => this.renderRoot.querySelector('heo-color-picker')?.updateComplete)
+      .then(() => {
+        if (!this.open || !this.picking) return;
+        this.#placer.invalidate();
+        this.#positionPopup();
+      });
+  }
+
+  /** The project's colour tokens, as the picker's swatches. */
+  get #swatches(): ColorSwatch[] {
+    return this.suggestions
+      .filter((item) => item.token && item.swatch)
+      .map((item) => ({ value: item.value, label: item.label ?? item.value, color: item.swatch! }));
+  }
+
+  #renderPicker(): TemplateResult {
+    const painted = this.draft.trim() || this.placeholder.trim();
+    return html`<div
+      class="popup picker"
+      popover="manual"
+      style=${this.popupStyle}
+      role="dialog"
+      aria-label=${this.fieldLabel ? `${this.fieldLabel}: colour picker` : 'Colour picker'}
+    >
+      <heo-color-picker
+        .value=${painted}
+        .contrast=${this.pickerContrast}
+        .swatches=${this.#swatches}
+        @color-input=${(event: CustomEvent<{ value: string }>) => {
+        event.stopPropagation();
+        this.draft = event.detail.value;
+        this.#emit('value-input');
+      }}
+        @color-change=${(event: CustomEvent<{ value: string }>) => {
+        event.stopPropagation();
+        this.draft = event.detail.value;
+        this.#commit();
+      }}
+        @color-cancel=${(event: Event) => {
+        event.stopPropagation();
+        this.#cancelPicker();
+      }}
+      ></heo-color-picker>
+    </div>`;
+  }
+
+  /** Escape in the picker: back to the value, and the preview off the page. */
+  #cancelPicker(): void {
+    const painted = this.#painted;
+    this.draft = this.value;
+    this.closePopup();
+    this.textInput?.focus();
+    if (painted) {
+      this.#painted = false;
+      this.dispatchEvent(new CustomEvent('value-revert', { bubbles: true, composed: true }));
+    }
   }
 
   /** The rows the list shows for what is typed, in order: for a host taking the best match. */
@@ -1407,18 +1487,12 @@ export class HeoValueField extends LitElement {
         tabindex="-1"
         title="Pick a colour"
         aria-label="Pick a colour"
-        @click=${() => this.colorInput?.click()}
+        aria-expanded=${this.open && this.picking}
+        @pointerdown=${(event: Event) => event.preventDefault()}
+        @click=${() => (this.open && this.picking ? this.closePopup() : this.#openPicker())}
       >
         <span class="swatch" style=${swatchStyle(resolved)}></span>
       </button>
-      <input
-        type="color"
-        .value=${toHexColor(resolved, '#000000')}
-        @input=${this.#onColorInput}
-        @change=${this.#onColorChange}
-        tabindex="-1"
-        aria-hidden="true"
-      />
     `;
   }
 
@@ -1567,6 +1641,7 @@ export class HeoValueField extends LitElement {
   #renderPopup(): TemplateResult {
     // The composer replaces the list while it is up: it answers the question the list was asking.
     if (this.composer) return this.#renderComposer();
+    if (this.picking) return this.#renderPicker();
     const items = this.filtered;
     if (!items.length) {
       const typed = this.draft.trim();
@@ -1976,8 +2051,10 @@ export class HeoValueField extends LitElement {
   #toggleOpen(): void {
     if (this.open) {
       this.open = false;
+      this.picking = false;
       return;
     }
+    this.picking = false;
     this.#openPopup();
     this.textInput?.focus();
   }
@@ -2023,7 +2100,7 @@ export class HeoValueField extends LitElement {
       anchor: this.getBoundingClientRect(),
       // A composer is wider than a list: three labelled rows each holding a field of their own.
       // A head (the destination switch) needs room for its choices on one or two lines.
-      minWidth: this.composer ? 296 : this.head ? 280 : 200,
+      minWidth: this.picking ? 268 : this.composer ? 296 : this.head ? 280 : 200,
     });
     if (style !== null) this.popupStyle = style;
   }
@@ -2225,6 +2302,7 @@ export class HeoValueField extends LitElement {
     openFields.delete(this);
     if (!this.open) return;
     this.open = false;
+    this.picking = false;
     this.#placer.invalidate();
     this.highlight = -1;
     // The composer goes with it. Left set, an abandoned form would stand in for the list the next
@@ -2264,16 +2342,6 @@ export class HeoValueField extends LitElement {
     if (!name) return raw;
     const resolved = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
     return resolved || 'transparent';
-  }
-
-  #onColorInput(event: Event): void {
-    this.draft = (event.target as HTMLInputElement).value;
-    this.#emit('value-input');
-  }
-
-  #onColorChange(event: Event): void {
-    this.draft = (event.target as HTMLInputElement).value;
-    this.#commit();
   }
 
   /* ---- Emitting ---- */

@@ -1126,7 +1126,7 @@ export class HeoBackgroundEditor extends LitElement {
       field-label=${label}
       .value=${value}
       .kind=${kind}
-      .property=${property.startsWith('background-') ? property : ''}
+      .property=${property.startsWith('background-') ? property : kind === 'color' ? 'background-color' : ''}
       .computed=${computed}
       .suggestions=${spec?.suggestions ?? []}
       .head=${spec?.head ?? null}

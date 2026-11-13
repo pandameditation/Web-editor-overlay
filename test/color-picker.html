@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Colour picker</title>
+  <!--
+    A colour field opens the overlay's own colour picker: a saturation and brightness square, hue
+    and opacity sliders, HEX and OKLCH fields, the project's colour tokens, and the WCAG contrast of
+    the colour against what it is read with: a text colour against the worst colour behind it
+    (a gradient's stops, an image's pixels), a background against the text colour, a border as
+    non-text. Drags are made with real mouse input.
+  -->
+  <style id="site">
+    :root {
+      --brand: #6366f1;
+      --ink: #0f172a;
+    }
+
+    body {
+      margin: 0;
+      padding: 16px;
+      font: 15px system-ui;
+    }
+
+    #grad {
+      color: #f8fafc;
+      background: linear-gradient(90deg, #000000, #ffff00);
+    }
+
+    #plain {
+      color: #777777;
+      background: #ffffff;
+    }
+
+    #pic {
+      color: #ffffff;
+      background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10'%3E%3Crect width='10' height='5' fill='%23000'/%3E%3Crect y='5' width='10' height='5' fill='%23ff0000'/%3E%3C/svg%3E");
+    }
+
+    #big {
+      color: #888888;
+      font-size: 32px;
+    }
+  </style>
+</head>
+
+<body>
+  <p id="grad">Text on a gradient</p>
+  <p id="plain">Grey text on white</p>
+  <p id="pic">Text on an image</p>
+  <p id="big">Large text</p>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const results = {};
+      const errors = [];
+      addEventListener('error', (event) => errors.push('error: ' + event.message));
+      const progress = document.getElementById('progress');
+      const settle = (ms = 300) => new Promise((resolve) => setTimeout(resolve, ms));
+      const deep = (selector, root = document) => {
+        const direct = root.querySelector?.(selector);
+        if (direct) return direct;
+        for (const el of root.querySelectorAll?.('*') ?? []) {
+          if (!el.shadowRoot) continue;
+          const found = deep(selector, el.shadowRoot);
+          if (found) return found;
+        }
+        return null;
+      };
+      // Real mouse input, through the runner: a synthetic move sent to the window would reach a
+      // window listener whatever stopped it on the way, which is how a broken drag once passed.
+      let seq = 0;
+      const waiters = new Map();
+      window.__heoKeysDone = (id) => { waiters.get(id)?.(); waiters.delete(id); };
+      const mouse = (...steps) => new Promise((resolve) => {
+        const id = ++seq;
+        waiters.set(id, resolve);
+        window.__heoPressKeys(JSON.stringify({ id, mouse: steps }));
+      }).then(() => settle(250));
+      const point = (type, el, fx, fy) => {
+        const r = el.getBoundingClientRect();
+        return { type, x: r.left + r.width * fx, y: r.top + r.height * fy };
+      };
+      // Past the history's merge window, so the next commit is an entry of its own.
+      const apart = () => settle(2700);
+      try {
+        const api = window.HtmlEditorOverlay.mount({ theme: 'light', presets: false, detectScriptContent: false });
+        const engine = api.engine;
+        api.setEditing(true);
+        await engine.whenReady();
+        engine.setDockTab('styles');
+        const sroot = () => deep('heo-styles-panel').shadowRoot;
+        const row = (list, property) => sroot().querySelector(`[data-declarations="${list}"] .row[data-property="${property}"] heo-value-field`);
+        // What the edit wrote: the colour is declared in the page's #grad rule, so it is written there.
+        const sheet = () => document.getElementById('site').sheet;
+        // The CSSOM serialises a colour as rgb(), so the text as written is read from the row, which
+        // shows the declaration as authored.
+        const written = () => row('typography', 'color')?.value.trim();
+        const select = async (id) => {
+          const el = document.getElementById(id);
+          api.select(el);
+          await settle(500);
+          return el;
+        };
+        /** Open a field's picker by pressing its swatch, as a user does. */
+        const open = async (field) => {
+          field.scrollIntoView({ block: 'start' });
+          await settle(200);
+          field.shadowRoot.querySelector('.color-btn').click();
+          await settle(400);
+          return field.shadowRoot.querySelector('heo-color-picker');
+        };
+        const inside = (picker, selector) => picker?.shadowRoot?.querySelector(selector);
+        const type = async (picker, name, text) => {
+          const input = inside(picker, `input[data-input="${name}"]`);
+          input.focus();
+          input.value = text;
+          input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+          input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, composed: true }));
+          await settle(300);
+        };
+
+        progress.textContent = 'open';
+        const grad = await select('grad');
+        let field = row('typography', 'color');
+        let picker = await open(field);
+        results.open = {
+          theSwatchOpensThePicker: Boolean(picker) && Boolean(inside(picker, '.area')),
+          noNativeColourInput: !field.shadowRoot.querySelector('input[type="color"]'),
+          itStartsOnTheValue: inside(picker, 'input[data-input="hex"]')?.value === 'F8FAFC',
+          hexAndOklchFields: ['hex', 'alpha', 'l', 'c', 'h'].every((name) => inside(picker, `input[data-input="${name}"]`)),
+          theTokensAreSwatches: picker?.shadowRoot?.querySelectorAll('.swatch').length === 2,
+        };
+
+        progress.textContent = 'contrast';
+        {
+          // White on a black-to-yellow gradient: yellow is the worst, ~1.07:1.
+          const text = inside(picker, '.contrast')?.textContent.replace(/\s+/g, ' ') ?? '';
+          results.contrast = {
+            againstTheWorstStop: /1\.0\d:1/.test(text),
+            theGradientIsNamed: /vs gradient · 2 colours/.test(text),
+            failsAA: Boolean(inside(picker, '.badge.fail')),
+            theWorstIsMarked: Boolean(inside(picker, '.chip.worst')),
+            // Nothing passes against both black and yellow, and the picker says so.
+            saysNothingPasses: /No colour of this hue passes AA/.test(text),
+          };
+        }
+
+        progress.textContent = 'area';
+        {
+          const entries = engine.history.size;
+          const area = inside(picker, '.area');
+          // Drag to the bottom left corner: black.
+          await mouse(point('move', area, 0.5, 0.5), point('down', area, 0.5, 0.5), point('move', area, 0.2, 0.8), point('move', area, 0, 1));
+          const previewed = getComputedStyle(grad).color === 'rgb(0, 0, 0)';
+          const midDrag = engine.history.size;
+          await mouse(point('up', area, 0, 1));
+          const text = inside(picker, '.contrast')?.textContent.replace(/\s+/g, ' ') ?? '';
+          results.area = {
+            thePageFollowsTheDrag: previewed,
+            nothingCommitsMidDrag: midDrag === entries,
+            letGoCommitsOnce: written() === '#000000' && engine.history.size === entries + 1,
+            // Black on black and yellow: black is the worst, 1:1.
+            theContrastFollows: /1\.00:1/.test(text),
+            thePickerStaysOpen: Boolean(field.shadowRoot.querySelector('heo-color-picker')),
+          };
+        }
+
+        progress.textContent = 'fields';
+        {
+          await apart();
+          await type(picker, 'hex', '6366f1');
+          const hexed = written();
+          await apart();
+          await type(picker, 'alpha', '50');
+          const translucent = written();
+          await apart();
+          await type(picker, 'l', '70');
+          const oklch = written();
+          const oklchPressed = inside(picker, '.format button[aria-pressed="true"]')?.textContent.trim();
+          await apart();
+          Array.from(picker.shadowRoot.querySelectorAll('.format button')).find((one) => one.textContent.trim() === 'HEX').click();
+          await settle(300);
+          const backToHex = written();
+          await apart();
+          inside(picker, '.swatch[aria-label="brand"]').click();
+          await settle(300);
+          results.fields = {
+            hexIsWritten: hexed === '#6366f1',
+            opacityGoesInTheHex: translucent === '#6366f180',
+            oklchIsWrittenAsOklch: /^oklch\(70% 0\.\d+ \d+(?:\.\d+)? \/ 50%\)$/.test(oklch) && oklchPressed === 'OKLCH',
+            theFormatSwitchesBack: /^#[0-9a-f]{8}$/.test(backToHex),
+            aTokenIsWrittenAsItsVar: written() === 'var(--brand)',
+          };
+        }
+
+        progress.textContent = 'slider';
+        {
+          await apart();
+          picker = field.shadowRoot.querySelector('heo-color-picker');
+          const hue = inside(picker, '.slider.hue');
+          await mouse(point('move', hue, 0.5, 0.5), point('down', hue, 0.5, 0.5), point('move', hue, 0.2, 0.5), point('move', hue, 0, 0.5), point('up', hue, 0, 0.5));
+          // Hue 0 at the brand's saturation and brightness: a red.
+          const red = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})(?:[0-9a-f]{2})?$/.exec(written());
+          results.slider = {
+            dragsTheHue: Boolean(red) && parseInt(red[1], 16) > parseInt(red[2], 16) && red[2] === red[3],
+          };
+        }
+
+        progress.textContent = 'escape';
+        {
+          await apart();
+          const before = written();
+          const entries = engine.history.size;
+          const input = inside(picker, 'input[data-input="hex"]');
+          input.focus();
+          input.value = '00ff00';
+          input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+          await settle(250);
+          // A hex typed without alpha keeps the opacity already set: 50%, from the steps above.
+          const previewed = getComputedStyle(grad).color === 'rgba(0, 255, 0, 0.5)';
+          input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true }));
+          await settle(300);
+          results.escape = {
+            typingPreviews: previewed,
+            escapePutsItBack: written() === before && engine.history.size === entries,
+            andCloses: !field.shadowRoot.querySelector('heo-color-picker'),
+          };
+        }
+
+        progress.textContent = 'line';
+        {
+          // Grey on white: a line splits the square into passing and failing colours.
+          await select('plain');
+          field = row('typography', 'color');
+          picker = await open(field);
+          const text = inside(picker, '.contrast')?.textContent.replace(/\s+/g, ' ') ?? '';
+          results.line = {
+            theRatio: /4\.48:1/.test(text),
+            theAALineIsDrawn: (picker?.shadowRoot?.querySelectorAll('polyline.curve:not(.aaa)').length ?? 0) >= 1,
+            andTheAAALine: (picker?.shadowRoot?.querySelectorAll('polyline.curve.aaa').length ?? 0) >= 1,
+          };
+          field.shadowRoot.querySelector('.color-btn').click();
+          await settle(200);
+        }
+
+        progress.textContent = 'background';
+        {
+          // A background is measured against the text colour.
+          await select('plain');
+          sroot().querySelector('heo-background-editor')?.closest('heo-section')?.shadowRoot?.querySelector('button')?.click();
+          await settle(300);
+          const editor = sroot().querySelector('heo-background-editor');
+          const base = editor.shadowRoot.querySelector('heo-value-field[data-property="background-color"]');
+          picker = await open(base);
+          const text = inside(picker, '.contrast')?.textContent.replace(/\s+/g, ' ') ?? '';
+          results.background = {
+            againstTheTextColour: /vs text colour/.test(text),
+            // #777 on white: 4.48:1, just short of AA.
+            theRatio: /4\.48:1/.test(text),
+          };
+          base.shadowRoot.querySelector('.color-btn').click();
+          await settle(200);
+        }
+
+        progress.textContent = 'image';
+        {
+          await select('pic');
+          field = row('typography', 'color');
+          picker = await open(field);
+          await settle(600);
+          const text = inside(picker, '.contrast')?.textContent.replace(/\s+/g, ' ') ?? '';
+          results.image = {
+            theImageIsSampled: /vs image · \d+ colours?/.test(text) && !/reading image/.test(text),
+            // White on red is the worst of black and red: 4.00:1.
+            againstItsWorstPixel: /4\.00:1/.test(text),
+          };
+          field.shadowRoot.querySelector('.color-btn').click();
+          await settle(200);
+        }
+
+        progress.textContent = 'large';
+        {
+          await select('big');
+          field = row('typography', 'color');
+          picker = await open(field);
+          const text = inside(picker, '.contrast')?.textContent.replace(/\s+/g, ' ') ?? '';
+          // #888 on white is 3.54:1: short of 4.5, past the 3 large text needs.
+          results.large = {
+            saysLargeText: /Large text/.test(text),
+            passesAAAtThree: /3\.54:1/.test(text) && Boolean(inside(picker, '.badge.pass')),
+          };
+          field.shadowRoot.querySelector('.color-btn').click();
+          await settle(200);
+        }
+      } catch (e) {
+        results.threw = String((e && e.stack) || e);
+      }
+      results.browserErrors = { ok: errors.length === 0, errors };
+      const failed = Object.entries(results)
+        .filter(([, group]) => group && typeof group === 'object')
+        .filter(([, group]) => Object.values(group).some((value) => value === false))
+        .map(([name]) => name);
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify({ ...results, failed: results.threw ? ['threw', ...failed] : failed }, null, 2) + ':END';
+    })();
+  </script>
+</body>
+
+</html>

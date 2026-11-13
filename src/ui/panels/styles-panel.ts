@@ -107,6 +107,7 @@ import {
   type Background,
 } from '../../core/background.js';
 import { compareContributions } from '../../core/cascade.js';
+import { setContrastSubject } from '../contrast.js';
 import '../controls/segmented.js';
 import '../controls/section.js';
 import { classNameIssues, forkNameIssues } from '../../core/validation.js';
@@ -1441,6 +1442,8 @@ export class HeoStylesPanel extends HeoElement {
 
   override connectedCallback(): void {
     super.connectedCallback();
+    // The colour picker measures contrast for the element this panel is editing.
+    setContrastSubject(() => this.editor.selected ?? null);
     listen(document, 'pointerdown', this.#onOutsidePress, true);
     listen(window, 'scroll', this.#onViewportChange, true);
     listen(window, 'resize', this.#onViewportChange);
@@ -1453,6 +1456,7 @@ export class HeoStylesPanel extends HeoElement {
 
   override disconnectedCallback(): void {
     super.disconnectedCallback();
+    setContrastSubject(null);
     // The rules' chips stay shown from selection to selection, until the panel is closed.
     this.ui = { ...this.ui, rulesOpen: false };
     unlisten(document, 'pointerdown', this.#onOutsidePress, true);
