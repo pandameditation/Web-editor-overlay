@@ -220,7 +220,16 @@ export const CSS_PROPERTIES: PropertyMeta[] = [
   { name: 'background-image', group: 'appearance', control: 'text', hint: 'url(...)' },
   { name: 'background-size', group: 'appearance', control: 'keyword', keywords: ['auto', 'cover', 'contain'] },
   { name: 'background-position', group: 'appearance', control: 'text', hint: 'center' },
-  { name: 'background-repeat', group: 'appearance', control: 'keyword', keywords: ['repeat', 'no-repeat', 'repeat-x', 'repeat-y'] },
+  { name: 'background-repeat', group: 'appearance', control: 'keyword', keywords: ['repeat', 'no-repeat', 'repeat-x', 'repeat-y', 'space', 'round'] },
+  { name: 'background-attachment', group: 'appearance', control: 'keyword', keywords: ['scroll', 'fixed', 'local'] },
+  { name: 'background-origin', group: 'appearance', control: 'keyword', keywords: ['padding-box', 'border-box', 'content-box'] },
+  { name: 'background-clip', group: 'appearance', control: 'keyword', keywords: ['border-box', 'padding-box', 'content-box', 'text'] },
+  {
+    name: 'background-blend-mode',
+    group: 'appearance',
+    control: 'keyword',
+    keywords: ['normal', 'multiply', 'screen', 'overlay', 'darken', 'lighten', 'color-dodge', 'color-burn', 'hard-light', 'soft-light', 'difference', 'exclusion', 'hue', 'saturation', 'color', 'luminosity'],
+  },
   { name: 'opacity', group: 'appearance', control: 'number', hint: '0 – 1' },
   { name: 'cursor', group: 'appearance', control: 'keyword', keywords: ['auto', 'default', 'pointer', 'text', 'move', 'grab', 'not-allowed', 'wait'] },
 

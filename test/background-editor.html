@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Background editor</title>
+  <!--
+    The Background section edits a background as layers (gradient, image, solid) over a colour, and
+    writes it back as one `background` shorthand, with `background-blend-mode` beside it when a layer
+    blends. Gradients are built on a 0–100 bar; a layer is placed by clicking or dragging on a drawing
+    of the element, snapping to the nine keyword positions.
+  -->
+  <style id="site">
+    .c {
+      background-color: white;
+    }
+  </style>
+</head>
+
+<body>
+  <p id="a">No background yet</p>
+  <p id="b" style='background: url("data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22/%3E") center / cover no-repeat #123456'>An image</p>
+  <p id="c" class="c">A rule's colour</p>
+  <p id="d" style="background: linear-gradient(90deg, red 0%, blue 100%); background-size: 50% auto">A shorthand and a longhand</p>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const results = {};
+      const errors = [];
+      addEventListener('error', (event) => errors.push('error: ' + event.message));
+      const progress = document.getElementById('progress');
+      const settle = (ms = 300) => new Promise((resolve) => setTimeout(resolve, ms));
+      const deep = (selector, root = document) => {
+        const direct = root.querySelector?.(selector);
+        if (direct) return direct;
+        for (const el of root.querySelectorAll?.('*') ?? []) {
+          if (!el.shadowRoot) continue;
+          const found = deep(selector, el.shadowRoot);
+          if (found) return found;
+        }
+        return null;
+      };
+      try {
+        const api = window.HtmlEditorOverlay.mount({ theme: 'dark', presets: false, detectScriptContent: false });
+        const engine = api.engine;
+        api.setEditing(true);
+        await engine.whenReady();
+        engine.setDockTab('styles');
+        const sroot = () => deep('heo-styles-panel').shadowRoot;
+        const editor = () => sroot().querySelector('heo-background-editor');
+        const shadow = () => editor()?.shadowRoot;
+        const field = (property, root = shadow()) => root?.querySelector(`heo-value-field[data-property="${property}"]`);
+        const send = async (target, type, value) => {
+          target?.dispatchEvent(new CustomEvent(type, { detail: { value }, bubbles: true, composed: true }));
+          await settle(250);
+        };
+        const segment = async (label, value) => {
+          shadow()?.querySelector(`heo-segmented[label="${label}"]`)
+            ?.dispatchEvent(new CustomEvent('segment-change', { detail: { value }, bubbles: true, composed: true }));
+          await settle(250);
+        };
+        const rows = () => Array.from(sroot().querySelectorAll('[data-declarations="surface"] .row')).map((row) => row.dataset.property).join(',');
+        const style = (el) => (el.getAttribute('style') ?? '').replace(/\s+/g, ' ').trim();
+        const select = async (id) => {
+          const el = document.getElementById(id);
+          api.select(el);
+          await settle(500);
+          return el;
+        };
+        const at = (el, fx, fy) => {
+          const r = el.getBoundingClientRect();
+          return [r.left + r.width * fx, r.top + r.height * fy];
+        };
+        /*
+         * Real mouse input, through the runner. Drags have to be tested this way: a synthetic move
+         * sent to the window reaches a window listener whatever stops it on the way, and the first
+         * version of these drags passed here while doing nothing under a real pointer.
+         */
+        let mouseSeq = 0;
+        const mouseWaiters = new Map();
+        window.__heoKeysDone = (id) => { mouseWaiters.get(id)?.(); mouseWaiters.delete(id); };
+        const mouse = (...steps) => new Promise((resolve) => {
+          const id = ++mouseSeq;
+          mouseWaiters.set(id, resolve);
+          window.__heoPressKeys(JSON.stringify({ id, mouse: steps }));
+        }).then(() => settle(250));
+        const point = (type, el, fx, fy, extra = {}) => {
+          const [x, y] = at(el, fx, fy);
+          return { type, x, y, ...extra };
+        };
+        const into = async (el) => {
+          el.scrollIntoView({ block: 'center' });
+          await settle(200);
+        };
+        // Past the history's merge window, so the next commit is an entry of its own.
+        const apart = () => settle(2700);
+
+        // Record the bar's request to open a stop's picker, which a native picker cannot report.
+        const picks = [];
+        const proto = customElements.get('heo-value-field').prototype;
+        const pickColor = proto.pickColor;
+        proto.pickColor = function () { picks.push(this.dataset.stop); };
+
+        progress.textContent = 'layout';
+        const a = await select('a');
+        // The section starts closed; open it, as a user would.
+        const section = () => editor()?.closest('heo-section');
+        if (!section()?.open) section()?.shadowRoot?.querySelector('button')?.click();
+        await settle(300);
+        results.layout = {
+          theSectionHasTheEditor: Boolean(editor()),
+          noLayersYet: shadow()?.querySelectorAll('.layer').length === 0,
+          theColourIsAField: Boolean(field('background-color')),
+          threeWaysToAdd: ['gradient', 'image', 'solid'].every((kind) => shadow()?.querySelector(`[data-add="${kind}"]`)),
+          theShorthandIsARow: rows() === 'background',
+        };
+
+        progress.textContent = 'gradient';
+        {
+          const entries = engine.history.size;
+          shadow().querySelector('[data-add="gradient"]').click();
+          await settle(300);
+          const added = style(a);
+          const oneEntry = engine.history.size === entries + 1;
+          await apart();
+          shadow().querySelector('[data-preset="0"]').click();
+          await settle(300);
+          const preset = style(a);
+          await apart();
+          // Drag the dial from its centre to its right: 90°.
+          const dial = shadow().querySelector('.dial');
+          await into(dial);
+          await mouse(point('move', dial, 0.5, 0.5), point('down', dial, 0.5, 0.5), point('move', dial, 0.8, 0.5), point('move', dial, 1.4, 0.5), point('up', dial, 1.4, 0.5));
+          const turned = style(a);
+          await apart();
+          await send(field('gradient-angle'), 'value-change', '90');
+          const angled = style(a);
+          await apart();
+          // A press on the bar at its middle adds a stop there, coloured between its neighbours.
+          const track = shadow().querySelector('.track');
+          await into(track);
+          await mouse(point('move', track, 0.5, 0.3), point('down', track, 0.5, 0.3), point('up', track, 0.5, 0.3));
+          const withStop = style(a);
+          const stopCount = shadow().querySelectorAll('.stop').length;
+          results.gradient = {
+            aGradientIsWritten: added === 'background: linear-gradient(180deg, #00000000 0%, #000000aa 100%);',
+            oneEntry,
+            aSwatchReplacesIt: preset === 'background: linear-gradient(135deg, #6366f1 0%, #ec4899 100%);',
+            theDialTurnsIt: turned === 'background: linear-gradient(90deg, #6366f1 0%, #ec4899 100%);',
+            theAngleIsWritten: angled === 'background: linear-gradient(90deg, #6366f1 0%, #ec4899 100%);',
+            aPressOnTheBarAddsAStop: stopCount === 3 && withStop === 'background: linear-gradient(90deg, #6366f1 0%, #a857c5 50%, #ec4899 100%);',
+            thePageDrawsIt: /linear-gradient/.test(getComputedStyle(a).backgroundImage),
+          };
+        }
+
+        progress.textContent = 'stops';
+        {
+          await apart();
+          // Drag the first stop to 75%: past the middle one, which reorders the gradient.
+          const track = shadow().querySelector('.track');
+          await into(track);
+          const first = shadow().querySelector('.stop[data-stop="0"]');
+          const entries = engine.history.size;
+          // The stop's square sits under the bar's left end: grab it there.
+          await mouse(point('move', first, 0.5, 0.9), point('down', first, 0.5, 0.9), point('move', track, 0.4, 1.3), point('move', track, 0.75, 1.3));
+          const midDragCommitted = engine.history.size !== entries;
+          const previewed = /rgb\(99, 102, 241\) 75%/.test(getComputedStyle(a).backgroundImage);
+          await mouse(point('up', track, 0.75, 1.3));
+          await settle(100);
+          const dragged = style(a);
+          const listOrder = Array.from(shadow().querySelectorAll('.stop-row heo-value-field[data-property="gradient-stop"]')).map((one) => one.value).join(',');
+          // A press that does not move opens that stop's colour.
+          const middle = shadow().querySelector('.stop[data-stop="1"]');
+          await mouse(point('move', middle, 0.5, 0.9), point('down', middle, 0.5, 0.9), point('up', middle, 0.5, 0.9));
+          await apart();
+          // Dragging a row of the list moves its colour; the positions stay on the bar.
+          const rowsNow = () => Array.from(shadow().querySelectorAll('.stop-row'));
+          const transfer = new DataTransfer();
+          rowsNow()[0].dispatchEvent(new DragEvent('dragstart', { bubbles: true, composed: true, dataTransfer: transfer }));
+          rowsNow()[2].dispatchEvent(new DragEvent('dragover', { bubbles: true, composed: true, cancelable: true, dataTransfer: transfer }));
+          rowsNow()[2].dispatchEvent(new DragEvent('drop', { bubbles: true, composed: true, cancelable: true, dataTransfer: transfer }));
+          await settle(300);
+          const reordered = style(a);
+          await apart();
+          // The keyboard moves a stop and removes one.
+          const handle = shadow().querySelector('.stop[data-stop="2"]');
+          handle.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', shiftKey: true, bubbles: true, composed: true }));
+          await settle(250);
+          const nudged = style(a);
+          await apart();
+          shadow().querySelector('.stop[data-stop="2"]').dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true, composed: true }));
+          await settle(250);
+          results.stops = {
+            nothingCommitsMidDrag: !midDragCommitted,
+            thePageFollowsTheDrag: previewed,
+            aDraggedStopPassesItsNeighbour: dragged === 'background: linear-gradient(90deg, #a857c5 50%, #6366f1 75%, #ec4899 100%);',
+            theListIsInBarOrder: listOrder === '#a857c5,#6366f1,#ec4899',
+            aPressOpensThatStopsColour: picks.length === 1 && picks[0] === '1',
+            aListDragMovesTheColourNotThePosition: reordered === 'background: linear-gradient(90deg, #6366f1 50%, #ec4899 75%, #a857c5 100%);',
+            arrowsMoveAStop: nudged === 'background: linear-gradient(90deg, #6366f1 50%, #ec4899 75%, #a857c5 90%);',
+            deleteRemovesIt: style(a) === 'background: linear-gradient(90deg, #6366f1 50%, #ec4899 75%);',
+          };
+        }
+
+        progress.textContent = 'radial';
+        {
+          await apart();
+          await segment('Gradient kind', 'radial');
+          const radial = style(a);
+          await apart();
+          shadow().querySelector('.dot9[title="right top"]').click();
+          await settle(250);
+          results.radial = {
+            radialIsWritten: radial === 'background: radial-gradient(#6366f1 50%, #ec4899 75%);',
+            theCentreIsWritten: style(a) === 'background: radial-gradient(at right top, #6366f1 50%, #ec4899 75%);',
+            noDialForRadial: !shadow().querySelector('.dial'),
+          };
+        }
+
+        progress.textContent = 'image';
+        {
+          await apart();
+          const entries = engine.history.size;
+          shadow().querySelector('[data-add="image"]').click();
+          await settle(300);
+          const waits = engine.history.size === entries && shadow().querySelectorAll('.layer').length === 2;
+          const url = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E";
+          await send(field('background-image'), 'value-change', url);
+          const image = style(a);
+          results.image = {
+            anImageWithNoAddressWritesNothing: waits,
+            itGoesOnTop: image.startsWith(`background: url("${url}") center / cover no-repeat, radial-gradient(`),
+            oneEntryForIt: engine.history.size === entries + 1,
+          };
+        }
+
+        progress.textContent = 'canvas';
+        {
+          await apart();
+          // The address field was focused when the layer was added, and its list hangs over the
+          // drawing: a press on the layer's row, outside it, closes it as it would for a user.
+          const row = shadow().querySelector('.layer[data-layer="0"]');
+          await into(row);
+          await mouse(point('move', row, 0.5, 0.5), point('down', row, 0.5, 0.5), point('up', row, 0.5, 0.5));
+          const origin = shadow().querySelector('.origin');
+          await into(origin);
+          // A press near the top right corner: the keyword, not a percentage.
+          const [x, y] = at(origin, 1, 0);
+          await mouse({ type: 'move', x: x - 6, y: y + 5 }, { type: 'down', x: x - 6, y: y + 5 }, { type: 'up', x: x - 6, y: y + 5 });
+          const snapped = style(a);
+          const dotLit = Boolean(shadow().querySelector('.snap.on'));
+          await apart();
+          // A drag from the centre to anywhere else: a percentage.
+          await mouse(point('move', origin, 0.5, 0.5), point('down', origin, 0.5, 0.5), point('move', origin, 0.4, 0.45), point('move', origin, 0.3, 0.4), point('up', origin, 0.3, 0.4));
+          const free = style(a);
+          await apart();
+          // With Alt, even beside a dot.
+          await mouse(point('move', origin, 0.98, 0.02, { alt: true }), point('down', origin, 0.98, 0.02, { alt: true }), point('up', origin, 0.98, 0.02, { alt: true }));
+          const unsnapped = style(a);
+          await apart();
+          await segment('Paint into', 'content-box');
+          const clipped = style(a);
+          const clipLine = shadow().querySelector('.clip-line')?.style.inset;
+          results.canvas = {
+            nearADotSnapsToItsKeyword: /url\("[^"]+"\) right top \/ cover no-repeat/.test(snapped) && dotLit,
+            elsewhereAPercentage: /url\("[^"]+"\) 30% 40% \/ cover no-repeat/.test(free),
+            altPlacesFreely: /url\("[^"]+"\) 98% 2% \/ cover no-repeat/.test(unsnapped),
+            theClipIsWritten: /no-repeat padding-box content-box,/.test(clipped),
+            theDrawingOutlinesTheClip: clipLine === '14px',
+          };
+        }
+
+        progress.textContent = 'placement';
+        {
+          await apart();
+          await send(field('background-blend-mode'), 'value-change', 'multiply');
+          const blended = style(a);
+          await apart();
+          await segment('Size', 'contain');
+          const contained = style(a);
+          await apart();
+          // Alt and an arrow move the picked layer down the stack.
+          shadow().querySelector('.layer[data-layer="0"]').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', altKey: true, bubbles: true, composed: true }));
+          await settle(300);
+          const moved = style(a);
+          await apart();
+          await send(field('background-color'), 'value-change', 'red');
+          const coloured = style(a);
+          results.placement = {
+            theBlendIsItsOwnDeclaration: /; background-blend-mode: multiply, normal;$/.test(blended),
+            aSizeIsWritten: /98% 2% \/ contain no-repeat/.test(contained),
+            reorderingMovesTheBlendWithIt: /^background: radial-gradient\(.*\), url\(.*; background-blend-mode: normal, multiply;$/.test(moved),
+            theColourGoesLast: /contain no-repeat padding-box content-box red; background-blend-mode/.test(coloured),
+          };
+          await apart();
+          shadow().querySelector('.layer[data-layer="1"] .kill').click();
+          await settle(300);
+          results.placement.removingALayerTakesItsBlend = style(a) === 'background: radial-gradient(at right top, #6366f1 50%, #ec4899 75%) red;';
+        }
+
+        progress.textContent = 'read';
+        {
+          await select('b');
+          const layer = shadow()?.querySelectorAll('.layer');
+          shadow()?.querySelector('.layer[data-layer="0"]')?.click();
+          await settle(250);
+          results.read = {
+            theImageIsALayer: layer?.length === 1 && /Image/.test(layer[0].textContent),
+            theColourIsRead: field('background-color')?.value === '#123456',
+            thePositionIsOnTheCanvas: Boolean(shadow()?.querySelector('.snap.on')) && field('background-position')?.value === 'center',
+            theSizeIsPicked: shadow()?.querySelector('heo-segmented[label="Size"]')?.value === 'cover',
+          };
+        }
+
+        progress.textContent = 'colour';
+        // A rule's colour stays a colour: no shorthand is written for a change to the colour alone.
+        {
+          const c = await select('c');
+          const rule = document.getElementById('site').sheet.cssRules[0];
+          await send(field('background-color'), 'value-change', 'blue');
+          results.colour = {
+            theColourIsARow: rows() === 'background,background-color',
+            writtenInTheRuleAsTheColour: !c.getAttribute('style') && rule.style.backgroundColor === 'blue' && !/background:/.test(rule.cssText),
+          };
+        }
+
+        progress.textContent = 'fold';
+        // A longhand the block declares on its own is folded into the shorthand the editor writes.
+        {
+          const d = await select('d');
+          const listed = rows() === 'background,background-size';
+          const sized = shadow()?.querySelector('heo-segmented[label="Size"]');
+          await send(field('gradient-angle'), 'value-change', '45');
+          results.fold = {
+            theLonghandIsARow: listed,
+            theLonghandIsRead: Boolean(sized) && field('background-size')?.value === '50% auto',
+            oneShorthandWithTheSizeFolded: style(d) === 'background: linear-gradient(45deg, red 0%, blue 100%) 0 0 / 50% auto;',
+            thePageKeepsTheSize: getComputedStyle(d).backgroundSize === '50% auto',
+            theRowIsGone: rows() === 'background',
+          };
+          engine.undo();
+          await settle(300);
+          // The attribute exactly as it was, unterminated last declaration and all.
+          results.fold.undoPutsBothBack = style(d) === 'background: linear-gradient(90deg, red 0%, blue 100%); background-size: 50% auto';
+        }
+
+        progress.textContent = 'search';
+        {
+          const search = sroot().querySelector('heo-search-field');
+          search?.dispatchEvent(new CustomEvent('search-input', { detail: { value: 'blend' }, bubbles: true, composed: true }));
+          await settle(400);
+          results.search = { findsTheBackgroundSection: Boolean(editor()) };
+          search?.dispatchEvent(new CustomEvent('search-input', { detail: { value: '' }, bubbles: true, composed: true }));
+          await settle(300);
+        }
+        proto.pickColor = pickColor;
+      } catch (e) {
+        results.threw = String((e && e.stack) || e);
+      }
+      results.browserErrors = { ok: errors.length === 0, errors };
+      const failed = Object.entries(results)
+        .filter(([, group]) => group && typeof group === 'object')
+        .filter(([, group]) => Object.values(group).some((value) => value === false))
+        .map(([name]) => name);
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify({ ...results, failed: results.threw ? ['threw', ...failed] : failed }, null, 2) + ':END';
+    })();
+  </script>
+</body>
+
+</html>

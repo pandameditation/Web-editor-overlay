@@ -96,6 +96,17 @@ import {
   type LineParts,
   type Side,
 } from '../../core/border.js';
+import '../controls/background-editor.js';
+import type { BackgroundFieldSpec } from '../controls/background-editor.js';
+import {
+  applyLonghand,
+  BACKGROUND_LONGHANDS,
+  composeBackground,
+  composeBlend,
+  parseBackground,
+  type Background,
+} from '../../core/background.js';
+import { compareContributions } from '../../core/cascade.js';
 import '../controls/segmented.js';
 import '../controls/section.js';
 import { classNameIssues, forkNameIssues } from '../../core/validation.js';
@@ -206,8 +217,9 @@ const SECTIONS: SectionSpec[] = [
     id: 'surface',
     heading: 'Background',
     glyph: 'droplet',
-    // Borders and outlines have their own section and editor: see BORDER_PROPERTIES.
-    properties: ['background-color', 'background-image', 'background-size', 'background-position'],
+    // Drawn by hand, as the background editor and its rows (#renderBackground); listed here for the
+    // search. Borders and outlines have their own section and editor: see BORDER_PROPERTIES.
+    properties: ['background', ...BACKGROUND_LONGHANDS],
   },
   {
     id: 'effects',
@@ -789,7 +801,9 @@ export class HeoStylesPanel extends HeoElement {
       ${this.#renderSpacing(el, model, computed, host)}
       ${this.#renderBorder(el, model, computed, host)}
       ${SECTIONS.filter((section) => !section.when || section.when(computed)).map((section) =>
-      this.#renderSection(section, el, model, host),
+      section.id === 'surface'
+        ? this.#renderBackground(section, el, model, computed, host)
+        : this.#renderSection(section, el, model, host),
     )}
       ${this.#renderParent(el, model, host)}
       ${found === 0 ? this.#renderNoMatch() : nothing}
@@ -2227,6 +2241,137 @@ export class HeoStylesPanel extends HeoElement {
       value ? `Set ${kind}` : `Remove ${kind}`,
       el,
     );
+  }
+
+  /**
+   * Background: the layers editor, plus `background` and any longhand a block declares on its own
+   * as rows, the way the Border section lists its parts.
+   *
+   * The editor reads the background as layers over a colour and writes it back as one shorthand
+   * where the `background` row writes, folding away the longhands the same block declares, and
+   * `background-blend-mode` beside it, which the shorthand cannot carry. A change to the colour alone,
+   * in a block with no shorthand, stays the `background-color` it was.
+   */
+  #renderBackground(
+    section: SectionSpec,
+    el: HTMLElement,
+    model: ElementModel,
+    computed: CSSStyleDeclaration,
+    host: StylesHost,
+  ): TemplateResult | typeof nothing {
+    const hits = section.properties.filter((property) => this.#hit(property, shownValue(model.cascade(property).applying[0])));
+    if (!hits.length) return nothing;
+    const scope: RowScope = { kind: 'section', id: section.id };
+    const specOf = (property: string): RowSpec => ({ property, scope, element: el, model, listId: section.id });
+    const choiceOf = (property: string) => {
+      const spec = specOf(property);
+      const { shown } = readRow(spec);
+      return { spec, shown, choice: destinationChoice(spec, host, rowIdOf(scope, property, el), shown) };
+    };
+    const value = this.#backgroundView(model);
+    const head = choiceOf('background').choice.head;
+    const fields: Record<string, BackgroundFieldSpec> = {};
+    for (const property of BACKGROUND_LONGHANDS) {
+      fields[property] = { suggestions: buildSuggestions(this.editor, property, el), head };
+    }
+    const own = (property: string): boolean => model.cascade(property).applying.some((one) => !one.via);
+    const rowsShown = ['background', ...BACKGROUND_LONGHANDS.filter(own)].filter((property) => hits.includes(property));
+    const touched = section.properties.filter(own).length;
+
+    const preview = (next: Background): void => {
+      const { spec, choice } = choiceOf('background');
+      previewChosen(host, spec, choice.picked, composeBackground(next));
+    };
+    const commit = (next: Background): void =>
+      this.#commitBackground(value, next, choiceOf('background').choice, choiceOf('background-color').choice, el, model);
+
+    return html`<heo-section
+      heading=${section.heading}
+      glyph=${section.glyph}
+      badge=${touched ? String(touched) : ''}
+      ?open=${host.filtering ? true : sectionOpen(section.id, false)}
+      @section-toggle=${(event: CustomEvent<{ open: boolean }>) => this.#remember(section.id, event.detail.open)}
+    >
+      <heo-background-editor
+        .value=${value}
+        .computedColor=${computed.backgroundColor}
+        .fields=${fields}
+        @background-input=${(event: CustomEvent<{ value: Background }>) => preview(event.detail.value)}
+        @background-change=${(event: CustomEvent<{ value: Background }>) => commit(event.detail.value)}
+        @background-revert=${() => this.editor.cancelPreview()}
+      ></heo-background-editor>
+      ${rowsShown.length
+        ? html`<div class="rows" style="margin-top:10px" data-declarations=${section.id}>
+            ${renderPropertyRows(rowsShown, specOf, host)}
+          </div>`
+        : nothing}
+    </heo-section>`;
+  }
+
+  /**
+   * The background as the editor shows it: the winning shorthand read as layers, with each longhand
+   * that beats it laid over (a later `background-size`, a more specific rule's colour).
+   */
+  #backgroundView(model: ElementModel): Background {
+    const shorthand = model.cascade('background').applying[0];
+    let background = shorthand ? parseBackground(shorthand.value) : { layers: [], color: '' };
+    for (const property of BACKGROUND_LONGHANDS) {
+      const winner = model.cascade(property).applying[0];
+      if (!winner || winner.via) continue;
+      if (shorthand && compareContributions(shorthand, winner) < 0) continue;
+      background = applyLonghand(background, property, winner.value);
+    }
+    return background;
+  }
+
+  /**
+   * Write a background where the `background` row writes, as one undo entry: the shorthand, with the
+   * longhands the same block declares folded into it (kept, they would compete with it by order),
+   * and the blend list beside it. A colour-only change in a block with no shorthand writes the
+   * colour alone, so `background-color: white` is not turned into a shorthand for nothing.
+   */
+  #commitBackground(
+    before: Background,
+    next: Background,
+    shorthandChoice: ReturnType<typeof destinationChoice>,
+    colourChoice: ReturnType<typeof destinationChoice>,
+    el: HTMLElement,
+    model: ElementModel,
+  ): void {
+    const declaredIn = (property: string, into: WriteTarget | null): boolean => Boolean(into) &&
+      model.cascade(property).applying.some((one) => !one.via && sameTarget(targetOf(one, el), into!));
+    const targetOfChoice = (choice: ReturnType<typeof destinationChoice>): WriteTarget | null =>
+      choice.picked.dest?.kind === 'target' ? choice.picked.dest.target : null;
+    const layersOf = (background: Background): string => composeBackground({ ...background, color: '' });
+    const blend = composeBlend(next);
+    // The colour alone, where no shorthand is written: the colour, where the colour's row writes.
+    const colourOnly = layersOf(before) === layersOf(next) && composeBlend(before) === blend &&
+      !declaredIn('background', targetOfChoice(shorthandChoice));
+    const choice = colourOnly ? colourChoice : shorthandChoice;
+    const dest = choice.picked.dest;
+    if (!dest) return;
+    this.editor.cancelPreview();
+    this.#patch({ rowDest: null });
+    const into = targetOfChoice(choice);
+    const declaredHere = (property: string): boolean => declaredIn(property, into);
+    const moving = choice.current?.dest?.kind === 'target' && choice.current.dest.target.kind === 'inline' && into?.kind !== 'inline';
+    const writes: Array<{ dest: NonNullable<typeof dest>; property: string; value: string; move?: boolean; remove?: boolean }> = [];
+    if (colourOnly) {
+      if (next.color || declaredHere('background-color')) {
+        writes.push({ dest, property: 'background-color', value: next.color, move: moving, remove: !next.color });
+      }
+    } else {
+      const value = composeBackground(next);
+      writes.push({ dest, property: 'background', value, move: moving, remove: !value });
+      for (const property of BACKGROUND_LONGHANDS) {
+        if (property !== 'background-blend-mode' && declaredHere(property)) writes.push({ dest, property, value: '', remove: true });
+      }
+      if (blend || declaredHere('background-blend-mode')) {
+        writes.push({ dest, property: 'background-blend-mode', value: blend, move: moving, remove: !blend });
+      }
+    }
+    if (!writes.length) return;
+    this.editor.writeDeclarationsTo(writes, writes.some((one) => one.value) ? 'Set background' : 'Remove background', el);
   }
 
   #renderSection(

@@ -634,7 +634,11 @@ function compareRanks(a: Rank, b: Rank): number {
   return b.index - a.index;
 }
 
-const compareContributions = (a: Contribution, b: Contribution): number =>
+/**
+ * Negative when `a` beats `b`. Exported for properties outside the shorthand families (the
+ * background's longhands and its shorthand), whose winner has to be decided between two lists.
+ */
+export const compareContributions = (a: Contribution, b: Contribution): number =>
   compareRanks(rankOf(a), rankOf(b));
 
 const BOX_SIDES: Record<string, readonly string[]> = {

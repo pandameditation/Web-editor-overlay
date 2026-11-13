@@ -975,6 +975,14 @@ export class HeoValueField extends LitElement {
     if (!this.open && this.#canOpen) this.#openPopup();
   }
 
+  /**
+   * Open the colour picker from outside: for a host drawing the colour somewhere else too, as the
+   * gradient bar draws its stops. Does nothing for a field that is not a colour.
+   */
+  pickColor(): void {
+    this.colorInput?.click();
+  }
+
   /** The rows the list shows for what is typed, in order: for a host taking the best match. */
   get listMatches(): readonly ValueSuggestion[] {
     return this.filtered;
@@ -1615,42 +1623,42 @@ export class HeoValueField extends LitElement {
       (group) => {
         const cols = gridColumns(group.items);
         const rows = repeat(
-        group.items,
-        (item) => `${group.name}:${item.value}`,
-        (item) => {
-          index += 1;
-          const current = index;
-          return html`<button
+          group.items,
+          (item) => `${group.name}:${item.value}`,
+          (item) => {
+            index += 1;
+            const current = index;
+            return html`<button
                 class=${`option${item.info ? ' info' : ''}${cols ? ' cell' : ''}`}
                 type="button"
                 role="option"
                 aria-selected=${current === this.highlight}
                 title=${item.info
-              ? `${item.label} — what ${item.hint} currently resolves to. Selecting this keeps the expression.`
-              : (item.hint ?? item.value)}
+                ? `${item.label} — what ${item.hint} currently resolves to. Selecting this keeps the expression.`
+                : (item.hint ?? item.value)}
                 @pointerdown=${(event: Event) => event.preventDefault()}
                 @pointerenter=${() => {
-              if (item.info) return;
-              // Once the arrow keys have been used they own the highlight. Letting
-              // the pointer move it would make the selected row and the row Tab
-              // takes disagree — and a mouse resting anywhere over the list would
-              // quietly redirect a keyboard choice. Clicking a row still works
-              // regardless; that is an explicit act.
-              if (this.#highlightMoved) return;
-              this.highlight = current;
-            }}
+                if (item.info) return;
+                // Once the arrow keys have been used they own the highlight. Letting
+                // the pointer move it would make the selected row and the row Tab
+                // takes disagree — and a mouse resting anywhere over the list would
+                // quietly redirect a keyboard choice. Clicking a row still works
+                // regardless; that is an explicit act.
+                if (this.#highlightMoved) return;
+                this.highlight = current;
+              }}
                 @click=${() => this.#choose(item)}
               >
                 ${item.swatch
-              ? html`<span class="swatch" style=${swatchStyle(item.swatch)}></span>`
-              : nothing}
+                ? html`<span class="swatch" style=${swatchStyle(item.swatch)}></span>`
+                : nothing}
                 ${item.icon ? html`<span class="ico">${icon(item.icon, 12)}</span>` : nothing}
                 <span class="name">${item.label ?? item.value}</span>
                 ${item.token ? html`<span class="tokenmark">${icon('droplet', 11)}</span>` : nothing}
                 ${item.hint ? html`<span class="meta">${item.hint}</span>` : nothing}
               </button>`;
-        },
-      );
+          },
+        );
         return html`
           <div class="group">${group.name}</div>
           ${cols ? html`<div class="cells" style=${`--cols:${cols}`}>${rows}</div>` : rows}
