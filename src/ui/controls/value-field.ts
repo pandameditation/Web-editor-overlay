@@ -1026,6 +1026,7 @@ export class HeoValueField extends LitElement {
       class="popup picker"
       popover="manual"
       style=${this.popupStyle}
+      @pointerdown=${keepFocusOnBlank}
       role="dialog"
       aria-label=${this.fieldLabel ? `${this.fieldLabel}: colour picker` : 'Colour picker'}
     >
@@ -1515,6 +1516,7 @@ export class HeoValueField extends LitElement {
       class="popup composer"
       popover="manual"
       style=${this.popupStyle}
+      @pointerdown=${keepFocusOnBlank}
       role="dialog"
       aria-label=${`Compose a ${state.fn}()`}
       @keydown=${this.#onComposerKey}
@@ -1646,6 +1648,7 @@ export class HeoValueField extends LitElement {
       return html`<div
         class=${this.inlineList ? 'popup inline' : 'popup'}
         popover=${this.inlineList ? nothing : 'manual'}
+        @pointerdown=${keepFocusOnBlank}
         style=${this.inlineList ? '' : this.popupStyle}
         role="listbox"
       >
@@ -1686,6 +1689,7 @@ export class HeoValueField extends LitElement {
     return html`<div
       class=${this.inlineList ? 'popup inline' : 'popup'}
       popover=${this.inlineList ? nothing : 'manual'}
+        @pointerdown=${keepFocusOnBlank}
       style=${this.inlineList ? '' : this.popupStyle}
       role="listbox"
     >
@@ -2563,6 +2567,21 @@ function cellOf(items: readonly ValueSuggestion[], index: number): { start: numb
 }
 
 const openFields = new Set<HeoValueField>();
+
+/**
+ * A press on a popup's blank space (its padding, a heading, a label) leaves focus where it is.
+ *
+ * The browser moves focus to the body when a press lands on nothing focusable, and the field reads
+ * focus leaving as the user leaving: a slightly missed click inside the colour picker or the list
+ * closed it. A press on something that takes focus (a field, a button, the picker's square) is left
+ * to do so.
+ */
+export function keepFocusOnBlank(event: PointerEvent): void {
+  const target = event.composedPath()[0];
+  if (!(target instanceof Element)) return;
+  if (target.closest('input, textarea, select, button, a[href], [tabindex], [contenteditable]')) return;
+  event.preventDefault();
+}
 
 declare global {
   interface HTMLElementTagNameMap {

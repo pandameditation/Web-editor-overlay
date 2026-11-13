@@ -1,4 +1,5 @@
 import { css, html, LitElement, nothing, type PropertyValues, type TemplateResult } from 'lit';
+import { keepFocusOnBlank } from './value-field.js';
 import { customElement, property, query, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 import {
@@ -605,7 +606,7 @@ export class HeoSelectorField extends LitElement {
   #renderPopup(): TemplateResult {
     const items = this.completions;
     if (!items.length) {
-      return html`<div class="popup" popover="manual" style=${this.popupStyle} role="listbox">
+      return html`<div class="popup" popover="manual" style=${this.popupStyle} role="listbox" @pointerdown=${keepFocusOnBlank}>
         <div class="none">
           Nothing in this page matches that. Any selector still works — press Enter to use
           what you typed.
@@ -623,7 +624,7 @@ export class HeoSelectorField extends LitElement {
     }
 
     let index = -1;
-    return html`<div class="popup" popover="manual" style=${this.popupStyle} role="listbox">
+    return html`<div class="popup" popover="manual" style=${this.popupStyle} role="listbox" @pointerdown=${keepFocusOnBlank}>
       ${repeat(
       groups,
       (group) => group.name,

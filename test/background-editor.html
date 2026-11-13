@@ -240,10 +240,11 @@
         {
           await apart();
           // The address field was focused when the layer was added, and its list hangs over the
-          // drawing: a press on the layer's row, outside it, closes it as it would for a user.
+          // drawing: a press outside it, on the layer's row, closes it as it would for a user.
           const row = shadow().querySelector('.layer[data-layer="0"]');
           await into(row);
-          await mouse(point('move', row, 0.5, 0.5), point('down', row, 0.5, 0.5), point('up', row, 0.5, 0.5));
+          // At the row's left edge, where the list does not reach: a press on the list itself keeps it.
+          await mouse(point('move', row, 0.05, 0.5), point('down', row, 0.05, 0.5), point('up', row, 0.05, 0.5));
           const origin = shadow().querySelector('.origin');
           await into(origin);
           // A press near the top right corner: the keyword, not a percentage.

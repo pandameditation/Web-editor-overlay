@@ -323,6 +323,46 @@
           field.shadowRoot.querySelector('.color-btn').click();
           await settle(200);
         }
+
+        progress.textContent = 'blank';
+        {
+          // A slightly missed click inside a popup (a label, its padding) must not close it.
+          const press = (x, y) => mouse({ type: 'move', x, y }, { type: 'down', x, y }, { type: 'up', x, y });
+          const centre = (el) => { const r = el.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; };
+          await select('plain');
+          field = row('typography', 'color');
+          field.scrollIntoView({ block: 'start' });
+          await settle(200);
+          const isOpen = () => Boolean(field.shadowRoot.querySelector('.popup'));
+          await press(...centre(field.shadowRoot.querySelector('.color-btn')));
+          picker = field.shadowRoot.querySelector('heo-color-picker');
+          const opened = Boolean(picker);
+          // Focus the hex field first: losing that focus is what closed it.
+          const hex = inside(picker, 'input[data-input="hex"]').getBoundingClientRect();
+          await press(hex.left + 20, hex.top + hex.height / 2);
+          const label = inside(picker, '.head > span').getBoundingClientRect();
+          await press(label.left + 5, label.top + label.height / 2);
+          const afterLabel = isOpen();
+          const pop = field.shadowRoot.querySelector('.popup').getBoundingClientRect();
+          await press(pop.left + 3, pop.bottom - 3);
+          const afterPadding = isOpen();
+          // Outside it, it still closes.
+          await press(20, 20);
+          const outsideCloses = !isOpen();
+          field.focusInput();
+          field.openList();
+          await settle(300);
+          const list = field.shadowRoot.querySelector('.popup').getBoundingClientRect();
+          await press(list.left + 2, list.top + 2);
+          results.blank = {
+            opened,
+            aLabelPressKeepsThePicker: afterLabel,
+            aPaddingPressKeepsIt: afterPadding,
+            aPressOutsideStillClosesIt: outsideCloses,
+            aPressOnTheListsPaddingKeepsIt: isOpen(),
+          };
+          field.closePopup();
+        }
       } catch (e) {
         results.threw = String((e && e.stack) || e);
       }

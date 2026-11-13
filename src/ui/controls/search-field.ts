@@ -1,4 +1,5 @@
 import { css, html, LitElement, nothing, type PropertyValues, type TemplateResult } from 'lit';
+import { keepFocusOnBlank } from './value-field.js';
 import { customElement, property, query, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 import { listen, unlisten } from '../../core/shield.js';
@@ -442,7 +443,7 @@ export class HeoSearchField extends LitElement {
   #renderPopup(): TemplateResult {
     const items = this.suggestions;
     if (!items.length) {
-      return html`<div class="popup" popover="manual" style=${this.popupStyle} role="listbox">
+      return html`<div class="popup" popover="manual" style=${this.popupStyle} role="listbox" @pointerdown=${keepFocusOnBlank}>
         <div class="none">Nothing matches that.</div>
       </div>`;
     }
@@ -458,7 +459,7 @@ export class HeoSearchField extends LitElement {
     }
 
     let index = -1;
-    return html`<div class="popup" popover="manual" style=${this.popupStyle} role="listbox">
+    return html`<div class="popup" popover="manual" style=${this.popupStyle} role="listbox" @pointerdown=${keepFocusOnBlank}>
       ${repeat(
       groups,
       (group) => group.name,
