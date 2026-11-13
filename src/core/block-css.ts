@@ -889,7 +889,7 @@ function blockElements(fragment: DocumentFragment, roots = blockRoots(fragment))
   return [...roots, ...descendants];
 }
 
-function blockRoots(fragment: DocumentFragment): HTMLElement[] {
+export function blockRoots(fragment: DocumentFragment): HTMLElement[] {
   return Array.from(fragment.children).filter(
     (element): element is HTMLElement => element instanceof HTMLElement,
   );

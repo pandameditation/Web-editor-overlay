@@ -7287,11 +7287,10 @@ export class EditorEngine {
         className: suggestedClass,
         selector: suggestedSelector,
         selectorExplicit: Boolean(currentSelector),
-        // Block paste defaults to applying the class to the block's top element.
-        // Off for a class the element already wears: there is nothing to apply.
-        applyClass: options.context === 'block' ||
-          (options.context === 'class' && Boolean(element) &&
-            !(currentClass && element?.classList.contains(currentClass))),
+        // Off for a class the element already wears: there is nothing to apply. Block
+        // paste no longer reads this — the class always lands on the resolved target.
+        applyClass: options.context === 'class' && Boolean(element) &&
+          !(currentClass && element?.classList.contains(currentClass)),
         append: true,
       },
     });

@@ -1,3 +1,4 @@
+import { blockRoots } from './block-css.js';
 import { HOST_TAG, IGNORE_ATTR, NON_SELECTABLE_TAGS } from './constants.js';
 
 /**
@@ -322,7 +323,7 @@ export interface SelectorCompletion {
 export function completeSelector(
   draft: string,
   vocabulary: SelectorVocabulary,
-  options: { limit?: number; root?: ParentNode } = {},
+  options: { limit?: number; root?: ParentNode; equivalents?: string[] } = {},
 ): SelectorCompletion[] {
   const limit = options.limit ?? 40;
   const root = options.root ?? document;
@@ -389,7 +390,7 @@ export function completeSelector(
   // A prefix match is what the user is aiming at; a match count is the tie-break; a
   // dead selector sinks. Sorted after collection so the group ordering above decides
   // ties rather than being overridden by it.
-  return out
+  const ranked = out
     .map((item, index) => ({ item, index }))
     .sort((a, b) => {
       const aDead = a.item.matches === 0 ? 1 : 0;
@@ -402,6 +403,36 @@ export function completeSelector(
     })
     .slice(0, limit)
     .map((entry) => entry.item);
+
+  /*
+   * A simpler exact equivalent of a positional selector, surfaced above the cap.
+   *
+   * When the picker generated a long structural selector but a readable class names the
+   * same element(s), that class is injected here so it is always visible — even though
+   * its low match count could otherwise have fallen past the `.slice(0, limit)` above.
+   * Validated and match-counted through the same path as every other offer, then
+   * de-duplicated against the ranked list by value and prepended.
+   */
+  const equivalents = options.equivalents ?? [];
+  if (!equivalents.length) return ranked;
+  const extra: SelectorCompletion[] = [];
+  const extraSeen = new Set<string>();
+  for (const term of equivalents) {
+    const value = normalizeSelector(term);
+    if (!value || extraSeen.has(value) || !isValidSelector(value)) continue;
+    extraSeen.add(value);
+    extra.push({
+      value,
+      label: value,
+      hint: 'same elements, shorter',
+      group: 'Same elements, simpler',
+      matches: countMatches(value, root),
+    });
+  }
+  if (!extra.length) return ranked;
+  // Shown once, in the "simpler" group: drop any ranked copy of the same value.
+  const rankedWithout = ranked.filter((item) => !extraSeen.has(item.value));
+  return [...extra, ...rankedWithout];
 }
 
 /**
@@ -442,10 +473,26 @@ export function canCombine(draft: string): boolean {
  * purpose of showing it is to say what the rule will do.
  */
 export function countMatches(selector: string, root: ParentNode = document): number {
+  return matchedBlockElements(selector, root).length;
+}
+
+/**
+ * The elements a selector matches, ignoring the overlay's own chrome.
+ *
+ * The single matcher `countMatches` and the block picker both go through, so the live
+ * count and the tree highlight can never disagree about what a selector targets. The
+ * three branches are exactly the ones `countMatches` grew (bare `:scope`, a `:scope`-
+ * prefixed selector, and anything else), kept verbatim so the extraction is behaviour-
+ * preserving — `countMatches` is now its `.length`.
+ */
+export function matchedBlockElements(
+  selector: string,
+  root: ParentNode = document,
+): HTMLElement[] {
   const text = selector.trim();
-  if (!text) return 0;
+  if (!text) return [];
   if (text === ':scope') {
-    return scopeElements(root).filter(inPageContent).length;
+    return scopeElements(root).filter(inPageContent) as HTMLElement[];
   }
   try {
     if (text.startsWith(':scope')) {
@@ -464,7 +511,7 @@ export function countMatches(selector: string, root: ParentNode = document): num
           }
         }
       }
-      return candidates.filter(inPageContent).length;
+      return candidates.filter(inPageContent) as HTMLElement[];
     }
     const candidates: Element[] = [];
     if (root instanceof Element) {
@@ -481,9 +528,9 @@ export function countMatches(selector: string, root: ParentNode = document): num
         candidates.push(element);
       }
     }
-    return candidates.filter(inPageContent).length;
+    return candidates.filter(inPageContent) as HTMLElement[];
   } catch {
-    return 0;
+    return [];
   }
 }
 
@@ -507,4 +554,170 @@ export function ruleSelectorFor(el: HTMLElement): string {
   if (classes.length > 1) return `${tag}.${classes[0]}`;
   if (el.id && !el.id.startsWith('heo-')) return `#${CSS.escape(el.id)}`;
   return tag;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Best selector for a picked set of block-template elements                   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A deterministic positional path from a template root to `e`, confined to `F`.
+ *
+ * `dom.ts`'s `selectorFor` cannot be reused: it terminates on `document.body` and
+ * tests uniqueness against `document`, neither of which works on a detached fragment —
+ * a root's `parentElement` is `null`, and uniqueness must be tested against the
+ * fragment. So this climbs to the template root and spells each step as a bare tag, or
+ * `:nth-of-type(k)` only when a same-tag sibling forces it, rooted at `:scope` (one
+ * root) or `:scope:nth-child(k)` (several). The result is single-valued and, because
+ * every step is confined to `F`, exact by construction.
+ */
+function templatePositionalPath(e: HTMLElement, fragment: DocumentFragment): string {
+  const roots = blockRoots(fragment);
+
+  const step = (node: HTMLElement, parent: Element): string => {
+    const tag = node.tagName.toLowerCase();
+    const sameTag = Array.from(parent.children).filter(
+      (child) => child.tagName === node.tagName,
+    );
+    return sameTag.length > 1 ? `${tag}:nth-of-type(${sameTag.indexOf(node) + 1})` : tag;
+  };
+
+  const rootStep = (root: Element): string =>
+    roots.length === 1 ? ':scope' : `:scope:nth-child(${roots.indexOf(root as HTMLElement) + 1})`;
+
+  if (roots.includes(e)) return rootStep(e);
+
+  const parts: string[] = [];
+  let node: HTMLElement = e;
+  while (node.parentElement && !roots.includes(node.parentElement as HTMLElement)) {
+    parts.unshift(step(node, node.parentElement));
+    node = node.parentElement;
+  }
+  const root = node.parentElement as HTMLElement;
+  parts.unshift(step(node, root));
+  return `${rootStep(root)} > ${parts.join(' > ')}`;
+}
+
+/** Same membership (set equality) between two element arrays. */
+function sameMembership(a: readonly HTMLElement[], b: readonly HTMLElement[]): boolean {
+  if (a.length !== b.length) return false;
+  const set = new Set(a);
+  return b.every((element) => set.has(element));
+}
+
+/**
+ * A selector matching exactly the picked set within the template and nothing else.
+ *
+ * Temporary by design: it only tells the paste where to apply, so it must be exact but
+ * need not be minimal or stable. Candidates are generated readable-first and the first
+ * whose match set equals the picked set wins; a positional path is the guaranteed exact
+ * terminal. Multiple elements try a shared readable form first, then a comma list of
+ * each element's single-element best selector.
+ */
+export function bestBlockSelector(
+  picked: readonly HTMLElement[],
+  fragment: DocumentFragment,
+): string {
+  if (!picked.length) return ':scope';
+  const roots = blockRoots(fragment);
+  const exact = (candidate: string): boolean =>
+    sameMembership(matchedBlockElements(candidate, fragment), picked);
+
+  if (picked.length === 1) {
+    const e = picked[0];
+    const tag = e.tagName.toLowerCase();
+    const classes = Array.from(e.classList).filter((name) => !name.startsWith('heo-'));
+
+    // (1) :scope, only when e is the lone root — keeps the top-element default readable.
+    if (roots.includes(e) && roots.length === 1 && exact(':scope')) return ':scope';
+    // (2) #id — same filter ruleSelectorFor uses, so a heo- id can never be emitted.
+    if (e.id && !e.id.startsWith('heo-')) {
+      const byId = `#${CSS.escape(e.id)}`;
+      if (exact(byId)) return byId;
+    }
+    // (3) a uniquely-identifying class, each tried in DOM order.
+    for (const c of classes) {
+      const byClass = `.${CSS.escape(c)}`;
+      if (exact(byClass)) return byClass;
+    }
+    // (4) the bare tag.
+    if (exact(tag)) return tag;
+    // (5) tag.class, each class in DOM order.
+    for (const c of classes) {
+      const byTagClass = `${tag}.${CSS.escape(c)}`;
+      if (exact(byTagClass)) return byTagClass;
+    }
+    // (6) the structural fallback — always exact, confined to the fragment.
+    return templatePositionalPath(e, fragment);
+  }
+
+  // Multiple elements: a shared readable form first, else a comma list.
+  const shared = sharedReadableSelectors(picked);
+  for (const candidate of shared) {
+    if (exact(candidate)) return candidate;
+  }
+  const list = picked.map((element) => bestBlockSelector([element], fragment)).join(', ');
+  return normalizeSelector(list);
+}
+
+/** Shared single-class, tag, and tag.class candidates common to every picked element. */
+function sharedReadableSelectors(picked: readonly HTMLElement[]): string[] {
+  const first = picked[0];
+  const classesOf = (el: HTMLElement): string[] =>
+    Array.from(el.classList).filter((name) => !name.startsWith('heo-'));
+  const sharedClasses = classesOf(first).filter((c) =>
+    picked.every((element) => element.classList.contains(c)),
+  );
+  const sharedTag = picked.every((element) => element.tagName === first.tagName)
+    ? first.tagName.toLowerCase()
+    : null;
+
+  const out: string[] = [];
+  for (const c of sharedClasses) out.push(`.${CSS.escape(c)}`);
+  if (sharedTag) out.push(sharedTag);
+  if (sharedTag) for (const c of sharedClasses) out.push(`${sharedTag}.${CSS.escape(c)}`);
+  return out;
+}
+
+/**
+ * Readable equivalents of the chosen selector, for the autocomplete's "simpler" group.
+ *
+ * Returns the single-class / `tag` / `tag.class` candidates drawn from the picked set
+ * whose match set equals the picked set exactly — but only when `bestBlockSelector`
+ * fell to a positional/list fallback (ladder steps 1–5 are already readable, so there
+ * is nothing simpler to surface and the list is empty). This is what makes a shorter
+ * exact form always visible in the dropdown even past the completion cap.
+ */
+export function readableEquivalents(
+  picked: readonly HTMLElement[],
+  fragment: DocumentFragment,
+): string[] {
+  if (!picked.length) return [];
+  const chosen = bestBlockSelector(picked, fragment);
+  // A readable ladder step was chosen; nothing simpler to offer.
+  if (!chosen.includes('>') && !chosen.includes(',') && !chosen.includes(':nth')) return [];
+
+  const exact = (candidate: string): boolean =>
+    sameMembership(matchedBlockElements(candidate, fragment), picked);
+
+  const candidates: string[] = [];
+  if (picked.length === 1) {
+    const e = picked[0];
+    const tag = e.tagName.toLowerCase();
+    const classes = Array.from(e.classList).filter((name) => !name.startsWith('heo-'));
+    for (const c of classes) candidates.push(`.${CSS.escape(c)}`);
+    candidates.push(tag);
+    for (const c of classes) candidates.push(`${tag}.${CSS.escape(c)}`);
+  } else {
+    candidates.push(...sharedReadableSelectors(picked));
+  }
+
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const candidate of candidates) {
+    if (seen.has(candidate) || candidate === chosen) continue;
+    seen.add(candidate);
+    if (exact(candidate)) out.push(candidate);
+  }
+  return out;
 }

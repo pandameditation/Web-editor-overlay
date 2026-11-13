@@ -19,6 +19,7 @@ import '../controls/code-editor.js';
 import '../controls/segmented.js';
 import '../controls/selector-field.js';
 import '../controls/value-field.js';
+import '../controls/which-elements.js';
 
 /**
  * A deliberate hand-off between pasted CSS and the place it should live.
@@ -606,22 +607,20 @@ export class HeoCssPasteDialog extends HeoElement {
               block HTML, including roots when they match.
             </div>`
           : html`<div class="fields">
-              <div class="field full">
-                <label>Element selector <span class="required">(required)</span></label>
-                <heo-selector-field
+              ${matchRoot
+              ? html`<div class="field full">
+                <heo-which-elements
                   ${field(this.form, 'css-selector', { required: true })}
-                  .value=${blockSelector}
+                  .selector=${blockSelector}
                   .matchRoot=${matchRoot}
-                  .peek=${false}
-                  action="Use this element"
-                  placeholder="choose an element in this block"
                   @selector-input=${(event: CustomEvent<{ value: string }>) =>
-              this.editor.updateCssPaste({ selector: event.detail.value, selectorExplicit: true })}
+                  this.editor.updateCssPaste({ selector: event.detail.value, selectorExplicit: true })}
                   @selector-submit=${(event: CustomEvent<{ value: string }>) =>
-              this.editor.updateCssPaste({ selector: event.detail.value, selectorExplicit: true })}
-                ></heo-selector-field>
+                  this.editor.updateCssPaste({ selector: event.detail.value, selectorExplicit: true })}
+                ></heo-which-elements>
                 ${this.form.error('css-selector')}
-              </div>
+              </div>`
+              : nothing}
               <div class="target field full">
                 ${icon('cursor', 12)}
                 ${blockMatches
@@ -655,44 +654,27 @@ export class HeoCssPasteDialog extends HeoElement {
                     (${Object.keys(existingClass.declarations).length} declarations).`
             : html`Creates new <code>.${normalizedClass || '…'}</code> in the global design system.`}
               </div>
-              <label class="check field full">
-                <span>
-                  <input
-                    type="checkbox"
-                    .checked=${open.applyClass}
-                    @change=${(event: Event) =>
-            this.editor.updateCssPaste({ applyClass: (event.target as HTMLInputElement).checked })}
-                  />
-                  Apply to block's top element
-                </span>
-              </label>
-              ${!open.applyClass
+              ${matchRoot
             ? html`<div class="field full">
-                <label>Element selector <span class="required">(required)</span></label>
-                <heo-selector-field
+                <heo-which-elements
                   ${field(this.form, 'css-selector', { required: true })}
-                  .value=${open.selector}
+                  .selector=${open.selector}
                   .matchRoot=${matchRoot}
-                  .peek=${false}
-                  action="Use this element"
-                  placeholder="choose an element in this block"
                   @selector-input=${(event: CustomEvent<{ value: string }>) =>
                 this.editor.updateCssPaste({ selector: event.detail.value, selectorExplicit: true })}
                   @selector-submit=${(event: CustomEvent<{ value: string }>) =>
                 this.editor.updateCssPaste({ selector: event.detail.value, selectorExplicit: true })}
-                ></heo-selector-field>
+                ></heo-which-elements>
                 ${this.form.error('css-selector')}
               </div>`
             : nothing}
               <div class="target field full">
                 ${icon('cursor', 12)}
-                ${open.applyClass
-            ? blockMatches
-              ? html`Applies <code>.${normalizedClass || '…'}</code> to
+                ${blockMatches
+            ? html`Applies <code>.${normalizedClass || '…'}</code> to
                     <code>${open.selector === ':scope' ? 'the block root' : open.selector}</code>
                     (${blockMatches} matching element${blockMatches === 1 ? '' : 's'}).`
-              : html`Choose an element selector from this block's markup to continue.`
-            : html`The class stays in the global design system until you enable applying it to the markup.`}
+            : html`Choose an element selector from this block's markup to continue.`}
               </div>
             </div>`
         : nothing}
@@ -703,22 +685,20 @@ export class HeoCssPasteDialog extends HeoElement {
               Every selector is scoped to the block; “As a global Class” makes a reusable class.
             </div>`
           : html`<div class="fields">
-              <div class="field full">
-                <label>Element selector <span class="required">(required)</span></label>
-                <heo-selector-field
+              ${matchRoot
+              ? html`<div class="field full">
+                <heo-which-elements
                   ${field(this.form, 'css-selector', { required: true })}
-                  .value=${blockSelector}
+                  .selector=${blockSelector}
                   .matchRoot=${matchRoot}
-                  .peek=${false}
-                  action="Use this element"
-                  placeholder="choose an element in this block"
                   @selector-input=${(event: CustomEvent<{ value: string }>) =>
-              this.editor.updateCssPaste({ selector: event.detail.value, selectorExplicit: true })}
+                  this.editor.updateCssPaste({ selector: event.detail.value, selectorExplicit: true })}
                   @selector-submit=${(event: CustomEvent<{ value: string }>) =>
-              this.editor.updateCssPaste({ selector: event.detail.value, selectorExplicit: true })}
-                ></heo-selector-field>
+                  this.editor.updateCssPaste({ selector: event.detail.value, selectorExplicit: true })}
+                ></heo-which-elements>
                 ${this.form.error('css-selector')}
-              </div>
+              </div>`
+              : nothing}
               <div class="target field full">
                 ${icon('code', 12)}
                 ${parsed.rules.length
@@ -733,9 +713,30 @@ export class HeoCssPasteDialog extends HeoElement {
     </section>`;
   }
 
+  /**
+   * The block template fragment, memoised by its source HTML.
+   *
+   * Rebuilt only when the pending block HTML changes. The WHICH ELEMENTS? picker holds
+   * element references from this fragment between a click and the selector it emits, and
+   * tracks a running picked set across clicks; a fresh fragment on every render would
+   * break both (the references would belong to a discarded tree). Keeping the identity
+   * stable while the HTML is unchanged is what lets the picker accumulate clicks.
+   */
+  #matchRootHtml: string | null = null;
+  #matchRootFragment: DocumentFragment | null = null;
+
   #blockMatchRoot(): DocumentFragment | null {
     const pending = this.editor.store.value.extraction;
-    return pending?.mode === 'block' ? blockMatchRoot(pending.html) : null;
+    if (pending?.mode !== 'block') {
+      this.#matchRootHtml = null;
+      this.#matchRootFragment = null;
+      return null;
+    }
+    if (pending.html !== this.#matchRootHtml || !this.#matchRootFragment) {
+      this.#matchRootHtml = pending.html;
+      this.#matchRootFragment = blockMatchRoot(pending.html);
+    }
+    return this.#matchRootFragment;
   }
 
   #blockSelector(
@@ -774,11 +775,9 @@ export class HeoCssPasteDialog extends HeoElement {
       }
       if (open.destination === 'block-class') {
         const selector = open.selector;
-        const target = open.applyClass
-          ? safeSelector(selector)
-            ? ` to ${selector === ':scope' ? 'the block root' : selector}`
-            : ' to a selected element'
-          : '';
+        const target = safeSelector(selector)
+          ? ` to ${selector === ':scope' ? 'the block root' : selector}`
+          : ' to a selected element';
         return `${count} ${count === 1 ? 'declaration' : 'declarations'} will upsert into the global .${open.className || '…'} class${target}.`;
       }
       const selector = this.#blockSelector(open, parsed);
@@ -876,7 +875,7 @@ export class HeoCssPasteDialog extends HeoElement {
       if (open.destination === 'block-inline' && parsed.rules.length <= 1) blockSelectorIssue();
       if (open.destination === 'block-class') {
         classIssue();
-        if (!open.applyClass) blockSelectorIssue();
+        blockSelectorIssue();
       }
       if (open.destination === 'block-rule' && (!parsed.rules.length || open.selectorExplicit)) {
         blockSelectorIssue();
@@ -923,9 +922,11 @@ export class HeoCssPasteDialog extends HeoElement {
       }
       if (open.destination === 'block-class') {
         const name = normalizeClassName(open.className);
-        if (this.editor.applyBlockClassCssPaste(parsed, name, open.applyClass, selector)) {
+        if (this.editor.applyBlockClassCssPaste(parsed, name, true, selector)) {
           this.editor.cancelCssPaste();
           this.editor.notify(`Upserted CSS into global .${name}.`, 'success');
+        } else {
+          this.form.fail('css-selector', 'That selector matches nothing in the block markup. Choose an element from the list.');
         }
         return;
       }

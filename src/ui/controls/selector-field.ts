@@ -370,6 +370,14 @@ export class HeoSelectorField extends LitElement {
   /** Supply a vocabulary explicitly when the host already built one for the match root. */
   @property({ attribute: false }) vocabulary?: SelectorVocabulary;
   /**
+   * Shorter exact equivalents to surface above the ranked list.
+   *
+   * The block picker computes these when it generated a positional selector but a
+   * readable class names the same element(s); they are injected uncapped so they are
+   * always visible. Empty for the page-wide field, which passes none.
+   */
+  @property({ attribute: false }) equivalents?: string[];
+  /**
    * Paint an outline over what the selector matches while this field has focus.
    *
    * On by default, and off for the rename field on an existing rule — there the rule is
@@ -435,7 +443,12 @@ export class HeoSelectorField extends LitElement {
      * draft rather than being handed them; the draft is private state, so `#openList` and each
      * committed value are the invalidation points instead.
      */
-    if (changed.has('value') || changed.has('matchRoot') || changed.has('vocabulary')) {
+    if (
+      changed.has('value') ||
+      changed.has('matchRoot') ||
+      changed.has('vocabulary') ||
+      changed.has('equivalents')
+    ) {
       this.#placer.invalidate();
       this.#vocabulary = null;
     }
@@ -472,7 +485,10 @@ export class HeoSelectorField extends LitElement {
 
   private get completions(): SelectorCompletion[] {
     this.#vocabulary ??= this.vocabulary ?? selectorVocabulary(this.matchRoot ?? document);
-    return completeSelector(this.draft, this.#vocabulary, { root: this.matchRoot ?? document });
+    return completeSelector(this.draft, this.#vocabulary, {
+      root: this.matchRoot ?? document,
+      equivalents: this.equivalents,
+    });
   }
 
   override render(): TemplateResult {
@@ -849,6 +865,19 @@ export class HeoSelectorField extends LitElement {
     if (!input) return;
     input.focus();
     if (options.select) input.select();
+  }
+
+  /**
+   * Drop focus from the inner input, so an external `value` write is not swallowed.
+   *
+   * The `willUpdate` guard keeps an in-flight edit from being clobbered by only taking
+   * an external `value` when the field is not `:focus-within`. A right-pane pick moves
+   * focus to the tree and then writes the generated selector back as `value`; the picker
+   * calls this first so the field is no longer focused when that write arrives and the
+   * draft actually updates.
+   */
+  blurInput(): void {
+    this.input?.blur();
   }
 }
 

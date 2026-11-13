@@ -516,7 +516,8 @@ color: rebeccapurple;`;
       await openPaste({ context: 'block' }, 'padding: 6px; border: 1px solid red;');
       engine.updateCssPaste({ destination: 'block-inline' });
       await frames();
-      const blockInlineField = () => dialogRoot()?.querySelector('.destination heo-selector-field');
+      const blockInlineField = () =>
+        dialogRoot()?.querySelector('.destination heo-which-elements')?.shadowRoot?.querySelector('heo-selector-field');
       {
         // Open the completion list the way a user does: focus then type the :scope draft back in,
         // so the autocomplete populates reliably (a bare focus() does not open it headlessly).
@@ -575,11 +576,13 @@ color: rebeccapurple;`;
           const field = blockInlineField();
           const input = field?.shadowRoot?.querySelector('input');
           const error = dialogRoot()?.querySelector('.field-error')?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+          // The form directive now marks the WHICH ELEMENTS? pane invalid (it wraps the field).
+          const pane = dialogRoot()?.querySelector('.destination heo-which-elements');
           return {
             ok: input?.value === '.missing-block-selector' &&
               Boolean(field?.shadowRoot?.querySelector('.count.miss')) &&
               /matches nothing/.test(error) &&
-              field?.getAttribute('aria-invalid') === 'true' &&
+              pane?.getAttribute('aria-invalid') === 'true' &&
               Boolean(engine.store.value.cssPaste),
             selector: input?.value ?? null,
             countTone: field?.shadowRoot?.querySelector('.count')?.className ?? null,
@@ -657,46 +660,16 @@ color: rebeccapurple;`;
         className: 'module-border',
       });
       await frames();
-      // Item 1: the checkbox now reads "Apply to block's top element", not "block markup".
-      check('theBlockClassApplyCheckboxReadsApplyToTopElement', () => {
+      // The "Apply to block's top element" checkbox is gone: the WHICH ELEMENTS? pane now
+      // owns the target, defaulting to the block's top element via :scope.
+      check('theApplyToTopElementCheckboxIsGone', () => {
         const label = dialogRoot()?.querySelector('label.check.field.full');
-        const text = label?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+        const text = dialogRoot()?.textContent?.replace(/\s+/g, ' ') ?? '';
         return {
-          ok: text.includes("Apply to block's top element") && !/block markup/.test(text),
-          text,
+          ok: label === null && !/Apply to block's top element/.test(text),
+          label: label ? 'present' : 'absent',
         };
       });
-      // Item 2: block paste starts with the checkbox ON (apply to the block's top element).
-      check('theBlockClassApplyCheckboxIsOnByDefault', () => {
-        const input = dialogRoot()?.querySelector('label.check.field.full input[type="checkbox"]');
-        return {
-          ok: engine.store.value.cssPaste?.applyClass === true && input?.checked === true,
-          applyClass: engine.store.value.cssPaste?.applyClass ?? null,
-          checked: input?.checked ?? null,
-        };
-      });
-      // Item 3: while Apply is ON the element-selector field is hidden (the class lands on the
-      // block's top element via the :scope default, no selector input needed).
-      check('theBlockClassSelectorFieldIsHiddenWhenApplyIsOn', () => {
-        const field = dialogRoot()?.querySelector('heo-selector-field');
-        return {
-          ok: field === null,
-          fieldTag: field?.tagName ?? 'absent',
-        };
-      });
-      // Item 3: unchecking Apply reveals the element-selector field again.
-      engine.updateCssPaste({ applyClass: false });
-      await frames();
-      check('uncheckingApplyRevealsTheElementSelectorField', () => {
-        const field = dialogRoot()?.querySelector('heo-selector-field');
-        return {
-          ok: field?.tagName === 'HEO-SELECTOR-FIELD',
-          fieldTag: field?.tagName ?? null,
-        };
-      });
-      // Restore the default (ON) state so the rest of this draft matches the shipping default.
-      engine.updateCssPaste({ applyClass: true });
-      await frames();
       const blockClassField = () => dialogRoot()?.querySelector('heo-value-field');
       const blockClassInput = () => blockClassField()?.shadowRoot?.querySelector('input');
       const blockClassQuery = blockClassInput();
@@ -731,12 +704,11 @@ color: rebeccapurple;`;
           destinationText,
         };
       });
-      const blockClassSelectorField = () => dialogRoot()?.querySelector('heo-selector-field');
+      // The selector field now lives inside the WHICH ELEMENTS? pane; reach it through there.
+      // No applyClass toggle to flip — the checkbox is gone and the pane is always shown.
+      const blockClassSelectorField = () =>
+        dialogRoot()?.querySelector('heo-which-elements')?.shadowRoot?.querySelector('heo-selector-field');
       const blockClassSelectorInput = () => blockClassSelectorField()?.shadowRoot?.querySelector('input');
-      // Apply is ON by default now and the selector field is hidden until unchecked, so uncheck
-      // first to reveal the markup-selector autocomplete this assertion exercises.
-      engine.updateCssPaste({ applyClass: false });
-      await frames();
       const blockSelectorQuery = blockClassSelectorInput();
       if (blockSelectorQuery) {
         blockSelectorQuery.focus();
@@ -784,8 +756,6 @@ color: rebeccapurple;`;
         targetInput.value = ':scope > .block-copy';
         targetInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
       }
-      await frames();
-      engine.updateCssPaste({ applyClass: true });
       await frames();
       await applyPaste();
       check('blockClassPasteStagesTheGlobalClassAndAppliesItToTheChosenElement', () => {
@@ -841,36 +811,15 @@ color: rebeccapurple;`;
         };
       });
 
-      const optOutClass = 'block-global-only';
-      await openPaste({ context: 'block' }, 'border-color: hotpink;');
-      engine.updateCssPaste({
-        destination: 'block-class',
-        className: optOutClass,
-        applyClass: false,
-      });
-      await frames();
-      await applyPaste();
-      check('blockClassPasteCanStayGlobalWithoutChangingBlockMarkup', () => {
-        const pending = engine.store.value.extraction;
-        const staged = pending?.mode === 'block' ? pending.globalClasses[optOutClass] : undefined;
-        const doc = pending?.mode === 'block'
-          ? new DOMParser().parseFromString(pending.html, 'text/html')
-          : null;
-        return {
-          ok: pending?.mode === 'block' &&
-            staged?.['border-color'] === 'hotpink' &&
-            doc?.querySelectorAll(`.${optOutClass}`).length === 0 &&
-            engine.classes.get(optOutClass) === undefined,
-          staged,
-          markupMatches: doc?.querySelectorAll(`.${optOutClass}`).length ?? null,
-          liveClass: engine.classes.get(optOutClass) ?? null,
-        };
-      });
+      // (The former `blockClassPasteCanStayGlobalWithoutChangingBlockMarkup` fixture is removed:
+      // with the checkbox gone the class always applies to the resolved target, so there is no
+      // "stay global without touching the markup" opt-out to assert.)
 
       await openPaste({ context: 'block' }, 'outline-width: 3px;');
       engine.updateCssPaste({ destination: 'block-rule' });
       await frames();
-      const blockRuleField = () => dialogRoot()?.querySelector('.destination heo-selector-field');
+      const blockRuleField = () =>
+        dialogRoot()?.querySelector('.destination heo-which-elements')?.shadowRoot?.querySelector('heo-selector-field');
       const blockRuleInput = () => blockRuleField()?.shadowRoot?.querySelector('input');
       check('selectorlessBlockRuleDefaultsToTheEncompassingRoot', () => {
         const field = blockRuleField();
@@ -920,7 +869,8 @@ color: rebeccapurple;`;
       await openPaste({ context: 'block' }, '.missing-scoped-selector { color: orange; }');
       engine.updateCssPaste({ destination: 'block-rule' });
       await frames();
-      const completeRuleField = () => dialogRoot()?.querySelector('.destination heo-selector-field');
+      const completeRuleField = () =>
+        dialogRoot()?.querySelector('.destination heo-which-elements')?.shadowRoot?.querySelector('heo-selector-field');
       const completeRuleInput = () => completeRuleField()?.shadowRoot?.querySelector('input');
       const completeRuleTarget = completeRuleInput();
       if (completeRuleTarget) {
@@ -1107,6 +1057,514 @@ color: rebeccapurple;`;
           blockLookupAfterRemoval: engine.blockInstance(insertedBlock)?.block.id ?? null,
         };
       });
+
+      /* ================================================================== *
+       * WHICH ELEMENTS? two-pane picker.
+       *
+       * One shared source of truth is `open.selector`; the left field renders it,
+       * the right tree highlights what it matches, and a right-pane pick rewrites it
+       * to an exact-match selector. These assertions drive the real rendered control
+       * (the pure best-selector logic in selectors.ts is not exported, so it is
+       * exercised through clicks — the DOM-backed substitute for a Node unit test).
+       * The sample template below is the design's worked-example markup, with a
+       * 45-char class on <section> and a 54-char data-note on <p>.
+       * ================================================================== */
+      const sampleTemplate = `<section class="hero card-lg promo-2024 featured spotlight-xl">
+  <h2>Title</h2>
+  <p data-note="lorem ipsum dolor sit amet consectetur adipiscing elit">Lead</p>
+  <a class="btn primary" href="#">Buy</a>
+  <a class="btn ghost" href="#">Learn</a>
+  <article class="nested" data-heo-block="x"><p>foreign</p></article>
+</section>`;
+
+      // Reach the pane and its inner field/tree through the WHICH ELEMENTS? control.
+      const whichPane = () => dialogRoot()?.querySelector('heo-which-elements');
+      const whichField = () => whichPane()?.shadowRoot?.querySelector('heo-selector-field');
+      const whichInput = () => whichField()?.shadowRoot?.querySelector('input');
+      const whichRows = () =>
+        Array.from(whichPane()?.shadowRoot?.querySelectorAll('[role="treeitem"]') ?? []);
+      const rowByTag = (fragment) =>
+        whichRows().find((row) => (row.querySelector('.label')?.textContent ?? '').includes(fragment));
+      const typeSelector = async (value) => {
+        const input = whichInput();
+        if (input) {
+          input.focus();
+          input.value = value;
+          input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        }
+        await frames();
+      };
+      // A real pointer-driven toggle of a row's selection checkbox (right-pane pick).
+      const clickRow = async (row) => {
+        const box = row?.querySelector('input[type="checkbox"]');
+        box?.click();
+        await frames();
+        await frames();
+      };
+
+      // --- A fresh single-root block on the sample template -----------------
+      engine.beginBlockDraft('WHICH ELEMENTS sample');
+      engine.updateExtraction({ html: sampleTemplate, css: '' });
+      await frames();
+      await openPaste({ context: 'block' }, 'padding: 4px;');
+      engine.updateCssPaste({ destination: 'block-inline' });
+      await frames();
+
+      check('whichElementsPaneTitleReadsWhichElements', () => {
+        const eyebrow = whichPane()?.shadowRoot?.querySelector('.eyebrow')?.textContent?.trim() ?? '';
+        return { ok: eyebrow === 'WHICH ELEMENTS?', eyebrow };
+      });
+
+      // The single "Element selector" field is replaced by WHICH ELEMENTS? on all three
+      // block destinations (inline/≤1 rule, class, scoped/≤1 rule), and no bare
+      // heo-selector-field is rendered directly in the destination anymore.
+      const paneOnInline = Boolean(whichPane());
+      // No bare selector field is rendered directly in the destination (only inside the pane).
+      const bareFieldOnInline = Boolean(dialogRoot()?.querySelector('.destination > .fields > .field > heo-selector-field'));
+      engine.updateCssPaste({ destination: 'block-class', className: 'which-triple' });
+      await frames();
+      const paneOnClass = Boolean(dialogRoot()?.querySelector('heo-which-elements'));
+      engine.updateCssPaste({ destination: 'block-rule' });
+      await frames();
+      const paneOnRule = Boolean(dialogRoot()?.querySelector('heo-which-elements'));
+      engine.updateCssPaste({ destination: 'block-inline' });
+      await frames();
+      check('whichElementsReplacesTheSingleSelectorFieldOnAllThreeDestinations', () => ({
+        ok: paneOnInline && paneOnClass && paneOnRule && !bareFieldOnInline,
+        paneOnInline,
+        paneOnClass,
+        paneOnRule,
+        bareFieldOnInlineAbsent: !bareFieldOnInline,
+      }));
+
+      check('theRightPaneListsTheBlockTemplateElements', () => {
+        // section, h2, p(lead), a(buy), a(learn), article, p(foreign) = 7 element rows.
+        const tags = whichRows().map((row) =>
+          (row.querySelector('.tag')?.textContent ?? '').trim());
+        return {
+          ok: whichRows().length === 7 &&
+            tags.filter((t) => t === 'section').length === 1 &&
+            tags.filter((t) => t === 'a').length === 2 &&
+            tags.filter((t) => t === 'p').length === 2,
+          tags,
+          count: whichRows().length,
+        };
+      });
+
+      check('eachTreeRowHasASelectionCheckboxAndIsReadOnly', () => {
+        const rows = whichRows();
+        const everyRowHasBox = rows.length > 0 &&
+          rows.every((row) => Boolean(row.querySelector('input[type="checkbox"]')));
+        // The label is a button (not an editable field): the markup text cannot be typed into.
+        const noEditableText = rows.every((row) =>
+          !row.querySelector('input[type="text"], textarea, [contenteditable="true"]'));
+        return { ok: everyRowHasBox && noEditableText, rowCount: rows.length };
+      });
+
+      check('longAttributeValuesAreTruncatedWithAnEllipsis', () => {
+        const section = rowByTag('section');
+        const sectionText = section?.querySelector('.label')?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+        const sectionTitle = section?.querySelector('.label')?.getAttribute('title') ?? '';
+        const buy = whichRows().find((row) =>
+          (row.querySelector('.label')?.textContent ?? '').includes('primary'));
+        const buyText = buy?.querySelector('.label')?.textContent ?? '';
+        return {
+          ok: sectionText.includes('class="hero card-lg promo-2024 featured \u2026"') &&
+            sectionTitle.includes('hero card-lg promo-2024 featured spotlight-xl') &&
+            buyText.includes('btn primary') && !buyText.includes('\u2026'),
+          sectionText,
+          sectionTitle,
+          buyText,
+        };
+      });
+
+      check('thereIsExactlyOneSelectorInputPerDestination', () => {
+        const fields = whichPane()?.shadowRoot?.querySelectorAll('heo-selector-field') ?? [];
+        // querySelectorAll does not cross shadow boundaries, so count inside the field.
+        const inputs = whichField()?.shadowRoot?.querySelectorAll('input') ?? [];
+        return { ok: fields.length === 1 && inputs.length === 1, fields: fields.length, inputs: inputs.length };
+      });
+
+      // --- Left -> right: typing highlights matching nodes ------------------
+      await typeSelector('p');
+      check('typingASelectorHighlightsTheMatchingTreeNodes', () => {
+        const selected = whichRows().filter((row) => row.getAttribute('aria-selected') === 'true');
+        const selectedTags = selected.map((row) => (row.querySelector('.tag')?.textContent ?? '').trim());
+        const sectionSelected = rowByTag('section')?.getAttribute('aria-selected') === 'true';
+        return {
+          // Both <p> nodes (lead + foreign) match; <section> does not.
+          ok: selected.length === 2 && selectedTags.every((t) => t === 'p') && sectionSelected === false,
+          selectedTags,
+        };
+      });
+
+      // --- Hand-typed non-matching selector is kept, not overwritten --------
+      await typeSelector('.nope');
+      check('aHandTypedNonMatchingSelectorIsNotOverwritten', () => {
+        const highlighted = whichRows().filter((row) => row.getAttribute('aria-selected') === 'true');
+        const miss = Boolean(whichField()?.shadowRoot?.querySelector('.count.miss'));
+        return {
+          ok: engine.store.value.cssPaste?.selector === '.nope' &&
+            whichInput()?.value === '.nope' &&
+            miss &&
+            highlighted.length === 0,
+          selector: engine.store.value.cssPaste?.selector ?? null,
+          inputValue: whichInput()?.value ?? null,
+          miss,
+        };
+      });
+
+      // --- A right-pane click after a non-matching type wins ----------------
+      await clickRow(rowByTag('section'));
+      check('aRightClickAfterANonMatchingTypeWins', () => {
+        // Clicking the lone root produces the readable :scope.
+        return {
+          ok: engine.store.value.cssPaste?.selector === ':scope',
+          selector: engine.store.value.cssPaste?.selector ?? null,
+        };
+      });
+
+      // --- Clicking a tree node rewrites the selector to an exact match -----
+      // Reset the selection to clear :scope, then pick the <h2>.
+      await typeSelector('');
+      await clickRow(whichRows().find((row) => (row.querySelector('.tag')?.textContent ?? '').trim() === 'h2'));
+      check('clickingATreeNodeRewritesTheSelectorToAnExactMatch', () => {
+        const selector = engine.store.value.cssPaste?.selector ?? '';
+        return {
+          // The lone <h2> is uniquely a bare tag.
+          ok: selector === 'h2',
+          selector,
+        };
+      });
+
+      check('clickingATreeNodeLandsTheGeneratedSelectorInTheInputValue', () => {
+        // The external write reached the input because blurInput() ran before the emit.
+        return {
+          ok: whichInput()?.value === 'h2',
+          inputValue: whichInput()?.value ?? null,
+        };
+      });
+
+      // --- Clicking an element with a class offers the readable class form --
+      // The inner <p> of article.nested needs a positional selector; but its only class-
+      // bearing relative is the <section>. Use the <a class="btn primary"> instead: its
+      // exact selector is the readable .primary (ladder step 3), so no "simpler" group is
+      // expected there. For the simpler-equivalent surfacing we need a positional pick that
+      // has a readable equivalent — the foreign <p> has none. So assert the mechanism on a
+      // case the design pins: pick both <a class="btn">, which yields .btn directly; and
+      // separately verify the "Same elements, simpler" group appears for the positional
+      // foreign <p> only when an equivalent exists (it does not), i.e. the group is absent.
+      // Instead, exercise the documented path: a class that is a simpler equivalent surfaces.
+      await typeSelector('');
+      await clickRow(whichRows().find((row) =>
+        (row.querySelector('.label')?.textContent ?? '').includes('primary')));
+      check('clickingAnElementWithAClassWritesTheReadableClassSelector', () => {
+        // <a class="btn primary"> -> .primary (unique class), the readable form.
+        return {
+          ok: engine.store.value.cssPaste?.selector === '.primary',
+          selector: engine.store.value.cssPaste?.selector ?? null,
+        };
+      });
+
+      // Surfacing of a simpler equivalent in the dropdown: pick the foreign <p> (a positional
+      // selector) and confirm no false "simpler" group is invented; then type a class that is
+      // a genuine simpler equivalent and confirm the group shows. The direct guarantee the
+      // design pins is that when equivalents exist they ride above the cap — exercised by
+      // passing one through the field via a two-element pick that resolves to .btn.
+      await typeSelector('');
+      const aTagRows = () => whichRows().filter((row) => (row.querySelector('.tag')?.textContent ?? '').trim() === 'a');
+      await clickRow(aTagRows()[0]);
+      const afterFirstARow = engine.store.value.cssPaste?.selector;
+      // Re-query after the re-render; the first click replaced the row nodes.
+      await clickRow(aTagRows()[1]);
+      check('clickingTwoNodesProducesAnExactSetSelector', () => {
+        // Both <a class="btn …"> share .btn, which matches exactly the two of them.
+        return {
+          ok: engine.store.value.cssPaste?.selector === '.btn',
+          selector: engine.store.value.cssPaste?.selector ?? null,
+          afterFirstARow,
+        };
+      });
+
+      // The foreign <p> resolves to a positional path; its readable equivalents are empty, so
+      // the "Same elements, simpler" group is omitted (nothing simpler to surface).
+      await typeSelector('');
+      const foreignP = whichRows().filter((row) =>
+        (row.querySelector('.tag')?.textContent ?? '').trim() === 'p')
+        .find((row) => Number(row.getAttribute('aria-level')) > 2);
+      await clickRow(foreignP);
+      check('clickingANestedForeignNodeProducesAnExactPositionalSelector', () => {
+        return {
+          ok: engine.store.value.cssPaste?.selector === ':scope > article > p',
+          selector: engine.store.value.cssPaste?.selector ?? null,
+        };
+      });
+
+      // A readable equivalent IS surfaced in the dropdown when one exists for a fallback.
+      // Construct one: a template where an element needs a positional selector but a class
+      // names the same single element. <h2> here is already a bare-tag readable form, so use
+      // a crafted template with two <h2> where one has a unique class.
+      engine.cancelExtraction();
+      await frames();
+      const equivTemplate = '<div><h2 class="lead-title">A</h2><h2>B</h2></div>';
+      engine.beginBlockDraft('WHICH ELEMENTS equiv');
+      engine.updateExtraction({ html: equivTemplate, css: '' });
+      await frames();
+      await openPaste({ context: 'block' }, 'padding: 4px;');
+      engine.updateCssPaste({ destination: 'block-inline' });
+      await frames();
+      // Pick the first <h2>: it has a unique class (.lead-title) so the best selector is the
+      // readable .lead-title (ladder step 3). To force the positional fallback and a surfaced
+      // equivalent, pick the SECOND <h2> (no class): best is :scope > h2:nth-of-type(2), and
+      // there is no readable equivalent, so no "simpler" group. For the first <h2>, .lead-title
+      // is chosen directly. We assert the field forwards equivalents by passing them manually:
+      // when a positional selector is generated AND a class equivalent exists it must appear.
+      // The first <h2> gives the readable class directly, confirming step-3 selection.
+      await typeSelector('');
+      {
+        const paneRows = () => Array.from(
+          dialogRoot()?.querySelector('heo-which-elements')?.shadowRoot?.querySelectorAll('[role="treeitem"]') ?? []);
+        const firstH2 = paneRows().find((row) =>
+          (row.querySelector('.label')?.textContent ?? '').includes('lead-title'));
+        firstH2?.querySelector('input[type="checkbox"]')?.click();
+        await frames();
+        await frames();
+      }
+      check('clickingAnElementWithAClassOffersTheReadableClassForm', () => {
+        // .lead-title is the readable class selector for the first <h2>.
+        return {
+          ok: engine.store.value.cssPaste?.selector === '.lead-title',
+          selector: engine.store.value.cssPaste?.selector ?? null,
+        };
+      });
+      // Equivalents are surfaced above the completion cap: feed a positional selector with a
+      // known class equivalent straight into the field and confirm the "Same elements, simpler"
+      // group renders the class option.
+      {
+        // Drive the field directly: a positional draft plus a known class equivalent. The
+        // equivalent is set on the field after the parent has settled, and the list is
+        // re-opened with a focus (no selector-input, so the parent will not re-render and
+        // reset the equivalents). This pins the cross-file forwarding into completeSelector.
+        const field = dialogRoot()?.querySelector('heo-which-elements')?.shadowRoot?.querySelector('heo-selector-field');
+        const input = field?.shadowRoot?.querySelector('input');
+        if (field && input) {
+          input.value = 'h2';
+          input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        }
+        await frames();
+        await frames();
+        if (field && input) {
+          field.equivalents = ['.lead-title'];
+          await field.updateComplete;
+          input.blur();
+          input.focus();
+        }
+        await frames();
+        await frames();
+      }
+      check('aSimplerEquivalentIsSurfacedInTheAutocompleteGroup', () => {
+        const field = dialogRoot()?.querySelector('heo-which-elements')?.shadowRoot?.querySelector('heo-selector-field');
+        const groups = Array.from(field?.shadowRoot?.querySelectorAll('.group') ?? [])
+          .map((g) => g.textContent?.trim());
+        const simplerGroupOptions = [];
+        let inSimpler = false;
+        for (const node of Array.from(field?.shadowRoot?.querySelector('.popup')?.children ?? [])) {
+          if (node.classList.contains('group')) inSimpler = node.textContent?.trim() === 'Same elements, simpler';
+          else if (inSimpler && node.querySelector?.('.name')) simplerGroupOptions.push(node.querySelector('.name').textContent?.trim());
+        }
+        return {
+          ok: groups.includes('Same elements, simpler') && simplerGroupOptions.includes('.lead-title'),
+          groups,
+          simplerGroupOptions,
+        };
+      });
+      engine.cancelExtraction();
+      await frames();
+
+      // --- Latest-action-wins: click, then edit, then click -----------------
+      engine.beginBlockDraft('WHICH ELEMENTS latest');
+      engine.updateExtraction({ html: sampleTemplate, css: '' });
+      await frames();
+      await openPaste({ context: 'block' }, 'padding: 4px;');
+      engine.updateCssPaste({ destination: 'block-inline' });
+      await frames();
+      await typeSelector('');
+      await clickRow(whichRows().find((row) => (row.querySelector('.tag')?.textContent ?? '').trim() === 'h2'));
+      const afterFirstClick = engine.store.value.cssPaste?.selector;
+      await typeSelector('section');
+      const afterEdit = engine.store.value.cssPaste?.selector;
+      await clickRow(whichRows().find((row) =>
+        (row.querySelector('.label')?.textContent ?? '').includes('primary')));
+      const afterSecondClick = engine.store.value.cssPaste?.selector;
+      check('latestActionWinsClickThenEditThenClick', () => ({
+        ok: afterFirstClick === 'h2' && afterEdit === 'section' && afterSecondClick === '.primary',
+        afterFirstClick,
+        afterEdit,
+        afterSecondClick,
+      }));
+      engine.cancelExtraction();
+      await frames();
+
+      // --- Single-root vs multi-root synthetic "Block's top element" row ----
+      engine.beginBlockDraft('WHICH ELEMENTS single root');
+      engine.updateExtraction({ html: sampleTemplate, css: '' });
+      await frames();
+      await openPaste({ context: 'block' }, 'padding: 4px;');
+      engine.updateCssPaste({ destination: 'block-inline' });
+      await frames();
+      check('singleRootTemplateHasNoSyntheticTopRow', () => {
+        const synthetic = whichPane()?.shadowRoot?.querySelector('.node.synthetic');
+        return { ok: synthetic === null, synthetic: synthetic ? 'present' : 'absent' };
+      });
+      await typeSelector('');
+      await clickRow(rowByTag('section'));
+      check('checkingTheSingleRootRowSetsScope', () => ({
+        ok: engine.store.value.cssPaste?.selector === ':scope',
+        selector: engine.store.value.cssPaste?.selector ?? null,
+      }));
+      engine.cancelExtraction();
+      await frames();
+
+      const multiRootTemplate = `<div class="first-root"><p class="first-copy">First</p></div>
+<section class="second-root"><p class="second-copy">Second</p></section>`;
+      engine.beginBlockDraft('WHICH ELEMENTS multi root');
+      engine.updateExtraction({ html: multiRootTemplate, css: '' });
+      await frames();
+      await openPaste({ context: 'block' }, 'padding: 4px;');
+      engine.updateCssPaste({ destination: 'block-inline' });
+      await frames();
+      check('multiRootTemplateShowsASyntheticTopElementRow', () => {
+        const synthetic = whichPane()?.shadowRoot?.querySelector('.node.synthetic');
+        const label = synthetic?.querySelector('.label')?.textContent?.trim() ?? '';
+        const level = synthetic?.getAttribute('aria-level');
+        return {
+          ok: Boolean(synthetic) && /Block's top element/.test(label) && level === '1',
+          label,
+          level,
+        };
+      });
+      // Checking the synthetic row sets bare :scope.
+      {
+        const synthetic = whichPane()?.shadowRoot?.querySelector('.node.synthetic');
+        synthetic?.querySelector('input[type="checkbox"]')?.click();
+        await frames();
+        await frames();
+      }
+      check('checkingTheSyntheticTopRowSetsScope', () => ({
+        ok: engine.store.value.cssPaste?.selector === ':scope',
+        selector: engine.store.value.cssPaste?.selector ?? null,
+      }));
+      // Typing :scope by hand lights up (checks) that same synthetic row.
+      await typeSelector(':scope');
+      check('typingScopeChecksTheSyntheticTopRow', () => {
+        const synthetic = whichPane()?.shadowRoot?.querySelector('.node.synthetic');
+        return {
+          ok: synthetic?.getAttribute('aria-checked') === 'true' &&
+            synthetic?.classList.contains('match') === true,
+          ariaChecked: synthetic?.getAttribute('aria-checked') ?? null,
+        };
+      });
+      engine.cancelExtraction();
+      await frames();
+
+      // --- Checkbox gone: top-element default on every destination ----------
+      // block-inline: bare declarations land on the root with nothing picked.
+      engine.beginBlockDraft('WHICH ELEMENTS default inline');
+      engine.updateExtraction({ html: blockMarkup, css: '' });
+      await frames();
+      await openPaste({ context: 'block' }, 'gap: 9px;');
+      engine.updateCssPaste({ destination: 'block-inline' });
+      await frames();
+      await applyPaste();
+      const defaultInlinePending = engine.store.value.extraction;
+      check('checkboxGoneBlockInlineDefaultsToTheRoot', () => {
+        const doc = new DOMParser().parseFromString(
+          defaultInlinePending?.mode === 'block' ? defaultInlinePending.html : '', 'text/html');
+        const root = doc.body.firstElementChild;
+        const paragraph = root?.querySelector('.block-copy');
+        return {
+          ok: root?.style.getPropertyValue('gap') === '9px' && !paragraph?.style.getPropertyValue('gap'),
+          rootStyle: root?.getAttribute('style') ?? null,
+        };
+      });
+      engine.cancelExtraction();
+      await frames();
+
+      // block-class: the class is added to the root with nothing picked (internal value :scope).
+      engine.beginBlockDraft('WHICH ELEMENTS default class');
+      engine.updateExtraction({ html: blockMarkup, css: '' });
+      await frames();
+      await openPaste({ context: 'block' }, 'background-color: navy;');
+      engine.updateCssPaste({ destination: 'block-class', className: 'which-default-class' });
+      await frames();
+      check('checkboxGoneBlockClassDefaultsToScopeInternally', () => ({
+        ok: engine.store.value.cssPaste?.selector === ':scope',
+        selector: engine.store.value.cssPaste?.selector ?? null,
+      }));
+      await applyPaste();
+      const defaultClassPending = engine.store.value.extraction;
+      check('checkboxGoneBlockClassAddsTheClassToTheRoot', () => {
+        const doc = new DOMParser().parseFromString(
+          defaultClassPending?.mode === 'block' ? defaultClassPending.html : '', 'text/html');
+        const root = doc.body.firstElementChild;
+        const paragraph = doc.querySelector('.block-copy');
+        return {
+          ok: root?.classList.contains('which-default-class') === true &&
+            paragraph?.classList.contains('which-default-class') === false,
+          rootClass: root?.getAttribute('class') ?? null,
+        };
+      });
+      engine.cancelExtraction();
+      await frames();
+
+      // block-rule: bare declarations scope to the root with nothing picked.
+      engine.beginBlockDraft('WHICH ELEMENTS default rule');
+      engine.updateExtraction({ html: blockMarkup, css: '' });
+      await frames();
+      await openPaste({ context: 'block' }, 'z-index: 5;');
+      engine.updateCssPaste({ destination: 'block-rule' });
+      await frames();
+      await applyPaste();
+      const defaultRulePending = engine.store.value.extraction;
+      check('checkboxGoneBlockRuleScopesBareDeclarationsToTheRoot', () => {
+        const css = defaultRulePending?.mode === 'block' ? defaultRulePending.css : '';
+        return {
+          ok: css === ':scope {\n  z-index: 5;\n}',
+          css,
+        };
+      });
+      engine.cancelExtraction();
+      await frames();
+
+      // --- 2+ rules: pane hidden for inline/scoped, shown for class ---------
+      engine.beginBlockDraft('WHICH ELEMENTS two rules');
+      engine.updateExtraction({ html: sampleTemplate, css: '' });
+      await frames();
+      await openPaste({ context: 'block' }, 'h2 { color: red; } p { color: blue; }');
+      engine.updateCssPaste({ destination: 'block-inline' });
+      await frames();
+      check('theWhichPaneIsHiddenForTwoOrMoreRulesOnInline', () => {
+        const pane = dialogRoot()?.querySelector('heo-which-elements');
+        const summary = dialogRoot()?.querySelector('.destination .target')?.textContent
+          ?.replace(/\s+/g, ' ').trim() ?? '';
+        return { ok: pane === null && summary.length > 0, pane: pane ? 'present' : 'absent', summary };
+      });
+      engine.updateCssPaste({ destination: 'block-rule' });
+      await frames();
+      check('theWhichPaneIsHiddenForTwoOrMoreRulesOnScoped', () => {
+        const pane = dialogRoot()?.querySelector('heo-which-elements');
+        return { ok: pane === null, pane: pane ? 'present' : 'absent' };
+      });
+      engine.updateCssPaste({ destination: 'block-class', className: 'two-rule-class' });
+      await frames();
+      check('theWhichPaneStaysShownForTwoOrMoreRulesOnClass', () => {
+        const pane = dialogRoot()?.querySelector('heo-which-elements');
+        return { ok: Boolean(pane), pane: pane ? 'present' : 'absent' };
+      });
+      engine.cancelCssPaste();
+      await frames();
+      engine.cancelExtraction();
+      await frames();
 
       /* ------------------------------------------------------------------ *
        * Native page paste is promoted only when it is CSS, while the modal owns
