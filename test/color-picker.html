@@ -212,8 +212,9 @@
 
         progress.textContent = 'escape';
         {
+          // Escape closes the picker on the colour it shows, including one typed and not entered:
+          // it is already on the page. Undo is the way back.
           await apart();
-          const before = written();
           const entries = engine.history.size;
           const input = inside(picker, 'input[data-input="hex"]');
           input.focus();
@@ -224,10 +225,28 @@
           const previewed = getComputedStyle(grad).color === 'rgba(0, 255, 0, 0.5)';
           input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true }));
           await settle(300);
+          const kept = written() === '#00ff0080' && getComputedStyle(grad).color === 'rgba(0, 255, 0, 0.5)';
+          const oneEntry = engine.history.size === entries + 1;
+          const closed = !field.shadowRoot.querySelector('heo-color-picker');
+          await apart();
+          // Escape after a drag, nothing typed: the dragged colour stays, nothing more is written.
+          picker = await open(field);
+          const area = inside(picker, '.area');
+          await mouse(point('move', area, 0.5, 0.5), point('down', area, 0.5, 0.5), point('move', area, 0, 1), point('up', area, 0, 1));
+          const afterDrag = engine.history.size;
+          area.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true }));
+          await settle(300);
+          const dragKept = /^#000000/.test(written()) && engine.history.size === afterDrag;
+          const dragClosed = !field.shadowRoot.querySelector('heo-color-picker');
+          engine.undo();
+          await settle(300);
           results.escape = {
             typingPreviews: previewed,
-            escapePutsItBack: written() === before && engine.history.size === entries,
-            andCloses: !field.shadowRoot.querySelector('heo-color-picker'),
+            escapeKeepsTheTypedColour: kept,
+            asOneEntry: oneEntry,
+            andCloses: closed && dragClosed,
+            escapeAfterADragKeepsIt: dragKept,
+            undoTakesItBack: written() === '#00ff0080',
           };
         }
 

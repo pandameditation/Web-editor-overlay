@@ -48,7 +48,8 @@ const AREA_H = 148;
  * pixels), a background against the text colour.
  *
  * Fires `color-input` with `{ value }` while a colour is explored (dragging, typing), `color-change`
- * when it is committed, and `color-cancel` on Escape.
+ * when it is committed, and `color-close` on Escape, which keeps the colour as it is: undo is the way
+ * back, as for any other edit.
  */
 @customElement('heo-color-picker')
 export class HeoColorPicker extends LitElement {
@@ -641,7 +642,7 @@ export class HeoColorPicker extends LitElement {
     if (event.key === 'Escape') {
       event.preventDefault();
       event.stopPropagation();
-      this.dispatchEvent(new CustomEvent('color-cancel', { bubbles: true, composed: true }));
+      this.dispatchEvent(new CustomEvent('color-close', { bubbles: true, composed: true }));
       return;
     }
     if (event.key === 'Enter') {
@@ -730,7 +731,7 @@ export class HeoColorPicker extends LitElement {
     const move = moves[event.key];
     if (event.key === 'Escape') {
       event.preventDefault();
-      this.dispatchEvent(new CustomEvent('color-cancel', { bubbles: true, composed: true }));
+      this.dispatchEvent(new CustomEvent('color-close', { bubbles: true, composed: true }));
       return;
     }
     if (!move) return;
@@ -742,7 +743,7 @@ export class HeoColorPicker extends LitElement {
     const sign = event.key === 'ArrowRight' || event.key === 'ArrowUp' ? 1 : event.key === 'ArrowLeft' || event.key === 'ArrowDown' ? -1 : 0;
     if (event.key === 'Escape') {
       event.preventDefault();
-      this.dispatchEvent(new CustomEvent('color-cancel', { bubbles: true, composed: true }));
+      this.dispatchEvent(new CustomEvent('color-close', { bubbles: true, composed: true }));
       return;
     }
     if (!sign) return;

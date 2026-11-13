@@ -1043,24 +1043,22 @@ export class HeoValueField extends LitElement {
         this.draft = event.detail.value;
         this.#commit();
       }}
-        @color-cancel=${(event: Event) => {
+        @color-close=${(event: Event) => {
         event.stopPropagation();
-        this.#cancelPicker();
+        this.#closePicker();
       }}
       ></heo-color-picker>
     </div>`;
   }
 
-  /** Escape in the picker: back to the value, and the preview off the page. */
-  #cancelPicker(): void {
-    const painted = this.#painted;
-    this.draft = this.value;
+  /**
+   * Escape in the picker: close it on the colour it shows. One typed but not yet entered is kept
+   * too, since it is already on the page; undo takes any of it back.
+   */
+  #closePicker(): void {
     this.closePopup();
     this.textInput?.focus();
-    if (painted) {
-      this.#painted = false;
-      this.dispatchEvent(new CustomEvent('value-revert', { bubbles: true, composed: true }));
-    }
+    if (this.draft.trim() !== this.value.trim()) this.#commit();
   }
 
   /** The rows the list shows for what is typed, in order: for a host taking the best match. */
