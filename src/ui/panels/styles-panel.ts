@@ -84,8 +84,18 @@ import '../controls/value-field.js';
 import '../controls/search-field.js';
 import '../controls/box-editor.js';
 import '../controls/border-editor.js';
-import type { BorderFieldSpec, LineView } from '../controls/border-editor.js';
-import { composeLine, LINE_PARTS, parseLine, type LineKind, type LinePart, type LineParts } from '../../core/border.js';
+import type { BorderFieldSpec, EdgeView, LineView } from '../controls/border-editor.js';
+import {
+  composeEdge,
+  composeLine,
+  LINE_PARTS,
+  parseLine,
+  SIDES,
+  type LineKind,
+  type LinePart,
+  type LineParts,
+  type Side,
+} from '../../core/border.js';
 import '../controls/segmented.js';
 import '../controls/section.js';
 import { classNameIssues, forkNameIssues } from '../../core/validation.js';
@@ -246,7 +256,9 @@ const SPACING_PROPERTIES = [
  */
 const BORDER_SHORTHANDS = ['border', 'outline'] as const;
 const BORDER_PARTS = ['border-width', 'border-style', 'border-color', 'outline-width', 'outline-style', 'outline-color'];
-const BORDER_PROPERTIES = [...BORDER_SHORTHANDS, 'border-radius', ...BORDER_PARTS];
+/** A side's own family: `border-bottom` and its three longhands. Rows, likewise, only where declared. */
+const BORDER_SIDE_PROPERTIES = SIDES.flatMap((side) => [`border-${side}`, ...LINE_PARTS.map((part) => `border-${side}-${part}`)]);
+const BORDER_PROPERTIES = [...BORDER_SHORTHANDS, 'border-radius', ...BORDER_PARTS, ...BORDER_SIDE_PROPERTIES, 'outline-offset'];
 
 /** The Effective styles element block: its rows' list and its adder share the id. */
 const EFFECTIVE_LIST_ID = 'effective';
@@ -2006,28 +2018,53 @@ export class HeoStylesPanel extends HeoElement {
       }
     }
     fields['border-radius'] = { suggestions: buildSuggestions(this.editor, 'border-radius', el), head: choiceOf('border-radius').choice.head };
+    fields['outline-offset'] = { suggestions: buildSuggestions(this.editor, 'outline-offset', el), head: choiceOf('outline-offset').choice.head };
     const radius = { value: shownValue(model.cascade('border-radius').applying[0]), computed: computed.borderRadius };
+    const offset = { value: shownValue(model.cascade('outline-offset').applying[0]), computed: computed.outlineOffset };
 
-    // Each shorthand, then the parts a block declares on their own (a real declaration to show).
+    // Each shorthand, then the parts a block declares on their own (a real declaration to show):
+    // the border's, each side's family, the outline's, and its offset.
+    const own = (property: string): boolean => model.cascade(property).applying.some((one) => !one.via);
+    const partsOf = (kind: LineKind): string[] => BORDER_PARTS.filter((part) => part.startsWith(`${kind}-`) && own(part));
     const rowsShown = [
-      ...BORDER_SHORTHANDS.flatMap((kind) => [
-        kind,
-        ...BORDER_PARTS.filter((part) => part.startsWith(`${kind}-`) &&
-          model.cascade(part).applying.some((one) => !one.via)),
-      ]),
+      'border',
+      ...partsOf('border'),
+      ...BORDER_SIDE_PROPERTIES.filter(own),
+      'outline',
+      ...partsOf('outline'),
+      ...(own('outline-offset') ? ['outline-offset'] : []),
       'border-radius',
     ].filter((property) => hits.includes(property));
-    const touched = BORDER_PROPERTIES.filter((property) => model.cascade(property).applying.some((one) => !one.via)).length;
+    const touched = BORDER_PROPERTIES.filter(own).length;
 
-    /** The shorthand a part's edit writes, or null for the radius, which is its own property. */
-    const lineOf = (property: string): { kind: LineKind; part: LinePart } | null => {
-      const [kind, part] = property.split('-') as [LineKind, LinePart];
-      return (kind === 'border' || kind === 'outline') && LINE_PARTS.includes(part) ? { kind, part } : null;
+    /** The line a field's edit writes: a shorthand's part, a side's part, or null for its own property. */
+    const lineOf = (property: string): { kind: LineKind; part: LinePart; side?: Side } | null => {
+      const words = property.split('-');
+      const [kind] = words as [LineKind];
+      if (kind !== 'border' && kind !== 'outline') return null;
+      const part = words[words.length - 1] as LinePart;
+      if (!LINE_PARTS.includes(part)) return null;
+      if (words.length === 2) return { kind, part };
+      const side = words[1] as Side;
+      return kind === 'border' && words.length === 3 && SIDES.includes(side) ? { kind, part, side } : null;
     };
+    /** What one side's edit writes, as its whole family (composeEdge). */
+    const edgeWrites = (side: Side, part: LinePart, value: string): Record<string, string> =>
+      composeEdge(side, lines.border.edges![side].parts, this.#allSides(lines.border), part, value);
     const preview = (property: string, value: string): void => {
       const line = lineOf(property);
-      const { spec, choice } = choiceOf(line ? line.kind : property);
-      previewChosen(host, spec, choice.picked, line ? composeLine(this.#lineBase(lines[line.kind]), line.part, value) : value);
+      const { choice } = choiceOf(line ? line.kind : property);
+      if (line?.side) {
+        // The side's own shorthand when that is what the edit writes, else its one longhand.
+        const writes = edgeWrites(line.side, line.part, value);
+        const shorthand = `border-${line.side}`;
+        const [name, text] = writes[shorthand]
+          ? [shorthand, writes[shorthand]!]
+          : [property, writes[property] || value || this.#allSides(lines.border)?.[line.part] || ''];
+        previewChosen(host, specOf(name), choice.picked, text);
+        return;
+      }
+      previewChosen(host, specOf(line ? line.kind : property), choice.picked, line ? composeLine(this.#lineBase(lines[line.kind]), line.part, value) : value);
     };
     const commit = (property: string, value: string): void => {
       const line = lineOf(property);
@@ -2036,7 +2073,15 @@ export class HeoStylesPanel extends HeoElement {
         writeChosen(host, spec, choice, shown, value);
         return;
       }
+      if (line.side) {
+        this.#commitEdge(edgeWrites(line.side, line.part, value), choiceOf('border').choice, el, model, `Set border-${line.side}`);
+        return;
+      }
       this.#commitLine(line.kind, composeLine(this.#lineBase(lines[line.kind]), line.part, value), choiceOf(line.kind).choice, el, model);
+    };
+    const reset = (side: Side): void => {
+      const writes = Object.fromEntries([`border-${side}`, ...LINE_PARTS.map((part) => `border-${side}-${part}`)].map((name) => [name, '']));
+      this.#commitEdge(writes, choiceOf('border').choice, el, model, `Reset border-${side}`);
     };
 
     return html`<heo-section
@@ -2049,10 +2094,12 @@ export class HeoStylesPanel extends HeoElement {
       <heo-border-editor
         .lines=${lines}
         .radius=${radius}
+        .offset=${offset}
         .fields=${fields}
         @line-input=${(event: CustomEvent<{ property: string; value: string }>) => preview(event.detail.property, event.detail.value)}
         @line-change=${(event: CustomEvent<{ property: string; value: string }>) => commit(event.detail.property, event.detail.value)}
         @line-revert=${() => this.editor.cancelPreview()}
+        @line-reset=${(event: CustomEvent<{ property: string }>) => reset(event.detail.property.replace(/^border-/, '') as Side)}
       ></heo-border-editor>
       ${rowsShown.length
         ? html`<div class="rows" style="margin-top:10px" data-declarations="border">
@@ -2079,7 +2126,7 @@ export class HeoStylesPanel extends HeoElement {
         token ||= read.token;
       }
     }
-    const sides = kind === 'border' ? ['top', 'right', 'bottom', 'left'] : [null];
+    const sides = kind === 'border' ? SIDES : [null];
     const drawn: LineParts = { width: '', style: '', color: '' };
     const mixed: LineView['mixed'] = {};
     for (const part of LINE_PARTS) {
@@ -2087,7 +2134,62 @@ export class HeoStylesPanel extends HeoElement {
       drawn[part] = values[0] ?? '';
       mixed[part] = new Set(values).size > 1;
     }
-    return { parts, token, computed: drawn, mixed };
+    if (kind !== 'border') return { parts, token, computed: drawn, mixed };
+    const edges = Object.fromEntries(SIDES.map((side): [Side, EdgeView] => [side, this.#edgeView(side, model, computed)])) as Record<Side, EdgeView>;
+    return { parts, token, computed: drawn, mixed, edges };
+  }
+
+  /**
+   * One side as the editor shows it: the parts it declares for itself, by its longhand or through
+   * its own shorthand (`border-bottom`), and not those it takes from `border` or `border-width`.
+   */
+  #edgeView(side: Side, model: ElementModel, computed: CSSStyleDeclaration): EdgeView {
+    const parts: LineParts = { width: '', style: '', color: '' };
+    const drawn: LineParts = { width: '', style: '', color: '' };
+    for (const part of LINE_PARTS) {
+      const property = `border-${side}-${part}`;
+      drawn[part] = computed.getPropertyValue(property).trim();
+      const winner = model.cascade(property).applying[0];
+      if (!winner) continue;
+      if (!winner.via) parts[part] = winner.value;
+      else if (winner.via === `border-${side}`) parts[part] = parseLine(winner.value)[part];
+    }
+    return { parts, computed: drawn };
+  }
+
+  /**
+   * What every side takes from the all-sides border, or null when there is none to take: as
+   * written, and as drawn where a part is not written (`border: dashed` draws `medium`).
+   */
+  #allSides(border: LineView): LineParts | null {
+    if (!border.token && !LINE_PARTS.some((part) => border.parts[part])) return null;
+    const base = this.#lineBase(border);
+    return { width: base.width || border.computed.width, style: base.style || border.computed.style, color: base.color || border.computed.color };
+  }
+
+  /**
+   * Write one side's family where the border writes, as one undo entry. A removal is only of what
+   * that same block declares: there is nothing to take out of a block not yet written.
+   */
+  #commitEdge(
+    writes: Record<string, string>,
+    choice: ReturnType<typeof destinationChoice>,
+    el: HTMLElement,
+    model: ElementModel,
+    label: string,
+  ): void {
+    const dest = choice.picked.dest;
+    if (!dest) return;
+    this.editor.cancelPreview();
+    this.#patch({ rowDest: null });
+    const into = dest.kind === 'target' ? dest.target : null;
+    const declaredHere = (property: string): boolean => Boolean(into) &&
+      model.cascade(property).applying.some((one) => !one.via && sameTarget(targetOf(one, el), into!));
+    const list = Object.entries(writes)
+      .filter(([property, value]) => value || declaredHere(property))
+      .map(([property, value]) => ({ dest, property, value, remove: !value }));
+    if (!list.length) return;
+    this.editor.writeDeclarationsTo(list, label, el);
   }
 
   /**

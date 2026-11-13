@@ -17,6 +17,10 @@
     .c {
       border: 2px solid green;
     }
+
+    .f {
+      border-top: 3px solid red;
+    }
   </style>
 </head>
 
@@ -24,6 +28,9 @@
   <p id="a">No border yet</p>
   <p id="b" style="border: 1px solid red; border-color: blue">A border and a part</p>
   <p id="c" class="c">A rule's border</p>
+  <p id="d" style="border: 2px dashed var(--brand)">Sides against a border</p>
+  <p id="e">Sides with no border</p>
+  <p id="f" class="f">A rule's side</p>
   <pre id="progress">start</pre>
   <pre id="out">pending</pre>
   <script src="../dist/html-editor-overlay.iife.js"></script>
@@ -165,6 +172,131 @@
             noPartRows,
             theFieldsReadTheRule: shown,
             writtenInTheRule: !c.getAttribute('style') && rule.style.borderTopColor === 'blue' && rule.style.borderTopWidth === '2px',
+          };
+        }
+
+        progress.textContent = 'edges';
+        /*
+         * One side edited on its own. Against a border, a side writes only the longhands that differ,
+         * so it goes on following the border's other parts; with no border, it is its own shorthand.
+         */
+        {
+          const d = await select('d');
+          const shadow = () => editor()?.shadowRoot;
+          const pick = async (side) => {
+            shadow()?.querySelector(`.glyph button${side === 'all' ? '.all' : `[data-side="${side}"]`}`)?.click();
+            await settle(150);
+          };
+          const allFieldsFirst = Boolean(field('border-width')) && !field('border-bottom-width');
+          await pick('bottom');
+          const scoped = Boolean(field('border-bottom-width')) && !field('border-width');
+          // A side's placeholder is what it inherits, so the field says what leaving it empty means.
+          const inherits = field('border-bottom-width')?.getAttribute('placeholder') === '2px';
+          await send('border-bottom-width', 'value-change', '4px');
+          const first = style(d);
+          const frame = shadow()?.querySelector('.frame.border');
+          const drawnPerSide = frame && getComputedStyle(frame).borderBottomWidth === '4px' && getComputedStyle(frame).borderTopWidth === '2px';
+          const marked = Boolean(shadow()?.querySelector('.glyph button[data-side="bottom"].set'));
+          const rowsWithSide = rows('border');
+          // The scope survives the commit: the field being edited does not vanish under the cursor.
+          const stillScoped = Boolean(field('border-bottom-width'));
+          await settle(2700);
+          await pick('all');
+          await send('border-color', 'value-change', 'blue');
+          const followed = style(d);
+          const keepsItsWidth = getComputedStyle(d).borderBottomWidth === '4px' && getComputedStyle(d).borderBottomColor === 'rgb(0, 0, 255)';
+          await settle(2700);
+          await pick('bottom');
+          await send('border-bottom-width', 'value-change', '2px');
+          const sameIsNoOverride = style(d);
+          await settle(2700);
+          await send('border-bottom-style', 'value-change', 'none');
+          const none = style(d);
+          const noneDrawn = getComputedStyle(d).borderBottomStyle === 'none';
+          await settle(2700);
+          await send('border-bottom-color', 'value-change', 'red');
+          const backOn = style(d);
+          const backOnDrawn = getComputedStyle(d).borderBottomStyle === 'dashed' && getComputedStyle(d).borderBottomColor === 'rgb(255, 0, 0)';
+          await settle(2700);
+          shadow()?.querySelector('.scope [data-act="reset"]')?.click();
+          await settle(300);
+          const reset = style(d);
+
+          const e = await select('e');
+          await pick('top');
+          await send('border-top-width', 'value-change', '3px');
+          const alone = style(e);
+          await settle(2700);
+          await pick('all');
+          await send('border-color', 'value-change', 'green');
+          const topKept = style(e) === 'border: 1px solid green; border-top: 3px solid;' &&
+            getComputedStyle(e).borderTopWidth === '3px' && getComputedStyle(e).borderLeftWidth === '1px';
+          results.edges = {
+            allFieldsFirst,
+            pickingASideScopesTheFields: scoped,
+            aSideShowsWhatItInherits: inherits,
+            aSideWritesOnlyWhatDiffers: first === 'border: 2px dashed var(--brand); border-bottom-width: 4px;',
+            theDiagramDrawsEachSide: Boolean(drawnPerSide),
+            theGlyphMarksTheSide: marked,
+            theSideIsARow: rowsWithSide === 'border,border-bottom-width,outline,border-radius',
+            theScopeSurvivesTheCommit: stillScoped,
+            theSideFollowsTheBorder: followed === 'border: 2px dashed blue; border-bottom-width: 4px;' && keepsItsWidth,
+            theSharedValueIsNoOverride: sameIsNoOverride === 'border: 2px dashed blue;',
+            noneIsTheSidesShorthand: none === 'border: 2px dashed blue; border-bottom: none;' && noneDrawn,
+            aColourTurnsTheSideBackOn: backOn === 'border: 2px dashed blue; border-bottom-color: red;' && backOnDrawn,
+            resetFollowsAllSidesAgain: reset === 'border: 2px dashed blue;',
+            withNoBorderASideIsItsOwnShorthand: alone === 'border-top: 3px solid;',
+            // A border given afterwards must not paint over the side: CSS reads a block in order.
+            aBorderAddedLaterKeepsTheSide: topKept,
+          };
+        }
+
+        progress.textContent = 'rule sides';
+        // In a rule, a side is written into the rule and follows the rule's border. A rule's side
+        // under a border written inline is beaten by it, as CSS says: the glyph stops claiming it.
+        {
+          const c = await select('c');
+          const rules = document.getElementById('site').sheet.cssRules;
+          editor()?.shadowRoot?.querySelector('.glyph button[data-side="bottom"]')?.click();
+          await settle(150);
+          await send('border-bottom-width', 'value-change', '5px');
+          const inRule = !c.getAttribute('style') && rules[1].style.borderBottomWidth === '5px';
+          await settle(2700);
+          editor()?.shadowRoot?.querySelector('.glyph button.all')?.click();
+          await settle(150);
+          await send('border-color', 'value-change', 'purple');
+          const follows = getComputedStyle(c).borderBottomWidth === '5px' && getComputedStyle(c).borderBottomColor === 'rgb(128, 0, 128)';
+          const f = await select('f');
+          const sideRead = (() => {
+            editor()?.shadowRoot?.querySelector('.glyph button[data-side="top"]')?.click();
+            return true;
+          })();
+          await settle(150);
+          const readsTheRulesSide = sideRead && field('border-top-width')?.value === '3px' && field('border-top-color')?.value === 'red';
+          editor()?.shadowRoot?.querySelector('.glyph button.all')?.click();
+          await settle(150);
+          await send('border-color', 'value-change', 'green');
+          results.ruleSides = {
+            theSideIsWrittenInTheRule: inRule,
+            itFollowsTheRulesBorder: follows,
+            aSideFromItsShorthandIsRead: readsTheRulesSide,
+            anInlineBorderBeatsTheRulesSide: f.getAttribute('style') === 'border: 1px solid green;' &&
+              getComputedStyle(f).borderTopWidth === '1px' &&
+              !editor()?.shadowRoot?.querySelector('.glyph button[data-side="top"].set'),
+          };
+        }
+
+        progress.textContent = 'offset';
+        {
+          const a = await select('a');
+          const gap = () => editor()?.shadowRoot?.querySelector('.gap');
+          const before = gap()?.getBoundingClientRect().height ?? 0;
+          await send('outline-offset', 'value-change', '6px');
+          results.offset = {
+            theOffsetSitsBetweenOutlineAndBorder: Boolean(editor()?.shadowRoot?.querySelector('.frame.outline > .gap + .frame.border')),
+            theOffsetIsWritten: /outline-offset: 6px;/.test(style(a)) && getComputedStyle(a).outlineOffset === '6px',
+            theGapWidensWithIt: (gap()?.getBoundingClientRect().height ?? 0) > before,
+            theOffsetIsARow: rows('border').includes('outline,outline-offset'),
           };
         }
 

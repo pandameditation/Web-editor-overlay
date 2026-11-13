@@ -95,3 +95,45 @@ export function composeLine(base: LineParts, part: LinePart, value: string): str
   }
   return LINE_PARTS.map((one) => next[one]).filter(Boolean).join(' ');
 }
+
+export type Side = 'top' | 'right' | 'bottom' | 'left';
+export const SIDES: readonly Side[] = ['top', 'right', 'bottom', 'left'];
+
+/**
+ * What one side's edit writes, as the whole side family: `border-<side>` and its three longhands,
+ * each to its new value or '' to remove it, so a side is never left with a shorthand and a longhand
+ * competing by order.
+ *
+ * `own` is what the side declares for itself; `all` is what every side draws from the all-sides
+ * border, or null when there is none. Against a border, only the parts that differ are written,
+ * as longhands (`border-bottom-width: 4px`), so the side goes on following the shared colour and
+ * style when those change; a part picked equal to the shared one stops being an override. With no
+ * border to follow, the side is its own shorthand, drawn the way `composeLine` draws a new line.
+ * Picking `none` writes `border-<side>: none`, which is the whole of what it means.
+ */
+export function composeEdge(
+  side: Side,
+  own: LineParts,
+  all: LineParts | null,
+  part: LinePart,
+  value: string,
+): Record<string, string> {
+  const name = `border-${side}`;
+  const out: Record<string, string> = { [name]: '' };
+  for (const one of LINE_PARTS) out[`${name}-${one}`] = '';
+  if (part === 'style' && /^none$/i.test(value.trim())) {
+    out[name] = 'none';
+    return out;
+  }
+  if (!all) {
+    out[name] = composeLine(own, part, value);
+    return out;
+  }
+  const next: LineParts = { ...own, [part]: value.trim() };
+  // A width or colour for a side that was turned off turns it back on, in the shared style.
+  if (part !== 'style' && /^(?:none|hidden)$/i.test(next.style)) next.style = '';
+  for (const one of LINE_PARTS) {
+    if (next[one] && next[one].toLowerCase() !== all[one].toLowerCase()) out[`${name}-${one}`] = next[one];
+  }
+  return out;
+}
