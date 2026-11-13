@@ -913,6 +913,7 @@ export class HeoValueField extends LitElement {
    * popover to be laid out.
    */
   override updated(): void {
+    this.#announceHighlight();
     const popup = this.renderRoot.querySelector<HTMLElement>('.popup');
     if (!popup || !this.open) return;
     if (!this.inlineList && typeof popup.showPopover === 'function' && !popup.matches(':popover-open')) {
@@ -924,6 +925,22 @@ export class HeoValueField extends LitElement {
       }
     }
     this.#positionPopup();
+  }
+
+  /** The suggestion last announced as highlighted, so each change is said once. */
+  #announced: string | null = null;
+
+  /**
+   * Say which suggestion is highlighted, by pointer or by arrow keys, as `suggestion-hover` with
+   * `{ value }` (null once none is): for a host that previews a choice before it is made, as the
+   * Animation section plays the one under the pointer.
+   */
+  #announceHighlight(): void {
+    const item = this.open && !this.picking && !this.composer && this.highlight >= 0 ? this.filtered[this.highlight] : undefined;
+    const value = item && !item.info ? item.value : null;
+    if (value === this.#announced) return;
+    this.#announced = value;
+    this.dispatchEvent(new CustomEvent('suggestion-hover', { detail: { value }, bubbles: true, composed: true }));
   }
 
   /** True when focus is inside this component, across the shadow boundary. */

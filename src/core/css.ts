@@ -338,7 +338,24 @@ export const CSS_PROPERTIES: PropertyMeta[] = [
   { name: 'transition-property', group: 'transition', control: 'text', hint: 'opacity, transform' },
   { name: 'transition-duration', group: 'transition', control: 'length', tokens: 'motion', hint: '200ms' },
   { name: 'transition-timing-function', group: 'transition', control: 'keyword', keywords: ['ease', 'ease-in', 'ease-out', 'ease-in-out', 'linear', 'cubic-bezier(.4,0,.2,1)'] },
-  { name: 'animation', group: 'transition', control: 'text' },
+  {
+    name: 'animation',
+    group: 'transition',
+    control: 'text',
+    hint: 'heo-blur-in 900ms ease both',
+    // The ready-made library's keyframes (core/animations.ts), each complete on its fallbacks: the
+    // 2026 picks, a spring blur-in, a scroll-driven spotlight and a breathing glow among them.
+    literals: [
+      'heo-blur-in 900ms cubic-bezier(0.22, 1, 0.36, 1) both',
+      'heo-pop 700ms cubic-bezier(0.34, 1.56, 0.64, 1) both',
+      'heo-slide 700ms cubic-bezier(0.22, 1, 0.36, 1) both',
+      'heo-wipe 900ms cubic-bezier(0.65, 0, 0.35, 1) both',
+      'heo-glow 2.4s ease-in-out infinite',
+      'heo-float 3.2s ease-in-out infinite',
+      'heo-spotlight linear both view()',
+      'none',
+    ],
+  },
   { name: 'will-change', group: 'transition', control: 'keyword', keywords: ['auto', 'transform', 'opacity'] },
 ];
 

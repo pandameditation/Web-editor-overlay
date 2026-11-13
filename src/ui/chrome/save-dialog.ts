@@ -1365,6 +1365,7 @@ export class HeoSaveDialog extends HeoElement {
       extent.classes && `${extent.classes} class${extent.classes === 1 ? '' : 'es'}`,
       extent.rules && `${extent.rules} rule${extent.rules === 1 ? '' : 's'}`,
       css.blockCSS.trim() && 'scoped block CSS',
+      css.animations?.trim() && 'animations',
       this.editor.blockLibrarySize() &&
       `${this.editor.blockLibrarySize()} block${this.editor.blockLibrarySize() === 1 ? '' : 's'}`,
     ].filter((part): part is string => Boolean(part));
@@ -1382,7 +1383,7 @@ export class HeoSaveDialog extends HeoElement {
     const all = this.editor.designSystemExtent('all');
     const allCSS = this.editor.designSystemParts('all');
     // Generated block CSS is part of the same CSS payload even when no registry entry exists.
-    if (!all.tokens && !all.classes && !all.rules && !allCSS.blockCSS.trim()) return nothing;
+    if (!all.tokens && !all.classes && !all.rules && !allCSS.blockCSS.trim() && !allCSS.animations?.trim()) return nothing;
     const used = this.editor.designSystemExtent('used');
     const usedCSS = this.editor.designSystemParts('used');
     const chosen = this.state.value.designSystemScope;
@@ -1392,13 +1393,14 @@ export class HeoSaveDialog extends HeoElement {
 
     const count = (
       extent: { tokens: number; classes: number; rules: number },
-      css: { blockCSS: string },
+      css: { blockCSS: string; animations?: string },
     ): string => {
       const parts = [
         extent.tokens && `${extent.tokens} token${extent.tokens === 1 ? '' : 's'}`,
         extent.classes && `${extent.classes} class${extent.classes === 1 ? '' : 'es'}`,
         extent.rules && `${extent.rules} rule${extent.rules === 1 ? '' : 's'}`,
         css.blockCSS.trim() && 'scoped block CSS',
+        css.animations?.trim() && 'animations',
       ].filter((part): part is string => Boolean(part));
       return parts.length ? parts.join(', ') : 'nothing';
     };

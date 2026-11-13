@@ -25,6 +25,7 @@ import type { ClassRegistry } from './classes.js';
 import { tokensInValue } from './css.js';
 import { patchCSS, type DeclarationPatch } from './css-patch.js';
 import { queryDeep } from './dom.js';
+import { animationLibraryCss, animationNamesIn } from './animations.js';
 import type { BlockLibrary } from './library.js';
 import { designRuleKey, type RuleRegistry } from './rules.js';
 import { safeSelector } from './selectors.js';
@@ -197,6 +198,8 @@ export interface DesignSystemParts {
   rules: string;
   /** Generated selectors for block instances, already scoped by the block library. */
   blockCSS: string;
+  /** The ready-made animations' keyframes the page refers to. */
+  animations?: string;
 }
 
 /** What `used` resolves to: the names that survive the pruning. */
@@ -322,6 +325,7 @@ export function designSystemParts(
   scope: DesignSystemScope,
 ): DesignSystemParts {
   if (scope === 'none') return { tokens: '', classes: '', rules: '', blockCSS: '' };
+  const animations = animationLibraryCss(animationReferences(registries));
 
   /*
    * The library sheet already contains only generated CSS for blocks it has injected. It is
@@ -335,6 +339,7 @@ export function designSystemParts(
       classes: registries.classes.toCSS(),
       rules: registries.rules.toCSS(),
       blockCSS,
+      animations,
     };
   }
   const used = designSystemUsage(registries);
@@ -343,7 +348,42 @@ export function designSystemParts(
     classes: registries.classes.cssFor(used.classes),
     rules: registries.rules.cssFor(used.rules),
     blockCSS,
+    animations,
   };
+}
+
+/**
+ * The library animations the page uses: named in a style attribute, a page stylesheet rule, or
+ * anything this editor writes. At every extent, since an animation whose keyframes were left out
+ * would simply not play. The generated sheets are skipped (the library's own is all of them).
+ */
+function animationReferences(registries: DesignRegistries): Set<string> {
+  const names = new Set<string>();
+  const note = (text: string): void => {
+    for (const name of animationNamesIn(text)) names.add(name);
+  };
+  note(registries.classes.toCSS(true));
+  note(registries.rules.toCSS(true));
+  note(registries.library.css);
+  const visit = (container: CSSStyleSheet | CSSGroupingRule): void => {
+    let list: CSSRuleList;
+    try {
+      list = container.cssRules;
+    } catch {
+      return;
+    }
+    for (const rule of Array.from(list)) {
+      if (rule instanceof CSSStyleRule) note(rule.style.cssText);
+      if (rule instanceof CSSGroupingRule) visit(rule);
+    }
+  };
+  for (const sheet of Array.from(document.styleSheets)) {
+    const node = sheet.ownerNode;
+    if (node instanceof Element && node.hasAttribute('data-heo-generated')) continue;
+    visit(sheet);
+  }
+  for (const el of queryDeep('[style]')) note(el.getAttribute('style') ?? '');
+  return names;
 }
 
 /** How many entries each extent would write, for the UI to put numbers on the choice. */

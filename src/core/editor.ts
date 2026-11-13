@@ -1,3 +1,5 @@
+import { ManagedStyleSheet } from './stylesheet.js';
+import { animationLibraryCss } from './animations.js';
 import {
   ClassRegistry,
   normalizeClassName,
@@ -1139,6 +1141,11 @@ export class EditorEngine {
    * had nowhere to live except the CSS panel's raw text.
    */
   readonly rules = new RuleRegistry();
+  /**
+   * The ready-made animations' keyframes, all of them, so any animation the Styles panel writes
+   * plays while editing. A save writes only the ones the page refers to (`designSystemParts`).
+   */
+  readonly #animationSheet = new ManagedStyleSheet('heo-animation-library', { internal: true });
   readonly library: BlockLibrary;
   /**
    * The AI capability: configured providers, what each may change, and the boundary.
@@ -1306,6 +1313,7 @@ export class EditorEngine {
 
   constructor(options: MountOptions = {}) {
     this.options = options;
+    this.#animationSheet.write(animationLibraryCss());
     // `null` width means the width the page renders at: the preview's, else the window's.
     bindViewport(this.#media, () => this.viewport.width);
     this.#sourceAccess = { endpoint: options.sourceEndpoint, token: options.sourceToken };
@@ -1568,6 +1576,7 @@ export class EditorEngine {
   destroy(): void {
     if (this.#destroyed) return;
     this.#destroyed = true;
+    this.#animationSheet.destroy();
     this.endTextEdit(true);
     // Unmounting mid-gesture has to put the page back: an abandoned drag would
     // otherwise leave the element translucent and, worse, permanently unclickable

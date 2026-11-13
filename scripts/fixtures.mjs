@@ -92,6 +92,7 @@ export const FIXTURES = [
   { page: 'test/border-editor.html', budget: 60000 },
   { page: 'test/background-editor.html', budget: 120000 },
   { page: 'test/color-picker.html', budget: 90000 },
+  { page: 'test/animation-editor.html', budget: 90000 },
   { page: 'test/box-sides.html', budget: 60000, weight: 5800, fast: true },
   { page: 'test/rule-authoring.html', budget: 90000, weight: 9000, fast: true },
   { page: 'test/style-dialog.html', budget: 45000, weight: 2400, fast: true },

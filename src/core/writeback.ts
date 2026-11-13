@@ -116,11 +116,13 @@ export interface DesignSystemCSS {
   rules: string;
   /** Generated, component-scoped CSS from the block library. */
   blockCSS?: string;
+  /** The ready-made animations' keyframes the page uses. */
+  animations?: string;
 }
 
 /** The parts, in cascade order, as one block. Empty when nothing was authored. */
 export function designSystemCSSText(css: DesignSystemCSS): string {
-  return [css.tokens, css.classes, css.rules, css.blockCSS ?? '']
+  return [css.tokens, css.classes, css.rules, css.blockCSS ?? '', css.animations ?? '']
     .filter((part) => part.trim())
     .join('\n\n');
 }
@@ -132,6 +134,7 @@ function designSystemKinds(css: DesignSystemCSS): string[] {
   if (css.classes.trim()) kinds.push('classes');
   if (css.rules.trim()) kinds.push('rules');
   if (css.blockCSS?.trim()) kinds.push('scoped block CSS');
+  if (css.animations?.trim()) kinds.push('animations');
   return kinds;
 }
 

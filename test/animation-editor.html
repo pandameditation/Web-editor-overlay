@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Animation editor</title>
+  <!--
+    The Animation section writes a ready-made animation as longhands and custom properties where the
+    animation-name row writes (a hover animation into the element's :hover state), previews a preset
+    hovered in the list on the selected elements, and the save carries only the keyframes the page
+    uses. Drags are made with real mouse input.
+  -->
+  <style id="site">
+    body {
+      margin: 0;
+      padding: 16px;
+      font: 15px system-ui;
+    }
+
+    .spinner {
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      to {
+        rotate: 360deg;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <p id="a">Animate me</p>
+  <p id="b" class="spinner">A rule's own animation</p>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const results = {};
+      const errors = [];
+      addEventListener('error', (event) => errors.push('error: ' + event.message));
+      const progress = document.getElementById('progress');
+      const settle = (ms = 300) => new Promise((resolve) => setTimeout(resolve, ms));
+      const deep = (selector, root = document) => {
+        const direct = root.querySelector?.(selector);
+        if (direct) return direct;
+        for (const el of root.querySelectorAll?.('*') ?? []) {
+          if (!el.shadowRoot) continue;
+          const found = deep(selector, el.shadowRoot);
+          if (found) return found;
+        }
+        return null;
+      };
+      let seq = 0;
+      const waiters = new Map();
+      window.__heoKeysDone = (id) => { waiters.get(id)?.(); waiters.delete(id); };
+      const mouse = (...steps) => new Promise((resolve) => {
+        const id = ++seq;
+        waiters.set(id, resolve);
+        window.__heoPressKeys(JSON.stringify({ id, mouse: steps }));
+      }).then(() => settle(250));
+      const point = (type, el, fx, fy) => {
+        const r = el.getBoundingClientRect();
+        return { type, x: r.left + r.width * fx, y: r.top + r.height * fy };
+      };
+      const apart = () => settle(2700);
+      const into = async (el) => {
+        el.scrollIntoView({ block: 'center' });
+        await settle(200);
+      };
+      try {
+        const api = window.HtmlEditorOverlay.mount({ theme: 'light', presets: false, detectScriptContent: false });
+        const engine = api.engine;
+        api.setEditing(true);
+        await engine.whenReady();
+        engine.setDockTab('styles');
+        const sroot = () => deep('heo-styles-panel').shadowRoot;
+        const editor = () => sroot().querySelector('heo-animation-editor');
+        const shadow = () => editor()?.shadowRoot;
+        const style = (el) => (el.getAttribute('style') ?? '').replace(/\s+/g, ' ').trim();
+        const select = async (id) => {
+          const el = document.getElementById(id);
+          api.select(el);
+          await settle(500);
+          return el;
+        };
+        const pickerField = () => shadow()?.querySelector('heo-value-field[data-property="animation-preset"]');
+        const pick = async (name) => {
+          pickerField().dispatchEvent(new CustomEvent('value-change', { detail: { value: name }, bubbles: true, composed: true }));
+          await settle(350);
+        };
+        const segment = async (label, value) => {
+          shadow().querySelector(`heo-segmented[label="${label}"]`)
+            .dispatchEvent(new CustomEvent('segment-change', { detail: { value }, bubbles: true, composed: true }));
+          await settle(350);
+        };
+
+        progress.textContent = 'open';
+        const a = await select('a');
+        const section = () => editor()?.closest('heo-section');
+        if (!section()?.open) section()?.shadowRoot?.querySelector('button')?.click();
+        await settle(300);
+        const field = pickerField();
+        field.focusInput();
+        field.openList();
+        await settle(300);
+        const groups = Array.from(field.shadowRoot.querySelectorAll('.popup .group')).map((one) => one.textContent.trim());
+        const options = () => Array.from(field.shadowRoot.querySelectorAll('.popup .option'));
+        results.open = {
+          theSectionHasTheEditor: Boolean(editor()),
+          commonValuesComeFirst: groups[0] === 'Common values',
+          thenByKind: ['Reveal', 'Attention', 'Scroll-driven'].every((one) => groups.includes(one)),
+          theSpringBlurIsACommonValue: options()[0]?.textContent.includes('Blur in'),
+        };
+
+        progress.textContent = 'hover';
+        {
+          // Hovering a name plays it on the element, writing nothing.
+          const entries = engine.history.size;
+          const glow = options().find((one) => one.textContent.includes('Glow'));
+          await mouse(point('move', glow, 0.5, 0.5), point('move', glow, 0.4, 0.5));
+          const playing = editor().previewing;
+          const script = a.getAnimations().filter((one) => !(one instanceof CSSAnimation)).length;
+          results.hover = {
+            hoveringPlaysIt: playing === 1 && script === 1,
+            writesNothing: engine.history.size === entries && !style(a),
+          };
+          field.closePopup();
+          await settle(200);
+        }
+
+        progress.textContent = 'pick';
+        {
+          const entries = engine.history.size;
+          await pick('Slide');
+          const css = getComputedStyle(a);
+          results.pick = {
+            asLonghands: style(a) === 'animation-name: heo-slide; animation-duration: auto; animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1); animation-fill-mode: both; animation-timeline: view(); animation-range: entry 0% cover 40%;',
+            oneEntry: engine.history.size === entries + 1,
+            theKeyframesExist: css.animationName === 'heo-slide' && a.getAnimations().some((one) => one instanceof CSSAnimation && one.animationName === 'heo-slide'),
+            theEditorShowsIt: pickerField().value === 'Slide' && shadow().querySelector('heo-segmented[label="Trigger"]')?.value === 'in-view',
+          };
+        }
+
+        progress.textContent = 'params';
+        {
+          await apart();
+          await segment('Direction', 'left');
+          const left = style(a);
+          await apart();
+          await segment('Trigger', 'load');
+          const load = style(a);
+          await apart();
+          const duration = shadow().querySelector('heo-value-field[data-property="animation-duration"]');
+          duration.dispatchEvent(new CustomEvent('value-change', { detail: { value: '450' }, bubbles: true, composed: true }));
+          await settle(350);
+          results.params = {
+            aDirectionIsAVariable: /--heo-x: 24px; --heo-y: 0px;/.test(left),
+            onLoadHasNoTimeline: !/animation-timeline/.test(load) && /animation-duration: 700ms/.test(load),
+            theDurationIsWritten: /animation-duration: 450ms/.test(style(a)),
+          };
+        }
+
+        progress.textContent = 'easing';
+        {
+          await apart();
+          const spring = Array.from(shadow().querySelector('heo-easing-editor').shadowRoot.querySelectorAll('.preset')).find((one) => one.textContent.trim() === 'Bouncy spring');
+          spring.click();
+          await settle(350);
+          const springWritten = /animation-timing-function: linear\(0, /.test(style(a));
+          await apart();
+          spring.parentElement.querySelector('.preset').click();
+          await settle(350);
+          await apart();
+          // Drag the first handle to the top left: a sharp start.
+          const easing = () => shadow().querySelector('heo-easing-editor').shadowRoot;
+          const graph = easing().querySelector('svg.graph');
+          await into(graph);
+          const handle = easing().querySelector('circle[data-handle="0"]');
+          const entries = engine.history.size;
+          await mouse(point('move', handle, 0.5, 0.5), point('down', handle, 0.5, 0.5), point('move', graph, 0.2, 0.3), point('move', graph, 0.06, py(1)));
+          const midDrag = engine.history.size;
+          await mouse(point('up', graph, 0.06, py(1)));
+          results.easing = {
+            aSpringIsLinear: springWritten,
+            dragsAHandle: /animation-timing-function: cubic-bezier\(0, 1, 0\.36, 1\)/.test(style(a)),
+            commitsOnRelease: midDrag === entries && engine.history.size === entries + 1,
+          };
+        }
+
+        progress.textContent = 'hover-trigger';
+        {
+          await apart();
+          await segment('Trigger', 'hover');
+          const base = style(a);
+          const findHover = () => Array.from(document.styleSheets).flatMap((sheet) => { try { return Array.from(sheet.cssRules); } catch { return []; } })
+            .find((rule) => rule.selectorText?.endsWith(':hover') && rule.style.getPropertyValue('animation-name') === 'heo-slide');
+          // Found afresh each time: the rule's sheet is rewritten on every change.
+          const hoverRule = findHover();
+          results.hoverTrigger = {
+            theBaseIsCleared: !/animation|--heo/.test(base),
+            aHoverRuleHoldsIt: Boolean(hoverRule) && a.classList.length === 1,
+            itReadsBackAsHover: shadow().querySelector('heo-segmented[label="Trigger"]')?.value === 'hover',
+          };
+          await apart();
+          await segment('Trigger', 'load');
+          results.hoverTrigger.backOffHover = /animation-name: heo-slide/.test(style(a)) &&
+            !findHover();
+        }
+
+        progress.textContent = 'save';
+        {
+          const parts = engine.designSystemParts('used');
+          results.save = {
+            theUsedKeyframesAreWritten: /@keyframes heo-slide \{/.test(parts.animations ?? ''),
+            andOnlyThose: (parts.animations.match(/@keyframes/g) ?? []).length === 1,
+          };
+        }
+
+        progress.textContent = 'remove';
+        {
+          await apart();
+          shadow().querySelector('.pick .kill').click();
+          await settle(350);
+          results.remove = {
+            everythingGoes: !/animation|--heo/.test(style(a)),
+            theEditorIsEmpty: !shadow().querySelector('heo-segmented[label="Trigger"]'),
+            theSaveDropsTheKeyframes: !(engine.designSystemParts('used').animations ?? '').trim(),
+          };
+          engine.undo();
+          await settle(350);
+          results.remove.undoPutsItBack = /animation-name: heo-slide/.test(style(a));
+        }
+
+        progress.textContent = 'fold';
+        {
+          // A rule's own shorthand is folded away: kept, it would compete with the longhands.
+          const b = await select('b');
+          const rule = Array.from(document.getElementById('site').sheet.cssRules).find((one) => one.selectorText === '.spinner');
+          await pick('Pulse');
+          results.fold = {
+            writtenInTheRule: !b.getAttribute('style') && rule.style.getPropertyValue('animation-name') === 'heo-pulse',
+            theShorthandIsGone: !/animation:/.test(rule.cssText) && rule.style.getPropertyValue('animation-iteration-count') === 'infinite',
+          };
+        }
+        function py(y) { return (1.45 - y) / 1.9; }
+      } catch (e) {
+        results.threw = String((e && e.stack) || e);
+      }
+      results.browserErrors = { ok: errors.length === 0, errors };
+      const failed = Object.entries(results)
+        .filter(([, group]) => group && typeof group === 'object')
+        .filter(([, group]) => Object.values(group).some((value) => value === false))
+        .map(([name]) => name);
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify({ ...results, failed: results.threw ? ['threw', ...failed] : failed }, null, 2) + ':END';
+    })();
+  </script>
+</body>
+
+</html>

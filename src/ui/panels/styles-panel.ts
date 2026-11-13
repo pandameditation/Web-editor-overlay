@@ -108,6 +108,15 @@ import {
 } from '../../core/background.js';
 import { compareContributions } from '../../core/cascade.js';
 import { setContrastSubject } from '../contrast.js';
+import '../controls/animation-editor.js';
+import {
+  ANIMATION_PROPERTIES,
+  composeAnimation,
+  readAnimation,
+  type AnimationConfig,
+} from '../../core/animations.js';
+import type { Contribution } from '../../core/cascade.js';
+import type { AddDestination } from '../../core/save-plan.js';
 import '../controls/segmented.js';
 import '../controls/section.js';
 import { classNameIssues, forkNameIssues } from '../../core/validation.js';
@@ -235,6 +244,13 @@ const SECTIONS: SectionSpec[] = [
     heading: 'Motion',
     glyph: 'refresh',
     properties: ['transition', 'transition-duration', 'transition-timing-function', 'will-change'],
+  },
+  {
+    id: 'animation',
+    heading: 'Animation',
+    glyph: 'play',
+    // Drawn by hand (#renderAnimation): the ready-made animations' editor, then its declarations.
+    properties: [...ANIMATION_PROPERTIES],
   },
 ];
 
@@ -804,7 +820,9 @@ export class HeoStylesPanel extends HeoElement {
       ${SECTIONS.filter((section) => !section.when || section.when(computed)).map((section) =>
       section.id === 'surface'
         ? this.#renderBackground(section, el, model, computed, host)
-        : this.#renderSection(section, el, model, host),
+        : section.id === 'animation'
+          ? this.#renderAnimation(section, el, model, host)
+          : this.#renderSection(section, el, model, host),
     )}
       ${this.#renderParent(el, model, host)}
       ${found === 0 ? this.#renderNoMatch() : nothing}
@@ -2376,6 +2394,101 @@ export class HeoStylesPanel extends HeoElement {
     }
     if (!writes.length) return;
     this.editor.writeDeclarationsTo(writes, writes.some((one) => one.value) ? 'Set background' : 'Remove background', el);
+  }
+
+  /**
+   * Animation: a ready-made animation, its trigger and its controls, written as declarations where
+   * the `animation-name` row writes; a hover animation goes into the element's `:hover` state.
+   * The declarations a block holds are rows under it.
+   */
+  #renderAnimation(
+    section: SectionSpec,
+    el: HTMLElement,
+    model: ElementModel,
+    host: StylesHost,
+  ): TemplateResult | typeof nothing {
+    const hits = section.properties.filter((property) => this.#hit(property, shownValue(model.cascade(property).applying[0])));
+    if (!hits.length) return nothing;
+    const scope: RowScope = { kind: 'section', id: section.id };
+    const specOf = (property: string): RowSpec => ({ property, scope, element: el, model, listId: section.id });
+    const hover = { width: null, state: ':hover' } as const;
+    // Written where the animation already is: its name's row, or the shorthand's when only that
+    // is declared, so a rule's `animation` is replaced in that rule and not shadowed inline.
+    const anchor = !model.cascade('animation-name').applying[0] && model.cascade('animation').applying[0] ? 'animation' : 'animation-name';
+    const choice = (() => {
+      const spec = specOf(anchor);
+      const { shown } = readRow(spec);
+      return destinationChoice(spec, host, rowIdOf(scope, anchor, el), shown);
+    })();
+    const winner = (property: string, onHover: boolean): Contribution | undefined =>
+      model.cascade(property, onHover ? hover : undefined).applying[0];
+    const fromHover = (one: Contribution | undefined): boolean =>
+      one?.source.kind === 'rule' && one.source.entry.state.includes(':hover');
+    const baseName = winner('animation-name', false) ?? winner('animation', false);
+    const hoverName = winner('animation-name', true) ?? winner('animation', true);
+    const onHover = !baseName && fromHover(hoverName);
+    const value = readAnimation((property) => {
+      const one = winner(property, onHover);
+      return one && (!onHover || fromHover(one) || property.startsWith('--')) ? one.value : '';
+    }, onHover);
+    // Where the animation now lives, so a change rewrites it there and a move takes it out.
+    const home = onHover ? hoverName : baseName;
+    const own = (property: string): boolean => model.cascade(property).applying.some((one) => !one.via);
+    const rowsShown = ANIMATION_PROPERTIES.filter((property) => own(property) && hits.includes(property));
+    const touched = rowsShown.length;
+
+    const commit = (next: AnimationConfig | null): void => {
+      const base = choice.picked.dest;
+      if (!base) return;
+      this.editor.cancelPreview();
+      this.#patch({ rowDest: null });
+      const homeTarget = home ? targetOf(home, el) : null;
+      // Hover: into the state block it is already in, else the element's own `:hover` class.
+      const dest: AddDestination = next?.trigger === 'hover'
+        ? (onHover && homeTarget ? { kind: 'target', target: homeTarget } : { kind: 'auto-class', element: el, media: null, state: ':hover' })
+        : base;
+      const writes = next ? composeAnimation(next) : {};
+      const list: Array<{ dest: AddDestination; property: string; value: string; remove?: boolean }> = [];
+      const into = dest.kind === 'target' ? dest.target : null;
+      const declaredIn = (property: string, target: WriteTarget | null, onHoverState: boolean): boolean => Boolean(target) &&
+        model.cascade(property, onHoverState ? hover : undefined).applying.some((one) => !one.via && sameTarget(targetOf(one, el), target!));
+      // Everything about an animation the destination block holds and the new one does not say,
+      // the shorthand included: kept, it would go on competing with the longhands.
+      for (const property of ANIMATION_PROPERTIES) {
+        if (writes[property] === undefined && declaredIn(property, into, dest.kind === 'target' && onHover && next?.trigger === 'hover')) {
+          list.push({ dest, property, value: '', remove: true });
+        }
+      }
+      for (const [property, text] of Object.entries(writes)) list.push({ dest, property, value: text });
+      // Moved somewhere else (to or from hover, or another block): taken out of where it was.
+      if (homeTarget && !(into && sameTarget(homeTarget, into))) {
+        for (const property of ANIMATION_PROPERTIES) {
+          if (declaredIn(property, homeTarget, onHover)) list.push({ dest: { kind: 'target', target: homeTarget }, property, value: '', remove: true });
+        }
+      }
+      if (!list.length) return;
+      this.editor.writeDeclarationsTo(list, next ? `Animate: ${next.preset}` : 'Remove animation', el);
+    };
+
+    return html`<heo-section
+      heading=${section.heading}
+      glyph=${section.glyph}
+      badge=${touched ? String(touched) : ''}
+      ?open=${host.filtering ? true : sectionOpen(section.id, false)}
+      @section-toggle=${(event: CustomEvent<{ open: boolean }>) => this.#remember(section.id, event.detail.open)}
+    >
+      <heo-animation-editor
+        .value=${value}
+        .targets=${this.editor.selection.length ? [...this.editor.selection] : [el]}
+        .head=${choice.head}
+        @animation-change=${(event: CustomEvent<{ value: AnimationConfig | null }>) => commit(event.detail.value)}
+      ></heo-animation-editor>
+      ${rowsShown.length
+        ? html`<div class="rows" style="margin-top:10px" data-declarations=${section.id}>
+            ${renderPropertyRows(rowsShown, specOf, host)}
+          </div>`
+        : nothing}
+    </heo-section>`;
   }
 
   #renderSection(
