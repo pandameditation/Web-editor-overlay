@@ -324,14 +324,20 @@ export class HeoColorPicker extends LitElement {
         color: var(--heo-text-faint);
         font-size: 10px;
       }
+      /* The backdrop's colours: a key, not controls, so small, flat and never ringed. */
       .against .chip {
-        width: 14px;
-        height: 14px;
+        width: 10px;
+        height: 10px;
+        cursor: default;
         border-radius: 3px;
         box-shadow: inset 0 0 0 1px var(--heo-line-strong);
       }
-      .against .chip.worst {
-        box-shadow: 0 0 0 2px var(--heo-danger);
+      .against .worst {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-family: var(--heo-mono);
+        color: var(--heo-text-dim);
       }
       .note {
         color: var(--heo-text-faint);
@@ -505,7 +511,12 @@ export class HeoColorPicker extends LitElement {
               title=${`${one.label} · ${one.color}`}
               aria-label=${one.label}
               aria-pressed=${String(this.value.trim() === one.value)}
-              @click=${() => this.#emit('color-change', one.value)}
+              @click=${() => {
+                // Taken as the picker's own colour first, so the square, the fields and the
+                // contrast show the token; emitting alone left them on the previous colour.
+                this.#take(one.value);
+                this.#emit('color-change', one.value);
+              }}
             ><i style=${`background:${one.color}`}></i></button>`)}
           </div>`
         : nothing}
@@ -557,12 +568,19 @@ export class HeoColorPicker extends LitElement {
       </div>
       <div class="against">
         <span>vs ${target.label}${target.pending ? ' · reading image…' : ''}</span>
-        ${shown.map((one) => html`<span
-          class=${`chip checker${one === worst && target.others.length > 1 ? ' worst' : ''}`}
-          title=${toHex(one)}
-        ><i style=${`position:absolute;inset:0;background:${toHex(one)}`}></i></span>`)}
+        <span class="chips" aria-hidden="true" style="display:inline-flex;gap:3px">
+          ${shown.map((one) => html`<span class="chip checker" title=${toHex(one)}><i style=${`position:absolute;inset:0;background:${toHex(one)}`}></i></span>`)}
+        </span>
         ${target.others.length > shown.length ? html`<span>+${target.others.length - shown.length}</span>` : nothing}
       </div>
+      ${worst && target.others.length > 1
+        // Said in words rather than by ringing one chip: a ring reads as "selected", and these are
+        // not something to select.
+        ? html`<div class="against">
+            <span>lowest against</span>
+            <span class="worst"><span class="chip checker"><i style=${`position:absolute;inset:0;background:${toHex(worst)}`}></i></span>${toHex(worst)}</span>
+          </div>`
+        : nothing}
       ${target.unread ? html`<span class="note">${target.unread}</span>` : nothing}
       ${!levels.aa && target.others.length > 1 && !this.#curve.aa.length
         ? html`<span class="note">No colour of this hue passes AA against every one of these: the backdrop is too varied.</span>`
