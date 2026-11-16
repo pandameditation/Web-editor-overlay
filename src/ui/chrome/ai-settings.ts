@@ -16,7 +16,18 @@ import { icon } from '../icons.js';
 import { baseStyles, surfaceStyles } from '../theme.js';
 import type { FieldIssue } from '../../core/validation.js';
 import { field, FormErrors } from '../form-errors.js';
+import type { SettingsCategory } from '../../core/editor.js';
+import type { SeedTarget } from '../../core/seed.js';
+import { DesignTransfer, type DesignTransferHost } from '../panels/design-transfer.js';
 import '../controls/viewport-sizes.js';
+
+/** The side tabs, in order. */
+const CATEGORIES: ReadonlyArray<{ id: SettingsCategory; label: string; glyph: string }> = [
+  { id: 'general', label: 'General', glyph: 'settings' },
+  { id: 'design', label: 'Design system', glyph: 'droplet' },
+  { id: 'viewports', label: 'Viewports', glyph: 'desktop' },
+  { id: 'ai', label: 'AI providers', glyph: 'sparkle' },
+];
 
 /**
  * Settings: how the editor behaves on this page, and where a model is connected.
@@ -64,6 +75,10 @@ export class HeoAiSettings extends HeoElement {
         pointer-events: auto;
         animation: fade var(--heo-fast) var(--heo-ease);
       }
+      /* Behind the block import screen; see willUpdate. */
+      :host([data-behind]) {
+        display: none;
+      }
       /*
        * Full screen, near enough, and that is a considered size rather than a generous one.
        *
@@ -75,7 +90,7 @@ export class HeoAiSettings extends HeoElement {
       .dialog {
         display: flex;
         flex-direction: column;
-        width: min(860px, 100%);
+        width: min(980px, 100%);
         height: min(88vh, 760px);
         border-radius: var(--heo-r-lg);
         overflow: hidden;
@@ -166,13 +181,73 @@ export class HeoAiSettings extends HeoElement {
        * remaining height and scroll inside itself, which put a second scrollbar under its
        * heading and left the form a short window to work through.
        */
+      /*
+       * The side tabs and the page they show.
+       *
+       * Four pages rather than one long column: General, Design system, Viewports and AI providers
+       * have nothing to do with each other beyond living in Settings, and stacked they made the
+       * providers form — the part with the most to read — start a screen and a half down.
+       */
+      .body-split {
+        display: grid;
+        grid-template-columns: 176px minmax(0, 1fr);
+        flex: 1 1 auto;
+        min-height: 0;
+        border-top: 1px solid var(--heo-line);
+      }
+      .cats {
+        padding: 10px 8px 14px 12px;
+        border-right: 1px solid var(--heo-line);
+        overflow-y: auto;
+      }
+      .cats [role='tablist'] {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .cat {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        padding: 7px 9px;
+        border: 1px solid transparent;
+        border-radius: var(--heo-r-sm);
+        background: transparent;
+        color: var(--heo-text-dim);
+        font: inherit;
+        font-size: 12px;
+        text-align: left;
+        cursor: pointer;
+      }
+      .cat:hover {
+        background: var(--heo-sunken);
+        color: var(--heo-text);
+      }
+      .cat[aria-selected='true'] {
+        border-color: var(--heo-accent-line);
+        background: var(--heo-accent-soft);
+        color: var(--heo-text);
+        font-weight: 600;
+      }
+      .cat svg {
+        flex: 0 0 auto;
+      }
+      .cat:focus-visible {
+        outline: 2px solid var(--heo-accent);
+        outline-offset: 1px;
+      }
+      .design-card {
+        padding: 12px;
+      }
+
       .sections {
         display: flex;
         flex: 1 1 auto;
         flex-direction: column;
         gap: 16px;
         min-height: 0;
-        padding: 2px 16px 14px;
+        padding: 12px 16px 14px;
         overflow-y: auto;
       }
       .section {
@@ -406,7 +481,7 @@ export class HeoAiSettings extends HeoElement {
         color: var(--heo-danger);
       }
 
-      .empty {
+      .no-model {
         padding: 14px 0 18px;
         margin: 0 auto;
         max-width: 46ch;
@@ -416,7 +491,7 @@ export class HeoAiSettings extends HeoElement {
         text-align: center;
       }
       /* Variable names read as names rather than as prose, so they can be copied by eye. */
-      .empty code {
+      .no-model code {
         padding: 1px 4px;
         border-radius: 4px;
         background: var(--heo-surface-2);
@@ -477,6 +552,28 @@ export class HeoAiSettings extends HeoElement {
           grid-template-columns: minmax(0, 1fr);
           grid-template-rows: auto auto;
         }
+        /* The side tabs become a strip along the top, the same move the provider list makes. */
+        .body-split {
+          grid-template-columns: minmax(0, 1fr);
+          grid-template-rows: auto minmax(0, 1fr);
+        }
+        .cats {
+          padding: 8px 12px;
+          border-right: 0;
+          border-bottom: 1px solid var(--heo-line);
+          overflow-x: auto;
+          overflow-y: hidden;
+          scrollbar-width: thin;
+        }
+        .cats [role='tablist'] {
+          flex-direction: row;
+          gap: 4px;
+        }
+        .cat {
+          width: auto;
+          flex: 0 0 auto;
+          white-space: nowrap;
+        }
         /* A horizontal strip, scrollable, so ten providers do not push the form off screen. */
         .list {
           flex-direction: row;
@@ -526,16 +623,31 @@ export class HeoAiSettings extends HeoElement {
         }
       }
     `,
+    // The design-system page draws the shared seed surface, which brings its own stylesheet.
+    DesignTransfer.styles,
   ];
 
   protected state = new StoreController(
     this,
     this.editor.store,
-    (s) => [s.aiSettingsOpen, s.registry, s.splitDoubleBreaks] as const,
+    (s) => [s.aiSettingsOpen, s.registry, s.splitDoubleBreaks, s.settingsCategory, s.capturePaste] as const,
     shallowArrayEquals,
   );
 
   protected modal = new ModalController(this, { initialFocus: '.close' });
+
+  /** The import field's errors, in the Design system page. */
+  protected transferForm = new FormErrors(this, () => []);
+
+  /*
+   * State the shared design-system surface reads back from its host, as in the Tokens panel and
+   * the save dialog. Not part of the draft: loading a seed is an undoable change of its own,
+   * applied when Load is pressed, the same as everywhere else that offers it.
+   */
+  @state() private seedTarget: SeedTarget | null = null;
+  @state() private incoming = '';
+  @state() private overwrite = false;
+  @state() private seedVersion = 0;
 
   /** What a provider needs before it can be tested or saved. See `form-errors.ts`. */
   protected providerForm = new FormErrors(this, () => {
@@ -557,6 +669,12 @@ export class HeoAiSettings extends HeoElement {
   @state() private forget: ReadonlySet<string> = new Set();
 
   override willUpdate(): void {
+    /*
+     * Out of sight while the block import screen is up. A seed holding one block, loaded from the
+     * Design system page, opens that screen — and at z-index 30 it would sit behind this dialog.
+     * Hidden rather than closed, so the draft is still here when the import is done.
+     */
+    this.toggleAttribute('data-behind', Boolean(this.state.value.capturePaste));
     if (!this.state.value.aiSettingsOpen) {
       this.draft = null;
       this.#baseline = null;
@@ -645,6 +763,7 @@ export class HeoAiSettings extends HeoElement {
     if (!this.state.value.aiSettingsOpen || !this.draft) return nothing;
     const sets = this.draft.sets;
     const dirty = this.#dirty;
+    const category = this.state.value.settingsCategory;
 
     return html`<div
       class="dialog surface"
@@ -674,51 +793,179 @@ export class HeoAiSettings extends HeoElement {
         </button>
       </header>
 
-      <div class="sections">
-        <section class="section" aria-labelledby="heo-settings-editing">
-          <div class="section-head">
-            <h3 id="heo-settings-editing">Editing</h3>
-          </div>
-          <label class="setting card">
-            <input
-              type="checkbox"
-              .checked=${this.draft.split}
-              @change=${(event: Event) =>
+      <div class="body-split">
+        ${this.#renderNav(category)}
+        <div
+          class="sections"
+          role="tabpanel"
+          id="heo-settings-page"
+          aria-labelledby=${`heo-settings-tab-${category}`}
+        >
+          ${category === 'general'
+        ? this.#renderGeneral()
+        : category === 'design'
+          ? this.#renderDesign()
+          : category === 'viewports'
+            ? this.#renderViewports()
+            : this.#renderProviders(sets)}
+        </div>
+      </div>
+
+      <footer>
+        ${dirty
+        ? html`<span class="unsaved" role="status">Unsaved changes</span>`
+        : html`<span class="quiet">Changes apply when you save them.</span>`}
+        <span class="spacer"></span>
+        <button class="btn sm" type="button" @click=${() => this.#cancel()}>Cancel</button>
+        <button class="btn sm primary" type="button" @click=${() => void this.#save()}>
+          ${icon('check', 12)} Save settings
+        </button>
+      </footer>
+    </div>`;
+  }
+
+  /**
+   * The side tabs: one page of Settings at a time.
+   *
+   * A vertical tablist with a roving tabindex, so Tab enters the list once and the arrow keys move
+   * through it, as the platform's own settings windows do. Switching pages keeps the draft: it
+   * lives on this component, not on the page being shown.
+   */
+  #renderNav(category: SettingsCategory): TemplateResult {
+    const go = (next: SettingsCategory, focus = false): void => {
+      this.editor.setSettingsCategory(next);
+      if (!focus) return;
+      void this.updateComplete.then(() =>
+        this.renderRoot.querySelector<HTMLElement>(`#heo-settings-tab-${next}`)?.focus());
+    };
+    const onKey = (event: KeyboardEvent): void => {
+      const at = CATEGORIES.findIndex((one) => one.id === category);
+      const last = CATEGORIES.length - 1;
+      const to =
+        event.key === 'ArrowDown' || event.key === 'ArrowRight' ? (at === last ? 0 : at + 1)
+          : event.key === 'ArrowUp' || event.key === 'ArrowLeft' ? (at === 0 ? last : at - 1)
+            : event.key === 'Home' ? 0
+              : event.key === 'End' ? last
+                : -1;
+      if (to < 0) return;
+      event.preventDefault();
+      go(CATEGORIES[to].id, true);
+    };
+    return html`<nav class="cats" aria-label="Settings categories">
+      <div role="tablist" aria-orientation="vertical" aria-label="Settings categories" @keydown=${onKey}>
+        ${CATEGORIES.map((one) => html`<button
+          class="cat"
+          type="button"
+          role="tab"
+          id=${`heo-settings-tab-${one.id}`}
+          aria-selected=${one.id === category ? 'true' : 'false'}
+          aria-controls="heo-settings-page"
+          tabindex=${one.id === category ? '0' : '-1'}
+          data-category=${one.id}
+          @click=${() => go(one.id)}
+        >
+          ${icon(one.glyph, 13)}
+          <span>${one.label}</span>
+        </button>`)}
+      </div>
+    </nav>`;
+  }
+
+  #renderGeneral(): TemplateResult {
+    const draft = this.draft!;
+    return html`<section class="section" aria-labelledby="heo-settings-editing">
+      <div class="section-head">
+        <h3 id="heo-settings-editing">Editing</h3>
+      </div>
+      <label class="setting card">
+        <input
+          type="checkbox"
+          .checked=${draft.split}
+          @change=${(event: Event) =>
         this.#setDraft({ split: (event.target as HTMLInputElement).checked })}
-            />
-            <span>
-              <span class="name">Split automatically at double line breaks</span>
-              <span class="desc">
-                Two line breaks in a row inside a paragraph, a heading or any text element become
-                two separate elements — including the ones already in the page. Saved with the
-                page.
-              </span>
-            </span>
-          </label>
-        </section>
+        />
+        <span>
+          <span class="name">Split automatically at double line breaks</span>
+          <span class="desc">
+            Two line breaks in a row inside a paragraph, a heading or any text element become
+            two separate elements — including the ones already in the page. Saved with the
+            page.
+          </span>
+        </span>
+      </label>
+    </section>`;
+  }
 
-        <section class="section" aria-labelledby="heo-settings-viewports">
-          <div class="section-head">
-            <h3 id="heo-settings-viewports">Viewport sizes</h3>
-            <p>
-              The sizes the Styles panel's preview bar offers: tick the ones to show and set their
-              widths. Your own sizes are breakpoints too. Kept as you change them, like any edit,
-              and saved with the page and in its seed.
-            </p>
-          </div>
-          <div class="card viewports-card">
-            <heo-viewport-sizes .engine=${this.editor}></heo-viewport-sizes>
-          </div>
-        </section>
+  /**
+   * The design system's seed: hand this one on, or load one in.
+   *
+   * The same surface the Tokens panel and the save dialog draw, rather than a Settings-only copy,
+   * so the three cannot drift. Loading is applied at once as an undoable change, like viewport
+   * edits, and is not part of the draft — the head says so, because the footer's Save does not
+   * cover it.
+   */
+  #renderDesign(): TemplateResult {
+    return html`<section class="section" aria-labelledby="heo-settings-design">
+      <div class="section-head">
+        <h3 id="heo-settings-design">Design system</h3>
+        <p>
+          Load a seed or a design system file into this page, or copy this page's seed to use it
+          elsewhere. Loading applies at once, as one change you can undo — it does not wait for
+          Save.
+        </p>
+      </div>
+      <div class="card design-card">${DesignTransfer.render(this.#transfer())}</div>
+    </section>`;
+  }
 
-        <section class="section providers" aria-labelledby="heo-settings-ai">
-          <div class="section-head">
-            <h3 id="heo-settings-ai">AI providers</h3>
-            <p>
-              Bring your own model. The first in the list is the default, and Promote moves one to
-              the top. Each one carries its own rules about what it may change.
-            </p>
-          </div>
+  /** What the shared design-system surface reads and writes, owned by this dialog. */
+  #transfer(): DesignTransferHost {
+    return {
+      engine: this.editor,
+      target: this.seedTarget,
+      onTarget: (target) => {
+        this.seedTarget = target;
+      },
+      form: this.transferForm,
+      incoming: this.incoming,
+      onIncoming: (text) => {
+        this.incoming = text;
+      },
+      overwrite: this.overwrite,
+      onOverwrite: (value) => {
+        this.overwrite = value;
+      },
+      onSeed: () => {
+        this.seedVersion += 1;
+      },
+    };
+  }
+
+  #renderViewports(): TemplateResult {
+    return html`<section class="section" aria-labelledby="heo-settings-viewports">
+      <div class="section-head">
+        <h3 id="heo-settings-viewports">Viewport sizes</h3>
+        <p>
+          The sizes the Styles panel's preview bar offers: tick the ones to show and set their
+          widths. Your own sizes are breakpoints too. Kept as you change them, like any edit,
+          and saved with the page and in its seed.
+        </p>
+      </div>
+      <div class="card viewports-card">
+        <heo-viewport-sizes .engine=${this.editor}></heo-viewport-sizes>
+      </div>
+    </section>`;
+  }
+
+  #renderProviders(sets: readonly AiProviderSet[]): TemplateResult {
+    return html`<section class="section providers" aria-labelledby="heo-settings-ai">
+      <div class="section-head">
+        <h3 id="heo-settings-ai">AI providers</h3>
+        <p>
+          Bring your own model. The first in the list is the default, and Promote moves one to
+          the top. Each one carries its own rules about what it may change.
+        </p>
+      </div>
           <div class="card providers-card">
             ${sets.length
         ? html`<div class="split">
@@ -734,7 +981,7 @@ export class HeoAiSettings extends HeoElement {
                     A key in .env is one line and needs no configuration, and it is also the only
                     tier that keeps the credential out of this page — so it is the one to put first.
                   -->
-                  <p class="empty">
+                  <p class="no-model">
                     No model yet. Put a key in <code>.env</code> and restart the dev server —
                     <code>ANTHROPIC_API_KEY</code>, <code>OPENAI_API_KEY</code> and
                     <code>GEMINI_API_KEY</code> are all picked up on their own, and stay on the
@@ -743,20 +990,7 @@ export class HeoAiSettings extends HeoElement {
                   <div class="empty-acts">${this.#renderAdd('empty')}</div>
                 </div>`}
           </div>
-        </section>
-      </div>
-
-      <footer>
-        ${dirty
-        ? html`<span class="unsaved" role="status">Unsaved changes</span>`
-        : html`<span class="quiet">Changes apply when you save them.</span>`}
-        <span class="spacer"></span>
-        <button class="btn sm" type="button" @click=${() => this.#cancel()}>Cancel</button>
-        <button class="btn sm primary" type="button" @click=${() => void this.#save()}>
-          ${icon('check', 12)} Save settings
-        </button>
-      </footer>
-    </div>`;
+    </section>`;
   }
 
   /**
@@ -1195,6 +1429,11 @@ export class HeoAiSettings extends HeoElement {
 
     const incomplete = draft.sets.find((set) => this.#issuesFor(set).length);
     if (incomplete) {
+      // The problem may be on a page that is not showing; go to it first.
+      if (this.state.value.settingsCategory !== 'ai') {
+        this.editor.setSettingsCategory('ai');
+        await this.updateComplete;
+      }
       if (this.#current(draft.sets).id !== incomplete.id) {
         this.openId = incomplete.id;
         this.providerForm.reset();

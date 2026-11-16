@@ -305,7 +305,7 @@ export class HeoToolbar extends HeoElement {
         type="button"
         title="Settings"
         aria-label="Settings"
-        @click=${() => this.editor.setAiSettings(true)}
+        @click=${() => this.editor.setAiSettings(true, 'general')}
       >
         ${icon('settings', 14)}
       </button>

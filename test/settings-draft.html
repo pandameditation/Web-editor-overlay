@@ -64,6 +64,8 @@
         await frames();
       };
       const open = async () => { engine.setAiSettings(true); await frames(); await frames(); };
+      const cat = (id) => root()?.querySelector(`.cats [role="tab"][data-category="${id}"]`);
+      const goTo = async (id) => { cat(id).click(); await frames(); };
 
       await check('theFooterSavesAndCancels', async () => {
         await open();
@@ -113,10 +115,142 @@
         };
       });
 
-      await check('editsStayInTheDraftUntilSaved', async () => {
-        await change(fieldLabelled('Model').querySelector('input'), 'm1-edited');
+      /*
+       * Settings is four pages behind side tabs, opened on the page the opener is about.
+       *
+       * The AI menu's buttons call setAiSettings(true) and mean providers; the toolbar gear means
+       * Settings as a whole and lands on General.
+       */
+      await check('categoriesAreSideTabs', async () => {
+        engine.setAiSettings(false);
+        await frames();
+        await open();
+        const tabs = Array.from(root().querySelectorAll('.cats [role="tab"]'));
+        const list = root().querySelector('.cats [role="tablist"]');
+        const openedOnAi = cat('ai')?.getAttribute('aria-selected') === 'true';
+        const aiPageShowsProviders = Boolean(root().querySelector('[role="tabpanel"] .providers-card'));
+        const rects = tabs.map((t) => t.getBoundingClientRect());
+        const pageLeft = root().querySelector('[role="tabpanel"]').getBoundingClientRect().left;
+        await goTo('viewports');
+        const viewportsPage = Boolean(root().querySelector('[role="tabpanel"] heo-viewport-sizes')) &&
+          !root().querySelector('.providers-card');
+        // Arrow keys move along the tabs and wrap, as a tablist should.
+        cat('viewports').focus();
+        cat('viewports').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+        await frames();
+        const arrowDown = engine.store.value.settingsCategory;
+        cat('ai').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+        await frames();
+        await frames();
+        const wrapsToFirst = engine.store.value.settingsCategory === 'general' &&
+          root().activeElement === cat('general');
+        engine.setAiSettings(false);
+        await frames();
+        // The toolbar gear.
+        const gear = document.querySelector('html-editor-overlay > heo-overlay')?.shadowRoot
+          ?.querySelector('heo-toolbar')?.shadowRoot?.querySelector('button[aria-label="Settings"]');
+        gear?.click();
+        await frames();
+        await frames();
+        const gearOpensGeneral = engine.store.value.settingsCategory === 'general' &&
+          Boolean(root()?.querySelector('[role="tabpanel"] .setting input'));
+        engine.setAiSettings(false);
+        await frames();
+        await open();
+        return {
+          fourTabsInOrder: tabs.map((t) => t.dataset.category).join() === 'general,design,viewports,ai',
+          labelled: tabs.map((t) => flat(t)).join('|') === 'General|Design system|Viewports|AI providers',
+          verticalTablist: list?.getAttribute('aria-orientation') === 'vertical' &&
+            rects.every((r, i) => i === 0 || r.top > rects[i - 1].top + 4),
+          onTheLeftOfThePage: rects[0].right <= pageLeft + 1,
+          openedOnAi,
+          aiPageShowsProviders,
+          viewportsPage,
+          arrowDownMovesOn: arrowDown === 'ai',
+          wrapsToFirst,
+          gearFound: Boolean(gear),
+          gearOpensGeneral,
+        };
+      });
+
+      /*
+       * A seed can be loaded from Settings, on the Design system page.
+       *
+       * The shared seed surface, applied at once as one undoable change rather than held for Save.
+       */
+      await check('aSeedLoadsFromTheDesignSystemPage', async () => {
+        await goTo('design');
+        const field = root().querySelector('[role="tabpanel"] textarea.paste');
+        const loadButton = button(root(), /^Load$/);
+        const before = engine.records.length;
+        field.value = JSON.stringify({ name: 'From settings', tokens: [{ name: 'settings-seed', value: '#abcdef' }] });
+        field.dispatchEvent(new Event('input', { bubbles: true }));
+        await frames();
+        loadButton.click();
+        await new Promise((r) => setTimeout(r, 100));
+        await frames();
+        const result = {
+          theFieldIsThere: Boolean(field) && Boolean(loadButton),
+          theTokenArrived: engine.tokens.get('settings-seed')?.value === '#abcdef',
+          asOneChange: engine.records.length === before + 1,
+          withoutWaitingForSave: engine.store.value.aiSettingsOpen === true,
+          theFieldIsCleared: root().querySelector('[role="tabpanel"] textarea.paste')?.value === '',
+          // The providers page used an empty-state class whose padding and centring would have
+          // reached the seed surface's dimmed rows; they must be laid out like the others.
+          emptyRowsKeepTheirPadding: (() => {
+            const rows = Array.from(root().querySelectorAll('.part'));
+            return rows.length > 1 && rows.every((el) => getComputedStyle(el).padding === '3px 5px');
+          })(),
+        };
+        engine.undo();
+        await frames();
+        result.undoTakesItBack = !engine.tokens.get('settings-seed');
+        return result;
+      });
+
+      /*
+       * A one-block seed opens the import screen, which sits at a lower z-index than Settings:
+       * Settings steps out of the way while it is up and comes back with its draft.
+       */
+      await check('aBlockSeedOpensTheImportScreenInFront', async () => {
+        await goTo('general');
         root().querySelector('.setting input').click();
         await frames();
+        await goTo('design');
+        const field = root().querySelector('[role="tabpanel"] textarea.paste');
+        field.value = JSON.stringify({
+          name: 'One block', version: 1, tokens: [], classes: [], blocks: [
+            { id: 'from-settings', name: 'From settings', kind: 'component', category: 'Captured', origin: 'captured', html: '<p>hi</p>', css: '' },
+          ]
+        });
+        field.dispatchEvent(new Event('input', { bubbles: true }));
+        await frames();
+        button(root(), /^Load$/).click();
+        await new Promise((r) => setTimeout(r, 400));
+        await frames();
+        const host = overlay()?.querySelector('heo-ai-settings');
+        const importOpen = Boolean(engine.store.value.capturePaste);
+        const settingsHidden = getComputedStyle(host).display === 'none';
+        engine.cancelCapturePaste();
+        await frames();
+        await frames();
+        const back = getComputedStyle(host).display !== 'none' && engine.store.value.aiSettingsOpen === true;
+        const draftKept = /Unsaved changes/.test(flat(root()?.querySelector('footer')));
+        // Put the checkbox back so the next group starts from a clean draft.
+        await goTo('general');
+        root().querySelector('.setting input').click();
+        await frames();
+        await goTo('ai');
+        return { importOpen, settingsHidden, back, draftKept };
+      });
+
+      await check('editsStayInTheDraftUntilSaved', async () => {
+        await change(fieldLabelled('Model').querySelector('input'), 'm1-edited');
+        // The checkbox lives on General; switching pages keeps the model edit in the draft.
+        await goTo('general');
+        root().querySelector('.setting input').click();
+        await frames();
+        await goTo('ai');
         const meanwhile = {
           model: engine.ai.get('one').model,
           split: engine.settings.value.splitDoubleBreaks,
@@ -180,11 +314,14 @@
         await change(fieldLabelled('Model').querySelector('input'), '');
         tab('Two').click();
         await frames();
+        // Saved from another page: the dialog has to bring the AI page back to show the problem.
+        await goTo('general');
         button(root(), /Save settings/).click();
         await frames();
         await frames();
         const model = fieldLabelled('Model').querySelector('input');
         return {
+          backOnTheAiPage: engine.store.value.settingsCategory === 'ai',
           stillOpen: engine.store.value.aiSettingsOpen,
           showing: flat(root().querySelector('.head .name')),
           error: flat(root().querySelector('.field-error')),

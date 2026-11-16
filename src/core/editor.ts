@@ -741,6 +741,9 @@ function blockStateSnapshot(block: LibraryBlock | undefined): string | undefined
   });
 }
 
+/** The pages of the Settings dialog, in the order its side tabs list them. */
+export type SettingsCategory = 'general' | 'design' | 'viewports' | 'ai';
+
 export interface EditorState {
   editing: boolean;
   selected: HTMLElement | null;
@@ -786,8 +789,15 @@ export interface EditorState {
    * different element highlighted is the worst kind of ambiguity in a direct-manipulation tool.
    */
   aiMenuOpen: boolean;
-  /** Whether the provider settings are open. Reached from the menu, and from nowhere else. */
+  /** Whether the Settings dialog is open. */
   aiSettingsOpen: boolean;
+  /**
+   * Which page of Settings is showing.
+   *
+   * In the store rather than in the dialog because the opener decides it: the AI menu's buttons
+   * are about providers and land there, the toolbar's gear lands on General.
+   */
+  settingsCategory: SettingsCategory;
   /**
    * The last run's account of itself, kept after the run ends.
    *
@@ -1345,6 +1355,7 @@ export class EditorEngine {
       insertAnchor: null,
       aiMenuOpen: false,
       aiSettingsOpen: false,
+      settingsCategory: 'general',
       aiOutcome: null,
       aiBusy: false,
       aiContextScope: { ...DEFAULT_AI_CONTEXT_SCOPE },
@@ -4487,9 +4498,19 @@ export class EditorEngine {
     });
   }
 
-  /** Open or close the provider settings. Reached from the menu, and from nowhere else. */
-  setAiSettings(open: boolean): void {
-    this.store.patch({ aiSettingsOpen: open });
+  /**
+   * Open or close Settings, on a given page.
+   *
+   * The page defaults to the AI providers because that is what every opener but the toolbar
+   * means by it — the AI menu's "Set up a model", "Add one" and gear all ask about providers.
+   */
+  setAiSettings(open: boolean, category: SettingsCategory = 'ai'): void {
+    this.store.patch(open ? { aiSettingsOpen: true, settingsCategory: category } : { aiSettingsOpen: false });
+  }
+
+  /** Switch the page Settings is showing, without closing or reopening it. */
+  setSettingsCategory(category: SettingsCategory): void {
+    this.store.patch({ settingsCategory: category });
   }
 
   /**

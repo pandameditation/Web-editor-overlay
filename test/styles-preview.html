@@ -777,7 +777,7 @@
         /* The same panel in Settings, live there too: the dialog's Save is for its own fields. */
         progress.textContent = 'settings';
         {
-          engine.setAiSettings(true);
+          engine.setAiSettings(true, 'viewports');
           await frames(4);
           const dialog = () => deep('heo-ai-settings')?.shadowRoot;
           const inSettings = () => dialog()?.querySelector('heo-viewport-sizes');
