@@ -82,22 +82,21 @@ export class HeoAiSettings extends HeoElement {
       }
 
       /*
-       * Two columns once there is more than one provider.
+       * Two columns, the provider list and the form, whatever the number of providers.
        *
        * The list on the left is the thing being navigated and the form on the right is the thing
        * being edited, which is the shape every settings surface converges on for the same reason:
-       * it keeps the answer to "which one am I changing" on screen while you change it. With a
-       * single provider there is nothing to navigate, so the list would be a column of one and
-       * the layout collapses to the form alone.
+       * it keeps the answer to "which one am I changing" on screen while you change it. A single
+       * provider used to drop the list and move Add into the form's actions; that was a second
+       * layout to keep in step for no gain, since the list of one still names the provider and
+       * holds the Add button where it is with two.
+       *
+       * Neither column scrolls on its own: the dialog body does, so the whole of Settings reads
+       * as one page with one scrollbar instead of a scrolling box nested inside another.
        */
       .split {
         display: grid;
         grid-template-columns: 232px minmax(0, 1fr);
-        flex: 1 1 auto;
-        min-height: 0;
-      }
-      .split.solo {
-        grid-template-columns: minmax(0, 1fr);
       }
       .list {
         display: flex;
@@ -105,14 +104,9 @@ export class HeoAiSettings extends HeoElement {
         gap: 4px;
         padding: 10px;
         border-right: 1px solid var(--heo-line);
-        overflow-y: auto;
-      }
-      .split.solo .list {
-        display: none;
       }
       .pane {
         padding: 8px 16px 14px;
-        overflow-y: auto;
       }
       /* Another row of the list, drawn as a slot waiting to be filled rather than as a provider. */
       .add-list {
@@ -125,10 +119,6 @@ export class HeoAiSettings extends HeoElement {
       }
       .add-list:hover {
         color: var(--heo-text);
-      }
-      /* With one provider the list is hidden, and the button moves into that provider's actions. */
-      .split.solo .add-list {
-        display: none;
       }
       .empty-acts {
         display: flex;
@@ -171,8 +161,10 @@ export class HeoAiSettings extends HeoElement {
       /*
        * The body: titled sections, each one a card.
        *
-       * The providers section takes the remaining height and scrolls inside its card, so the
-       * footer with Save stays in view however long a provider's form gets.
+       * The body is the one thing that scrolls, between a fixed header and footer, so Save stays
+       * in view however long a provider's form gets. The providers card used to take the
+       * remaining height and scroll inside itself, which put a second scrollbar under its
+       * heading and left the form a short window to work through.
        */
       .sections {
         display: flex;
@@ -181,15 +173,13 @@ export class HeoAiSettings extends HeoElement {
         gap: 16px;
         min-height: 0;
         padding: 2px 16px 14px;
+        overflow-y: auto;
       }
       .section {
         display: flex;
+        flex: 0 0 auto;
         flex-direction: column;
         gap: 8px;
-      }
-      .section.providers {
-        flex: 1 1 auto;
-        min-height: 0;
       }
       .section-head h3 {
         margin: 0;
@@ -213,13 +203,7 @@ export class HeoAiSettings extends HeoElement {
       .viewports-card {
         padding: 4px 10px 8px;
       }
-      .providers-card {
-        display: flex;
-        flex: 1 1 auto;
-        flex-direction: column;
-        min-height: 0;
-        overflow: hidden;
-      }
+
       .setting {
         display: flex;
         align-items: flex-start;
@@ -489,10 +473,9 @@ export class HeoAiSettings extends HeoElement {
           height: auto;
           max-height: calc(100vh - 16px);
         }
-        .split,
-        .split.solo {
+        .split {
           grid-template-columns: minmax(0, 1fr);
-          grid-template-rows: auto minmax(0, 1fr);
+          grid-template-rows: auto auto;
         }
         /* A horizontal strip, scrollable, so ten providers do not push the form off screen. */
         .list {
@@ -738,7 +721,7 @@ export class HeoAiSettings extends HeoElement {
           </div>
           <div class="card providers-card">
             ${sets.length
-        ? html`<div class=${`split${sets.length === 1 ? ' solo' : ''}`}>
+        ? html`<div class="split">
                   <div class="list" role="tablist" aria-label="Providers">
                     ${sets.map((set, index) => this.#renderRow(set, index))}
                     ${this.#renderAdd('list')}
@@ -779,16 +762,16 @@ export class HeoAiSettings extends HeoElement {
   /**
    * Add a provider, inside the providers section rather than in the dialog's footer.
    *
-   * Beside the list when there is one, so it reads as "another row"; in the action line of the
-   * only provider when there is just one; centred under the explanation when there are none.
+   * At the foot of the list, so it reads as "another row"; centred under the explanation when
+   * there are no providers yet.
    */
-  #renderAdd(where: 'list' | 'acts' | 'empty'): TemplateResult {
+  #renderAdd(where: 'list' | 'empty'): TemplateResult {
     return html`<button
       class=${`btn sm add add-${where}`}
       type="button"
       @click=${() => this.#add()}
     >
-      ${icon('plus', 12)} ${where === 'acts' ? 'Add another provider' : 'Add a provider'}
+      ${icon('plus', 12)} Add a provider
     </button>`;
   }
 
@@ -1028,8 +1011,6 @@ export class HeoAiSettings extends HeoElement {
               ${icon(verdict.ok ? 'check' : 'alert', 11)} ${verdict.text}
             </span>`
         : nothing}
-        <span class="spacer"></span>
-        ${sets.length === 1 ? this.#renderAdd('acts') : nothing}
       </div>
     </div>`;
   }

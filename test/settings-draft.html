@@ -1,10 +1,22 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="utf-8">
   <title>Settings: a draft until Save settings</title>
-  <style>body { margin: 0; padding: 24px; font: 16px/1.5 system-ui, sans-serif; } pre { margin-top: 16px; }</style>
+  <style>
+    body {
+      margin: 0;
+      padding: 24px;
+      font: 16px/1.5 system-ui, sans-serif;
+    }
+
+    pre {
+      margin-top: 16px;
+    }
+  </style>
 </head>
+
 <body>
   <p>Page</p>
   <pre id="progress">start</pre>
@@ -61,7 +73,43 @@
         return {
           footer,
           noAddInTheFooter: !footer.some((b) => /add/i.test(b.text)),
-          addBesideTest: Boolean(root().querySelector('.body-rows .acts .add-acts')),
+        };
+      });
+
+      /*
+       * One provider gets the same two-column layout as several.
+       *
+       * It used to hide the list and move Add into the form's action line, a second layout that
+       * had to be kept in step with the first for no gain.
+       */
+      await check('oneProviderUsesTheListLayout', async () => {
+        const list = root().querySelector('.split .list');
+        return {
+          theListIsShown: Boolean(list) && getComputedStyle(list).display !== 'none',
+          withTheOneTab: root().querySelectorAll('.list .tab').length === 1,
+          addIsTheLastRowOfTheList: list?.lastElementChild?.classList.contains('add-list') === true,
+          andNotAlsoInTheForm: !root().querySelector('.body-rows .add'),
+        };
+      });
+
+      /*
+       * The dialog body is the only thing that scrolls.
+       *
+       * The providers card used to take the remaining height and scroll inside itself, which put
+       * a second scrollbar under "AI providers". theBodyOverflows proves the content is long
+       * enough here that a nested scroller would have appeared.
+       */
+      await check('oneScrollbarForTheWholeDialog', async () => {
+        const body = root().querySelector('.sections');
+        const nested = ['.providers-card', '.split', '.list', '.pane'].map((s) => root().querySelector(s));
+        const scrolls = (el) => el.scrollHeight > el.clientHeight + 1 &&
+          /auto|scroll/.test(getComputedStyle(el).overflowY);
+        return {
+          theBodyOverflows: body.scrollHeight > body.clientHeight + 1,
+          andTheBodyScrolls: /auto|scroll/.test(getComputedStyle(body).overflowY),
+          nothingInsideItScrolls: nested.every((el) => el && !scrolls(el)),
+          theProvidersCardIsAsTallAsItsContent: nested[0].scrollHeight <= nested[0].clientHeight + 2,
+          theFooterStaysInView: root().querySelector('footer').getBoundingClientRect().bottom <= innerHeight,
         };
       });
 
@@ -101,7 +149,7 @@
       });
 
       await check('addRemoveAndPromoteAreSavedTogether', async () => {
-        button(root(), /Add another provider/).click();
+        button(root(), /Add a provider/).click();
         await frames();
         const tabs = () => Array.from(root().querySelectorAll('.tab')).map((t) => flat(t.querySelector('.name')));
         const addBelowTabs = root().querySelector('.list')?.lastElementChild?.classList.contains('add-list');
@@ -161,7 +209,7 @@
       await check('aKeyIsTestedFromTheDraftAndStoredOnlyOnSave', async () => {
         engine.ai.upsert({ id: 'keyed', label: 'Keyed', transport: 'in-page', provider: 'openai', baseURL: 'https://api.openai.com/v1', model: 'gpt' });
         await open();
-        Array.from(root().querySelectorAll('.tab')).find((t) => flat(t) .includes('Keyed')).click();
+        Array.from(root().querySelectorAll('.tab')).find((t) => flat(t).includes('Keyed')).click();
         await frames();
         const key = root().querySelector('input[type="password"]');
         key.value = 'sk-draft-only';
@@ -214,4 +262,5 @@
     });
   </script>
 </body>
+
 </html>
