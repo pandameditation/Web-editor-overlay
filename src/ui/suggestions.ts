@@ -5,6 +5,23 @@ import { normalizeMedia } from '../core/rules.js';
 import type { DesignToken, TokenGroup } from '../core/types.js';
 import { mediaApplies } from '../core/viewport.js';
 import type { ValueKind, ValueSuggestion } from './controls/value-field.js';
+import { parseShadows, type ShadowSwatch } from '../core/shadow.js';
+
+/**
+ * The design system's shadow tokens, as the shadow editor's swatches: the ones it can draw, written
+ * as their var() when picked. Empty when there are none, and the editor shows HEO's own instead.
+ */
+export function shadowSwatches(engine: EditorEngine): ShadowSwatch[] {
+  const out: ShadowSwatch[] = [];
+  for (const token of engine.tokens.list()) {
+    if (token.group !== 'shadow') continue;
+    const shadows = parseShadows(token.value, 'box');
+    if (!shadows?.length) continue;
+    // Named as the CSS names it, which is what a designer reading the swatch's title is matching.
+    out.push({ name: `--${token.name}`, value: `var(--${token.name})`, shadows });
+  }
+  return out;
+}
 
 /**
  * Builds the suggestion list behind every value field.
@@ -180,6 +197,9 @@ function literalsFor(meta: PropertyMeta): string[] {
 
 /** Map a property's control type onto the value field's input behaviour. */
 export function valueKindFor(property: string): ValueKind {
+  // Typed as text, with the shadow editor at the head of the field.
+  if (property === 'box-shadow' || property === 'text-shadow') return 'shadow';
+  if (property === 'filter') return 'filter';
   const meta = propertyMeta(property);
   switch (meta.control) {
     case 'length':

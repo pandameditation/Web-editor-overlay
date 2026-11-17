@@ -286,7 +286,7 @@ export const PRESETS: AnimationPreset[] = [
       { at: '50%', declarations: { 'box-shadow': '0 0 var(--heo-blur, 24px) var(--heo-spread, 4px) var(--heo-color, oklch(65% 0.2 280 / 55%))' } },
     ],
     params: [
-      { key: 'color', label: 'Colour', kind: 'color', default: 'oklch(65% 0.2 280 / 55%)' },
+      { key: 'color', label: 'Color', kind: 'color', default: 'oklch(65% 0.2 280 / 55%)' },
       { key: 'blur', label: 'Size', kind: 'length', default: '24px' },
     ],
     vars: (p) => lean({ '--heo-color': p.color || 'oklch(65% 0.2 280 / 55%)', '--heo-blur': p.blur || '24px' }, { '--heo-color': 'oklch(65% 0.2 280 / 55%)', '--heo-blur': '24px' }),

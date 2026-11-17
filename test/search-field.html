@@ -178,7 +178,7 @@
 
       // A token searched for by name.
       await typeInto(tokField, 'brand', tokPanel);
-      results.tokens.narrowedToTheToken = headings().includes('Colour');
+      results.tokens.narrowedToTheToken = headings().includes('Color');
       results.tokens.droppedTheOthers = !headings().includes('Reusable classes');
 
       // A class searched for by name, proving the search crosses registries.
@@ -187,7 +187,7 @@
 
       // And by declaration, which is how you find a colour you cannot name.
       await typeInto(tokField, '#ff3355', tokPanel);
-      results.tokens.findsByValue = headings().includes('Colour');
+      results.tokens.findsByValue = headings().includes('Color');
 
       await typeInto(tokField, 'zzzz', tokPanel);
       results.tokens.saysWhenNothingMatches = Boolean(

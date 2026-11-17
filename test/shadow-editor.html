@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Shadow editor</title>
+  <!--
+    The shadow editor opens from the control at the head of the box-shadow, text-shadow and filter
+    fields, where a colour has its swatch. It edits a stack of shadows, live, with swatches (the value
+    as it was, then the design system's shadow tokens or HEO's own), and moves shadows between
+    box-shadow and filter: drop-shadow() both ways.
+  -->
+  <style id="site">
+    :root {
+      --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 10%), 0 2px 4px -2px rgb(0 0 0 / 10%);
+    }
+  </style>
+</head>
+
+<body>
+  <div id="card" style="width:200px;padding:20px;box-shadow:0 1px 2px rgb(0 0 0 / 6%), 0 8px 24px -6px rgb(15 23 42 / 18%)">Card</div>
+  <p id="title">A title</p>
+  <div id="named" style="width:80px;height:20px;box-shadow:0 2px 6px black, 0 0 0 1px var(--shadow-md)">Named</div>
+  <div id="logo" style="width:60px;height:60px;background:#6366f1;filter:saturate(1.2) contrast(1.05)">★</div>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const results = {};
+      const errors = [];
+      addEventListener('error', (event) => errors.push('error: ' + event.message));
+      addEventListener('unhandledrejection', (event) => errors.push('rejection: ' + event.reason));
+      const progress = document.getElementById('progress');
+      const settle = (ms = 300) => new Promise((resolve) => setTimeout(resolve, ms));
+      const check = async (name, fn) => {
+        progress.textContent = name;
+        try { results[name] = await fn(); } catch (err) { results[name] = 'THREW: ' + String(err && err.stack); }
+      };
+      const deep = (selector, root = document) => {
+        const direct = root.querySelector?.(selector);
+        if (direct) return direct;
+        for (const el of root.querySelectorAll?.('*') ?? []) {
+          if (!el.shadowRoot) continue;
+          const found = deep(selector, el.shadowRoot);
+          if (found) return found;
+        }
+        return null;
+      };
+      const flat = (node) => (node?.textContent ?? '').replace(/\s+/g, ' ').trim();
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark', presets: false, detectScriptContent: false });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      engine.setDockTab('styles');
+      const sroot = () => deep('heo-styles-panel').shadowRoot;
+      const field = (property) => sroot()?.querySelector(`heo-value-field[data-property="${property}"]`);
+      const opener = (property) => field(property)?.shadowRoot?.querySelector('.shadow-btn');
+      const editor = (property) => field(property)?.shadowRoot?.querySelector('heo-shadow-editor');
+      const ed = (property) => editor(property)?.shadowRoot;
+      const button = (root, re) => Array.from(root?.querySelectorAll('button') ?? []).find((b) => re.test(flat(b)) || re.test(b.getAttribute('aria-label') ?? ''));
+      const inline = (el, property) => el.style.getPropertyValue(property).replace(/\s+/g, ' ').trim();
+      // What the browser makes of a value, so an expected value compares with a written one in one form.
+      const as = (property, value) => {
+        const probe = document.createElement('i');
+        probe.style.setProperty(property, value);
+        return probe.style.getPropertyValue(property).replace(/\s+/g, ' ').trim();
+      };
+      const is = (el, property, value) => inline(el, property) === as(property, value);
+      const select = async (id) => {
+        const el = document.getElementById(id);
+        api.select(el);
+        await settle(500);
+        const section = sroot().querySelector('[data-declarations="effects"]')?.closest('heo-section');
+        if (section && !section.open) section.shadowRoot?.querySelector('button')?.click();
+        await settle(300);
+        return el;
+      };
+      // The opener toggles, so a field whose editor is still up from an earlier step is left as it is.
+      const open = async (property) => {
+        if (!editor(property)) opener(property).click();
+        await settle(350);
+      };
+      const lengthField = (root, label) => Array.from(root.querySelectorAll('heo-value-field')).find((one) => one.getAttribute('field-label') === label);
+      const send = async (target, type, value) => {
+        target.dispatchEvent(new CustomEvent(type, { detail: { value }, bubbles: true, composed: true }));
+        await settle(250);
+      };
+
+      const card = await select('card');
+
+      await check('opener', () => {
+        const box = field('box-shadow');
+        const lead = opener('box-shadow');
+        const input = box?.shadowRoot?.querySelector('input[type="text"]');
+        return {
+          theBoxShadowFieldHasTheOpener: Boolean(lead),
+          onTheLeftLikeTheColorSwatch: Boolean(lead && input) && lead.getBoundingClientRect().right <= input.getBoundingClientRect().left + 1,
+          textShadowHasOneToo: Boolean(opener('text-shadow')),
+          filterHasOneToo: Boolean(opener('filter')),
+          // The control at the head draws the shadow it opens.
+          drawsTheShadow: /px/.test(lead?.querySelector('i')?.getAttribute('style') ?? ''),
+        };
+      });
+
+      await check('open', async () => {
+        await open('box-shadow');
+        const root = ed('box-shadow');
+        const layers = root?.querySelectorAll('.layer') ?? [];
+        const swatches = Array.from(root?.querySelectorAll('.swatch') ?? []);
+        return {
+          opensInTheFieldsPopup: Boolean(editor('box-shadow')),
+          readsTheStackFromTheRule: layers.length === 2,
+          theLastShadowIsPicked: layers[1]?.getAttribute('aria-current') === 'true',
+          firstSwatchIsTheValueAsItWas: swatches[0]?.dataset.swatch === 'original' && swatches[0]?.getAttribute('aria-pressed') === 'true',
+          theDesignSystemsTokenIsASwatch: swatches.some((one) => one.dataset.swatch === '--shadow-md'),
+          andNotHeosOwnWhenThereAreTokens: !swatches.some((one) => one.dataset.swatch === 'Neon'),
+          offersTheConversion: /use filter: drop-shadow\(\) instead/i.test(flat(root?.querySelector('.convert'))),
+          saysSpreadWouldBeLost: /no spread or inset/i.test(flat(root)),
+          saysColorNotColour: /\bColor\b/.test(flat(root)) && !/colour/i.test(flat(root)),
+        };
+      });
+
+      await check('live', async () => {
+        const root = ed('box-shadow');
+        const recordsBefore = engine.history.records.length;
+        const blur = root.querySelectorAll('input[type="range"]')[0];
+        blur.value = '40';
+        blur.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        await settle(150);
+        const previewed = getComputedStyle(card).boxShadow.includes('40px');
+        // A preview is not an edit: nothing on the undo stack yet.
+        const notWrittenYet = engine.history.records.length === recordsBefore;
+        blur.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+        await settle(400);
+        const written = inline(card, 'box-shadow');
+        void written;
+        return {
+          previewsWhileDragging: previewed,
+          writesNothingWhileDragging: notWrittenYet,
+          writesWhenItSettles: is(card, 'box-shadow', '0 1px 2px rgb(0 0 0 / 6%), 0 8px 40px -6px rgb(15 23 42 / 18%)'),
+          staysOpen: Boolean(editor('box-shadow')),
+        };
+      });
+
+      await check('fields', async () => {
+        const root = ed('box-shadow');
+        await send(lengthField(root, 'Offset X'), 'value-change', '5px');
+        await send(lengthField(root, 'Spread'), 'value-change', '2px');
+        const opacity = ed('box-shadow').querySelector('#heo-shadow-alpha');
+        opacity.value = '50';
+        opacity.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+        await settle(400);
+        const written = inline(card, 'box-shadow');
+        const inset = ed('box-shadow').querySelector('heo-segmented[label="Outer or inset"]');
+        inset.dispatchEvent(new CustomEvent('segment-change', { detail: { value: 'inset' }, bubbles: true, composed: true }));
+        await settle(400);
+        return {
+          xSpreadAndOpacityWrite: written === as('box-shadow', '0 1px 2px rgb(0 0 0 / 6%), 5px 8px 40px 2px rgb(15 23 42 / 50%)'),
+          insetWrites: is(card, 'box-shadow', '0 1px 2px rgb(0 0 0 / 6%), inset 5px 8px 40px 2px rgb(15 23 42 / 50%)'),
+        };
+      });
+
+      await check('pad', async () => {
+        const pad = ed('box-shadow').querySelector('.pad');
+        pad.focus();
+        pad.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', shiftKey: true, bubbles: true, composed: true }));
+        await settle(400);
+        return { arrowKeysNudgeTheOffset: is(card, 'box-shadow', '0 1px 2px rgb(0 0 0 / 6%), inset 15px 8px 40px 2px rgb(15 23 42 / 50%)') };
+      });
+
+      await check('swatches', async () => {
+        const token = () => Array.from(ed('box-shadow').querySelectorAll('.swatch')).find((one) => one.dataset.swatch === '--shadow-md');
+        token().click();
+        await settle(400);
+        const asVar = inline(card, 'box-shadow') === 'var(--shadow-md)';
+        const loaded = ed('box-shadow').querySelectorAll('.layer').length === 2 && token().getAttribute('aria-pressed') === 'true';
+        await send(lengthField(ed('box-shadow'), 'Offset X'), 'value-change', '3px');
+        const edited = inline(card, 'box-shadow');
+        const original = () => ed('box-shadow').querySelector('.swatch[data-swatch="original"]');
+        original().click();
+        await settle(400);
+        return {
+          aTokenPickedIsWrittenAsItsVar: asVar,
+          andLoadsIntoTheEditor: loaded,
+          // The picked shadow is still the second one; its X changes, the rest is the token's values.
+          editingAfterwardsWritesTheValues: edited === as('box-shadow', '0 4px 6px -1px rgb(0 0 0 / 10%), 3px 2px 4px -2px rgb(0 0 0 / 10%)'),
+          theSwatchItselfIsUnchanged: token().getAttribute('aria-pressed') === 'false',
+          theFirstSwatchPutsBackTheValueAsItWas: is(card, 'box-shadow', '0 1px 2px rgb(0 0 0 / 6%), 0 8px 24px -6px rgb(15 23 42 / 18%)'),
+        };
+      });
+
+      await check('toFilter', async () => {
+        const tick = ed('box-shadow').querySelector('.convert input');
+        tick.click();
+        await settle(800);
+        const filterNow = inline(card, 'filter');
+        return {
+          theBoxShadowIsRemoved: inline(card, 'box-shadow') === 'none',
+          // The spread is dropped: drop-shadow() has none.
+          theShadowsBecomeDropShadows: filterNow === as('filter', 'drop-shadow(0 1px 2px rgb(0 0 0 / 6%)) drop-shadow(0 8px 24px rgb(15 23 42 / 18%))'),
+          theEditorOpensAgainOnTheFilterRow: Boolean(editor('filter')),
+          inDropShadowModeWithTheBoxTicked: /drop shadow/i.test(flat(ed('filter')?.querySelector('.title'))) &&
+            ed('filter')?.querySelector('.convert input')?.checked === true,
+          spreadIsOffThere: ed('filter')?.querySelectorAll('.line.off').length >= 1,
+        };
+      });
+
+      await check('backToBox', async () => {
+        ed('filter').querySelector('.convert input').click();
+        await settle(800);
+        return {
+          convertsBack: is(card, 'box-shadow', '0 1px 2px rgb(0 0 0 / 6%), 0 8px 24px rgb(15 23 42 / 18%)'),
+          theFilterHasNoDropShadowLeft: inline(card, 'filter') === 'none',
+          reopensOnBoxShadow: Boolean(editor('box-shadow')),
+        };
+      });
+
+      const logo = await select('logo');
+      await check('filter', async () => {
+        await open('filter');
+        const root = ed('filter');
+        const chips = Array.from(root.querySelectorAll('.fns .chip')).map(flat);
+        const noTick = !root.querySelector('.convert');
+        button(root, /add a shadow/i).click();
+        await settle(400);
+        const written = inline(logo, 'filter');
+        // A chip of another function selects it in the field, scrolled into view.
+        const contrast = Array.from(ed('filter')?.querySelectorAll('.fns .chip') ?? []).find((one) => flat(one) === 'contrast(1.05)');
+        contrast?.click();
+        await settle(300);
+        const input = field('filter').shadowRoot.querySelector('input[type="text"]');
+        return {
+          showsTheOtherFunctions: chips.includes('saturate(1.2)') && chips.includes('contrast(1.05)'),
+          noConversionWhileThereIsNoDropShadow: noTick,
+          addingADropShadowKeepsTheOthers: written === as('filter', 'saturate(1.2) contrast(1.05) drop-shadow(0px 4px 12px rgb(0 0 0 / 20%))'),
+          aChipSelectsItsFunctionInTheField: input.value.slice(input.selectionStart, input.selectionEnd) === 'contrast(1.05)',
+          andTheFieldHasFocus: field('filter').matches(':focus-within'),
+        };
+      });
+
+      /*
+       * A named shadow colour froze the page: reading it appended a probe to the body on every render,
+       * the editor sees body changes as page edits and re-renders, and the next render probed again.
+       */
+      await check('namedColorDoesNotLoop', async () => {
+        const named = await select('named');
+        let bodyChanges = 0;
+        const watch = new MutationObserver((list) => { bodyChanges += list.length; });
+        watch.observe(document.body, { childList: true });
+        await open('box-shadow');
+        let late = 0;
+        for (let i = 0; i < 10; i += 1) {
+          const t = performance.now();
+          await settle(50);
+          late += Math.max(0, performance.now() - t - 50);
+        }
+        watch.disconnect();
+        // The last shadow is picked, and its var() colour has no opacity to read; the first is black.
+        const tokenAlphaOff = ed('box-shadow')?.querySelector('#heo-shadow-alpha')?.disabled === true;
+        ed('box-shadow')?.querySelectorAll('.layer')[0]?.click();
+        await settle(200);
+        const alpha = ed('box-shadow')?.querySelector('#heo-shadow-alpha');
+        void named;
+        return {
+          theEditorOpens: Boolean(editor('box-shadow')),
+          nothingIsAddedToThePage: bodyChanges === 0,
+          thePageStaysResponsive: late < 250,
+          aNamedColorsOpacityIsRead: Boolean(alpha && !alpha.disabled && alpha.value === '100'),
+          aTokenColorsOpacityIsOffNotGuessed: tokenAlphaOff,
+        };
+      });
+
+      const title = await select('title');
+      await check('text', async () => {
+        await open('text-shadow');
+        const root = ed('text-shadow');
+        const blocked = Array.from(root.querySelectorAll('.swatch')).filter((one) => one.disabled).length;
+        button(root, /add a shadow/i).click();
+        await settle(400);
+        return {
+          opensInTextMode: /text shadow/i.test(flat(root.querySelector('.title'))),
+          noConversion: !root.querySelector('.convert'),
+          spreadIsOff: Boolean(root.querySelector('.line.off')),
+          // The design system's token has no inset, so every swatch can be a text shadow.
+          tokenSwatchesStayOn: blocked === 0,
+          writesAValidTextShadow: is(title, 'text-shadow', '0px 4px 12px rgb(0 0 0 / 20%)') && getComputedStyle(title).textShadow !== 'none',
+        };
+      });
+
+      await check('heoSwatches', async () => {
+        // No shadow tokens: HEO's own eight.
+        for (const token of engine.tokens.list().filter((one) => one.group === 'shadow')) engine.tokens.remove(token.name);
+        await select('card');
+        await open('box-shadow');
+        const names = Array.from(ed('box-shadow')?.querySelectorAll('.swatch') ?? []).map((one) => one.dataset.swatch);
+        await select('title');
+        await open('text-shadow');
+        const off = Array.from(ed('text-shadow')?.querySelectorAll('.swatch') ?? []).filter((one) => one.disabled).map((one) => one.dataset.swatch);
+        return {
+          theFirstIsStillTheValueAsItWas: names[0] === 'original',
+          thenHeosEight: names.length === 9 && names.includes('Soft') && names.includes('Ring'),
+          // Inner is an inset shadow, which a text shadow cannot be.
+          anInsetSwatchIsOffForText: off.length === 1 && off[0] === 'Inner',
+        };
+      });
+
+      const failed = Object.entries(results)
+        .filter(([, group]) => group && typeof group === 'object')
+        .filter(([, group]) => Object.values(group).some((value) => value === false))
+        .map(([name]) => name);
+      const threw = Object.entries(results).filter(([, v]) => typeof v === 'string').map(([k]) => k);
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify({ ok: !failed.length && !threw.length && !errors.length, failed: [...failed, ...threw], errors, results }, null, 2) + ':END';
+    })();
+  </script>
+</body>
+
+</html>

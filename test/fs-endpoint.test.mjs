@@ -116,6 +116,9 @@ await test('the probe reports the project root', async () => {
   assert.equal(body.ok, true);
   assert.equal(body.root, root);
   assert.equal(body.base, '/');
+  // What lets the page tell an endpoint that stores fonts from one that needs a restart first.
+  assert.equal(body.bytes, true);
+  assert.equal(body.remove, true);
 });
 
 await test('a file can be read', async () => {
@@ -139,6 +142,34 @@ await test('a write creates directories on the way', async () => {
   const response = await authed('styles/nested/new.css', { method: 'PUT', body: '.a {}\n' });
   assert.equal(response.status, 200);
   assert.equal(await readFile(join(root, 'styles/nested/new.css'), 'utf8'), '.a {}\n');
+});
+
+/* A stored design-system file: bytes, not text. A UTF-8 round trip would mangle 0x80–0xff. */
+const fontBytes = new Uint8Array([0x77, 0x4f, 0x46, 0x32, 0x00, 0x80, 0xc3, 0xff, 0xfe, 0x01]);
+const octet = { 'content-type': 'application/octet-stream' };
+
+await test('a byte body is written untouched', async () => {
+  const response = await authed('assets/fonts/inter.woff2', { method: 'PUT', headers: octet, body: fontBytes });
+  assert.equal(response.status, 200);
+  const disk = new Uint8Array(await readFile(join(root, 'assets/fonts/inter.woff2')));
+  assert.deepEqual([...disk], [...fontBytes]);
+});
+
+await test('a byte body cannot land as source', async () => {
+  const response = await authed('assets/evil.js', { method: 'PUT', headers: octet, body: fontBytes });
+  assert.equal(response.status, 403);
+});
+
+await test('a text body cannot land as a font', async () => {
+  const response = await authed('assets/fonts/text.woff2', { method: 'PUT', body: 'not a font' });
+  assert.equal(response.status, 403);
+});
+
+await test('a byte body still needs the token and stays inside the root', async () => {
+  const anonymous = await fetch(`${endpoint}?path=assets/a.png`, { method: 'PUT', headers: octet, body: fontBytes });
+  assert.equal(anonymous.status, 403);
+  const climbing = await authed('../outside.png', { method: 'PUT', headers: octet, body: fontBytes });
+  assert.equal(climbing.status, 403);
 });
 
 /* -------------------------------------------------------------------------- */
@@ -213,7 +244,28 @@ await test('node_modules is off limits even for an allowed extension', async () 
 });
 
 await test('an unsupported method is refused', async () => {
-  assert.equal((await authed('theme.css', { method: 'DELETE' })).status, 405);
+  assert.equal((await authed('theme.css', { method: 'PATCH' })).status, 405);
+});
+
+/* Deleting: only a stored media file, never source, and only with the token. */
+await test('a stored file can be deleted', async () => {
+  await authed('assets/images/old.png', { method: 'PUT', headers: octet, body: fontBytes });
+  const response = await authed('assets/images/old.png', { method: 'DELETE' });
+  assert.equal(response.status, 200);
+  await assert.rejects(readFile(join(root, 'assets/images/old.png')));
+});
+
+await test('source can never be deleted', async () => {
+  assert.equal((await authed('theme.css', { method: 'DELETE' })).status, 403);
+  assert.ok(await readFile(join(root, 'theme.css'), 'utf8'), 'theme.css is still there');
+  assert.equal((await authed('index.html', { method: 'DELETE' })).status, 403);
+});
+
+await test('a delete needs the token and stays inside the root', async () => {
+  await authed('assets/images/keep.png', { method: 'PUT', headers: octet, body: fontBytes });
+  assert.equal((await fetch(`${endpoint}?path=assets/images/keep.png`, { method: 'DELETE' })).status, 403);
+  assert.equal((await authed('../heo-outside.png', { method: 'DELETE' })).status, 403);
+  assert.ok(await readFile(join(root, 'assets/images/keep.png')), 'still there');
 });
 
 await test('no CORS headers are ever handed out', async () => {

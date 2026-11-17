@@ -1588,7 +1588,7 @@ export class HeoExtractDialog extends HeoElement {
       <p>
         ${icon('sparkle', 11)}
         <span>
-          <strong>Make parts editable with props.</strong> Replace text, a link or a colour with
+          <strong>Make parts editable with props.</strong> Replace text, a link or a color with
           <code class="mono">{{name}}</code> — for example
           <code class="mono">&lt;h3&gt;{{title}}&lt;/h3&gt;</code> or
           <code class="mono">href="{{link}}"</code>. Each one becomes a field to fill in when the

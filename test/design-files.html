@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Design system files: store embedded ones in a file, embed linked ones</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 24px;
+      font: 16px/1.5 system-ui, sans-serif;
+    }
+  </style>
+  <!-- The page's own CSS, with files folded in: an inline sheet and a linked one. -->
+  <style id="page-css">
+    /* inline, keep me */
+    @font-face { font-family: "Inline Grotesk"; src: url(data:font/woff2;base64,d09GMgANGic0QU5baHWCj5yptsPQ3er3BBEeKzhFUl9seYaToK26x9Th7vsIFSIvPElWY3B9ipeksb7L2OXy/wwZJjNATVpndIGOm6i1ws/c6fYDEB0qN0RRXmt4hZKfrLnG0+Dt+gcUIS47SFVib3yJlqOwvcrX5PH+CxglMj9MWWZzgI2ap7TBztvo9QIPHCk2Q1BdaneEkZ6ruMXS3+z5BhMgLTpHVGFue4iVoq+8ydbj8P0KFw==) format("woff2"); }
+    :root { --grain: url(data:image/jpeg;base64,/9j/4AAFCg8UGR4jKC0yNzxBRktQVVpfZGluc3h9goeMkZaboKWqr7S5vsPIzdLX3OHm6/D1+v8ECQ4TGB0iJywxNjtARUpPVFleY2htcnd8gYaLkJWan6SprrO4vQ==); }
+  </style>
+  <link rel="stylesheet" href="nested/files-sheet.css">
+</head>
+<body>
+  <p>Page</p>
+  <!-- Embedded straight into the page's markup, the case the first version missed. -->
+  <img id="photo" alt="" src="data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=">
+  <div id="banner" style="height:4px;background-image:url('data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=')"></div>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const errors = [];
+      window.addEventListener('error', (e) => errors.push('error: ' + e.message));
+      window.addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+      const results = {};
+      const check = async (name, fn) => {
+        document.getElementById('progress').textContent = name;
+        try { results[name] = await fn(); }
+        catch (err) { results[name] = 'THREW: ' + String(err && err.stack); }
+      };
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const flat = (node) => (node?.textContent ?? '').replace(/\s+/g, ' ').trim();
+      const until = async (test, ms = 4000) => {
+        const end = performance.now() + ms;
+        while (performance.now() < end) {
+          if (test()) return true;
+          await new Promise((r) => setTimeout(r, 30));
+        }
+        return false;
+      };
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark' });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+
+      /* ---- A design system with one of each shape ---- */
+      // A woff2 signature and 300 bytes after it: big enough that leaving it out of a seed shows.
+      const fontBytes = [119, 79, 70, 50, ...Array.from({ length: 300 }, (_, i) => (i * 37) % 256)];
+      const fontData = 'data:font/woff2;base64,' + btoa(String.fromCharCode(...fontBytes));
+      const pngData = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+      const svgData = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E";
+      engine.library.upsert({
+        id: 'hero',
+        name: 'Hero',
+        kind: 'component',
+        origin: 'captured',
+        html: `<section class="hero"><img src="${pngData}" alt=""><img srcset="${pngData} 1x, nested/dot.svg 2x" alt=""><a href="nested/dot.svg">link</a></section>`,
+        css: `@font-face { font-family: "Inter Display"; font-weight: 700; src: url("${fontData}") format("woff2"); }\n.hero { background: url(nested/dot.svg); }`,
+      });
+      engine.tokens.upsert({ name: 'pattern', value: `url("${svgData}")`, group: 'other', origin: 'user' });
+      // A stylesheet-origin token is the page's CSS, not the design system's: out of scope.
+      engine.tokens.upsert({ name: 'from-sheet', value: `url("${pngData}")`, group: 'other', origin: 'stylesheet' });
+
+      /* ---- A project stub that records what it was asked to write ---- */
+      const written = new Map();
+      const removed = [];
+      const pathOf = (url) => {
+        const path = decodeURIComponent(new URL(url, location.href).pathname);
+        const at = path.lastIndexOf('/test/');
+        return at === -1 ? null : path.slice(at + '/test/'.length);
+      };
+      const host = {
+        kind: 'directory',
+        label: 'stub-project',
+        resolve: (url) => pathOf(url),
+        read: async () => null,
+        write: async (path, text) => { written.set(path, new TextEncoder().encode(text)); },
+        writeBytes: async (path, bytes) => { written.set(path, new Uint8Array(bytes)); },
+        remove: async (path) => { removed.push(path); written.delete(path); },
+        ensureWritable: async () => true,
+        release: async () => {},
+      };
+
+      const overlay = () => document.querySelector('html-editor-overlay > heo-overlay')?.shadowRoot;
+      const settings = () => overlay()?.querySelector('heo-ai-settings')?.shadowRoot;
+      const files = () => settings()?.querySelector('heo-design-files')?.shadowRoot;
+      const rows = () => Array.from(files()?.querySelectorAll('.row[data-place]') ?? []);
+      const rowNamed = (re) => rows().find((row) => re.test(flat(row.querySelector('.name'))));
+      const button = (root, re) => Array.from(root?.querySelectorAll('button') ?? []).find((b) => re.test(flat(b)));
+
+      const jpegData = document.getElementById('photo').getAttribute('src');
+      const everything = { tokens: true, classes: true, rules: true, blocks: true, ai: true, aiKeys: false, settings: true };
+      let seedFontPath = '';
+      await check('scan', () => {
+        const all = engine.designFiles().filter((one) => one.ref !== jpegData && !one.uses.some((use) => use.owner === 'sheet'));
+        const font = all.find((one) => one.kind === 'font');
+        const png = all.find((one) => one.ref === pngData);
+        const svg = all.find((one) => one.ref === svgData);
+        const dot = all.find((one) => one.ref === 'nested/dot.svg');
+        return {
+          findsTheFourDistinctFiles: all.length === 4,
+          theFontIsEmbeddedAndNamedAfterItsFamilyAndWeight: font?.place === 'embedded' && font?.name === 'inter-display-700.woff2',
+          anEmbeddedSizeIsTheDecodedPayload: font?.bytes === fontBytes.length,
+          theSameImageInSrcAndSrcsetIsOneFile: png?.uses.length === 1 && png?.place === 'embedded',
+          aPercentEncodedSvgTokenCounts: svg?.kind === 'image' && svg?.uses[0]?.label === '--pattern',
+          aRelativeUrlIsLinked: dot?.place === 'linked' && dot?.name === 'dot.svg',
+          // `a[href]` is a link to a page, not a file the block needs; and a stylesheet-origin token is not the design system's.
+          aStylesheetTokenIsLeftOut: !all.some((one) => one.uses.some((use) => use.key === 'from-sheet')),
+        };
+      });
+
+      await check('page', () => {
+        const jpeg = engine.designFiles().find((one) => one.ref === jpegData);
+        return {
+          aDataUrlInThePagesOwnImgIsFound: jpeg?.place === 'embedded' && jpeg?.kind === 'image',
+          theSameOneInAnInlineStyleIsTheSameFile: jpeg?.uses.length === 2 && jpeg.uses.every((use) => use.owner === 'element'),
+          // The overlay's own UI holds images too; none of them is the page's.
+          nothingFromTheOverlayItself: !engine.designFiles().some((one) => one.uses.some((use) => /heo-|html-editor-overlay/.test(use.label))),
+        };
+      });
+
+      await check('sheets', () => {
+        const all = engine.designFiles();
+        const inSheet = (label) => all.filter((one) => one.uses.some((use) => use.owner === 'sheet' && use.label === label));
+        const linked = inSheet('files-sheet.css');
+        const inline = inSheet('page-css');
+        return {
+          anUnquotedFontFaceInALinkedSheetIsFound: linked.some((one) => one.kind === 'font' && one.place === 'embedded' && one.name === 'clay-sans.woff2'),
+          aTextureTokenInALinkedSheetIsFound: linked.some((one) => one.kind === 'image' && one.mime === 'image/jpeg'),
+          andBothInAnInlineSheet: inline.some((one) => one.kind === 'font') && inline.some((one) => one.kind === 'image'),
+          theSizeIsTheDecodedPayload: linked.find((one) => one.kind === 'font')?.bytes === 204,
+          // The token read from that sheet is the sheet's, so it is not listed twice.
+          theSheetTokenIsNotAlsoATokenRow: !all.some((one) => one.uses.some((use) => use.owner === 'token' && use.key === 'clay-tex')),
+        };
+      });
+
+      await check('seedOptions', () => {
+        const kept = engine.designSystem(everything);
+        const lean = engine.designSystem({ ...everything, files: { font: false } });
+        const css = lean.blocks.find((one) => one.id === 'hero')?.css ?? '';
+        seedFontPath = /url\("(assets\/fonts\/inter-display-700-[0-9a-f]{12}\.woff2)"\)/.exec(css)?.[1] ?? '';
+        const html = lean.blocks.find((one) => one.id === 'hero')?.html ?? '';
+        return {
+          everythingTravelsByDefault: kept.blocks.find((one) => one.id === 'hero')?.css.includes('data:font/woff2'),
+          aFontLeftOutIsLinkedAtItsStoredPath: Boolean(seedFontPath) && !css.includes('data:font'),
+          theOtherKindsStillTravel: html.includes('data:image/png') &&
+            lean.tokens.find((one) => one.name === 'pattern')?.value.includes('data:image/svg'),
+          theLiveDesignSystemIsUntouched: engine.library.get('hero').css.includes('data:font/woff2'),
+          theSeedIsSmaller: JSON.stringify(lean).length < JSON.stringify(kept).length,
+        };
+      });
+
+      await check('seedMenu', async () => {
+        engine.setAiSettings(true);
+        engine.setSettingsCategory('design');
+        const transfer = () => settings()?.querySelector('.design-card');
+        await until(() => transfer()?.querySelector('[data-part="files"]'));
+        const parent = transfer().querySelector('[data-part="files"]');
+        const fontRow = transfer().querySelector('[data-part="files-font"]');
+        const imageRow = transfer().querySelector('[data-part="files-image"]');
+        // The two stylesheet tokens travel in the seed with their textures; the page's font faces do not.
+        const counts = /5 embedded files/.test(flat(parent)) && /1 font/.test(flat(fontRow)) && /4 images/.test(flat(imageRow));
+        fontRow.querySelector('input').click();
+        await frames();
+        const mixed = transfer().querySelector('[data-part="files"] input').indeterminate;
+        const noted = /linked at/i.test(flat(transfer().querySelector('.files-note')));
+        // Back on, so the rest of this page sees the default seed.
+        transfer().querySelector('[data-part="files-font"] input').click();
+        await frames();
+        engine.setAiSettings(false);
+        await frames();
+        return {
+          aRowPerKindWithItsCount: counts,
+          theParentShowsAMixedChoice: mixed,
+          saysWhereLeftOutFilesAreLinked: noted,
+          theNoteGoesWhenEverythingIsBack: !transfer()?.querySelector('.files-note'),
+        };
+      });
+
+      await check('withoutProject', async () => {
+        engine.setAiSettings(true);
+        engine.setSettingsCategory('general');
+        const expected = engine.designFiles().length;
+        await until(() => rows().length === expected);
+        await frames();
+        const store = rowNamed(/inter-display/i)?.querySelector('.act button');
+        return {
+          rendersOneRowPerFile: expected === 9 && rows().length === expected,
+          storingIsOfferedButDisabled: Boolean(store && store.disabled && /store in a file/i.test(flat(store))),
+          saysWhyAndOffersTheConnection: /needs the page's folder/i.test(flat(files()?.querySelector('.note.warn'))),
+          embeddingStillWorks: !rowNamed(/^dot\.svg/)?.querySelector('.act button')?.disabled,
+          aFolderPerKindPresent: ['font', 'image'].every((kind) => files()?.querySelector(`input[data-kind="${kind}"]`)?.value === `assets/${kind === 'font' ? 'fonts' : 'images'}`),
+        };
+      });
+
+      // A dev server started before byte writes existed: it answers, but would refuse every font.
+      await check('oldServer', async () => {
+        await engine.attachProject({ ...host, kind: 'server', label: 'old-server', writeBytes: undefined, needsRestartForBytes: true }, { quiet: true });
+        await frames();
+        const note = flat(files()?.querySelector('.note.warn'));
+        return {
+          saysToRestartTheServer: /started before it could store files/i.test(note) && /restart/i.test(note),
+          offersReconnect: Boolean(button(files()?.querySelector('.note.warn'), /reconnect/i)),
+          storingStaysOff: Boolean(rowNamed(/inter-display/i)?.querySelector('.act button')?.disabled),
+        };
+      });
+
+      await engine.attachProject(host, { quiet: true });
+      await frames();
+
+      await check('alignment', async () => {
+        await until(() => rows().every((row) => !row.querySelector('.act button')?.disabled));
+        await frames();
+        // The complaint was buttons out of line: every row's action at the same x, the same width.
+        const boxes = rows().map((row) => row.querySelector('.act button').getBoundingClientRect());
+        const same = (key) => boxes.every((box) => Math.abs(box[key] - boxes[0][key]) < 0.5);
+        const header = files().querySelector('.head').children;
+        const sizeHead = header[2].getBoundingClientRect();
+        const sizeCells = rows().map((row) => row.children[2].getBoundingClientRect());
+        return {
+          everyActionStartsAtTheSameX: same('left'),
+          everyActionEndsAtTheSameX: same('right'),
+          everyActionHasTheSameWidth: same('width'),
+          andThereAreActionsOfBothKinds: rows().some((row) => /embed/i.test(flat(row.querySelector('.act')))) &&
+            rows().some((row) => /store/i.test(flat(row.querySelector('.act')))),
+          theSizeColumnLinesUpWithItsHeader: sizeCells.every((box) => Math.abs(box.right - sizeHead.right) < 0.5),
+          noRowWrapsOntoTwoLines: rows().every((row) => row.getBoundingClientRect().height < 40),
+        };
+      });
+
+      const blockBefore = { ...engine.library.get('hero') };
+      let fontPath = '';
+      await check('askWhere', async () => {
+        button(rowNamed(/inter-display/i), /store in a file/i).click();
+        await frames();
+        const field = files().querySelector('.ask input');
+        const prefilled = field?.value === 'assets/fonts';
+        const named = /inter-display-700-[0-9a-f]{12}\.woff2/.test(flat(files().querySelector('.ask')));
+        const nothingYet = written.size === 0;
+        field.value = 'type/fonts';
+        field.dispatchEvent(new Event('input', { bubbles: true }));
+        await frames();
+        button(files().querySelector('.ask'), /^store$/i).click();
+        await until(() => written.size > 0 && !files()?.querySelector('.ask'));
+        await frames();
+        fontPath = [...written.keys()].find((path) => /^type\/fonts\/inter-display-700-[0-9a-f]{12}\.woff2$/.test(path)) ?? '';
+        const bytes = fontPath ? Array.from(written.get(fontPath)) : [];
+        const block = engine.library.get('hero');
+        return {
+          asksWithTheKindsFolderPrefilled: prefilled,
+          andShowsTheNameItWillGet: named,
+          writesNothingBeforeStoreIsPressed: nothingYet,
+          writesIntoTheFolderTyped: Boolean(fontPath),
+          writesTheExactBytes: bytes.length === fontBytes.length && bytes.every((b, i) => b === fontBytes[i]),
+          // Immediately: no Save, the dialog is still open.
+          theFontFaceLinksTheFileAtOnce: block.css.includes(`url("${fontPath}")`) && !block.css.includes('data:font'),
+          withoutWaitingForSave: engine.store.value.aiSettingsOpen && !settings()?.querySelector('footer .unsaved'),
+          theFolderIsRememberedForTheKind: engine.fileFolders.font === 'type/fonts' &&
+            files().querySelector('input[data-kind="font"]')?.value === 'type/fonts',
+          theRowNowSaysWhereItIs: /type\/fonts\//.test(flat(rowNamed(/inter-display/i)?.querySelector('.where'))),
+          theToastOffersUndo: engine.store.value.toast?.action?.label === 'Undo',
+          theSeedLinksTheSameName: fontPath.split('/').pop() === seedFontPath.split('/').pop(),
+          isOneUndoStep: /^Store 1 file in type\/fonts\/$/.test(engine.history.undoLabel ?? ''),
+        };
+      });
+
+      await check('bulk', async () => {
+        for (const re of [/^hero\.png/i, /^dot\.svg/]) rowNamed(re).querySelector('input[type=checkbox]').click();
+        await frames();
+        const bar = files().querySelector('.bulk');
+        const counts = /2 selected/.test(flat(bar));
+        const storeOne = /store in a file \(1\)/i.test(flat(button(bar, /store in a file/i)));
+        button(bar, /store in a file/i).click();
+        await until(() => [...written.keys()].some((path) => path.startsWith('assets/images/')));
+        await frames();
+        const bar2 = files().querySelector('.bulk');
+        // The selection clears after an action, so select the svg again to embed it.
+        rowNamed(/^dot\.svg/).querySelector('input[type=checkbox]').click();
+        await frames();
+        button(files().querySelector('.bulk'), /^embed/i).click();
+        await until(() => engine.library.get('hero').css.includes('data:image/svg+xml;base64,'));
+        const block = engine.library.get('hero');
+        const pngPath = [...written.keys()].find((path) => /^assets\/images\/hero-[0-9a-f]{12}\.png$/.test(path)) ?? '';
+        return {
+          countsTheSelection: counts,
+          saysHowManyCanBeStored: storeOne,
+          storesTheEmbeddedOnesInTheirFolder: Boolean(pngPath),
+          srcAndSrcsetBothFollow: (block.html.split(pngPath).length - 1) === 2 && !block.html.includes('data:image/png'),
+          theSelectionClears: !bar2.classList.contains('on'),
+          embedsTheLinkedOne: !block.css.includes('nested/dot.svg'),
+          // An a[href] to the same file is a link to it, not a use of it: it stays as written.
+          theLinkKeepsItsHref: block.html.includes('<a href="nested/dot.svg">'),
+          theRestOfTheMarkupIsUntouched: block.html.startsWith('<section class="hero"><img src="') && block.html.includes('alt=""'),
+          theStylesheetTokenKeepsItsDataUrl: engine.tokens.get('from-sheet')?.value.includes('data:image/png'),
+        };
+      });
+
+      await check('undo', async () => {
+        engine.undo();
+        engine.undo();
+        engine.undo();
+        await frames();
+        const block = engine.library.get('hero');
+        return {
+          putsTheDataUrlsBack: block.css === blockBefore.css && block.html === blockBefore.html,
+          andTheFolderTheFontWasStoredIn: engine.fileFolders.font === 'assets/fonts',
+        };
+      });
+
+      await check('folderMove', async () => {
+        engine.settings.set({ fileFolders: { ...engine.fileFolders, image: 'nested' } });
+        written.clear();
+        engine.tokens.upsert({ name: 'dot', value: 'url(nested/dot.svg)', group: 'other', origin: 'user' });
+        await frames();
+        const field = files().querySelector('input[data-kind="image"]');
+        field.value = 'media';
+        field.dispatchEvent(new Event('input', { bubbles: true }));
+        field.dispatchEvent(new Event('change', { bubbles: true }));
+        await until(() => written.has('media/dot.svg'));
+        await frames();
+        return {
+          changingAFolderMovesTheFilesInIt: written.has('media/dot.svg'),
+          rewritesTheirUrls: engine.tokens.get('dot')?.value === 'url("media/dot.svg")',
+          andTheBlockThatUsedIt: engine.library.get('hero').css.includes('url("media/dot.svg")'),
+          onlyThatKindsFolderChanges: engine.fileFolders.image === 'media' && engine.fileFolders.font === 'assets/fonts',
+          andTravelsInTheSeed: engine.designSystem().settings?.fileFolders?.image === 'media',
+        };
+      });
+
+      await check('pageStore', async () => {
+        const before = engine.history.records.length;
+        const outcome = await engine.applyDesignFiles({ store: [jpegData] });
+        const src = document.getElementById('photo').getAttribute('src');
+        const style = document.getElementById('banner').getAttribute('style');
+        const records = engine.history.records.slice(before);
+        const attributeRecords = records.filter((one) => one.detail?.attribute);
+        const stored = outcome.stored === 1 && /^media\/[a-z0-9-]+-[0-9a-f]{12}\.jpg$/.test(src);
+        engine.undo();
+        await frames();
+        return {
+          storesTheImageFromThePage: stored,
+          theInlineStyleFollows: style.includes(`url("${src}")`) && style.includes('height:4px'),
+          // The save writes page attributes back from one record per attribute.
+          aRecordPerAttributeForTheSave: attributeRecords.some((one) => one.detail.attribute === 'src') &&
+            attributeRecords.some((one) => one.detail.attribute === 'style'),
+          undoPutsThePagesDataUrlBack: document.getElementById('photo').getAttribute('src') === jpegData &&
+            document.getElementById('banner').getAttribute('style').includes(jpegData),
+        };
+      });
+
+      await check('sheetStore', async () => {
+        const all = engine.designFiles();
+        const refs = all.filter((one) => one.uses.some((use) => use.owner === 'sheet') && one.place === 'embedded').map((one) => one.ref);
+        const linkedSheet = () => [...document.styleSheets].find((sheet) => sheet.href?.endsWith('files-sheet.css'));
+        const sheetText = () => [...linkedSheet().cssRules].map((rule) => rule.cssText).join('\n');
+        const before = engine.history.records.length;
+        const outcome = await engine.applyDesignFiles({ store: refs });
+        const records = engine.history.records.slice(before);
+        const inline = document.getElementById('page-css').textContent;
+        const fontFile = [...written.keys()].find((path) => /^assets\/fonts\/clay-sans-[0-9a-f]{12}\.woff2$/.test(path));
+        const result = {
+          storesAllFour: outcome.stored === 4 && !outcome.failed.length,
+          theLinkedSheetIsRepaintedAtOnce: !sheetText().includes('data:') && /url\("assets\/fonts\/clay-sans-/.test(sheetText()),
+          theInlineSheetToo: !inline.includes('data:') && inline.includes('/* inline, keep me */'),
+          // The save writes a linked sheet to its own file, from the file's text with its comments.
+          theRecordNamesTheCssFile: records.some((one) => String(one.detail?.writeTo ?? '').endsWith('nested/files-sheet.css') &&
+            String(one.detail?.css ?? '').includes('Keep this comment')),
+          theFontFileIsWritten: Boolean(fontFile),
+          // Named after the custom property, in the image folder (media/ by now).
+          theSheetTokenFollows: /^url\("media\/clay-tex-[0-9a-f]{12}\.jpg"\)$/.test(engine.tokens.get('clay-tex')?.value ?? ''),
+          theListShowsThemInAFile: !engine.designFiles().some((one) => one.uses.some((use) => use.owner === 'sheet') && one.place === 'embedded'),
+        };
+        engine.undo();
+        await frames();
+        result.undoPutsTheDataUrlsBack = sheetText().includes('data:font/woff2') &&
+          document.getElementById('page-css').textContent.includes('data:font/woff2') &&
+          (engine.tokens.get('clay-tex')?.value ?? '').includes('data:image/jpeg');
+        return result;
+      });
+
+      await check('reembed', async () => {
+        const fontRef = () => engine.designFiles().find((one) => one.kind === 'font' && one.uses.some((use) => use.label === 'files-sheet.css'));
+        const heroPng = () => engine.designFiles().find((one) => one.uses.some((use) => use.key === 'hero') && one.mime === 'image/png');
+        engine.setAiSettings(true);
+        engine.setSettingsCategory('general');
+        await engine.applyDesignFiles({ store: [fontRef().ref, heroPng().ref] });
+        await frames();
+        const storedPng = heroPng();
+        const pngRow = () => rowNamed(new RegExp(`^${storedPng.name.replace('.', '\\.')}`));
+        await until(() => pngRow());
+        const wasLinked = storedPng.place === 'linked' && /embed/i.test(flat(pngRow()?.querySelector('.act')));
+        // Through the row's own button, the way the bug was reported.
+        button(pngRow(), /^embed/i).click();
+        await until(() => heroPng()?.place === 'embedded' && files()?.querySelector('[data-leftovers]'));
+        await frames();
+        const embeddedRow = rowNamed(/^hero\.png/);
+        const note = files().querySelector('[data-leftovers]');
+        const offered = /still in the project/i.test(flat(note)) && /other pages might/i.test(flat(note)) && Boolean(button(note, /delete the file/i));
+        button(note, /delete the file/i).click();
+        await until(() => removed.length > 0 && !files()?.querySelector('[data-leftovers]'));
+        // A linked sheet's file is only rewritten on Save: embedding it again must use the sheet as it is now.
+        const fontOut = await engine.applyDesignFiles({ embed: [fontRef().ref] });
+        return {
+          storingMadeItLinked: wasLinked,
+          theRowGoesBackToStoreInAFile: /store in a file/i.test(flat(embeddedRow?.querySelector('.act'))),
+          andSaysEmbeddedAgain: /embedded/i.test(flat(embeddedRow?.querySelector('.where'))),
+          offersToDeleteTheFileLeftBehind: offered,
+          deletesOnlyThatFileWhenAsked: removed.length === 1 && /^media\/hero-[0-9a-f]{12}\.png$/.test(removed[0]),
+          aStoredSheetFontEmbedsBack: fontOut.embedded === 1 && fontRef()?.place === 'embedded' &&
+            [...document.styleSheets].find((s) => s.href?.endsWith('files-sheet.css'))?.cssRules[0]?.cssText.includes('data:font/woff2'),
+          andIsOfferedForDeletionToo: fontOut.leftovers?.length === 1,
+        };
+      });
+
+      await check('onlyInFilesFolders', async () => {
+        // A font the page linked before the Files folders existed: the author's file, not a stored one.
+        engine.tokens.upsert({ name: 'probe-font', value: 'url(nested/probe.woff2)', group: 'other', origin: 'user' });
+        await frames();
+        const removedBefore = removed.length;
+        const row = () => rowNamed(/^probe\.woff2/);
+        await until(() => row());
+        button(row(), /^embed/i).click();
+        await until(() => files()?.querySelector('[data-leftovers-outside]'));
+        await frames();
+        const note = files().querySelector('[data-leftovers-outside]');
+        const refused = await engine.removeStoredFile('nested/probe.woff2');
+        const inside = await engine.removeStoredFile('../outside/a.png');
+        const result = {
+          theFileIsEmbedded: /^url\("data:font\/woff2;base64,/.test(engine.tokens.get('probe-font')?.value ?? ''),
+          saysItStaysBecauseItIsOutsideTheFolders: /only deletes files inside the Files folders/i.test(flat(note)) &&
+            /assets\/fonts\//.test(flat(note)),
+          offersNoDeleteForIt: !button(note, /delete/i) && !files().querySelector('[data-leftovers]'),
+          theEngineRefusesItToo: /outside the Files folders/i.test(refused ?? '') && /outside the Files folders/i.test(inside ?? ''),
+          nothingWasDeleted: removed.length === removedBefore,
+        };
+        button(note, /^ok$/i).click();
+        return result;
+      });
+
+      await check('cannotDelete', async () => {
+        const { remove: _gone, ...without } = host;
+        await engine.attachProject(without, { quiet: true });
+        await frames();
+        const png = () => engine.designFiles().find((one) => one.uses.some((use) => use.key === 'hero') && one.mime === 'image/png');
+        await engine.applyDesignFiles({ store: [png().ref] });
+        await frames();
+        const stored = () => rowNamed(new RegExp(`^${png().name.replace('.', '\\.')}`));
+        await until(() => stored() && /embed/i.test(flat(stored().querySelector('.act'))));
+        button(stored(), /^embed/i).click();
+        await until(() => files()?.querySelector('[data-leftovers]'));
+        const note = files().querySelector('[data-leftovers]');
+        const result = {
+          saysTheFileStaysAndWhy: /stays in the project/i.test(flat(note)) && /cannot delete files/i.test(flat(note)),
+          offersNoDeleteButton: !button(note, /delete/i),
+        };
+        button(note, /^ok$/i).click();
+        await engine.attachProject(host, { quiet: true });
+        return result;
+      });
+
+      await check('folderRules', async () => {
+        const outcome = await engine.applyDesignFiles({ folders: { image: '../outside' } });
+        const seeded = engine.settings.import({ fileFolders: { image: '/etc' } });
+        return {
+          aFolderThatClimbsIsRefused: outcome.failed.length === 1 && engine.fileFolders.image === 'media',
+          aSeedCannotSetAnAbsoluteFolder: seeded === 0 && engine.fileFolders.image === 'media',
+        };
+      });
+
+      const failed = Object.entries(results)
+        .filter(([, group]) => group && typeof group === 'object')
+        .filter(([, group]) => Object.values(group).some((value) => value === false))
+        .map(([name]) => name);
+      const threw = Object.entries(results).filter(([, v]) => typeof v === 'string').map(([k]) => k);
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify({ ok: !failed.length && !threw.length && !errors.length, failed: [...failed, ...threw], errors, results }, null, 2) + ':END';
+    })();
+  </script>
+</body>
+</html>

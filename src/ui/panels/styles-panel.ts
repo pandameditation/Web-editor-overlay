@@ -237,7 +237,8 @@ const SECTIONS: SectionSpec[] = [
     // Not the sparkle any more: that is Effective styles' glyph, and two sections sharing one
     // picture made the panel's two most different sections look related.
     glyph: 'eye',
-    properties: ['opacity', 'box-shadow', 'filter', 'backdrop-filter', 'transform', 'mix-blend-mode', 'cursor'],
+    // text-shadow beside box-shadow and filter: the three the shadow editor opens from.
+    properties: ['opacity', 'box-shadow', 'text-shadow', 'filter', 'backdrop-filter', 'transform', 'mix-blend-mode', 'cursor'],
   },
   {
     id: 'motion',

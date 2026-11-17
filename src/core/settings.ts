@@ -1,6 +1,7 @@
 import { MAX_CUSTOM_SIZES, MAX_VIEWPORT, MIN_VIEWPORT, VIEWPORT_PRESETS } from './breakpoints.js';
 import type { EditorSettings, PortableSettings } from './types.js';
 import { viewportEditsOf, type ViewportEdit } from './viewports.js';
+import { DEFAULT_FILE_FOLDERS, fileFoldersOf } from './design-files.js';
 
 /**
  * Editor preferences that belong to the page rather than to the browser.
@@ -14,6 +15,7 @@ export const DEFAULT_SETTINGS: Readonly<EditorSettings> = Object.freeze({
   splitDoubleBreaks: false,
   viewportSizes: Object.freeze([]) as readonly number[],
   viewportEdits: Object.freeze([]) as readonly ViewportEdit[],
+  fileFolders: DEFAULT_FILE_FOLDERS,
 });
 
 /**
@@ -28,6 +30,8 @@ export function sameSetting(a: unknown, b: unknown): boolean {
     return a.length === b.length &&
       a.every((value, index) => value === b[index] || JSON.stringify(value) === JSON.stringify(b[index]));
   }
+  // A record of strings (the folders per kind), by value.
+  if (a && b && typeof a === 'object' && typeof b === 'object') return JSON.stringify(a) === JSON.stringify(b);
   return a === b;
 }
 
@@ -62,6 +66,9 @@ export function portableSettings(input: unknown): PortableSettings | null {
   if (sizes) next.viewportSizes = sizes;
   const edits = viewportEditsOf(raw.viewportEdits);
   if (edits) next.viewportEdits = edits;
+  // A path a seed sets, so held to the same rule as a typed one: relative, inside the page's folder.
+  const folders = fileFoldersOf(raw.fileFolders);
+  if (folders) next.fileFolders = folders;
   return Object.keys(next).length ? next : null;
 }
 
@@ -86,7 +93,9 @@ export class SettingsRegistry {
       const value = patch[key];
       if (value === undefined || sameSetting(next[key], value)) continue;
       // A frozen copy of an array, so a caller cannot change the registry's value behind its back.
-      (next as Record<string, unknown>)[key] = Array.isArray(value) ? Object.freeze([...value]) : value;
+      (next as Record<string, unknown>)[key] = Array.isArray(value)
+        ? Object.freeze([...value])
+        : value && typeof value === 'object' ? Object.freeze({ ...value }) : value;
       changed = true;
     }
     if (!changed) return false;

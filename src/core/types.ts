@@ -229,6 +229,11 @@ export interface EditorSettings {
    * hidden from the bar. One per size, keyed by the width it started at. See `core/viewports.ts`.
    */
   viewportEdits: readonly ViewportEdit[];
+  /**
+   * Where stored files go, one folder per kind, relative to the page: `{ image: 'img', … }`.
+   * Changing one moves the files already in it. See `core/design-files.ts`.
+   */
+  fileFolders: Readonly<Record<'font' | 'image' | 'audio' | 'video' | 'other', string>>;
 }
 
 /** The subset of settings a document carries: only the ones that differ from the defaults. */

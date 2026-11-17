@@ -443,7 +443,7 @@ export class HeoColorPicker extends LitElement {
 
       <div class="controls">
         ${'EyeDropper' in window
-        ? html`<button type="button" class="icon-btn" title="Pick a colour from the screen" aria-label="Pick a colour from the screen" @click=${this.#eyedrop}>
+        ? html`<button type="button" class="icon-btn" title="Pick a color from the screen" aria-label="Pick a color from the screen" @click=${this.#eyedrop}>
             ${icon('droplet', 13)}
           </button>`
         : html`<span></span>`}
@@ -477,7 +477,7 @@ export class HeoColorPicker extends LitElement {
 
       <div class="head">
         <span>Writes</span>
-        ${outside ? html`<span class="gamut" title="Outside sRGB: screens that cannot show it show the nearest colour">● outside sRGB</span>` : nothing}
+        ${outside ? html`<span class="gamut" title="Outside sRGB: screens that cannot show it show the nearest color">● outside sRGB</span>` : nothing}
         <span class="format" role="group" aria-label="Format written">
           ${(['hex', 'oklch'] as Format[]).map((one) => html`<button
             type="button"
@@ -504,7 +504,7 @@ export class HeoColorPicker extends LitElement {
 
       ${this.#renderContrast()}
       ${this.swatches.length
-        ? html`<div class="swatches" role="group" aria-label="Colour tokens">
+        ? html`<div class="swatches" role="group" aria-label="Color tokens">
             ${this.swatches.map((one) => html`<button
               type="button"
               class="swatch checker"
@@ -583,7 +583,7 @@ export class HeoColorPicker extends LitElement {
         : nothing}
       ${target.unread ? html`<span class="note">${target.unread}</span>` : nothing}
       ${!levels.aa && target.others.length > 1 && !this.#curve.aa.length
-        ? html`<span class="note">No colour of this hue passes AA against every one of these: the backdrop is too varied.</span>`
+        ? html`<span class="note">No color of this hue passes AA against every one of these: the backdrop is too varied.</span>`
         : nothing}
     </div>`;
   }

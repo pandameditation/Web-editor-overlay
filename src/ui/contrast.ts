@@ -51,7 +51,7 @@ export function contrastTargetFor(property: string): ContrastTarget | null {
     const text = resolveColor(getComputedStyle(el).color);
     if (!text) return null;
     const under = backdrop(el.parentElement);
-    return finish({ picked: 'background', kind, others: [text], under: under.colours, label: 'text colour' }, under, 'under');
+    return finish({ picked: 'background', kind, others: [text], under: under.colours, label: 'text color' }, under, 'under');
   }
   const behind = backdrop(el);
   return finish({ picked: 'foreground', kind, others: behind.colours, under: [], label: behind.label }, behind, 'others');
@@ -135,7 +135,7 @@ function backdrop(from: Element | null): Backdrop {
       gradients ? `gradient${gradients > 1 ? 's' : ''}` : '',
       pictures ? `image${pictures > 1 ? 's' : ''}` : '',
     ].filter(Boolean);
-    const label = parts.length ? `${parts.join(' and ')} · ${colours.length} colour${colours.length === 1 ? '' : 's'}` : 'background';
+    const label = parts.length ? `${parts.join(' and ')} · ${colours.length} color${colours.length === 1 ? '' : 's'}` : 'background';
     return { colours, label, unread };
   };
   const urls = layers.flatMap((layer) => layer.images.filter((image) => /^url\(/i.test(image)).map(urlOf));

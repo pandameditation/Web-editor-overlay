@@ -60,3 +60,4 @@
 {"timestamp":1793027884289,"command":"kirograph_node","originalTokens":1500,"compressedTokens":12,"strategy":"graph:kirograph_node","sessionId":"0feef6110342427d","source":"graph"}
 {"timestamp":1794240459742,"command":"kirograph_context","originalTokens":15000,"compressedTokens":645,"strategy":"graph:kirograph_context","sessionId":"0feef6110342427d","source":"graph"}
 {"timestamp":1794562717896,"command":"kirograph_context","originalTokens":12000,"compressedTokens":411,"strategy":"graph:kirograph_context","sessionId":"0feef6110342427d","source":"graph"}
+{"timestamp":1794835722628,"command":"kirograph_context","originalTokens":15000,"compressedTokens":627,"strategy":"graph:kirograph_context","sessionId":"0feef6110342427d","source":"graph"}

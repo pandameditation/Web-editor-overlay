@@ -29,7 +29,7 @@ export const TOKEN_GROUPS: TokenGroup[] = [
 ];
 
 export const TOKEN_GROUP_LABELS: Record<TokenGroup, string> = {
-  color: 'Colour',
+  color: 'Color',
   space: 'Spacing',
   size: 'Size',
   radius: 'Radius',

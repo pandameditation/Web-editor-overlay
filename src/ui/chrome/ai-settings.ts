@@ -20,6 +20,8 @@ import type { SettingsCategory } from '../../core/editor.js';
 import type { SeedTarget } from '../../core/seed.js';
 import { DesignTransfer, type DesignTransferHost } from '../panels/design-transfer.js';
 import '../controls/viewport-sizes.js';
+import '../controls/design-files.js';
+
 
 /** The side tabs, in order. */
 const CATEGORIES: ReadonlyArray<{ id: SettingsCategory; label: string; glyph: string }> = [
@@ -277,6 +279,9 @@ export class HeoAiSettings extends HeoElement {
       }
       .viewports-card {
         padding: 4px 10px 8px;
+      }
+      .files-card {
+        padding: 0;
       }
 
       .setting {
@@ -630,7 +635,8 @@ export class HeoAiSettings extends HeoElement {
   protected state = new StoreController(
     this,
     this.editor.store,
-    (s) => [s.aiSettingsOpen, s.registry, s.splitDoubleBreaks, s.settingsCategory, s.capturePaste] as const,
+    (s) =>
+      [s.aiSettingsOpen, s.registry, s.splitDoubleBreaks, s.settingsCategory, s.capturePaste, s.project] as const,
     shallowArrayEquals,
   );
 
@@ -893,6 +899,25 @@ export class HeoAiSettings extends HeoElement {
           </span>
         </span>
       </label>
+    </section>
+    <section class="section" aria-labelledby="heo-settings-files">
+      <div class="section-head">
+        <h3 id="heo-settings-files">Files</h3>
+        <p>
+          Every font, image, audio and video file the design system and this page use. Embedded
+          files travel inside them as data URLs; stored files sit in the files folder beside the
+          page and are linked by a relative URL — a smaller design system, and a folder to keep
+          with it. Storing and embedding apply at once, each with its own Undo; they do not wait
+          for Save.
+        </p>
+      </div>
+      <div class="card files-card">
+        <heo-design-files
+          .engine=${this.editor}
+          .revision=${this.state.value.registry}
+          ?connected=${Boolean(this.state.value.project)}
+        ></heo-design-files>
+      </div>
     </section>`;
   }
 
@@ -1532,7 +1557,10 @@ interface SettingsDraft {
 }
 
 function cloneDraft(draft: SettingsDraft): SettingsDraft {
-  return { sets: draft.sets.map((set) => structuredClone(set)), split: draft.split };
+  return {
+    sets: draft.sets.map((set) => structuredClone(set)),
+    split: draft.split,
+  };
 }
 
 function sameDraft(a: SettingsDraft | null, b: SettingsDraft | null): boolean {

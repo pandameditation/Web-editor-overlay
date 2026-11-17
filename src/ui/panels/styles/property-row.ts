@@ -14,7 +14,10 @@ import { renderFamilies } from '../class-editor.js';
 import { entryLabel, reachText, shortLabel } from '../../../core/save-plan.js';
 import { mediaApplies } from '../../../core/viewport.js';
 import { icon } from '../../icons.js';
-import { buildSuggestions, valueKindFor } from '../../suggestions.js';
+import { buildSuggestions, shadowSwatches, valueKindFor } from '../../suggestions.js';
+import { composeFilter, formatShadows, splitFilter } from '../../../core/shadow.js';
+import type { HeoValueField } from '../../controls/value-field.js';
+import type { ShadowConvert } from '../../controls/shadow-editor.js';
 import { destinationParts, displayName, explainDestination, type AdderDestination } from './property-adder.js';
 import { renderMenu } from './menu.js';
 import type { RowScope, StylesHost } from './types.js';
@@ -581,6 +584,33 @@ export function renderPropertyRow(spec: RowSpec, host: StylesHost): TemplateResu
    */
   const tagWrites = Boolean(shown && current && picked === current);
   const commit = (text: string): void => writeChosen(host, spec, choice, shown, text);
+  /*
+   * box-shadow ↔ filter: drop-shadow(): the shadows move to the other property, where the same
+   * destination is written, and the editor opens again on that row so editing carries on.
+   * The property being left becomes `none`, or the filter's other functions.
+   */
+  const convertShadows = (event: CustomEvent<ShadowConvert>): void => {
+    event.stopPropagation();
+    const { to, shadows, rest } = event.detail;
+    const otherSpec: RowSpec = { ...spec, property: to };
+    const other = shownValue(readRow(otherSpec).shown) || 'none';
+    let next: string;
+    if (to === 'filter') {
+      // Drop shadows already in the filter are replaced; its other functions stay where they are.
+      const split = splitFilter(other) ?? { others: [], drops: [], at: 0 };
+      next = composeFilter(split.others, shadows, split.at);
+    } else {
+      next = formatShadows(shadows, 'box');
+    }
+    const root = (event.target as Element).getRootNode() as ParentNode;
+    commit(rest);
+    writeChosen(host, otherSpec, choice, undefined, next);
+    // Open again where the shadows went, once the panel has drawn the new values.
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const field = root.querySelector<HeoValueField>(`heo-value-field[data-property="${to}"]`);
+      field?.openShadowEditor();
+    }));
+  };
   const removeImportant = (): void => {
     if (!shown) return;
     if (shown.source.kind === 'inline') engine.overrideStyle(property, shown.value, element, { important: false });
@@ -612,6 +642,9 @@ export function renderPropertyRow(spec: RowSpec, host: StylesHost): TemplateResu
         .property=${property}
         .computed=${computed}
         .suggestions=${buildSuggestions(engine, property, element)}
+        .shadowTokens=${valueKindFor(property) === 'shadow' || property === 'filter' ? shadowSwatches(engine) : []}
+        ?shadow-convertible=${property === 'box-shadow' || property === 'filter'}
+        @shadow-convert=${(event: CustomEvent<ShadowConvert>) => convertShadows(event)}
         placeholder=${spec.placeholder ?? shorten(computed)}
         @value-input=${(event: CustomEvent<{ value: string }>) => previewChosen(host, spec, picked, event.detail.value)}
         @value-revert=${() => engine.cancelPreview()}

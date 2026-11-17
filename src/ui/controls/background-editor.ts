@@ -605,8 +605,8 @@ export class HeoBackgroundEditor extends LitElement {
         <div class="base">
           <span></span>
           <span class="thumb checker"><i style=${this.draft.color ? `background:${this.draft.color}` : ''}></i></span>
-          <b>Colour</b>
-          ${this.#field('background-color', 'color', this.draft.color, this.computedColor, 'Background colour', (value, commit) =>
+          <b>Color</b>
+          ${this.#field('background-color', 'color', this.draft.color, this.computedColor, 'Background color', (value, commit) =>
       this.#change((next) => { next.color = value; }, commit))}
         </div>
       </div>
@@ -616,7 +616,7 @@ export class HeoBackgroundEditor extends LitElement {
         <button type="button" class="add" data-add="solid" @click=${() => this.#add('solid')}>${icon('plus', 11)} Solid</button>
       </div>
       ${layer ? this.#renderDetail(layer, this.selected) : nothing}
-      <p class="tip">Top layer first; the colour is always underneath. Written as one background.</p>
+      <p class="tip">Top layer first; the color is always underneath. Written as one background.</p>
     `;
   }
 
@@ -747,8 +747,8 @@ export class HeoBackgroundEditor extends LitElement {
         </div>`;
       case 'solid':
         return html`<div class="row">
-          <span class="label">colour</span>
-          ${this.#field('solid-color', 'color', layer.color ?? '', '', 'Layer colour', (value, commit) =>
+          <span class="label">color</span>
+          ${this.#field('solid-color', 'color', layer.color ?? '', '', 'Layer color', (value, commit) =>
           this.#change((next) => { next.layers[index]!.color = value; }, commit))}
         </div>`;
       default:
@@ -880,7 +880,7 @@ export class HeoBackgroundEditor extends LitElement {
         ><i style=${`background:${stop.color}`}></i></button>`)}
         <div class="scale" aria-hidden="true">${[0, 25, 50, 75, 100].map((n) => html`<span style=${`left:${n}%`}>${n}</span>`)}</div>
       </div>
-      <div class="stops" role="list" aria-label="Colour stops">
+      <div class="stops" role="list" aria-label="Color stops">
         ${order.map((k) => {
           const stop = gradient.stops[k]!;
           return html`<div
@@ -893,8 +893,8 @@ export class HeoBackgroundEditor extends LitElement {
             @dragleave=${(event: DragEvent) => (event.currentTarget as HTMLElement).classList.remove('over')}
             @drop=${(event: DragEvent) => this.#drop(event, 'stop', k)}
           >
-            <span class="grip" title="Drag to reorder the colours">${icon('grip', 12)}</span>
-            ${this.#field('gradient-stop', 'color', stop.color, '', `Stop ${k + 1} colour`, (value, commit) => {
+            <span class="grip" title="Drag to reorder the colors">${icon('grip', 12)}</span>
+            ${this.#field('gradient-stop', 'color', stop.color, '', `Stop ${k + 1} color`, (value, commit) => {
             this.stop = k;
             setGradient((g) => { g.stops[k]!.color = value; }, commit);
           }, '', String(k))}

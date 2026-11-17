@@ -49,6 +49,22 @@ export interface FileHost {
   read(path: string): Promise<string | null>;
   write(path: string, text: string): Promise<void>;
   /**
+   * Write bytes rather than text: a font, a picture, a sound.
+   *
+   * Separate from `write`, and optional, because every other caller writes source and a host
+   * written before the design system could store its files has no reason to know about bytes.
+   * Without it, files can still be embedded but not stored.
+   */
+  writeBytes?(path: string, bytes: Uint8Array<ArrayBuffer>): Promise<void>;
+  /**
+   * Delete a stored file: a font, a picture, a sound. Never source.
+   *
+   * Optional and narrow on purpose. The only thing that asks is the Files list, after a file it
+   * stored has been embedded again and nothing references it any more, and only when the user
+   * says so. A host without it leaves the file where it is, and the list says that.
+   */
+  remove?(path: string): Promise<void>;
+  /**
    * True when writing will work right now.
    *
    * Separate from connecting because a directory grant does not survive a reload:
@@ -138,6 +154,16 @@ export function projectPathOf(url: string): string | null {
   }
 }
 
+/**
+ * True for a font, picture, sound or video: the only kind of file the editor ever deletes.
+ *
+ * The same list the dev server holds byte writes to. Checked on this side as well as on the
+ * server's, so a folder handed over through the picker is held to the same rule.
+ */
+export function isMediaPath(path: string): boolean {
+  return /\.(?:woff2?|ttf|otf|eot|png|jpe?g|gif|webp|avif|ico|bmp|svg|mp3|m4a|ogg|oga|opus|wav|flac|aac|mp4|webm|ogv|mov)$/i.test(path);
+}
+
 /** Collapse a path to POSIX segments with no leading slash, or null if it escapes. */
 export function normalizePath(path: string): string | null {
   const parts: string[] = [];
@@ -212,12 +238,27 @@ class DirectoryHost implements FileHost {
   }
 
   async write(path: string, text: string): Promise<void> {
+    await this.#put(path, text);
+  }
+
+  async writeBytes(path: string, bytes: Uint8Array<ArrayBuffer>): Promise<void> {
+    await this.#put(path, bytes);
+  }
+
+  async remove(path: string): Promise<void> {
+    if (!isMediaPath(path)) throw new Error(`${path} is not a stored file.`);
+    const at = await this.#locate(path, false);
+    if (!at) throw new Error(`${path} is not inside ${this.label}.`);
+    await at.dir.removeEntry(at.name);
+  }
+
+  async #put(path: string, body: string | Uint8Array<ArrayBuffer>): Promise<void> {
     const at = await this.#locate(path, true);
     if (!at) throw new Error(`Could not open ${path} inside ${this.label}.`);
     const handle = await at.dir.getFileHandle(at.name, { create: true });
     const stream = await handle.createWritable();
     try {
-      await stream.write(text);
+      await stream.write(body);
     } finally {
       // Closing is what commits the write, so it happens even when writing threw —
       // otherwise the file is left truncated with the temporary swap file behind it.
@@ -380,12 +421,21 @@ class ServerHost implements FileHost {
   /** The server's URL base, so a project served under a sub-path still resolves. */
   #base: string;
   #token: string;
+  /** Present only when the endpoint said it stores bytes; see `writeBytes` on the interface. */
+  writeBytes?: (path: string, bytes: Uint8Array<ArrayBuffer>) => Promise<void>;
+  /** True when the server answered but predates byte writes: it needs a restart, not a reconnect. */
+  readonly needsRestartForBytes: boolean;
+  /** Present only when the endpoint said it deletes stored files. */
+  remove?: (path: string) => Promise<void>;
 
-  constructor(endpoint: string, root: string, base: string, token: string) {
+  constructor(endpoint: string, root: string, base: string, token: string, bytes = false, removes = false) {
     this.#endpoint = endpoint;
     this.#root = root;
     this.#base = normalizePath(base) ?? '';
     this.#token = token;
+    this.needsRestartForBytes = !bytes;
+    if (bytes) this.writeBytes = (path, data) => this.#writeBytes(path, data);
+    if (removes) this.remove = (path) => this.#remove(path);
   }
 
   /**
@@ -460,6 +510,43 @@ class ServerHost implements FileHost {
     }
   }
 
+  /**
+   * Bytes go up as `application/octet-stream`, which is how the endpoint tells them from text.
+   *
+   * The endpoint writes a text body as UTF-8, which would mangle a font; and it only accepts a
+   * byte body for media extensions, so this cannot be used to drop arbitrary binaries into a
+   * project.
+   */
+  async #remove(path: string): Promise<void> {
+    const clean = normalizePath(path);
+    if (!clean || !isMediaPath(clean)) throw new Error(`${path} is not a stored file.`);
+    const response = await fetch(this.#url(clean), {
+      method: 'DELETE',
+      credentials: 'same-origin',
+      headers: this.#headers(),
+    });
+    // Already gone is the outcome that was asked for.
+    if (!response.ok && response.status !== 404) {
+      const detail = await response.text().catch(() => '');
+      throw new Error(`${response.status} deleting ${clean}${detail ? `: ${detail}` : ''}`);
+    }
+  }
+
+  async #writeBytes(path: string, bytes: Uint8Array<ArrayBuffer>): Promise<void> {
+    const clean = normalizePath(path);
+    if (!clean) throw new Error(`${path} is not a path inside the project.`);
+    const response = await fetch(this.#url(clean), {
+      method: 'PUT',
+      credentials: 'same-origin',
+      headers: this.#headers({ 'content-type': 'application/octet-stream' }),
+      body: bytes,
+    });
+    if (!response.ok) {
+      const detail = await response.text().catch(() => '');
+      throw new Error(`${response.status} writing ${clean}${detail ? `: ${detail}` : ''}`);
+    }
+  }
+
   async ensureWritable(): Promise<boolean> {
     return (await probeServer(this.#endpoint, this.#token)) !== null;
   }
@@ -494,6 +581,10 @@ class ServerHost implements FileHost {
 interface ServerProbe {
   root: string;
   base: string;
+  /** The endpoint stores bytes. Absent from a server started before it could. */
+  bytes: boolean;
+  /** The endpoint deletes stored files. */
+  remove: boolean;
 }
 
 async function probeServer(endpoint: string, token: string): Promise<ServerProbe | null> {
@@ -503,9 +594,20 @@ async function probeServer(endpoint: string, token: string): Promise<ServerProbe
       headers: { 'x-heo-token': token },
     });
     if (!response.ok) return null;
-    const body = (await response.json()) as { ok?: boolean; root?: string; base?: string };
+    const body = (await response.json()) as {
+      ok?: boolean;
+      root?: string;
+      base?: string;
+      bytes?: boolean;
+      remove?: boolean;
+    };
     if (!body?.ok || typeof body.root !== 'string') return null;
-    return { root: body.root, base: typeof body.base === 'string' ? body.base : '' };
+    return {
+      root: body.root,
+      base: typeof body.base === 'string' ? body.base : '',
+      bytes: body.bytes === true,
+      remove: body.remove === true,
+    };
   } catch {
     return null;
   }
@@ -525,7 +627,7 @@ export async function connectServer(
   if (!endpoint || !token) return null;
   const probe = await probeServer(endpoint, token);
   if (!probe) return null;
-  return new ServerHost(endpoint, probe.root, probe.base, token);
+  return new ServerHost(endpoint, probe.root, probe.base, token, probe.bytes, probe.remove);
 }
 
 /* -------------------------------------------------------------------------- */

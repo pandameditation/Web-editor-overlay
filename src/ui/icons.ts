@@ -81,6 +81,10 @@ const PATHS: Record<string, string> = {
   sliders: 'M3 5h4M11 5h2M3 11h2M9 11h4M8.4 3.4v3.2M6.4 9.4v3.2',
   code: 'M5.6 4.8L2.4 8l3.2 3.2M10.4 4.8L13.6 8l-3.2 3.2',
   image: 'M2.6 3.4h10.8v9.2H2.6zM5.6 7.2a1 1 0 100-2 1 1 0 000 2zM2.6 10.6l3-2.8 3.2 3 2-1.8 2.6 2.4',
+  // Kinds of file a design system carries: a letterform, a note, a frame of film.
+  font: 'M3.2 13L7 3h2l3.8 10M4.7 9.2h6.6',
+  audio: 'M6 11.6V4.2l7-1.6v7.6M6 11.6a1.7 1.7 0 11-3.4 0 1.7 1.7 0 013.4 0zM13 10.2a1.7 1.7 0 11-3.4 0 1.7 1.7 0 013.4 0z',
+  video: 'M2.4 4.4h8.2v7.2H2.4zM10.6 7l3-1.8v5.6l-3-1.8',
   text: 'M3.4 4.2V3h9.2v1.2M8 3v10M6 13h4',
   component:
     'M8 2.2l2.4 2.4L8 7 5.6 4.6zM13.8 8l-2.4 2.4L9 8l2.4-2.4zM8 9l2.4 2.4L8 13.8 5.6 11.4zM7 8l-2.4 2.4L2.2 8l2.4-2.4z',

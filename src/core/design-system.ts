@@ -28,6 +28,7 @@ import { queryDeep } from './dom.js';
 import { animationLibraryCss, animationNamesIn } from './animations.js';
 import type { BlockLibrary } from './library.js';
 import { designRuleKey, type RuleRegistry } from './rules.js';
+import { DEFAULT_FILE_FOLDERS, withoutEmbedded, type DesignFileKind } from './design-files.js';
 import { safeSelector } from './selectors.js';
 import { portableSettings, type SettingsRegistry } from './settings.js';
 import type { TokenRegistry } from './tokens.js';
@@ -104,6 +105,13 @@ export interface DesignSystemSelection {
   settings?: boolean;
   /** The viewport sizes among them: the user's own and the bar's edits. Absent means carried. */
   viewports?: boolean;
+  /**
+   * Which kinds of embedded file travel as data URLs, by kind. An absent kind is carried.
+   *
+   * A kind left out is linked instead, at the path storing it would write — see `withoutEmbedded`
+   * — so the seed loses the bytes but not the reference.
+   */
+  files?: Partial<Record<DesignFileKind, boolean>>;
 }
 
 /** Everything the session owns, and no credentials. The default for every existing caller. */
@@ -156,15 +164,30 @@ export function exportDesignSystem(
    * `rules` and `ai` are omitted when empty by `compactDesignSystem`, which is where the bytes
    * are actually saved.
    */
+  const leftOut = new Set(
+    Object.entries(selection.files ?? {})
+      .filter(([, carried]) => carried === false)
+      .map(([kind]) => kind as DesignFileKind),
+  );
+  const parts = withoutEmbedded(
+    {
+      tokens: selection.tokens ? registries.tokens.export() : [],
+      classes: selection.classes ? registries.classes.export() : [],
+      rules: selection.rules ? registries.rules.export() : [],
+      blocks: selection.blocks ? registries.library.export() : [],
+    },
+    leftOut,
+    registries.settings?.value.fileFolders ?? DEFAULT_FILE_FOLDERS,
+  );
   return {
     $schema: SCHEMA,
     name,
     version: 1,
     createdAt: new Date().toISOString(),
-    tokens: selection.tokens ? registries.tokens.export() : [],
-    classes: selection.classes ? registries.classes.export() : [],
-    rules: selection.rules ? registries.rules.export() : [],
-    blocks: selection.blocks ? registries.library.export() : [],
+    tokens: parts.tokens,
+    classes: parts.classes,
+    rules: parts.rules,
+    blocks: parts.blocks,
     ...(ai.length ? { ai } : {}),
     ...(aiKeys.length ? { aiKeys } : {}),
     ...(Object.keys(settings).length ? { settings } : {}),

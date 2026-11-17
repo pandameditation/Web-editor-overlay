@@ -18,6 +18,7 @@ import {
 } from '../../core/seed.js';
 import type { DesignSystemDocument } from '../../core/types.js';
 import { designSystemCSSText } from '../../core/writeback.js';
+import { scanDesignFiles, type DesignFileKind } from '../../core/design-files.js';
 import { field, fieldLabel, type FormErrors } from '../form-errors.js';
 import { icon } from '../icons.js';
 
@@ -292,6 +293,20 @@ export const DesignTransfer = {
     .part.risky {
       color: var(--heo-warn);
     }
+    .part .weight {
+      color: var(--heo-text-faint);
+      font-variant-numeric: tabular-nums;
+    }
+    .files-note {
+      margin: 1px 0 3px 18px;
+      color: var(--heo-text-hint);
+      font-size: 10.5px;
+      line-height: 1.5;
+    }
+    .files-note code {
+      color: var(--heo-text-dim);
+      font-family: var(--heo-mono);
+    }
     .part.risky b {
       color: var(--heo-warn);
     }
@@ -564,6 +579,81 @@ export const DesignTransfer = {
       </label>`;
     };
 
+    /*
+     * Embedded files, by kind: what a font family or a set of photographs adds to the string.
+     *
+     * Only the design system's own — a seed does not carry the page — and counted whatever is
+     * ticked, like the other rows. A kind left out is linked at its stored path instead; see
+     * withoutEmbedded.
+     */
+    const embedded = scanDesignFiles({
+      tokens: available.tokens,
+      classes: available.classes,
+      rules: available.rules ?? [],
+      blocks: available.blocks,
+    }).filter((file) => file.place === 'embedded');
+    const kinds = FILE_KINDS.filter((one) => embedded.some((file) => file.kind === one.id));
+    const carried = (kind: DesignFileKind): boolean => selection.files?.[kind] !== false;
+    const chooseFiles = (patch: Partial<Record<DesignFileKind, boolean>>): void =>
+      choose({ files: { ...(selection.files ?? {}), ...patch } });
+    const leftOut = kinds.filter((one) => !carried(one.id));
+    const filesPart = (): TemplateResult => {
+      const on = kinds.filter((one) => carried(one.id)).length;
+      const bytes = embedded.reduce((sum, file) => sum + (file.bytes ?? 0), 0);
+      return html`<label
+          class=${`part${embedded.length === 0 ? ' empty' : ''}`}
+          data-part="files"
+          title=${embedded.length === 0
+            ? 'Nothing in the design system is embedded.'
+            : on
+              ? 'Leave the embedded files out of the seed: they are linked at their stored path instead'
+              : 'Put the embedded files back in the seed'}
+        >
+          <input
+            type="checkbox"
+            .checked=${embedded.length > 0 && on === kinds.length}
+            .indeterminate=${on > 0 && on < kinds.length}
+            ?disabled=${embedded.length === 0}
+            @change=${(event: Event) => {
+              const next = (event.target as HTMLInputElement).checked;
+              chooseFiles(Object.fromEntries(kinds.map((one) => [one.id, next])));
+            }}
+          />
+          <span>
+            <b>${embedded.length}</b> embedded ${embedded.length === 1 ? 'file' : 'files'}
+            ${bytes ? html`<span class="weight">· ${bytesLabel(bytes)}</span>` : nothing}
+          </span>
+        </label>
+        ${kinds.map((one) => {
+          const of = embedded.filter((file) => file.kind === one.id);
+          const size = of.reduce((sum, file) => sum + (file.bytes ?? 0), 0);
+          return html`<label
+            class="part dependent"
+            data-part=${`files-${one.id}`}
+            title=${carried(one.id)
+              ? `Leave the embedded ${one.many} out of the seed`
+              : `Put the embedded ${one.many} back in the seed`}
+          >
+            <input
+              type="checkbox"
+              .checked=${carried(one.id)}
+              @change=${(event: Event) => chooseFiles({ [one.id]: (event.target as HTMLInputElement).checked })}
+            />
+            <span>
+              <b>${of.length}</b> ${of.length === 1 ? one.one : one.many}
+              ${size ? html`<span class="weight">· ${bytesLabel(size)}</span>` : nothing}
+            </span>
+          </label>`;
+        })}
+        ${leftOut.length
+          ? html`<p class="files-note" role="note">
+              Left out, ${leftOut.map((one) => one.many).join(' and ')} are linked at
+              <code>${engine.fileFolders[leftOut[0].id]}/</code>… instead. Store them
+              from Settings › General › Files so those links resolve on the page that loads this seed.
+            </p>`
+          : nothing}`;
+    };
+
     return html`<div class="transfer">
       <p class="hint" style="margin:0 0 9px">
         A seed carries this design system as one string. Paste it into any page and that page
@@ -591,6 +681,7 @@ export const DesignTransfer = {
         ${part('classes', available.classes.length, 'class', 'classes')}
         ${part('rules', available.rules?.length ?? 0, 'rule', 'rules')}
         ${part('blocks', available.blocks.length, 'block', 'blocks')}
+        ${filesPart()}
         <!-- Before the providers, so their API keys row stays right under the providers it belongs to. -->
         ${viewportsPart()}
         <!--
@@ -800,4 +891,20 @@ async function openFile(host: DesignTransferHost): Promise<void> {
   const text = await pickTextFile('application/json,.json,.txt,text/plain');
   if (!text) return;
   await host.engine.importDesignSystemText(text, host.overwrite);
+}
+
+/** The kinds of embedded file the seed can leave out, in the order the Files list shows them. */
+const FILE_KINDS: ReadonlyArray<{ id: DesignFileKind; one: string; many: string }> = [
+  { id: 'font', one: 'font', many: 'fonts' },
+  { id: 'image', one: 'image', many: 'images' },
+  { id: 'audio', one: 'audio file', many: 'audio files' },
+  { id: 'video', one: 'video', many: 'videos' },
+  { id: 'other', one: 'other file', many: 'other files' },
+];
+
+/** `312 kB`, `1.4 MB`: the decoded size a kind adds (a third more again as base64). */
+function bytesLabel(bytes: number): string {
+  if (bytes < 1000) return `${bytes} B`;
+  if (bytes < 1_000_000) return `${Math.round(bytes / 1000)} kB`;
+  return `${(bytes / 1_000_000).toFixed(1)} MB`;
 }

@@ -93,7 +93,7 @@ export const HEAD_FIELDS: readonly HeadField[] = [
   },
   {
     id: 'themeColor',
-    label: 'Theme colour',
+    label: 'Theme color',
     group: 'basics',
     kind: 'color',
     tag: 'meta[name="theme-color"]',

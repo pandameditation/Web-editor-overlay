@@ -80,6 +80,8 @@ export const FIXTURES = [
   { page: 'test/turn-into.html', budget: 60000, weight: 2500 },
   { page: 'test/form-errors.html', budget: 60000, weight: 2500 },
   { page: 'test/settings-draft.html', budget: 60000, weight: 2000 },
+  { page: 'test/design-files.html', budget: 45000, weight: 2000, fast: true },
+  { page: 'test/shadow-editor.html', budget: 60000, weight: 2600, fast: true },
   { page: 'test/split-save-modes.html', budget: 45000, weight: 2000, fast: true },
   { page: 'test/shield.html', budget: 45000, weight: 2900 },
   { page: 'test/bundle.html', budget: 45000, strict: true, weight: 2800 },

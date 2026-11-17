@@ -394,7 +394,7 @@ export const COMPONENT_PRESETS: LibraryBlock[] = [
       },
       colour: {
         type: 'token',
-        label: 'Colour',
+        label: 'Color',
         tokenGroup: 'color',
         default: S.muted,
         description: 'The rule and the ornament together.',

@@ -141,13 +141,13 @@
           const text = inside(picker, '.contrast')?.textContent.replace(/\s+/g, ' ') ?? '';
           results.contrast = {
             againstTheWorstStop: /1\.0\d:1/.test(text),
-            theGradientIsNamed: /vs gradient · 2 colours/.test(text),
+            theGradientIsNamed: /vs gradient · 2 colors/.test(text),
             failsAA: Boolean(inside(picker, '.badge.fail')),
             // Named in words; no chip is ringed, since none of them can be selected.
             theWorstIsNamed: /lowest against #ffff00/.test(text),
             noChipLooksSelected: !inside(picker, '.chip.worst') && !inside(picker, '.chip[aria-pressed]'),
             // Nothing passes against both black and yellow, and the picker says so.
-            saysNothingPasses: /No colour of this hue passes AA/.test(text),
+            saysNothingPasses: /No color of this hue passes AA/.test(text),
           };
         }
 
@@ -285,7 +285,7 @@
           picker = await open(base);
           const text = inside(picker, '.contrast')?.textContent.replace(/\s+/g, ' ') ?? '';
           results.background = {
-            againstTheTextColour: /vs text colour/.test(text),
+            againstTheTextColour: /vs text color/.test(text),
             // #777 on white: 4.48:1, just short of AA.
             theRatio: /4\.48:1/.test(text),
           };
@@ -301,7 +301,7 @@
           await settle(600);
           const text = inside(picker, '.contrast')?.textContent.replace(/\s+/g, ' ') ?? '';
           results.image = {
-            theImageIsSampled: /vs image · \d+ colours?/.test(text) && !/reading image/.test(text),
+            theImageIsSampled: /vs image · \d+ colors?/.test(text) && !/reading image/.test(text),
             // White on red is the worst of black and red: 4.00:1.
             againstItsWorstPixel: /4\.00:1/.test(text),
           };

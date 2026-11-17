@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { readFileSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { loadEnv, type Plugin, type ViteDevServer } from 'vite';
@@ -47,10 +47,27 @@ const WRITABLE = new Set([
   '.vue', '.svelte', '.astro',
 ]);
 
+/**
+ * Extensions the endpoint will write *as bytes*: the files a design system stores beside the page.
+ *
+ * Separate from `WRITABLE`, and only for a body sent as `application/octet-stream`. Fonts,
+ * pictures, sounds and videos are inert to a build — nothing executes them — so writing one is a
+ * much smaller grant than writing source, and keeping the two lists apart means a byte body can
+ * never land as a `.js` file and a text body is never written into a font.
+ */
+const WRITABLE_BYTES = new Set([
+  '.woff2', '.woff', '.ttf', '.otf', '.eot',
+  '.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif', '.ico', '.bmp', '.svg',
+  '.mp3', '.m4a', '.ogg', '.oga', '.opus', '.wav', '.flac', '.aac',
+  '.mp4', '.webm', '.ogv', '.mov',
+]);
+
 /** Directories the endpoint refuses outright, whatever the extension. */
 const FORBIDDEN = ['node_modules', '.git', '.svn', '.hg'];
 
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
+/** A stored video can be larger than any source file; still bounded, so a runaway body is refused. */
+const MAX_BINARY_BYTES = 64 * 1024 * 1024;
 /**
  * Browser-facing URL for the virtual module.
  *
@@ -547,11 +564,26 @@ async function handleFileRequest(
       send(405, 'The probe is a GET.');
       return;
     }
-    send(200, JSON.stringify({ ok: true, root: context.root, base: context.base }), 'application/json');
+    // `bytes` says this endpoint stores fonts and pictures; an older one refuses them, and a page
+    // that knows that up front can say "restart the dev server" instead of failing on a 403.
+    send(
+      200,
+      JSON.stringify({ ok: true, root: context.root, base: context.base, bytes: true, remove: true }),
+      'application/json',
+    );
     return;
   }
 
-  const target = safeResolve(context.root, requested);
+  // A byte body is a stored design-system file, held to the media allowlist rather than the
+  // source one; see WRITABLE_BYTES.
+  const binary =
+    method === 'PUT' && header(request, 'content-type').toLowerCase().startsWith('application/octet-stream');
+  /*
+   * A DELETE is held to the media list, never the source one: the editor removes a font or a
+   * picture it stored once nothing uses it, and has no business deleting a stylesheet or a page.
+   */
+  const removing = method === 'DELETE';
+  const target = safeResolve(context.root, requested, binary || removing ? WRITABLE_BYTES : WRITABLE);
   if (!target) {
     send(403, `${requested} is not a file this endpoint will touch.`);
     return;
@@ -566,14 +598,25 @@ async function handleFileRequest(
     return;
   }
 
-  if (method !== 'PUT') {
-    send(405, 'Use GET to read and PUT to write.');
+  if (removing) {
+    try {
+      await unlink(target);
+      send(200, JSON.stringify({ ok: true }), 'application/json');
+    } catch (error) {
+      const missing = (error as NodeJS.ErrnoException)?.code === 'ENOENT';
+      send(missing ? 404 : 500, missing ? 'No such file.' : error instanceof Error ? error.message : 'Delete failed.');
+    }
     return;
   }
 
-  let body: string;
+  if (method !== 'PUT') {
+    send(405, 'Use GET to read, PUT to write and DELETE to remove a stored file.');
+    return;
+  }
+
+  let body: Buffer;
   try {
-    body = await readBody(request);
+    body = await readBodyBytes(request, binary ? MAX_BINARY_BYTES : MAX_BODY_BYTES);
   } catch (error) {
     send(413, error instanceof Error ? error.message : 'Body too large.');
     return;
@@ -583,8 +626,10 @@ async function handleFileRequest(
     // Directories are created on the way, so writing a file into a folder that does
     // not exist yet works. Nothing outside the root is reachable to create.
     await mkdir(dirname(target), { recursive: true });
-    await writeFile(target, body, 'utf8');
-    send(200, JSON.stringify({ ok: true, bytes: Buffer.byteLength(body) }), 'application/json');
+    // Text is decoded and re-encoded as UTF-8, as it always was; bytes are written untouched.
+    if (binary) await writeFile(target, body);
+    else await writeFile(target, body.toString('utf8'), 'utf8');
+    send(200, JSON.stringify({ ok: true, bytes: body.length }), 'application/json');
   } catch (error) {
     send(500, error instanceof Error ? error.message : 'Write failed.');
   }
@@ -966,7 +1011,11 @@ function writeChunk(response: FsResponse, text: string): void {
  * directory this has no business in. And having an extension outside the small set the
  * editor actually writes.
  */
-function safeResolve(root: string, requested: string): string | null {
+function safeResolve(
+  root: string,
+  requested: string,
+  allowed: ReadonlySet<string> = WRITABLE,
+): string | null {
   const target = resolve(root, requested);
   if (target !== root && !target.startsWith(root + sep)) return null;
 
@@ -976,23 +1025,27 @@ function safeResolve(root: string, requested: string): string | null {
   const dot = target.lastIndexOf('.');
   const slash = Math.max(target.lastIndexOf('/'), target.lastIndexOf('\\'));
   if (dot <= slash) return null;
-  return WRITABLE.has(target.slice(dot).toLowerCase()) ? target : null;
+  return allowed.has(target.slice(dot).toLowerCase()) ? target : null;
 }
 
-function readBody(request: FsRequest): Promise<string> {
+async function readBody(request: FsRequest): Promise<string> {
+  return (await readBodyBytes(request, MAX_BODY_BYTES)).toString('utf8');
+}
+
+function readBodyBytes(request: FsRequest, limit: number): Promise<Buffer> {
   return new Promise((fulfil, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
     request.on('data', (chunk) => {
       size += chunk.length;
-      if (size > MAX_BODY_BYTES) {
+      if (size > limit) {
         request.destroy();
         reject(new Error('That file is larger than this endpoint will write.'));
         return;
       }
       chunks.push(chunk);
     });
-    request.on('end', () => fulfil(Buffer.concat(chunks).toString('utf8')));
+    request.on('end', () => fulfil(Buffer.concat(chunks)));
     request.on('error', (error) => reject(error ?? new Error('Request failed.')));
   });
 }

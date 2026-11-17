@@ -15,6 +15,9 @@ import { PopoverPlacer } from '../place.js';
 import { contrastTargetFor, type ContrastTarget } from '../contrast.js';
 import type { ColorSwatch } from './color-picker.js';
 import './color-picker.js';
+import { parseShadows, splitFilter, type ShadowSwatch } from '../../core/shadow.js';
+import { miniShadow, type ShadowConvert } from './shadow-editor.js';
+import './shadow-editor.js';
 import { icon } from '../icons.js';
 import { baseStyles, swatchStyle } from '../theme.js';
 
@@ -48,7 +51,11 @@ export interface ValueSuggestion {
   opens?: FunctionName;
 }
 
-export type ValueKind = 'text' | 'length' | 'number' | 'color' | 'keyword';
+/**
+ * `shadow` is box-shadow and text-shadow, `filter` is filter: both are text to type, with the shadow
+ * editor at the head of the field where a colour has its swatch.
+ */
+export type ValueKind = 'text' | 'length' | 'number' | 'color' | 'keyword' | 'shadow' | 'filter';
 
 /**
  * The overlay's primary value control.
@@ -336,6 +343,28 @@ export class HeoValueField extends LitElement {
       .color-btn .swatch {
         width: 15px;
         height: 15px;
+      }
+      /* The shadow editor's opener: a tiny picture of the shadow, as the colour's swatch is of it. */
+      .shadow-btn .mini {
+        display: grid;
+        place-items: center;
+        width: 15px;
+        height: 15px;
+        border-radius: 4px;
+        background: color-mix(in oklab, var(--heo-text) 12%, var(--heo-sunken));
+      }
+      .shadow-btn .mini i {
+        width: 9px;
+        height: 7px;
+        border-radius: 2px;
+        background: #fff;
+      }
+      .shadow-btn .mini b {
+        color: #fff;
+        font: 700 10px/1 system-ui, sans-serif;
+      }
+      .shadow-btn[aria-expanded='true'] {
+        background: var(--heo-accent-soft);
       }
       input[type='color'] {
         position: absolute;
@@ -762,6 +791,12 @@ export class HeoValueField extends LitElement {
   @query('input[type="text"]') private textInput!: HTMLInputElement;
   /** The popup is the colour picker rather than the list. */
   @state() private picking = false;
+  /** The popup is the shadow editor. */
+  @state() private shadowing = false;
+  /** The design system's shadow tokens, for the shadow editor's swatches. */
+  @property({ attribute: false }) shadowTokens: readonly ShadowSwatch[] = [];
+  /** Whether the host moves shadows between box-shadow and filter, which the editor then offers. */
+  @property({ type: Boolean, attribute: 'shadow-convertible' }) shadowConvertible = false;
   /** What the picker measures contrast against, read when it opens. */
   @state() private pickerContrast: ContrastTarget | null = null;
 
@@ -801,6 +836,7 @@ export class HeoValueField extends LitElement {
     if (event.composedPath().includes(this)) return;
     this.open = false;
     this.picking = false;
+    this.shadowing = false;
     this.highlight = -1;
     // Abandoning a composer by pressing elsewhere discards it, and the live preview it painted has
     // to go with it — this field's own value never changed.
@@ -965,7 +1001,7 @@ export class HeoValueField extends LitElement {
     const active = this.shadowRoot?.activeElement;
     if (!active) return false;
     // The picker is a dialog of the field's own: anywhere inside the field keeps it up.
-    if (this.picking) return true;
+    if (this.picking || this.shadowing) return true;
     if (active === this.textInput) return true;
     const popup = this.renderRoot.querySelector('.popup');
     return Boolean(popup && (active === popup || popup.contains(active)));
@@ -1016,6 +1052,7 @@ export class HeoValueField extends LitElement {
   /** Open the colour picker in the popup, with the contrast it is to be measured against. */
   #openPicker(): void {
     this.composer = null;
+    this.shadowing = false;
     this.picking = true;
     this.pickerContrast = this.property ? contrastTargetFor(this.property) : null;
     if (!this.open) this.#openPopup();
@@ -1045,7 +1082,7 @@ export class HeoValueField extends LitElement {
       style=${this.popupStyle}
       @pointerdown=${keepFocusOnBlank}
       role="dialog"
-      aria-label=${this.fieldLabel ? `${this.fieldLabel}: colour picker` : 'Colour picker'}
+      aria-label=${this.fieldLabel ? `${this.fieldLabel}: color picker` : 'Color picker'}
     >
       <heo-color-picker
         .value=${painted}
@@ -1067,6 +1104,116 @@ export class HeoValueField extends LitElement {
       }}
       ></heo-color-picker>
     </div>`;
+  }
+
+  /**
+   * Open the shadow editor from outside: after a conversion moves the shadows to this property, the
+   * host opens it here so editing carries on where it went.
+   */
+  openShadowEditor(): void {
+    if (this.kind !== 'shadow' && this.kind !== 'filter') return;
+    this.composer = null;
+    this.picking = false;
+    this.shadowing = true;
+    if (!this.open) this.#openPopup();
+    void this.updateComplete
+      .then(() => this.renderRoot.querySelector('heo-shadow-editor')?.updateComplete)
+      .then(() => {
+        if (!this.open || !this.shadowing) return;
+        this.#placer.invalidate();
+        this.#positionPopup();
+      });
+  }
+
+  /** The opener: the shadow drawn small, on a card for a box and on a letter for text. */
+  #renderShadowButton(): TemplateResult {
+    const text = this.property === 'text-shadow';
+    const source = this.draft.trim() || this.computed.trim();
+    const list =
+      this.kind === 'filter'
+        ? (splitFilter(source)?.drops ?? [])
+        : (parseShadows(source, text ? 'text' : 'box') ?? parseShadows(this.computed, text ? 'text' : 'box') ?? []);
+    const label = this.kind === 'filter' ? 'Edit the drop shadows' : 'Open the shadow editor';
+    return html`<button
+      class="color-btn shadow-btn"
+      type="button"
+      tabindex="-1"
+      title=${label}
+      aria-label=${label}
+      aria-expanded=${this.open && this.shadowing}
+      @pointerdown=${(event: Event) => event.preventDefault()}
+      @click=${() => (this.open && this.shadowing ? this.closePopup() : this.openShadowEditor())}
+    >
+      <span class="mini">${text || this.kind === 'filter'
+        ? html`<b style=${`text-shadow:${miniShadow(list, 4, 'text')}`}>A</b>`
+        : html`<i style=${`box-shadow:${miniShadow(list, 4)}`}></i>`}</span>
+    </button>`;
+  }
+
+  #renderShadowEditor(): TemplateResult {
+    const mode = this.kind === 'filter' ? 'filter' : this.property === 'text-shadow' ? 'text' : 'box';
+    return html`<div
+      class="popup picker shadowing"
+      popover="manual"
+      style=${this.popupStyle}
+      @pointerdown=${keepFocusOnBlank}
+      role="dialog"
+      aria-label=${`${this.property || 'shadow'}: shadow editor`}
+    >
+      <heo-shadow-editor
+        .value=${this.draft}
+        .computed=${this.computed}
+        .mode=${mode}
+        .tokens=${this.shadowTokens}
+        ?convertible=${this.shadowConvertible}
+        @shadow-input=${(event: CustomEvent<{ value: string }>) => {
+          event.stopPropagation();
+          this.draft = event.detail.value;
+          this.#emit('value-input');
+        }}
+        @shadow-change=${(event: CustomEvent<{ value: string }>) => {
+          event.stopPropagation();
+          this.draft = event.detail.value;
+          this.#commit();
+          // Measured again: adding or removing a shadow changes the editor's height.
+          void this.updateComplete.then(() => this.#positionPopup());
+        }}
+        @shadow-convert=${(event: CustomEvent<ShadowConvert>) => {
+          // Two properties change, which only the host can write; it hears this one as it bubbles.
+          this.closePopup();
+          void event;
+        }}
+        @filter-select=${(event: CustomEvent<{ fn: string }>) => {
+          event.stopPropagation();
+          this.#selectText(event.detail.fn);
+        }}
+        @shadow-close=${(event: Event) => {
+          event.stopPropagation();
+          this.closePopup();
+          this.textInput?.focus();
+        }}
+      ></heo-shadow-editor>
+    </div>`;
+  }
+
+  /**
+   * Select a stretch of the value in the box, scrolled into view: one function of a long filter,
+   * picked from the shadow editor, so it can be typed over at once.
+   */
+  #selectText(part: string): void {
+    const input = this.textInput;
+    if (!input) return;
+    const at = input.value.indexOf(part);
+    if (at < 0) return;
+    this.closePopup();
+    input.focus();
+    input.setSelectionRange(at, at + part.length);
+    // The width of the text before it, in the box's own font, is how far to scroll.
+    const style = getComputedStyle(input);
+    const context = document.createElement('canvas').getContext('2d');
+    if (!context) return;
+    context.font = `${style.fontSize} ${style.fontFamily}`;
+    input.scrollLeft = Math.max(0, context.measureText(input.value.slice(0, at)).width - 12);
   }
 
   /**
@@ -1442,6 +1589,7 @@ export class HeoValueField extends LitElement {
    */
   #renderLead(): TemplateResult | typeof nothing {
     if (this.kind === 'color') return this.#renderColorButton();
+    if (this.kind === 'shadow' || this.kind === 'filter') return this.#renderShadowButton();
     if (!this.isNumeric) return nothing;
     return this.#renderGauge();
   }
@@ -1501,8 +1649,8 @@ export class HeoValueField extends LitElement {
         class="color-btn"
         type="button"
         tabindex="-1"
-        title="Pick a colour"
-        aria-label="Pick a colour"
+        title="Pick a color"
+        aria-label="Pick a color"
         aria-expanded=${this.open && this.picking}
         @pointerdown=${(event: Event) => event.preventDefault()}
         @click=${() => (this.open && this.picking ? this.closePopup() : this.#openPicker())}
@@ -1659,6 +1807,7 @@ export class HeoValueField extends LitElement {
     // The composer replaces the list while it is up: it answers the question the list was asking.
     if (this.composer) return this.#renderComposer();
     if (this.picking) return this.#renderPicker();
+    if (this.shadowing) return this.#renderShadowEditor();
     const items = this.filtered;
     if (!items.length) {
       const typed = this.draft.trim();
@@ -2071,9 +2220,11 @@ export class HeoValueField extends LitElement {
     if (this.open) {
       this.open = false;
       this.picking = false;
+      this.shadowing = false;
       return;
     }
     this.picking = false;
+    this.shadowing = false;
     this.#openPopup();
     this.textInput?.focus();
   }
@@ -2119,7 +2270,7 @@ export class HeoValueField extends LitElement {
       anchor: this.getBoundingClientRect(),
       // A composer is wider than a list: three labelled rows each holding a field of their own.
       // A head (the destination switch) needs room for its choices on one or two lines.
-      minWidth: this.picking ? 268 : this.composer ? 296 : this.head ? 280 : 200,
+      minWidth: this.shadowing ? 320 : this.picking ? 268 : this.composer ? 296 : this.head ? 280 : 200,
     });
     if (style !== null) this.popupStyle = style;
   }
@@ -2322,6 +2473,7 @@ export class HeoValueField extends LitElement {
     if (!this.open) return;
     this.open = false;
     this.picking = false;
+    this.shadowing = false;
     this.#placer.invalidate();
     this.highlight = -1;
     // The composer goes with it. Left set, an abandoned form would stand in for the list the next

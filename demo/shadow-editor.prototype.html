@@ -1,0 +1,1408 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PROTOTYPE — Shadow & glow editor: box-shadow and filter: drop-shadow()</title>
+  <!--
+  PROTOTYPE — throwaway, not part of the overlay build. Open the file directly in a browser.
+  Delete, or move it to a prototype branch, once a direction is picked.
+
+  Question: what should the shadow & glow editor look like, opened from the Effects section's
+  box-shadow row and from its filter row?
+
+  Shared by every variant (the request spells them out):
+    - controls: offset, blur, spread ("range"), opacity, colour (with the colour picker), and the
+      element previews live while you drag;
+    - opened from box-shadow: a tickbox "Use filter: drop-shadow() instead" converts the result into
+      drop-shadow() functions added to the element's current filter (box-shadow is then removed);
+    - opened from filter: the same editor, straight in drop-shadow mode, no tickbox. The other
+      filter functions already there are kept; the drop-shadow is added (or replaces the one there);
+    - drop-shadow has no spread and no inset, so those controls are off in that mode, and a value
+      converted from box-shadow says what it lost.
+  What differs is the structure:
+    A — Inline expander under the row: shadow layers as a list, an offset pad you drag, sliders.
+    B — Popover with a big preview tile and presets first; the offset is a light direction (angle
+        + distance) rather than X/Y.
+    C — Figma-style effect list: one compact row per effect (type, swatch, eye, −); clicking a row
+        opens its fields as number inputs. Most compact; least visual.
+  Scenario (top of the stage): opened from box-shadow on the card, or from filter on the logo.
+    D — This round: A, plus shadow swatches (small, like the colour picker's) between the stack and
+        the editor. The first swatch is the value being edited, as it was when the editor opened;
+        the rest are the design system's shadow tokens, or eight HEO swatches when it has none.
+        Clicking one loads it into the editor, still editable; editing never changes a swatch. A
+        token picked and left alone is written as var(--token). The opener sits on the left of the
+        field, where the colour swatch and the size gauge sit. In drop-shadow mode the filter's
+        functions are chips: clicking one selects that function in the field, scrolled into view.
+  Variants: ?variant=D (default) | A | B | C, the bottom bar, or ← →. ?tokens=0 for no shadow tokens.
+-->
+  <style>
+    :root {
+      /* src/ui/theme.ts, light theme */
+      --bg: #ffffff;
+      --sunken: #f3f4f7;
+      --raised: #ffffff;
+      --hover: #eef0f5;
+      --text: #1f2330;
+      --dim: #4b5263;
+      --faint: #6b7385;
+      --line: #e3e6ec;
+      --line2: #d3d7e0;
+      --accent: #6366f1;
+      --accent-soft: color-mix(in oklab, var(--accent) 12%, transparent);
+      --warn: #b45309;
+      --danger: #e11d48;
+      --r-sm: 7px;
+      --r-md: 9px;
+      --font: Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+      --mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+      --checker: linear-gradient(45deg, #d9dce3 25%, transparent 25% 75%, #d9dce3 75%), linear-gradient(45deg, #d9dce3 25%, transparent 25% 75%, #d9dce3 75%);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      height: 100%;
+    }
+
+    body {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 340px;
+      font-family: var(--font);
+      background: #e9ecf2;
+      color: var(--text);
+    }
+
+    button,
+    input,
+    select {
+      font: inherit;
+    }
+
+    /* ---------------------------------------------------------------- page side (not the design) */
+    .stage {
+      padding: 24px 32px 90px;
+      overflow: auto;
+    }
+
+    .stage h1 {
+      font: 600 11px/1 var(--font);
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: #64748b;
+      margin: 0 0 12px;
+    }
+
+    .scenario {
+      display: inline-flex;
+      gap: 2px;
+      padding: 2px;
+      border-radius: 8px;
+      background: #dfe3ea;
+      margin-bottom: 14px;
+    }
+
+    .scenario button {
+      all: unset;
+      padding: 5px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      color: #475569;
+      cursor: pointer;
+    }
+
+    .scenario button[aria-pressed=true] {
+      background: #fff;
+      color: #111827;
+      font-weight: 600;
+      box-shadow: 0 1px 2px rgb(0 0 0 / 10%);
+    }
+
+    .site {
+      background: #f8fafc;
+      border-radius: 14px;
+      padding: 48px;
+      display: flex;
+      gap: 56px;
+      align-items: center;
+      justify-content: center;
+      min-height: 300px;
+      box-shadow: 0 8px 30px -12px rgb(15 23 42 / 25%);
+    }
+
+    .card {
+      width: 260px;
+      padding: 22px;
+      border-radius: 16px;
+      background: #fff;
+      font: 14px/1.5 system-ui;
+      color: #334155;
+      transition: none;
+    }
+
+    .card b {
+      display: block;
+      font-size: 17px;
+      color: #0f172a;
+      margin-bottom: 4px;
+    }
+
+    .logo {
+      width: 150px;
+      height: 150px;
+    }
+
+    .edited {
+      outline: 2px dashed color-mix(in oklab, var(--accent) 60%, transparent);
+      outline-offset: 10px;
+    }
+
+    .outs {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 8px;
+      margin-top: 18px;
+    }
+
+    .out {
+      background: #111827;
+      color: #e5e7eb;
+      border-radius: 10px;
+      padding: 12px 14px;
+      font: 11.5px/1.6 var(--mono);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .out b {
+      color: #a5b4fc;
+      font-weight: 500;
+    }
+
+    .out .c {
+      color: #8b93a5;
+    }
+
+    .out .gone {
+      color: #fca5a5;
+      text-decoration: line-through;
+    }
+
+    .question {
+      margin-top: 14px;
+      color: #475569;
+      font-size: 13px;
+      line-height: 1.5;
+      max-width: 680px;
+    }
+
+    /* ---------------------------------------------------------------- panel chrome */
+    .panel {
+      background: var(--bg);
+      border-left: 1px solid var(--line);
+      overflow: auto;
+      padding: 14px 14px 100px;
+      font-size: 12px;
+      position: relative;
+    }
+
+    .section-h {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font: 600 11px/1 var(--font);
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: var(--dim);
+      margin: 2px 0 12px;
+    }
+
+    .group-h {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin: 12px 0 6px;
+      color: var(--faint);
+      font-size: 9.5px;
+      font-weight: 600;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+
+    .group-h::after {
+      content: '';
+      flex: 1;
+      border-top: 1px solid var(--line);
+    }
+
+    .tip {
+      margin: 6px 0 0;
+      color: var(--faint);
+      font-size: 10.5px;
+      line-height: 1.45;
+    }
+
+    .warnline {
+      margin: 6px 0 0;
+      color: var(--warn);
+      font-size: 10.5px;
+      line-height: 1.45;
+      display: flex;
+      gap: 5px;
+    }
+
+    /* property rows, as the Effects section draws them */
+    .prow {
+      display: grid;
+      grid-template-columns: 82px minmax(0, 1fr);
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 5px;
+    }
+
+    .prow>.name {
+      color: var(--dim);
+      font: 11px var(--mono);
+    }
+
+    .prow.open>.name {
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    .f {
+      display: flex;
+      align-items: center;
+      height: 28px;
+      min-width: 0;
+      border: 1px solid var(--line2);
+      border-radius: var(--r-sm);
+      background: var(--raised);
+      padding: 0 7px;
+      gap: 6px;
+    }
+
+    .f:focus-within,
+    .f.on {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 18%, transparent);
+    }
+
+    .f input,
+    .f select {
+      all: unset;
+      flex: 1;
+      min-width: 0;
+      font: 12px var(--mono);
+      color: var(--text);
+    }
+
+    .f .val {
+      flex: 1;
+      min-width: 0;
+      font: 11.5px var(--mono);
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .f .unit {
+      font: 10.5px var(--mono);
+      color: var(--faint);
+    }
+
+    .f .lbl {
+      font: 500 10px var(--font);
+      color: var(--faint);
+    }
+
+    .opener {
+      all: unset;
+      display: grid;
+      place-items: center;
+      width: 20px;
+      height: 20px;
+      border-radius: 5px;
+      color: var(--faint);
+      cursor: pointer;
+      flex: none;
+    }
+
+    .opener:hover,
+    .opener.on {
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+
+    .sw {
+      position: relative;
+      width: 16px;
+      height: 16px;
+      flex: none;
+      border-radius: 4px;
+      overflow: hidden;
+      background-image: var(--checker);
+      background-size: 8px 8px;
+      background-position: 0 0, 4px 4px;
+      box-shadow: inset 0 0 0 1px rgb(0 0 0 / 14%);
+      cursor: pointer;
+    }
+
+    .sw i {
+      position: absolute;
+      inset: 0;
+    }
+
+    .sw input[type=color] {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      cursor: pointer;
+      width: 100%;
+      height: 100%;
+      border: 0;
+      padding: 0;
+    }
+
+    .seg {
+      display: flex;
+      padding: 2px;
+      gap: 2px;
+      background: var(--sunken);
+      border-radius: var(--r-sm);
+      border: 1px solid var(--line);
+    }
+
+    .seg button {
+      all: unset;
+      flex: 1;
+      text-align: center;
+      padding: 4px 6px;
+      border-radius: 5px;
+      font-size: 11px;
+      color: var(--dim);
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .seg button[aria-pressed=true] {
+      background: var(--raised);
+      color: var(--text);
+      box-shadow: 0 1px 2px rgb(0 0 0 / 12%);
+      font-weight: 600;
+    }
+
+    .seg button:disabled {
+      color: #b8bdc8;
+      cursor: not-allowed;
+    }
+
+    .btn {
+      all: unset;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      height: 26px;
+      padding: 0 9px;
+      border: 1px solid var(--line2);
+      border-radius: var(--r-sm);
+      background: var(--raised);
+      font-size: 11.5px;
+      color: var(--dim);
+      cursor: pointer;
+    }
+
+    .btn:hover {
+      background: var(--hover);
+      color: var(--text);
+    }
+
+    .btn.primary {
+      color: var(--accent);
+      border-color: color-mix(in oklab, var(--accent) 40%, var(--line2));
+    }
+
+    .icon {
+      all: unset;
+      display: grid;
+      place-items: center;
+      width: 22px;
+      height: 22px;
+      border-radius: 5px;
+      color: var(--faint);
+      cursor: pointer;
+      font-size: 12px;
+    }
+
+    .icon:hover {
+      background: var(--hover);
+      color: var(--text);
+    }
+
+    .icon.danger:hover {
+      color: var(--danger);
+    }
+
+    :focus-visible {
+      outline: 2px solid color-mix(in oklab, var(--accent) 70%, white);
+      outline-offset: 1px;
+    }
+
+    .check {
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+      padding: 8px 9px;
+      border-radius: var(--r-sm);
+      background: var(--sunken);
+      border: 1px solid var(--line);
+      cursor: pointer;
+    }
+
+    .check input {
+      margin: 1px 0 0;
+      accent-color: var(--accent);
+    }
+
+    .check b {
+      display: block;
+      font-size: 11.5px;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .check span span {
+      display: block;
+      color: var(--faint);
+      font-size: 10.5px;
+      line-height: 1.4;
+      margin-top: 1px;
+    }
+
+    .check code,
+    .tip code,
+    .warnline code {
+      font: 10.5px var(--mono);
+      color: var(--text);
+    }
+
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      align-items: center;
+    }
+
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      height: 22px;
+      padding: 0 7px;
+      border-radius: 999px;
+      border: 1px solid var(--line2);
+      background: var(--sunken);
+      font: 10.5px var(--mono);
+      color: var(--dim);
+    }
+
+    .chip.edit {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    /* editor body */
+    .editor {
+      border: 1px solid color-mix(in oklab, var(--accent) 35%, var(--line2));
+      border-radius: var(--r-md);
+      background: color-mix(in oklab, var(--accent) 3%, var(--bg));
+      padding: 10px;
+      margin: 2px 0 10px;
+      display: grid;
+      gap: 9px;
+    }
+
+    .ehead {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+
+    .ehead .t {
+      font-weight: 600;
+      font-size: 12px;
+    }
+
+    .ehead .m {
+      color: var(--faint);
+      font: 10.5px var(--mono);
+    }
+
+    .ehead .spacer {
+      flex: 1;
+    }
+
+    .slide {
+      display: grid;
+      grid-template-columns: 58px minmax(0, 1fr) 62px;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .slide>label {
+      color: var(--dim);
+      font-size: 11px;
+    }
+
+    .slide input[type=range] {
+      width: 100%;
+      accent-color: var(--accent);
+    }
+
+    .slide .f {
+      height: 24px;
+      padding: 0 6px;
+    }
+
+    .slide.off {
+      opacity: .45;
+    }
+
+    .slide.off input {
+      pointer-events: none;
+    }
+
+    .layers {
+      display: grid;
+      gap: 3px;
+    }
+
+    .layer {
+      display: grid;
+      grid-template-columns: 26px minmax(0, 1fr) 22px 22px;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 4px;
+      border-radius: 6px;
+      border: 1px solid transparent;
+      cursor: pointer;
+    }
+
+    .layer:hover {
+      background: var(--hover);
+    }
+
+    .layer.on {
+      background: var(--accent-soft);
+      border-color: color-mix(in oklab, var(--accent) 35%, transparent);
+    }
+
+    .layer .mini {
+      width: 26px;
+      height: 18px;
+      border-radius: 4px;
+      background: #fff;
+      border: 1px solid var(--line2);
+    }
+
+    .layer .v {
+      font: 10.5px var(--mono);
+      color: var(--dim);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .layer.hidden .v {
+      text-decoration: line-through;
+      opacity: .6;
+    }
+
+    .pad-wrap {
+      display: grid;
+      grid-template-columns: 96px minmax(0, 1fr);
+      gap: 10px;
+      align-items: center;
+    }
+
+    .pad {
+      position: relative;
+      width: 96px;
+      height: 96px;
+      border-radius: 8px;
+      background: var(--sunken);
+      border: 1px solid var(--line2);
+      cursor: crosshair;
+      touch-action: none;
+      background-image: linear-gradient(var(--line2), var(--line2)), linear-gradient(var(--line2), var(--line2));
+      background-size: 1px 100%, 100% 1px;
+      background-position: center;
+      background-repeat: no-repeat;
+    }
+
+    .pad .dot {
+      position: absolute;
+      width: 12px;
+      height: 12px;
+      margin: -6px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 0 3px #fff, 0 1px 4px rgb(0 0 0 / 30%);
+      pointer-events: none;
+    }
+
+    .pad .zero {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 22px;
+      height: 14px;
+      margin: -7px -11px;
+      border-radius: 3px;
+      background: #fff;
+      border: 1px solid var(--line2);
+      pointer-events: none;
+    }
+
+    .xy {
+      display: grid;
+      gap: 5px;
+    }
+
+    .presets {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 6px;
+    }
+
+    .preset {
+      all: unset;
+      display: grid;
+      gap: 6px;
+      justify-items: center;
+      padding: 10px 4px 7px;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: var(--sunken);
+      cursor: pointer;
+      font-size: 10.5px;
+      color: var(--dim);
+    }
+
+    .preset:hover {
+      border-color: var(--accent);
+      color: var(--text);
+    }
+
+    .preset i {
+      width: 34px;
+      height: 22px;
+      border-radius: 5px;
+      background: #fff;
+    }
+
+    .preset.dis {
+      opacity: .4;
+      pointer-events: none;
+    }
+
+    /* variant B popover */
+    .pop {
+      position: absolute;
+      left: 10px;
+      right: 10px;
+      z-index: 5;
+      background: var(--bg);
+      border: 1px solid var(--line2);
+      border-radius: 12px;
+      box-shadow: 0 18px 40px -10px rgb(15 23 42 / 35%);
+      padding: 12px;
+      display: grid;
+      gap: 10px;
+    }
+
+    .tile {
+      height: 120px;
+      border-radius: 10px;
+      background: #f1f5f9;
+      display: grid;
+      place-items: center;
+      background-image: var(--checker);
+      background-size: 14px 14px;
+      background-position: 0 0, 7px 7px;
+    }
+
+    .tile .shape {
+      width: 92px;
+      height: 58px;
+      border-radius: 10px;
+      background: #fff;
+    }
+
+    .tile svg {
+      width: 74px;
+      height: 74px;
+    }
+
+    .dialrow {
+      display: grid;
+      grid-template-columns: 64px minmax(0, 1fr);
+      gap: 10px;
+      align-items: center;
+    }
+
+    .dial {
+      position: relative;
+      width: 64px;
+      height: 64px;
+      border-radius: 50%;
+      background: var(--sunken);
+      box-shadow: inset 0 0 0 1px var(--line2);
+      cursor: grab;
+      touch-action: none;
+    }
+
+    .dial i {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 2px;
+      height: 26px;
+      margin-left: -1px;
+      background: var(--accent);
+      border-radius: 2px;
+      transform-origin: 50% 0;
+    }
+
+    .dial b {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 8px;
+      height: 8px;
+      margin: -4px;
+      border-radius: 50%;
+      background: var(--accent);
+    }
+
+    .dial .sun {
+      position: absolute;
+      width: 10px;
+      height: 10px;
+      margin: -5px;
+      border-radius: 50%;
+      background: #f59e0b;
+      box-shadow: 0 0 6px #f59e0b;
+    }
+
+    /* variant C effect list */
+    .fx {
+      display: grid;
+      grid-template-columns: 22px 1fr 18px 22px 22px;
+      gap: 5px;
+      align-items: center;
+      height: 30px;
+      padding: 0 4px;
+      border-radius: 6px;
+      border: 1px solid var(--line);
+      background: var(--raised);
+      cursor: pointer;
+    }
+
+    .fx.on {
+      border-color: var(--accent);
+    }
+
+    .fx select {
+      all: unset;
+      font-size: 11.5px;
+      color: var(--text);
+      cursor: pointer;
+    }
+
+    .fxbody {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 5px;
+      padding: 8px 4px 4px;
+    }
+
+    .fxbody .f {
+      height: 26px;
+      padding: 0 5px;
+    }
+
+    .fxbody .f .lbl {
+      font-size: 9.5px;
+    }
+
+    .fxbody .wide {
+      grid-column: span 2;
+    }
+
+    /* ---------------------------------------------------------------- round D */
+    .opener.lead { margin-left: -3px; }
+    .mini-sh { display: block; width: 12px; height: 12px; border-radius: 3px; background: #fff; border: 1px solid var(--line2); }
+    .f .val-in { all: unset; flex: 1; min-width: 0; font: 11.5px var(--mono); color: var(--text); }
+    .f .val-in::selection { background: color-mix(in oklab, var(--accent) 30%, transparent); }
+    .swatches { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .swatch { all: unset; position: relative; width: 24px; height: 24px; border-radius: 6px; background: #e3e7ee; display: grid; place-items: center; cursor: pointer; }
+    .swatch i { width: 12px; height: 12px; border-radius: 3px; background: #fff; }
+    .swatch:hover { background: #d8dde6; }
+    .swatch[aria-pressed=true] { box-shadow: 0 0 0 2px var(--accent); }
+    .swatch:disabled { opacity: .35; cursor: not-allowed; }
+    .swatch-sep { width: 1px; height: 18px; background: var(--line2); margin: 0 1px; }
+    .chips button.chip { all: unset; display: inline-flex; align-items: center; height: 22px; padding: 0 7px; border-radius: 999px; border: 1px solid var(--line2); background: var(--sunken); font: 10.5px var(--mono); color: var(--dim); cursor: pointer; }
+    .chips button.chip:hover { border-color: var(--accent); color: var(--text); }
+    .chips button.chip.edit { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+    .chips button.chip.on { box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent) 35%, transparent); }
+
+    [hidden] {
+      display: none !important;
+    }
+
+    /* prototype switcher: not part of the design */
+    .proto-bar {
+      position: fixed;
+      left: calc(50% - 170px);
+      bottom: 18px;
+      transform: translateX(-50%);
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px;
+      border-radius: 999px;
+      background: #111;
+      color: #fff;
+      box-shadow: 0 8px 24px rgb(0 0 0 / 35%);
+      font: 600 12px var(--font);
+      z-index: 50;
+    }
+
+    .proto-bar button {
+      border: 0;
+      background: #333;
+      color: #fff;
+      border-radius: 999px;
+      width: 28px;
+      height: 28px;
+      cursor: pointer;
+    }
+
+    .proto-bar span {
+      padding: 0 10px;
+      min-width: 210px;
+      text-align: center;
+    }
+  </style>
+</head>
+
+<body>
+  <main class="stage">
+    <h1>Shadow &amp; glow editor — prototype</h1>
+    <div class="scenario" role="group" aria-label="Scenario">
+      <button type="button" data-scenario="box" aria-pressed="true">Opened from box-shadow · card</button>
+      <button type="button" data-scenario="filter" aria-pressed="false">Opened from filter · logo</button>
+    </div>
+    <div class="scenario" role="group" aria-label="Design system">
+      <button type="button" data-tokens="1" aria-pressed="true">Design system has shadow tokens</button>
+      <button type="button" data-tokens="0" aria-pressed="false">No shadow tokens · HEO swatches</button>
+    </div>
+    <div class="site">
+      <div class="card" id="card"><b>Clay workshop</b>Hand-thrown bowls, glazed in small batches. Saturdays, 10–12.
+      </div>
+      <!-- A transparent shape: where drop-shadow() and box-shadow differ (one follows the shape, one the box). -->
+      <svg class="logo" id="logo" viewBox="0 0 100 100" aria-label="Logo">
+        <path d="M50 6 61 37h33L67 56l10 32-27-19-27 19 10-32L6 37h33z" fill="#6366f1" />
+      </svg>
+    </div>
+    <div class="outs">
+      <div class="out" id="out"></div>
+    </div>
+    <p class="question" id="question"></p>
+  </main>
+
+  <aside class="panel" id="panel">
+    <div class="section-h">◉ Effects</div>
+    <div class="prow"><span class="name">opacity</span>
+      <div class="f"><span class="val">1</span></div>
+    </div>
+    <div class="prow" id="row-box"><span class="name">box-shadow</span>
+      <div class="f" id="f-box"><button class="opener lead" type="button" id="open-box" title="Open the shadow editor"
+          aria-label="Open the shadow editor"><i class="mini-sh" id="sw-box"></i></button><span class="val" id="v-box"></span></div>
+    </div>
+    <div id="slot-box"></div>
+    <div class="prow" id="row-filter"><span class="name">filter</span>
+      <div class="f" id="f-filter"><button class="opener lead" type="button" id="open-filter"
+          title="Open the filter editor: drop shadows" aria-label="Open the filter editor">◐</button><input
+          class="val-in" id="v-filter" spellcheck="false" aria-label="filter"></div>
+    </div>
+    <div id="slot-filter"></div>
+    <div class="prow"><span class="name">backdrop-filter</span>
+      <div class="f"><span class="val" style="color:var(--faint)">none</span></div>
+    </div>
+    <div class="prow"><span class="name">transform</span>
+      <div class="f"><span class="val" style="color:var(--faint)">none</span></div>
+    </div>
+    <div class="prow"><span class="name">mix-blend-mode</span>
+      <div class="f"><span class="val" style="color:var(--faint)">normal</span></div>
+    </div>
+  </aside>
+
+  <div class="proto-bar" role="toolbar" aria-label="Prototype variant switcher">
+    <button type="button" data-step="-1" aria-label="Previous variant">←</button>
+    <span id="proto-label"></span>
+    <button type="button" data-step="1" aria-label="Next variant">→</button>
+  </div>
+
+  <script>
+    // ------------------------------------------------------------------ model (shared by every variant)
+    const NAMES = { D: 'A + swatches', A: 'Inline expander', B: 'Popover + presets', C: 'Effect list' };
+    const KEYS = Object.keys(NAMES);
+    const hex2rgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+    const color = (l) => { const [r, g, b] = hex2rgb(l.color); return `rgb(${r} ${g} ${b} / ${Math.round(l.alpha * 100)}%)`; };
+    const shadow = (o) => ({ x: 0, y: 8, blur: 24, spread: -6, color: '#0f172a', alpha: 0.18, inset: false, on: true, ...o });
+
+    const SCENARIOS = {
+      box: { origin: 'box-shadow', target: 'card', filterBefore: [], layers: [shadow({ x: 0, y: 1, blur: 2, spread: 0, alpha: 0.06 }), shadow()] },
+      filter: { origin: 'filter', target: 'logo', filterBefore: ['saturate(1.2)', 'contrast(1.05)'], layers: [shadow({ x: 0, y: 6, blur: 10, spread: 0, color: '#4338ca', alpha: 0.45 })] },
+    };
+    const PRESETS = [
+      { name: 'Soft', layers: [shadow({ y: 8, blur: 24, spread: -6, alpha: 0.18 })] },
+      { name: 'Lifted', layers: [shadow({ y: 1, blur: 2, spread: 0, alpha: 0.08 }), shadow({ y: 18, blur: 36, spread: -12, alpha: 0.25 })] },
+      { name: 'Hard', layers: [shadow({ x: 6, y: 6, blur: 0, spread: 0, alpha: 1 })] },
+      { name: 'Glow', layers: [shadow({ x: 0, y: 0, blur: 22, spread: 4, color: '#6366f1', alpha: 0.6 })] },
+      { name: 'Neon', layers: [shadow({ x: 0, y: 0, blur: 4, spread: 0, color: '#22d3ee', alpha: 0.9 }), shadow({ x: 0, y: 0, blur: 28, spread: 6, color: '#22d3ee', alpha: 0.5 })] },
+      { name: 'Inner', box: true, layers: [shadow({ x: 0, y: 2, blur: 6, spread: 0, alpha: 0.2, inset: true })] },
+    ];
+
+    /*
+     * The swatches after the first: the design system's shadow tokens when it has any, else eight of
+     * HEO's own. A token is written as var(--name) as long as it is picked and left as it is.
+     */
+    const TOKENS = [
+      { name: '--shadow-xs', layers: [shadow({ y: 1, blur: 2, spread: 0, alpha: 0.06 })] },
+      { name: '--shadow-sm', layers: [shadow({ y: 1, blur: 3, spread: 0, alpha: 0.1 }), shadow({ y: 1, blur: 2, spread: -1, alpha: 0.1 })] },
+      { name: '--shadow-md', layers: [shadow({ y: 4, blur: 6, spread: -1, alpha: 0.1 }), shadow({ y: 2, blur: 4, spread: -2, alpha: 0.1 })] },
+      { name: '--shadow-lg', layers: [shadow({ y: 10, blur: 15, spread: -3, alpha: 0.12 }), shadow({ y: 4, blur: 6, spread: -4, alpha: 0.1 })] },
+      { name: '--shadow-xl', layers: [shadow({ y: 20, blur: 25, spread: -5, alpha: 0.14 }), shadow({ y: 8, blur: 10, spread: -6, alpha: 0.1 })] },
+      { name: '--shadow-glow', layers: [shadow({ x: 0, y: 0, blur: 20, spread: 2, color: '#6366f1', alpha: 0.55 })] },
+    ];
+    const HEO_SWATCHES = [
+      ...PRESETS,
+      { name: 'Deep', layers: [shadow({ y: 24, blur: 48, spread: -12, alpha: 0.35 })] },
+      { name: 'Ring', box: true, layers: [shadow({ x: 0, y: 0, blur: 0, spread: 3, color: '#6366f1', alpha: 0.35 })] },
+    ];
+    const copyLayers = (layers) => layers.map((l) => ({ ...l }));
+    const sameLayers = (a, b) => JSON.stringify(a.map(({ on, ...rest }) => rest)) === JSON.stringify(b.map(({ on, ...rest }) => rest));
+    const swatchList = () => (state.tokens ? TOKENS : HEO_SWATCHES);
+
+    let variant = new URLSearchParams(location.search).get('variant');
+    if (!KEYS.includes(variant)) variant = 'D';
+    let state;
+    const reset = (key) => {
+      const s = SCENARIOS[key];
+      state = {
+        scenario: key, origin: s.origin, drop: s.origin === 'filter', layers: copyLayers(s.layers), picked: s.layers.length - 1,
+        open: true, filterBefore: [...s.filterBefore], tokens: state ? state.tokens : true,
+        // The first swatch: the value as it was when the editor opened. It never changes.
+        original: copyLayers(s.layers), fn: null,
+      };
+    };
+    // ?scenario=filter and ?drop=1 open a given state directly (for screenshots and sharing).
+    const params = new URLSearchParams(location.search);
+    reset(params.get('scenario') === 'filter' ? 'filter' : 'box');
+    if (params.get('drop') === '1') state.drop = true;
+    if (params.get('tokens') === '0') state.tokens = false;
+
+    // The token the stack still is, when it is one: written as var(--name) rather than its values.
+    const tokenNow = () => (state.tokens ? TOKENS.find((t) => sameLayers(t.layers, state.layers)) : null);
+
+    const boxValue = () => tokenNow() ? `var(${tokenNow().name})` : rawBox();
+    const rawBox = () => state.layers.filter((l) => l.on).map((l) => `${l.inset ? 'inset ' : ''}${l.x}px ${l.y}px ${l.blur}px ${l.spread}px ${color(l)}`).join(', ') || 'none';
+    const dropFns = () => state.layers.filter((l) => l.on).map((l) => `drop-shadow(${l.x}px ${l.y}px ${l.blur}px ${color(l)})`);
+    const filterValue = () => [...state.filterBefore.filter((fn) => !fn.startsWith('drop-shadow')), ...dropFns()].join(' ') || 'none';
+    const lost = () => state.drop ? state.layers.filter((l) => l.on && (l.spread || l.inset)) : [];
+
+    // ------------------------------------------------------------------ live preview + output
+    function paint() {
+      const card = document.getElementById('card');
+      const logo = document.getElementById('logo');
+      const target = state.scenario === 'box' ? card : logo;
+      card.classList.toggle('edited', target === card);
+      logo.classList.toggle('edited', target === logo);
+      card.style.boxShadow = ''; card.style.filter = ''; logo.style.filter = ''; logo.style.boxShadow = '';
+      if (state.drop) target.style.filter = filterValue();
+      else target.style.boxShadow = rawBox();
+
+      const before = state.filterBefore.join(' ') || 'none';
+      document.getElementById('v-box').textContent = state.drop ? 'none' : boxValue();
+      const field = document.getElementById('v-filter');
+      if (document.activeElement !== field) field.value = state.drop ? filterValue() : before;
+      // The opener is a tiny picture of the shadow, as the colour row's swatch is of its colour.
+      document.getElementById('sw-box').style.boxShadow = state.drop ? 'none' : scaled(state.layers, 4);
+
+      const out = document.getElementById('out');
+      const sel = state.scenario === 'box' ? '.card' : '.logo';
+      if (state.drop && state.origin === 'box-shadow') {
+        out.innerHTML = `<span class="c">/* written on Done: the shadow becomes drop-shadow() added to filter */</span>\n${sel} {\n  <span class="gone">box-shadow: …;</span>\n  <b>filter</b>: ${filterValue()};\n}` +
+          (lost().length ? `\n<span class="c">/* drop-shadow has no spread or inset: ${lost().length} layer(s) lost them */</span>` : '');
+      } else if (state.drop) {
+        out.innerHTML = `<span class="c">/* the filter functions already there are kept; the drop-shadow is added */</span>\n${sel} {\n  <b>filter</b>: ${filterValue()};\n}`;
+      } else {
+        out.innerHTML = `${sel} {\n  <b>box-shadow</b>: ${boxValue()};\n}`;
+      }
+      document.getElementById('question').textContent = state.scenario === 'box'
+        ? 'Card, opened from its box-shadow row. Tick “Use filter: drop-shadow()” to see the same shadow converted, and the spread it loses.'
+        : 'Logo (a transparent shape), opened from its filter row: drop-shadow mode, no tickbox. saturate() and contrast() are kept; the drop-shadow follows the star, not its box.';
+    }
+
+    // ------------------------------------------------------------------ shared pieces
+    const scaled = (layers, k) => layers.filter((l) => l.on !== false).map((l) => `${l.inset ? 'inset ' : ''}${Math.round(l.x / k)}px ${Math.round(l.y / k)}px ${Math.round(l.blur / k)}px ${Math.round(l.spread / k)}px ${color(l)}`).join(', ') || 'none';
+    const h = (html) => { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content; };
+    const L = () => state.layers[state.picked];
+    const slider = (key, label, min, max, unit, { off = false, scale = 1 } = {}) => `
+      <div class="slide${off ? ' off' : ''}" data-key="${key}" title="${off ? 'drop-shadow() has no ' + label.toLowerCase() : ''}">
+        <label>${label}</label>
+        <input type="range" min="${min}" max="${max}" value="${Math.round(L()[key] * scale)}" data-scale="${scale}" ${off ? 'tabindex="-1"' : ''}>
+        <span class="f"><input value="${Math.round(L()[key] * scale)}" data-scale="${scale}" aria-label="${label}"><span class="unit">${unit}</span></span>
+      </div>`;
+    // With its opacity beside it where there is no Opacity slider (B), alone where there is (A).
+    const colorRow = (alpha = true) => `
+      <div class="slide" data-key="color">
+        <label>Colour</label>
+        <span class="f"${alpha ? '' : ' style="grid-column: span 2"'}><span class="sw"><i style="background:${color(L())}"></i><input type="color" value="${L().color}" aria-label="Shadow colour"></span><span class="val">${L().color}</span></span>
+        ${alpha ? `<span class="f"><input value="${Math.round(L().alpha * 100)}" data-alpha aria-label="Opacity"><span class="unit">%</span></span>` : ''}
+      </div>`;
+    const tickbox = () => state.origin !== 'box-shadow' ? '' : `
+      <label class="check"><input type="checkbox" id="to-drop" ${state.drop ? 'checked' : ''}>
+        <span><b>Use filter: drop-shadow() instead</b>
+        <span>Follows the element's shape — transparent pixels, text, icons — instead of its box. Added to the element's <code>filter</code>; <code>box-shadow</code> is removed.</span></span>
+      </label>`;
+    const filterChips = () => !state.drop ? '' : `
+      <div><div class="group-h">filter</div><div class="chips">
+        ${state.filterBefore.filter((fn) => !fn.startsWith('drop-shadow')).map((fn) => `<span class="chip">${fn}</span>`).join('')}
+        ${dropFns().map((fn) => `<span class="chip edit">${fn.replace(/\(.+/, '(…)')}</span>`).join('')}
+      </div><p class="tip">The other functions stay as they are; this editor writes the drop-shadow part.</p></div>`;
+    const lostLine = () => lost().length ? `<p class="warnline">⚠ <span>drop-shadow() has no spread or inset: ${lost().length === 1 ? 'one layer loses' : lost().length + ' layers lose'} ${[...new Set(lost().flatMap((l) => [l.spread ? 'spread' : '', l.inset ? 'inset' : '']).filter(Boolean))].join(' and ')}.</span></p>` : '';
+    const layerList = () => `
+      <div><div class="group-h">${state.drop ? 'Drop shadows' : 'Shadows'} <button class="icon" type="button" data-add title="Add a shadow" aria-label="Add a shadow">＋</button></div>
+      <div class="layers">${state.layers.map((l, i) => `
+        <div class="layer${i === state.picked ? ' on' : ''}${l.on ? '' : ' hidden'}" data-pick="${i}">
+          <span class="mini" style="box-shadow:${l.inset ? 'inset ' : ''}${Math.round(l.x / 4)}px ${Math.round(l.y / 4)}px ${Math.round(l.blur / 4)}px ${color(l)}"></span>
+          <span class="v">${l.inset && !state.drop ? 'inset ' : ''}${l.x} ${l.y} · blur ${l.blur}${state.drop ? '' : ' · spread ' + l.spread} · ${Math.round(l.alpha * 100)}%</span>
+          <button class="icon" type="button" data-eye="${i}" aria-label="${l.on ? 'Hide' : 'Show'} this shadow">${l.on ? '◉' : '○'}</button>
+          <button class="icon danger" type="button" data-del="${i}" aria-label="Remove this shadow">−</button>
+        </div>`).join('')}</div></div>`;
+    const presetGrid = () => `<div class="presets">${PRESETS.map((p, i) => `
+      <button class="preset${p.box && state.drop ? ' dis' : ''}" type="button" data-preset="${i}" title="${p.box && state.drop ? 'drop-shadow() cannot be inset' : ''}">
+        <i style="box-shadow:${p.layers.map((l) => `${l.inset ? 'inset ' : ''}${Math.round(l.x / 2)}px ${Math.round(l.y / 2)}px ${Math.round(l.blur / 2)}px ${Math.round(l.spread / 2)}px ${color(l)}`).join(', ')}"></i>${p.name}
+      </button>`).join('')}</div>`;
+
+    // ------------------------------------------------------------------ variants
+    function variantA() {
+      return `<div class="editor" role="group" aria-label="Shadow editor">
+        <div class="ehead"><span class="t">${state.drop ? 'Drop shadow' : 'Box shadow'}</span><span class="m">${state.drop ? 'filter: drop-shadow()' : 'box-shadow'}</span><span class="spacer"></span><button class="btn" type="button" data-close>Done</button></div>
+        ${tickbox()}
+        ${filterChips()}
+        ${layerList()}
+        <div class="pad-wrap">
+          <div class="pad" data-pad title="Drag to set the offset"><span class="zero"></span><span class="dot" style="left:${50 + L().x * 1.1}%;top:${50 + L().y * 1.1}%"></span></div>
+          <div class="xy">
+            <span class="f"><span class="lbl">X</span><input value="${L().x}" data-num="x" aria-label="Offset X"><span class="unit">px</span></span>
+            <span class="f"><span class="lbl">Y</span><input value="${L().y}" data-num="y" aria-label="Offset Y"><span class="unit">px</span></span>
+            ${state.drop ? '' : `<div class="seg" role="group" aria-label="Outer or inset"><button type="button" data-inset="0" aria-pressed="${!L().inset}">Outer</button><button type="button" data-inset="1" aria-pressed="${L().inset}">Inset</button></div>`}
+          </div>
+        </div>
+        ${slider('blur', 'Blur', 0, 80, 'px')}
+        ${slider('spread', 'Spread', -40, 40, 'px', { off: state.drop })}
+        ${slider('alpha', 'Opacity', 0, 100, '%', { scale: 100 })}
+        ${colorRow(false)}
+        ${lostLine()}
+      </div>`;
+    }
+
+    function variantB() {
+      const l = L();
+      const angle = Math.round((Math.atan2(l.y, l.x) * 180) / Math.PI);
+      const dist = Math.round(Math.hypot(l.x, l.y));
+      const tileShape = state.scenario === 'box'
+        ? `<div class="shape" style="${state.drop ? `filter:${dropFns().join(' ')}` : `box-shadow:${boxValue()}`}"></div>`
+        : `<svg viewBox="0 0 100 100" style="filter:${filterValue()}"><path d="M50 6 61 37h33L67 56l10 32-27-19-27 19 10-32L6 37h33z" fill="#6366f1"/></svg>`;
+      return `<div class="pop" role="dialog" aria-label="Shadow editor" style="top:${state.origin === 'filter' ? 150 : 115}px">
+        <div class="ehead"><span class="t">${state.drop ? 'Drop shadow' : 'Shadow & glow'}</span><span class="m">${state.drop ? 'filter' : 'box-shadow'}</span><span class="spacer"></span>
+          <div class="seg" style="width:auto">${state.layers.map((_, i) => `<button type="button" data-pick="${i}" aria-pressed="${i === state.picked}">${i + 1}</button>`).join('')}<button type="button" data-add aria-label="Add a shadow">＋</button></div>
+          <button class="icon" type="button" data-close aria-label="Close">✕</button></div>
+        <div class="tile">${tileShape}</div>
+        ${presetGrid()}
+        <div class="dialrow">
+          <div class="dial" data-dial title="Drag: the shadow falls away from the light"><span class="sun" style="left:${50 - Math.cos((angle * Math.PI) / 180) * 46}%;top:${50 - Math.sin((angle * Math.PI) / 180) * 46}%"></span><i style="transform:rotate(${angle - 90}deg)"></i><b></b></div>
+          <div class="xy">
+            <span class="f"><span class="lbl">Angle</span><input value="${angle}" data-polar="angle" aria-label="Angle"><span class="unit">°</span></span>
+            <span class="f"><span class="lbl">Distance</span><input value="${dist}" data-polar="dist" aria-label="Distance"><span class="unit">px</span></span>
+          </div>
+        </div>
+        ${slider('blur', 'Blur', 0, 80, 'px')}
+        ${slider('spread', 'Spread', -40, 40, 'px', { off: state.drop })}
+        ${colorRow()}
+        ${tickbox()}
+        ${lostLine()}
+        ${state.drop ? `<p class="tip">Written into <code>filter</code> after ${state.filterBefore.filter((f) => !f.startsWith('drop-shadow')).join(' ') || 'nothing else'}.</p>` : ''}
+      </div>`;
+    }
+
+    function variantC() {
+      const types = state.drop
+        ? [['drop', 'Drop shadow']]
+        : [['outer', 'Drop shadow'], ['inner', 'Inner shadow'], ['glow', 'Outer glow']];
+      return `<div class="editor" role="group" aria-label="Effects">
+        <div class="ehead"><span class="t">Effects</span><span class="m">${state.drop ? 'filter' : 'box-shadow'}</span><span class="spacer"></span><button class="icon" type="button" data-add aria-label="Add an effect">＋</button><button class="btn" type="button" data-close>Done</button></div>
+        ${state.layers.map((l, i) => {
+        const kind = state.drop ? 'drop' : l.inset ? 'inner' : !l.x && !l.y ? 'glow' : 'outer';
+        return `<div>
+            <div class="fx${i === state.picked ? ' on' : ''}" data-pick="${i}">
+              <span class="sw"><i style="background:${color(l)}"></i></span>
+              <select data-type="${i}" aria-label="Effect type">${types.map(([v, n]) => `<option value="${v}" ${v === kind ? 'selected' : ''}>${n}</option>`).join('')}</select>
+              <span style="font:10px var(--mono);color:var(--faint)">${Math.round(l.alpha * 100)}%</span>
+              <button class="icon" type="button" data-eye="${i}" aria-label="${l.on ? 'Hide' : 'Show'}">${l.on ? '◉' : '○'}</button>
+              <button class="icon danger" type="button" data-del="${i}" aria-label="Remove">−</button>
+            </div>
+            ${i === state.picked ? `<div class="fxbody">
+              <span class="f"><span class="lbl">X</span><input value="${l.x}" data-num="x" aria-label="X"></span>
+              <span class="f"><span class="lbl">Y</span><input value="${l.y}" data-num="y" aria-label="Y"></span>
+              <span class="f"><span class="lbl">Blur</span><input value="${l.blur}" data-num="blur" aria-label="Blur"></span>
+              <span class="f${state.drop ? '" style="opacity:.45" title="drop-shadow() has no spread' : ''}"><span class="lbl">Spread</span><input value="${l.spread}" data-num="spread" aria-label="Spread" ${state.drop ? 'disabled' : ''}></span>
+              <span class="f wide"><span class="sw"><i style="background:${color(l)}"></i><input type="color" value="${l.color}" aria-label="Colour"></span><span class="val">${l.color}</span></span>
+              <span class="f wide"><span class="lbl">Opacity</span><input value="${Math.round(l.alpha * 100)}" data-alpha aria-label="Opacity"><span class="unit">%</span></span>
+            </div>` : ''}
+          </div>`;
+      }).join('')}
+        ${tickbox()}
+        ${filterChips()}
+        ${lostLine()}
+      </div>`;
+    }
+
+    /*
+     * The swatches: the value being edited first, then the design system's shadows (or HEO's).
+     * A swatch is a picture of a whole value, so picking one replaces the stack; editing after that
+     * changes the stack and never the swatch. Pressed while the stack is still that swatch's value.
+     */
+    function swatchStrip() {
+      const list = swatchList();
+      const cell = (layers, label, attr, disabled = false) => `<button class="swatch" type="button" ${attr}
+        aria-pressed="${sameLayers(layers, state.layers)}" ${disabled ? 'disabled' : ''}
+        title="${label}${disabled ? ' — drop-shadow() cannot be inset' : ''}" aria-label="${label}"><i style="box-shadow:${scaled(layers, 2)}"></i></button>`;
+      return `<div>
+        <div class="group-h">Swatches</div>
+        <div class="swatches" role="group" aria-label="Shadow swatches">
+          ${cell(state.original, 'As it was', 'data-swatch="original"')}
+          <span class="swatch-sep" aria-hidden="true"></span>
+          ${list.map((one, i) => cell(one.layers, one.name, `data-swatch="${i}"`, state.drop && one.layers.some((l) => l.inset))).join('')}
+        </div>
+        <p class="tip">${state.tokens
+          ? `From the design system: ${TOKENS.length} shadow tokens. Picked and left as it is, a token is written as <code>var(--shadow-md)</code>.`
+          : 'HEO swatches: the design system has no shadow tokens. Add some and they replace these.'}</p>
+      </div>`;
+    }
+
+    /* The filter as chips. Clicking one selects that function in the field, scrolled into view. */
+    function filterChipsD() {
+      if (!state.drop) return '';
+      const others = state.filterBefore.filter((fn) => !fn.startsWith('drop-shadow'));
+      const drops = dropFns();
+      return `<div><div class="group-h">filter</div><div class="chips">
+        ${others.map((fn) => `<button type="button" class="chip${state.fn === fn ? ' on' : ''}" data-fn="${fn}" title="Edit ${fn.replace(/\(.*/, '')} in the field">${fn}</button>`).join('')}
+        ${drops.map((fn, i) => `<button type="button" class="chip edit${state.fn === fn ? ' on' : ''}" data-fn="${fn}" data-fn-layer="${i}" title="Edited here">drop-shadow(…)</button>`).join('')}
+      </div><p class="tip">This editor writes the drop-shadows. The other functions stay as they are: click one to edit it in the field (they will get editors of their own later).</p></div>`;
+    }
+
+    function variantD() {
+      return `<div class="editor" role="group" aria-label="Shadow editor">
+        <div class="ehead"><span class="t">${state.drop ? 'Drop shadow' : 'Box shadow'}</span><span class="m">${state.drop ? 'filter: drop-shadow()' : 'box-shadow'}</span><span class="spacer"></span><button class="btn" type="button" data-close>Done</button></div>
+        ${tickbox()}
+        ${filterChipsD()}
+        ${layerList()}
+        ${swatchStrip()}
+        <div class="pad-wrap">
+          <div class="pad" data-pad title="Drag to set the offset"><span class="zero"></span><span class="dot" style="left:${50 + L().x * 1.1}%;top:${50 + L().y * 1.1}%"></span></div>
+          <div class="xy">
+            <span class="f"><span class="lbl">X</span><input value="${L().x}" data-num="x" aria-label="Offset X"><span class="unit">px</span></span>
+            <span class="f"><span class="lbl">Y</span><input value="${L().y}" data-num="y" aria-label="Offset Y"><span class="unit">px</span></span>
+            ${state.drop ? '' : `<div class="seg" role="group" aria-label="Outer or inset"><button type="button" data-inset="0" aria-pressed="${!L().inset}">Outer</button><button type="button" data-inset="1" aria-pressed="${L().inset}">Inset</button></div>`}
+          </div>
+        </div>
+        ${slider('blur', 'Blur', 0, 80, 'px')}
+        ${slider('spread', 'Spread', -40, 40, 'px', { off: state.drop })}
+        ${slider('alpha', 'Opacity', 0, 100, '%', { scale: 100 })}
+        ${colorRow(false)}
+        ${lostLine()}
+      </div>`;
+    }
+
+    /*
+     * Select one function in the filter field and scroll it into view: the width of the text before
+     * it, measured in the field's own font, is how far to scroll.
+     */
+    function selectInField(fn) {
+      const field = document.getElementById('v-filter');
+      const at = field.value.indexOf(fn);
+      if (at < 0) return;
+      field.focus();
+      field.setSelectionRange(at, at + fn.length);
+      const ctx = document.createElement('canvas').getContext('2d');
+      const style = getComputedStyle(field);
+      ctx.font = `${style.fontSize} ${style.fontFamily}`;
+      const before = ctx.measureText(field.value.slice(0, at)).width;
+      field.scrollLeft = Math.max(0, before - 12);
+    }
+
+    // ------------------------------------------------------------------ render + wiring
+    function render() {
+      document.querySelectorAll('[data-scenario]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.scenario === state.scenario)));
+      document.querySelectorAll('[data-tokens]').forEach((b) => b.setAttribute('aria-pressed', String((b.dataset.tokens === '1') === state.tokens)));
+      document.getElementById('proto-label').textContent = `${variant} — ${NAMES[variant]}`;
+      const slotBox = document.getElementById('slot-box');
+      const slotFilter = document.getElementById('slot-filter');
+      slotBox.replaceChildren(); slotFilter.replaceChildren();
+      document.querySelectorAll('.pop').forEach((p) => p.remove());
+      const fromFilter = state.origin === 'filter';
+      document.getElementById('row-box').classList.toggle('open', state.open && !fromFilter);
+      document.getElementById('row-filter').classList.toggle('open', state.open && fromFilter);
+      document.getElementById('f-box').classList.toggle('on', state.open && !fromFilter);
+      document.getElementById('f-filter').classList.toggle('on', state.open && fromFilter);
+      document.getElementById('open-box').classList.toggle('on', state.open && !fromFilter);
+      document.getElementById('open-filter').classList.toggle('on', state.open && fromFilter);
+      if (state.open) {
+        const body = h(variant === 'D' ? variantD() : variant === 'A' ? variantA() : variant === 'B' ? variantB() : variantC());
+        if (variant === 'B') document.getElementById('panel').appendChild(body);
+        else (fromFilter ? slotFilter : slotBox).appendChild(body);
+      }
+      paint();
+      const url = new URL(location.href);
+      url.searchParams.set('variant', variant);
+      history.replaceState(null, '', url);
+    }
+
+    const set = (patch, rerender = true) => { Object.assign(L(), patch); rerender ? render() : paint(); };
+
+    document.addEventListener('click', (e) => {
+      const t = e.target.closest('button, [data-pick], [data-scenario]');
+      if (!t) return;
+      if (t.dataset.tokens !== undefined) { state.tokens = t.dataset.tokens === '1'; render(); return; }
+      if (t.dataset.swatch !== undefined) {
+        const from = t.dataset.swatch === 'original' ? state.original : swatchList()[Number(t.dataset.swatch)].layers;
+        state.layers = copyLayers(from);
+        state.picked = 0;
+        render();
+        return;
+      }
+      if (t.dataset.fn !== undefined) {
+        state.fn = t.dataset.fn;
+        if (t.dataset.fnLayer !== undefined) state.picked = Number(t.dataset.fnLayer);
+        render();
+        selectInField(t.dataset.fn);
+        return;
+      }
+      if (t.dataset.scenario) { reset(t.dataset.scenario); render(); return; }
+      if (t.dataset.step) { variant = KEYS[(KEYS.indexOf(variant) + Number(t.dataset.step) + KEYS.length) % KEYS.length]; render(); return; }
+      if (t.id === 'open-box') { if (state.origin !== 'box-shadow') reset('box'); state.open = !state.open; render(); return; }
+      if (t.id === 'open-filter') { if (state.origin !== 'filter') reset('filter'); state.open = !state.open; render(); return; }
+      if (t.hasAttribute('data-close')) { state.open = false; render(); return; }
+      if (t.hasAttribute('data-add')) { state.layers.push(shadow({ alpha: 0.12 })); state.picked = state.layers.length - 1; render(); return; }
+      if (t.dataset.del !== undefined) { e.stopPropagation(); state.layers.splice(Number(t.dataset.del), 1); if (!state.layers.length) state.layers.push(shadow()); state.picked = Math.min(state.picked, state.layers.length - 1); render(); return; }
+      if (t.dataset.eye !== undefined) { e.stopPropagation(); const l = state.layers[Number(t.dataset.eye)]; l.on = !l.on; render(); return; }
+      if (t.dataset.inset !== undefined) { set({ inset: t.dataset.inset === '1' }); return; }
+      if (t.dataset.preset !== undefined) { state.layers = PRESETS[Number(t.dataset.preset)].layers.map((l) => ({ ...l })); state.picked = 0; render(); return; }
+      if (t.dataset.pick !== undefined && !e.target.closest('select, input')) { state.picked = Number(t.dataset.pick); render(); }
+    });
+    document.addEventListener('change', (e) => {
+      if (e.target.id === 'to-drop') { state.drop = e.target.checked; render(); return; }
+      // Typed into the filter field: the functions this editor does not own are taken as typed.
+      if (e.target.id === 'v-filter') {
+        const fns = e.target.value.match(/[a-z-]+\((?:[^()]|\([^()]*\))*\)/gi) ?? [];
+        state.filterBefore = fns.filter((fn) => !/^drop-shadow/i.test(fn));
+        state.fn = null;
+        render();
+        return;
+      }
+      if (e.target.dataset.type !== undefined) {
+        const l = state.layers[Number(e.target.dataset.type)];
+        const v = e.target.value;
+        if (v === 'inner') Object.assign(l, { inset: true });
+        if (v === 'outer') Object.assign(l, { inset: false, y: l.y || 6 });
+        if (v === 'glow') Object.assign(l, { inset: false, x: 0, y: 0, blur: Math.max(l.blur, 18), color: '#6366f1', alpha: 0.6 });
+        render();
+      }
+      if (e.target.type === 'color') set({ color: e.target.value });
+    });
+    document.addEventListener('input', (e) => {
+      const el = e.target;
+      const row = el.closest('.slide');
+      if (row && row.dataset.key && row.dataset.key !== 'color') {
+        const scale = Number(el.dataset.scale || 1);
+        const value = Number(el.value) / scale;
+        if (!Number.isFinite(value)) return;
+        Object.assign(L(), { [row.dataset.key]: value });
+        row.querySelectorAll('input').forEach((other) => { if (other !== el) other.value = el.value; });
+        paint();
+        return;
+      }
+      if (el.dataset.num) { const v = Number(el.value); if (Number.isFinite(v)) set({ [el.dataset.num]: v }, false); return; }
+      if (el.hasAttribute('data-alpha')) { const v = Number(el.value); if (Number.isFinite(v)) set({ alpha: Math.max(0, Math.min(100, v)) / 100 }, false); return; }
+      if (el.dataset.polar) {
+        const l = L();
+        let angle = Math.atan2(l.y, l.x); let dist = Math.hypot(l.x, l.y);
+        if (el.dataset.polar === 'angle') angle = (Number(el.value) * Math.PI) / 180; else dist = Number(el.value);
+        set({ x: Math.round(Math.cos(angle) * dist), y: Math.round(Math.sin(angle) * dist) }, false);
+        return;
+      }
+      if (el.type === 'color') set({ color: el.value }, false);
+    });
+    // Drag on the offset pad (A) or the light dial (B).
+    document.addEventListener('pointerdown', (e) => {
+      const first = e.target.closest('[data-pad], [data-dial]');
+      if (!first) return;
+      e.preventDefault();
+      const selector = first.hasAttribute('data-pad') ? '[data-pad]' : '[data-dial]';
+      const move = (ev) => {
+        // Re-found every move: a render replaces the element under the pointer.
+        const pad = document.querySelector(selector);
+        if (!pad) return;
+        const r = pad.getBoundingClientRect();
+        const dx = ev.clientX - (r.left + r.width / 2);
+        const dy = ev.clientY - (r.top + r.height / 2);
+        if (pad.hasAttribute('data-pad')) {
+          const k = 90 / r.width;
+          Object.assign(L(), { x: Math.round(Math.max(-40, Math.min(40, dx * k))), y: Math.round(Math.max(-40, Math.min(40, dy * k))) });
+        } else {
+          const dist = Math.hypot(L().x, L().y) || 8;
+          const angle = Math.atan2(dy, dx);
+          Object.assign(L(), { x: Math.round(Math.cos(angle) * dist), y: Math.round(Math.sin(angle) * dist) });
+        }
+        render();
+      };
+      move(e);
+      const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); };
+      addEventListener('pointermove', move);
+      addEventListener('pointerup', up);
+    });
+    addEventListener('keydown', (e) => {
+      if (e.target.closest('input, textarea, select, [contenteditable]')) return;
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        variant = KEYS[(KEYS.indexOf(variant) + (e.key === 'ArrowRight' ? 1 : -1) + KEYS.length) % KEYS.length];
+        render();
+      }
+    });
+    render();
+  </script>
+</body>
+
+</html>

@@ -21,6 +21,7 @@ import {
   EDIT_DISCARDED_EVENT,
   HOST_TAG,
   IGNORE_ATTR,
+  INJECTED_ATTR,
   PLACEABILITY_DELAY_MS,
   INSERTED_ATTR,
   RULE_STYLE_ID,
@@ -74,6 +75,7 @@ import {
   firstSelectableChild,
   isMutable,
   isNativeInputEvent,
+  isOverlayNode,
   isSelectable,
   labelFor,
   nearestSourceRef,
@@ -271,10 +273,13 @@ import {
   describeRule,
   DOCUMENT_TARGET,
   fetchStyleSource,
+  readStyleSource,
   rememberRuleDeclarations,
   rememberStyleText,
   ruleDeclarations,
   resetSheetIds,
+  writeStyleSource,
+  type StyleSource,
 } from './sheets.js';
 import {
   applyWritePlan,
@@ -334,6 +339,28 @@ import {
 } from './group.js';
 import { Store } from './store.js';
 import { TokenRegistry } from './tokens.js';
+import { fetchAsset, toDataUrl } from './assets.js';
+import { cssUrls, rewriteCssUrls } from './css-urls.js';
+import {
+  absolute,
+  contentHash,
+  decodeDataUrl,
+  inFilesFolder,
+  movedRef,
+  normalizeFilesFolder,
+  pageFileAttributes,
+  rewriteAttributeValue,
+  rewriteDesignFiles,
+  scanDesignFiles,
+  storedPath,
+  type DesignFile,
+  type DesignFileKind,
+  type DesignFileOutcome,
+  type DesignFilePlan,
+  type DesignFileSources,
+  type PageFileAttribute,
+  type PageSheetText,
+} from './design-files.js';
 import type {
   BlockKind,
   ChangeRecord,
@@ -995,6 +1022,11 @@ export interface ProjectInfo {
 
 const DEFAULT_TOOLBAR = { x: 24, y: 24 };
 
+/** `1 file`, `3 files`. */
+function filesCount(count: number): string {
+  return `${count} file${count === 1 ? '' : 's'}`;
+}
+
 /**
  * The editor engine.
  *
@@ -1445,6 +1477,8 @@ export class EditorEngine {
 
     this.#listeners.push(
       this.history.onChange(() => {
+        // The page's files may have changed with it; see designFiles.
+        this.#historyTick += 1;
         // A commit, undo or redo may have moved or replaced what the trail points at, and the
         // user asked that any edit end the Left/Right walk.
         this.#navTrail = [];
@@ -10774,6 +10808,417 @@ export class EditorEngine {
 
   designSystemSeed(selection?: DesignSystemSelection): Promise<string> {
     return encodeSeed(this.designSystem(selection));
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Design system files: embedded or stored beside the page                */
+  /* ---------------------------------------------------------------------- */
+
+  /**
+   * The entries a stored or embedded file can sit in: the ones the design system owns.
+   *
+   * Not stylesheet-origin entries, whose CSS lives in a file this would be contradicting, and not
+   * preset blocks, which are rebuilt on every load. See `core/design-files.ts`.
+   */
+  #fileSources(): DesignFileSources {
+    const owned = <T extends { origin?: string }>(list: T[]): T[] =>
+      list.filter((entry) => entry.origin !== 'stylesheet');
+    return {
+      tokens: owned(this.tokens.list()),
+      classes: owned(this.classes.list()),
+      rules: owned(this.rules.list()),
+      blocks: this.library.list().filter((block) => block.origin !== 'preset'),
+    };
+  }
+
+  /**
+   * The bytes of every file stored this session, by resolved URL.
+   *
+   * Embedding one back needs its bytes, and the file was written a moment ago — reading it back
+   * over the network asks a dev server for something it may not serve yet, or serve stale.
+   */
+  #storedBytes = new Map<string, { bytes: Uint8Array<ArrayBuffer>; mime: string }>();
+
+  /** Counts history changes, so a cache of what the page holds knows when to look again. */
+  #historyTick = 0;
+  #filesCache: { key: string; files: DesignFile[] } | null = null;
+
+  /**
+   * The page's own stylesheets the editor can rewrite: linked and inline, not its own.
+   *
+   * `readOnly` already says "another origin" and "the editor owns this one", which are exactly the
+   * sheets a file cannot be stored out of.
+   */
+  #pageSheets(): StyleSource[] {
+    return collectStyleSources(this.#project).filter((source) => !source.readOnly);
+  }
+
+  /** Each sheet's text for the scan: the file's own when it has been read, else the CSSOM's. */
+  #pageSheetTexts(): PageSheetText[] {
+    return this.#pageSheets().map((source) => ({
+      key: source.id,
+      label: source.label,
+      text: source.pendingBefore ?? readStyleSource(source),
+    }));
+  }
+
+  /** The page's own attributes that hold files: everything outside the editor's own elements. */
+  #pageFiles(): PageFileAttribute[] {
+    return pageFileAttributes(
+      document,
+      (el) => isOverlayNode(el) || el.hasAttribute(INJECTED_ATTR),
+      (el) => (el instanceof HTMLElement ? labelFor(el) : el.tagName.toLowerCase()),
+    );
+  }
+
+  /**
+   * Every font, image, sound and video the design system refers to, embedded or linked.
+   *
+   * Cached per registry revision: an embedded font is a long string, and the Settings dialog
+   * re-renders on every keystroke.
+   */
+  designFiles(): DesignFile[] {
+    // Per design-system revision and per page change: an embedded font is a long string, and the
+    // Settings dialog re-renders on every keystroke.
+    const key = `${this.store.value.registry}:${this.#historyTick}`;
+    if (this.#filesCache?.key === key) return this.#filesCache.files;
+    // What the page already downloaded is the only size worth knowing without fetching anything.
+    const sizeOf = (url: string): number | null => {
+      const entry = performance.getEntriesByName(url).at(-1) as PerformanceResourceTiming | undefined;
+      return entry?.decodedBodySize || null;
+    };
+    const files = scanDesignFiles(this.#fileSources(), sizeOf, this.#pageFiles(), this.#pageSheetTexts());
+    this.#filesCache = { key, files };
+    return files;
+  }
+
+  /** Where stored files go, one folder per kind, relative to the page. */
+  get fileFolders(): Readonly<Record<DesignFileKind, string>> {
+    return this.settings.value.fileFolders;
+  }
+
+  /** True when files can be stored right now: a project is connected and can write bytes. */
+  canStoreFiles(): boolean {
+    return this.storeFilesBlocker() === null;
+  }
+
+  /**
+   * Why files cannot be stored right now, in one sentence, or null when they can.
+   *
+   * The dev server's case is worth its own sentence. A server started before the endpoint learnt
+   * to write bytes still answers, still writes source — and refused every font and picture with
+   * "not a file this endpoint will touch", which read as a path problem. The probe now says
+   * whether bytes are accepted, so the remedy can be named instead: restart it.
+   */
+  storeFilesBlocker(): string | null {
+    const project = this.#project;
+    const info = this.store.value.project;
+    if (!project) return 'Storing a file writes it beside the page, so it needs the page\'s folder connected.';
+    if (info?.lost) return `The connection to ${project.label} was lost. Reconnect it to store files.`;
+    if ((project as { needsRestartForBytes?: boolean }).needsRestartForBytes) {
+      return `The dev server for ${project.label} was started before it could store files. Restart it (stop and run it again), then reconnect.`;
+    }
+    if (typeof project.writeBytes !== 'function') return `${project.label} cannot store files.`;
+    return null;
+  }
+
+  /**
+   * Store embedded files beside the page, embed linked ones, and move the files folder.
+   *
+   * The I/O happens first and the rewrite second, as one undoable change. A file that could not
+   * be written or read is reported and its references are left as they were, so a failure never
+   * leaves a reference pointing at nothing. Undo puts the references back; the files already
+   * written stay on disk, since deleting from a project is not something this editor does.
+   */
+  async applyDesignFiles(plan: DesignFilePlan): Promise<DesignFileOutcome> {
+    const outcome: DesignFileOutcome = { stored: 0, embedded: 0, moved: 0, failed: [], leftovers: [] };
+    const before = this.settings.value.fileFolders;
+    const after: Record<DesignFileKind, string> = { ...before };
+    for (const [kind, typed] of Object.entries(plan.folders ?? {}) as Array<[DesignFileKind, string]>) {
+      const clean = normalizeFilesFolder(typed ?? '');
+      if (!clean) {
+        outcome.failed.push(`"${typed}" is not a folder inside this page's folder.`);
+        return outcome;
+      }
+      after[kind] = clean;
+    }
+    const changedKinds = (Object.keys(after) as DesignFileKind[]).filter((kind) => after[kind] !== before[kind]);
+    const files = new Map(this.designFiles().map((file) => [file.ref, file]));
+    const storing = (plan.store ?? []).map((ref) => files.get(ref)).filter(
+      (file): file is DesignFile => file?.place === 'embedded',
+    );
+    const embedding = (plan.embed ?? []).map((ref) => files.get(ref)).filter(
+      (file): file is DesignFile => Boolean(file && file.place !== 'embedded'),
+    );
+    const embeddingRefs = new Set(embedding.map((file) => file.ref));
+    const moving = [...files.values()].filter((file) =>
+      file.place === 'linked' &&
+      !embeddingRefs.has(file.ref) &&
+      changedKinds.includes(file.kind) &&
+      movedRef(file.ref, before[file.kind], after[file.kind]));
+
+    const project = this.#project;
+    const needsProject = storing.length > 0 || moving.length > 0;
+    const blocker = this.storeFilesBlocker();
+    if (needsProject && blocker) {
+      outcome.failed.push(blocker);
+      return outcome;
+    }
+    if (needsProject && project && !(await project.ensureWritable())) {
+      outcome.failed.push(`${project.label} is not accepting writes right now.`);
+      return outcome;
+    }
+
+    const replacements = new Map<string, string>();
+    const write = async (relative: string, bytes: Uint8Array<ArrayBuffer>): Promise<void> => {
+      const path = project?.resolve(absolute(relative)) ?? null;
+      if (path === null || !project?.writeBytes) {
+        throw new Error(`${relative} is outside ${project?.label ?? 'the project'}.`);
+      }
+      await project.writeBytes(path, bytes);
+    };
+
+    for (const file of storing) {
+      const decoded = decodeDataUrl(file.ref);
+      if (!decoded) {
+        outcome.failed.push(`${file.name} could not be decoded.`);
+        continue;
+      }
+      try {
+        const relative = storedPath(file, after[file.kind], contentHash(decoded.bytes));
+        await write(relative, decoded.bytes);
+        this.#storedBytes.set(absolute(relative), decoded);
+        replacements.set(file.ref, relative);
+        outcome.stored += 1;
+      } catch (error) {
+        outcome.failed.push(`${file.name}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
+    for (const file of embedding) {
+      const asset = this.#storedBytes.get(absolute(file.ref)) ?? (await fetchAsset(absolute(file.ref), project));
+      if (!asset) {
+        outcome.failed.push(
+          file.place === 'remote'
+            ? `${file.name} is on another site that does not let this page read it.`
+            : `${file.name} could not be read.`,
+        );
+        continue;
+      }
+      const mime = asset.mime === 'application/octet-stream' ? file.mime : asset.mime;
+      replacements.set(file.ref, toDataUrl({ bytes: asset.bytes, mime }));
+      outcome.embedded += 1;
+    }
+
+    const movedKinds = new Set<DesignFileKind>();
+    const failedKinds = new Set<DesignFileKind>();
+    for (const file of moving) {
+      const next = movedRef(file.ref, before[file.kind], after[file.kind])!;
+      const asset = await fetchAsset(absolute(file.ref), null);
+      if (!asset) {
+        outcome.failed.push(`${file.name} could not be read from ${before[file.kind]}/, so it stays there.`);
+        failedKinds.add(file.kind);
+        continue;
+      }
+      try {
+        await write(decodeURI(next), asset.bytes);
+        replacements.set(file.ref, next);
+        outcome.moved += 1;
+        movedKinds.add(file.kind);
+      } catch (error) {
+        outcome.failed.push(`${file.name}: ${error instanceof Error ? error.message : String(error)}`);
+        failedKinds.add(file.kind);
+      }
+    }
+    /*
+     * A kind's folder changes when nothing in it failed to move, or when something did move.
+     * Every file it held failing is the one case worth keeping the old folder for: the links all
+     * still point there.
+     */
+    const folderKinds = changedKinds.filter((kind) => movedKinds.has(kind) || !failedKinds.has(kind));
+    const nextFolders = { ...before };
+    for (const kind of folderKinds) nextFolders[kind] = after[kind];
+
+    const sources = this.#fileSources();
+    const changed = rewriteDesignFiles(sources, replacements);
+    // Copies of what each changed entry was, so undo puts back exactly that.
+    const previous: DesignFileSources = {
+      tokens: changed.tokens.map((entry) => ({ ...sources.tokens.find((one) => one.name === entry.name)! })),
+      classes: changed.classes.map((entry) => {
+        const was = sources.classes.find((one) => one.name === entry.name)!;
+        return { ...was, declarations: { ...was.declarations } };
+      }),
+      rules: changed.rules.map((entry) => {
+        const was = sources.rules.find((one) => designRuleKey(one) === designRuleKey(entry))!;
+        return { ...was, declarations: { ...was.declarations } };
+      }),
+      blocks: changed.blocks.map((entry) => ({ ...sources.blocks.find((one) => one.id === entry.id)! })),
+    };
+    const put = (entries: DesignFileSources): void => {
+      for (const entry of entries.tokens) this.tokens.upsert(entry);
+      for (const entry of entries.classes) this.classes.upsert(entry);
+      for (const entry of entries.rules) this.rules.upsert(entry);
+      for (const entry of entries.blocks) this.library.upsert(entry);
+    };
+    /*
+     * The page's own attributes, through the same command every other attribute edit uses, so
+     * the save writes them back like any edit — one record per attribute, as it needs.
+     */
+    const swap = (raw: string): string | null => replacements.get(raw.trim()) ?? null;
+    const byElement = new Map<HTMLElement, Record<string, string>>();
+    for (const entry of replacements.size ? this.#pageFiles() : []) {
+      if (!(entry.el instanceof HTMLElement)) continue;
+      const next = rewriteAttributeValue(entry.attribute, entry.el.getAttribute(entry.attribute) ?? '', swap);
+      if (next === null) continue;
+      byElement.set(entry.el, { ...(byElement.get(entry.el) ?? {}), [entry.attribute]: next });
+    }
+    const pageCommands = [...byElement].map(([el, values]) => setAttributes(el, values, 'Relink files'));
+    /*
+     * The page's stylesheets, through the CSS panel's own write: the live sheet is repainted at
+     * once, and the record names the file, so Save writes a linked sheet back to disk and an
+     * inline one with the page. Rewritten from the file's text rather than the CSSOM's, so the
+     * rest of the file — comments, formatting — stays as its author wrote it.
+     */
+    const sheetCommands: Command[] = [];
+    for (const source of replacements.size ? this.#pageSheets() : []) {
+      const seen = source.pendingBefore ?? readStyleSource(source);
+      if (!cssUrls(seen).some((url) => replacements.has(url.trim()))) continue;
+      /*
+       * The text as it stands now, which is the remembered one once an edit has landed: the file
+       * on disk is only rewritten on Save. Reading the disk here put back the version from before
+       * a store, so embedding a file just stored found no path to replace and quietly did nothing.
+       */
+      const text = source.pendingBefore ?? (await fetchStyleSource(source, project));
+      const next = rewriteCssUrls(text, swap);
+      if (next === text) continue;
+      rememberStyleText(source.id, text);
+      const command = writeStyleSource({ ...source, pendingBefore: text }, next);
+      if (command) sheetCommands.push(command);
+    }
+    // A stylesheet token read from a rewritten sheet reads again, so the registry agrees with it.
+    const rescan = (): void => {
+      if (!sheetCommands.length) return;
+      this.tokens.scanDocument();
+      this.classes.scanDocument();
+      this.rules.scanDocument();
+    };
+    const touched =
+      changed.tokens.length + changed.classes.length + changed.rules.length + changed.blocks.length +
+      pageCommands.length + sheetCommands.length;
+    // A folder moves even when nothing was in it: it is where the next stored file of its kind goes.
+    const folderChanged = folderKinds.length > 0;
+    if (!touched && !folderChanged) return outcome;
+    // A folder change worth naming on its own: one nothing was stored or moved into.
+    const folderOnly = folderKinds.filter((kind) =>
+      !movedKinds.has(kind) && !storing.some((file) => file.kind === kind && replacements.has(file.ref)));
+    const where = (kinds: Iterable<DesignFileKind>): string =>
+      [...new Set([...kinds].map((kind) => `${after[kind]}/`))].join(', ');
+    const parts = [
+      outcome.stored ? `store ${filesCount(outcome.stored)} in ${where(storing.map((file) => file.kind))}` : '',
+      outcome.embedded ? `embed ${filesCount(outcome.embedded)}` : '',
+      outcome.moved ? `move ${filesCount(outcome.moved)} to ${where(movedKinds)}` : '',
+      folderOnly.length ? `${folderOnly.map((kind) => `${kind} folder`).join(', ')} ${where(folderOnly)}` : '',
+    ].filter(Boolean);
+    const summary = parts.join(', ').replace(/^./, (first) => first.toUpperCase());
+    const pageRecords = [...pageCommands, ...sheetCommands].flatMap((command) => [
+      command.record,
+      ...(command.extraRecords ?? []),
+    ]);
+    this.history.commit({
+      label: summary,
+      record: {
+        id: nextChangeId(),
+        kind: 'token',
+        summary,
+        target: 'design system',
+        at: Date.now(),
+      },
+      extraRecords: pageRecords,
+      apply: () => {
+        put(changed);
+        for (const command of pageCommands) command.apply();
+        for (const command of sheetCommands) command.apply();
+        rescan();
+        if (folderChanged) this.settings.set({ fileFolders: nextFolders });
+      },
+      revert: () => {
+        put(previous);
+        for (const command of [...pageCommands].reverse()) command.revert();
+        for (const command of [...sheetCommands].reverse()) command.revert();
+        rescan();
+        if (folderChanged) this.settings.set({ fileFolders: before });
+      },
+    });
+    this.#bumpRegistry();
+    /*
+     * Checked rather than assumed: a reference that is still there after the rewrite was not
+     * replaced, and saying "embedded" about it is how the list and the toast came to disagree.
+     */
+    const left = new Set(this.designFiles().map((file) => file.ref));
+    for (const [ref] of replacements) {
+      if (!left.has(ref)) continue;
+      const file = files.get(ref);
+      if (!file) continue;
+      if (embeddingRefs.has(ref)) outcome.embedded -= 1;
+      else if (file.place === 'embedded') outcome.stored -= 1;
+      else outcome.moved -= 1;
+      outcome.failed.push(`${file.name} is still referenced somewhere this could not rewrite, so that place was left as it was.`);
+    }
+    /*
+     * What embedding left behind: the local file it was read from, now linked by nothing here.
+     * Offered for deletion rather than deleted, because another page may still link it — and a
+     * file the user did not ask to lose is the one thing this feature must never take.
+     */
+    for (const file of embedding) {
+      if (file.place !== 'linked' || left.has(file.ref) || !replacements.has(file.ref)) continue;
+      const path = project?.resolve(absolute(file.ref)) ?? null;
+      if (path) {
+        outcome.leftovers!.push({
+          name: file.name,
+          ref: file.ref,
+          path,
+          deletable: inFilesFolder(file.ref, this.settings.value.fileFolders),
+        });
+      }
+    }
+    return outcome;
+  }
+
+  /** True when the connected project can delete a stored file. */
+  canRemoveFiles(): boolean {
+    return Boolean(this.#project?.remove && !this.store.value.project?.lost);
+  }
+
+  /**
+   * Delete a stored file the user chose to delete: a font, picture, sound or video, inside one of
+   * the Files folders, and nowhere else.
+   *
+   * Taken by the reference as the page writes it, not by a project path, so the folder rule is
+   * checked on the thing the user was shown. The dev server and the folder picker each refuse
+   * anything but media on their own side; the Files folders are this editor's setting, so this is
+   * where they are enforced.
+   *
+   * Not an undoable change: nothing on the page refers to the file any more, so there is no edit
+   * to take back, and the bytes are gone from disk. The Files list says so before asking. Returns
+   * a sentence when it could not, null when it did.
+   */
+  async removeStoredFile(ref: string): Promise<string | null> {
+    const project = this.#project;
+    if (!project?.remove) return 'This project cannot delete files, so the file stays where it is.';
+    const folders = this.settings.value.fileFolders;
+    if (!inFilesFolder(ref, folders)) {
+      return `${ref} is outside the Files folders, and the editor only deletes files inside them. It stays where it is.`;
+    }
+    const path = project.resolve(absolute(ref));
+    if (path === null) return `${ref} is not inside ${project.label}, so it stays where it is.`;
+    try {
+      // The bytes stay remembered: an undo of the embed links the path again, and embedding it a
+      // second time must still work although the file is gone.
+      await project.remove(path);
+      return null;
+    } catch (error) {
+      return `${path} could not be deleted: ${error instanceof Error ? error.message : String(error)}`;
+    }
   }
 
   /**
