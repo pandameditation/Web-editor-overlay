@@ -199,7 +199,8 @@ function literalsFor(meta: PropertyMeta): string[] {
 export function valueKindFor(property: string): ValueKind {
   // Typed as text, with the shadow editor at the head of the field.
   if (property === 'box-shadow' || property === 'text-shadow') return 'shadow';
-  if (property === 'filter') return 'filter';
+  // Typed as text, with the filter editor at its head.
+  if (property === 'filter' || property === 'backdrop-filter') return 'filter';
   const meta = propertyMeta(property);
   switch (meta.control) {
     case 'length':

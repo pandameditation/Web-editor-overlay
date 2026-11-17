@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Filter editor</title>
+  <!--
+    The filter editor opens from the control at the head of the filter and backdrop-filter fields,
+    in the shadow editor's dialog, titled "Filter" or "Backdrop filter". The functions set are chips
+    in the order they apply, each with a cross; the ones not set are dashed chips that add them at
+    their neutral value. The picked function's editor sits under them: a slider and a number, the
+    angle dial for hue-rotate, the shadow editor for drop-shadow(), a reference for url().
+  -->
+  <style id="site">
+    :root {
+      --fx: blur(1px);
+    }
+  </style>
+</head>
+
+<body>
+  <div id="photo" style="width:120px;height:60px;background:linear-gradient(90deg,#f97316,#6366f1);filter:sepia(0.6) contrast(120%) hue-rotate(20deg)">Photo</div>
+  <div id="glass" style="width:120px;height:40px;background:rgb(255 255 255 / 20%);backdrop-filter:blur(6px)">Glass</div>
+  <div id="tok" style="width:40px;height:20px;background:#6366f1;filter:var(--fx) saturate(150%)">Tok</div>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <filter id="grain"><feTurbulence baseFrequency="0.9" /></filter>
+  </svg>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const results = {};
+      const errors = [];
+      addEventListener('error', (event) => errors.push('error: ' + event.message));
+      addEventListener('unhandledrejection', (event) => errors.push('rejection: ' + event.reason));
+      const progress = document.getElementById('progress');
+      const settle = (ms = 300) => new Promise((resolve) => setTimeout(resolve, ms));
+      const check = async (name, fn) => {
+        progress.textContent = name;
+        try { results[name] = await fn(); } catch (err) { results[name] = 'THREW: ' + String(err && err.stack); }
+      };
+      const deep = (selector, root = document) => {
+        const direct = root.querySelector?.(selector);
+        if (direct) return direct;
+        for (const el of root.querySelectorAll?.('*') ?? []) {
+          if (!el.shadowRoot) continue;
+          const found = deep(selector, el.shadowRoot);
+          if (found) return found;
+        }
+        return null;
+      };
+      const flat = (node) => (node?.textContent ?? '').replace(/\s+/g, ' ').trim();
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark', presets: false, detectScriptContent: false });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      engine.setDockTab('styles');
+      const sroot = () => deep('heo-styles-panel').shadowRoot;
+      const field = (property) => sroot()?.querySelector(`heo-value-field[data-property="${property}"]`);
+      const opener = (property) => field(property)?.shadowRoot?.querySelector('.shadow-btn');
+      const editor = (property) => field(property)?.shadowRoot?.querySelector('heo-filter-editor');
+      const ed = (property) => editor(property)?.shadowRoot;
+      const head = (property) => field(property)?.shadowRoot?.querySelector('.popup.dialog .dialog-head');
+      const chips = (property) => Array.from(ed(property)?.querySelectorAll('.fchip') ?? []);
+      const chipTexts = (property) => chips(property).map((one) => flat(one.querySelector('.pick')));
+      const chip = (property, text) => chips(property).find((one) => flat(one.querySelector('.pick')) === text);
+      const adder = (property, name) => ed(property)?.querySelector(`.add[data-add="${name}"]`);
+      const inline = (el, property) => el.style.getPropertyValue(property).replace(/\s+/g, ' ').trim();
+      const as = (property, value) => {
+        const probe = document.createElement('i');
+        probe.style.setProperty(property, value);
+        return probe.style.getPropertyValue(property).replace(/\s+/g, ' ').trim();
+      };
+      const is = (el, property, value) => inline(el, property) === as(property, value);
+      const select = async (id) => {
+        const el = document.getElementById(id);
+        api.select(el);
+        await settle(500);
+        const section = sroot().querySelector('[data-declarations="effects"]')?.closest('heo-section');
+        if (section && !section.open) section.shadowRoot?.querySelector('button')?.click();
+        await settle(300);
+        return el;
+      };
+      const open = async (property) => {
+        if (!editor(property)) opener(property).click();
+        await settle(400);
+      };
+      const slide = async (input, value, settleIt = true) => {
+        input.value = String(value);
+        input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        await settle(150);
+        if (settleIt) {
+          input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+          await settle(350);
+        }
+      };
+      const deepActive = (root) => { let a = root?.activeElement; while (a?.shadowRoot?.activeElement) a = a.shadowRoot.activeElement; return a; };
+      // Real key presses: a synthetic Escape is never handled as the page's own shortcut.
+      let keySeq = 0;
+      const keyWaiters = new Map();
+      window.__heoKeysDone = (id) => { keyWaiters.get(id)?.(); keyWaiters.delete(id); };
+      const keys = (...names) => new Promise((resolve) => {
+        const id = ++keySeq;
+        keyWaiters.set(id, resolve);
+        window.__heoPressKeys(JSON.stringify({ id, keys: names }));
+      }).then(() => settle(300));
+
+      const photo = await select('photo');
+
+      await check('opener', async () => {
+        const lead = opener('filter');
+        const backdrop = opener('backdrop-filter');
+        await open('filter');
+        const title = flat(head('filter')?.querySelector('.title'));
+        const sub = flat(head('filter')?.querySelector('.sub'));
+        return {
+          theFilterFieldHasTheOpener: Boolean(lead),
+          backdropFilterHasOneToo: Boolean(backdrop),
+          // A patch drawn through the filter, as the shadow's opener draws the shadow.
+          drawsTheFilter: /sepia/.test(lead?.querySelector('.filter-mini i')?.getAttribute('style') ?? ''),
+          opensTheFilterEditor: Boolean(editor('filter')),
+          titledFilterNotDropShadow: title === 'Filter' && sub === 'filter',
+          inTheSharedDialog: Boolean(field('filter').shadowRoot.querySelector('.popup.dialog heo-filter-editor')),
+        };
+      });
+
+      await check('chips', async () => {
+        const root = ed('filter');
+        const adds = Array.from(root.querySelectorAll('.add')).map((one) => one.dataset.add);
+        const active = deepActive(field('filter').shadowRoot);
+        return {
+          setFunctionsInOrderAsWritten: chipTexts('filter').join(' | ') === 'sepia(0.6) | contrast(120%) | hue-rotate(20deg)',
+          eachHasACross: chips('filter').every((one) => one.querySelector('button.x[aria-label^="Remove"]')),
+          andCanBeDragged: chips('filter').every((one) => one.draggable),
+          unsetOnesAreOffered: adds.join(',') === 'grayscale,blur,brightness,saturate,opacity,invert,drop-shadow,url',
+          theFirstIsPicked: chips('filter')[0]?.dataset.picked === 'true',
+          // Focus goes in, to the first chip, not the grip or the cross of the head.
+          focusIsOnTheFirstChip: Boolean(active?.matches?.('.pick')) && active.closest('.fchip')?.dataset.part === '0',
+        };
+      });
+
+      await check('amount', async () => {
+        const recordsBefore = engine.history.records.length;
+        const range = ed('filter').querySelector('.ed input[type="range"]');
+        const startsAtItsValue = range?.value === '60';
+        const scale = flat(ed('filter').querySelector('.scale'));
+        range.value = '45';
+        range.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        await settle(150);
+        const previewed = getComputedStyle(photo).filter.includes('sepia(0.45)');
+        const notWrittenYet = engine.history.records.length === recordsBefore;
+        range.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+        await settle(400);
+        return {
+          theSliderStartsAtTheValue: startsAtItsValue,
+          saysWhereNothingChanges: /0% = unchanged/.test(scale) && /100%/.test(scale),
+          previewsWhileDragging: previewed,
+          writesNothingWhileDragging: notWrittenYet,
+          // Written as the author wrote it: a plain number stays a plain number.
+          writesInTheFormItWasIn: is(photo, 'filter', 'sepia(0.45) contrast(120%) hue-rotate(20deg)'),
+          theChipShowsTheNewValue: chipTexts('filter')[0] === 'sepia(0.45)',
+          staysOpen: Boolean(editor('filter')),
+        };
+      });
+
+      await check('number', async () => {
+        chip('filter', 'contrast(120%)').querySelector('.pick').click();
+        await settle(200);
+        const range = ed('filter').querySelector('.ed input[type="range"]');
+        const box = ed('filter').querySelector('.ed .num input');
+        const rangeMax = range?.max;
+        box.value = '300';
+        box.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+        await settle(400);
+        return {
+          contrastGoesTo1000: rangeMax === '1000',
+          theNumberWrites: is(photo, 'filter', 'sepia(0.45) contrast(300%) hue-rotate(20deg)'),
+        };
+      });
+
+      await check('hue', async () => {
+        chip('filter', 'hue-rotate(20deg)').querySelector('.pick').click();
+        await settle(200);
+        const dial = ed('filter').querySelector('.ed .dial');
+        dial.focus();
+        dial.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', shiftKey: true, bubbles: true, composed: true }));
+        await settle(400);
+        return {
+          hueRotateHasTheAngleDial: Boolean(dial) && dial.getAttribute('role') === 'slider',
+          theArrowsTurnIt: is(photo, 'filter', 'sepia(0.45) contrast(300%) hue-rotate(35deg)'),
+        };
+      });
+
+      await check('add', async () => {
+        adder('filter', 'blur').click();
+        await settle(500);
+        const addedAtNeutral = is(photo, 'filter', 'sepia(0.45) contrast(300%) hue-rotate(35deg) blur(0px)');
+        const picked = chips('filter').find((one) => one.dataset.picked === 'true');
+        const active = ed('filter').activeElement;
+        const range = ed('filter').querySelector('.ed input[type="range"]');
+        const max = range?.max;
+        await slide(range, 4);
+        return {
+          addedAtTheEndAtItsNeutralValue: addedAtNeutral,
+          andPicked: flat(picked?.querySelector('.pick')) === 'blur(4px)' || flat(picked?.querySelector('.pick')) === 'blur(0px)',
+          focusGoesToItsControl: Boolean(active?.matches('input[type="range"]')),
+          blurGoesTo10px: max === '10',
+          itsSliderWrites: is(photo, 'filter', 'sepia(0.45) contrast(300%) hue-rotate(35deg) blur(4px)'),
+          noLongerOfferedToAdd: !adder('filter', 'blur'),
+        };
+      });
+
+      await check('remove', async () => {
+        chip('filter', 'contrast(300%)').querySelector('.x').click();
+        await settle(500);
+        const active = ed('filter').activeElement;
+        return {
+          theCrossRemovesIt: is(photo, 'filter', 'sepia(0.45) hue-rotate(35deg) blur(4px)'),
+          itIsOfferedAgain: Boolean(adder('filter', 'contrast')),
+          focusStaysInTheChips: Boolean(active?.matches('.pick')) && flat(active) === 'hue-rotate(35deg)',
+          staysOpen: Boolean(editor('filter')),
+        };
+      });
+
+      await check('order', async () => {
+        // Alt and an arrow move the focused chip.
+        const last = chip('filter', 'blur(4px)').querySelector('.pick');
+        last.focus();
+        last.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', altKey: true, bubbles: true, composed: true }));
+        await settle(400);
+        const moved = is(photo, 'filter', 'sepia(0.45) blur(4px) hue-rotate(35deg)');
+        // And by dragging one onto another.
+        const data = new DataTransfer();
+        chips('filter')[2].dispatchEvent(new DragEvent('dragstart', { dataTransfer: data, bubbles: true, composed: true }));
+        chips('filter')[0].dispatchEvent(new DragEvent('dragover', { dataTransfer: data, bubbles: true, composed: true, cancelable: true }));
+        chips('filter')[0].dispatchEvent(new DragEvent('drop', { dataTransfer: data, bubbles: true, composed: true, cancelable: true }));
+        await settle(400);
+        return {
+          altArrowMovesAChip: moved,
+          draggingMovesOne: is(photo, 'filter', 'hue-rotate(35deg) sepia(0.45) blur(4px)'),
+        };
+      });
+
+      await check('dropShadow', async () => {
+        adder('filter', 'drop-shadow').click();
+        await settle(600);
+        const shadow = ed('filter').querySelector('.ed heo-shadow-editor');
+        const sroot2 = shadow?.shadowRoot;
+        const written = is(photo, 'filter', 'hue-rotate(35deg) sepia(0.45) blur(4px) drop-shadow(0px 4px 12px rgb(0 0 0 / 20%))');
+        const x = Array.from(sroot2?.querySelectorAll('heo-value-field') ?? []).find((one) => one.getAttribute('field-label') === 'Offset X');
+        x?.dispatchEvent(new CustomEvent('value-change', { detail: { value: '5px' }, bubbles: true, composed: true }));
+        await settle(400);
+        const several = Array.from(sroot2?.querySelectorAll('.swatch') ?? []).find((one) => one.dataset.swatch === 'Lifted');
+        return {
+          addsAVisibleDropShadow: written,
+          itsEditorIsTheShadowEditor: Boolean(shadow) && shadow.mode === 'drop',
+          oneShadowNoStack: !sroot2?.querySelector('.layer') && Boolean(sroot2?.querySelector('.pad')),
+          itsControlsWrite: is(photo, 'filter', 'hue-rotate(35deg) sepia(0.45) blur(4px) drop-shadow(5px 4px 12px rgb(0 0 0 / 20%))'),
+          aSwatchOfSeveralShadowsIsOff: Boolean(several?.disabled),
+          theChipShowsIt: chipTexts('filter').at(-1)?.startsWith('drop-shadow(5px'),
+        };
+      });
+
+      await check('url', async () => {
+        const before = inline(photo, 'filter');
+        adder('filter', 'url').click();
+        await settle(500);
+        const notWrittenEmpty = inline(photo, 'filter') === before;
+        const ref = Array.from(ed('filter').querySelectorAll('.ed heo-value-field')).find((one) => one.getAttribute('field-label') === 'SVG filter reference');
+        const offered = (ref?.suggestions ?? []).map((one) => one.value);
+        ref?.dispatchEvent(new CustomEvent('value-change', { detail: { value: '#grain' }, bubbles: true, composed: true }));
+        await settle(400);
+        return {
+          anEmptyUrlIsNotWritten: notWrittenEmpty,
+          thePagesFiltersAreOffered: offered.includes('#grain'),
+          pickingOneWritesIt: inline(photo, 'filter').endsWith('url("#grain")') || inline(photo, 'filter').endsWith('url(#grain)'),
+          everyFunctionIsNowSet: ['sepia', 'blur', 'hue-rotate', 'drop-shadow', 'url'].every((name) => !adder('filter', name)),
+        };
+      });
+
+      await check('escape', async () => {
+        // Focus is in the reference field, whose list of the page's filters opened with it. Innermost
+        // first: Escape closes that list, then the dialog — never the page's selection.
+        const ref = Array.from(ed('filter').querySelectorAll('.ed heo-value-field')).find((one) => one.getAttribute('field-label') === 'SVG filter reference');
+        await keys('Escape');
+        const afterFirst = { dialog: Boolean(editor('filter')), list: Boolean(ref?.listIsOpen) };
+        if (afterFirst.dialog) await keys('Escape');
+        const active = field('filter').shadowRoot.activeElement;
+        return {
+          // Either the first press closed the dialog, or it closed the list and left the dialog up.
+          aListInsideClosesFirst: !afterFirst.dialog || !afterFirst.list,
+          escapeClosesIt: !editor('filter'),
+          andKeepsTheElementSelected: Boolean(engine.store.value.selected),
+          focusReturnsToItsButton: Boolean(active?.classList.contains('shadow-btn')),
+        };
+      });
+
+      const glass = await select('glass');
+      await check('backdrop', async () => {
+        await open('backdrop-filter');
+        const title = flat(head('backdrop-filter')?.querySelector('.title'));
+        const texts = chipTexts('backdrop-filter');
+        const range = ed('backdrop-filter')?.querySelector('.ed input[type="range"]');
+        if (range) await slide(range, 8);
+        const written = is(glass, 'backdrop-filter', 'blur(8px)');
+        head('backdrop-filter')?.querySelector('button[aria-label="Close"]')?.click();
+        await settle(300);
+        return {
+          titledBackdropFilter: title === 'Backdrop filter',
+          readsItsFunctions: texts.join('|') === 'blur(6px)',
+          writesBackdropFilter: written,
+          theCrossClosesIt: !editor('backdrop-filter'),
+        };
+      });
+
+      await select('tok');
+      await check('opaque', async () => {
+        await open('filter');
+        const texts = chipTexts('filter');
+        const opaque = chips('filter').find((one) => one.classList.contains('opaque'));
+        const note = flat(ed('filter').querySelector('.ed'));
+        const button = Array.from(ed('filter').querySelectorAll('.ed button')).find((one) => /edit in the field/i.test(flat(one)));
+        button?.click();
+        await settle(400);
+        const input = field('filter').shadowRoot.querySelector('input[type="text"]');
+        return {
+          aVarIsKeptAsAChip: texts[0] === 'var(--fx)' && Boolean(opaque),
+          andItsNeighbourIsEditable: texts[1] === 'saturate(150%)',
+          saysItIsKeptAsWritten: /kept exactly as written/i.test(note),
+          editInTheFieldSelectsIt: input.value.slice(input.selectionStart, input.selectionEnd) === 'var(--fx)',
+        };
+      });
+
+      const failed = Object.entries(results)
+        .filter(([, group]) => group && typeof group === 'object')
+        .filter(([, group]) => Object.values(group).some((value) => value === false))
+        .map(([name]) => name);
+      const threw = Object.entries(results).filter(([, v]) => typeof v === 'string').map(([k]) => k);
+      document.getElementById('out').textContent = 'RESULTS:' + JSON.stringify({ ok: failed.length === 0 && threw.length === 0 && errors.length === 0, failed, threw, errors, results }, null, 2) + ':END';
+    })();
+  </script>
+</body>
+
+</html>

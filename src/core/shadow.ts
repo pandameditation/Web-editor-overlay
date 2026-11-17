@@ -3,7 +3,7 @@ import { splitTopLevel, splitTopLevelCommas } from './css.js';
 
 /**
  * Shadows, read and written: `box-shadow`, `text-shadow`, and the `drop-shadow()` functions of
- * `filter`.
+ * `filter` and `backdrop-filter`.
  *
  * The three are one idea with different limits. A box shadow has four lengths and may be inset; a
  * text shadow and a drop shadow have three and may not. One model serves all three, so the editor
@@ -124,44 +124,13 @@ export function lostIn(shadow: Shadow, mode: ShadowMode): Array<'spread' | 'inse
 /* filter                                                                      */
 /* -------------------------------------------------------------------------- */
 
-/** A `filter` value's functions, in order, as written. `none` is an empty list. */
-export function filterFunctions(value: string): string[] {
-  const text = value.trim();
-  if (!text || /^none$/i.test(text)) return [];
-  return splitTopLevel(text);
-}
-
-const isDropShadow = (fn: string): boolean => /^drop-shadow\(/i.test(fn.trim());
-
 /**
- * A `filter` taken apart: the drop shadows, which the editor owns, and everything else, which it
- * leaves exactly as written. Null when a drop-shadow() in it cannot be read.
+ * One `drop-shadow()` function of a filter as a shadow, or null when it cannot be read. The rest of
+ * the filter is `core/filter.ts`'s.
  */
-export function splitFilter(value: string): { others: string[]; drops: Shadow[]; at: number } | null {
-  const fns = filterFunctions(value);
-  const others: string[] = [];
-  const drops: Shadow[] = [];
-  // Where the drop shadows go back: where the first one was, or at the end.
-  let at = -1;
-  for (const fn of fns) {
-    if (!isDropShadow(fn)) {
-      others.push(fn);
-      continue;
-    }
-    if (at < 0) at = others.length;
-    const inner = fn.trim().replace(/^drop-shadow\(/i, '').replace(/\)$/, '');
-    const one = parseOne(inner, 'drop');
-    if (!one) return null;
-    drops.push(one);
-  }
-  return { others, drops, at: at < 0 ? others.length : at };
-}
-
-/** A `filter` with its drop shadows replaced, the other functions kept where they were. */
-export function composeFilter(others: readonly string[], drops: readonly Shadow[], at = others.length): string {
-  const written = drops.map((one) => formatShadow(one, 'drop'));
-  const fns = [...others.slice(0, at), ...written, ...others.slice(at)];
-  return fns.length ? fns.join(' ') : 'none';
+export function parseDropShadow(fn: string): Shadow | null {
+  const match = /^drop-shadow\(([\s\S]*)\)$/i.exec(fn.trim());
+  return match ? parseOne(match[1], 'drop') : null;
 }
 
 /* -------------------------------------------------------------------------- */

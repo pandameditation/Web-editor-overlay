@@ -15,12 +15,14 @@ import { PopoverPlacer } from '../place.js';
 import { contrastTargetFor, type ContrastTarget } from '../contrast.js';
 import type { ColorSwatch } from './color-picker.js';
 import './color-picker.js';
-import { parseShadows, splitFilter, type ShadowSwatch } from '../../core/shadow.js';
+import { parseShadows, type ShadowSwatch } from '../../core/shadow.js';
+import { filterPreview } from '../../core/filter.js';
 import { miniShadow } from './shadow-editor.js';
 import { pushEscapeLayer } from '../../core/keymap.js';
 import { tieLayer } from '../../core/focus.js';
 import { firstFocusable } from '../../core/modal.js';
 import './shadow-editor.js';
+import './filter-editor.js';
 import { icon } from '../icons.js';
 import { baseStyles, swatchStyle } from '../theme.js';
 
@@ -365,6 +367,13 @@ export class HeoValueField extends LitElement {
       .shadow-btn .mini b {
         color: #fff;
         font: 700 10px/1 system-ui, sans-serif;
+      }
+      /* A filter's opener: a patch of colours, drawn through the filter. */
+      .shadow-btn .filter-mini i {
+        width: 11px;
+        height: 11px;
+        border-radius: 3px;
+        background: linear-gradient(135deg, #f97316, #ec4899 45%, #6366f1 75%, #22d3ee);
       }
       .shadow-btn[aria-expanded='true'] {
         background: var(--heo-accent-soft);
@@ -1197,7 +1206,7 @@ export class HeoValueField extends LitElement {
     this.shadowing = true;
     if (!this.open) this.#openPopup();
     void this.updateComplete
-      .then(() => this.renderRoot.querySelector('heo-shadow-editor')?.updateComplete)
+      .then(() => this.renderRoot.querySelector<LitElement>('heo-shadow-editor, heo-filter-editor')?.updateComplete)
       .then(() => {
         if (!this.open || !this.shadowing) return;
         this.#dialogBox = null;
@@ -1211,15 +1220,16 @@ export class HeoValueField extends LitElement {
       });
   }
 
-  /** The opener: the shadow drawn small, on a card for a box and on a letter for text. */
+  /**
+   * The opener: the shadow drawn small, on a card for a box and on a letter for text; for a filter,
+   * a patch of colours drawn through it.
+   */
   #renderShadowButton(): TemplateResult {
     const text = this.property === 'text-shadow';
     const source = this.draft.trim() || this.computed.trim();
-    const list =
-      this.kind === 'filter'
-        ? (splitFilter(source)?.drops ?? [])
-        : (parseShadows(source, text ? 'text' : 'box') ?? parseShadows(this.computed, text ? 'text' : 'box') ?? []);
-    const label = this.kind === 'filter' ? 'Edit the drop shadows' : 'Open the shadow editor';
+    const filter = this.kind === 'filter';
+    const list = filter ? [] : (parseShadows(source, text ? 'text' : 'box') ?? parseShadows(this.computed, text ? 'text' : 'box') ?? []);
+    const label = filter ? `Open the ${this.#filterTitle.toLowerCase()} editor` : 'Open the shadow editor';
     return html`<button
       class="color-btn shadow-btn"
       type="button"
@@ -1230,16 +1240,60 @@ export class HeoValueField extends LitElement {
       @pointerdown=${(event: Event) => event.preventDefault()}
       @click=${() => (this.open && this.shadowing ? this.closePopup() : this.openShadowEditor())}
     >
-      <span class="mini">${text || this.kind === 'filter'
-        ? html`<b style=${`text-shadow:${miniShadow(list, 4, 'text')}`}>A</b>`
-        : html`<i style=${`box-shadow:${miniShadow(list, 4)}`}></i>`}</span>
+      ${filter
+        ? html`<span class="mini filter-mini"><i style=${`filter:${filterPreview(source, 4)}`}></i></span>`
+        : html`<span class="mini">${text
+          ? html`<b style=${`text-shadow:${miniShadow(list, 4, 'text')}`}>A</b>`
+          : html`<i style=${`box-shadow:${miniShadow(list, 4)}`}></i>`}</span>`}
     </button>`;
   }
 
+  /** The filter editor's title: "Filter", "Backdrop filter". */
+  get #filterTitle(): string {
+    return this.property === 'backdrop-filter' ? 'Backdrop filter' : 'Filter';
+  }
+
+  /** The filter editor, in the shadow editor's dialog, for filter and backdrop-filter. */
+  #renderFilterEditor(): TemplateResult {
+    const property = this.property || 'filter';
+    return html`<div
+      class="popup picker shadowing dialog"
+      popover="manual"
+      tabindex="-1"
+      style=${this.#dialogStyle()}
+      @pointerdown=${keepFocusOnBlank}
+      @keydown=${this.#onDialogKey}
+      role="dialog"
+      aria-label=${`${property}: filter editor`}
+    >
+      ${this.#renderDialogHead(this.#filterTitle, property)}
+      <heo-filter-editor
+        .value=${this.draft}
+        .property=${property}
+        .tokens=${this.shadowTokens}
+        @filter-input=${(event: CustomEvent<{ value: string }>) => {
+          event.stopPropagation();
+          this.draft = event.detail.value;
+          this.#emit('value-input');
+        }}
+        @filter-change=${(event: CustomEvent<{ value: string }>) => {
+          event.stopPropagation();
+          this.draft = event.detail.value;
+          this.#commit();
+        }}
+        @filter-select=${(event: CustomEvent<{ fn: string }>) => {
+          event.stopPropagation();
+          this.#selectText(event.detail.fn);
+        }}
+      ></heo-filter-editor>
+    </div>`;
+  }
+
   #renderShadowEditor(): TemplateResult {
-    const mode = this.kind === 'filter' ? 'filter' : this.property === 'text-shadow' ? 'text' : 'box';
-    const title = mode === 'filter' ? 'Drop shadow' : mode === 'text' ? 'Text shadow' : 'Box shadow';
-    const sub = mode === 'filter' ? 'filter: drop-shadow()' : mode === 'text' ? 'text-shadow' : 'box-shadow';
+    if (this.kind === 'filter') return this.#renderFilterEditor();
+    const mode = this.property === 'text-shadow' ? 'text' : 'box';
+    const title = mode === 'text' ? 'Text shadow' : 'Box shadow';
+    const sub = mode === 'text' ? 'text-shadow' : 'box-shadow';
     return html`<div
       class="popup picker shadowing dialog"
       popover="manual"
@@ -1267,10 +1321,6 @@ export class HeoValueField extends LitElement {
           this.#commit();
           // A shadow added or removed changes the height: #onDialogResize grows it about its middle.
         }}
-        @filter-select=${(event: CustomEvent<{ fn: string }>) => {
-          event.stopPropagation();
-          this.#selectText(event.detail.fn);
-        }}
       ></heo-shadow-editor>
     </div>`;
   }
@@ -1283,6 +1333,7 @@ export class HeoValueField extends LitElement {
    */
   #dialogBox: { top: number; left: number; width: number; height: number; maxHeight: number; content: number } | null = null;
   #dialogObserver: ResizeObserver | null = null;
+  #resizeFrame = 0;
 
   #dialogStyle(): string {
     const box = this.#dialogBox;
@@ -1308,7 +1359,7 @@ export class HeoValueField extends LitElement {
     if (opening) {
       const opener = this.renderRoot.querySelector<HTMLElement>('.color-btn');
       tieLayer(popup, opener);
-      const body = popup.querySelector<HTMLElement>('heo-color-picker, heo-shadow-editor');
+      const body = popup.querySelector<HTMLElement>('heo-color-picker, heo-shadow-editor, heo-filter-editor');
       const first = body ? firstFocusable(body.shadowRoot ?? body) : null;
       (first ?? popup).focus({ preventScroll: true });
     }
@@ -1331,7 +1382,17 @@ export class HeoValueField extends LitElement {
      */
     this.#dialogBox = { top, left, width, height, maxHeight: number(popup.style.maxHeight) ?? height, content: popup.scrollHeight };
 
-    if (!this.#dialogObserver) this.#dialogObserver = new ResizeObserver(() => this.#onDialogResize());
+    /*
+     * Answered in the next frame, not in the callback. Resizing the dialog there can resize what is
+     * observed again in the same frame — a scrollbar coming or going narrows the content, which
+     * rewraps the filter editor's chips — and the browser reports that as a ResizeObserver loop.
+     */
+    if (!this.#dialogObserver) {
+      this.#dialogObserver = new ResizeObserver(() => {
+        cancelAnimationFrame(this.#resizeFrame);
+        this.#resizeFrame = requestAnimationFrame(() => this.#onDialogResize());
+      });
+    }
     this.#dialogObserver.disconnect();
     // The content, not the popup: the popup's own size is what this sets.
     for (const child of Array.from(popup.children)) this.#dialogObserver.observe(child);
@@ -1433,7 +1494,7 @@ export class HeoValueField extends LitElement {
 
   /**
    * Select a stretch of the value in the box, scrolled into view: one function of a long filter,
-   * picked from the shadow editor, so it can be typed over at once.
+   * picked from the filter editor, so it can be typed over at once.
    */
   #selectText(part: string): void {
     const input = this.textInput;
@@ -2735,6 +2796,7 @@ export class HeoValueField extends LitElement {
     if (dialog) tieLayer(dialog, null);
     this.#dialogBox = null;
     this.#dialogObserver?.disconnect();
+    cancelAnimationFrame(this.#resizeFrame);
     this.#escapeLayer?.();
     this.#escapeLayer = null;
     this.#placer.invalidate();

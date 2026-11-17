@@ -3,16 +3,15 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { parseColor, type Rgba } from '../../core/color.js';
 import {
   alphaOf,
-  composeFilter,
   formatShadow,
   formatShadows,
   HEO_SHADOW_SWATCHES,
   lengthParts,
   lostIn,
   NO_SHADOW,
+  parseDropShadow,
   parseShadows,
   sameShadows,
-  splitFilter,
   withAlpha,
   type Shadow,
   type ShadowMode,
@@ -24,8 +23,11 @@ import { baseStyles } from '../theme.js';
 import './segmented.js';
 import './value-field.js';
 
-/** What the editor writes: `box-shadow`, `text-shadow`, or the drop shadows of `filter`. */
-export type ShadowEditorMode = 'box' | 'text' | 'filter';
+/**
+ * What the editor writes: `box-shadow`, `text-shadow`, or one `drop-shadow()` function — the filter
+ * editor's, which owns the rest of the filter.
+ */
+export type ShadowEditorMode = ShadowMode;
 
 
 /** A shadow drawn small: lengths divided down, so a 24px blur reads in a 12px tile. */
@@ -74,10 +76,11 @@ const DRAG_RANGE = 40;
 /**
  * The shadow & glow editor: one or more shadows, built and previewed live.
  *
- * Opened from the field of `box-shadow`, `text-shadow` or `filter`, in the popup the colour picker
- * uses, and from the same place: the control at the head of the field. Top to bottom: the stack of
- * shadows, the swatches, then the picked shadow's offset (a pad to drag, and X and Y), blur, spread,
- * opacity and color.
+ * Opened from the field of `box-shadow` or `text-shadow`, in the popup the colour picker uses, and
+ * from the same place: the control at the head of the field. Top to bottom: the stack of shadows,
+ * the picked shadow's offset (a pad to drag, and X and Y), blur, spread, opacity and color, then the
+ * swatches. In `drop` mode it is the filter editor's editor for one `drop-shadow()`: no stack, the
+ * same controls.
  *
  * The swatches are small, like the colour picker's. The first is the value as it was when the editor
  * opened; the rest are the design system's shadow tokens, or eight of HEO's when it has none. Picking
@@ -85,8 +88,8 @@ const DRAG_RANGE = 40;
  * token picked and left as it is, is written as its `var()`.
  *
  * Writes as it goes, like the background editor: `shadow-input` while a value is being dragged, for
- * the host's live preview, and `shadow-change` when it settles. `filter-select` asks it to select
- * one of the filter's other functions in the field. The popup's head — grip, title, ✕ — belongs to the field that opens it.
+ * the host's live preview, and `shadow-change` when it settles. The popup's head — grip, title, ✕ —
+ * belongs to the field that opens it.
  */
 @customElement('heo-shadow-editor')
 export class HeoShadowEditor extends LitElement {
@@ -144,27 +147,6 @@ export class HeoShadowEditor extends LitElement {
         font-size: 10.5px;
         line-height: 1.45;
       }
-      .fns {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 4px;
-      }
-      .fns .chip {
-        font-family: var(--heo-mono);
-        font-size: 10.5px;
-        cursor: pointer;
-      }
-      .fns .chip:hover {
-        border-color: var(--heo-line-strong);
-        color: var(--heo-text);
-      }
-      .fns .chip.mine {
-        border-color: var(--heo-accent-line);
-        background: var(--heo-accent-soft);
-        color: var(--heo-text);
-        font-weight: 600;
-      }
-
       /* The stack: one row per shadow, the picked one marked. */
       .layers {
         display: grid;
@@ -391,8 +373,6 @@ export class HeoShadowEditor extends LitElement {
   /** The swatch the stack still is, until something is edited. Written as the swatch's own value. */
   @state() private fromSwatch: ShadowSwatch | null = null;
   @state() private readable = true;
-  #others: string[] = [];
-  #at = 0;
   /**
    * The values this editor sent, recent first, so its own echoes are not read as somebody else's
    * change. More than the last one: two quick edits are both in flight, and the host's answer to the
@@ -410,13 +390,11 @@ export class HeoShadowEditor extends LitElement {
   /** Take the value apart: the written one, else a token's own value, else the computed one. */
   #read(): void {
     let list: Shadow[] | null = null;
-    if (this.mode === 'filter') {
-      const split = splitFilter(this.value) ?? splitFilter(this.computed);
-      if (split) {
-        this.#others = split.others;
-        this.#at = split.at;
-        list = split.drops;
-      }
+    if (this.mode === 'drop') {
+      // One function, one shadow: never an empty stack, which a drop-shadow() cannot be.
+      const one = parseDropShadow(this.value);
+      list = one ? [one] : null;
+      this.fromSwatch = null;
     } else {
       const mode = this.mode;
       list = parseShadows(this.value, mode);
@@ -433,12 +411,12 @@ export class HeoShadowEditor extends LitElement {
   }
 
   get #shadowMode(): ShadowMode {
-    return this.mode === 'filter' ? 'drop' : this.mode;
+    return this.mode;
   }
 
   /** The value as it would be written now. */
   #written(list = this.shadows): string {
-    if (this.mode === 'filter') return composeFilter(this.#others, list, this.#at);
+    if (this.mode === 'drop') return list[0] ? formatShadow(list[0], 'drop') : '';
     if (this.fromSwatch && this.mode === 'box' && sameShadows(this.fromSwatch.shadows, list)) return this.fromSwatch.value;
     return formatShadows(list, this.mode);
   }
@@ -474,41 +452,16 @@ export class HeoShadowEditor extends LitElement {
      * last. The head — grip, title, ✕ — is the popup's, shared with the colour picker.
      */
     return html`
-      ${this.mode === 'filter' ? this.#renderFunctions() : nothing}
-      ${this.readable
-        ? this.#renderStack()
-        : html`<p class="unreadable">
-            This value cannot be edited here as it is. Pick a swatch to start from, or add a shadow.
-          </p>`}
+      ${!this.readable
+        ? html`<p class="unreadable">
+            This value cannot be edited here as it is. Pick a swatch to start from${this.mode === 'drop' ? '' : ', or add a shadow'}.
+          </p>`
+        : this.mode === 'drop'
+          ? nothing
+          : this.#renderStack()}
       ${current ? this.#renderShadow(current, mode) : nothing}
       ${this.#renderSwatches()}
     `;
-  }
-
-  /** The filter's functions: the drop shadows are this editor's, the rest open in the field. */
-  #renderFunctions(): TemplateResult {
-    const drops = this.shadows.map((one) => formatShadow(one, 'drop'));
-    return html`<div>
-      <div class="group">filter</div>
-      <div class="fns">
-        ${this.#others.map((fn) => html`<button
-          class="chip"
-          type="button"
-          title=${`Edit ${fn} in the field`}
-          @click=${() =>
-            this.dispatchEvent(new CustomEvent('filter-select', { detail: { fn }, bubbles: true, composed: true }))}
-        >${fn}</button>`)}
-        ${drops.map((_fn, index) => html`<button
-          class="chip mine"
-          type="button"
-          title="Edited here"
-          aria-pressed=${index === this.picked ? 'true' : 'false'}
-          @click=${() => {
-            this.picked = index;
-          }}
-        >drop-shadow(…)</button>`)}
-      </div>
-    </div>`;
   }
 
   #add(): void {
@@ -543,7 +496,7 @@ export class HeoShadowEditor extends LitElement {
    */
   #renderStack(): TemplateResult {
     const mode = this.#shadowMode;
-    const label = this.mode === 'filter' ? 'Drop shadows' : 'Shadows';
+    const label = 'Shadows';
     return html`<div>
       <div class="group">
         ${label}
@@ -666,8 +619,11 @@ export class HeoShadowEditor extends LitElement {
   #renderSwatches(): TemplateResult {
     const mode = this.#shadowMode;
     const cell = (shadows: readonly Shadow[], label: string, swatch: ShadowSwatch | null, first = false): TemplateResult => {
-      // An inset cannot be a text or a drop shadow, so a swatch made of one cannot be picked there.
-      const blocked = mode !== 'box' && shadows.some((one) => one.inset);
+      // An inset cannot be a text or a drop shadow, so a swatch made of one cannot be picked there;
+      // and one drop-shadow() is one shadow, so neither can a swatch of several.
+      const inset = mode !== 'box' && shadows.some((one) => one.inset);
+      const several = mode === 'drop' && shadows.length !== 1;
+      const blocked = inset || several;
       const pressed = sameShadows(shadows, this.shadows) && (first ? !this.fromSwatch : this.fromSwatch === null || this.fromSwatch.value === swatch?.value);
       return html`<button
         class="swatch"
@@ -675,7 +631,11 @@ export class HeoShadowEditor extends LitElement {
         ?disabled=${blocked}
         aria-pressed=${pressed ? 'true' : 'false'}
         aria-label=${label}
-        title=${blocked ? `${label}: an inset shadow, which ${this.mode === 'text' ? 'text-shadow' : 'drop-shadow()'} cannot be` : label}
+        title=${inset
+          ? `${label}: an inset shadow, which ${this.mode === 'text' ? 'text-shadow' : 'drop-shadow()'} cannot be`
+          : several
+            ? `${label}: ${shadows.length} shadows, and a drop-shadow() is one`
+            : label}
         data-swatch=${first ? 'original' : label}
         @click=${() => this.#replace(shadows.map((one) => ({ ...one })), mode === 'box' ? swatch : null)}
       >

@@ -6,13 +6,12 @@
  */
 import assert from 'node:assert/strict';
 import {
-  composeFilter,
   formatShadow,
   formatShadows,
   lengthParts,
   lostIn,
+  parseDropShadow,
   parseShadows,
-  splitFilter,
   withAlpha,
 } from '../src/core/shadow.ts';
 
@@ -75,21 +74,12 @@ test('a drop shadow drops spread and inset, and says what it lost', () => {
   assert.deepEqual(lostIn(shadow, 'box'), []);
 });
 
-test('a filter keeps its other functions, in place, around the drop shadows', () => {
-  const split = splitFilter('saturate(1.2) drop-shadow(0 6px 10px rgb(67 56 202 / 45%)) contrast(1.05)')!;
-  assert.deepEqual(split.others, ['saturate(1.2)', 'contrast(1.05)']);
-  assert.equal(split.drops.length, 1);
-  assert.equal(split.drops[0].color, 'rgb(67 56 202 / 45%)');
-  assert.equal(split.at, 1);
-  assert.equal(
-    composeFilter(split.others, split.drops, split.at),
-    'saturate(1.2) drop-shadow(0 6px 10px rgb(67 56 202 / 45%)) contrast(1.05)',
-  );
-  // No drop shadow yet: it goes at the end; none left and nothing else: none.
-  const plain = splitFilter('blur(2px)')!;
-  assert.equal(composeFilter(plain.others, split.drops, plain.at), 'blur(2px) drop-shadow(0 6px 10px rgb(67 56 202 / 45%))');
-  assert.equal(composeFilter([], []), 'none');
-  assert.deepEqual(splitFilter('none'), { others: [], drops: [], at: 0 });
+test('a drop-shadow() function reads as one shadow, and nothing else does', () => {
+  const one = parseDropShadow('drop-shadow(0 6px 10px rgb(67 56 202 / 45%))')!;
+  assert.equal(one.y, '6px');
+  assert.equal(one.color, 'rgb(67 56 202 / 45%)');
+  assert.equal(parseDropShadow('drop-shadow(0 0 0 2px red)'), null);
+  assert.equal(parseDropShadow('blur(2px)'), null);
 });
 
 test('opacity rewrites the colour and keeps its channels', () => {

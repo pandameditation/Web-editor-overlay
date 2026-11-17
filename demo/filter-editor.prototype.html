@@ -1,0 +1,385 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PROTOTYPE — Filter editor: filter and backdrop-filter in the shadow editor's popover</title>
+  <!--
+  PROTOTYPE — throwaway, not part of the overlay build. Open the file directly in a browser.
+
+  Question: how does the shadow editor's popover become a filter editor, opened from `filter` and
+  `backdrop-filter` (written with `-webkit-backdrop-filter` beside it, for Safari)?
+
+  Shared by every variant (from the request):
+    - the popover is the existing one: same head (grip, title "Filter" / "Backdrop filter", the
+      property, ✕), same live preview, Escape and focus behaviour;
+    - every function is listed: the ones set, with their values ("sepia(60%)"), in the order the
+      filter applies them, and the ones not set yet, by name only ("contrast");
+    - clicking one opens its editor. Ranges: grayscale, sepia, invert, opacity 0–100%; blur 0–10px;
+      brightness 0–200%; saturate and contrast 0–1000%; hue-rotate 0–360° on the background
+      editor's angle dial; drop-shadow() is the existing shadow editor; url() takes a reference
+      (the page's own <filter id>s offered as a list);
+    - order matters in a filter (blur then grayscale ≠ grayscale then blur), so set functions can be
+      dragged, as shadows and background layers are;
+    - an unset function is added at its neutral value the moment it is clicked, so nothing changes
+      on screen until its control moves; the trash removes it again.
+  What differs is the structure:
+    A — Chips: set functions as chips in order, unset ones as dashed chips after a rule. The picked
+        chip's editor sits under them.
+    B — Stack: the shadow editor's stack, one row per set function (grip, mini preview, name and
+        value, trash), then the unset ones as small "+ name" buttons. The picked row's editor below.
+    C — Mixer: every function is a slider row at once, unset ones dim at their neutral value; moving
+        one sets it. Order shown as numbers on the set rows; drop-shadow and url fold open.
+  Variants: ?variant=A (default) | B | C, the bottom bar, or ← →. Scenario buttons at the top.
+-->
+  <style>
+    :root {
+      --bg: #ffffff; --sunken: #f3f4f7; --raised: #ffffff; --hover: #eef0f5;
+      --text: #1f2330; --dim: #4b5263; --faint: #6b7385; --line: #e3e6ec; --line2: #d3d7e0;
+      --accent: #6366f1; --accent-soft: color-mix(in oklab, var(--accent) 12%, transparent);
+      --danger: #e11d48; --r-sm: 7px; --r-md: 9px;
+      --font: Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+      --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; }
+    body { display: grid; grid-template-columns: minmax(0, 1fr) 360px; font-family: var(--font); background: #e9ecf2; color: var(--text); }
+    button, input, select { font: inherit; }
+    .stage { padding: 24px 32px 90px; overflow: auto; }
+    .stage h1 { font: 600 11px/1 var(--font); letter-spacing: .08em; text-transform: uppercase; color: #64748b; margin: 0 0 12px; }
+    .scenario { display: inline-flex; gap: 2px; padding: 2px; border-radius: 8px; background: #dfe3ea; margin-bottom: 14px; }
+    .scenario button { all: unset; padding: 5px 10px; border-radius: 6px; font-size: 12px; color: #475569; cursor: pointer; }
+    .scenario button[aria-pressed=true] { background: #fff; color: #111827; font-weight: 600; box-shadow: 0 1px 2px rgb(0 0 0 / 10%); }
+    .site { position: relative; border-radius: 14px; overflow: hidden; height: 300px; display: grid; place-items: center;
+      background: linear-gradient(135deg, #f97316, #ec4899 40%, #6366f1 70%, #22d3ee); }
+    .site .sun { position: absolute; width: 140px; height: 140px; border-radius: 50%; background: #fde047; left: 60px; top: 40px; }
+    .site .hill { position: absolute; left: -10%; right: -10%; bottom: -60px; height: 180px; border-radius: 50%; background: #166534; }
+    .site .photo { position: absolute; inset: 0; }
+    .glass { position: relative; width: 300px; padding: 22px; border-radius: 16px; color: #fff; font: 15px/1.5 system-ui;
+      background: rgb(255 255 255 / 18%); border: 1px solid rgb(255 255 255 / 35%); }
+    .glass b { display: block; font-size: 18px; }
+    .out { margin-top: 16px; background: #111827; color: #e5e7eb; border-radius: 10px; padding: 12px 14px; font: 11.5px/1.6 var(--mono); white-space: pre-wrap; word-break: break-word; }
+    .out b { color: #a5b4fc; font-weight: 500; }
+    .out .c { color: #8b93a5; }
+    .question { margin-top: 12px; color: #475569; font-size: 13px; line-height: 1.5; max-width: 680px; }
+    /* panel */
+    .panel { background: var(--bg); border-left: 1px solid var(--line); padding: 14px; font-size: 12px; overflow: auto; }
+    .prow { display: grid; grid-template-columns: 104px minmax(0, 1fr); align-items: center; gap: 8px; margin-bottom: 5px; }
+    .prow .name { color: var(--dim); font: 11px var(--mono); }
+    .prow.on .name { color: var(--accent); font-weight: 600; }
+    .f { display: flex; align-items: center; height: 28px; min-width: 0; border: 1px solid var(--line2); border-radius: var(--r-sm); background: var(--raised); padding: 0 7px; gap: 6px; }
+    .prow.on .f { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 18%, transparent); }
+    .f .val { flex: 1; min-width: 0; font: 11.5px var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .opener { all: unset; display: grid; place-items: center; width: 18px; height: 18px; border-radius: 4px; background: #e4e7ed; cursor: pointer; font-size: 11px; }
+    /* popover */
+    .pop { margin: 4px 0 10px; border: 1px solid var(--line2); border-radius: 12px; background: var(--bg); box-shadow: 0 18px 40px -12px rgb(15 23 42 / 35%); padding: 10px; display: grid; gap: 10px; }
+    .head { display: flex; align-items: center; gap: 7px; cursor: grab; }
+    .head .t { font-weight: 600; } .head .m { color: var(--faint); font: 10px var(--mono); } .head .sp { flex: 1; }
+    .icon { all: unset; display: grid; place-items: center; width: 22px; height: 22px; border-radius: 5px; color: var(--faint); cursor: pointer; }
+    .icon:hover { background: var(--hover); color: var(--text); }
+    .icon.danger:hover { color: var(--danger); }
+    .group { display: flex; align-items: center; gap: 6px; color: var(--faint); font-size: 9.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
+    .group::after { content: ''; flex: 1; border-top: 1px solid var(--line); }
+    .chips { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+    .chip { all: unset; display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 8px; border-radius: 999px; border: 1px solid var(--line2); background: var(--sunken); font: 10.5px var(--mono); color: var(--text); cursor: pointer; }
+    .chip.unset { border-style: dashed; background: transparent; color: var(--faint); }
+    .chip.unset::before { content: '+'; }
+    .chip[aria-pressed=true] { border-color: var(--accent); background: var(--accent-soft); font-weight: 600; }
+    .chip .g { color: var(--faint); cursor: grab; }
+    .rule { width: 1px; height: 16px; background: var(--line2); margin: 0 2px; }
+    .stack { display: grid; gap: 2px; }
+    .row { display: grid; grid-template-columns: 14px 24px minmax(0, 1fr) 22px; align-items: center; gap: 7px; padding: 2px 4px; border: 1px solid transparent; border-radius: var(--r-sm); cursor: pointer; }
+    .row:hover { background: var(--hover); }
+    .row[aria-current=true] { border-color: color-mix(in oklab, var(--accent) 40%, transparent); background: var(--accent-soft); }
+    .row .v { font: 10.5px var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .grip { color: var(--faint); cursor: grab; text-align: center; }
+    .thumb { width: 24px; height: 18px; border-radius: 4px; background: linear-gradient(135deg, #f97316, #ec4899 50%, #22d3ee); }
+    .adds { display: flex; flex-wrap: wrap; gap: 4px; }
+    .add { all: unset; height: 22px; padding: 0 7px; border-radius: 6px; border: 1px dashed var(--line2); font: 10.5px var(--mono); color: var(--faint); cursor: pointer; }
+    .add:hover { border-color: var(--accent); color: var(--text); }
+    .ed { display: grid; gap: 8px; padding: 8px; border-radius: var(--r-sm); background: var(--sunken); border: 1px solid var(--line); }
+    .ed .eh { display: flex; align-items: center; gap: 6px; font: 600 11px var(--mono); }
+    .ed .eh .sp { flex: 1; }
+    .line { display: grid; grid-template-columns: minmax(0, 1fr) 76px; gap: 8px; align-items: center; }
+    .line input[type=range] { width: 100%; accent-color: var(--accent); }
+    .num { display: flex; align-items: center; height: 26px; padding: 0 6px; border: 1px solid var(--line2); border-radius: var(--r-sm); background: var(--raised); }
+    .num input { all: unset; flex: 1; min-width: 0; font: 11.5px var(--mono); }
+    .num span { color: var(--faint); font: 10.5px var(--mono); }
+    .scale { display: flex; justify-content: space-between; color: var(--faint); font: 9.5px var(--mono); margin-top: -4px; }
+    .dialrow { display: grid; grid-template-columns: 40px minmax(0, 1fr) 76px; gap: 8px; align-items: center; }
+    .dial { position: relative; width: 36px; height: 36px; border-radius: 50%; background: var(--raised); box-shadow: inset 0 0 0 1px var(--line2); cursor: grab; touch-action: none; }
+    .dial i { position: absolute; left: 50%; top: 50%; width: 2px; height: 14px; margin-left: -1px; border-radius: 2px; background: var(--accent); transform-origin: 50% 0; }
+    .dial b { position: absolute; left: 50%; top: 50%; width: 6px; height: 6px; margin: -3px; border-radius: 50%; background: var(--accent); }
+    .hue { height: 8px; border-radius: 999px; background: linear-gradient(90deg, red, #ff0, lime, cyan, blue, #f0f, red); }
+    .tip { margin: 0; color: var(--faint); font-size: 10.5px; line-height: 1.45; }
+    .mix { display: grid; gap: 3px; }
+    .mrow { display: grid; grid-template-columns: 16px 82px minmax(0, 1fr) 54px 20px; gap: 6px; align-items: center; padding: 1px 2px; border-radius: 6px; }
+    .mrow.unset { opacity: .5; }
+    .mrow.unset:hover { opacity: .85; }
+    .mrow .n { font: 10.5px var(--mono); }
+    .mrow .o { display: grid; place-items: center; width: 16px; height: 16px; border-radius: 50%; background: var(--accent); color: #fff; font: 600 9px var(--font); }
+    .mrow .o.none { background: transparent; }
+    .mrow input[type=range] { width: 100%; accent-color: var(--accent); }
+    .mrow .vv { font: 10.5px var(--mono); text-align: right; color: var(--dim); }
+    .fold { padding: 6px 8px; border-radius: 6px; border: 1px dashed var(--line2); color: var(--faint); font: 10.5px var(--mono); cursor: pointer; }
+    .shadowmini { display: grid; gap: 6px; }
+    .shadowmini .pad { width: 64px; height: 64px; border-radius: 6px; border: 1px solid var(--line2); background: var(--raised); position: relative; }
+    .shadowmini .pad::after { content: ''; position: absolute; left: 50%; top: 60%; width: 10px; height: 10px; margin: -5px; border-radius: 50%; background: var(--accent); }
+    select.sel { height: 26px; border: 1px solid var(--line2); border-radius: var(--r-sm); background: var(--raised); font: 11.5px var(--mono); padding: 0 6px; }
+    [hidden] { display: none !important; }
+    .proto-bar { position: fixed; left: calc(50% - 180px); bottom: 18px; transform: translateX(-50%); display: flex; align-items: center; gap: 4px; padding: 4px; border-radius: 999px; background: #111; color: #fff; font: 600 12px var(--font); z-index: 50; }
+    .proto-bar button { border: 0; background: #333; color: #fff; border-radius: 999px; width: 28px; height: 28px; cursor: pointer; }
+    .proto-bar span { padding: 0 10px; min-width: 200px; text-align: center; }
+  </style>
+</head>
+<body>
+  <main class="stage">
+    <h1>Filter editor — prototype</h1>
+    <div class="scenario" role="group" aria-label="Scenario">
+      <button type="button" data-scenario="filter" aria-pressed="true">filter · on the photo</button>
+      <button type="button" data-scenario="backdrop" aria-pressed="false">backdrop-filter · on the glass card</button>
+    </div>
+    <div class="site">
+      <div class="photo" id="photo"><span class="sun"></span><span class="hill"></span></div>
+      <div class="glass" id="glass"><b>Clay workshop</b>Saturdays, 10–12. A glass card over the picture.</div>
+    </div>
+    <div class="out" id="out"></div>
+    <p class="question" id="question"></p>
+    <svg width="0" height="0" style="position:absolute"><filter id="grain"><feTurbulence baseFrequency=".9" /><feColorMatrix type="saturate" values="0" /><feComposite in2="SourceGraphic" operator="in" /><feBlend in2="SourceGraphic" mode="multiply" /></filter><filter id="duotone"><feColorMatrix type="matrix" values=".3 .3 .3 0 .1  .2 .2 .2 0 .05  .6 .6 .6 0 .3  0 0 0 1 0" /></filter></svg>
+  </main>
+
+  <aside class="panel">
+    <div class="group" style="margin-bottom:10px">Effects</div>
+    <div class="prow"><span class="name">opacity</span><div class="f"><span class="val">1</span></div></div>
+    <div class="prow"><span class="name">box-shadow</span><div class="f"><span class="val" style="color:var(--faint)">none</span></div></div>
+    <div class="prow" id="row-filter"><span class="name">filter</span><div class="f"><button class="opener" type="button" data-open="filter" aria-label="Open the filter editor">◐</button><span class="val" id="v-filter"></span></div></div>
+    <div id="slot-filter"></div>
+    <div class="prow" id="row-backdrop"><span class="name">backdrop-filter</span><div class="f"><button class="opener" type="button" data-open="backdrop" aria-label="Open the backdrop filter editor">◐</button><span class="val" id="v-backdrop"></span></div></div>
+    <div id="slot-backdrop"></div>
+    <div class="prow"><span class="name">transform</span><div class="f"><span class="val" style="color:var(--faint)">none</span></div></div>
+  </aside>
+
+  <div class="proto-bar" role="toolbar" aria-label="Prototype variant switcher">
+    <button type="button" data-step="-1" aria-label="Previous variant">←</button>
+    <span id="proto-label"></span>
+    <button type="button" data-step="1" aria-label="Next variant">→</button>
+  </div>
+
+  <script>
+    const NAMES = { A: 'Chips', B: 'Stack', C: 'Mixer' };
+    const KEYS = Object.keys(NAMES);
+    /*
+     * The catalogue. `neutral` is the value that changes nothing, so a function added by clicking it
+     * shows no change until its control moves.
+     */
+    const FNS = {
+      grayscale: { max: 100, unit: '%', neutral: 0 },
+      sepia: { max: 100, unit: '%', neutral: 0 },
+      blur: { max: 10, unit: 'px', neutral: 0, step: 0.5 },
+      brightness: { max: 200, unit: '%', neutral: 100 },
+      'hue-rotate': { max: 360, unit: 'deg', neutral: 0, dial: true },
+      saturate: { max: 1000, unit: '%', neutral: 100 },
+      opacity: { max: 100, unit: '%', neutral: 100 },
+      contrast: { max: 1000, unit: '%', neutral: 100 },
+      invert: { max: 100, unit: '%', neutral: 0 },
+      'drop-shadow': { shadow: true },
+      url: { url: true },
+    };
+    const ORDER = Object.keys(FNS);
+    const SCEN = {
+      filter: { prop: 'filter', title: 'Filter', target: 'photo', set: [{ fn: 'sepia', v: 60 }, { fn: 'contrast', v: 120 }, { fn: 'hue-rotate', v: 20 }] },
+      backdrop: { prop: 'backdrop-filter', title: 'Backdrop filter', target: 'glass', set: [{ fn: 'blur', v: 6 }, { fn: 'saturate', v: 180 }] },
+    };
+    let variant = new URLSearchParams(location.search).get('variant');
+    if (!KEYS.includes(variant)) variant = 'A';
+    let state;
+    const reset = (key) => {
+      const s = SCEN[key];
+      state = { scenario: key, set: s.set.map((one) => ({ ...one })), picked: s.set[0].fn, open: true, shadow: { x: 0, y: 4, blur: 8, color: 'rgb(0 0 0 / 35%)' }, url: '#grain' };
+    };
+    reset(new URLSearchParams(location.search).get('scenario') === 'backdrop' ? 'backdrop' : 'filter');
+
+    const text = (one) => {
+      if (one.fn === 'drop-shadow') return `drop-shadow(${state.shadow.x}px ${state.shadow.y}px ${state.shadow.blur}px ${state.shadow.color})`;
+      if (one.fn === 'url') return `url(${state.url})`;
+      const meta = FNS[one.fn];
+      return `${one.fn}(${one.v}${meta.unit})`;
+    };
+    const value = () => state.set.map(text).join(' ') || 'none';
+    const unset = () => ORDER.filter((fn) => !state.set.some((one) => one.fn === fn));
+    const add = (fn) => {
+      if (!state.set.some((one) => one.fn === fn)) state.set.push({ fn, v: FNS[fn].neutral ?? 0 });
+      state.picked = fn;
+    };
+
+    function paint() {
+      const s = SCEN[state.scenario];
+      const photo = document.getElementById('photo');
+      const glass = document.getElementById('glass');
+      photo.style.filter = s.prop === 'filter' ? value() : 'none';
+      glass.style.backdropFilter = s.prop === 'backdrop-filter' ? value() : 'none';
+      glass.style.webkitBackdropFilter = glass.style.backdropFilter;
+      document.getElementById('v-filter').textContent = s.prop === 'filter' ? value() : 'none';
+      document.getElementById('v-backdrop').textContent = s.prop === 'backdrop-filter' ? value() : 'none';
+      const sel = s.prop === 'filter' ? '.photo' : '.glass';
+      document.getElementById('out').innerHTML = `${sel} {\n  <b>${s.prop}</b>: ${value()};` +
+        (s.prop === 'backdrop-filter' ? `\n  <b>-webkit-backdrop-filter</b>: ${value()}; <span class="c">/* Safari, written beside it */</span>` : '') + '\n}';
+      document.getElementById('question').textContent = s.prop === 'filter'
+        ? 'filter on the picture itself. Click a set function to edit it, an unset one to add it at its neutral value. Order matters: drag to reorder.'
+        : 'backdrop-filter on the glass card: it filters what is behind the card, not the card. Same editor, its own title.';
+    }
+
+    // ------------------------------------------------------------------ the picked function's editor
+    function editorFor(fn) {
+      const one = state.set.find((x) => x.fn === fn);
+      if (!one) return '';
+      const meta = FNS[fn];
+      const head = `<div class="eh">${fn}()<span class="sp"></span><button class="icon danger" type="button" data-remove="${fn}" aria-label="Remove ${fn}">🗑</button></div>`;
+      if (meta.shadow) {
+        return `<div class="ed">${head}
+          <div class="shadowmini"><div style="display:grid;grid-template-columns:64px 1fr;gap:8px;align-items:center"><div class="pad"></div>
+          <div style="display:grid;gap:4px"><span class="num"><input value="${state.shadow.x}" aria-label="X"><span>px</span></span><span class="num"><input value="${state.shadow.y}" aria-label="Y"><span>px</span></span></div></div>
+          <p class="tip">The shadow editor's own controls: offset pad, blur, opacity, color, its swatches.</p></div></div>`;
+      }
+      if (meta.url) {
+        return `<div class="ed">${head}
+          <div class="line"><select class="sel" data-url><option value="#grain" ${state.url === '#grain' ? 'selected' : ''}>#grain</option><option value="#duotone" ${state.url === '#duotone' ? 'selected' : ''}>#duotone</option><option value="filters.svg#paper">filters.svg#paper</option></select><span class="tip">2 in this page</span></div>
+          <p class="tip">An SVG &lt;filter&gt; by reference: the page's own ids, or a file and an id typed in the field.</p></div>`;
+      }
+      if (meta.dial) {
+        return `<div class="ed">${head}
+          <div class="dialrow"><div class="dial" data-dial aria-label="Hue rotation"><i style="transform:rotate(${one.v + 180}deg)"></i><b></b></div>
+          <div><div class="hue" style="filter:hue-rotate(${one.v}deg)"></div></div>
+          <span class="num"><input value="${one.v}" data-num="${fn}" aria-label="${fn}"><span>deg</span></span></div>
+          <p class="tip">The background editor's angle dial: drag it round, or the arrow keys.</p></div>`;
+      }
+      return `<div class="ed">${head}
+        <div class="line"><input type="range" min="0" max="${meta.max}" step="${meta.step ?? 1}" value="${one.v}" data-range="${fn}" aria-label="${fn}">
+        <span class="num"><input value="${one.v}" data-num="${fn}" aria-label="${fn}"><span>${meta.unit}</span></span></div>
+        <div class="scale"><span>0</span><span>${meta.neutral ? `${meta.neutral}${meta.unit} = unchanged` : ''}</span><span>${meta.max}${meta.unit}</span></div></div>`;
+    }
+
+    // ------------------------------------------------------------------ variants
+    function variantA() {
+      return `${state.set.length ? `<div><div class="group">Applied, in order</div><div class="chips" style="margin-top:6px">
+          ${state.set.map((one) => `<button class="chip" type="button" draggable="true" data-pick="${one.fn}" aria-pressed="${state.picked === one.fn}"><span class="g">⋮⋮</span>${text(one)}</button>`).join('')}
+        </div></div>` : ''}
+        <div><div class="group">Add</div><div class="chips" style="margin-top:6px">
+          ${unset().map((fn) => `<button class="chip unset" type="button" data-add="${fn}">${fn}</button>`).join('')}
+        </div></div>
+        ${editorFor(state.picked)}`;
+    }
+    function variantB() {
+      return `<div><div class="group">Applied, in order</div><div class="stack" style="margin-top:6px">
+          ${state.set.map((one) => `<div class="row" draggable="true" data-pick="${one.fn}" aria-current="${state.picked === one.fn}">
+            <span class="grip">⋮⋮</span><span class="thumb" style="filter:${text(one)}"></span><span class="v">${text(one)}</span>
+            <button class="icon danger" type="button" data-remove="${one.fn}" aria-label="Remove ${one.fn}">🗑</button></div>`).join('') || '<p class="tip">No filter yet.</p>'}
+        </div></div>
+        ${editorFor(state.picked)}
+        <div><div class="group">Add a function</div><div class="adds" style="margin-top:6px">
+          ${unset().map((fn) => `<button class="add" type="button" data-add="${fn}">+ ${fn}</button>`).join('')}
+        </div></div>`;
+    }
+    function variantC() {
+      const pos = (fn) => state.set.findIndex((one) => one.fn === fn);
+      return `<div class="mix">${ORDER.map((fn) => {
+        const meta = FNS[fn];
+        const one = state.set.find((x) => x.fn === fn);
+        const at = pos(fn);
+        if (meta.shadow || meta.url) {
+          return `<div class="mrow${one ? '' : ' unset'}"><span class="o${at < 0 ? ' none' : ''}">${at < 0 ? '' : at + 1}</span><span class="n">${fn}</span>
+            <span class="fold" data-${one ? 'pick' : 'add'}="${fn}">${one ? text(one) : 'add…'}</span><span></span><span></span></div>
+            ${one && state.picked === fn ? editorFor(fn) : ''}`;
+        }
+        const v = one ? one.v : meta.neutral;
+        return `<div class="mrow${one ? '' : ' unset'}" title="${one ? '' : 'Not set: move it to add it'}">
+          <span class="o${at < 0 ? ' none' : ''}">${at < 0 ? '' : at + 1}</span><span class="n">${fn}</span>
+          <input type="range" min="0" max="${meta.max}" step="${meta.step ?? 1}" value="${v}" data-range="${fn}" aria-label="${fn}">
+          <span class="vv">${v}${meta.unit}</span>
+          ${one ? `<button class="icon danger" type="button" data-remove="${fn}" aria-label="Remove ${fn}">×</button>` : '<span></span>'}</div>`;
+      }).join('')}</div><p class="tip">Order: the numbers. Drag a set row to change it.</p>`;
+    }
+
+    function render() {
+      document.querySelectorAll('[data-scenario]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.scenario === state.scenario)));
+      document.getElementById('proto-label').textContent = `${variant} — ${NAMES[variant]}`;
+      const s = SCEN[state.scenario];
+      document.getElementById('row-filter').classList.toggle('on', state.open && s.prop === 'filter');
+      document.getElementById('row-backdrop').classList.toggle('on', state.open && s.prop === 'backdrop-filter');
+      const slot = document.getElementById(s.prop === 'filter' ? 'slot-filter' : 'slot-backdrop');
+      document.getElementById('slot-filter').innerHTML = '';
+      document.getElementById('slot-backdrop').innerHTML = '';
+      if (state.open) {
+        const body = variant === 'A' ? variantA() : variant === 'B' ? variantB() : variantC();
+        slot.innerHTML = `<div class="pop" role="dialog" aria-label="${s.title}">
+          <div class="head"><span class="grip">⋮⋮</span><span class="t">${s.title}</span><span class="m">${s.prop}</span><span class="sp"></span><button class="icon" type="button" data-close aria-label="Close">✕</button></div>
+          ${body}</div>`;
+      }
+      paint();
+      const url = new URL(location.href);
+      url.searchParams.set('variant', variant);
+      history.replaceState(null, '', url);
+    }
+
+    document.addEventListener('click', (e) => {
+      const t = e.target.closest('button, [data-pick], [data-add]');
+      if (!t) return;
+      if (t.dataset.scenario) { reset(t.dataset.scenario); render(); return; }
+      if (t.dataset.step) { variant = KEYS[(KEYS.indexOf(variant) + Number(t.dataset.step) + KEYS.length) % KEYS.length]; render(); return; }
+      if (t.dataset.open) { if (state.scenario !== t.dataset.open) reset(t.dataset.open); else state.open = !state.open; render(); return; }
+      if (t.hasAttribute('data-close')) { state.open = false; render(); return; }
+      if (t.dataset.remove) { state.set = state.set.filter((one) => one.fn !== t.dataset.remove); state.picked = state.set[0]?.fn ?? null; render(); return; }
+      if (t.dataset.add) { add(t.dataset.add); render(); return; }
+      if (t.dataset.pick) { state.picked = t.dataset.pick; render(); }
+    });
+    document.addEventListener('input', (e) => {
+      const fn = e.target.dataset.range ?? e.target.dataset.num;
+      if (!fn) return;
+      const v = Number(e.target.value);
+      if (!Number.isFinite(v)) return;
+      add(fn);
+      state.set.find((one) => one.fn === fn).v = v;
+      // A range moves its number with it; the mixer redraws its value text.
+      document.querySelectorAll(`[data-num="${fn}"], [data-range="${fn}"]`).forEach((el) => { if (el !== e.target) el.value = v; });
+      if (variant === 'C' || e.target.dataset.num) render(); else paint();
+    });
+    document.addEventListener('change', (e) => { if (e.target.dataset.url !== undefined) { state.url = e.target.value; render(); } });
+    // The hue dial: the angle from the centre to the pointer.
+    document.addEventListener('pointerdown', (e) => {
+      if (!e.target.closest('[data-dial]')) return;
+      e.preventDefault();
+      const move = (ev) => {
+        const dial = document.querySelector('[data-dial]');
+        if (!dial) return;
+        const r = dial.getBoundingClientRect();
+        const deg = Math.round((Math.atan2(ev.clientY - (r.top + r.height / 2), ev.clientX - (r.left + r.width / 2)) * 180) / Math.PI + 90 + 360) % 360;
+        state.set.find((one) => one.fn === 'hue-rotate').v = deg;
+        render();
+      };
+      move(e);
+      const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); };
+      addEventListener('pointermove', move);
+      addEventListener('pointerup', up);
+    });
+    // Reorder by dragging a set chip or row onto another.
+    let from = null;
+    document.addEventListener('dragstart', (e) => { from = e.target.closest('[data-pick]')?.dataset.pick ?? null; });
+    document.addEventListener('dragover', (e) => { if (from && e.target.closest('[data-pick]')) e.preventDefault(); });
+    document.addEventListener('drop', (e) => {
+      const to = e.target.closest('[data-pick]')?.dataset.pick;
+      if (!from || !to || from === to) return;
+      e.preventDefault();
+      const a = state.set.findIndex((one) => one.fn === from);
+      const [moved] = state.set.splice(a, 1);
+      state.set.splice(state.set.findIndex((one) => one.fn === to), 0, moved);
+      from = null;
+      render();
+    });
+    addEventListener('keydown', (e) => {
+      if (e.target.closest('input, select')) return;
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { variant = KEYS[(KEYS.indexOf(variant) + (e.key === 'ArrowRight' ? 1 : -1) + KEYS.length) % KEYS.length]; render(); }
+    });
+    render();
+  </script>
+</body>
+</html>

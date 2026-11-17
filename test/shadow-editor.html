@@ -5,10 +5,10 @@
   <meta charset="utf-8">
   <title>Shadow editor</title>
   <!--
-    The shadow editor opens from the control at the head of the box-shadow, text-shadow and filter
-    fields, where a colour has its swatch. It edits a stack of shadows, live, with swatches (the value
-    as it was, then the design system's shadow tokens or HEO's own), and moves shadows between
-    box-shadow and filter: drop-shadow() both ways.
+    The shadow editor opens from the control at the head of the box-shadow and text-shadow fields,
+    where a colour has its swatch. It edits a stack of shadows, live, with swatches (the value as it
+    was, then the design system's shadow tokens or HEO's own). The filter field's editor is
+    test/filter-editor.html.
   -->
   <style id="site">
     :root {
@@ -24,7 +24,6 @@
   <img id="icon" alt="" src="nested/dot.svg" style="width:24px;box-shadow:0 2px 6px rgb(0 0 0 / 20%)">
   <img id="photo" alt="" style="width:24px;box-shadow:0 2px 6px rgb(0 0 0 / 20%)" src="data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=">
   <div id="named" style="width:80px;height:20px;box-shadow:0 2px 6px black, 0 0 0 1px var(--shadow-md)">Named</div>
-  <div id="logo" style="width:60px;height:60px;background:#6366f1;filter:saturate(1.2) contrast(1.05)">★</div>
   <pre id="progress">start</pre>
   <pre id="out">pending</pre>
   <script src="../dist/html-editor-overlay.iife.js"></script>
@@ -258,35 +257,15 @@
         };
       });
 
-      const logo = await select('logo');
-      await check('filter', async () => {
-        await open('filter');
-        const root = ed('filter');
-        const chips = Array.from(root.querySelectorAll('.fns .chip')).map(flat);
-        const addInside = Boolean(button(root, /^add shadow$/i)) && !root.querySelector('.empty-stack');
-        button(root, /^add shadow$/i).click();
-        await settle(400);
-        const written = inline(logo, 'filter');
-        // A chip of another function selects it in the field, scrolled into view.
-        const contrast = Array.from(ed('filter')?.querySelectorAll('.fns .chip') ?? []).find((one) => flat(one) === 'contrast(1.05)');
-        contrast?.click();
-        await settle(300);
-        const input = field('filter').shadowRoot.querySelector('input[type="text"]');
-        return {
-          showsTheOtherFunctions: chips.includes('saturate(1.2)') && chips.includes('contrast(1.05)'),
-          anEmptyStackHasAnAddShadowButton: addInside,
-          addingADropShadowKeepsTheOthers: written === as('filter', 'saturate(1.2) contrast(1.05) drop-shadow(0px 4px 12px rgb(0 0 0 / 20%))'),
-          aChipSelectsItsFunctionInTheField: input.value.slice(input.selectionStart, input.selectionEnd) === 'contrast(1.05)',
-          andTheFieldHasFocus: field('filter').matches(':focus-within'),
-        };
-      });
-
       /*
        * A named shadow colour froze the page: reading it appended a probe to the body on every render,
        * the editor sees body changes as page edits and re-renders, and the next render probed again.
        */
       await check('dialog', async () => {
         await select('plain');
+        // Still up from the swatches above: the opener toggles, so close it first.
+        if (editor('box-shadow')) head('box-shadow').querySelector('button[aria-label="Close"]').click();
+        await settle(250);
         // Looked at in the frame it opens: the animation is over in 170ms.
         opener('box-shadow').click();
         await new Promise((resolve) => requestAnimationFrame(resolve));

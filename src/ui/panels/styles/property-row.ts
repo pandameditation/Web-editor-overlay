@@ -612,7 +612,7 @@ export function renderPropertyRow(spec: RowSpec, host: StylesHost): TemplateResu
         .property=${property}
         .computed=${computed}
         .suggestions=${buildSuggestions(engine, property, element)}
-        .shadowTokens=${valueKindFor(property) === 'shadow' || property === 'filter' ? shadowSwatches(engine) : []}
+        .shadowTokens=${valueKindFor(property) === 'shadow' || valueKindFor(property) === 'filter' ? shadowSwatches(engine) : []}
         placeholder=${spec.placeholder ?? shorten(computed)}
         @value-input=${(event: CustomEvent<{ value: string }>) => previewChosen(host, spec, picked, event.detail.value)}
         @value-revert=${() => engine.cancelPreview()}
