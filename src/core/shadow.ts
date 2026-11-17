@@ -20,7 +20,7 @@ export interface Shadow {
   x: string;
   y: string;
   blur: string;
-  /** Box shadows only. Kept on the others so converting back does not lose it. */
+  /** Box shadows only. Kept on the others, so a swatch made for a box keeps it. */
   spread: string;
   color: string;
   /** Box shadows only. */

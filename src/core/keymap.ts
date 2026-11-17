@@ -28,6 +28,27 @@ let lastFieldErase = -Infinity;
 /** A page Backspace this soon after a field one was meant for that field: it is ignored. */
 const ERASE_GRACE_MS = 1500;
 
+/**
+ * Overlay surfaces that Escape closes before it reaches the page: the colour picker and the shadow
+ * editor, open over a field. Topmost last.
+ *
+ * Needed because such a dialog is usually opened with the mouse, and its opener takes no focus — so
+ * the Escape that should close it arrives from the page, where it meant "deselect", and the element
+ * went while the dialog stayed. Moving focus into the dialog instead disturbed what was going on in
+ * it (a drag in the colour area committed as the focus moved). Escape from inside a dialog is the
+ * dialog's own to handle; this is for the keys that come from outside.
+ */
+const escapeLayers: Array<() => void> = [];
+
+/** Register a surface Escape should close first. Returns the function that unregisters it. */
+export function pushEscapeLayer(close: () => void): () => void {
+  escapeLayers.push(close);
+  return () => {
+    const at = escapeLayers.lastIndexOf(close);
+    if (at >= 0) escapeLayers.splice(at, 1);
+  };
+}
+
 export function handleKeyDown(engine: EditorEngine, event: KeyboardEvent): void {
   const state = engine.store.value;
   const mod = event.metaKey || event.ctrlKey;
@@ -257,8 +278,16 @@ export function handleKeyDown(engine: EditorEngine, event: KeyboardEvent): void 
       return;
     }
   }
+  /*
+   * Escape from elsewhere in the overlay (the dock, a tab just pressed) while a field's dialog is
+   * open: the dialog closes. Its own keys are handled inside it, and marked as handled.
+   */
+  if (key === 'Escape' && fromOverlay(event) && escapeLayers.length && !insideFieldDialog(event)) {
+    event.preventDefault();
+    escapeLayers[escapeLayers.length - 1]!();
+    return;
+  }
   if (fromOverlay(event)) return;
-
   // Anything typed into a page field belongs to that field.
   if (isEditableTarget(event)) return;
 
@@ -296,7 +325,8 @@ export function handleKeyDown(engine: EditorEngine, event: KeyboardEvent): void 
     case 'Escape':
       // Unwind one layer at a time rather than closing everything at once.
       event.preventDefault();
-      if (state.quickMenuOpen) engine.setQuickMenu(false);
+      if (escapeLayers.length) escapeLayers[escapeLayers.length - 1]!();
+      else if (state.quickMenuOpen) engine.setQuickMenu(false);
       else if (state.insertAnchor) engine.setInsertAnchor(null);
       else if (state.selected) engine.select(null);
       else engine.setEditing(false);
@@ -449,6 +479,16 @@ function insideNativeModal(event: KeyboardEvent): boolean {
  * reports the host element for anything inside a shadow root — which is every
  * control the overlay draws.
  */
+/**
+ * True for a key from inside a field's dialog. This keymap runs in the capture phase, ahead of the
+ * dialog, which handles its own Escape innermost first: a field's open list closes before it does.
+ */
+function insideFieldDialog(event: KeyboardEvent): boolean {
+  return event
+    .composedPath()
+    .some((node) => node instanceof Element && node.classList.contains('popup') && node.classList.contains('dialog'));
+}
+
 function fromOverlay(event: KeyboardEvent): boolean {
   return event
     .composedPath()

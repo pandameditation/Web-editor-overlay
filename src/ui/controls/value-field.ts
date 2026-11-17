@@ -16,7 +16,10 @@ import { contrastTargetFor, type ContrastTarget } from '../contrast.js';
 import type { ColorSwatch } from './color-picker.js';
 import './color-picker.js';
 import { parseShadows, splitFilter, type ShadowSwatch } from '../../core/shadow.js';
-import { miniShadow, type ShadowConvert } from './shadow-editor.js';
+import { miniShadow } from './shadow-editor.js';
+import { pushEscapeLayer } from '../../core/keymap.js';
+import { tieLayer } from '../../core/focus.js';
+import { firstFocusable } from '../../core/modal.js';
 import './shadow-editor.js';
 import { icon } from '../icons.js';
 import { baseStyles, swatchStyle } from '../theme.js';
@@ -426,6 +429,63 @@ export class HeoValueField extends LitElement {
         max-height: none;
         padding: 10px;
       }
+      /*
+       * The colour picker and the shadow editor are small dialogs rather than lists: they open from
+       * their own middle, and when they grow they grow about it (see #onDialogResize).
+       */
+      .popup.dialog {
+        animation: dialog-in 170ms var(--heo-ease);
+        transform-origin: 50% 50%;
+      }
+      /* Focused so its keys are its own; the ring belongs on its controls, not round the whole. */
+      .popup.dialog:focus {
+        outline: none;
+      }
+      @keyframes dialog-in {
+        from {
+          opacity: 0;
+          scale: 0.94;
+        }
+      }
+      /* Their head: a grip and a title to move them by, and the close cross. */
+      .dialog-head {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        margin: -3px -2px 8px 0;
+        cursor: grab;
+        touch-action: none;
+        user-select: none;
+      }
+      .dialog-head:active {
+        cursor: grabbing;
+      }
+      .dialog-head .grip {
+        display: grid;
+        place-items: center;
+        color: var(--heo-text-faint);
+      }
+      .dialog-head .title {
+        color: var(--heo-text);
+        font-size: 12px;
+        font-weight: 600;
+      }
+      .dialog-head .sub {
+        overflow: hidden;
+        color: var(--heo-text-faint);
+        font-family: var(--heo-mono);
+        font-size: 10px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .dialog-head .spacer {
+        flex: 1 1 auto;
+      }
+      .dialog-head .close {
+        width: 22px;
+        height: 22px;
+        cursor: pointer;
+      }
       @keyframes pop {
         from {
           opacity: 0;
@@ -797,8 +857,6 @@ export class HeoValueField extends LitElement {
   @state() private popupShift = { x: 0, y: 0 };
   /** The design system's shadow tokens, for the shadow editor's swatches. */
   @property({ attribute: false }) shadowTokens: readonly ShadowSwatch[] = [];
-  /** Whether the host moves shadows between box-shadow and filter, which the editor then offers. */
-  @property({ type: Boolean, attribute: 'shadow-convertible' }) shadowConvertible = false;
   /** What the picker measures contrast against, read when it opens. */
   @state() private pickerContrast: ContrastTarget | null = null;
 
@@ -833,6 +891,7 @@ export class HeoValueField extends LitElement {
    * one of them stale. Capture phase so this runs before the press is acted on.
    */
   #onFocusOutBound = (): void => this.#onFocusOut();
+
   #onDocumentDown = (event: Event): void => {
     if (!this.open) return;
     if (event.composedPath().includes(this)) return;
@@ -891,6 +950,8 @@ export class HeoValueField extends LitElement {
 
   override disconnectedCallback(): void {
     super.disconnectedCallback();
+    this.#escapeLayer?.();
+    this.#escapeLayer = null;
     unlisten(window, 'scroll', this.#onScroll, true);
     unlisten(window, 'resize', this.#onScroll);
     unlisten(document, 'pointerdown', this.#onDocumentDown, true);
@@ -952,6 +1013,12 @@ export class HeoValueField extends LitElement {
    */
   override updated(): void {
     this.#announceHighlight();
+    // Closed some other way than closePopup (a press elsewhere, the chevron): let go of Escape too.
+    if (this.#escapeLayer && !(this.open && (this.picking || this.shadowing))) {
+      this.#escapeLayer();
+      this.#escapeLayer = null;
+      this.#dialogBox = null;
+    }
     const popup = this.renderRoot.querySelector<HTMLElement>('.popup');
     if (!popup || !this.open) return;
     if (!this.inlineList && typeof popup.showPopover === 'function' && !popup.matches(':popover-open')) {
@@ -1000,10 +1067,15 @@ export class HeoValueField extends LitElement {
    * `:focus-within` on the host flattens away.
    */
   #focusKeepsListOpen(): boolean {
+    /*
+     * A dialog of the field's own — the picker, the shadow editor — stays up whatever focus does.
+     * A press outside, Escape and its ✕ close it. Checked before asking where focus is, because a
+     * control inside that removes itself (Add shadow, a shadow's trash) drops focus on nothing, and
+     * that read as focus leaving: the editor closed under the click that added a shadow.
+     */
+    if (this.picking || this.shadowing) return true;
     const active = this.shadowRoot?.activeElement;
     if (!active) return false;
-    // The picker is a dialog of the field's own: anywhere inside the field keeps it up.
-    if (this.picking || this.shadowing) return true;
     if (active === this.textInput) return true;
     const popup = this.renderRoot.querySelector('.popup');
     return Boolean(popup && (active === popup || popup.contains(active)));
@@ -1064,8 +1136,14 @@ export class HeoValueField extends LitElement {
       .then(() => this.renderRoot.querySelector('heo-color-picker')?.updateComplete)
       .then(() => {
         if (!this.open || !this.picking) return;
+        this.#dialogBox = null;
         this.#placer.invalidate();
         this.#positionPopup();
+        return this.updateComplete;
+      })
+      .then(() => {
+        const popup = this.renderRoot.querySelector<HTMLElement>('.popup.dialog');
+        if (this.open && this.picking && popup) this.#settleDialog(popup);
       });
   }
 
@@ -1079,13 +1157,16 @@ export class HeoValueField extends LitElement {
   #renderPicker(): TemplateResult {
     const painted = this.draft.trim() || this.placeholder.trim();
     return html`<div
-      class="popup picker"
+      class="popup picker dialog"
       popover="manual"
-      style=${this.popupStyle}
+      tabindex="-1"
+      style=${this.#dialogStyle()}
       @pointerdown=${keepFocusOnBlank}
+      @keydown=${this.#onDialogKey}
       role="dialog"
       aria-label=${this.fieldLabel ? `${this.fieldLabel}: color picker` : 'Color picker'}
     >
+      ${this.#renderDialogHead('Color', this.fieldLabel || this.property)}
       <heo-color-picker
         .value=${painted}
         .contrast=${this.pickerContrast}
@@ -1102,16 +1183,13 @@ export class HeoValueField extends LitElement {
       }}
         @color-close=${(event: Event) => {
         event.stopPropagation();
-        this.#closePicker();
+        this.#closeDialog();
       }}
       ></heo-color-picker>
     </div>`;
   }
 
-  /**
-   * Open the shadow editor from outside: after a conversion moves the shadows to this property, the
-   * host opens it here so editing carries on where it went.
-   */
+  /** Open the shadow editor, as its button does: for a host or a test opening it from outside. */
   openShadowEditor(): void {
     if (this.kind !== 'shadow' && this.kind !== 'filter') return;
     this.composer = null;
@@ -1122,8 +1200,14 @@ export class HeoValueField extends LitElement {
       .then(() => this.renderRoot.querySelector('heo-shadow-editor')?.updateComplete)
       .then(() => {
         if (!this.open || !this.shadowing) return;
+        this.#dialogBox = null;
         this.#placer.invalidate();
         this.#positionPopup();
+        return this.updateComplete;
+      })
+      .then(() => {
+        const popup = this.renderRoot.querySelector<HTMLElement>('.popup.dialog');
+        if (this.open && this.shadowing && popup) this.#settleDialog(popup);
       });
   }
 
@@ -1154,20 +1238,24 @@ export class HeoValueField extends LitElement {
 
   #renderShadowEditor(): TemplateResult {
     const mode = this.kind === 'filter' ? 'filter' : this.property === 'text-shadow' ? 'text' : 'box';
+    const title = mode === 'filter' ? 'Drop shadow' : mode === 'text' ? 'Text shadow' : 'Box shadow';
+    const sub = mode === 'filter' ? 'filter: drop-shadow()' : mode === 'text' ? 'text-shadow' : 'box-shadow';
     return html`<div
-      class="popup picker shadowing"
+      class="popup picker shadowing dialog"
       popover="manual"
-      style=${`${this.popupStyle};translate:${this.popupShift.x}px ${this.popupShift.y}px`}
+      tabindex="-1"
+      style=${this.#dialogStyle()}
       @pointerdown=${keepFocusOnBlank}
+      @keydown=${this.#onDialogKey}
       role="dialog"
       aria-label=${`${this.property || 'shadow'}: shadow editor`}
     >
+      ${this.#renderDialogHead(title, sub)}
       <heo-shadow-editor
         .value=${this.draft}
         .computed=${this.computed}
         .mode=${mode}
         .tokens=${this.shadowTokens}
-        ?convertible=${this.shadowConvertible}
         @shadow-input=${(event: CustomEvent<{ value: string }>) => {
           event.stopPropagation();
           this.draft = event.detail.value;
@@ -1177,30 +1265,171 @@ export class HeoValueField extends LitElement {
           event.stopPropagation();
           this.draft = event.detail.value;
           this.#commit();
-          // Measured again: adding or removing a shadow changes the editor's height.
-          void this.updateComplete.then(() => this.#positionPopup());
-        }}
-        @shadow-move=${(event: CustomEvent<{ dx: number; dy: number }>) => {
-          event.stopPropagation();
-          this.popupShift = { x: this.popupShift.x + event.detail.dx, y: this.popupShift.y + event.detail.dy };
-        }}
-        @shadow-convert=${(event: CustomEvent<ShadowConvert>) => {
-          // Two properties change, which only the host can write; it hears this as it bubbles, and
-          // closes this field's editor once it has (or leaves it open when the user declines).
-          void event;
+          // A shadow added or removed changes the height: #onDialogResize grows it about its middle.
         }}
         @filter-select=${(event: CustomEvent<{ fn: string }>) => {
           event.stopPropagation();
           this.#selectText(event.detail.fn);
         }}
-        @shadow-close=${(event: Event) => {
-          event.stopPropagation();
-          this.closePopup();
-          this.textInput?.focus();
-        }}
       ></heo-shadow-editor>
     </div>`;
   }
+
+  /*
+   * A dialog popup — the colour picker, the shadow editor — is placed once, when it opens, and then
+   * stays where it is: placed again on every change, it jumped whenever it grew (adding the first
+   * shadow pushed it from below the field to above it). Growing keeps its middle where it was, and
+   * the new height is revealed from that middle. Dragging the head moves it by `popupShift`.
+   */
+  #dialogBox: { top: number; left: number; width: number; height: number; maxHeight: number; content: number } | null = null;
+  #dialogObserver: ResizeObserver | null = null;
+
+  #dialogStyle(): string {
+    const box = this.#dialogBox;
+    const placed = box
+      ? `top:${box.top}px;left:${box.left}px;width:${box.width}px;max-height:${box.maxHeight}px`
+      : this.popupStyle;
+    return `${placed};translate:${this.popupShift.x}px ${this.popupShift.y}px`;
+  }
+
+  /** Take the first placement as the dialog's own, and watch it for growth. */
+  /** Unregisters this field's dialog from the page's Escape, while one is open. */
+  #escapeLayer: (() => void) | null = null;
+
+  #settleDialog(popup: HTMLElement): void {
+    const opening = !this.#escapeLayer;
+    if (!this.#escapeLayer) this.#escapeLayer = pushEscapeLayer(() => this.#closeDialog());
+    /*
+     * As the overlay's other popovers do: focus goes in, to the first control (menus focus their
+     * first item; modals their first field), and Tab treats the dialog as sitting right after the
+     * button that opened it (`tieLayer`, as the panel's menus are tied). The head's grip and ✕ are
+     * left out of "first", so a keyboard lands on what the dialog is for.
+     */
+    if (opening) {
+      const opener = this.renderRoot.querySelector<HTMLElement>('.color-btn');
+      tieLayer(popup, opener);
+      const body = popup.querySelector<HTMLElement>('heo-color-picker, heo-shadow-editor');
+      const first = body ? firstFocusable(body.shadowRoot ?? body) : null;
+      (first ?? popup).focus({ preventScroll: true });
+    }
+    /*
+     * From the placement and from layout, never from the painted box: this runs while the opening
+     * animation still has the dialog at 94% scale, and a box read from it made the first drag snap
+     * the dialog narrower and off to one side.
+     */
+    // What the popup is drawn at right now, so taking it over changes nothing on screen.
+    const number = (value: string): number | null => (value.endsWith('px') ? Number.parseFloat(value) : null);
+    const top = number(popup.style.top);
+    const left = number(popup.style.left);
+    const width = number(popup.style.width) ?? popup.offsetWidth;
+    const height = popup.offsetHeight;
+    if (top === null || left === null || !height) return;
+    /*
+     * Exactly as placed, cap included: settling must not move or resize anything. Lifting the cap
+     * here grew a picker opened in a short window under the pointer that was dragging in it.
+     * Only what the content does afterwards changes the dialog — see #onDialogResize.
+     */
+    this.#dialogBox = { top, left, width, height, maxHeight: number(popup.style.maxHeight) ?? height, content: popup.scrollHeight };
+
+    if (!this.#dialogObserver) this.#dialogObserver = new ResizeObserver(() => this.#onDialogResize());
+    this.#dialogObserver.disconnect();
+    // The content, not the popup: the popup's own size is what this sets.
+    for (const child of Array.from(popup.children)) this.#dialogObserver.observe(child);
+  }
+
+  #onDialogResize(): void {
+    const popup = this.renderRoot.querySelector<HTMLElement>('.popup.dialog');
+    const box = this.#dialogBox;
+    if (!popup || !box || !this.open) return;
+    // What the content wants now against what it wanted when the dialog settled.
+    const content = popup.scrollHeight;
+    if (Math.abs(content - box.content) < 1) return;
+    const height = Math.round(Math.min(Math.max(120, box.height + content - box.content), Math.max(120, innerHeight - 16)));
+    // About the middle, kept on screen.
+    const middle = box.top + box.height / 2;
+    const top = Math.round(Math.min(Math.max(8, middle - height / 2), Math.max(8, innerHeight - height - 8)));
+    const grew = height - box.height;
+    this.#dialogBox = { ...box, top, height, maxHeight: height, content };
+    this.requestUpdate();
+    if (grew > 0 && typeof popup.animate === 'function' && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      const edge = Math.round(grew / 2);
+      popup.animate(
+        [{ clipPath: `inset(${edge}px 0 ${edge}px 0 round 9px)` }, { clipPath: 'inset(0 0 0 0 round 9px)' }],
+        { duration: 180, easing: 'cubic-bezier(0.2, 0, 0, 1)' },
+      );
+    }
+  }
+
+  /**
+   * Close a dialog and hand focus back to the button that opened it.
+   *
+   * The button, not the text: the dialog was opened from it, and the text box is a different
+   * control with its own list. The colour picker commits what it shows on the way out, as Escape
+   * always did; the shadow editor has already written every change.
+   */
+  #closeDialog(): void {
+    if (this.picking) this.#closePicker();
+    else this.closePopup();
+    void this.updateComplete.then(() =>
+      this.renderRoot.querySelector<HTMLElement>('.color-btn')?.focus({ preventScroll: true }));
+  }
+
+  /*
+   * Escape anywhere in a dialog closes it — a swatch just clicked, the pad, a slider — and only the
+   * dialog. A control inside that answers Escape itself (a field's own list, the colour area) marks
+   * the key as handled, and is left to it.
+   */
+  #onDialogKey = (event: KeyboardEvent): void => {
+    if (event.key !== 'Escape' || event.defaultPrevented) return;
+    event.preventDefault();
+    event.stopPropagation();
+    this.#closeDialog();
+  };
+
+  /** The head the colour picker and the shadow editor share: drag it to move them, ✕ to close. */
+  #renderDialogHead(title: string, sub: string): TemplateResult {
+    return html`<div class="dialog-head" title="Drag to move" @pointerdown=${this.#startDialogMove}>
+      <span class="grip" aria-hidden="true">${icon('grip', 12)}</span>
+      <span class="title">${title}</span>
+      ${sub ? html`<span class="sub">${sub}</span>` : nothing}
+      <span class="spacer"></span>
+      <button
+        class="btn ghost icon sm close"
+        type="button"
+        aria-label="Close"
+        title="Close"
+        @pointerdown=${(event: Event) => event.stopPropagation()}
+        @click=${() => this.#closeDialog()}
+      >${icon('close', 11)}</button>
+    </div>`;
+  }
+
+  #startDialogMove = (event: PointerEvent): void => {
+    if (event.button !== 0) return;
+    const head = event.currentTarget as HTMLElement;
+    event.preventDefault();
+    // Moved before it settled: settle it where it is, so a later placement cannot pull it back.
+    const popup = head.closest<HTMLElement>('.popup.dialog');
+    if (popup && !this.#dialogBox) this.#settleDialog(popup);
+    try {
+      head.setPointerCapture(event.pointerId);
+    } catch {
+      // A synthetic or already-released pointer: the drag still follows the listeners below.
+    }
+    let last = { x: event.clientX, y: event.clientY };
+    const move = (at: PointerEvent): void => {
+      this.popupShift = { x: this.popupShift.x + at.clientX - last.x, y: this.popupShift.y + at.clientY - last.y };
+      last = { x: at.clientX, y: at.clientY };
+    };
+    const up = (): void => {
+      head.removeEventListener('pointermove', move);
+      head.removeEventListener('pointerup', up);
+      head.removeEventListener('pointercancel', up);
+    };
+    head.addEventListener('pointermove', move);
+    head.addEventListener('pointerup', up);
+    head.addEventListener('pointercancel', up);
+  };
 
   /**
    * Select a stretch of the value in the box, scrolled into view: one function of a long filter,
@@ -1228,7 +1457,6 @@ export class HeoValueField extends LitElement {
    */
   #closePicker(): void {
     this.closePopup();
-    this.textInput?.focus();
     if (this.draft.trim() !== this.value.trim()) this.#commit();
   }
 
@@ -2103,6 +2331,15 @@ export class HeoValueField extends LitElement {
     }
 
     if (event.key === 'Escape') {
+      /*
+       * A field inside another field's dialog (the shadow editor's X, its blur) with no list open
+       * lets Escape through to the dialog, which closes. Blurring here dropped focus on the page,
+       * where the next Escape deselected the element.
+       */
+      if (!this.open && this.#hostFields().length) {
+        this.draft = this.value;
+        return;
+      }
       event.preventDefault();
       event.stopPropagation();
       if (this.open) {
@@ -2272,6 +2509,8 @@ export class HeoValueField extends LitElement {
    */
   #positionPopup(): void {
     if (this.inlineList) return;
+    // A dialog placed once stays put; see #dialogBox.
+    if ((this.picking || this.shadowing) && this.#dialogBox) return;
     const style = this.#placer.style(this.renderRoot.querySelector<HTMLElement>('.popup'), {
       anchor: this.getBoundingClientRect(),
       // A composer is wider than a list: three labelled rows each holding a field of their own.
@@ -2279,7 +2518,17 @@ export class HeoValueField extends LitElement {
       minWidth: this.shadowing ? 320 : this.picking ? 268 : this.composer ? 296 : this.head ? 280 : 200,
     });
     if (style !== null) this.popupStyle = style;
+    // A dialog takes this placement as its own once it has drawn at it, and stays there.
+    if ((this.picking || this.shadowing) && !this.#settling) {
+      this.#settling = true;
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        this.#settling = false;
+        const popup = this.renderRoot.querySelector<HTMLElement>('.popup.dialog');
+        if (this.open && (this.picking || this.shadowing) && popup && !this.#dialogBox) this.#settleDialog(popup);
+      }));
+    }
   }
+  #settling = false;
 
   #choose(item: ValueSuggestion): void {
     /*
@@ -2482,6 +2731,12 @@ export class HeoValueField extends LitElement {
     this.shadowing = false;
     // Dragged somewhere for this opening only: the next one is placed afresh.
     this.popupShift = { x: 0, y: 0 };
+    const dialog = this.renderRoot.querySelector<HTMLElement>('.popup.dialog');
+    if (dialog) tieLayer(dialog, null);
+    this.#dialogBox = null;
+    this.#dialogObserver?.disconnect();
+    this.#escapeLayer?.();
+    this.#escapeLayer = null;
     this.#placer.invalidate();
     this.highlight = -1;
     // The composer goes with it. Left set, an abandoned form would stand in for the list the next

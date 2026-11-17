@@ -338,8 +338,13 @@
           picker = field.shadowRoot.querySelector('heo-color-picker');
           const opened = Boolean(picker);
           // Focus the hex field first: losing that focus is what closed it.
+          // A short window caps the picker and it scrolls: bring the field into view, as a user would.
+          inside(picker, 'input[data-input="hex"]').scrollIntoView({ block: 'nearest' });
+          await settle(100);
           const hex = inside(picker, 'input[data-input="hex"]').getBoundingClientRect();
           await press(hex.left + 20, hex.top + hex.height / 2);
+          inside(picker, '.head > span').scrollIntoView({ block: 'nearest' });
+          await settle(100);
           const label = inside(picker, '.head > span').getBoundingClientRect();
           await press(label.left + 5, label.top + label.height / 2);
           const afterLabel = isOpen();

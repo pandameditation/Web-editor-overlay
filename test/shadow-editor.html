@@ -18,8 +18,11 @@
 </head>
 
 <body>
-  <div id="card" style="width:200px;padding:20px;box-shadow:0 1px 2px rgb(0 0 0 / 6%), 0 8px 24px -6px rgb(15 23 42 / 18%)">Card</div>
+  <div id="card" style="width:200px;padding:20px;clip-path:inset(-40px round 16px);box-shadow:0 1px 2px rgb(0 0 0 / 6%), 0 8px 24px -6px rgb(15 23 42 / 18%)">Card</div>
   <p id="title">A title</p>
+  <div id="plain" style="width:80px;height:20px;box-shadow:0 2px 6px rgb(0 0 0 / 20%)">Plain</div>
+  <img id="icon" alt="" src="nested/dot.svg" style="width:24px;box-shadow:0 2px 6px rgb(0 0 0 / 20%)">
+  <img id="photo" alt="" style="width:24px;box-shadow:0 2px 6px rgb(0 0 0 / 20%)" src="data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=">
   <div id="named" style="width:80px;height:20px;box-shadow:0 2px 6px black, 0 0 0 1px var(--shadow-md)">Named</div>
   <div id="logo" style="width:60px;height:60px;background:#6366f1;filter:saturate(1.2) contrast(1.05)">★</div>
   <pre id="progress">start</pre>
@@ -81,12 +84,23 @@
         if (!editor(property)) opener(property).click();
         await settle(350);
       };
-      const confirmDialog = () => deep('heo-confirm-dialog')?.shadowRoot;
+      const head = (property) => field(property)?.shadowRoot?.querySelector('.popup.dialog .dialog-head');
       const lengthField = (root, label) => Array.from(root.querySelectorAll('heo-value-field')).find((one) => one.getAttribute('field-label') === label);
       const send = async (target, type, value) => {
         target.dispatchEvent(new CustomEvent(type, { detail: { value }, bubbles: true, composed: true }));
         await settle(250);
       };
+
+      // Real key presses: a synthetic Escape is never handled as the page's own shortcut.
+      let keySeq = 0;
+      const keyWaiters = new Map();
+      window.__heoKeysDone = (id) => { keyWaiters.get(id)?.(); keyWaiters.delete(id); };
+      const keys = (...names) => new Promise((resolve) => {
+        const id = ++keySeq;
+        keyWaiters.set(id, resolve);
+        window.__heoPressKeys(JSON.stringify({ id, keys: names }));
+      }).then(() => settle(300));
+      const focusedIn = (el) => el?.shadowRoot?.activeElement ?? null;
 
       const card = await select('card');
 
@@ -123,11 +137,10 @@
           // Last, after the controls, as in the colour picker.
           swatchesComeLast: Boolean(root.querySelector('.offset')) &&
             (root.querySelector('.offset').compareDocumentPosition(root.querySelector('.swatches')) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
-          offersTheConversion: /use filter: drop-shadow\(\) instead/i.test(flat(root?.querySelector('.convert'))),
-          withTheShortDescription: /Follows the element's shape instead of its box — better for complex shapes, icons, etc\./.test(flat(root?.querySelector('.convert'))),
-          noStandingWarningAboutWhatConvertingLoses: !/no spread or inset/i.test(flat(root)),
+          // The box-shadow ↔ drop-shadow() switch is gone: one property, one editor.
+          noConversionSwitch: !root?.querySelector('.convert') && !/drop-shadow\(\) instead/i.test(flat(root)),
           noHintUnderTheSwatches: !/HEO's own/i.test(flat(root)),
-          closesWithAnXNotDone: Boolean(root.querySelector('.head button[aria-label="Close"]')) && !button(root, /^done$/i),
+          closesWithAnXNotDone: Boolean(head('box-shadow')?.querySelector('button[aria-label="Close"]')) && !button(root, /^done$/i),
           removesWithTheTrash: root.querySelectorAll('.layer .kill').length === 2,
           saysColorNotColour: /\bColor\b/.test(flat(root)) && !/colour/i.test(flat(root)),
         };
@@ -206,10 +219,10 @@
       await check('move', async () => {
         const popup = () => field('box-shadow').shadowRoot.querySelector('.popup');
         const start = popup().getBoundingClientRect();
-        const head = ed('box-shadow').querySelector('.head');
-        const box = head.getBoundingClientRect();
-        const pointer = (type, x, y) => head.dispatchEvent(new PointerEvent(type, { pointerId: 9, button: 0, clientX: x, clientY: y, bubbles: true, composed: true }));
-        try { head.setPointerCapture = () => {}; } catch { /* the capture is not what is under test */ }
+        const grab = head('box-shadow');
+        const box = grab.getBoundingClientRect();
+        const pointer = (type, x, y) => grab.dispatchEvent(new PointerEvent(type, { pointerId: 9, button: 0, clientX: x, clientY: y, bubbles: true, composed: true }));
+        
         pointer('pointerdown', box.left + 40, box.top + 8);
         pointer('pointermove', box.left + 10, box.top + 38);
         pointer('pointerup', box.left + 10, box.top + 38);
@@ -245,56 +258,11 @@
         };
       });
 
-      await check('decline', async () => {
-        ed('box-shadow').querySelector('.convert input').click();
-        await settle(400);
-        button(confirmDialog(), /keep box-shadow/i)?.click();
-        await settle(500);
-        return {
-          decliningChangesNothing: inline(card, 'filter') === '' && is(card, 'box-shadow', '0 1px 2px rgb(0 0 0 / 6%), 0 8px 24px -6px rgb(15 23 42 / 18%)'),
-        };
-      });
-      await open('box-shadow');
-
-      await check('toFilter', async () => {
-        const tick = ed('box-shadow').querySelector('.convert input');
-        tick.click();
-        await settle(400);
-        // The second shadow has a spread, which a drop shadow cannot keep: asked first.
-        const asked = /no spread or inset/i.test(flat(confirmDialog()));
-        const untouchedWhileAsking = inline(card, 'filter') === '' && inline(card, 'box-shadow') !== 'none';
-        button(confirmDialog(), /^convert$/i)?.click();
-        await settle(800);
-        const filterNow = inline(card, 'filter');
-        return {
-          asksBeforeLosingTheSpread: asked,
-          andChangesNothingUntilAnswered: untouchedWhileAsking,
-          theBoxShadowIsRemoved: inline(card, 'box-shadow') === 'none',
-          // The spread is dropped: drop-shadow() has none.
-          theShadowsBecomeDropShadows: filterNow === as('filter', 'drop-shadow(0 1px 2px rgb(0 0 0 / 6%)) drop-shadow(0 8px 24px rgb(15 23 42 / 18%))'),
-          theEditorOpensAgainOnTheFilterRow: Boolean(editor('filter')),
-          inDropShadowModeWithTheBoxTicked: /drop shadow/i.test(flat(ed('filter')?.querySelector('.title'))) &&
-            ed('filter')?.querySelector('.convert input')?.checked === true,
-          spreadIsOffThere: ed('filter')?.querySelectorAll('.line.off').length >= 1,
-        };
-      });
-
-      await check('backToBox', async () => {
-        ed('filter').querySelector('.convert input').click();
-        await settle(800);
-        return {
-          convertsBack: is(card, 'box-shadow', '0 1px 2px rgb(0 0 0 / 6%), 0 8px 24px rgb(15 23 42 / 18%)'),
-          theFilterHasNoDropShadowLeft: inline(card, 'filter') === 'none',
-          reopensOnBoxShadow: Boolean(editor('box-shadow')),
-        };
-      });
-
       const logo = await select('logo');
       await check('filter', async () => {
         await open('filter');
         const root = ed('filter');
         const chips = Array.from(root.querySelectorAll('.fns .chip')).map(flat);
-        const noTick = !root.querySelector('.convert');
         const addInside = Boolean(button(root, /^add shadow$/i)) && !root.querySelector('.empty-stack');
         button(root, /^add shadow$/i).click();
         await settle(400);
@@ -306,7 +274,6 @@
         const input = field('filter').shadowRoot.querySelector('input[type="text"]');
         return {
           showsTheOtherFunctions: chips.includes('saturate(1.2)') && chips.includes('contrast(1.05)'),
-          noConversionWhileThereIsNoDropShadow: noTick,
           anEmptyStackHasAnAddShadowButton: addInside,
           addingADropShadowKeepsTheOthers: written === as('filter', 'saturate(1.2) contrast(1.05) drop-shadow(0px 4px 12px rgb(0 0 0 / 20%))'),
           aChipSelectsItsFunctionInTheField: input.value.slice(input.selectionStart, input.selectionEnd) === 'contrast(1.05)',
@@ -318,6 +285,143 @@
        * A named shadow colour froze the page: reading it appended a probe to the body on every render,
        * the editor sees body changes as page edits and re-renders, and the next render probed again.
        */
+      await check('dialog', async () => {
+        await select('plain');
+        // Looked at in the frame it opens: the animation is over in 170ms.
+        opener('box-shadow').click();
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        const popup = () => field('box-shadow').shadowRoot.querySelector('.popup.dialog');
+        const opening = popup()?.getAnimations().some((one) => one.animationName === 'dialog-in');
+        await settle(350);
+        head('box-shadow').querySelector('button[aria-label="Close"]').click();
+        await settle(250);
+        const closed = !editor('box-shadow');
+        // The colour picker has the same head: moved by it, closed by its cross.
+        const colour = Array.from(sroot().querySelectorAll('heo-value-field')).find((one) => one.kind === 'color');
+        colour?.pickColor();
+        await settle(500);
+        const pick = () => colour.shadowRoot.querySelector('.popup.dialog');
+        const pickHead = colour.shadowRoot.querySelector('.dialog-head');
+        const pointer = (type, x, y) => pickHead.dispatchEvent(new PointerEvent(type, { pointerId: 7, button: 0, clientX: x, clientY: y, bubbles: true, composed: true }));
+        // A press that does not move settles it where it is drawn; this small test viewport can cap
+        // its first placement, after which it grows about its middle, which is not the drag.
+        pointer('pointerdown', 0, 0);
+        pointer('pointerup', 0, 0);
+        await settle(300);
+        const start = pick()?.getBoundingClientRect();
+        const box = pickHead?.getBoundingClientRect();
+        if (box) {
+          pointer('pointerdown', box.left + 30, box.top + 6);
+          pointer('pointermove', box.left + 10, box.top + 26);
+          pointer('pointerup', box.left + 10, box.top + 26);
+        }
+        await settle(250);
+        const moved = pick()?.getBoundingClientRect();
+        const titled = /color/i.test(flat(pickHead?.querySelector('.title')));
+        pickHead?.querySelector('button[aria-label="Close"]')?.click();
+        await settle(250);
+        return {
+          theShadowEditorOpensWithItsAnimation: Boolean(opening),
+          andItsCrossClosesIt: closed,
+          theColorPickerHasTheSameHead: Boolean(pickHead) && titled,
+          // Its middle follows the pointer: it may also grow a little about it once uncapped.
+          itMovesByItsHead: Boolean(start && moved) && Math.round(moved.left - start.left) === -20 &&
+            Math.abs((moved.top + moved.height / 2) - (start.top + start.height / 2) - 20) <= 2,
+          andItsCrossClosesIt2: !colour.shadowRoot.querySelector('.popup.dialog'),
+        };
+      });
+
+      /*
+       * Escape closes the dialog, and only the dialog: it used to reach the page's shortcut and
+       * deselect the element. Focus goes back to the button that opened it, never to the text.
+       */
+      await check('escape', async () => {
+        await select('plain');
+        await open('box-shadow');
+        await keys('Escape');
+        const afterOpen = { closed: !editor('box-shadow'), selected: Boolean(engine.store.value.selected), onButton: focusedIn(field('box-shadow'))?.classList.contains('shadow-btn') };
+        // After a swatch picked with the mouse.
+        await open('box-shadow');
+        const swatch = ed('box-shadow').querySelectorAll('.swatch')[3];
+        swatch.click();
+        swatch.focus();
+        await settle(300);
+        await keys('Escape');
+        const afterSwatch = { closed: !editor('box-shadow'), selected: Boolean(engine.store.value.selected) };
+        // From inside one of its own fields, with no list open.
+        await open('box-shadow');
+        const blur = lengthField(ed('box-shadow'), 'Blur');
+        blur.focusInput();
+        await settle(200);
+        // Innermost first: a list the field opened closes before the dialog does.
+        if (blur.listIsOpen) await keys('Escape');
+        const stillOpenAfterList = Boolean(editor('box-shadow'));
+        await keys('Escape');
+        const afterField = { closed: !editor('box-shadow'), selected: Boolean(engine.store.value.selected) };
+        // The cross, too, hands focus to the button.
+        await open('box-shadow');
+        head('box-shadow').querySelector('button[aria-label="Close"]').click();
+        await settle(300);
+        const crossFocus = focusedIn(field('box-shadow'));
+        // And the colour picker, the same way.
+        const colour = Array.from(sroot().querySelectorAll('heo-value-field')).find((one) => one.kind === 'color');
+        colour.shadowRoot.querySelector('.color-btn').click();
+        await settle(500);
+        await keys('Escape');
+        const pickerClosed = !colour.shadowRoot.querySelector('heo-color-picker');
+        return {
+          escapeClosesIt: afterOpen.closed,
+          andKeepsTheElementSelected: afterOpen.selected,
+          focusReturnsToItsButton: Boolean(afterOpen.onButton),
+          escapeWorksAfterClickingASwatch: afterSwatch.closed && afterSwatch.selected,
+          escapeWorksFromItsOwnField: stillOpenAfterList && afterField.closed && afterField.selected,
+          theCrossHandsFocusToTheButtonNotTheText: Boolean(crossFocus?.classList.contains('shadow-btn')),
+          theColorPickerClosesTheSameWay: pickerClosed && Boolean(engine.store.value.selected) &&
+            Boolean(focusedIn(colour)?.classList.contains('color-btn')),
+        };
+      });
+
+      /*
+       * Focus goes into a popover when it opens, as the overlay's other popovers do: to its first
+       * control, not the grip or the cross. And it never drops on nothing when a control goes away.
+       */
+      await check('focus', async () => {
+        const deepIn = (root) => { let a = root?.activeElement; while (a?.shadowRoot?.activeElement) a = a.shadowRoot.activeElement; return a; };
+        await select('plain');
+        if (editor('box-shadow')) head('box-shadow').querySelector('button[aria-label="Close"]').click();
+        await settle(250);
+        opener('box-shadow').click();
+        await settle(500);
+        const onOpen = deepIn(field('box-shadow').shadowRoot);
+        const insideEditor = Boolean(onOpen) && editor('box-shadow').shadowRoot.contains(onOpen.getRootNode() === editor('box-shadow').shadowRoot ? onOpen : onOpen.getRootNode().host);
+        const firstControl = onOpen?.matches?.('.layer, .add-first, button[aria-label="Add a shadow"]');
+        // Add, then the trash: focus follows into the stack instead of dropping.
+        button(ed('box-shadow'), /add a shadow/i).click();
+        await settle(400);
+        const afterAdd = ed('box-shadow').activeElement;
+        const rows = ed('box-shadow').querySelectorAll('.layer').length;
+        ed('box-shadow').querySelector(`.layer[data-layer="${rows - 1}"] .kill`).click();
+        await settle(400);
+        const afterTrash = ed('box-shadow').activeElement;
+        const stillOpen = Boolean(editor('box-shadow'));
+        head('box-shadow').querySelector('button[aria-label="Close"]').click();
+        await settle(250);
+        // The colour picker the same way.
+        const colour = Array.from(sroot().querySelectorAll('heo-value-field')).find((one) => one.kind === 'color');
+        colour.shadowRoot.querySelector('.color-btn').click();
+        await settle(500);
+        const inPicker = deepIn(colour.shadowRoot);
+        const pickerFocused = Boolean(inPicker) && Boolean(colour.shadowRoot.querySelector('heo-color-picker')?.shadowRoot?.contains(inPicker));
+        await keys('Escape');
+        return {
+          openingFocusesTheEditorsFirstControl: insideEditor && Boolean(firstControl),
+          notTheGripOrTheCross: !onOpen?.closest?.('.dialog-head'),
+          addingAShadowFocusesItsRow: afterAdd?.matches('.layer') && afterAdd.dataset.layer === String(rows - 1),
+          removingOneKeepsFocusInTheStack: stillOpen && Boolean(afterTrash?.matches('.layer, .add-first')),
+          theColorPickerFocusesInsideToo: pickerFocused,
+        };
+      });
+
       await check('namedColorDoesNotLoop', async () => {
         const named = await select('named');
         let bodyChanges = 0;
@@ -351,11 +455,20 @@
         await open('text-shadow');
         const root = ed('text-shadow');
         const blocked = Array.from(root.querySelectorAll('.swatch')).filter((one) => one.disabled).length;
+        // Held, not looked up again: once set, text-shadow also gets a row in Effective styles above.
+        const opened = field('text-shadow');
+        const popup = () => opened.shadowRoot.querySelector('.popup.dialog');
+        const before = popup().getBoundingClientRect();
         button(root, /^add shadow$/i).click();
         await settle(400);
+        const after = popup().getBoundingClientRect();
+        const middle = (rect) => rect.top + rect.height / 2;
+        // Grown about its middle, unless that would have pushed it off the screen.
+        const inPlace = Math.abs(middle(after) - middle(before)) < 2 || Math.round(after.top) === 8 || Math.round(after.bottom) === innerHeight - 8;
+        const sameColumn = Math.abs(after.left - before.left) < 1;
         return {
-          opensInTextMode: /text shadow/i.test(flat(root.querySelector('.title'))),
-          noConversion: !root.querySelector('.convert'),
+          addingTheFirstShadowGrowsItInPlace: after.height > before.height + 40 && inPlace && sameColumn,
+          opensInTextMode: /text shadow/i.test(flat(opened.shadowRoot.querySelector('.dialog-head .title'))),
           spreadIsOff: Boolean(root.querySelector('.line.off')),
           // Only HEO's Inner is an inset shadow, which a text shadow cannot be; the token stays on.
           onlyTheInsetSwatchIsOff: blocked === 1,
@@ -377,7 +490,7 @@
         const names = Array.from(editorRoot?.querySelectorAll('.swatch') ?? []).map((one) => one.dataset.swatch);
         await send(Array.from(editorRoot?.querySelectorAll('heo-value-field') ?? []).find((one) => one.getAttribute('field-label') === 'Offset X'), 'value-change', '2px');
         const value = engine.tokens.get('shadow-md')?.value ?? '';
-        token?.shadowRoot?.querySelector('heo-shadow-editor')?.shadowRoot?.querySelector('.head button[aria-label="Close"]')?.click();
+        token?.shadowRoot?.querySelector('.dialog-head button[aria-label="Close"]')?.click();
         await settle(300);
         engine.setDockTab('styles');
         await settle(400);

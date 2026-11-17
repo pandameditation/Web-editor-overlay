@@ -27,17 +27,6 @@ import './value-field.js';
 /** What the editor writes: `box-shadow`, `text-shadow`, or the drop shadows of `filter`. */
 export type ShadowEditorMode = 'box' | 'text' | 'filter';
 
-/** A conversion between box-shadow and filter: drop-shadow(), for the host to write as two properties. */
-export interface ShadowConvert {
-  /** The property the shadows move to. */
-  to: 'filter' | 'box-shadow';
-  /** The shadows, as the editor has them. */
-  shadows: Shadow[];
-  /** What the property being left becomes: `none`, or the filter's other functions. */
-  rest: string;
-  /** How many shadows lose a spread or an inset on the way: the host confirms before converting. */
-  lost: number;
-}
 
 /** A shadow drawn small: lengths divided down, so a 24px blur reads in a 12px tile. */
 export function miniShadow(list: readonly Shadow[], divide: number, mode: ShadowMode = 'box'): string {
@@ -96,10 +85,8 @@ const DRAG_RANGE = 40;
  * token picked and left as it is, is written as its `var()`.
  *
  * Writes as it goes, like the background editor: `shadow-input` while a value is being dragged, for
- * the host's live preview, and `shadow-change` when it settles. `shadow-convert` asks the host to
- * move the shadows between `box-shadow` and `filter: drop-shadow()`, which is two properties and so
- * the host's to write. `filter-select` asks it to select one of the filter's other functions in the
- * field. `shadow-close` is Done.
+ * the host's live preview, and `shadow-change` when it settles. `filter-select` asks it to select
+ * one of the filter's other functions in the field. The popup's head — grip, title, ✕ — belongs to the field that opens it.
  */
 @customElement('heo-shadow-editor')
 export class HeoShadowEditor extends LitElement {
@@ -119,23 +106,6 @@ export class HeoShadowEditor extends LitElement {
         min-width: 0;
         width: 100%;
       }
-      .head {
-        display: flex;
-        align-items: center;
-        gap: 7px;
-        margin: -2px 0 0;
-        cursor: grab;
-        touch-action: none;
-        user-select: none;
-      }
-      .head:active {
-        cursor: grabbing;
-      }
-      .head .close {
-        width: 22px;
-        height: 22px;
-        cursor: pointer;
-      }
       .grip {
         display: grid;
         place-items: center;
@@ -144,18 +114,6 @@ export class HeoShadowEditor extends LitElement {
       }
       .add-first {
         justify-self: start;
-      }
-      .head .title {
-        font-weight: 600;
-        font-size: 12px;
-        color: var(--heo-text);
-      }
-      .head .mono {
-        color: var(--heo-text-faint);
-        font-size: 10px;
-      }
-      .head .spacer {
-        flex: 1 1 auto;
       }
       .group {
         display: flex;
@@ -172,32 +130,6 @@ export class HeoShadowEditor extends LitElement {
         content: '';
         flex: 1;
         border-top: 1px solid var(--heo-line);
-      }
-      .convert {
-        display: flex;
-        gap: 8px;
-        align-items: flex-start;
-        padding: 8px 9px;
-        border: 1px solid var(--heo-line);
-        border-radius: var(--heo-r-sm);
-        background: var(--heo-sunken);
-        cursor: pointer;
-      }
-      .convert input {
-        margin: 1px 0 0;
-        accent-color: var(--heo-accent);
-      }
-      .convert b {
-        display: block;
-        color: var(--heo-text);
-        font-weight: 600;
-      }
-      .convert span span {
-        display: block;
-        margin-top: 2px;
-        color: var(--heo-text-hint);
-        font-size: 10.5px;
-        line-height: 1.45;
       }
       code {
         color: var(--heo-text);
@@ -449,10 +381,8 @@ export class HeoShadowEditor extends LitElement {
   /** Its computed value, read when the written one is a token or another value this cannot read. */
   @property({ type: String }) computed = '';
   @property({ type: String }) mode: ShadowEditorMode = 'box';
-  /** The design system's shadow tokens, as swatches. HEO's own are used when there are none. */
+  /** The design system's shadow tokens, as swatches, before HEO's own. */
   @property({ attribute: false }) tokens: readonly ShadowSwatch[] = [];
-  /** Whether the host can move the shadows between box-shadow and filter. */
-  @property({ type: Boolean }) convertible = false;
 
   @state() private shadows: Shadow[] = [];
   @state() private picked = 0;
@@ -539,28 +469,11 @@ export class HeoShadowEditor extends LitElement {
   override render(): TemplateResult {
     const mode = this.#shadowMode;
     const current = this.shadows[this.picked];
-    const title = this.mode === 'filter' ? 'Drop shadow' : this.mode === 'text' ? 'Text shadow' : 'Box shadow';
-    const property = this.mode === 'filter' ? 'filter: drop-shadow()' : this.mode === 'text' ? 'text-shadow' : 'box-shadow';
     /*
      * Top to bottom, the colour picker's order: what is being edited, the controls, the swatches
-     * last. The head is the handle the editor is moved by, and ✕ closes it, as other popovers do.
+     * last. The head — grip, title, ✕ — is the popup's, shared with the colour picker.
      */
     return html`
-      <div class="head" title="Drag to move" @pointerdown=${this.#startMove}>
-        <span class="grip" aria-hidden="true">${icon('grip', 12)}</span>
-        <span class="title">${title}</span>
-        <span class="mono">${property}</span>
-        <span class="spacer"></span>
-        <button
-          class="btn ghost icon sm close"
-          type="button"
-          aria-label="Close"
-          title="Close"
-          @pointerdown=${(event: Event) => event.stopPropagation()}
-          @click=${this.#close}
-        >${icon('close', 11)}</button>
-      </div>
-      ${this.#renderConvert()}
       ${this.mode === 'filter' ? this.#renderFunctions() : nothing}
       ${this.readable
         ? this.#renderStack()
@@ -570,48 +483,6 @@ export class HeoShadowEditor extends LitElement {
       ${current ? this.#renderShadow(current, mode) : nothing}
       ${this.#renderSwatches()}
     `;
-  }
-
-  /*
-   * Between box-shadow and filter: drop-shadow(). Ticked in filter mode, so unticking goes back.
-   *
-   * The box is put back as it was the moment it is clicked: whether it ends up the other way is
-   * the host's to say, after the conversion — and after the user confirms one that loses a spread
-   * or an inset, which they may decline.
-   */
-  #renderConvert(): TemplateResult | typeof nothing {
-    if (!this.convertible || this.mode === 'text') return nothing;
-    if (this.mode === 'filter' && !this.shadows.length) return nothing;
-    const toFilter = this.mode === 'box';
-    return html`<label class="convert">
-      <input
-        type="checkbox"
-        .checked=${!toFilter}
-        @change=${(event: Event) => {
-          (event.target as HTMLInputElement).checked = !toFilter;
-          this.#convert(toFilter ? 'filter' : 'box-shadow');
-        }}
-      />
-      <span>
-        <b>Use filter: drop-shadow() instead</b>
-        <span>
-          ${toFilter
-            ? html`Follows the element's shape instead of its box — better for complex shapes, icons, etc.`
-            : html`Untick to make these a <code>box-shadow</code> again.`}
-        </span>
-      </span>
-    </label>`;
-  }
-
-  #convert(to: 'filter' | 'box-shadow'): void {
-    const lost = to === 'filter' ? this.shadows.filter((one) => lostIn(one, 'drop').length) : [];
-    const detail: ShadowConvert = {
-      to,
-      shadows: this.shadows.map((one) => ({ ...one })),
-      rest: to === 'filter' ? 'none' : composeFilter(this.#others, [], this.#at),
-      lost: lost.length,
-    };
-    this.dispatchEvent(new CustomEvent<ShadowConvert>('shadow-convert', { detail, bubbles: true, composed: true }));
   }
 
   /** The filter's functions: the drop shadows are this editor's, the rest open in the field. */
@@ -644,6 +515,26 @@ export class HeoShadowEditor extends LitElement {
     const base = this.shadows[this.picked] ?? { ...NO_SHADOW, y: '4px', blur: '12px' };
     this.picked = this.shadows.length;
     this.#replace([...this.shadows, { ...base }], null);
+    this.#focusRow(this.picked);
+  }
+
+  /** Remove a shadow, and keep the keyboard in the stack: on the next row, or on Add. */
+  #remove(index: number): void {
+    this.#replace(this.shadows.filter((_one, at) => at !== index), null);
+    this.#focusRow(Math.min(index, this.shadows.length - 1));
+  }
+
+  /*
+   * Focus a row once it is drawn, or Add when the stack is empty. The control that was pressed is
+   * gone by then — Add becomes the stack, a trash goes with its row — and focus must not drop on
+   * nothing.
+   */
+  #focusRow(index: number): void {
+    void this.updateComplete.then(() => {
+      const row = this.renderRoot.querySelector<HTMLElement>(`.layer[data-layer="${index}"]`);
+      const target = row ?? this.renderRoot.querySelector<HTMLElement>('.add-first, button[aria-label="Add a shadow"]');
+      target?.focus({ preventScroll: true });
+    });
   }
 
   /**
@@ -692,7 +583,7 @@ export class HeoShadowEditor extends LitElement {
               <span @click=${(event: Event) => event.stopPropagation()}>${renderKill({
                 label: `Remove shadow ${index + 1}`,
                 tight: true,
-                onClick: () => this.#replace(this.shadows.filter((_one, at) => at !== index), null),
+                onClick: () => this.#remove(index),
               })}</span>
             </div>`)}
           </div>`
@@ -804,28 +695,6 @@ export class HeoShadowEditor extends LitElement {
       </div>
     </div>`;
   }
-
-  /** Drag the editor by its head: the host moves the popup by as much as the pointer moved. */
-  #startMove = (event: PointerEvent): void => {
-    if (event.button !== 0) return;
-    const head = event.currentTarget as HTMLElement;
-    event.preventDefault();
-    head.setPointerCapture(event.pointerId);
-    let last = { x: event.clientX, y: event.clientY };
-    const move = (at: PointerEvent): void => {
-      const delta = { dx: at.clientX - last.x, dy: at.clientY - last.y };
-      last = { x: at.clientX, y: at.clientY };
-      this.dispatchEvent(new CustomEvent('shadow-move', { detail: delta, bubbles: true, composed: true }));
-    };
-    const up = (): void => {
-      head.removeEventListener('pointermove', move);
-      head.removeEventListener('pointerup', up);
-      head.removeEventListener('pointercancel', up);
-    };
-    head.addEventListener('pointermove', move);
-    head.addEventListener('pointerup', up);
-    head.addEventListener('pointercancel', up);
-  };
 
   #renderShadow(current: Shadow, mode: ShadowMode): TemplateResult {
     const x = lengthParts(current.x);
@@ -1021,9 +890,6 @@ export class HeoShadowEditor extends LitElement {
     this.#edit({ x: `${x.number + delta[0]}${x.unit}`, y: `${y.number + delta[1]}${y.unit}` }, true);
   };
 
-  #close = (): void => {
-    this.dispatchEvent(new CustomEvent('shadow-close', { bubbles: true, composed: true }));
-  };
 }
 
 declare global {

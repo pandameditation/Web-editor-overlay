@@ -213,8 +213,8 @@ export class ModalController implements ReactiveController {
 const FOCUSABLE =
   'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
 
-/** The first thing worth focusing inside a dialog, crossing shadow roots. */
-function firstFocusable(root: ParentNode): HTMLElement | null {
+/** The first thing worth focusing inside a dialog, crossing shadow roots. Also used for popovers. */
+export function firstFocusable(root: ParentNode): HTMLElement | null {
   for (const el of Array.from(root.querySelectorAll<HTMLElement>('*'))) {
     if (el.shadowRoot) {
       const inner = firstFocusable(el.shadowRoot);
