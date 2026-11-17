@@ -19,6 +19,7 @@ import {
   type ShadowSwatch,
 } from '../../core/shadow.js';
 import { icon } from '../icons.js';
+import { killStyles, renderKill } from '../kill.js';
 import { baseStyles } from '../theme.js';
 import './segmented.js';
 import './value-field.js';
@@ -34,6 +35,8 @@ export interface ShadowConvert {
   shadows: Shadow[];
   /** What the property being left becomes: `none`, or the filter's other functions. */
   rest: string;
+  /** How many shadows lose a spread or an inset on the way: the host confirms before converting. */
+  lost: number;
 }
 
 /** A shadow drawn small: lengths divided down, so a 24px blur reads in a 12px tile. */
@@ -102,6 +105,7 @@ const DRAG_RANGE = 40;
 export class HeoShadowEditor extends LitElement {
   static override styles = [
     baseStyles,
+    killStyles,
     css`
       :host {
         display: grid;
@@ -119,6 +123,27 @@ export class HeoShadowEditor extends LitElement {
         display: flex;
         align-items: center;
         gap: 7px;
+        margin: -2px 0 0;
+        cursor: grab;
+        touch-action: none;
+        user-select: none;
+      }
+      .head:active {
+        cursor: grabbing;
+      }
+      .head .close {
+        width: 22px;
+        height: 22px;
+        cursor: pointer;
+      }
+      .grip {
+        display: grid;
+        place-items: center;
+        color: var(--heo-text-faint);
+        cursor: grab;
+      }
+      .add-first {
+        justify-self: start;
       }
       .head .title {
         font-weight: 600;
@@ -215,7 +240,7 @@ export class HeoShadowEditor extends LitElement {
       }
       .layer {
         display: grid;
-        grid-template-columns: 24px minmax(0, 1fr) 22px;
+        grid-template-columns: 14px 24px minmax(0, 1fr) auto;
         align-items: center;
         gap: 7px;
         padding: 2px 4px;
@@ -229,6 +254,9 @@ export class HeoShadowEditor extends LitElement {
       }
       .layer:hover {
         background: var(--heo-hover);
+      }
+      .layer.over {
+        box-shadow: inset 0 2px 0 var(--heo-accent);
       }
       .layer[aria-current='true'] {
         border-color: var(--heo-accent-line);
@@ -261,12 +289,6 @@ export class HeoShadowEditor extends LitElement {
         color: #fff;
         font: 700 11px/1 var(--heo-font, system-ui);
       }
-      .empty-stack {
-        margin: 0;
-        color: var(--heo-text-hint);
-        font-size: 11px;
-      }
-
       /* The swatches: small, like the colour picker's. */
       .swatches {
         display: flex;
@@ -519,12 +541,24 @@ export class HeoShadowEditor extends LitElement {
     const current = this.shadows[this.picked];
     const title = this.mode === 'filter' ? 'Drop shadow' : this.mode === 'text' ? 'Text shadow' : 'Box shadow';
     const property = this.mode === 'filter' ? 'filter: drop-shadow()' : this.mode === 'text' ? 'text-shadow' : 'box-shadow';
+    /*
+     * Top to bottom, the colour picker's order: what is being edited, the controls, the swatches
+     * last. The head is the handle the editor is moved by, and ✕ closes it, as other popovers do.
+     */
     return html`
-      <div class="head">
+      <div class="head" title="Drag to move" @pointerdown=${this.#startMove}>
+        <span class="grip" aria-hidden="true">${icon('grip', 12)}</span>
         <span class="title">${title}</span>
         <span class="mono">${property}</span>
         <span class="spacer"></span>
-        <button class="btn sm" type="button" @click=${this.#close}>Done</button>
+        <button
+          class="btn ghost icon sm close"
+          type="button"
+          aria-label="Close"
+          title="Close"
+          @pointerdown=${(event: Event) => event.stopPropagation()}
+          @click=${this.#close}
+        >${icon('close', 11)}</button>
       </div>
       ${this.#renderConvert()}
       ${this.mode === 'filter' ? this.#renderFunctions() : nothing}
@@ -533,47 +567,49 @@ export class HeoShadowEditor extends LitElement {
         : html`<p class="unreadable">
             This value cannot be edited here as it is. Pick a swatch to start from, or add a shadow.
           </p>`}
-      ${this.#renderSwatches()}
       ${current ? this.#renderShadow(current, mode) : nothing}
+      ${this.#renderSwatches()}
     `;
   }
 
-  /** Between box-shadow and filter: drop-shadow(). Ticked in filter mode, so unticking goes back. */
+  /*
+   * Between box-shadow and filter: drop-shadow(). Ticked in filter mode, so unticking goes back.
+   *
+   * The box is put back as it was the moment it is clicked: whether it ends up the other way is
+   * the host's to say, after the conversion — and after the user confirms one that loses a spread
+   * or an inset, which they may decline.
+   */
   #renderConvert(): TemplateResult | typeof nothing {
     if (!this.convertible || this.mode === 'text') return nothing;
     if (this.mode === 'filter' && !this.shadows.length) return nothing;
     const toFilter = this.mode === 'box';
-    const lost = toFilter ? this.shadows.filter((one) => lostIn(one, 'drop').length) : [];
     return html`<label class="convert">
-        <input
-          type="checkbox"
-          .checked=${!toFilter}
-          @change=${() => this.#convert(toFilter ? 'filter' : 'box-shadow')}
-        />
+      <input
+        type="checkbox"
+        .checked=${!toFilter}
+        @change=${(event: Event) => {
+          (event.target as HTMLInputElement).checked = !toFilter;
+          this.#convert(toFilter ? 'filter' : 'box-shadow');
+        }}
+      />
+      <span>
+        <b>Use filter: drop-shadow() instead</b>
         <span>
-          <b>Use filter: drop-shadow() instead</b>
-          <span>
-            ${toFilter
-        ? html`Follows the element's shape — transparent pixels, text, icons — instead of its
-                  box. Added to the element's <code>filter</code>; <code>box-shadow</code> is removed.`
-        : html`Untick to make these a <code>box-shadow</code> again. The filter's other
-                  functions stay.`}
-          </span>
+          ${toFilter
+            ? html`Follows the element's shape instead of its box — better for complex shapes, icons, etc.`
+            : html`Untick to make these a <code>box-shadow</code> again.`}
         </span>
-      </label>
-      ${lost.length
-        ? html`<p class="warn">${icon('alert', 12)}<span>
-            drop-shadow() has no spread or inset: converting drops them from
-            ${lost.length === 1 ? 'one shadow' : `${lost.length} shadows`}.
-          </span></p>`
-        : nothing}`;
+      </span>
+    </label>`;
   }
 
   #convert(to: 'filter' | 'box-shadow'): void {
+    const lost = to === 'filter' ? this.shadows.filter((one) => lostIn(one, 'drop').length) : [];
     const detail: ShadowConvert = {
       to,
       shadows: this.shadows.map((one) => ({ ...one })),
       rest: to === 'filter' ? 'none' : composeFilter(this.#others, [], this.#at),
+      lost: lost.length,
     };
     this.dispatchEvent(new CustomEvent<ShadowConvert>('shadow-convert', { detail, bubbles: true, composed: true }));
   }
@@ -589,7 +625,7 @@ export class HeoShadowEditor extends LitElement {
           type="button"
           title=${`Edit ${fn} in the field`}
           @click=${() =>
-        this.dispatchEvent(new CustomEvent('filter-select', { detail: { fn }, bubbles: true, composed: true }))}
+            this.dispatchEvent(new CustomEvent('filter-select', { detail: { fn }, bubbles: true, composed: true }))}
         >${fn}</button>`)}
         ${drops.map((_fn, index) => html`<button
           class="chip mine"
@@ -601,33 +637,35 @@ export class HeoShadowEditor extends LitElement {
           }}
         >drop-shadow(…)</button>`)}
       </div>
-      ${this.#others.length
-        ? html`<p class="hint" style="margin:5px 0 0">
-            This editor writes the drop shadows. The other functions stay as they are: click one to
-            edit it in the field.
-          </p>`
-        : nothing}
     </div>`;
   }
 
+  #add(): void {
+    const base = this.shadows[this.picked] ?? { ...NO_SHADOW, y: '4px', blur: '12px' };
+    this.picked = this.shadows.length;
+    this.#replace([...this.shadows, { ...base }], null);
+  }
+
+  /**
+   * The stack: one row per shadow, the background editor's layer row — a grip to drag it by, a
+   * picture, what it is, and the trash. Alt and an arrow move the focused row.
+   */
   #renderStack(): TemplateResult {
     const mode = this.#shadowMode;
     const label = this.mode === 'filter' ? 'Drop shadows' : 'Shadows';
     return html`<div>
       <div class="group">
         ${label}
-        <button
-          class="btn ghost icon sm"
-          type="button"
-          style="width:20px;height:20px"
-          aria-label="Add a shadow"
-          title="Add a shadow"
-          @click=${() => {
-        const base = this.shadows[this.picked] ?? { ...NO_SHADOW, y: '4px', blur: '12px' };
-        this.picked = this.shadows.length;
-        this.#replace([...this.shadows, { ...base }], null);
-      }}
-        >${icon('plus', 11)}</button>
+        ${this.shadows.length
+          ? html`<button
+              class="btn ghost icon sm"
+              type="button"
+              style="width:20px;height:20px"
+              aria-label="Add a shadow"
+              title="Add a shadow"
+              @click=${() => this.#add()}
+            >${icon('plus', 11)}</button>`
+          : nothing}
       </div>
       ${this.shadows.length
         ? html`<div class="layers">
@@ -635,34 +673,82 @@ export class HeoShadowEditor extends LitElement {
               class="layer"
               role="button"
               tabindex="0"
+              draggable="true"
+              data-layer=${index}
               aria-current=${index === this.picked ? 'true' : 'false'}
+              aria-label=${`Shadow ${index + 1}: ${this.#summary(one, mode)}`}
               @click=${() => {
-            this.picked = index;
-          }}
-              @keydown=${(event: KeyboardEvent) => {
-            if (event.key === 'Enter' || event.key === ' ') {
-              event.preventDefault();
-              this.picked = index;
-            }
-          }}
+                this.picked = index;
+              }}
+              @keydown=${(event: KeyboardEvent) => this.#layerKey(event, index)}
+              @dragstart=${(event: DragEvent) => this.#dragStart(event, index)}
+              @dragover=${(event: DragEvent) => this.#dragOver(event)}
+              @dragleave=${(event: DragEvent) => (event.currentTarget as HTMLElement).classList.remove('over')}
+              @drop=${(event: DragEvent) => this.#drop(event, index)}
             >
+              <span class="grip" title="Drag to reorder">${icon('grip', 12)}</span>
               ${this.#tile([one], mode)}
               <span class="v">${this.#summary(one, mode)}</span>
-              <button
-                class="btn ghost icon sm"
-                type="button"
-                style="width:20px;height:20px"
-                aria-label="Remove this shadow"
-                title="Remove this shadow"
-                @click=${(event: Event) => {
-            event.stopPropagation();
-            this.#replace(this.shadows.filter((_one, at) => at !== index), null);
-          }}
-              >${icon('minus', 11)}</button>
+              <span @click=${(event: Event) => event.stopPropagation()}>${renderKill({
+                label: `Remove shadow ${index + 1}`,
+                tight: true,
+                onClick: () => this.#replace(this.shadows.filter((_one, at) => at !== index), null),
+              })}</span>
             </div>`)}
           </div>`
-        : html`<p class="empty-stack">No shadow. Pick a swatch or add one.</p>`}
+        : html`<button class="btn sm add-first" type="button" @click=${() => this.#add()}>
+            ${icon('plus', 11)} Add shadow
+          </button>`}
     </div>`;
+  }
+
+  #layerKey(event: KeyboardEvent, index: number): void {
+    if (event.target !== event.currentTarget) return;
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      this.picked = index;
+    } else if (event.altKey && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
+      event.preventDefault();
+      const to = Math.max(0, Math.min(this.shadows.length - 1, index + (event.key === 'ArrowUp' ? -1 : 1)));
+      if (to !== index) this.#move(index, to);
+    }
+  }
+
+  /** Move a shadow in the stack. The first one is drawn on top, so order is what the eye sees. */
+  #move(from: number, to: number): void {
+    const next = [...this.shadows];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    this.picked = to;
+    this.#replace(next, null);
+  }
+
+  #dragFrom: number | null = null;
+
+  #dragStart(event: DragEvent, index: number): void {
+    // A drag that starts in a control is that control's, not the row moving.
+    if ((event.composedPath()[0] as HTMLElement).closest?.('button')) {
+      event.preventDefault();
+      return;
+    }
+    this.#dragFrom = index;
+    event.dataTransfer?.setData('text/plain', `shadow:${index}`);
+    if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+  }
+
+  #dragOver(event: DragEvent): void {
+    if (this.#dragFrom === null) return;
+    event.preventDefault();
+    (event.currentTarget as HTMLElement).classList.add('over');
+  }
+
+  #drop(event: DragEvent, index: number): void {
+    (event.currentTarget as HTMLElement).classList.remove('over');
+    const from = this.#dragFrom;
+    this.#dragFrom = null;
+    if (from === null || from === index) return;
+    event.preventDefault();
+    this.#move(from, index);
   }
 
   #summary(one: Shadow, mode: ShadowMode): string {
@@ -682,13 +768,16 @@ export class HeoShadowEditor extends LitElement {
     return html`<span class="tile"><b style=${`text-shadow:${miniShadow(list, 3, 'text')}`}>A</b></span>`;
   }
 
+  /**
+   * The swatches, last, as in the colour picker: the value as it was, then the design system's
+   * shadow tokens, then HEO's own, each set behind its own short rule. They wrap onto more lines.
+   */
   #renderSwatches(): TemplateResult {
     const mode = this.#shadowMode;
-    const list = this.tokens.length ? this.tokens : HEO_SHADOW_SWATCHES;
     const cell = (shadows: readonly Shadow[], label: string, swatch: ShadowSwatch | null, first = false): TemplateResult => {
       // An inset cannot be a text or a drop shadow, so a swatch made of one cannot be picked there.
       const blocked = mode !== 'box' && shadows.some((one) => one.inset);
-      const pressed = sameShadows(shadows, this.shadows) && (first ? !this.fromSwatch : true);
+      const pressed = sameShadows(shadows, this.shadows) && (first ? !this.fromSwatch : this.fromSwatch === null || this.fromSwatch.value === swatch?.value);
       return html`<button
         class="swatch"
         type="button"
@@ -704,21 +793,39 @@ export class HeoShadowEditor extends LitElement {
           : html`<b style=${`text-shadow:${miniShadow(shadows, 2, 'text')}`}>A</b>`}
       </button>`;
     };
+    const sep = html`<span class="sep" aria-hidden="true"></span>`;
     return html`<div>
       <div class="group">Swatches</div>
       <div class="swatches" role="group" aria-label="Shadow swatches">
         ${cell(this.original, 'As it was', null, true)}
-        <span class="sep" aria-hidden="true"></span>
-        ${list.map((one) => cell(one.shadows, one.name, one))}
+        ${this.tokens.length ? html`${sep}${this.tokens.map((one) => cell(one.shadows, one.name, one))}` : nothing}
+        ${sep}
+        ${HEO_SHADOW_SWATCHES.map((one) => cell(one.shadows, one.name, one))}
       </div>
-      <p class="hint" style="margin:5px 0 0">
-        ${this.tokens.length
-        ? html`From the design system. Picked and left as it is, a token is written as its
-              <code>var()</code>.`
-        : html`HEO's own: the design system has no shadow tokens yet.`}
-      </p>
     </div>`;
   }
+
+  /** Drag the editor by its head: the host moves the popup by as much as the pointer moved. */
+  #startMove = (event: PointerEvent): void => {
+    if (event.button !== 0) return;
+    const head = event.currentTarget as HTMLElement;
+    event.preventDefault();
+    head.setPointerCapture(event.pointerId);
+    let last = { x: event.clientX, y: event.clientY };
+    const move = (at: PointerEvent): void => {
+      const delta = { dx: at.clientX - last.x, dy: at.clientY - last.y };
+      last = { x: at.clientX, y: at.clientY };
+      this.dispatchEvent(new CustomEvent('shadow-move', { detail: delta, bubbles: true, composed: true }));
+    };
+    const up = (): void => {
+      head.removeEventListener('pointermove', move);
+      head.removeEventListener('pointerup', up);
+      head.removeEventListener('pointercancel', up);
+    };
+    head.addEventListener('pointermove', move);
+    head.addEventListener('pointerup', up);
+    head.addEventListener('pointercancel', up);
+  };
 
   #renderShadow(current: Shadow, mode: ShadowMode): TemplateResult {
     const x = lengthParts(current.x);

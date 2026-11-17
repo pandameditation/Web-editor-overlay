@@ -10,7 +10,7 @@ import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import type { DesignClass, DesignRule, DesignToken, TokenGroup } from '../../core/types.js';
 import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
-import { classSuggestions } from '../suggestions.js';
+import { classSuggestions, shadowSwatches } from '../suggestions.js';
 import { killStyles, renderKill } from '../kill.js';
 import { baseStyles } from '../theme.js';
 import { ClassEditor } from './class-editor.js';
@@ -533,7 +533,9 @@ export class HeoTokensPanel extends HeoElement {
      * What is left in the well is what the field cannot show: a shadow, and a glyph naming the
      * group for everything else.
      */
-    const ownsItsPreview = isColor || DIMENSIONAL_GROUPS.has(token.group);
+    // A shadow's field draws the shadow at its head and opens the shadow editor, as Styles does.
+    const isShadow = token.group === 'shadow';
+    const ownsItsPreview = isColor || isShadow || DIMENSIONAL_GROUPS.has(token.group);
     return html`<div class=${`token${ownsItsPreview ? ' no-preview' : ''}`}>
       ${ownsItsPreview
         ? nothing
@@ -541,7 +543,10 @@ export class HeoTokensPanel extends HeoElement {
       <heo-value-field
         label=${token.name}
         .value=${token.value}
-        .kind=${isColor ? 'color' : DIMENSIONAL_GROUPS.has(token.group) ? 'length' : 'text'}
+        .kind=${isColor ? 'color' : isShadow ? 'shadow' : DIMENSIONAL_GROUPS.has(token.group) ? 'length' : 'text'}
+        .property=${isShadow ? 'box-shadow' : ''}
+        .computed=${isShadow ? token.value : ''}
+        .shadowTokens=${isShadow ? shadowSwatches(this.editor).filter((one) => one.value !== `var(--${token.name})`) : []}
         .suggestions=${[]}
         @value-change=${(event: CustomEvent<{ value: string }>) =>
         this.#setToken(token, event.detail.value)}
@@ -628,9 +633,13 @@ export class HeoTokensPanel extends HeoElement {
           .value=${this.newValue}
           .kind=${this.newGroup === 'color'
         ? 'color'
-        : DIMENSIONAL_GROUPS.has(this.newGroup)
-          ? 'length'
-          : 'text'}
+        : this.newGroup === 'shadow'
+          ? 'shadow'
+          : DIMENSIONAL_GROUPS.has(this.newGroup)
+            ? 'length'
+            : 'text'}
+          .property=${this.newGroup === 'shadow' ? 'box-shadow' : ''}
+          .shadowTokens=${this.newGroup === 'shadow' ? shadowSwatches(this.editor) : []}
           .suggestions=${[]}
           placeholder="value"
           @value-input=${(event: CustomEvent<{ value: string }>) => {

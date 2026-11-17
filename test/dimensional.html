@@ -748,6 +748,7 @@
               kind: field?.kind,
               well: Boolean(row.querySelector('.preview')),
               gauge: Boolean(field?.shadowRoot.querySelector('.gauge')),
+              shadowButton: Boolean(field?.shadowRoot.querySelector('.shadow-btn')),
               width: Math.round(field?.getBoundingClientRect().width ?? 0),
             };
           },
@@ -770,8 +771,11 @@
           // Which is the width a colour row has had all along, for the same reason.
           asWideAsAColourRow:
             colour.length > 0 && dimensional.every((r) => r.width === colour[0].width),
-          // The well stays where the field cannot replace it: a shadow is not a length.
-          shadowKeepsItsWell: shadow.length > 0 && shadow.every((r) => r.well && !r.gauge),
+          /*
+           * A shadow is not a length, so no gauge. Its field now draws the shadow at its head and opens
+           * the shadow editor, so the read-only well beside it would be the same picture twice.
+           */
+          shadowDrawsItsOwnPreview: shadow.length > 0 && shadow.every((r) => !r.well && !r.gauge && r.shadowButton),
         };
 
       } catch (error) {

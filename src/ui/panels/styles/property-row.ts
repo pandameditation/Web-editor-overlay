@@ -591,7 +591,35 @@ export function renderPropertyRow(spec: RowSpec, host: StylesHost): TemplateResu
    */
   const convertShadows = (event: CustomEvent<ShadowConvert>): void => {
     event.stopPropagation();
-    const { to, shadows, rest } = event.detail;
+    const { to, shadows, rest, lost } = event.detail;
+    const source = event.target as HeoValueField;
+    /*
+     * A shadow with a spread or an inset loses it as a drop shadow. Said once, as a question, at
+     * the moment of converting, rather than as a standing warning under the box.
+     */
+    if (lost) {
+      engine.askToConfirm({
+        title: 'Convert to drop-shadow()?',
+        message:
+          `drop-shadow() has no spread or inset, so ${lost === 1 ? 'one shadow loses' : `${lost} shadows lose`} ` +
+          'them on the way. Undo takes the conversion back.',
+        confirmLabel: 'Convert',
+        dismissLabel: 'Keep box-shadow',
+        tone: 'warn',
+        reversible: true,
+        run: () => convertNow(to, shadows, rest, source),
+      });
+      return;
+    }
+    convertNow(to, shadows, rest, source);
+  };
+  const convertNow = (
+    to: ShadowConvert['to'],
+    shadows: ShadowConvert['shadows'],
+    rest: string,
+    source: HeoValueField,
+  ): void => {
+    source.closePopup();
     const otherSpec: RowSpec = { ...spec, property: to };
     const other = shownValue(readRow(otherSpec).shown) || 'none';
     let next: string;
@@ -602,7 +630,8 @@ export function renderPropertyRow(spec: RowSpec, host: StylesHost): TemplateResu
     } else {
       next = formatShadows(shadows, 'box');
     }
-    const root = (event.target as Element).getRootNode() as ParentNode;
+    // The field captured when the event arrived: after a confirmation the event has no target left.
+    const root = source.getRootNode() as ParentNode;
     commit(rest);
     writeChosen(host, otherSpec, choice, undefined, next);
     // Open again where the shadows went, once the panel has drawn the new values.

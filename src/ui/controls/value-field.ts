@@ -793,6 +793,8 @@ export class HeoValueField extends LitElement {
   @state() private picking = false;
   /** The popup is the shadow editor. */
   @state() private shadowing = false;
+  /** How far the shadow editor has been dragged from where it was placed. */
+  @state() private popupShift = { x: 0, y: 0 };
   /** The design system's shadow tokens, for the shadow editor's swatches. */
   @property({ attribute: false }) shadowTokens: readonly ShadowSwatch[] = [];
   /** Whether the host moves shadows between box-shadow and filter, which the editor then offers. */
@@ -1155,7 +1157,7 @@ export class HeoValueField extends LitElement {
     return html`<div
       class="popup picker shadowing"
       popover="manual"
-      style=${this.popupStyle}
+      style=${`${this.popupStyle};translate:${this.popupShift.x}px ${this.popupShift.y}px`}
       @pointerdown=${keepFocusOnBlank}
       role="dialog"
       aria-label=${`${this.property || 'shadow'}: shadow editor`}
@@ -1178,9 +1180,13 @@ export class HeoValueField extends LitElement {
           // Measured again: adding or removing a shadow changes the editor's height.
           void this.updateComplete.then(() => this.#positionPopup());
         }}
+        @shadow-move=${(event: CustomEvent<{ dx: number; dy: number }>) => {
+          event.stopPropagation();
+          this.popupShift = { x: this.popupShift.x + event.detail.dx, y: this.popupShift.y + event.detail.dy };
+        }}
         @shadow-convert=${(event: CustomEvent<ShadowConvert>) => {
-          // Two properties change, which only the host can write; it hears this one as it bubbles.
-          this.closePopup();
+          // Two properties change, which only the host can write; it hears this as it bubbles, and
+          // closes this field's editor once it has (or leaves it open when the user declines).
           void event;
         }}
         @filter-select=${(event: CustomEvent<{ fn: string }>) => {
@@ -2474,6 +2480,8 @@ export class HeoValueField extends LitElement {
     this.open = false;
     this.picking = false;
     this.shadowing = false;
+    // Dragged somewhere for this opening only: the next one is placed afresh.
+    this.popupShift = { x: 0, y: 0 };
     this.#placer.invalidate();
     this.highlight = -1;
     // The composer goes with it. Left set, an abandoned form would stand in for the list the next
