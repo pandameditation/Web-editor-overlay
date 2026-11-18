@@ -1028,6 +1028,7 @@ export class HeoValueField extends LitElement {
       this.#escapeLayer = null;
       this.#dialogBox = null;
     }
+    if (this.open && !this.picking && !this.shadowing && !this.composer) this.#measureRoom();
     const popup = this.renderRoot.querySelector<HTMLElement>('.popup');
     if (!popup || !this.open) return;
     if (!this.inlineList && typeof popup.showPopover === 'function' && !popup.matches(':popover-open')) {
@@ -1594,7 +1595,29 @@ export class HeoValueField extends LitElement {
       }
       group.push(item);
     }
-    return groups.flat();
+    return groups.flatMap((group) => inCellOrder(group, this.#room));
+  }
+
+  /** The list's room, as measured once it is drawn: see cellLayout. */
+  #room: ListRoom = { width: 261, ch: 6.62 };
+
+  /** Measure the open list: its inner width, and its mono font's character. Redrawn if it changed. */
+  #measureRoom(): void {
+    const popup = this.renderRoot.querySelector<HTMLElement>('.popup[role="listbox"]');
+    const name = popup?.querySelector<HTMLElement>('.option .name');
+    if (!popup || !name || !popup.clientWidth) return;
+    const style = getComputedStyle(popup);
+    const width = popup.clientWidth - Number.parseFloat(style.paddingLeft) - Number.parseFloat(style.paddingRight);
+    let ch = this.#room.ch;
+    const font = getComputedStyle(name);
+    const context = document.createElement('canvas').getContext('2d');
+    if (context) {
+      context.font = `${font.fontSize} ${font.fontFamily}`;
+      ch = context.measureText('0123456789').width / 10 || ch;
+    }
+    if (Math.abs(width - this.#room.width) < 2 && Math.abs(ch - this.#room.ch) < 0.05) return;
+    this.#room = { width, ch };
+    this.requestUpdate();
   }
 
   #matches(): ValueSuggestion[] {
@@ -2159,7 +2182,45 @@ export class HeoValueField extends LitElement {
       groups,
       (group) => group.name,
       (group) => {
-        const cols = gridColumns(group.items);
+        const layout = cellLayout(group.items, this.#room);
+        const cols = layout?.cols ?? 0;
+        const row = (item: ValueSuggestion, cell: boolean): TemplateResult => {
+          index += 1;
+          const current = index;
+          return html`<button
+                class=${`option${item.info ? ' info' : ''}${cell ? ' cell' : ''}`}
+                type="button"
+                role="option"
+                aria-selected=${current === this.highlight}
+                title=${item.info
+                ? `${item.label} — what ${item.hint} currently resolves to. Selecting this keeps the expression.`
+                : (item.hint ?? item.value)}
+                @pointerdown=${(event: Event) => event.preventDefault()}
+                @pointerenter=${() => {
+                if (item.info) return;
+                if (this.#highlightMoved) return;
+                this.highlight = current;
+              }}
+                @click=${() => this.#choose(item)}
+              >
+                ${item.swatch
+                ? html`<span class="swatch" style=${swatchStyle(item.swatch)}></span>`
+                : nothing}
+                ${item.icon ? html`<span class="ico">${icon(item.icon, 12)}</span>` : nothing}
+                <span class="name">${item.label ?? item.value}</span>
+                ${item.token ? html`<span class="tokenmark">${icon('droplet', 11)}</span>` : nothing}
+                ${item.hint ? html`<span class="meta">${item.hint}</span>` : nothing}
+              </button>`;
+        };
+        if (layout) {
+          const cells = group.items.slice(0, layout.cells);
+          const after = group.items.slice(layout.cells);
+          return html`
+            <div class="group">${group.name}</div>
+            <div class="cells" style=${`--cols:${cols}`}>${repeat(cells, (item) => `${group.name}:${item.value}`, (item) => row(item, true))}</div>
+            ${repeat(after, (item) => `${group.name}:${item.value}`, (item) => row(item, false))}
+          `;
+        }
         const rows = repeat(
           group.items,
           (item) => `${group.name}:${item.value}`,
@@ -2167,7 +2228,7 @@ export class HeoValueField extends LitElement {
             index += 1;
             const current = index;
             return html`<button
-                class=${`option${item.info ? ' info' : ''}${cols ? ' cell' : ''}`}
+                class=${`option${item.info ? ' info' : ''}`}
                 type="button"
                 role="option"
                 aria-selected=${current === this.highlight}
@@ -2199,7 +2260,7 @@ export class HeoValueField extends LitElement {
         );
         return html`
           <div class="group">${group.name}</div>
-          ${cols ? html`<div class="cells" style=${`--cols:${cols}`}>${rows}</div>` : rows}
+          ${rows}
         `;
       },
     )}
@@ -2464,7 +2525,7 @@ export class HeoValueField extends LitElement {
         let next = this.highlight;
         // In a grid of cells, up and down move a line: to the cell above or below, or out of the
         // grid past its first or last line, the way the rows around it go.
-        const cell = next >= 0 ? cellOf(items, next) : null;
+        const cell = next >= 0 ? cellOf(items, next, this.#room) : null;
         const within = cell ? next + direction * cell.cols : -1;
         if (cell && within >= cell.start && within < cell.end) {
           this.highlight = within;
@@ -3031,33 +3092,70 @@ export class HeoValueField extends LitElement {
  * layer, so there can be one open list. Nothing else in the overlay needs to know
  * about it, which is why this is not editor state.
  */
-/**
- * How many cells a line holds for a group drawn as a grid, or 0 for a list of rows: only a group
- * of plain, short values (no hint, swatch, icon, token or composer) is a grid. Four to a line when
- * every value is as short as `48px`, three up to `flex-end`'s length.
- */
-function gridColumns(items: readonly ValueSuggestion[]): number {
-  if (items.length < 4) return 0;
-  let longest = 0;
-  for (const item of items) {
-    if (item.hint || item.swatch || item.icon || item.token || item.info || item.opens) return 0;
-    longest = Math.max(longest, (item.label ?? item.value).length);
-  }
-  // Longer than `flex-end` does not fit a third of the list: those stay rows, never cut short.
-  if (longest > 9) return 0;
-  return longest <= 6 ? 4 : 3;
+/** The list's inner width and its mono character's, measured once open (the panel's, until then). */
+export interface ListRoom {
+  width: number;
+  ch: number;
 }
 
-/** The grid the row at `index` is a cell of: its group's span in the list and its columns. */
-function cellOf(items: readonly ValueSuggestion[], index: number): { start: number; end: number; cols: number } | null {
+const CELL_PADDING = 16;
+const CELL_GAP = 2;
+
+/**
+ * How a group is laid out: its first `cells` values as a grid of `cols` to a line, the rest as rows
+ * after it; null for a list of rows. Only a group of plain values (no hint, swatch, icon, token or
+ * composer) is a grid, and only one of at least four.
+ *
+ * Columns come from the room each cell has, measured, not from a fixed length. The old rule — four
+ * when every value was as short as `48px`, three up to `flex-end` — put `cursor` in rows for
+ * `not-allowed` and `mix-blend-mode` for `difference`, and one long `drop-shadow(…)` put all of
+ * `filter`'s common values in rows. Now as many to a line as fit, and up to two values too long for
+ * even two to a line go after the grid, on rows of their own, never cut short.
+ */
+export function cellLayout(items: readonly ValueSuggestion[], room: ListRoom): { cols: number; cells: number } | null {
+  if (items.length < 4) return null;
+  for (const item of items) {
+    if (item.hint || item.swatch || item.icon || item.token || item.info || item.opens) return null;
+  }
+  const length = (item: ValueSuggestion): number => (item.label ?? item.value).length;
+  // Half a character spare, so a value at the edge is not drawn against it.
+  const fits = (item: ValueSuggestion, cols: number): boolean =>
+    (length(item) + 0.5) * room.ch + CELL_PADDING <= (room.width - CELL_GAP * (cols - 1)) / cols;
+  for (const cols of [4, 3, 2]) {
+    if (items.every((item) => fits(item, cols))) return { cols, cells: items.length };
+  }
+  const short = items.filter((item) => fits(item, 2));
+  if (short.length < 4 || items.length - short.length > 2) return null;
+  for (const cols of [4, 3, 2]) {
+    if (short.every((item) => fits(item, cols))) return { cols, cells: short.length };
+  }
+  return null;
+}
+
+/**
+ * A group in the order it is drawn: the values that go in the grid first, then the long ones, each
+ * part in its own order. The highlight indexes the drawn order, so this is the list's order too.
+ */
+function inCellOrder(items: ValueSuggestion[], room: ListRoom): ValueSuggestion[] {
+  const layout = cellLayout(items, room);
+  if (!layout || layout.cells === items.length) return items;
+  const cols = layout.cols;
+  const fits = (item: ValueSuggestion): boolean =>
+    ((item.label ?? item.value).length + 0.5) * room.ch + CELL_PADDING <= (room.width - CELL_GAP * (cols - 1)) / cols;
+  return [...items.filter(fits), ...items.filter((item) => !fits(item))];
+}
+
+/** The grid the row at `index` is a cell of: its span in the list and its columns. */
+function cellOf(items: readonly ValueSuggestion[], index: number, room: ListRoom): { start: number; end: number; cols: number } | null {
   const group = items[index]?.group;
   if (group === undefined) return null;
   let start = index;
   while (start > 0 && items[start - 1].group === group) start -= 1;
   let end = index + 1;
   while (end < items.length && items[end].group === group) end += 1;
-  const cols = gridColumns(items.slice(start, end));
-  return cols ? { start, end, cols } : null;
+  const layout = cellLayout(items.slice(start, end), room);
+  if (!layout || index >= start + layout.cells) return null;
+  return { start, end: start + layout.cells, cols: layout.cols };
 }
 
 const openFields = new Set<HeoValueField>();

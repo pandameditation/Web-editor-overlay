@@ -332,6 +332,43 @@
         };
       });
 
+      /*
+       * Accepted keywords and common values go several to a line wherever they fit, measured: one
+       * value like not-allowed or difference used to put the whole list in rows, and one long
+       * drop-shadow() all of filter's. A value too long for two to a line goes after the grid.
+       */
+      await select('photo');
+      await check('listColumns', async () => {
+        const look = async (property) => {
+          const f = field(property);
+          f.focusInput();
+          f.openList();
+          await settle(300);
+          const root = f.shadowRoot;
+          const cells = root.querySelector('.cells');
+          const out = {
+            cols: cells ? getComputedStyle(cells).gridTemplateColumns.split(' ').length : 0,
+            inGrid: Array.from(cells?.querySelectorAll('.option.cell .name') ?? []).map(flat),
+            cut: Array.from(root.querySelectorAll('.option.cell .name')).filter((n) => n.scrollWidth > n.clientWidth + 1).length,
+            rowsAfter: cells ? Array.from(cells.parentElement.children).filter((one) => one.matches('.option') && cells.compareDocumentPosition(one) & Node.DOCUMENT_POSITION_FOLLOWING).map((one) => flat(one.querySelector('.name'))) : [],
+          };
+          f.closePopup();
+          root.querySelector('input[type="text"]')?.blur();
+          await settle(200);
+          return out;
+        };
+        const cursor = await look('cursor');
+        const blend = await look('mix-blend-mode');
+        const filter = await look('filter');
+        return {
+          cursorKeywordsShareLines: cursor.cols >= 2 && cursor.inGrid.includes('not-allowed'),
+          blendModesShareLines: blend.cols >= 2 && blend.inGrid.includes('difference'),
+          filterValuesShareLines: filter.cols >= 2 && filter.inGrid.includes('blur(4px)'),
+          aLongOneGoesAfterOnItsOwnRow: filter.rowsAfter.some((one) => one.startsWith('drop-shadow(')) && !filter.inGrid.some((one) => one.startsWith('drop-shadow(')),
+          nothingIsCutShort: cursor.cut + blend.cut + filter.cut === 0,
+        };
+      });
+
       const failed = Object.entries(results)
         .filter(([, group]) => group && typeof group === 'object')
         .filter(([, group]) => Object.values(group).some((value) => value === false))
