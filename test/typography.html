@@ -206,9 +206,24 @@
         const target = proot.querySelector('[data-font="Courier New"], [data-font="Menlo"], [data-font="Arial"]');
         const before = getComputedStyle(h).fontFamily;
         const recordsBefore = engine.history.records.length;
+        // Every row one height, whatever its face: a taller face moved the list under the pointer.
+        const heights = new Set(Array.from(proot.querySelectorAll('[data-font]')).map((one) => Math.round(one.getBoundingClientRect().height)));
+        const popup = () => f.shadowRoot.querySelector('.popup.dialog').getBoundingClientRect();
+        const boxBefore = popup();
+        // Entering a row without moving (the list moved under a still pointer) previews nothing.
         target.dispatchEvent(new PointerEvent('pointerenter', { bubbles: false }));
+        await settle(200);
+        const stillPointer = getComputedStyle(h).fontFamily === before;
+        const box = target.getBoundingClientRect();
+        target.dispatchEvent(new PointerEvent('pointermove', { clientX: box.left + 10, clientY: box.top + 10, bubbles: true, composed: true }));
         await settle(300);
         const previewed = getComputedStyle(h).fontFamily;
+        const boxDuring = popup();
+        // The same point again, as the browser sends when the content under it changes: no new preview.
+        const other = proot.querySelector('[data-font="Georgia"]');
+        other.dispatchEvent(new PointerEvent('pointermove', { clientX: box.left + 10, clientY: box.top + 10, bubbles: true, composed: true }));
+        await settle(300);
+        const steady = getComputedStyle(h).fontFamily === previewed;
         const notWritten = engine.history.records.length === recordsBefore;
         proot.querySelector('.list').dispatchEvent(new PointerEvent('pointerleave', { bubbles: false }));
         await settle(300);
@@ -220,7 +235,11 @@
           opensThePicker: Boolean(picker),
           listsSystemFonts: fonts.includes('Georgia'),
           eachInItsOwnFace: /Georgia/.test(ownFace),
+          everyRowOneHeight: heights.size === 1,
+          aStillPointerPreviewsNothing: stillPointer,
           hoverPreviewsOnTheElement: previewed !== before && previewed.includes(target.dataset.font),
+          thePickerDoesNotMoveWhileItPreviews: Math.round(boxDuring.top) === Math.round(boxBefore.top) && Math.round(boxDuring.height) === Math.round(boxBefore.height),
+          aMoveThatIsNotAMoveChangesNothing: steady,
           withoutWriting: notWritten,
           leavingPutsItBack: back === before,
           clickingPicks: h.style.fontFamily.includes(target.dataset.font),

@@ -1251,6 +1251,16 @@ export class HeoValueField extends LitElement {
     </button>`;
   }
 
+  /*
+   * The value the picker shows while a font is being previewed: the one before the preview. A host
+   * that repaints the element hands the previewed stack back as the value, and the picker's
+   * fallback chain then changed with every hover, resizing the dialog under the pointer.
+   */
+  get #fontBase(): string {
+    return this.#fontCommitted ?? (this.value || this.computed);
+  }
+  #fontCommitted: string | null = null;
+
   /** A font field's opener: "Aa" in the font the field holds. */
   #renderFontButton(): TemplateResult {
     const value = this.draft.trim() || this.computed.trim();
@@ -1284,15 +1294,17 @@ export class HeoValueField extends LitElement {
     >
       ${this.#renderDialogHead('Font', this.property || 'font-family')}
       <heo-font-picker
-        .value=${this.value || this.computed}
+        .value=${this.#painted ? this.#fontBase : this.value || this.computed}
         .tokenFamilies=${families}
         @font-preview=${(event: CustomEvent<{ value: string | null }>) => {
           event.stopPropagation();
           if (event.detail.value) {
+            if (!this.#painted) this.#fontCommitted = this.value || this.computed;
             this.draft = event.detail.value;
             this.#emit('value-input');
             return;
           }
+          this.#fontCommitted = null;
           this.draft = this.value;
           if (this.#painted) {
             this.#painted = false;
@@ -1301,6 +1313,7 @@ export class HeoValueField extends LitElement {
         }}
         @font-change=${(event: CustomEvent<{ value: string }>) => {
           event.stopPropagation();
+          this.#fontCommitted = null;
           this.draft = event.detail.value;
           this.#commit();
         }}

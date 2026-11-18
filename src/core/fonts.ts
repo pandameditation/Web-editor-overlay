@@ -143,11 +143,15 @@ export function hasLocalFont(name: string): boolean {
   return found;
 }
 
-/** The families the page loads with `@font-face`, by name. */
+/** The faces loaded for a preview: in the document's font set, but not the page's own fonts. */
+const previewFaces = new WeakSet<FontFace>();
+
+/** The families the page loads with `@font-face`, by name. Not the ones loaded for a preview. */
 export function pageFontFamilies(): string[] {
   const names = new Set<string>();
   try {
     for (const face of document.fonts as unknown as Iterable<FontFace>) {
+      if (previewFaces.has(face)) continue;
       const name = face.family.replace(/^(['"])(.*)\1$/, '$2').trim();
       if (name && !name.startsWith('heo-')) names.add(name);
     }
@@ -185,6 +189,7 @@ export function previewWebFont(font: WebFont, text?: string): Promise<boolean> {
           unicodeRange: descriptor('unicode-range') ?? undefined,
           display: 'swap',
         });
+        previewFaces.add(face);
         document.fonts.add(face);
         added.push(face);
       }

@@ -98,12 +98,19 @@ export class HeoFontPicker extends LitElement {
         flex: 1;
         border-top: 1px solid var(--heo-line);
       }
+      /*
+       * One height for every row, whatever its face. Each name is drawn in its own font, and a face
+       * with taller glyphs made its row taller: the list moved under a still pointer, which hovered
+       * the next font, which moved it again — the picker flickered.
+       */
       .font {
         display: grid;
         grid-template-columns: minmax(0, 1fr) auto;
         align-items: center;
         gap: 8px;
-        padding: 5px 8px;
+        height: 32px;
+        padding: 0 8px;
+        overflow: hidden;
         border: 1px solid transparent;
         border-radius: var(--heo-r-sm);
         background: transparent;
@@ -120,9 +127,11 @@ export class HeoFontPicker extends LitElement {
         border-color: var(--heo-accent-line);
       }
       .font .nm {
+        display: block;
         overflow: hidden;
+        height: 22px;
         font-size: 17px;
-        line-height: 1.2;
+        line-height: 22px;
         text-overflow: ellipsis;
         white-space: nowrap;
       }
@@ -235,7 +244,23 @@ export class HeoFontPicker extends LitElement {
     return this.#families.slice(1);
   }
 
+  /*
+   * The list, worked out once per search and per web-font switch, not on every render. A render
+   * comes with every preview (the host repaints the element), and a list read afresh each time
+   * could change under the pointer — fonts appearing as they loaded — which hovered something else.
+   */
+  #listKey = '';
+  #list: Array<{ group: string; items: Choice[] }> = [];
+
   #choices(): Array<{ group: string; items: Choice[] }> {
+    const key = `${this.query}|${this.web}|${this.tokenFamilies.join(',')}`;
+    if (key === this.#listKey) return this.#list;
+    this.#listKey = key;
+    this.#list = this.#readChoices();
+    return this.#list;
+  }
+
+  #readChoices(): Array<{ group: string; items: Choice[] }> {
     const needle = this.query.trim().toLowerCase();
     const match = (name: string): boolean => !needle || name.toLowerCase().includes(needle);
     const seen = new Set<string>();
@@ -291,6 +316,20 @@ export class HeoFontPicker extends LitElement {
     this.#emit('font-preview', { value: choice ? this.#stack(choice.name, choice.web) : null });
   }
 
+  #pointer: { x: number; y: number } | null = null;
+
+  /**
+   * Preview the font under the pointer, once the pointer has moved. Not on entering a row: a row
+   * also "enters" under a pointer that is standing still when the list moves, and that is no
+   * choice of the user's.
+   */
+  #hover(event: PointerEvent, choice: Choice): void {
+    const at = { x: event.clientX, y: event.clientY };
+    const moved = !this.#pointer || this.#pointer.x !== at.x || this.#pointer.y !== at.y;
+    this.#pointer = at;
+    if (moved) this.#preview(choice);
+  }
+
   #pick(choice: Choice): void {
     this.#hovered = null;
     if (choice.web) {
@@ -333,7 +372,7 @@ export class HeoFontPicker extends LitElement {
             aria-current=${choice.name.toLowerCase() === current ? 'true' : 'false'}
             aria-selected=${choice.name.toLowerCase() === current ? 'true' : 'false'}
             title=${`${choice.name}: hover to see it on the element, click to use it`}
-            @pointerenter=${() => this.#preview(choice)}
+            @pointermove=${(event: PointerEvent) => this.#hover(event, choice)}
             @focus=${() => this.#preview(choice)}
             @blur=${() => this.#preview(null)}
             @click=${() => this.#pick(choice)}
