@@ -268,6 +268,37 @@ export class HeoTransitionEditor extends LitElement {
         display: flex;
         justify-content: space-between;
       }
+      /* What the state changes and nothing transitions yet: laid out, dashed, one click from added. */
+      .trow.ghost {
+        border-style: dashed;
+        border-color: var(--heo-line-strong);
+        color: var(--heo-text-faint);
+      }
+      .trow.ghost .what span {
+        color: var(--heo-text-dim);
+      }
+      .trow.ghost .handle,
+      .trow.ghost {
+        cursor: pointer;
+      }
+      .trow.ghost .grip {
+        color: var(--heo-accent);
+      }
+      .bar.ghostbar {
+        background: transparent;
+        border: 1px dashed var(--heo-accent-line);
+        cursor: pointer;
+      }
+      .ghosts-all {
+        display: flex;
+        justify-content: flex-end;
+        padding: 2px 4px;
+      }
+      .hidden-note {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
       .empty {
         margin: 0;
         padding: 10px;
@@ -447,7 +478,7 @@ export class HeoTransitionEditor extends LitElement {
       this.draft = null;
       if (this.picked >= this.items.length) this.picked = Math.max(0, this.items.length - 1);
     }
-    if (changed.has('triggers') && !this.triggers.some((one) => one.state === this.trigger)) {
+    if (changed.has('triggers') && this.trigger !== '*' && !this.triggers.some((one) => one.state === this.trigger)) {
       this.trigger = this.triggers[0]?.state ?? '';
     }
   }
@@ -463,7 +494,10 @@ export class HeoTransitionEditor extends LitElement {
     if (!changed.has('items') || this.#focusAfter === null) return;
     const index = this.#focusAfter;
     this.#focusAfter = null;
-    (this.#row(index) ?? this.renderRoot.querySelector<HTMLElement>('.add'))?.focus({ preventScroll: true });
+    const shown = this.#shown;
+    const row = shown.includes(index) ? index : (shown.find((one) => one > index) ?? shown.at(-1));
+    const target = (row !== undefined ? this.#row(row) : null) ?? this.renderRoot.querySelector<HTMLElement>('.trow.ghost, .add');
+    target?.focus({ preventScroll: true });
   }
 
   override disconnectedCallback(): void {
@@ -477,6 +511,47 @@ export class HeoTransitionEditor extends LitElement {
 
   get #current(): TransitionTrigger | undefined {
     return this.triggers.find((one) => one.state === this.trigger);
+  }
+
+  /*
+   * The menu is a view, never a write. One `transition` serves every state, so switching to
+   * `:focus-visible` must not take `:hover`'s rows out of the CSS: they are hidden, and come back on
+   * switching back. "Any change" shows them all, the ones no state changes (a script's) included.
+   */
+
+  /** The states a transition of `property` plays for. */
+  #statesOf(property: string): TransitionTrigger[] {
+    return this.triggers.filter((one) => property === 'all' ? one.changes.length > 0 : one.changes.some((c) => carries(property, c.property)));
+  }
+
+  /** Whether a row belongs in the view: in "any change" every row; else what the state changes. */
+  #shows(item: TransitionItem): boolean {
+    const current = this.#current;
+    if (!current) return true;
+    return item.property === 'all' || current.changes.some((c) => carries(item.property, c.property));
+  }
+
+  /** The rows the view shows, by their place in the list. */
+  get #shown(): number[] {
+    return this.#list.map((one, index) => (this.#shows(one) ? index : -1)).filter((index) => index >= 0);
+  }
+
+  /** What the picked state changes that no row transitions yet: offered in place, already laid out. */
+  get #suggested(): TriggerChange[] {
+    const current = this.#current;
+    if (!current) return [];
+    return current.changes.filter((change) => !this.#list.some((one) => carries(one.property, change.property)));
+  }
+
+  /** The row picked, if the view shows it; else the view's first. */
+  get #pickedAt(): number {
+    const shown = this.#shown;
+    return shown.includes(this.picked) ? this.picked : (shown[0] ?? -1);
+  }
+
+  get #defaultDuration(): string {
+    const base = this.durations.find((one) => /base|normal|medium|default/i.test(one.name)) ?? this.durations[0];
+    return base ? `var(${base.name})` : '250ms';
   }
 
   #ms(text: string): number {
@@ -498,18 +573,17 @@ export class HeoTransitionEditor extends LitElement {
     this.#emit(items);
   }
 
-  #add(property: string): void {
-    const name = property.trim().toLowerCase();
-    if (!name) return;
-    const base = this.durations.find((one) => /base|normal|medium|default/i.test(one.name)) ?? this.durations[0];
-    const items = [...this.#list.map((one) => ({ ...one })), {
+  #add(...properties: string[]): void {
+    const names = properties.map((one) => one.trim().toLowerCase()).filter(Boolean);
+    if (!names.length) return;
+    const items = [...this.#list.map((one) => ({ ...one })), ...names.map((name) => ({
       property: name,
-      duration: base ? `var(${base.name})` : '250ms',
+      duration: this.#defaultDuration,
       delay: '',
       easing: '',
       behavior: '',
-    }];
-    this.picked = items.length - 1;
+    }))];
+    this.picked = items.length - names.length;
     this.adding = false;
     this.#focusAfter = this.picked;
     this.#emit(items);
@@ -539,16 +613,28 @@ export class HeoTransitionEditor extends LitElement {
 
   override render(): TemplateResult {
     const list = this.#list;
-    const picked = list[this.picked];
+    const at = this.#pickedAt;
+    const picked = list[at];
+    const shown = this.#shown;
+    const suggested = this.#suggested;
+    const hidden = list.length - shown.length;
     return html`
       ${this.#renderTrigger()}
-      ${list.length
-        ? this.#renderTimeline(list)
+      ${shown.length || suggested.length
+        ? this.#renderTimeline(list, shown, suggested)
         : html`<p class="empty">
             Nothing transitions yet: every change ${this.#current ? html`<b>${this.#current.label}</b> makes` : 'is'} instant. Add a property below.
           </p>`}
+      ${hidden
+        ? html`<p class="note hidden-note">
+            ${hidden} more for other changes, kept as they are.
+            <button class="btn ghost sm" type="button" data-show-all @click=${() => {
+              this.trigger = '*';
+            }}>Show all</button>
+          </p>`
+        : nothing}
       ${this.#renderAdd(list)}
-      ${picked ? this.#renderPicked(picked, this.picked) : nothing}
+      ${picked ? this.#renderPicked(picked, at) : nothing}
     `;
   }
 
@@ -565,8 +651,9 @@ export class HeoTransitionEditor extends LitElement {
               @change=${(event: Event) => {
                 this.trigger = (event.target as HTMLSelectElement).value;
               }}
-            >${this.triggers.map((one) => html`<option value=${one.state} ?selected=${one.state === this.trigger}>${one.label}</option>`)}</select>
-            <span class="w">starts</span>`
+            >${this.triggers.map((one) => html`<option value=${one.state} ?selected=${one.state === this.trigger}>${one.label}</option>`)}
+              <option value="*" ?selected=${this.trigger === '*'}>any change</option></select>
+            <span class="w">${this.trigger === '*' ? 'happens' : 'starts'}</span>`
           : html`<select aria-label="Trigger" disabled><option>no state in the page's CSS</option></select>`}
         <button
           class="btn primary sm try"
@@ -575,7 +662,7 @@ export class HeoTransitionEditor extends LitElement {
           title=${playable
             ? `Play the transitions as ${current!.label} would, there and back. Nothing is written.`
             : this.triggers.length
-              ? `Nothing here transitions a change ${current?.label ?? ''} makes.`
+              ? current ? `Nothing here transitions a change ${current.label} makes.` : 'Pick a state to play it.'
               : 'Nothing to play between: no state rule reaches this element.'}
           @click=${() => this.play()}
         >${icon('play', 11)} Try it</button>
@@ -592,23 +679,36 @@ export class HeoTransitionEditor extends LitElement {
     `;
   }
 
-  #renderTimeline(list: readonly TransitionItem[]): TemplateResult {
+  #renderTimeline(list: readonly TransitionItem[], shown: readonly number[], suggested: readonly TriggerChange[]): TemplateResult {
     const span = this.#span;
-    const changes = this.#current?.changes ?? [];
+    const current = this.#current;
+    const changes = current?.changes ?? [];
     const quarter = (n: number): string => `${Math.round((span * n) / 4)}`;
+    const at = this.#pickedAt;
+    const ghostMs = this.#ms(this.#defaultDuration);
     return html`<div class="tl" role="list" aria-label="Transitions, in the order written">
-      ${list.map((one, index) => {
+      ${shown.map((index) => {
+        const one = list[index];
         const change = one.property === 'all'
           ? (changes.length ? { from: 'every change', to: `${changes.length} propert${changes.length === 1 ? 'y' : 'ies'}` } : null)
           : changes.find((c) => carries(one.property, c.property));
+        // In one state's view, the others it also plays for; in "any change", every one.
+        const states = this.#statesOf(one.property).filter((t) => t !== current).map((t) => t.label);
         const delay = this.#ms(one.delay);
         const duration = this.#ms(one.duration);
+        const sub = current
+          ? change
+            ? html`<small title=${`${change.from} → ${change.to}${states.length ? ` · also ${states.join(', ')}` : ''}`}>${change.from} → ${change.to}${states.length ? ` · also ${states.join(', ')}` : ''}</small>`
+            : html`<small class="none">${current.label} does not change it</small>`
+          : states.length
+            ? html`<small>${states.join(', ')}</small>`
+            : html`<small class="none">${this.triggers.length ? 'no state changes it' : 'for a change a script makes'}</small>`;
         return html`<div
           class="trow"
           role="listitem"
           tabindex="0"
           data-row=${index}
-          aria-current=${index === this.picked ? 'true' : 'false'}
+          aria-current=${index === at ? 'true' : 'false'}
           aria-label=${`${one.property}: ${duration}ms after ${delay}ms. Alt and an arrow move it.`}
           @click=${() => {
             this.picked = index;
@@ -628,13 +728,11 @@ export class HeoTransitionEditor extends LitElement {
             @dragstart=${(event: DragEvent) => this.#dragStart(event, index)}
           ><span class="grip">${icon('grip', 12)}</span><span class="what">
             <span>${one.property}</span>
-            ${change
-              ? html`<small title=${`${change.from} → ${change.to}`}>${change.from} → ${change.to}</small>`
-              : html`<small class="none">${this.#current ? `${this.#current.label} does not change it` : 'no state changes it'}</small>`}
+            ${sub}
           </span></span>
           <span class="track">
             <span
-              class=${change ? 'bar' : 'bar idle'}
+              class=${change || !current ? 'bar' : 'bar idle'}
               data-bar=${index}
               style=${`left:${(delay / span) * 100}%;width:${(duration / span) * 100}%`}
               title=${`${duration}ms after ${delay}ms. Drag to delay it.`}
@@ -649,6 +747,35 @@ export class HeoTransitionEditor extends LitElement {
           })}</span>
         </div>`;
       })}
+      ${suggested.map((change) => html`<div
+        class="trow ghost"
+        role="listitem"
+        tabindex="0"
+        data-ghost=${change.property}
+        title=${`${current!.label} changes it, and nothing transitions it yet: it snaps. Click to transition it.`}
+        aria-label=${`${change.property}: not transitioned yet. Enter adds it.`}
+        @click=${() => this.#add(change.property)}
+        @keydown=${(event: KeyboardEvent) => {
+          if (event.key !== 'Enter' && event.key !== ' ') return;
+          event.preventDefault();
+          this.#add(change.property);
+        }}
+      >
+        <span class="handle"><span class="grip">${icon('plus', 11)}</span><span class="what">
+          <span>${change.property}</span>
+          <small title=${`${change.from} → ${change.to}`}>${change.from} → ${change.to}</small>
+        </span></span>
+        <span class="track"><span class="bar ghostbar" style=${`left:0;width:${(ghostMs / span) * 100}%`}></span></span>
+        <button class="btn ghost icon sm" type="button" data-add=${change.property} aria-label=${`Transition ${change.property}`} title=${`Transition ${change.property}`} @click=${(event: Event) => {
+          event.stopPropagation();
+          this.#add(change.property);
+        }}>${icon('plus', 11)}</button>
+      </div>`)}
+      ${suggested.length > 1
+        ? html`<div class="ghosts-all"><button class="btn sm" type="button" data-add-all @click=${() => this.#add(...suggested.map((c) => c.property))}>
+            ${icon('plus', 11)} Transition all ${suggested.length}
+          </button></div>`
+        : nothing}
       <div class="scale" aria-hidden="true"><span></span>
         <div><span>0</span><span>${quarter(1)}</span><span>${quarter(2)}</span><span>${quarter(3)}</span><span>${span}ms</span></div><span></span></div>
     </div>`;
@@ -656,19 +783,12 @@ export class HeoTransitionEditor extends LitElement {
 
   #renderAdd(list: readonly TransitionItem[]): TemplateResult {
     const has = (property: string): boolean => list.some((one) => one.property === property);
-    const current = this.#current;
-    const fromTrigger = (current?.changes ?? []).filter((change) => !list.some((one) => carries(one.property, change.property)));
-    const rest = COMMON.filter((property) => !has(property) && !fromTrigger.some((change) => change.property === property));
+    // What the state changes is already on the timeline, as suggested rows.
+    const suggested = this.#suggested;
+    const rest = COMMON.filter((property) => !has(property) && !suggested.some((change) => change.property === property));
     return html`<div>
       <div class="group" style="margin-bottom:6px">Add</div>
       <div class="chips" role="group" aria-label="Properties to transition">
-        ${fromTrigger.map((change) => html`<button
-          class="add changed"
-          type="button"
-          data-add=${change.property}
-          title=${`${current!.label} changes it: ${change.from} → ${change.to}`}
-          @click=${() => this.#add(change.property)}
-        >+ ${change.property} <span class="tag">${current!.label}</span></button>`)}
         ${rest.map((property) => html`<button class="add" type="button" data-add=${property} @click=${() => this.#add(property)}>+ ${property}</button>`)}
         ${this.adding
           ? html`<span class="other"><input
@@ -777,7 +897,10 @@ export class HeoTransitionEditor extends LitElement {
       this.picked = index;
     } else if (event.altKey && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
       event.preventDefault();
-      this.#move(index, index + (event.key === 'ArrowUp' ? -1 : 1));
+      // To the next row the view shows: hidden rows keep their places.
+      const shown = this.#shown;
+      const to = shown[shown.indexOf(index) + (event.key === 'ArrowUp' ? -1 : 1)];
+      if (to !== undefined) this.#move(index, to);
     }
   }
 

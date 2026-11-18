@@ -15,7 +15,7 @@
     :root { --motion-fast: 150ms; --motion-base: 250ms; --motion-slow: 400ms; }
     .card { width: 200px; padding: 16px; background-color: #ffffff; transition: background-color var(--motion-fast) ease-out, transform 250ms; }
     .card:hover { background-color: #eef2ff; transform: translateY(-4px); box-shadow: 0 12px 24px rgb(0 0 0 / 20%); }
-    .card:focus-visible { outline-offset: 3px; }
+    .card:focus-visible { outline-color: #6366f1; outline-offset: 3px; }
     .nav { display: flex; gap: 12px; padding: 8px; background: #0f172a; }
     .nav a { color: #94a3b8; }
     .nav:hover a { color: #e2e8f0; }
@@ -64,7 +64,14 @@
       const tabs = () => motion()?.querySelector('heo-segmented');
       const editor = () => motion()?.querySelector('heo-transition-editor');
       const ed = () => editor()?.shadowRoot;
-      const rows = () => Array.from(ed()?.querySelectorAll('.trow') ?? []);
+      const rows = () => Array.from(ed()?.querySelectorAll('.trow:not(.ghost)') ?? []);
+      const ghosts = () => Array.from(ed()?.querySelectorAll('.trow.ghost') ?? []).map((one) => one.dataset.ghost);
+      const view = async (state) => {
+        const menu = ed().querySelector('select');
+        menu.value = state;
+        menu.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+        await settle(300);
+      };
       const names = () => rows().map((row) => flat(row.querySelector('.what span')));
       const rule = (selector) => Array.from(document.getElementById('site').sheet.cssRules).find((one) => one.selectorText === selector);
       const ruleTransition = () => rule('.card').style.getPropertyValue('transition').replace(/\s+/g, ' ').trim();
@@ -99,35 +106,35 @@
         const options = Array.from(ed().querySelectorAll('select option')).map((one) => one.value);
         const sub = flat(rows()[0]?.querySelector('.what small'));
         const adds = Array.from(ed().querySelectorAll('.add')).map((one) => one.dataset.add);
-        const changed = ed().querySelector('.add.changed');
         return {
           readsTheTransitionsInOrder: names().join(',') === 'background-color,transform',
-          theTriggersAreTheElementsStates: options.join('|') === ':hover|:focus-visible',
+          theTriggersAreTheElementsStates: options.join('|') === ':hover|:focus-visible|*',
           eachRowSaysWhatTheStateChanges: /#ffffff\s*→\s*#eef2ff/i.test(sub),
           barsAreTheirTiming: (() => {
-            const bars = Array.from(ed().querySelectorAll('.bar'));
+            const bars = Array.from(ed().querySelectorAll('.trow:not(.ghost) .bar'));
             return bars.length === 2 && parseFloat(bars[0].style.width) < parseFloat(bars[1].style.width);
           })(),
           rowsCanBeDraggedAndRemoved: rows().every((row) => row.querySelector('.handle')?.draggable && row.querySelector('.kill')),
           // The grip and the name move a row; the track, its bar and the bar's end are the timing's.
           theNameIsPartOfTheHandle: rows().every((row) => row.querySelector('.handle .grip') && row.querySelector('.handle .what')),
           onlyTheGripDrags: rows().every((row) => !row.draggable && !row.querySelector('.track').closest('[draggable="true"]')),
-          // What :hover changes and nothing transitions yet comes first, tagged with the state.
-          addOffersTheStatesOtherChangeFirst: adds[0] === 'box-shadow' && /:hover/.test(flat(changed)),
+          // What :hover changes and nothing transitions yet is on the timeline already, to click.
+          theStatesOtherChangeIsSuggestedInPlace: ghosts().join(',') === 'box-shadow',
+          andNotAlsoAChip: !ed().querySelector('.add[data-add="box-shadow"]'),
           thenAllAndTheCommonOnes: adds.includes('all') && adds.includes('opacity') && adds.at(-1) === 'other',
           theFirstRowIsPicked: rows()[0]?.getAttribute('aria-current') === 'true' && /background-color/.test(flat(ed().querySelector('.ed .group'))),
         };
       });
 
       await check('add', async () => {
-        ed().querySelector('.add[data-add="box-shadow"]').click();
+        ed().querySelector('.trow.ghost[data-ghost="box-shadow"]').click();
         await settle(500);
         const written = ruleTransition();
         return {
           writesIntoTheRuleItCameFrom: /box-shadow var\(--motion-base\)/.test(written) && /^background-color var\(--motion-fast\) ease-out/.test(written),
           keepsTheOthersAsWritten: written.includes('transform 250ms'),
           theNewRowIsPickedAndFocused: rows()[2]?.getAttribute('aria-current') === 'true' && ed().activeElement === rows()[2],
-          noLongerOffered: !ed().querySelector('.add[data-add="box-shadow"]'),
+          noLongerSuggested: !ghosts().includes('box-shadow'),
         };
       });
 
@@ -247,8 +254,41 @@
         const focused = ed().activeElement;
         return {
           theTrashRemovesIt: !/box-shadow/.test(afterOne) && /transform/.test(afterOne),
-          itIsOfferedAgain: Boolean(ed().querySelector('.add[data-add="box-shadow"]')),
+          itIsSuggestedAgain: ghosts().includes('box-shadow'),
           focusStaysInTheTimeline: Boolean(focused?.matches('.trow')),
+        };
+      });
+
+      /*
+       * The menu is a view. Switching shows what that state changes and hides the rest, written
+       * nowhere; switching back shows them again, and "any change" shows every one.
+       */
+      await check('view', async () => {
+        const before = ruleTransition();
+        await view(':focus-visible');
+        const focusRows = names().join(',');
+        const focusGhosts = ghosts().join(',');
+        const hiddenNote = flat(ed().querySelector('.hidden-note'));
+        const untouched = ruleTransition() === before;
+        ed().querySelector('[data-add-all]').click();
+        await settle(500);
+        const afterAll = ruleTransition();
+        const focusAfter = names().join(',');
+        await view(':hover');
+        const hoverRows = names().join(',');
+        await view('*');
+        const allRows = names().join(',');
+        // Shown as also playing for the other state where it does.
+        await view(':hover');
+        return {
+          switchingWritesNothing: untouched,
+          theOtherStatesRowsAreHidden: focusRows === '',
+          itsChangesAreSuggested: focusGhosts === 'outline-color,outline-offset',
+          andSaidToBeKept: /2 more/.test(hiddenNote),
+          oneClickAddsThemAll: /outline-color var\(--motion-base\), outline-offset var\(--motion-base\)$/.test(afterAll) && focusAfter === 'outline-color,outline-offset',
+          andHoverKeepsItsOwn: /^background-color/.test(afterAll) && /transform/.test(afterAll),
+          switchingBackShowsThemAgain: hoverRows === 'background-color,transform',
+          anyChangeShowsEveryOne: allRows === 'background-color,transform,outline-color,outline-offset',
         };
       });
 
@@ -268,9 +308,9 @@
         const options = Array.from(ed()?.querySelectorAll('select option') ?? []).map((one) => one.value);
         const note = flat(ed()?.querySelector('.note'));
         const chips = Array.from(sroot().querySelectorAll('[data-cond]')).map((one) => one.dataset.cond);
-        const adds = Array.from(ed()?.querySelectorAll('.add.changed') ?? []).map((one) => one.dataset.add);
+        const adds = ghosts();
         return {
-          theTriggerIsTheNavsHover: options.join('|') === ':hover on .nav',
+          theTriggerIsTheNavsHover: options.join('|') === ':hover on .nav|*',
           saidAsSuch: /\.nav/.test(note),
           notTheLinksOwnHover: !options.includes(':hover'),
           theConditionsBarSaysSoToo: chips.includes('state::hover on .nav') && !chips.includes('state::hover'),
