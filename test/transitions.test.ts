@@ -64,9 +64,16 @@ test('times in milliseconds, a token through its value', () => {
 
 test('a transition covers its property, its longhands, and all of them for all', () => {
   assert.ok(covers('all', 'transform'));
-  assert.ok(covers('background', 'background-color'));
+  assert.ok(covers('border', 'border-top-color'));
+  assert.ok(covers('outline', 'outline-color'));
   assert.ok(!covers('color', 'background-color'));
   assert.ok(!covers('all', '--x'));
+});
+
+test('not by the name: outline-offset is not part of outline', () => {
+  assert.ok(!covers('outline', 'outline-offset'));
+  assert.ok(!covers('border', 'border-radius'));
+  assert.ok(!covers('outline-offset', 'outline'));
 });
 
 test('a state on another element is that element’s, and written back where it was', () => {

@@ -294,11 +294,6 @@ export class HeoTransitionEditor extends LitElement {
         justify-content: flex-end;
         padding: 2px 4px;
       }
-      .hidden-note {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-      }
       .empty {
         margin: 0;
         padding: 10px;
@@ -617,7 +612,6 @@ export class HeoTransitionEditor extends LitElement {
     const picked = list[at];
     const shown = this.#shown;
     const suggested = this.#suggested;
-    const hidden = list.length - shown.length;
     return html`
       ${this.#renderTrigger()}
       ${shown.length || suggested.length
@@ -625,14 +619,6 @@ export class HeoTransitionEditor extends LitElement {
         : html`<p class="empty">
             Nothing transitions yet: every change ${this.#current ? html`<b>${this.#current.label}</b> makes` : 'is'} instant. Add a property below.
           </p>`}
-      ${hidden
-        ? html`<p class="note hidden-note">
-            ${hidden} more for other changes, kept as they are.
-            <button class="btn ghost sm" type="button" data-show-all @click=${() => {
-              this.trigger = '*';
-            }}>Show all</button>
-          </p>`
-        : nothing}
       ${this.#renderAdd(list)}
       ${picked ? this.#renderPicked(picked, at) : nothing}
     `;

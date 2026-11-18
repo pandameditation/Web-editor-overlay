@@ -1,4 +1,5 @@
 import { splitTopLevel, splitTopLevelCommas } from './css.js';
+import { shorthandChain } from './declaration-list.js';
 
 /**
  * `transition`, read and written as a list of transitions: one per property, each with its own
@@ -148,9 +149,43 @@ export function formatTransitions(items: readonly TransitionItem[]): string {
   return items.length ? items.map(formatTransition).join(', ') : 'none';
 }
 
-/** Whether a transition of `property` (`all`, a shorthand) carries a change to `changed`. */
+/** Longhands by shorthand, as the browser expands them; filled as asked. */
+const members = new Map<string, Set<string> | null>();
+
+/**
+ * The longhands `shorthand` sets, asked of the browser: set it on a style nobody renders and see
+ * what it filled in. Null outside a browser, or for a property that is not a shorthand.
+ */
+function longhandsSet(shorthand: string): Set<string> | null {
+  if (members.has(shorthand)) return members.get(shorthand)!;
+  let out: Set<string> | null = null;
+  if (typeof document !== 'undefined') {
+    const style = document.createElement('i').style;
+    style.setProperty(shorthand, 'initial');
+    const names = Array.from({ length: style.length }, (_unused, i) => style.item(i)).filter((name) => name !== shorthand);
+    out = names.length ? new Set(names) : null;
+  }
+  members.set(shorthand, out);
+  return out;
+}
+
+/**
+ * Whether a transition of `property` (`all`, a shorthand) carries a change to `changed`.
+ *
+ * By what the shorthand sets, never by its name. Guessing from the prefix said `outline` carries
+ * `outline-offset`, which it does not — `outline` is its color, style and width — so adding
+ * `outline` took `outline-offset` off the suggestions, and its change went on snapping. The same
+ * guess was wrong for `border-radius` under `border` and `background-blend-mode` under
+ * `background`.
+ */
 export function covers(property: string, changed: string): boolean {
   const p = property.trim().toLowerCase();
   const c = changed.trim().toLowerCase();
-  return p === 'all' ? !c.startsWith('--') : c === p || c.startsWith(`${p}-`);
+  if (p === 'all') return !c.startsWith('--');
+  if (c === p) return true;
+  if (p.startsWith('--') || c.startsWith('--')) return false;
+  const set = longhandsSet(p);
+  if (set) return set.has(c) || [...set].some((one) => one !== p && longhandsSet(one)?.has(c));
+  // Outside a browser: the shorthand families the editor knows.
+  return shorthandChain(c).includes(p);
 }

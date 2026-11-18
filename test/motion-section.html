@@ -98,7 +98,8 @@
           animationAndTransitionTabs: (tabs()?.options ?? []).map((one) => one.value).join(',') === 'animation,transition',
           // A transition and no animation: it opens on Transition.
           opensOnTheTransitionTab: tabs()?.value === 'transition' && Boolean(editor()),
-          willChangeMovedToEffects: Boolean(effects?.querySelector('[data-property="will-change"]')),
+          // A renderer hint, not shown upfront; Add property still reaches it.
+          willChangeIsNotShownUpfront: !sroot().querySelector('[data-property="will-change"]') && Boolean(effects),
         };
       });
 
@@ -266,11 +267,19 @@
       await check('view', async () => {
         const before = ruleTransition();
         await view(':focus-visible');
+        const addAll = Boolean(ed().querySelector('[data-add-all]'));
         const focusRows = names().join(',');
         const focusGhosts = ghosts().join(',');
-        const hiddenNote = flat(ed().querySelector('.hidden-note'));
         const untouched = ruleTransition() === before;
-        ed().querySelector('[data-add-all]').click();
+        // outline carries outline-color, not outline-offset: the offset must stay suggested.
+        ed().querySelector('.add[data-add="other"]').click();
+        await settle(200);
+        const other = ed().querySelector('.other input');
+        other.value = 'outline';
+        other.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, composed: true }));
+        await settle(500);
+        const afterOutline = ghosts().join(',');
+        ed().querySelector('.trow.ghost[data-ghost="outline-offset"]').click();
         await settle(500);
         const afterAll = ruleTransition();
         const focusAfter = names().join(',');
@@ -283,12 +292,13 @@
         return {
           switchingWritesNothing: untouched,
           theOtherStatesRowsAreHidden: focusRows === '',
-          itsChangesAreSuggested: focusGhosts === 'outline-color,outline-offset',
-          andSaidToBeKept: /2 more/.test(hiddenNote),
-          oneClickAddsThemAll: /outline-color var\(--motion-base\), outline-offset var\(--motion-base\)$/.test(afterAll) && focusAfter === 'outline-color,outline-offset',
+          itsChangesAreSuggested: focusGhosts === 'outline-color,outline-offset' && addAll,
+          noHiddenRowsNote: !ed().querySelector('.hidden-note, [data-show-all]'),
+          aShorthandOnlyCoversItsOwnLonghands: afterOutline === 'outline-offset',
+          theOffsetIsStillAddable: /outline var\(--motion-base\), outline-offset var\(--motion-base\)$/.test(afterAll) && focusAfter === 'outline,outline-offset',
           andHoverKeepsItsOwn: /^background-color/.test(afterAll) && /transform/.test(afterAll),
           switchingBackShowsThemAgain: hoverRows === 'background-color,transform',
-          anyChangeShowsEveryOne: allRows === 'background-color,transform,outline-color,outline-offset',
+          anyChangeShowsEveryOne: allRows === 'background-color,transform,outline,outline-offset',
         };
       });
 

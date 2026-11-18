@@ -242,8 +242,8 @@ const SECTIONS: SectionSpec[] = [
     // picture made the panel's two most different sections look related.
     glyph: 'eye',
     // text-shadow beside box-shadow and filter: the three the shadow editor opens from.
-    // will-change is a hint to the renderer, not motion: it moved here from Motion.
-    properties: ['opacity', 'box-shadow', 'text-shadow', 'filter', 'backdrop-filter', 'transform', 'mix-blend-mode', 'cursor', 'will-change'],
+    // No will-change: a hint to the renderer, rarely authored by hand. Add property still reaches it.
+    properties: ['opacity', 'box-shadow', 'text-shadow', 'filter', 'backdrop-filter', 'transform', 'mix-blend-mode', 'cursor'],
   },
   {
     id: 'motion',
