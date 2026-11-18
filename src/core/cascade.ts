@@ -315,6 +315,105 @@ export function peelPseudos(part: string): { base: string; pseudo: string } {
   return { base: base.trim(), pseudo };
 }
 
+/* -------------------------------------------------------------------------- */
+/* A state on another element                                                  */
+/* -------------------------------------------------------------------------- */
+
+/** One compound of a complex selector, and the combinator before it (`''` for the first). */
+interface Compound {
+  combinator: string;
+  text: string;
+}
+
+/** A complex selector cut into its compounds at top-level combinators: `.nav:hover > a` is two. */
+function compoundsOf(part: string): Compound[] {
+  const out: Compound[] = [];
+  let depth = 0;
+  let quote = '';
+  let text = '';
+  // The combinator characters seen since the last compound ended, and the one the current one has.
+  let pending = '';
+  let combinator = '';
+  const push = (): void => {
+    if (text) out.push({ combinator, text });
+    text = '';
+  };
+  for (let i = 0; i < part.length; i += 1) {
+    const ch = part[i];
+    if (!quote && depth === 0 && (/\s/.test(ch) || ch === '>' || ch === '+' || ch === '~')) {
+      push();
+      pending += ch;
+      continue;
+    }
+    if (!text) {
+      combinator = out.length ? pending.trim() || ' ' : '';
+      pending = '';
+    }
+    text += ch;
+    if (quote) {
+      if (ch === '\\') text += part[++i] ?? '';
+      else if (ch === quote) quote = '';
+      continue;
+    }
+    if (ch === '\\') text += part[++i] ?? '';
+    else if (ch === '"' || ch === "'") quote = ch;
+    else if (ch === '(' || ch === '[') depth += 1;
+    else if (ch === ')' || ch === ']') depth = Math.max(0, depth - 1);
+  }
+  push();
+  return out;
+}
+
+const CONTEXT_STATE = ' on ';
+
+/**
+ * A selector part's states, said of the element each is on.
+ *
+ * `.nav:hover a` is a rule for the link that applies while the *nav* is hovered. Peeled as a whole
+ * it reported `:hover` as the link's own, and the panel listed it as the link's hover — hovering
+ * the link did nothing of the kind, and a declaration added "on hover" there went into a rule the
+ * link's own hover never reaches. A state on one other compound is now its own condition,
+ * `:hover on .nav`; a state on the element itself is what it always was. Anything more tangled —
+ * states on two compounds, or on both the element and another — keeps the old reading.
+ */
+export function peelStates(part: string): { base: string; pseudo: string } {
+  const whole = peelPseudos(part);
+  if (!whole.pseudo) return whole;
+  const pieces = compoundsOf(part);
+  if (pieces.length < 2) return whole;
+  const subject = peelPseudos(pieces[pieces.length - 1].text);
+  const others = pieces.slice(0, -1).map((one) => peelPseudos(one.text)).filter((one) => one.pseudo);
+  if (subject.pseudo || others.length !== 1) return whole;
+  const [context] = others;
+  if (/::/.test(context.pseudo)) return whole;
+  return { base: whole.base, pseudo: `${context.pseudo}${CONTEXT_STATE}${context.base || '*'}` };
+}
+
+/**
+ * A state taken apart: the pseudo-classes, and the compound they are on when it is another
+ * element's (`:hover on .nav` → `:hover`, `.nav`), null for the element's own.
+ */
+export function stateTrigger(state: string): { pseudo: string; on: string | null } {
+  const at = state.indexOf(CONTEXT_STATE);
+  return at < 0 ? { pseudo: state, on: null } : { pseudo: state.slice(0, at), on: state.slice(at + CONTEXT_STATE.length) };
+}
+
+/**
+ * A family's selector in a state, as it would be written: `.card` and `:hover` is `.card:hover`;
+ * `.nav a` and `:hover on .nav` is `.nav:hover a`. Null when the state is on a compound the
+ * family does not have, so there is no such rule to write.
+ */
+export function withState(family: string, state: string): string | null {
+  const { pseudo, on } = stateTrigger(state);
+  if (!on) return `${family}${state}`;
+  const pieces = compoundsOf(family);
+  const at = pieces.slice(0, -1).findIndex((one) => one.text === on);
+  if (at < 0) return null;
+  return pieces
+    .map((one, i) => `${i ? (one.combinator === ' ' ? ' ' : ` ${one.combinator} `) : ''}${i === at ? `${one.text}${pseudo}` : one.text}`)
+    .join('');
+}
+
 /**
  * How a rule reaches this element, if it does.
  *
@@ -327,7 +426,7 @@ function reachOf(
 ): { matched: string; base: string; state: string; specificity: Specificity } | null {
   let found: { matched: string; base: string; state: string; specificity: Specificity } | null = null;
   for (const part of splitSelectorList(selectorText)) {
-    const { base, pseudo } = peelPseudos(part);
+    const { base, pseudo } = peelStates(part);
     // A bare `::selection` or `:hover` has no base left and applies to anything.
     if (!matches(el, base || '*')) continue;
     if (!found) {

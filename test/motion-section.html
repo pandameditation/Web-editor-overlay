@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Motion section</title>
+  <!--
+    Motion is one section: Animation and Transition behind a switch. The Transition tab is a
+    timeline of the element's transitions, under the state that plays them ("When :hover starts"),
+    with Try it, rows to pick, move and remove, and Add chips led by what the state changes. A
+    state on another element (.nav:hover a) is that element's, said ":hover on .nav", here and in
+    the panel's conditions.
+  -->
+  <style id="site">
+    :root { --motion-fast: 150ms; --motion-base: 250ms; --motion-slow: 400ms; }
+    .card { width: 200px; padding: 16px; background-color: #ffffff; transition: background-color var(--motion-fast) ease-out, transform 250ms; }
+    .card:hover { background-color: #eef2ff; transform: translateY(-4px); box-shadow: 0 12px 24px rgb(0 0 0 / 20%); }
+    .card:focus-visible { outline-offset: 3px; }
+    .nav { display: flex; gap: 12px; padding: 8px; background: #0f172a; }
+    .nav a { color: #94a3b8; }
+    .nav:hover a { color: #e2e8f0; }
+    .plain { padding: 8px; }
+  </style>
+</head>
+
+<body>
+  <div class="card" id="card" tabindex="0">Card</div>
+  <nav class="nav"><a href="#" id="link">Classes</a><a href="#">Studio</a></nav>
+  <div class="plain" id="plain">Plain</div>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const results = {};
+      const errors = [];
+      addEventListener('error', (event) => errors.push('error: ' + event.message));
+      addEventListener('unhandledrejection', (event) => errors.push('rejection: ' + event.reason));
+      const progress = document.getElementById('progress');
+      const settle = (ms = 300) => new Promise((resolve) => setTimeout(resolve, ms));
+      const check = async (name, fn) => {
+        progress.textContent = name;
+        try { results[name] = await fn(); } catch (err) { results[name] = 'THREW: ' + String(err && err.stack); }
+      };
+      const deep = (selector, root = document) => {
+        const direct = root.querySelector?.(selector);
+        if (direct) return direct;
+        for (const el of root.querySelectorAll?.('*') ?? []) {
+          if (!el.shadowRoot) continue;
+          const found = deep(selector, el.shadowRoot);
+          if (found) return found;
+        }
+        return null;
+      };
+      const flat = (node) => (node?.textContent ?? '').replace(/\s+/g, ' ').trim();
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark', presets: false, detectScriptContent: false });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      engine.setDockTab('styles');
+      const sroot = () => deep('heo-styles-panel').shadowRoot;
+      const sections = () => Array.from(sroot().querySelectorAll('heo-section'));
+      const motion = () => sections().find((one) => one.getAttribute('heading') === 'Motion');
+      const tabs = () => motion()?.querySelector('heo-segmented');
+      const editor = () => motion()?.querySelector('heo-transition-editor');
+      const ed = () => editor()?.shadowRoot;
+      const rows = () => Array.from(ed()?.querySelectorAll('.trow') ?? []);
+      const names = () => rows().map((row) => flat(row.querySelector('.what span')));
+      const rule = (selector) => Array.from(document.getElementById('site').sheet.cssRules).find((one) => one.selectorText === selector);
+      const ruleTransition = () => rule('.card').style.getPropertyValue('transition').replace(/\s+/g, ' ').trim();
+      const select = async (id) => {
+        api.select(document.getElementById(id));
+        await settle(500);
+        const section = motion();
+        if (section && !section.open) section.shadowRoot?.querySelector('button')?.click();
+        await settle(300);
+      };
+      const tab = async (value) => {
+        tabs().dispatchEvent(new CustomEvent('segment-change', { detail: { value }, bubbles: true, composed: true }));
+        await settle(300);
+      };
+
+      await select('card');
+
+      await check('section', async () => {
+        const headings = sections().map((one) => one.getAttribute('heading'));
+        const effects = sroot().querySelector('[data-declarations="effects"]');
+        return {
+          oneMotionSection: headings.filter((one) => one === 'Motion').length === 1,
+          noSeparateAnimationSection: !headings.includes('Animation'),
+          animationAndTransitionTabs: (tabs()?.options ?? []).map((one) => one.value).join(',') === 'animation,transition',
+          // A transition and no animation: it opens on Transition.
+          opensOnTheTransitionTab: tabs()?.value === 'transition' && Boolean(editor()),
+          willChangeMovedToEffects: Boolean(effects?.querySelector('[data-property="will-change"]')),
+        };
+      });
+
+      await check('timeline', async () => {
+        const options = Array.from(ed().querySelectorAll('select option')).map((one) => one.value);
+        const sub = flat(rows()[0]?.querySelector('.what small'));
+        const adds = Array.from(ed().querySelectorAll('.add')).map((one) => one.dataset.add);
+        const changed = ed().querySelector('.add.changed');
+        return {
+          readsTheTransitionsInOrder: names().join(',') === 'background-color,transform',
+          theTriggersAreTheElementsStates: options.join('|') === ':hover|:focus-visible',
+          eachRowSaysWhatTheStateChanges: /#ffffff\s*→\s*#eef2ff/i.test(sub),
+          barsAreTheirTiming: (() => {
+            const bars = Array.from(ed().querySelectorAll('.bar'));
+            return bars.length === 2 && parseFloat(bars[0].style.width) < parseFloat(bars[1].style.width);
+          })(),
+          rowsCanBeDraggedAndRemoved: rows().every((row) => row.draggable && row.querySelector('.grip') && row.querySelector('.kill')),
+          // What :hover changes and nothing transitions yet comes first, tagged with the state.
+          addOffersTheStatesOtherChangeFirst: adds[0] === 'box-shadow' && /:hover/.test(flat(changed)),
+          thenAllAndTheCommonOnes: adds.includes('all') && adds.includes('opacity') && adds.at(-1) === 'other',
+          theFirstRowIsPicked: rows()[0]?.getAttribute('aria-current') === 'true' && /background-color/.test(flat(ed().querySelector('.ed .group'))),
+        };
+      });
+
+      await check('add', async () => {
+        ed().querySelector('.add[data-add="box-shadow"]').click();
+        await settle(500);
+        const written = ruleTransition();
+        return {
+          writesIntoTheRuleItCameFrom: /box-shadow var\(--motion-base\)/.test(written) && /^background-color var\(--motion-fast\) ease-out/.test(written),
+          keepsTheOthersAsWritten: written.includes('transform 250ms'),
+          theNewRowIsPickedAndFocused: rows()[2]?.getAttribute('aria-current') === 'true' && ed().activeElement === rows()[2],
+          noLongerOffered: !ed().querySelector('.add[data-add="box-shadow"]'),
+        };
+      });
+
+      await check('timing', async () => {
+        const box = ed().querySelector('.ed input[aria-label^="Duration, milliseconds"]');
+        box.value = '320';
+        box.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+        await settle(500);
+        const afterNumber = ruleTransition();
+        const preset = Array.from(ed().querySelectorAll('.ed .presets button')).find((one) => /^slow/.test(flat(one)));
+        preset?.click();
+        await settle(500);
+        const afterToken = ruleTransition();
+        return {
+          aNumberWritesMilliseconds: /box-shadow 320ms/.test(afterNumber),
+          aTokenPresetWritesItsVar: /box-shadow var\(--motion-slow\)/.test(afterToken),
+          theDurationTokensAreThePresets: Array.from(ed().querySelectorAll('.ed .presets button')).map(flat).join(',') === 'fast 150,base 250,slow 400',
+        };
+      });
+
+      await check('bar', async () => {
+        const bar = ed().querySelectorAll('.bar')[1];
+        const box = bar.getBoundingClientRect();
+        const track = bar.parentElement.getBoundingClientRect();
+        const pointer = (type, x) => bar.dispatchEvent(new PointerEvent(type, { pointerId: 5, button: 0, clientX: x, clientY: box.top + 4, bubbles: true, composed: true }));
+        pointer('pointerdown', box.left + 2);
+        pointer('pointermove', box.left + 2 + track.width / 6);
+        await settle(60);
+        const drafted = ed().querySelectorAll('.bar')[1].style.left;
+        const notWrittenYet = !/transform 250ms \d/.test(ruleTransition());
+        pointer('pointerup', box.left + 2 + track.width / 6);
+        await settle(500);
+        const written = ruleTransition();
+        return {
+          draggingMovesTheBar: parseFloat(drafted) > 0,
+          writesNothingUntilReleased: notWrittenYet,
+          releasingWritesTheDelay: /transform 250ms \d+ms/.test(written),
+        };
+      });
+
+      await check('order', async () => {
+        rows()[0].focus();
+        rows()[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', altKey: true, bubbles: true, composed: true }));
+        await settle(500);
+        const moved = names().join(',');
+        const movedRule = ruleTransition();
+        const data = new DataTransfer();
+        rows()[1].dispatchEvent(new DragEvent('dragstart', { dataTransfer: data, bubbles: true, composed: true }));
+        rows()[0].dispatchEvent(new DragEvent('dragover', { dataTransfer: data, bubbles: true, composed: true, cancelable: true }));
+        rows()[0].dispatchEvent(new DragEvent('drop', { dataTransfer: data, bubbles: true, composed: true, cancelable: true }));
+        await settle(500);
+        return {
+          altArrowMovesARow: moved === 'transform,background-color,box-shadow' && /^transform/.test(movedRule),
+          draggingMovesItBack: names().join(',') === 'background-color,transform,box-shadow' && /^background-color/.test(ruleTransition()),
+        };
+      });
+
+      await check('tryIt', async () => {
+        const card = document.getElementById('card');
+        let mutations = 0;
+        const watch = new MutationObserver((list) => { mutations += list.length; });
+        watch.observe(card, { attributes: true });
+        watch.observe(document.getElementById('site'), { childList: true, characterData: true, subtree: true });
+        const sheetBefore = document.getElementById('site').sheet.cssRules.length;
+        const button = Array.from(ed().querySelectorAll('button')).find((one) => /try it/i.test(flat(one)));
+        button.click();
+        await settle(120);
+        const playing = editor().previewing;
+        const moving = card.getAnimations().length;
+        await settle(2200);
+        watch.disconnect();
+        return {
+          tryItPlaysOnTheElement: playing >= 3 && moving >= 3,
+          andWritesNothing: mutations === 0 && document.getElementById('site').sheet.cssRules.length === sheetBefore,
+          andEndsAsItWas: card.getAnimations().length === 0 && editor().previewing === 0,
+        };
+      });
+
+      await check('remove', async () => {
+        rows()[2].querySelector('.kill').click();
+        await settle(500);
+        const afterOne = ruleTransition();
+        const focused = ed().activeElement;
+        return {
+          theTrashRemovesIt: !/box-shadow/.test(afterOne) && /transform/.test(afterOne),
+          itIsOfferedAgain: Boolean(ed().querySelector('.add[data-add="box-shadow"]')),
+          focusStaysInTheTimeline: Boolean(focused?.matches('.trow')),
+        };
+      });
+
+      await check('animationTab', async () => {
+        await tab('animation');
+        const animationEditor = motion().querySelector('heo-animation-editor');
+        const noTimeline = !editor();
+        await tab('transition');
+        return {
+          theAnimationEditorIsTheOtherTab: Boolean(animationEditor) && noTimeline,
+          andBackAgain: Boolean(editor()),
+        };
+      });
+
+      await select('link');
+      await check('ancestorState', async () => {
+        const options = Array.from(ed()?.querySelectorAll('select option') ?? []).map((one) => one.value);
+        const note = flat(ed()?.querySelector('.note'));
+        const chips = Array.from(sroot().querySelectorAll('[data-cond]')).map((one) => one.dataset.cond);
+        const adds = Array.from(ed()?.querySelectorAll('.add.changed') ?? []).map((one) => one.dataset.add);
+        return {
+          theTriggerIsTheNavsHover: options.join('|') === ':hover on .nav',
+          saidAsSuch: /\.nav/.test(note),
+          notTheLinksOwnHover: !options.includes(':hover'),
+          theConditionsBarSaysSoToo: chips.includes('state::hover on .nav') && !chips.includes('state::hover'),
+          offersTheColorItChanges: adds.join(',') === 'color',
+        };
+      });
+
+      await select('plain');
+      await check('noState', async () => {
+        const select = ed()?.querySelector('select');
+        const button = Array.from(ed()?.querySelectorAll('button') ?? []).find((one) => /try it/i.test(flat(one)));
+        const note = flat(ed()?.querySelector('.note'));
+        return {
+          saysThereIsNoState: Boolean(select?.disabled) && /no state/i.test(flat(select)),
+          tryItIsOff: Boolean(button?.disabled),
+          theNoteIsShort: /a script makes/.test(note) && !/cannot see/.test(note),
+          stillAuthorable: Boolean(ed()?.querySelector('.add[data-add="opacity"]')),
+        };
+      });
+
+      const failed = Object.entries(results)
+        .filter(([, group]) => group && typeof group === 'object')
+        .filter(([, group]) => Object.values(group).some((value) => value === false))
+        .map(([name]) => name);
+      const threw = Object.entries(results).filter(([, v]) => typeof v === 'string').map(([k]) => k);
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify({ ok: !failed.length && !threw.length && !errors.length, failed: [...failed, ...threw], errors, results }, null, 2) + ':END';
+    })();
+  </script>
+</body>
+
+</html>

@@ -1,0 +1,995 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PROTOTYPE — Motion section, Transition tab: the timeline</title>
+  <!--
+  PROTOTYPE — throwaway, not part of the overlay build. Open the file directly in a browser.
+
+  The chosen mix of demo/motion-section.prototype.html:
+    - A's switch at the top of the Motion section: Animation | Transition;
+    - C's timeline: what the trigger changes, on one clock, a bar per transitioned property
+      (drag it to delay, drag its end to lengthen), a playhead when Try it plays;
+    - B's rows: each transitioned property is a row that is picked by clicking, moved by its grip
+      (or Alt and an arrow) and removed by its trash. Removed, it goes back to the Add chips;
+    - A's Add chips right under the timeline: first what the trigger changes and is not yet
+      transitioned (tagged with the state), then all and the common ones;
+    - the picked row's timing and easing below; the raw declarations folded at the end.
+  The trigger is a menu of the states the page's own CSS gives this element (read like the
+  panel's States already are). Scenarios — the bottom bar, ← →, or ?scenario=:
+    card    — a card with :hover and :focus-visible rules;
+    link    — a link whose color changes only through an ancestor's :hover (.nav:hover a);
+    none    — an element no state rule reaches: nothing to play between yet.
+-->
+  <style>
+    :root {
+      --bg: #ffffff;
+      --sunken: #f3f4f7;
+      --raised: #ffffff;
+      --hover: #eef0f5;
+      --text: #1f2330;
+      --dim: #4b5263;
+      --faint: #6b7385;
+      --line: #e3e6ec;
+      --line2: #d3d7e0;
+      --accent: #6366f1;
+      --accent-soft: color-mix(in oklab, var(--accent) 12%, transparent);
+      --accent-line: color-mix(in oklab, var(--accent) 45%, transparent);
+      --danger: #e11d48;
+      --warn: #b45309;
+      --r-sm: 7px;
+      --font: Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+      --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      height: 100%;
+    }
+
+    body {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 380px;
+      font-family: var(--font);
+      background: #e9ecf2;
+      color: var(--text);
+    }
+
+    button,
+    input,
+    select {
+      font: inherit;
+    }
+
+    .stage {
+      padding: 24px 32px 90px;
+      overflow: auto;
+    }
+
+    .stage h1 {
+      font: 600 11px/1 var(--font);
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: #64748b;
+      margin: 0 0 14px;
+    }
+
+    .site {
+      border-radius: 14px;
+      background: #f8fafc;
+      height: 260px;
+      display: grid;
+      place-items: center;
+      border: 1px solid #e2e8f0;
+    }
+
+    .card {
+      width: 260px;
+      padding: 18px 20px;
+      border-radius: 14px;
+      background: #fff;
+      color: #0f172a;
+      box-shadow: 0 1px 2px rgb(15 23 42 / 8%);
+      cursor: pointer;
+      font: 14px/1.45 system-ui;
+    }
+
+    .card b {
+      display: block;
+      font-size: 16px;
+      margin-bottom: 2px;
+    }
+
+    .card:hover,
+    .card.is-hover {
+      background: #eef2ff;
+      transform: translateY(-4px);
+      box-shadow: 0 16px 30px -12px rgb(79 70 229 / 45%);
+    }
+
+    .card:focus-visible,
+    .card.is-focus {
+      outline: 3px solid #6366f1;
+      outline-offset: 3px;
+    }
+
+    .nav {
+      display: flex;
+      gap: 18px;
+      padding: 14px 20px;
+      border-radius: 12px;
+      background: #0f172a;
+      font: 14px system-ui;
+    }
+
+    .nav a {
+      color: #94a3b8;
+      text-decoration: none;
+    }
+
+    .nav:hover a,
+    .nav.is-hover a {
+      color: #e2e8f0;
+    }
+
+    .plain {
+      padding: 14px 20px;
+      border-radius: 10px;
+      background: #fff;
+      font: 14px system-ui;
+      border: 1px solid #e2e8f0;
+    }
+
+    .picked {
+      outline: 2px solid var(--accent);
+      outline-offset: 4px;
+    }
+
+    .out {
+      margin-top: 16px;
+      background: #111827;
+      color: #e5e7eb;
+      border-radius: 10px;
+      padding: 12px 14px;
+      font: 11.5px/1.6 var(--mono);
+      white-space: pre-wrap;
+    }
+
+    .out b {
+      color: #a5b4fc;
+      font-weight: 500;
+    }
+
+    .out .c {
+      color: #8b93a5;
+    }
+
+    .question {
+      margin-top: 12px;
+      color: #475569;
+      font-size: 13px;
+      line-height: 1.5;
+      max-width: 720px;
+    }
+
+    /* panel */
+    .panel {
+      background: var(--bg);
+      border-left: 1px solid var(--line);
+      padding: 12px 14px 90px;
+      font-size: 12px;
+      overflow: auto;
+    }
+
+    .sec {
+      border-top: 1px solid var(--line);
+      padding: 10px 0;
+    }
+
+    .sechead {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      font: 600 10.5px var(--font);
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      color: var(--dim);
+    }
+
+    .sechead .n {
+      margin-left: auto;
+      color: var(--faint);
+      font-weight: 500;
+    }
+
+    .body {
+      display: grid;
+      gap: 10px;
+      margin-top: 10px;
+      min-width: 0;
+    }
+
+    .group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--faint);
+      font-size: 9.5px;
+      font-weight: 600;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+
+    .group::after {
+      content: '';
+      flex: 1;
+      border-top: 1px solid var(--line);
+    }
+
+    .seg {
+      display: inline-flex;
+      padding: 2px;
+      border-radius: 8px;
+      background: var(--sunken);
+      border: 1px solid var(--line);
+      justify-self: start;
+    }
+
+    .seg button {
+      all: unset;
+      padding: 4px 12px;
+      border-radius: 6px;
+      font-size: 11.5px;
+      color: var(--dim);
+      cursor: pointer;
+    }
+
+    .seg button[aria-pressed=true] {
+      background: var(--raised);
+      color: var(--text);
+      font-weight: 600;
+      box-shadow: 0 1px 2px rgb(0 0 0 / 10%);
+    }
+
+    .trigger {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .trigger .w {
+      color: var(--dim);
+      font-size: 11.5px;
+    }
+
+    select.state {
+      height: 26px;
+      border: 1px solid var(--line2);
+      border-radius: var(--r-sm);
+      background: var(--raised);
+      font: 11.5px var(--mono);
+      padding: 0 4px;
+    }
+
+    .btn {
+      all: unset;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      height: 26px;
+      padding: 0 10px;
+      border-radius: var(--r-sm);
+      border: 1px solid var(--line2);
+      background: var(--raised);
+      font-size: 11.5px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .btn.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+      margin-left: auto;
+    }
+
+    .btn[aria-disabled=true] {
+      opacity: .45;
+      cursor: not-allowed;
+    }
+
+    /* the timeline: one row per transitioned property */
+    .tl {
+      display: grid;
+      gap: 2px;
+    }
+
+    .trow {
+      display: grid;
+      grid-template-columns: 14px 118px minmax(0, 1fr) 22px;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 4px;
+      border: 1px solid transparent;
+      border-radius: var(--r-sm);
+      cursor: pointer;
+    }
+
+    .trow:hover {
+      background: var(--hover);
+    }
+
+    .trow[aria-current=true] {
+      border-color: var(--accent-line);
+      background: var(--accent-soft);
+    }
+
+    .trow.over {
+      box-shadow: inset 0 2px 0 var(--accent);
+    }
+
+    .trow:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 1px;
+    }
+
+    .grip {
+      color: var(--faint);
+      cursor: grab;
+      text-align: center;
+      font-size: 11px;
+    }
+
+    .what {
+      min-width: 0;
+      font: 10.5px var(--mono);
+    }
+
+    .what span {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .what small {
+      display: block;
+      color: var(--faint);
+      font-size: 9.5px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .what small.none {
+      color: var(--warn);
+    }
+
+    .track {
+      position: relative;
+      height: 18px;
+      border-radius: 4px;
+      background: repeating-linear-gradient(90deg, var(--line) 0 1px, transparent 1px 25%), var(--raised);
+      border: 1px solid var(--line);
+    }
+
+    .bar {
+      position: absolute;
+      top: 2px;
+      height: 12px;
+      border-radius: 3px;
+      background: var(--accent);
+      cursor: grab;
+      min-width: 4px;
+    }
+
+    .bar.idle {
+      background: color-mix(in oklab, var(--accent) 45%, var(--line2));
+    }
+
+    .bar::after {
+      content: '';
+      position: absolute;
+      right: 0;
+      top: 0;
+      bottom: 0;
+      width: 5px;
+      border-radius: 0 3px 3px 0;
+      background: rgb(255 255 255 / 50%);
+      cursor: e-resize;
+    }
+
+    .playhead {
+      position: absolute;
+      top: -3px;
+      bottom: -3px;
+      width: 2px;
+      background: var(--danger);
+      left: 0;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .tl.playing .playhead {
+      opacity: 1;
+    }
+
+    .kill {
+      all: unset;
+      display: grid;
+      place-items: center;
+      width: 20px;
+      height: 20px;
+      border-radius: 4px;
+      color: var(--dim);
+      cursor: pointer;
+      font-size: 11px;
+    }
+
+    .kill:hover {
+      color: var(--danger);
+      background: var(--raised);
+    }
+
+    .scale {
+      display: grid;
+      grid-template-columns: 14px 118px minmax(0, 1fr) 22px;
+      gap: 6px;
+      padding: 0 5px;
+      font: 9.5px var(--mono);
+      color: var(--faint);
+    }
+
+    .scale div {
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .empty {
+      margin: 0;
+      padding: 10px;
+      border: 1px dashed var(--line2);
+      border-radius: var(--r-sm);
+      color: var(--faint);
+      font-size: 11px;
+      line-height: 1.5;
+    }
+
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+
+    .chip {
+      all: unset;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      height: 22px;
+      padding: 0 8px;
+      border-radius: 999px;
+      border: 1px dashed var(--line2);
+      font: 10.5px var(--mono);
+      color: var(--faint);
+      cursor: pointer;
+    }
+
+    .chip:hover {
+      border-color: var(--accent-line);
+      color: var(--text);
+    }
+
+    .chip.state {
+      color: var(--text);
+      border-color: var(--accent-line);
+    }
+
+    .chip .tag {
+      color: var(--accent);
+    }
+
+    .hint {
+      color: var(--faint);
+      font-size: 10.5px;
+      line-height: 1.45;
+      margin: 0;
+    }
+
+    .hint b {
+      color: var(--dim);
+      font-weight: 600;
+    }
+
+    .warn {
+      color: var(--warn);
+    }
+
+    .sub {
+      display: grid;
+      gap: 8px;
+      padding: 8px;
+      border-radius: var(--r-sm);
+      background: var(--sunken);
+      border: 1px solid var(--line);
+      min-width: 0;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 64px minmax(0, 1fr);
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .lbl {
+      color: var(--dim);
+      font: 11px var(--mono);
+    }
+
+    .pair {
+      display: grid;
+      grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+      gap: 6px;
+      min-width: 0;
+    }
+
+    .num {
+      min-width: 0;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      height: 28px;
+      padding: 0 7px;
+      border: 1px solid var(--line2);
+      border-radius: var(--r-sm);
+      background: var(--raised);
+      gap: 4px;
+    }
+
+    .num input {
+      all: unset;
+      flex: 1;
+      min-width: 0;
+      font: 11.5px var(--mono);
+    }
+
+    .num span {
+      color: var(--faint);
+      font: 10px var(--mono);
+      white-space: nowrap;
+    }
+
+    .num .tok {
+      color: var(--accent);
+    }
+
+    .presets {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      min-width: 0;
+    }
+
+    .presets button {
+      all: unset;
+      box-sizing: border-box;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font: 10px var(--mono);
+      padding: 3px 6px;
+      border-radius: 5px;
+      border: 1px solid var(--line);
+      cursor: pointer;
+      color: var(--dim);
+      background: var(--raised);
+    }
+
+    .presets button[aria-pressed=true] {
+      border-color: var(--accent-line);
+      background: var(--accent-soft);
+      color: var(--text);
+    }
+
+    .curve {
+      display: grid;
+      grid-template-columns: 132px minmax(0, 1fr);
+      gap: 10px;
+      align-items: start;
+      min-width: 0;
+    }
+
+    .curve svg {
+      width: 132px;
+      height: 104px;
+      border-radius: 8px;
+      background: var(--raised);
+      border: 1px solid var(--line);
+    }
+
+    .decl {
+      border: 1px dashed var(--line2);
+      border-radius: var(--r-sm);
+      padding: 6px 8px;
+    }
+
+    .decl summary {
+      cursor: pointer;
+      color: var(--faint);
+      font-size: 10.5px;
+    }
+
+    .decl .d {
+      display: grid;
+      grid-template-columns: 150px minmax(0, 1fr);
+      font: 10.5px var(--mono);
+      color: var(--dim);
+      margin-top: 3px;
+    }
+
+    .decl .d i {
+      font-style: normal;
+      color: var(--text);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .anim {
+      display: grid;
+      gap: 8px;
+      padding: 8px;
+      border-radius: var(--r-sm);
+      background: var(--sunken);
+      border: 1px solid var(--line);
+    }
+
+    .field {
+      display: flex;
+      align-items: center;
+      height: 28px;
+      padding: 0 8px;
+      border: 1px solid var(--line2);
+      border-radius: var(--r-sm);
+      background: var(--raised);
+      font: 11.5px var(--mono);
+      flex: 1;
+    }
+
+    [hidden] {
+      display: none !important;
+    }
+
+    .proto-bar {
+      position: fixed;
+      left: calc(50% - 190px);
+      bottom: 18px;
+      transform: translateX(-50%);
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px;
+      border-radius: 999px;
+      background: #111;
+      color: #fff;
+      font: 600 12px var(--font);
+      z-index: 50;
+    }
+
+    .proto-bar button {
+      border: 0;
+      background: #333;
+      color: #fff;
+      border-radius: 999px;
+      width: 28px;
+      height: 28px;
+      cursor: pointer;
+    }
+
+    .proto-bar span {
+      padding: 0 10px;
+      min-width: 220px;
+      text-align: center;
+    }
+  </style>
+</head>
+
+<body>
+  <main class="stage">
+    <h1>Motion section · Transition tab — prototype</h1>
+    <div class="site" id="site"></div>
+    <div class="out" id="out"></div>
+    <p class="question" id="question"></p>
+  </main>
+
+  <aside class="panel">
+    <div class="sec">
+      <div class="sechead">▸ Effects <span class="n">3</span></div>
+    </div>
+    <div class="sec" id="motion"></div>
+  </aside>
+
+  <div class="proto-bar" role="toolbar" aria-label="Prototype scenario switcher">
+    <button type="button" data-step="-1" aria-label="Previous scenario">←</button>
+    <span id="proto-label"></span>
+    <button type="button" data-step="1" aria-label="Next scenario">→</button>
+  </div>
+
+  <script>
+    /*
+     * Each scenario: the element, the selector written to, and the states the page's CSS gives it,
+     * each with what it changes (from → to). `via` is set when the state is an ancestor's.
+     */
+    const SCENARIOS = {
+      card: {
+        label: 'card — :hover and :focus-visible',
+        html: '<div class="card picked" id="el" tabindex="0"><b>Pottery for beginners</b>Hover me, or press Try it in the panel.</div>',
+        selector: '.card',
+        states: {
+          ':hover': {
+            cls: 'is-hover', changes: [
+              { prop: 'background-color', from: '#ffffff', to: '#eef2ff' },
+              { prop: 'transform', from: 'none', to: 'translateY(-4px)' },
+              { prop: 'box-shadow', from: '0 1px 2px rgb(15 23 42 / 8%)', to: '0 16px 30px -12px rgb(79 70 229 / 45%)' },
+            ]
+          },
+          ':focus-visible': {
+            cls: 'is-focus', changes: [
+              { prop: 'outline-color', from: 'currentcolor', to: '#6366f1' },
+              { prop: 'outline-offset', from: '0px', to: '3px' },
+            ]
+          },
+        },
+        list: [
+          { prop: 'background-color', dur: 150, delay: 0, ease: 'ease-out' },
+          { prop: 'transform', dur: 250, delay: 0, ease: 'cubic-bezier(.34,1.56,.64,1)' },
+        ],
+      },
+      link: {
+        label: 'link — through .nav:hover',
+        html: '<nav class="nav" id="nav"><a href="#" class="picked" id="el">Classes</a><a href="#">Studio</a><a href="#">Contact</a></nav>',
+        selector: '.nav a',
+        states: {
+          ':hover on .nav': { cls: 'is-hover', target: 'nav', via: '.nav', changes: [{ prop: 'color', from: '#94a3b8', to: '#e2e8f0' }] },
+          ':hover': { cls: 'is-hover-self', changes: [] },
+        },
+        list: [],
+      },
+      none: {
+        label: 'none — no state rule reaches it',
+        html: '<div class="plain picked" id="el">A plain block: no :hover, no :focus in the page’s CSS.</div>',
+        selector: '.plain',
+        states: {},
+        list: [{ prop: 'opacity', dur: 250, delay: 0, ease: 'ease' }],
+      },
+    };
+    const KEYS = Object.keys(SCENARIOS);
+    const COMMON = ['all', 'opacity', 'color', 'background-color', 'transform', 'box-shadow', 'filter'];
+    const TOKENS = { '--motion-fast': 150, '--motion-base': 250, '--motion-slow': 400 };
+    const EASINGS = { ease: [0.25, 0.1, 0.25, 1], 'ease-out': [0, 0, 0.58, 1], 'ease-in-out': [0.42, 0, 0.58, 1], 'cubic-bezier(.2,0,0,1)': [0.2, 0, 0, 1], 'cubic-bezier(.34,1.56,.64,1)': [0.34, 1.56, 0.64, 1] };
+    const SPAN = 600;
+
+    let key = new URLSearchParams(location.search).get('scenario');
+    if (!KEYS.includes(key)) key = 'card';
+    let s, state;
+    const load = () => {
+      s = SCENARIOS[key];
+      state = { tab: 'transition', list: s.list.map((one) => ({ ...one })), picked: 0, trigger: Object.keys(s.states)[0] ?? '' };
+    };
+    load();
+
+    const tokenFor = (ms) => Object.entries(TOKENS).find(([, v]) => v === ms)?.[0];
+    const msText = (ms) => (tokenFor(ms) ? `var(${tokenFor(ms)})` : `${ms}ms`);
+    const shorthand = () => state.list.map((t) => `${t.prop} ${msText(t.dur)} ${t.ease}${t.delay ? ` ${t.delay}ms` : ''}`).join(',\n              ') || 'none';
+    const changes = () => s.states[state.trigger]?.changes ?? [];
+    const changeOf = (prop) => changes().find((c) => c.prop === prop) ?? (prop === 'all' && changes().length ? { from: 'every change', to: `${changes().length} properties` } : null);
+    const curve = (ease) => {
+      const [x1, y1, x2, y2] = EASINGS[ease] ?? EASINGS.ease;
+      const X = (x) => 8 + x * 116, Y = (y) => 96 - ((y + 0.2) / 1.6) * 88;
+      return `<path d="M${X(0)},${Y(0)} C${X(x1)},${Y(y1)} ${X(x2)},${Y(y2)} ${X(1)},${Y(1)}" fill="none" stroke="var(--accent)" stroke-width="2"/>`;
+    };
+
+    function paint() {
+      const el = document.getElementById('el');
+      if (el) el.style.transition = state.list.map((t) => `${t.prop} ${t.dur}ms ${t.ease} ${t.delay}ms`).join(', ') || '';
+      document.getElementById('out').innerHTML = `${s.selector} {\n  <b>transition</b>: ${shorthand()};\n}` +
+        Object.entries(s.states).filter(([, st]) => st.changes.length).map(([name, st]) =>
+          `\n<span class="c">/* already in the page: ${name}, ${st.changes.map((c) => c.prop).join(', ')} */</span>`).join('');
+      document.getElementById('question').innerHTML = {
+        card: 'The page has <b>.card:hover</b> and <b>.card:focus-visible</b>. The trigger menu lists both; each shows what it changes and offers those first.',
+        link: 'The link changes color only through <b>.nav:hover a</b>: hovering the <i>nav</i> is the trigger, so it is labelled as such, and Try it hovers the nav, not the link.',
+        none: 'No state rule reaches this element. A transition still works for changes made by scripts (a class toggled, a style set), which no stylesheet shows — so it can be authored, just not played.',
+      }[key];
+    }
+
+    function tryIt() {
+      const st = s.states[state.trigger];
+      if (!st || !st.changes.length) return;
+      const target = st.target ? document.getElementById(st.target) : document.getElementById('el');
+      target.classList.add(st.cls);
+      const longest = Math.max(0, ...state.list.map((t) => t.dur + t.delay));
+      const tl = document.querySelector('.tl');
+      tl?.classList.add('playing');
+      document.querySelectorAll('.playhead').forEach((p) => {
+        p.style.transition = 'none'; p.style.left = '0'; void p.offsetWidth;
+        p.style.transition = `left ${longest}ms linear`; p.style.left = `${Math.min(100, (longest / SPAN) * 100)}%`;
+      });
+      setTimeout(() => { target.classList.remove(st.cls); setTimeout(() => tl?.classList.remove('playing'), 300); }, longest + 700);
+    }
+
+    // ------------------------------------------------------------------ the Transition tab
+    function triggerBar() {
+      const names = Object.keys(s.states);
+      if (!names.length) {
+        return `<div class="trigger"><span class="w">When</span><select class="state" disabled><option>no state in the page’s CSS</option></select>
+          <span class="btn primary" aria-disabled="true" title="Nothing to play between: no state rule reaches this element">▶ Try it</span></div>`;
+      }
+      const playable = changes().length > 0;
+      return `<div class="trigger"><span class="w">When</span>
+          <select class="state" data-trigger aria-label="Trigger">${names.map((n) => `<option ${n === state.trigger ? 'selected' : ''}>${n}</option>`).join('')}</select>
+          <span class="w">starts</span>
+          <button class="btn primary" type="button" data-try ${playable ? '' : 'aria-disabled="true"'}>▶ Try it</button></div>`;
+    }
+
+    function timeline() {
+      if (!state.list.length) return `<p class="empty">Nothing transitions yet: every change ${state.trigger ? `<b>${state.trigger}</b> makes` : ''} snaps. Add a property below.</p>`;
+      return `<div class="tl">${state.list.map((t, i) => {
+        const c = changeOf(t.prop);
+        const sub = c ? `<small>${c.from} → ${c.to}</small>` : `<small class="none">${state.trigger ? `${state.trigger} does not change it` : 'no state changes it'}</small>`;
+        return `<div class="trow" role="button" tabindex="0" draggable="true" data-pick="${i}" aria-current="${i === state.picked}" aria-label="${t.prop}, ${t.dur}ms after ${t.delay}ms">
+          <span class="grip" title="Drag to reorder; Alt and an arrow move it">⋮⋮</span>
+          <span class="what"><span>${t.prop}</span>${sub}</span>
+          <div class="track"><span class="bar${c ? '' : ' idle'}" data-bar="${i}" style="left:${(t.delay / SPAN) * 100}%;width:${(t.dur / SPAN) * 100}%" title="${t.dur}ms after ${t.delay}ms. Drag to delay it; drag its end to lengthen it."></span><span class="playhead"></span></div>
+          <button class="kill" type="button" data-kill="${i}" aria-label="Stop transitioning ${t.prop}" title="Stop transitioning ${t.prop}">🗑</button></div>`;
+      }).join('')}
+        <div class="scale"><span></span><span></span><div><span>0</span><span>150</span><span>300</span><span>450</span><span>600ms</span></div><span></span></div></div>`;
+    }
+
+    function adds() {
+      const set = new Set(state.list.map((t) => t.prop));
+      const fromState = changes().filter((c) => !set.has(c.prop));
+      const rest = COMMON.filter((p) => !set.has(p) && !fromState.some((c) => c.prop === p));
+      return `<div class="group">Add</div><div class="chips">
+        ${fromState.map((c) => `<button class="chip state" type="button" data-add="${c.prop}" title="${state.trigger} changes it: ${c.from} → ${c.to}">+ ${c.prop} <span class="tag">${state.trigger}</span></button>`).join('')}
+        ${rest.map((p) => `<button class="chip" type="button" data-add="${p}">+ ${p}</button>`).join('')}
+        <button class="chip" type="button" data-add="other">+ other…</button></div>`;
+    }
+
+    function editor() {
+      const t = state.list[state.picked];
+      if (!t) return '';
+      return `<div class="sub"><div class="group">${t.prop}</div>
+        <div class="row"><span class="lbl">duration</span><div class="pair">
+          <label class="num"><input value="${t.dur}" data-set="dur" aria-label="Duration, ms"><span>ms</span>${tokenFor(t.dur) ? `<span class="tok">${tokenFor(t.dur).replace('--motion-', '')}</span>` : ''}</label>
+          <label class="num"><input value="${t.delay}" data-set="delay" aria-label="Delay, ms"><span>delay</span></label></div></div>
+        <div class="row"><span class="lbl"></span><div class="presets">${Object.entries(TOKENS).map(([k, v]) => `<button type="button" data-dur="${v}" aria-pressed="${t.dur === v}">${k.replace('--motion-', '')} ${v}</button>`).join('')}</div></div>
+        <div class="row" style="align-items:start"><span class="lbl">easing</span><div class="curve"><svg viewBox="0 0 132 104">${curve(t.ease)}</svg>
+          <div class="presets">${Object.keys(EASINGS).map((e) => `<button type="button" data-ease="${e}" aria-pressed="${t.ease === e}" title="${e}">${e.replace('cubic-bezier', 'bezier')}</button>`).join('')}</div></div></div></div>`;
+    }
+
+    const declarations = () => `<details class="decl"><summary>Declarations</summary>
+      ${[['transition-property', state.list.map((t) => t.prop).join(', ') || 'all'], ['transition-duration', state.list.map((t) => msText(t.dur)).join(', ') || '0s'],
+      ['transition-timing-function', state.list.map((t) => t.ease).join(', ') || 'ease'], ['transition-delay', state.list.map((t) => `${t.delay}ms`).join(', ') || '0s'],
+      ['transition-behavior', 'normal']].map(([k, v]) => `<div class="d"><span>${k}</span><i>${v}</i></div>`).join('')}</details>`;
+
+    function transitionTab() {
+      const via = s.states[state.trigger]?.via;
+      return `${triggerBar()}
+        ${via ? `<p class="hint">Hovering <b>${via}</b>, an ancestor, is what changes this element: Try it hovers ${via}.</p>` : ''}
+        ${!Object.keys(s.states).length ? `<p class="hint warn">No rule in the page’s CSS changes this element in a state. A transition here still plays for changes a script makes (a class added, a style set).</p>` : ''}
+        ${timeline()}
+        ${adds()}
+        ${editor()}
+        ${declarations()}`;
+    }
+    const animationTab = () => `<div class="anim"><div style="display:flex;gap:6px"><span class="field">none — pick a ready-made animation</span><button class="btn" type="button">▶</button></div>
+      <p class="hint">The Animation editor as it is today: keyframes that play on their own (on load, on hover, on scroll).</p></div>`;
+
+    function render() {
+      document.getElementById('proto-label').textContent = s.label;
+      document.getElementById('site').innerHTML = s.html;
+      const body = state.tab === 'animation' ? animationTab() : transitionTab();
+      document.getElementById('motion').innerHTML = `<div class="sechead">▾ Motion <span class="n">${state.list.length ? `${state.list.length} transition${state.list.length > 1 ? 's' : ''}` : 'no transition'} · no animation</span></div>
+        <div class="body"><div class="seg" role="group" aria-label="Motion kind">
+          <button type="button" data-tab="animation" aria-pressed="${state.tab === 'animation'}">Animation</button>
+          <button type="button" data-tab="transition" aria-pressed="${state.tab === 'transition'}">Transition <span style="color:var(--faint)">${state.list.length}</span></button></div>${body}</div>`;
+      paint();
+      const url = new URL(location.href);
+      url.searchParams.set('scenario', key);
+      history.replaceState(null, '', url);
+    }
+
+    const move = (from, to) => {
+      if (to < 0 || to >= state.list.length || from === to) return;
+      const [one] = state.list.splice(from, 1);
+      state.list.splice(to, 0, one);
+      state.picked = to;
+      render();
+      document.querySelector(`.trow[data-pick="${to}"]`)?.focus();
+    };
+
+    document.addEventListener('click', (e) => {
+      const t = e.target.closest('button, [data-pick]');
+      if (!t || t.getAttribute('aria-disabled') === 'true') return;
+      if (t.dataset.step) { key = KEYS[(KEYS.indexOf(key) + Number(t.dataset.step) + KEYS.length) % KEYS.length]; load(); render(); return; }
+      if (t.dataset.kill !== undefined) { state.list.splice(Number(t.dataset.kill), 1); state.picked = Math.max(0, Math.min(state.picked, state.list.length - 1)); render(); return; }
+      if (t.dataset.tab) { state.tab = t.dataset.tab; render(); return; }
+      if (t.hasAttribute('data-try')) { tryIt(); return; }
+      if (t.dataset.add) {
+        const prop = t.dataset.add === 'other' ? (prompt('Property to transition', 'border-color') || '').trim() : t.dataset.add;
+        if (!prop) return;
+        state.list.push({ prop, dur: 250, delay: 0, ease: 'ease' });
+        state.picked = state.list.length - 1;
+        render();
+        return;
+      }
+      if (t.dataset.dur) { state.list[state.picked].dur = Number(t.dataset.dur); render(); return; }
+      if (t.dataset.ease) { state.list[state.picked].ease = t.dataset.ease; render(); return; }
+      if (t.dataset.pick !== undefined && !e.target.closest('.bar')) { state.picked = Number(t.dataset.pick); render(); }
+    });
+    document.addEventListener('keydown', (e) => {
+      const row = e.target.closest?.('.trow');
+      if (row && e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) { e.preventDefault(); const i = Number(row.dataset.pick); move(i, i + (e.key === 'ArrowUp' ? -1 : 1)); return; }
+      if (row && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); state.picked = Number(row.dataset.pick); render(); return; }
+      if (e.target.closest('input, select, .trow')) return;
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { key = KEYS[(KEYS.indexOf(key) + (e.key === 'ArrowRight' ? 1 : -1) + KEYS.length) % KEYS.length]; load(); render(); }
+    });
+    document.addEventListener('change', (e) => {
+      if (e.target.dataset.trigger !== undefined) { state.trigger = e.target.value; render(); return; }
+      const k = e.target.dataset.set;
+      if (k) { const n = Number(e.target.value); if (Number.isFinite(n) && n >= 0) state.list[state.picked][k] = n; render(); }
+    });
+    // Rows reorder by their grip (the row is draggable; a drag on the bar is the bar's).
+    let from = null;
+    document.addEventListener('dragstart', (e) => {
+      if (e.target.closest?.('.bar, .kill')) { e.preventDefault(); return; }
+      from = e.target.closest?.('.trow')?.dataset.pick ?? null;
+    });
+    document.addEventListener('dragover', (e) => { const r = e.target.closest?.('.trow'); if (from !== null && r) { e.preventDefault(); r.classList.add('over'); } });
+    document.addEventListener('dragleave', (e) => e.target.closest?.('.trow')?.classList.remove('over'));
+    document.addEventListener('drop', (e) => {
+      const r = e.target.closest?.('.trow');
+      if (from === null || !r) return;
+      e.preventDefault();
+      move(Number(from), Number(r.dataset.pick));
+      from = null;
+    });
+    // Bars: drag to delay, drag the end to lengthen.
+    document.addEventListener('pointerdown', (e) => {
+      const bar = e.target.closest('.bar');
+      if (!bar) return;
+      e.preventDefault();
+      const i = Number(bar.dataset.bar);
+      const t = state.list[i];
+      state.picked = i;
+      const track = bar.parentElement.getBoundingClientRect();
+      const stretch = e.clientX > bar.getBoundingClientRect().right - 6;
+      const start = { x: e.clientX, dur: t.dur, delay: t.delay };
+      const drag = (ev) => {
+        const ms = Math.round((((ev.clientX - start.x) / track.width) * SPAN) / 10) * 10;
+        if (stretch) t.dur = Math.max(10, Math.min(SPAN, start.dur + ms));
+        else t.delay = Math.max(0, Math.min(SPAN - t.dur, start.delay + ms));
+        bar.style.left = `${(t.delay / SPAN) * 100}%`;
+        bar.style.width = `${(t.dur / SPAN) * 100}%`;
+        paint();
+      };
+      const up = () => { removeEventListener('pointermove', drag); removeEventListener('pointerup', up); render(); };
+      addEventListener('pointermove', drag);
+      addEventListener('pointerup', up);
+    });
+    render();
+  </script>
+</body>
+
+</html>

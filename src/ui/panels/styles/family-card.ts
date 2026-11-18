@@ -2,7 +2,7 @@ import { leanBlockSelector } from '../../../core/block-rule-edit.js';
 import { css, html, nothing, type CSSResult, type TemplateResult } from 'lit';
 import { repeat } from 'lit/directives/repeat.js';
 import { EDITABLE_STATES, isPseudoElement, isWidthQuery, mediaNow, mediaShort, needsGeneratedContent, pseudoElementNamed } from '../../../core/breakpoints.js';
-import { classFamily, type Family, type RuleEntry, type WriteTarget } from '../../../core/cascade.js';
+import { classFamily, withState, type Family, type RuleEntry, type WriteTarget } from '../../../core/cascade.js';
 import { simpleClassName } from '../../../core/classes.js';
 import { escapeRegExp } from '../../../core/css.js';
 import {
@@ -356,10 +356,11 @@ export function renderFamilyCard(
       : nothing;
     const stateBlocks = ordered.map((state) => {
       const waiting = pending.find((one) => one.state === state);
-      if (waiting) return renderPendingBlock(waiting, `${key}${state}${short ? ` ${short}` : ''}`, uses, host);
+      if (waiting) return renderPendingBlock(waiting, `${withState(key, state) ?? `${key} ${state}`}${short ? ` ${short}` : ''}`, uses, host);
       const members = inSlot.filter((entry) => entry.state === state);
       const id = blockId(key, slot, state);
-      const stateLabel = `${key}${state}${short ? ` ${short}` : ''}`;
+      // `.nav:hover a`, not `.nav a:hover`: a state on another element is written where it is.
+      const stateLabel = `${withState(key, state) ?? `${key} ${state}`}${short ? ` ${short}` : ''}`;
       const target = [...members].reverse().find((entry) => entry.target.kind !== 'readonly') ?? members.at(-1)!;
       const pseudo = isPseudoElement(state);
       const live = target.target.kind === 'live';

@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PROTOTYPE — Motion section: transitions merged with animations</title>
+  <!--
+  PROTOTYPE — throwaway, not part of the overlay build. Open the file directly in a browser.
+
+  Question: how does one "Motion" section hold both the Animation editor (unchanged, shown folded
+  here) and a real Transition editor, so a transition is visible and complete?
+
+  The element: a button card whose :hover state (already in the page) sets background-color,
+  transform and box-shadow. Shared by every variant:
+    - the properties to transition are offered from what the element's states change, so the first
+      click is the right one; "all" is still there;
+    - duration / delay from the motion tokens (--motion-fast 150ms, --motion-base 250ms, …), the
+      easing from the Animation editor's curve editor;
+    - "Try it" plays the transition on the element (flips it to :hover and back) — a transition
+      shows nothing until something changes, which is why today's rows look inert;
+    - the raw longhands, transition-behavior included, stay under "Declarations";
+    - will-change leaves this section (Effects / Add property).
+  What differs is the structure:
+    A — Tabs: the section has a two-way switch, Animation | Transition, one editor at a time.
+    B — List: transitions as a list, one row per property with its own timing (the shorthand's
+        comma list), the picked row's editor below. Animation as a second part under it.
+    C — Timeline: the :hover change shown as a timeline — one bar per property (delay + duration),
+        dragged to retime, toggled to animate or snap. Animation as a second part under it.
+  Variants: ?variant=A (default) | B | C, the bottom bar, or ← →.
+-->
+  <style>
+    :root {
+      --bg: #ffffff; --sunken: #f3f4f7; --raised: #ffffff; --hover: #eef0f5;
+      --text: #1f2330; --dim: #4b5263; --faint: #6b7385; --line: #e3e6ec; --line2: #d3d7e0;
+      --accent: #6366f1; --accent-soft: color-mix(in oklab, var(--accent) 12%, transparent);
+      --accent-line: color-mix(in oklab, var(--accent) 45%, transparent);
+      --r-sm: 7px; --font: Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+      --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; }
+    body { display: grid; grid-template-columns: minmax(0, 1fr) 380px; font-family: var(--font); background: #e9ecf2; color: var(--text); }
+    button, input, select { font: inherit; }
+    .stage { padding: 24px 32px 90px; overflow: auto; }
+    .stage h1 { font: 600 11px/1 var(--font); letter-spacing: .08em; text-transform: uppercase; color: #64748b; margin: 0 0 14px; }
+    .site { border-radius: 14px; background: #f8fafc; height: 260px; display: grid; place-items: center; border: 1px solid #e2e8f0; }
+    .card { width: 260px; padding: 18px 20px; border-radius: 14px; background: #ffffff; color: #0f172a; box-shadow: 0 1px 2px rgb(15 23 42 / 8%); cursor: pointer; font: 14px/1.45 system-ui; outline: 2px solid var(--accent); outline-offset: 4px; }
+    .card b { display: block; font-size: 16px; margin-bottom: 2px; }
+    .card:hover, .card.is-hover { background: #eef2ff; transform: translateY(-4px); box-shadow: 0 16px 30px -12px rgb(79 70 229 / 45%); }
+    .out { margin-top: 16px; background: #111827; color: #e5e7eb; border-radius: 10px; padding: 12px 14px; font: 11.5px/1.6 var(--mono); white-space: pre-wrap; }
+    .out b { color: #a5b4fc; font-weight: 500; } .out .c { color: #8b93a5; }
+    .question { margin-top: 12px; color: #475569; font-size: 13px; line-height: 1.5; max-width: 720px; }
+    /* panel */
+    .panel { background: var(--bg); border-left: 1px solid var(--line); padding: 12px 14px 90px; font-size: 12px; overflow: auto; }
+    .sec { border-top: 1px solid var(--line); padding: 10px 0; }
+    .sechead { display: flex; align-items: center; gap: 7px; font: 600 10.5px var(--font); letter-spacing: .06em; text-transform: uppercase; color: var(--dim); cursor: pointer; }
+    .sechead .n { margin-left: auto; color: var(--faint); font-weight: 500; }
+    .sec.folded .body { display: none; }
+    .body { display: grid; gap: 10px; margin-top: 10px; }
+    .group { display: flex; align-items: center; gap: 6px; color: var(--faint); font-size: 9.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
+    .group::after { content: ''; flex: 1; border-top: 1px solid var(--line); }
+    .seg { display: inline-flex; padding: 2px; border-radius: 8px; background: var(--sunken); border: 1px solid var(--line); }
+    .seg button { all: unset; padding: 4px 12px; border-radius: 6px; font-size: 11.5px; color: var(--dim); cursor: pointer; }
+    .seg button[aria-pressed=true] { background: var(--raised); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgb(0 0 0 / 10%); }
+    .row { display: grid; grid-template-columns: 64px minmax(0, 1fr); align-items: center; gap: 8px; }
+    .lbl { color: var(--dim); font: 11px var(--mono); }
+    .chips { display: flex; flex-wrap: wrap; gap: 4px; }
+    .chip { all: unset; display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 8px; border-radius: 999px; border: 1px solid var(--line2); background: var(--sunken); font: 10.5px var(--mono); cursor: pointer; }
+    .chip[aria-pressed=true] { border-color: var(--accent-line); background: var(--accent-soft); font-weight: 600; }
+    .chip.sugg { border-style: dashed; background: transparent; color: var(--faint); }
+    .chip .x { color: var(--faint); }
+    .hint { color: var(--faint); font-size: 10.5px; line-height: 1.45; margin: 0; }
+    .hint b { color: var(--dim); font-weight: 600; }
+    .pair { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 6px; min-width: 0; }
+    .num { min-width: 0; overflow: hidden; display: flex; align-items: center; height: 28px; padding: 0 7px; border: 1px solid var(--line2); border-radius: var(--r-sm); background: var(--raised); gap: 4px; }
+    .num input { all: unset; flex: 1; min-width: 0; font: 11.5px var(--mono); }
+    .num span { color: var(--faint); font: 10px var(--mono); }
+    .num .tok { color: var(--accent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .field { display: flex; align-items: center; height: 28px; padding: 0 8px; border: 1px solid var(--line2); border-radius: var(--r-sm); background: var(--raised); font: 11.5px var(--mono); }
+    .curve { display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 10px; align-items: start; min-width: 0; }
+    .curve svg { width: 132px; height: 104px; border-radius: 8px; background: var(--sunken); border: 1px solid var(--line); }
+    .presets { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+    .presets button { all: unset; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; box-sizing: border-box; font: 10px var(--mono); padding: 3px 6px; border-radius: 5px; border: 1px solid var(--line); cursor: pointer; color: var(--dim); }
+    .presets button[aria-pressed=true] { border-color: var(--accent-line); background: var(--accent-soft); color: var(--text); }
+    .btn { all: unset; display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 12px; border-radius: var(--r-sm); border: 1px solid var(--line2); background: var(--raised); font-size: 11.5px; font-weight: 600; cursor: pointer; }
+    .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .btn:disabled { opacity: .5; }
+    .decl { border: 1px dashed var(--line2); border-radius: var(--r-sm); padding: 6px 8px; display: grid; gap: 3px; }
+    .decl summary { cursor: pointer; color: var(--faint); font-size: 10.5px; }
+    .decl .d { display: grid; grid-template-columns: 150px minmax(0, 1fr); font: 10.5px var(--mono); color: var(--dim); }
+    .decl .d i { font-style: normal; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .anim { display: grid; gap: 8px; padding: 8px; border-radius: var(--r-sm); background: var(--sunken); border: 1px solid var(--line); }
+    .anim .pick { display: flex; gap: 6px; align-items: center; }
+    .stack { display: grid; gap: 2px; }
+    .trow { display: grid; grid-template-columns: 14px minmax(0, 1fr) 54px 40px 22px; align-items: center; gap: 6px; padding: 3px 4px; border: 1px solid transparent; border-radius: var(--r-sm); cursor: pointer; font: 10.5px var(--mono); }
+    .trow:hover { background: var(--hover); }
+    .trow[aria-current=true] { border-color: var(--accent-line); background: var(--accent-soft); }
+    .trow .t { color: var(--faint); text-align: right; }
+    .trow svg { width: 40px; height: 16px; }
+    .kill { all: unset; display: grid; place-items: center; width: 20px; height: 20px; border-radius: 4px; color: var(--dim); cursor: pointer; }
+    .kill:hover { color: #e11d48; background: var(--hover); }
+    .grip { color: var(--faint); cursor: grab; text-align: center; }
+    .sub { display: grid; gap: 8px; padding: 8px; border-radius: var(--r-sm); background: var(--sunken); border: 1px solid var(--line); }
+    .tl { display: grid; gap: 4px; }
+    .tlrow { display: grid; grid-template-columns: 16px 112px minmax(0, 1fr); align-items: center; gap: 6px; font: 10.5px var(--mono); }
+    .tlrow .what { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .tlrow .what small { display: block; color: var(--faint); font-size: 9.5px; }
+    .track { position: relative; height: 18px; border-radius: 4px; background: repeating-linear-gradient(90deg, var(--line) 0 1px, transparent 1px 25%), var(--sunken); }
+    .bar { position: absolute; top: 3px; height: 12px; border-radius: 3px; background: var(--accent); cursor: ew-resize; }
+    .bar.off { background: var(--line2); }
+    .bar::after { content: ''; position: absolute; right: 0; top: 0; bottom: 0; width: 5px; border-radius: 0 3px 3px 0; background: rgb(255 255 255 / 45%); cursor: e-resize; }
+    .scale { display: grid; grid-template-columns: 134px minmax(0, 1fr); font: 9.5px var(--mono); color: var(--faint); }
+    .scale div { display: flex; justify-content: space-between; }
+    .playhead { position: absolute; top: -2px; bottom: -2px; width: 2px; background: #e11d48; left: 0; display: none; }
+    .tl.playing .playhead { display: block; }
+    input[type=checkbox] { accent-color: var(--accent); margin: 0; }
+    [hidden] { display: none !important; }
+    .proto-bar { position: fixed; left: calc(50% - 190px); bottom: 18px; transform: translateX(-50%); display: flex; align-items: center; gap: 4px; padding: 4px; border-radius: 999px; background: #111; color: #fff; font: 600 12px var(--font); z-index: 50; }
+    .proto-bar button { border: 0; background: #333; color: #fff; border-radius: 999px; width: 28px; height: 28px; cursor: pointer; }
+    .proto-bar span { padding: 0 10px; min-width: 200px; text-align: center; }
+  </style>
+</head>
+<body>
+  <main class="stage">
+    <h1>Motion section — prototype</h1>
+    <div class="site"><div class="card" id="card"><b>Pottery for beginners</b>Hover me, or press Try it in the panel.</div></div>
+    <div class="out" id="out"></div>
+    <p class="question">The card's <b>:hover</b> state (already in the page) changes background-color, transform and box-shadow. The Transition editor offers those three first, and Try it plays them.</p>
+  </main>
+
+  <aside class="panel">
+    <div class="sec folded"><div class="sechead">▸ Effects <span class="n">3</span></div></div>
+    <div class="sec" id="motion"></div>
+  </aside>
+
+  <div class="proto-bar" role="toolbar" aria-label="Prototype variant switcher">
+    <button type="button" data-step="-1" aria-label="Previous variant">←</button>
+    <span id="proto-label"></span>
+    <button type="button" data-step="1" aria-label="Next variant">→</button>
+  </div>
+
+  <script>
+    const NAMES = { A: 'Tabs', B: 'List', C: 'Timeline' };
+    const KEYS = Object.keys(NAMES);
+    let variant = new URLSearchParams(location.search).get('variant');
+    if (!KEYS.includes(variant)) variant = 'A';
+    // What the :hover rule changes, read from the page; offered first.
+    const CHANGED = [
+      { prop: 'background-color', from: '#ffffff', to: '#eef2ff' },
+      { prop: 'transform', from: 'none', to: 'translateY(-4px)' },
+      { prop: 'box-shadow', from: '0 1px 2px …', to: '0 16px 30px -12px …' },
+    ];
+    const OTHER = ['all', 'opacity', 'color', 'border-color', 'filter'];
+    const TOKENS = { '--motion-fast': 150, '--motion-base': 250, '--motion-slow': 400 };
+    const EASINGS = { ease: [0.25, 0.1, 0.25, 1], 'ease-out': [0, 0, 0.58, 1], 'ease-in-out': [0.42, 0, 0.58, 1], 'cubic-bezier(.2,0,0,1)': [0.2, 0, 0, 1], 'cubic-bezier(.34,1.56,.64,1)': [0.34, 1.56, 0.64, 1] };
+    const state = {
+      tab: 'transition',
+      list: [
+        { prop: 'background-color', dur: 150, delay: 0, ease: 'ease-out', on: true },
+        { prop: 'transform', dur: 250, delay: 0, ease: 'cubic-bezier(.34,1.56,.64,1)', on: true },
+      ],
+      picked: 0,
+      animFolded: true,
+    };
+    const tokenFor = (ms) => Object.entries(TOKENS).find(([, v]) => v === ms)?.[0];
+    const msText = (ms) => tokenFor(ms) ? `var(${tokenFor(ms)})` : `${ms}ms`;
+    const one = (t) => `${t.prop} ${msText(t.dur)} ${t.ease}${t.delay ? ` ${t.delay}ms` : ''}`;
+    const value = () => state.list.filter((t) => t.on).map(one).join(',\n              ') || 'none';
+    const curve = (ease, w = 132, h = 104, pad = 8) => {
+      const [x1, y1, x2, y2] = EASINGS[ease] ?? EASINGS.ease;
+      const X = (x) => pad + x * (w - 2 * pad), Y = (y) => h - pad - ((y + 0.2) / 1.6) * (h - 2 * pad) + 0;
+      return `<path d="M${X(0)},${Y(0)} C${X(x1)},${Y(y1)} ${X(x2)},${Y(y2)} ${X(1)},${Y(1)}" fill="none" stroke="var(--accent)" stroke-width="2"/>`;
+    };
+
+    function paint() {
+      const card = document.getElementById('card');
+      card.style.transition = state.list.filter((t) => t.on).map((t) => `${t.prop} ${t.dur}ms ${t.ease} ${t.delay}ms`).join(', ') || 'none';
+      document.getElementById('out').innerHTML = `.card {\n  <b>transition</b>: ${value()};\n}\n.card:hover { <span class="c">/* already in the page */</span>\n  background-color: #eef2ff; transform: translateY(-4px); box-shadow: …;\n}`;
+    }
+    function tryIt() {
+      const card = document.getElementById('card');
+      card.classList.add('is-hover');
+      const longest = Math.max(0, ...state.list.filter((t) => t.on).map((t) => t.dur + t.delay));
+      const tl = document.querySelector('.tl');
+      if (tl) {
+        tl.classList.add('playing');
+        document.querySelectorAll('.playhead').forEach((p) => { p.style.transition = 'none'; p.style.left = '0'; void p.offsetWidth; p.style.transition = `left ${longest}ms linear`; p.style.left = `${(longest / 600) * 100}%`; });
+      }
+      setTimeout(() => { card.classList.remove('is-hover'); setTimeout(() => tl?.classList.remove('playing'), longest + 50); }, longest + 600);
+    }
+
+    // ------------------------------------------------------------------ shared pieces
+    function propChips() {
+      const set = new Set(state.list.map((t) => t.prop));
+      return `<div class="group">Properties</div>
+        <div class="chips">${state.list.map((t, i) => `<button class="chip" type="button" data-pick="${i}" aria-pressed="${i === state.picked}">${t.prop}<span class="x" data-kill="${i}">✕</span></button>`).join('')}</div>
+        <div class="chips">${CHANGED.filter((c) => !set.has(c.prop)).map((c) => `<button class="chip sugg" type="button" data-add="${c.prop}" title=":hover changes it: ${c.from} → ${c.to}">+ ${c.prop} <span style="opacity:.7">· :hover</span></button>`).join('')}
+          ${OTHER.filter((p) => !set.has(p)).map((p) => `<button class="chip sugg" type="button" data-add="${p}">+ ${p}</button>`).join('')}</div>`;
+    }
+    function timing(t) {
+      return `<div class="row"><span class="lbl">duration</span><div class="pair">
+          <label class="num"><input value="${t.dur}" data-set="dur"><span>ms</span>${tokenFor(t.dur) ? `<span class="tok">${tokenFor(t.dur).replace('--motion-', '')}</span>` : ''}</label>
+          <label class="num"><input value="${t.delay}" data-set="delay"><span>delay</span></label></div></div>
+        <div class="row"><span class="lbl"></span><div class="presets">${Object.entries(TOKENS).map(([k, v]) => `<button type="button" data-dur="${v}" aria-pressed="${t.dur === v}">${k.replace('--motion-', '')} ${v}</button>`).join('')}</div></div>
+        <div class="row" style="align-items:start"><span class="lbl">easing</span><div class="curve"><svg viewBox="0 0 132 104">${curve(t.ease)}</svg>
+          <div class="presets">${Object.keys(EASINGS).map((e) => `<button type="button" data-ease="${e}" aria-pressed="${t.ease === e}">${e.replace('cubic-bezier', 'bezier')}</button>`).join('')}
+          <p class="hint" style="margin-top:4px">The Animation editor's curve: drag its handles.</p></div></div></div>`;
+    }
+    const tryButton = () => `<button class="btn primary" type="button" data-try>▶ Try it</button>`;
+    const declarations = () => `<details class="decl"><summary>Declarations</summary>
+      <div class="d"><span>transition-property</span><i>${state.list.map((t) => t.prop).join(', ')}</i></div>
+      <div class="d"><span>transition-duration</span><i>${state.list.map((t) => msText(t.dur)).join(', ')}</i></div>
+      <div class="d"><span>transition-timing-function</span><i>${state.list.map((t) => t.ease).join(', ')}</i></div>
+      <div class="d"><span>transition-delay</span><i>${state.list.map((t) => `${t.delay}ms`).join(', ')}</i></div>
+      <div class="d"><span>transition-behavior</span><i>normal</i></div></details>`;
+    const animation = () => `<div class="anim"><div class="pick"><span class="field" style="flex:1">none — pick a ready-made animation</span><button class="btn" type="button">▶</button></div>
+      <p class="hint">The Animation editor as it is today: keyframes that play on their own (on load, on hover, on scroll).</p></div>`;
+    const triggerNote = () => `<p class="hint">A transition plays when a value <b>changes</b>: here, when <b>:hover</b> starts and ends. Nothing moves until then.</p>`;
+
+    // ------------------------------------------------------------------ variants
+    function variantA() {
+      const t = state.list[state.picked];
+      const body = state.tab === 'animation' ? animation() : `${triggerNote()}${propChips()}${t ? `<div class="group">${t.prop}</div>${timing(t)}` : ''}<div>${tryButton()}</div>${declarations()}`;
+      return `<div class="seg" role="group" aria-label="Motion kind">
+          <button type="button" data-tab="animation" aria-pressed="${state.tab === 'animation'}">Animation</button>
+          <button type="button" data-tab="transition" aria-pressed="${state.tab === 'transition'}">Transition <span style="color:var(--faint)">${state.list.length}</span></button></div>${body}`;
+    }
+    function variantB() {
+      const t = state.list[state.picked];
+      const mini = (e) => `<svg viewBox="0 0 40 16">${curve(e, 40, 16, 2)}</svg>`;
+      return `<div class="group">Transitions <span style="margin-left:auto">${tryButton().replace('btn primary', 'btn').replace('▶ Try it', '▶ Try')}</span></div>
+        ${triggerNote()}
+        <div class="stack">${state.list.map((x, i) => `<div class="trow" data-pick="${i}" aria-current="${i === state.picked}"><span class="grip">⋮⋮</span><span>${x.prop}</span><span class="t">${msText(x.dur).replace('var(--motion-', '').replace(')', '')}${x.delay ? `+${x.delay}` : ''}</span>${mini(x.ease)}<button class="kill" type="button" data-kill="${i}" aria-label="Remove">🗑</button></div>`).join('')}</div>
+        <div class="chips">${CHANGED.filter((c) => !state.list.some((x) => x.prop === c.prop)).map((c) => `<button class="chip sugg" type="button" data-add="${c.prop}">+ ${c.prop} · :hover</button>`).join('')}<button class="chip sugg" type="button" data-add="all">+ all</button><button class="chip sugg" type="button" data-add="opacity">+ other…</button></div>
+        ${t ? `<div class="sub"><div class="group">${t.prop}</div>${timing(t)}</div>` : ''}
+        ${declarations()}
+        <div class="group">Animation</div>${animation()}`;
+    }
+    function variantC() {
+      const SPAN = 600;
+      const rows = CHANGED.map((c) => {
+        const t = state.list.find((x) => x.prop === c.prop);
+        const i = state.list.indexOf(t);
+        const left = t ? (t.delay / SPAN) * 100 : 0, width = t ? (t.dur / SPAN) * 100 : 3;
+        return `<div class="tlrow"><input type="checkbox" ${t?.on ? 'checked' : ''} data-toggle="${c.prop}" aria-label="Animate ${c.prop}">
+          <span class="what" ${t ? `data-pick="${i}" style="cursor:pointer;${i === state.picked ? 'font-weight:700' : ''}"` : ''}>${c.prop}<small>${c.from} → ${c.to}</small></span>
+          <div class="track"><span class="bar${t?.on ? '' : ' off'}" style="left:${left}%;width:${width}%" title="${t ? `${t.dur}ms after ${t.delay}ms — drag to move, its end to stretch` : 'snaps: not transitioned'}"></span><span class="playhead"></span></div></div>`;
+      }).join('');
+      const t = state.list[state.picked];
+      return `<div class="group">When :hover starts <span style="margin-left:auto">${tryButton().replace('btn primary', 'btn')}</span></div>
+        <div class="tl">${rows}<div class="scale"><span></span><div><span>0</span><span>150</span><span>300</span><span>450</span><span>600ms</span></div></div></div>
+        <p class="hint">Each change the state makes, on one clock. Ticked ones are transitioned; unticked ones snap. Drag a bar to delay it, its end to lengthen it.</p>
+        ${t ? `<div class="sub"><div class="group">${t.prop}</div>${timing(t)}</div>` : ''}
+        <div class="chips"><button class="chip sugg" type="button" data-add="opacity">+ a property :hover does not change…</button></div>
+        ${declarations()}
+        <div class="group">Animation</div>${animation()}`;
+    }
+
+    function render() {
+      document.getElementById('proto-label').textContent = `${variant} — ${NAMES[variant]}`;
+      const body = variant === 'A' ? variantA() : variant === 'B' ? variantB() : variantC();
+      document.getElementById('motion').innerHTML = `<div class="sechead">▾ Motion <span class="n">${state.list.length} transitions · no animation</span></div><div class="body">${body}</div>`;
+      paint();
+      const url = new URL(location.href);
+      url.searchParams.set('variant', variant);
+      history.replaceState(null, '', url);
+    }
+
+    document.addEventListener('click', (e) => {
+      const t = e.target.closest('button, [data-pick], [data-kill]');
+      if (!t) return;
+      if (t.dataset.step) { variant = KEYS[(KEYS.indexOf(variant) + Number(t.dataset.step) + KEYS.length) % KEYS.length]; render(); return; }
+      if (e.target.closest('[data-kill]')) { const i = Number(e.target.closest('[data-kill]').dataset.kill); state.list.splice(i, 1); state.picked = Math.max(0, Math.min(state.picked, state.list.length - 1)); render(); return; }
+      if (t.dataset.tab) { state.tab = t.dataset.tab; render(); return; }
+      if (t.hasAttribute('data-try')) { tryIt(); return; }
+      if (t.dataset.add) { state.list.push({ prop: t.dataset.add, dur: 250, delay: 0, ease: 'ease', on: true }); state.picked = state.list.length - 1; render(); return; }
+      if (t.dataset.dur) { state.list[state.picked].dur = Number(t.dataset.dur); render(); return; }
+      if (t.dataset.ease) { state.list[state.picked].ease = t.dataset.ease; render(); return; }
+      if (t.dataset.pick !== undefined) { state.picked = Number(t.dataset.pick); render(); }
+    });
+    document.addEventListener('change', (e) => {
+      const key = e.target.dataset.set;
+      if (key) { const n = Number(e.target.value); if (Number.isFinite(n)) state.list[state.picked][key] = n; render(); return; }
+      const prop = e.target.dataset.toggle;
+      if (prop) {
+        const t = state.list.find((x) => x.prop === prop);
+        if (t) t.on = e.target.checked; else state.list.push({ prop, dur: 250, delay: 0, ease: 'ease', on: true });
+        render();
+      }
+    });
+    // Timeline bars: drag to move the delay, the end to stretch the duration.
+    document.addEventListener('pointerdown', (e) => {
+      const bar = e.target.closest('.bar');
+      if (!bar || bar.classList.contains('off')) return;
+      const prop = bar.closest('.tlrow').querySelector('[data-toggle]').dataset.toggle;
+      const t = state.list.find((x) => x.prop === prop);
+      if (!t) return;
+      e.preventDefault();
+      const track = bar.parentElement.getBoundingClientRect();
+      const stretch = e.clientX > bar.getBoundingClientRect().right - 6;
+      const start = { x: e.clientX, dur: t.dur, delay: t.delay };
+      const move = (ev) => {
+        const ms = Math.round(((ev.clientX - start.x) / track.width) * 600 / 10) * 10;
+        if (stretch) t.dur = Math.max(10, start.dur + ms); else t.delay = Math.max(0, start.delay + ms);
+        bar.style.left = `${(t.delay / 600) * 100}%`;
+        bar.style.width = `${(t.dur / 600) * 100}%`;
+        paint();
+      };
+      const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); render(); };
+      addEventListener('pointermove', move);
+      addEventListener('pointerup', up);
+    });
+    addEventListener('keydown', (e) => {
+      if (e.target.closest('input, select')) return;
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { variant = KEYS[(KEYS.indexOf(variant) + (e.key === 'ArrowRight' ? 1 : -1) + KEYS.length) % KEYS.length]; render(); }
+    });
+    render();
+  </script>
+</body>
+</html>

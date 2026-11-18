@@ -1,7 +1,7 @@
 import { css, html, nothing, type PropertyValues, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { isPseudoElement, isWidthQuery, mediaIcon, mediaKind, mediaNow, needsGeneratedContent } from '../../core/breakpoints.js';
-import { rulesPass, type ElementModel, type WriteTarget } from '../../core/cascade.js';
+import { rulesPass, stateTrigger, withState, type ElementModel, type WriteTarget } from '../../core/cascade.js';
 import {
   escapeRegExp,
   parentLayoutProperties,
@@ -109,6 +109,10 @@ import {
 import { compareContributions } from '../../core/cascade.js';
 import { setContrastSubject } from '../contrast.js';
 import '../controls/animation-editor.js';
+import '../controls/transition-editor.js';
+import type { TransitionTrigger, TriggerChange } from '../controls/transition-editor.js';
+import { formatTransitions, readTransitions, timeMs, TRANSITION_PROPERTIES, type TransitionItem } from '../../core/transitions.js';
+import type { SegmentOption } from '../controls/segmented.js';
 import {
   ANIMATION_PROPERTIES,
   composeAnimation,
@@ -238,20 +242,20 @@ const SECTIONS: SectionSpec[] = [
     // picture made the panel's two most different sections look related.
     glyph: 'eye',
     // text-shadow beside box-shadow and filter: the three the shadow editor opens from.
-    properties: ['opacity', 'box-shadow', 'text-shadow', 'filter', 'backdrop-filter', 'transform', 'mix-blend-mode', 'cursor'],
+    // will-change is a hint to the renderer, not motion: it moved here from Motion.
+    properties: ['opacity', 'box-shadow', 'text-shadow', 'filter', 'backdrop-filter', 'transform', 'mix-blend-mode', 'cursor', 'will-change'],
   },
   {
     id: 'motion',
     heading: 'Motion',
-    glyph: 'refresh',
-    properties: ['transition', 'transition-duration', 'transition-timing-function', 'will-change'],
-  },
-  {
-    id: 'animation',
-    heading: 'Animation',
     glyph: 'play',
-    // Drawn by hand (#renderAnimation): the ready-made animations' editor, then its declarations.
-    properties: [...ANIMATION_PROPERTIES],
+    /*
+     * Drawn by hand (#renderMotion): Animation (keyframes that play on their own) and Transition
+     * (how a change of state plays), one at a time, each its editor then its declarations. They
+     * were two sections, and Motion's three transition rows — no property list, no delay — gave
+     * no sign of doing anything.
+     */
+    properties: [...TRANSITION_PROPERTIES, ...ANIMATION_PROPERTIES],
   },
 ];
 
@@ -821,8 +825,8 @@ export class HeoStylesPanel extends HeoElement {
       ${SECTIONS.filter((section) => !section.when || section.when(computed)).map((section) =>
       section.id === 'surface'
         ? this.#renderBackground(section, el, model, computed, host)
-        : section.id === 'animation'
-          ? this.#renderAnimation(section, el, model, host)
+        : section.id === 'motion'
+          ? this.#renderMotion(section, el, model, host)
           : this.#renderSection(section, el, model, host),
     )}
       ${this.#renderParent(el, model, host)}
@@ -998,7 +1002,7 @@ export class HeoStylesPanel extends HeoElement {
         { kind: 'target', target: entry.target },
         toRecord(entry.declarations),
         label,
-        { short: entry.family, name: `${entry.family}${entry.state}`, media: entry.media, impact },
+        { short: entry.family, name: withState(entry.family, entry.state) ?? entry.matched, media: entry.media, impact },
       ));
     }
     // The switch names a rule by its family; two at once under different conditions say which.
@@ -1223,7 +1227,11 @@ export class HeoStylesPanel extends HeoElement {
    */
   #stateDestinations(el: HTMLElement, model: ElementModel, state: string, slot = 'base'): AdderDestination[] {
     const { classes, others } = model.families();
-    const keys = [...classes, ...others].map((family) => family.key);
+    // A state on another element (`:hover on .nav`) has a rule only where the family has that
+    // element: `.nav a` does, the link's own class does not. And no new class: one of the
+    // element's own cannot say "while the nav is hovered".
+    const contextual = stateTrigger(state).on !== null;
+    const keys = [...classes, ...others].map((family) => family.key).filter((key) => withState(key, state) !== null);
     // Under the group's media too: `:hover ≥768px` writes into the `≥768px` hover rule.
     const media = slotMedia(model, slot);
     const short = slotName(model, slot);
@@ -1235,26 +1243,30 @@ export class HeoStylesPanel extends HeoElement {
       ...ordered.map((key) => {
         const entry = existing(key);
         const reach = model.reach(key);
-        const label = `${key}${state}${short ? ` ${short}` : ''}`;
+        const selector = withState(key, state)!;
+        const label = `${selector}${short ? ` ${short}` : ''}`;
         return stylesDestination(
           label,
           reachText(reach),
-          entry ? { kind: 'target', target: entry.target } : { kind: 'new-rule', selector: `${key}${state}`, media },
+          entry ? { kind: 'target', target: entry.target } : { kind: 'new-rule', selector, media },
           entry ? toRecord(entry.declarations) : {},
           label,
-          { short: key, name: `${key}${state}`, media, impact: reach },
+          { short: key, name: selector, media, impact: reach },
         );
       }),
-      stylesDestination(
-        `a new class${state}${short ? ` ${short}` : ''}`,
-        'this element only',
-        { kind: 'auto-class', element: el, media, state },
-        {},
-        `a new class${state}${short ? ` ${short}` : ''}`,
-        { media, impact: 1 },
-      ),
+      ...(contextual
+        ? []
+        : [stylesDestination(
+          `a new class${state}${short ? ` ${short}` : ''}`,
+          'this element only',
+          { kind: 'auto-class', element: el, media, state },
+          {},
+          `a new class${state}${short ? ` ${short}` : ''}`,
+          { media, impact: 1 },
+        )]),
     ];
   }
+
 
   /**
    * Open the Effective styles adder, seeded with what was being looked for.
@@ -2402,16 +2414,11 @@ export class HeoStylesPanel extends HeoElement {
    * the `animation-name` row writes; a hover animation goes into the element's `:hover` state.
    * The declarations a block holds are rows under it.
    */
-  #renderAnimation(
-    section: SectionSpec,
-    el: HTMLElement,
-    model: ElementModel,
-    host: StylesHost,
-  ): TemplateResult | typeof nothing {
-    const hits = section.properties.filter((property) => this.#hit(property, shownValue(model.cascade(property).applying[0])));
-    if (!hits.length) return nothing;
-    const scope: RowScope = { kind: 'section', id: section.id };
-    const specOf = (property: string): RowSpec => ({ property, scope, element: el, model, listId: section.id });
+  #animationPart(el: HTMLElement, model: ElementModel, host: StylesHost): MotionPart | null {
+    const hits = ANIMATION_PROPERTIES.filter((property) => this.#hit(property, shownValue(model.cascade(property).applying[0])));
+    if (!hits.length) return null;
+    const scope: RowScope = { kind: 'section', id: 'motion' };
+    const specOf = (property: string): RowSpec => ({ property, scope, element: el, model, listId: 'motion' });
     const hover = { width: null, state: ':hover' } as const;
     // Written where the animation already is: its name's row, or the shorthand's when only that
     // is declared, so a rule's `animation` is replaced in that rule and not shadowed inline.
@@ -2471,6 +2478,119 @@ export class HeoStylesPanel extends HeoElement {
       this.editor.writeDeclarationsTo(list, next ? `Animate: ${next.preset}` : 'Remove animation', el);
     };
 
+    return {
+      touched,
+      set: Boolean(value),
+      body: html`
+        <heo-animation-editor
+          .value=${value}
+          .targets=${this.editor.selection.length ? [...this.editor.selection] : [el]}
+          .head=${choice.head}
+          @animation-change=${(event: CustomEvent<{ value: AnimationConfig | null }>) => commit(event.detail.value)}
+        ></heo-animation-editor>
+        ${rowsShown.length
+          ? html`<div class="rows" style="margin-top:10px" data-declarations="animation">
+              ${renderPropertyRows(rowsShown, specOf, host)}
+            </div>`
+          : nothing}`,
+    };
+  }
+
+  /**
+   * Transition: the element's transitions on a timeline, written as the `transition` shorthand
+   * where its row writes, the longhands that block declares taken out so they cannot go on
+   * competing with it. The declarations a block holds are rows under it.
+   */
+  #transitionPart(el: HTMLElement, model: ElementModel, host: StylesHost): MotionPart | null {
+    const hits = TRANSITION_PROPERTIES.filter((property) => this.#hit(property, shownValue(model.cascade(property).applying[0])));
+    if (!hits.length) return null;
+    const scope: RowScope = { kind: 'section', id: 'motion' };
+    const specOf = (property: string): RowSpec => ({ property, scope, element: el, model, listId: 'motion' });
+    const winner = (property: string): Contribution | undefined => model.cascade(property).applying[0];
+    // Written where the transition already is: the shorthand's row, or a longhand's when only
+    // longhands are declared, so a rule's transition is replaced in that rule.
+    const anchor = winner('transition') || !winner('transition-property') ? 'transition' : 'transition-property';
+    const choice = (() => {
+      const spec = specOf(anchor);
+      const { shown } = readRow(spec);
+      return destinationChoice(spec, host, rowIdOf(scope, anchor, el), shown);
+    })();
+    const items = readTransitions((property) => winner(property)?.value ?? '');
+    const own = (property: string): boolean => model.cascade(property).applying.some((one) => !one.via);
+    const rowsShown = TRANSITION_PROPERTIES.filter((property) => own(property) && hits.includes(property));
+    const shown = getComputedStyle(el);
+    const durations = this.editor.tokens
+      .list('motion')
+      .map((token) => {
+        const name = token.name.startsWith('--') ? token.name : `--${token.name}`;
+        return { name, ms: timeMs(token.value, (one) => shown.getPropertyValue(one)) };
+      })
+      .filter((one): one is { name: string; ms: number } => one.ms !== null && one.ms > 0)
+      .sort((a, b) => a.ms - b.ms);
+
+    const commit = (next: readonly TransitionItem[]): void => {
+      const dest = choice.picked.dest;
+      if (!dest) return;
+      this.editor.cancelPreview();
+      this.#patch({ rowDest: null });
+      const into = dest.kind === 'target' ? dest.target : null;
+      const declaredIn = (property: string): boolean => Boolean(into) &&
+        model.cascade(property).applying.some((one) => !one.via && sameTarget(targetOf(one, el), into!));
+      const list: Array<{ dest: AddDestination; property: string; value: string; remove?: boolean }> = [];
+      for (const property of TRANSITION_PROPERTIES.slice(1)) {
+        if (declaredIn(property)) list.push({ dest, property, value: '', remove: true });
+      }
+      if (next.length) list.push({ dest, property: 'transition', value: formatTransitions(next) });
+      else if (declaredIn('transition')) list.push({ dest, property: 'transition', value: '', remove: true });
+      if (!list.length) return;
+      this.editor.writeDeclarationsTo(list, next.length ? 'Set transition' : 'Remove transition', el);
+    };
+
+    return {
+      touched: rowsShown.length,
+      set: Boolean(items?.length),
+      body: html`
+        ${choice.head ? html`<div style="margin-bottom:8px">${choice.head}</div>` : nothing}
+        ${items === null
+          ? html`<p class="hint" style="margin:0 0 9px">
+              This transition is written in a way the timeline cannot read (a token for the whole list): edit it in its row below.
+            </p>`
+          : html`<heo-transition-editor
+              .items=${items}
+              .triggers=${transitionTriggers(model)}
+              .durations=${durations}
+              .target=${el}
+              .resolve=${(name: string) => getComputedStyle(el).getPropertyValue(name)}
+              @transition-change=${(event: CustomEvent<{ items: TransitionItem[] }>) => commit(event.detail.items)}
+            ></heo-transition-editor>`}
+        ${rowsShown.length
+          ? html`<div class="rows" style="margin-top:10px" data-declarations="transition">
+              ${renderPropertyRows(rowsShown, specOf, host)}
+            </div>`
+          : nothing}`,
+    };
+  }
+
+  /** Which of the two the Motion section shows, once picked; until then, the one in use. */
+  #motionTab: 'animation' | 'transition' | null = null;
+
+  /**
+   * Motion: Animation and Transition, one at a time behind a switch. Unpicked, it shows the one
+   * the element uses — a transition with no animation opens on Transition — and Animation
+   * otherwise. While searching, a tab with nothing that matches gives way to the other.
+   */
+  #renderMotion(section: SectionSpec, el: HTMLElement, model: ElementModel, host: StylesHost): TemplateResult | typeof nothing {
+    const animation = this.#animationPart(el, model, host);
+    const transition = this.#transitionPart(el, model, host);
+    if (!animation && !transition) return nothing;
+    let tab = this.#motionTab ?? (transition?.set && !animation?.set ? 'transition' : 'animation');
+    if (tab === 'transition' && !transition) tab = 'animation';
+    if (tab === 'animation' && !animation) tab = 'transition';
+    const touched = (animation?.touched ?? 0) + (transition?.touched ?? 0);
+    const options: SegmentOption[] = [
+      { value: 'animation', label: 'Animation', title: 'Keyframes that play on their own: on load, on hover, on scroll' },
+      { value: 'transition', label: 'Transition', title: 'How a change plays: when a state such as :hover starts or ends' },
+    ];
     return html`<heo-section
       heading=${section.heading}
       glyph=${section.glyph}
@@ -2478,17 +2598,19 @@ export class HeoStylesPanel extends HeoElement {
       ?open=${host.filtering ? true : sectionOpen(section.id, false)}
       @section-toggle=${(event: CustomEvent<{ open: boolean }>) => this.#remember(section.id, event.detail.open)}
     >
-      <heo-animation-editor
-        .value=${value}
-        .targets=${this.editor.selection.length ? [...this.editor.selection] : [el]}
-        .head=${choice.head}
-        @animation-change=${(event: CustomEvent<{ value: AnimationConfig | null }>) => commit(event.detail.value)}
-      ></heo-animation-editor>
-      ${rowsShown.length
-        ? html`<div class="rows" style="margin-top:10px" data-declarations=${section.id}>
-            ${renderPropertyRows(rowsShown, specOf, host)}
-          </div>`
-        : nothing}
+      <div class="motion-tabs" style="margin-bottom:10px">
+        <heo-segmented
+          label="Animation or transition"
+          .options=${options}
+          .value=${tab}
+          @segment-change=${(event: CustomEvent<{ value: string }>) => {
+            event.stopPropagation();
+            this.#motionTab = event.detail.value === 'transition' ? 'transition' : 'animation';
+            this.requestUpdate();
+          }}
+        ></heo-segmented>
+      </div>
+      <div data-motion=${tab}>${tab === 'transition' ? transition!.body : animation!.body}</div>
     </heo-section>`;
   }
 
@@ -2671,6 +2793,43 @@ export class HeoStylesPanel extends HeoElement {
 }
 
 /** The properties a state's rules in effect now declare, sorted. */
+/** What one tab of the Motion section draws, and how much it holds. */
+interface MotionPart {
+  body: TemplateResult;
+  /** Rows declared, for the section's badge. */
+  touched: number;
+  /** Whether the element has one now. */
+  set: boolean;
+}
+
+/** Motion's own properties: what a state changes in them is not a change a transition plays. */
+const MOTION_OWN = new Set([...TRANSITION_PROPERTIES, ...ANIMATION_PROPERTIES]);
+
+/**
+ * The states the page's CSS gives the element that change something, and what: each property a
+ * state's rules declare and win, from the value the element has now to the state's. A state on
+ * another element (`:hover on .nav`) is one too, said as such.
+ */
+function transitionTriggers(model: ElementModel): TransitionTrigger[] {
+  const el = model.element;
+  const computed = getComputedStyle(el);
+  const out: TransitionTrigger[] = [];
+  for (const group of model.groups()) {
+    if (group.kind !== 'state') continue;
+    const changes: TriggerChange[] = [];
+    for (const property of statePropertiesOf(model, group.state)) {
+      if (MOTION_OWN.has(property)) continue;
+      const to = model.cascade(property, { width: null, state: group.state }).applying[0];
+      if (!to || to.source.kind !== 'rule' || to.source.entry.state !== group.state) continue;
+      const from = model.cascade(property).applying[0]?.value ?? (computed.getPropertyValue(property).trim() || 'initial');
+      if (from.trim() === to.value.trim()) continue;
+      changes.push({ property, from, to: to.value });
+    }
+    if (changes.length) out.push({ state: group.state, label: group.state, on: stateTrigger(group.state).on, changes });
+  }
+  return out;
+}
+
 function statePropertiesOf(model: ElementModel, state: string): string[] {
   const names = new Set<string>();
   for (const entry of model.entries) {
