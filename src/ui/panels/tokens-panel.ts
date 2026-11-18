@@ -17,6 +17,10 @@ import { ClassEditor } from './class-editor.js';
 import { RuleEditor, type RuleEditorHost } from './rule-editor.js';
 import { DesignTransfer, type DesignTransferHost } from './design-transfer.js';
 import '../controls/section.js';
+import '../controls/value-field.js';
+import { buildSuggestions, valueKindFor } from '../suggestions.js';
+import { shownTypographyRows } from './styles/typography.js';
+import { textStyleDeclarations, textStyleMarker, TEXT_STYLE_MARKER } from '../../core/text-styles.js';
 import '../controls/search-field.js';
 import '../controls/segmented.js';
 import { classNameIssues, selectorIssues, type FieldIssue } from '../../core/validation.js';
@@ -55,6 +59,80 @@ export class HeoTokensPanel extends HeoElement {
     ClassEditor.styles,
     RuleEditor.styles,
     css`
+      /* Text styles: each drawn in its own look, then the picked one's rows. */
+      .tstyles {
+        display: grid;
+        gap: 2px;
+      }
+      .tstyle {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 8px;
+        min-height: 30px;
+        padding: 4px 8px;
+        border: 1px solid transparent;
+        border-radius: var(--heo-r-sm);
+        background: transparent;
+        color: var(--heo-text);
+        font: inherit;
+        text-align: left;
+        cursor: pointer;
+      }
+      .tstyle:hover {
+        background: var(--heo-hover);
+      }
+      .tstyle[aria-current='true'] {
+        border-color: var(--heo-accent-line);
+        background: var(--heo-accent-soft);
+      }
+      .tstyle .p {
+        overflow: hidden;
+        max-height: 28px;
+        line-height: 1.25;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .tstyle .m {
+        color: var(--heo-text-faint);
+        font-family: var(--heo-mono);
+        font-size: 10px;
+      }
+      .tstyle-ed {
+        display: grid;
+        gap: 6px;
+        margin-top: 10px;
+      }
+      .trow {
+        display: grid;
+        grid-template-columns: 8px 92px minmax(0, 1fr) 18px;
+        align-items: center;
+        gap: 6px;
+      }
+      .trow .dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--heo-accent);
+      }
+      .trow .dot.off {
+        background: transparent;
+      }
+      .trow .tname {
+        overflow: hidden;
+        color: var(--heo-text);
+        font-size: 11px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .trow.sub .tname {
+        padding-left: 10px;
+        color: var(--heo-text-dim);
+      }
+      .trow heo-value-field,
+      .trow heo-segmented {
+        min-width: 0;
+      }
       :host {
         display: block;
         padding-bottom: 16px;
@@ -226,6 +304,8 @@ export class HeoTokensPanel extends HeoElement {
   protected ruleForm = new FormErrors(this, () => selectorIssues('rule-create', this.ruleDraft));
   @state() private newGroup: TokenGroup = 'color';
   @state() private expandedClass: string | null = null;
+  /** The text style being edited in Text styles, by class. */
+  @state() private textStyle: string | null = null;
   @state() private newClassProperty = '';
   @state() private version = 0;
   @state() private classDraft = '';
@@ -284,6 +364,7 @@ export class HeoTokensPanel extends HeoElement {
       ${this.#shows('tokens')
         ? TOKEN_GROUPS.map((group) => this.#renderGroup(group, usage)).filter(Boolean)
         : nothing}
+      ${this.#shows('classes') ? this.#renderTextStyles() : nothing}
       ${this.#shows('classes') ? this.#renderClassList(el) : nothing}
       ${this.#shows('rules') ? this.#renderRules(el) : nothing}
       ${this.query ? this.#renderNoMatches() : nothing}
@@ -661,6 +742,113 @@ export class HeoTokensPanel extends HeoElement {
         </button>
       </div>
     </heo-section>`;
+  }
+
+  /**
+   * Text styles: the design system's classes marked as one (core/text-styles.ts), each drawn in its
+   * own look. Picking one edits it with the Typography section's rows — the same names, order and
+   * controls — writing to the class, so every element wearing it follows.
+   */
+  #renderTextStyles(): TemplateResult | typeof nothing {
+    const needle = this.query.trim().toLowerCase();
+    const styles = this.editor.textStyles().filter((one) => !needle || one.name.toLowerCase().includes(needle) || one.entry.name.includes(needle));
+    if (needle && !styles.length) return nothing;
+    const picked = styles.find((one) => one.entry.name === this.textStyle) ?? null;
+    const look = (decl: Record<string, string>): string => Object.entries(decl)
+      .filter(([property]) => !property.startsWith('--') && property !== 'line-height')
+      .map(([property, value]) => `${property}:${property === 'font-size' ? `min(20px, ${value})` : value.replace(/[;{}<>]/g, '')}`)
+      .join(';');
+    return html`<heo-section
+      heading="Text styles"
+      glyph="text"
+      badge=${String(styles.length)}
+      ?open=${openGroups.has('text-styles') || Boolean(needle)}
+      @section-toggle=${(event: CustomEvent<{ open: boolean }>) => this.#remember('text-styles', event.detail.open)}
+    >
+      ${styles.length
+        ? html`<div class="tstyles" role="list">
+            ${styles.map((one) => html`<button
+              class="tstyle"
+              type="button"
+              role="listitem"
+              data-text-style=${one.entry.name}
+              aria-current=${picked?.entry.name === one.entry.name ? 'true' : 'false'}
+              @click=${() => {
+                this.textStyle = picked?.entry.name === one.entry.name ? null : one.entry.name;
+              }}
+            >
+              <span class="p" style=${look(textStyleDeclarations(one.entry))}>${one.name}</span>
+              <span class="m">.${one.entry.name} · ${one.used}×</span>
+            </button>`)}
+          </div>`
+        : html`<p class="hint" style="margin:0">No text styles yet. In Styles, style a text and save it as one from Typography.</p>`}
+      ${picked ? this.#renderTextStyleEditor(picked.entry, picked.name, picked.used) : nothing}
+    </heo-section>`;
+  }
+
+  /** A text style's rows: its name, then Typography's rows, writing to the class. */
+  #renderTextStyleEditor(entry: DesignClass, name: string, used: number): TemplateResult {
+    const engine = this.editor;
+    const decl = entry.declarations;
+    const write = (property: string, value: string): void => {
+      if (value.trim()) engine.setClassDeclaration(entry.name, property, value);
+      else if (property in decl) engine.removeClassDeclaration(entry.name, property);
+    };
+    const rows = shownTypographyRows(decl['text-decoration-line'] ?? '');
+    return html`<div class="tstyle-ed" data-text-style-editor=${entry.name}>
+      <div class="trow">
+        <span class="dot off"></span>
+        <span class="tname">Name</span>
+        <heo-value-field
+          field-label="Text style name"
+          .value=${name}
+          action-hidden
+          chevron-hidden
+          @value-change=${(event: CustomEvent<{ value: string }>) => {
+            const next = event.detail.value.trim();
+            if (next && next !== name) engine.setClassDeclaration(entry.name, TEXT_STYLE_MARKER, textStyleMarker(next), undefined, `Rename text style to ${next}`);
+          }}
+        ></heo-value-field>
+        ${renderKill({ label: `Delete the text style ${name}`, title: used ? `Delete ${name}: ${used} elements lose it` : `Delete ${name}`, tight: true, onClick: () => {
+          engine.removeClass(entry.name);
+          this.textStyle = null;
+        } })}
+      </div>
+      ${rows.map((row) => {
+        const value = decl[row.property] ?? '';
+        const set = Boolean(value);
+        return html`<div class=${row.sub ? 'trow sub' : 'trow'} data-property=${row.property}>
+          <span class=${set ? 'dot' : 'dot off'}></span>
+          <span class="tname" title=${row.property}>${row.label}</span>
+          ${row.segments
+            ? html`<heo-segmented
+                .options=${row.segments}
+                .value=${value}
+                clearable
+                label=${row.label}
+                @segment-change=${(event: CustomEvent<{ value: string }>) => write(row.property, event.detail.value)}
+              ></heo-segmented>`
+            : html`<heo-value-field
+                data-property=${row.property}
+                field-label=${row.label}
+                .kind=${valueKindFor(row.property)}
+                .property=${row.property}
+                .value=${value}
+                .suggestions=${buildSuggestions(engine, row.property, null)}
+                .shadowTokens=${row.property === 'text-shadow' ? shadowSwatches(engine) : []}
+                @value-input=${(event: CustomEvent<{ value: string }>) => {
+                  if (event.detail.value.trim()) engine.previewClassDeclaration(entry.name, row.property, event.detail.value);
+                }}
+                @value-revert=${() => engine.cancelPreview()}
+                @value-change=${(event: CustomEvent<{ value: string }>) => write(row.property, event.detail.value)}
+              ></heo-value-field>`}
+          ${set
+            ? renderKill({ label: `Remove ${row.label} from ${name}`, tight: true, onClick: () => engine.removeClassDeclaration(entry.name, row.property) })
+            : html`<span></span>`}
+        </div>`;
+      })}
+      <p class="hint" style="margin:0">The rows the Styles panel's Typography has. Here they change ${name} itself: ${used === 1 ? 'the element using it follows' : `the ${used} elements using it follow`}.</p>
+    </div>`;
   }
 
   #renderClassList(el: HTMLElement | null): TemplateResult | typeof nothing {

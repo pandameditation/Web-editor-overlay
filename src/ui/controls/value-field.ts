@@ -23,6 +23,8 @@ import { tieLayer } from '../../core/focus.js';
 import { firstFocusable } from '../../core/modal.js';
 import './shadow-editor.js';
 import './filter-editor.js';
+import './font-picker.js';
+import { parseFamilies } from '../../core/fonts.js';
 import { icon } from '../icons.js';
 import { baseStyles, swatchStyle } from '../theme.js';
 
@@ -60,7 +62,7 @@ export interface ValueSuggestion {
  * `shadow` is box-shadow and text-shadow, `filter` is filter: both are text to type, with the shadow
  * editor at the head of the field where a colour has its swatch.
  */
-export type ValueKind = 'text' | 'length' | 'number' | 'color' | 'keyword' | 'shadow' | 'filter';
+export type ValueKind = 'text' | 'length' | 'number' | 'color' | 'keyword' | 'shadow' | 'filter' | 'font';
 
 /**
  * The overlay's primary value control.
@@ -1201,13 +1203,13 @@ export class HeoValueField extends LitElement {
 
   /** Open the shadow editor, as its button does: for a host or a test opening it from outside. */
   openShadowEditor(): void {
-    if (this.kind !== 'shadow' && this.kind !== 'filter') return;
+    if (this.kind !== 'shadow' && this.kind !== 'filter' && this.kind !== 'font') return;
     this.composer = null;
     this.picking = false;
     this.shadowing = true;
     if (!this.open) this.#openPopup();
     void this.updateComplete
-      .then(() => this.renderRoot.querySelector<LitElement>('heo-shadow-editor, heo-filter-editor')?.updateComplete)
+      .then(() => this.renderRoot.querySelector<LitElement>('heo-shadow-editor, heo-filter-editor, heo-font-picker')?.updateComplete)
       .then(() => {
         if (!this.open || !this.shadowing) return;
         this.#dialogBox = null;
@@ -1247,6 +1249,63 @@ export class HeoValueField extends LitElement {
           ? html`<b style=${`text-shadow:${miniShadow(list, 4, 'text')}`}>A</b>`
           : html`<i style=${`box-shadow:${miniShadow(list, 4)}`}></i>`}</span>`}
     </button>`;
+  }
+
+  /** A font field's opener: "Aa" in the font the field holds. */
+  #renderFontButton(): TemplateResult {
+    const value = this.draft.trim() || this.computed.trim();
+    return html`<button
+      class="color-btn shadow-btn font-btn"
+      type="button"
+      tabindex="-1"
+      title="Open the font picker"
+      aria-label="Open the font picker"
+      aria-expanded=${this.open && this.shadowing}
+      @pointerdown=${(event: Event) => event.preventDefault()}
+      @click=${() => (this.open && this.shadowing ? this.#closeDialog() : this.openShadowEditor())}
+    ><span class="mini"><b style=${`font-family:${value.replace(/[;{}]/g, '')}`}>Aa</b></span></button>`;
+  }
+
+  /** The font picker, in the shadow editor's dialog. Hovering a font previews it; leaving puts the value back. */
+  #renderFontPicker(): TemplateResult {
+    const families = this.suggestions
+      .filter((item) => item.token && item.hint)
+      .map((item) => parseFamilies(item.hint ?? '')[0])
+      .filter((one): one is string => Boolean(one));
+    return html`<div
+      class="popup picker shadowing dialog"
+      popover="manual"
+      tabindex="-1"
+      style=${this.#dialogStyle()}
+      @pointerdown=${keepFocusOnBlank}
+      @keydown=${this.#onDialogKey}
+      role="dialog"
+      aria-label="Font picker"
+    >
+      ${this.#renderDialogHead('Font', this.property || 'font-family')}
+      <heo-font-picker
+        .value=${this.value || this.computed}
+        .tokenFamilies=${families}
+        @font-preview=${(event: CustomEvent<{ value: string | null }>) => {
+          event.stopPropagation();
+          if (event.detail.value) {
+            this.draft = event.detail.value;
+            this.#emit('value-input');
+            return;
+          }
+          this.draft = this.value;
+          if (this.#painted) {
+            this.#painted = false;
+            this.dispatchEvent(new CustomEvent('value-revert', { bubbles: true, composed: true }));
+          }
+        }}
+        @font-change=${(event: CustomEvent<{ value: string }>) => {
+          event.stopPropagation();
+          this.draft = event.detail.value;
+          this.#commit();
+        }}
+      ></heo-font-picker>
+    </div>`;
   }
 
   /** The filter editor's title: "Filter", "Backdrop filter". */
@@ -1360,7 +1419,7 @@ export class HeoValueField extends LitElement {
     if (opening) {
       const opener = this.renderRoot.querySelector<HTMLElement>('.color-btn');
       tieLayer(popup, opener);
-      const body = popup.querySelector<HTMLElement>('heo-color-picker, heo-shadow-editor, heo-filter-editor');
+      const body = popup.querySelector<HTMLElement>('heo-color-picker, heo-shadow-editor, heo-filter-editor, heo-font-picker');
       const first = body ? firstFocusable(body.shadowRoot ?? body) : null;
       (first ?? popup).focus({ preventScroll: true });
     }
@@ -1430,6 +1489,12 @@ export class HeoValueField extends LitElement {
    * always did; the shadow editor has already written every change.
    */
   #closeDialog(): void {
+    // A font hovered and not picked: the element goes back to the font it has.
+    if (this.kind === 'font' && this.#painted && this.draft !== this.value) {
+      this.draft = this.value;
+      this.#painted = false;
+      this.dispatchEvent(new CustomEvent('value-revert', { bubbles: true, composed: true }));
+    }
     if (this.picking) this.#closePicker();
     else this.closePopup();
     void this.updateComplete.then(() =>
@@ -1908,6 +1973,7 @@ export class HeoValueField extends LitElement {
   #renderLead(): TemplateResult | typeof nothing {
     if (this.kind === 'color') return this.#renderColorButton();
     if (this.kind === 'shadow' || this.kind === 'filter') return this.#renderShadowButton();
+    if (this.kind === 'font') return this.#renderFontButton();
     if (!this.isNumeric) return nothing;
     return this.#renderGauge();
   }
@@ -2125,6 +2191,7 @@ export class HeoValueField extends LitElement {
     // The composer replaces the list while it is up: it answers the question the list was asking.
     if (this.composer) return this.#renderComposer();
     if (this.picking) return this.#renderPicker();
+    if (this.shadowing && this.kind === 'font') return this.#renderFontPicker();
     if (this.shadowing) return this.#renderShadowEditor();
     const items = this.filtered;
     if (!items.length) {

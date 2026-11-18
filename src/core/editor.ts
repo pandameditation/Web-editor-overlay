@@ -56,6 +56,13 @@ import {
   ViewportPreview,
 } from './viewport.js';
 import {
+  isTextStyle,
+  isTypography,
+  storedTextStyle,
+  textStyleClass,
+  textStyleName,
+} from './text-styles.js';
+import {
   addClassToBlockElements,
   applyBlockInlineRules,
   blockIdsReferencedByCSS,
@@ -2691,6 +2698,168 @@ export class EditorEngine {
       revert: () => this.classes.upsert(snapshot),
     });
     this.#bumpRevision();
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Text styles                                                            */
+  /* ---------------------------------------------------------------------- */
+
+  /** The design system's text styles: its classes carrying the text-style marker, by name. */
+  textStyles(): Array<{ entry: DesignClass; name: string; used: number }> {
+    const usage = this.classes.usage();
+    return this.classes
+      .list()
+      .filter((entry) => isTextStyle(entry))
+      .map((entry) => ({ entry, name: textStyleName(entry), used: usage.get(entry.name) ?? 0 }));
+  }
+
+  /** The text style an element wears: its first class that is one. */
+  textStyleOf(el: HTMLElement | null = this.store.value.selected): DesignClass | null {
+    if (!el) return null;
+    for (const name of Array.from(el.classList)) {
+      const entry = this.classes.get(name);
+      if (isTextStyle(entry)) return entry!;
+    }
+    return null;
+  }
+
+  /**
+   * Whether an element's typography is its own: declared in its style attribute.
+   *
+   * The Typography section writes there, so an edit made through it is what this sees: the element
+   * then no longer looks like its text style, and the section says so until the edits are saved as
+   * a style or discarded.
+   */
+  hasOwnTypography(el: HTMLElement | null = this.store.value.selected): boolean {
+    if (!el) return false;
+    return Object.keys(inlineDeclarations(el)).some((property) => isTypography(property));
+  }
+
+  /**
+   * Put an element in a text style (or in none, for null): its other text styles' classes come
+   * off, this one's goes on, and the typography in its style attribute is dropped, since that is
+   * what made it differ. One undo step.
+   */
+  applyTextStyle(className: string | null, el: HTMLElement | null = this.store.value.selected): void {
+    if (!el) return;
+    const entry = className ? this.classes.get(className) : undefined;
+    if (className && !isTextStyle(entry)) return;
+    this.#commitTextStyle(el, null, entry?.name ?? null, entry ? `Use text style ${textStyleName(entry)}` : 'Leave the text style');
+  }
+
+  /**
+   * Save an element's typography as a text style and put it in it: `declarations` become the
+   * style's, under `name`. `replace` names an existing style's class to overwrite (every element
+   * using it changes); otherwise a new class is made. Returns the class, or null.
+   */
+  saveTextStyle(
+    name: string,
+    declarations: Record<string, string>,
+    replace: string | null,
+    el: HTMLElement | null = this.store.value.selected,
+  ): string | null {
+    if (!el || !name.trim()) return null;
+    const existing = replace ? this.classes.get(replace) : undefined;
+    if (replace && !isTextStyle(existing)) return null;
+    const className = existing?.name ?? this.classes.uniqueName(textStyleClass(name));
+    const next: DesignClass = {
+      ...(existing ?? {}),
+      name: className,
+      label: name.trim(),
+      declarations: storedTextStyle(name, declarations),
+      origin: 'user',
+    };
+    this.#commitTextStyle(el, next, className, existing ? `Replace text style ${name.trim()}` : `Save text style ${name.trim()}`);
+    return className;
+  }
+
+  /** The one command both of the above make: a class (maybe), the element's classes, its style. */
+  #commitTextStyle(el: HTMLElement, style: DesignClass | null, wear: string | null, label: string): void {
+    const previousEntry = style ? this.classes.get(style.name) : undefined;
+    const previousClass = el.getAttribute('class');
+    const previousStyle = el.getAttribute('style');
+    const keep = Array.from(el.classList).filter((name) => name !== wear && !isTextStyle(this.classes.get(name)));
+    const nextClass = [...keep, ...(wear ? [wear] : [])].join(' ');
+    const remaining = Object.entries(inlineDeclarations(el)).filter(([property]) => !isTypography(property));
+    const nextStyle = remaining.map(([property, value]) => `${property}: ${value}`).join('; ');
+    this.history.commit({
+      label,
+      subject: `text-style:${style?.name ?? wear ?? 'none'}`,
+      record: {
+        id: nextChangeId(),
+        kind: 'token-class',
+        summary: style
+          ? `${previousEntry ? 'Replace' : 'Create'} text style .${style.name} from ${labelFor(el)}`
+          : wear
+            ? `Put ${labelFor(el)} in text style .${wear}`
+            : `Take ${labelFor(el)} out of its text style`,
+        target: selectorFor(el),
+        source: nearestSourceRef(el),
+        after: wear ?? undefined,
+        detail: style ? { ...style.declarations } : { class: wear ?? '' },
+        at: Date.now(),
+      },
+      apply: () => {
+        if (style) this.classes.upsert(style);
+        if (nextClass) el.setAttribute('class', nextClass);
+        else el.removeAttribute('class');
+        if (nextStyle) el.setAttribute('style', nextStyle);
+        else el.removeAttribute('style');
+      },
+      revert: () => {
+        if (style) {
+          if (previousEntry) this.classes.upsert(previousEntry);
+          else this.classes.remove(style.name);
+        }
+        if (previousClass === null) el.removeAttribute('class');
+        else el.setAttribute('class', previousClass);
+        if (previousStyle === null) el.removeAttribute('style');
+        else el.setAttribute('style', previousStyle);
+      },
+    });
+    this.#bumpRevision();
+  }
+
+  /**
+   * Link a web font's stylesheet into the page's head, once: the font picker's "add to the
+   * project". Undoable, and written to the file like any head edit. Only https URLs.
+   */
+  addFontStylesheet(href: string): boolean {
+    let url: URL;
+    try {
+      url = new URL(href);
+    } catch {
+      return false;
+    }
+    if (url.protocol !== 'https:') return false;
+    const already = Array.from(document.head.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"]'))
+      .some((link) => link.href === url.href);
+    if (already) return false;
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = url.href;
+    this.history.commit({
+      label: 'Add a web font',
+      subject: `head:font:${url.href}`,
+      record: {
+        id: nextChangeId(),
+        kind: 'attribute',
+        summary: `Link the web font stylesheet ${url.host}${url.pathname}`,
+        target: 'link',
+        group: 'document-head',
+        after: url.href,
+        anchor: { tag: 'link', attr: { name: 'href', value: url.href } },
+        detail: { scope: 'document head', tag: 'link', attribute: 'href', value: url.href },
+        at: Date.now(),
+      },
+      domOnly: true,
+      apply: () => {
+        if (!link.isConnected) document.head.appendChild(link);
+      },
+      revert: () => link.remove(),
+    });
+    this.#bumpRevision();
+    return true;
   }
 
   /* ---------------------------------------------------------------------- */

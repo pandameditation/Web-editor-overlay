@@ -1,7 +1,7 @@
 import { css, html, nothing, type PropertyValues, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { isPseudoElement, isWidthQuery, mediaIcon, mediaKind, mediaNow, needsGeneratedContent } from '../../core/breakpoints.js';
-import { rulesPass, stateTrigger, withState, type ElementModel, type WriteTarget } from '../../core/cascade.js';
+import { inlineDeclarations, rulesPass, stateTrigger, withState, type ElementModel, type WriteTarget } from '../../core/cascade.js';
 import {
   escapeRegExp,
   parentLayoutProperties,
@@ -76,6 +76,7 @@ import {
   destinationChoice,
   shownValue,
   targetOf,
+  renderPropertyRow,
   type RowSpec,
 } from './styles/property-row.js';
 import type { RowScope, StylesHost, StylesUiState } from './styles/types.js';
@@ -113,6 +114,13 @@ import '../controls/transition-editor.js';
 import type { TransitionTrigger, TriggerChange } from '../controls/transition-editor.js';
 import { formatTransitions, readTransitions, timeMs, TRANSITION_PROPERTIES, type TransitionItem } from '../../core/transitions.js';
 import type { SegmentOption } from '../controls/segmented.js';
+import { shownTypographyRows } from './styles/typography.js';
+import { proposedTextStyleName, textStyleDeclarations, TYPOGRAPHY_PROPERTIES } from '../../core/text-styles.js';
+import { parseFamilies } from '../../core/fonts.js';
+import '../controls/type-tuning.js';
+import '../controls/text-style-dialog.js';
+import type { DialogTextStyle } from '../controls/text-style-dialog.js';
+import type { TuningValues } from '../controls/type-tuning.js';
 import {
   ANIMATION_PROPERTIES,
   composeAnimation,
@@ -143,7 +151,8 @@ const SECTIONS: SectionSpec[] = [
     id: 'layout',
     heading: 'Layout',
     glyph: 'panel',
-    properties: ['display', 'position', 'overflow', 'z-index'],
+    // white-space moved here from Typography: it is about how the box lays its text out.
+    properties: ['display', 'position', 'overflow', 'z-index', 'white-space'],
   },
   {
     id: 'inset',
@@ -213,19 +222,8 @@ const SECTIONS: SectionSpec[] = [
     id: 'typography',
     heading: 'Typography',
     glyph: 'text',
-    properties: [
-      'color',
-      'font-family',
-      'font-size',
-      'font-weight',
-      'line-height',
-      'letter-spacing',
-      'text-align',
-      'text-transform',
-      'text-decoration',
-      'text-wrap',
-      'white-space',
-    ],
+    // Drawn by hand (#renderTypography): text styles, then the rows of typography/rows.ts.
+    properties: [...TYPOGRAPHY_PROPERTIES],
   },
   {
     id: 'surface',
@@ -243,7 +241,8 @@ const SECTIONS: SectionSpec[] = [
     glyph: 'eye',
     // text-shadow beside box-shadow and filter: the three the shadow editor opens from.
     // No will-change: a hint to the renderer, rarely authored by hand. Add property still reaches it.
-    properties: ['opacity', 'box-shadow', 'text-shadow', 'filter', 'backdrop-filter', 'transform', 'mix-blend-mode', 'cursor'],
+    // text-shadow is Typography's now, beside the text it shades.
+    properties: ['opacity', 'box-shadow', 'filter', 'backdrop-filter', 'transform', 'mix-blend-mode', 'cursor'],
   },
   {
     id: 'motion',
@@ -378,6 +377,90 @@ export class HeoStylesPanel extends HeoElement {
       :host {
         display: block;
         padding-bottom: 16px;
+      }
+      /* Typography: the text styles, each drawn in its own look. */
+      .typestyles {
+        display: grid;
+        gap: 2px;
+        margin-bottom: 10px;
+      }
+      .tgroup {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-bottom: 4px;
+        color: var(--heo-text-faint);
+        font-size: 9.5px;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+      .tgroup::after {
+        content: '';
+        flex: 1;
+        border-top: 1px solid var(--heo-line);
+      }
+      .tstyle {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 8px;
+        min-height: 30px;
+        padding: 4px 8px;
+        border: 1px solid transparent;
+        border-radius: var(--heo-r-sm);
+        background: transparent;
+        color: var(--heo-text);
+        font: inherit;
+        text-align: left;
+        cursor: pointer;
+      }
+      .tstyle:hover {
+        background: var(--heo-hover);
+      }
+      .tstyle[aria-current='true'] {
+        border-color: var(--heo-accent-line);
+        background: var(--heo-accent-soft);
+      }
+      .tstyle.mine {
+        border-style: dashed;
+        cursor: default;
+      }
+      .tstyle .p {
+        overflow: hidden;
+        max-height: 30px;
+        line-height: 1.25;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .tstyle .m {
+        color: var(--heo-text-faint);
+        font-family: var(--heo-mono);
+        font-size: 10px;
+        text-align: right;
+      }
+      .tstyle.mine .m {
+        color: var(--heo-accent-text);
+      }
+      .tactions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 6px;
+        margin-top: 4px;
+      }
+      heo-section > .more,
+      .more {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        margin: 8px 0 6px;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: var(--heo-accent-text);
+        font: inherit;
+        font-size: 11.5px;
+        cursor: pointer;
       }
 
       .top {
@@ -827,7 +910,9 @@ export class HeoStylesPanel extends HeoElement {
         ? this.#renderBackground(section, el, model, computed, host)
         : section.id === 'motion'
           ? this.#renderMotion(section, el, model, host)
-          : this.#renderSection(section, el, model, host),
+          : section.id === 'typography'
+            ? this.#renderTypography(section, el, model, host)
+            : this.#renderSection(section, el, model, host),
     )}
       ${this.#renderParent(el, model, host)}
       ${found === 0 ? this.#renderNoMatch() : nothing}
@@ -2569,6 +2654,187 @@ export class HeoStylesPanel extends HeoElement {
             </div>`
           : nothing}`,
     };
+  }
+
+  /** The Typography section's dialog, while open: saving, or saving on the way to another style. */
+  #typeDialog: { mode: 'save' | 'leave'; target: string | null } | null = null;
+  #typeTune = false;
+
+  /**
+   * Typography: the design system's text styles, then the element's typography as labelled rows.
+   *
+   * A text style is a class (see core/text-styles.ts). The rows write to the element's style
+   * attribute, so editing anything makes the element differ from its style: the list then shows
+   * "This text", unsaved, and "Save as text style…" names it. Picking another style with edits
+   * unsaved asks first, in one dialog that can save them as it goes.
+   */
+  #renderTypography(section: SectionSpec, el: HTMLElement, model: ElementModel, host: StylesHost): TemplateResult | typeof nothing {
+    const engine = this.editor;
+    const styles = engine.textStyles();
+    const current = engine.textStyleOf(el);
+    const edited = engine.hasOwnTypography(el);
+    const scope: RowScope = { kind: 'section', id: section.id };
+    /*
+     * Under a text style, one place to write: the element's own style attribute, so an edit makes
+     * the element its own rather than changing the style every other element wears (that is done
+     * from Tokens, or by saving over it). Without one, rows write where the value is written now,
+     * as every section of the panel does.
+     */
+    const inline = !current ? undefined : [stylesDestination(
+      'inline style',
+      'this element only, every size',
+      { kind: 'target', target: { kind: 'inline', element: el } },
+      toRecord(model.inline),
+      'this element',
+      { impact: 1 },
+    )];
+    const value = (property: string): string => model.cascade(property).applying[0]?.value ?? '';
+    const rows = shownTypographyRows(value('text-decoration-line') || getComputedStyle(el).textDecorationLine)
+      .filter((row) => host.hit(row.property, row.label, value(row.property)));
+    const tuning = (['text-wrap', 'hyphens', 'text-indent', 'font-variant-numeric', 'font-variant-caps', 'font-variant-ligatures'] as const);
+    const tuneShown = tuning.some((property) => host.hit(property, value(property)));
+    const styleHits = styles.filter((one) => host.hit(one.name, one.entry.name));
+    if (!rows.length && !tuneShown && !styleHits.length) return nothing;
+
+    const look = (): Record<string, string> => {
+      const out: Record<string, string> = {};
+      for (const property of TYPOGRAPHY_PROPERTIES) {
+        const one = value(property);
+        if (one) out[property] = one;
+      }
+      return out;
+    };
+    const dialogStyles: DialogTextStyle[] = styles.map((one) => ({
+      className: one.entry.name,
+      name: one.name,
+      used: one.used,
+      declarations: textStyleDeclarations(one.entry),
+    }));
+    const fromName = current ? styles.find((one) => one.entry.name === current.name)?.name ?? '' : '';
+    const pick = (className: string): void => {
+      if (edited) {
+        this.#typeDialog = { mode: 'leave', target: className };
+        this.requestUpdate();
+        return;
+      }
+      if (className !== current?.name) engine.applyTextStyle(className, el);
+    };
+    const changes = Object.keys(inlineDeclarations(el)).filter((property) => TYPOGRAPHY_PROPERTIES.includes(property)).length;
+    const dialog = this.#typeDialog;
+    const targetName = dialog?.target ? styles.find((one) => one.entry.name === dialog.target)?.name ?? '' : '';
+    const computedFamily = getComputedStyle(el).fontFamily;
+    const sizeOf = (decl: Record<string, string>): string => {
+      const size = decl['font-size'] ?? '';
+      return /^var\(/.test(size) ? (getComputedStyle(el).getPropertyValue(size.replace(/^var\(\s*|\s*(,.*)?\)$/g, '')).trim() || size) : size;
+    };
+    const preview = (decl: Record<string, string>): string => Object.entries(decl)
+      .filter(([property]) => !property.startsWith('--') && property !== 'font-size' && property !== 'line-height')
+      .map(([property, text]) => `${property}:${text.replace(/[;{}<>]/g, '')}`)
+      .join(';');
+
+    return html`<heo-section
+      heading=${section.heading}
+      glyph=${section.glyph}
+      badge=${edited ? 'unsaved' : current ? fromName : ''}
+      ?open=${host.filtering ? true : sectionOpen(section.id, true)}
+      @section-toggle=${(event: CustomEvent<{ open: boolean }>) => this.#remember(section.id, event.detail.open)}
+      @font-web=${(event: CustomEvent<{ href: string }>) => engine.addFontStylesheet(event.detail.href)}
+    >
+      <div class="typestyles" data-text-styles>
+        <div class="tgroup">Text style</div>
+        ${edited
+          ? html`<div class="tstyle mine" aria-current="true" data-text-style="mine">
+              <span class="p" style=${preview(look())}>This text</span>
+              <span class="m">${current ? `edited from ${fromName} · not saved` : 'not saved'}</span>
+            </div>`
+          : nothing}
+        ${styleHits.map((one) => {
+          const decl = textStyleDeclarations(one.entry);
+          return html`<button
+            class="tstyle"
+            type="button"
+            data-text-style=${one.entry.name}
+            aria-current=${!edited && current?.name === one.entry.name ? 'true' : 'false'}
+            title=${`${one.name}: .${one.entry.name}, used ${one.used}×`}
+            @click=${() => pick(one.entry.name)}
+          >
+            <span class="p" style=${`${preview(decl)};font-size:min(22px, ${sizeOf(decl) || '16px'})`}>${one.name}</span>
+            <span class="m">${[sizeOf(decl), decl['line-height']].filter(Boolean).join('/')}${decl['font-size'] || decl['line-height'] ? ' · ' : ''}${one.used}×</span>
+          </button>`;
+        })}
+        ${!styles.length
+          ? html`<p class="hint" style="margin:0">No text styles yet. Style this text below, then save it as one to use it elsewhere.</p>`
+          : nothing}
+        ${edited || !current
+          ? html`<div class="tactions">
+              ${edited && current
+                ? html`<button class="btn sm ghost" type="button" @click=${() => engine.applyTextStyle(current.name, el)}>Discard changes</button>`
+                : nothing}
+              <button class="btn sm primary" type="button" data-save-text-style ?disabled=${!edited && !Object.keys(look()).length} @click=${() => {
+                this.#typeDialog = { mode: 'save', target: null };
+                this.requestUpdate();
+              }}>Save as text style…</button>
+            </div>`
+          : nothing}
+      </div>
+      <div class="rows" data-declarations=${section.id}>
+        ${rows.map((row) => renderPropertyRow({
+          property: row.property,
+          scope,
+          element: el,
+          model,
+          listId: section.id,
+          label: row.label,
+          sub: row.sub,
+          segments: row.segments,
+          destinations: inline,
+        }, host))}
+      </div>
+      ${tuneShown
+        ? html`<button class="more" type="button" aria-expanded=${this.#typeTune ? 'true' : 'false'} @click=${() => {
+            this.#typeTune = !this.#typeTune;
+            this.requestUpdate();
+          }}>${this.#typeTune ? 'Hide fine-tuning' : 'Fine-tuning: line breaks, numbers & letters'} ${icon(this.#typeTune ? 'chevronUp' : 'chevronDown', 10)}</button>
+          ${this.#typeTune || host.filtering
+            ? html`<heo-type-tuning
+                .values=${Object.fromEntries(tuning.map((property) => [property, value(property)])) as unknown as TuningValues}
+                family=${computedFamily}
+                familyName=${parseFamilies(computedFamily)[0] ?? ''}
+                @tune-change=${(event: CustomEvent<{ property: string; value: string }>) =>
+                  engine.setStyle(event.detail.property, event.detail.value, el)}
+              ></heo-type-tuning>`
+            : nothing}`
+        : nothing}
+      <heo-text-style-dialog
+        ?open=${Boolean(dialog)}
+        mode=${dialog?.mode ?? 'save'}
+        .styles=${dialogStyles}
+        from=${fromName}
+        target=${targetName}
+        .look=${look()}
+        .changes=${changes}
+        sample=${(el.textContent ?? '').replace(/\s+/g, ' ').trim()}
+        proposed=${proposedTextStyleName(fromName || null, styles.map((one) => one.name))}
+        @style-cancel=${() => {
+          this.#typeDialog = null;
+          this.requestUpdate();
+        }}
+        @style-discard=${() => {
+          const target = this.#typeDialog?.target ?? null;
+          this.#typeDialog = null;
+          engine.applyTextStyle(target, el);
+          this.requestUpdate();
+        }}
+        @style-save=${(event: CustomEvent<{ name: string; replace: string | null }>) => {
+          const target = this.#typeDialog?.target ?? null;
+          this.#typeDialog = null;
+          const saved = engine.saveTextStyle(event.detail.name, look(), event.detail.replace, el);
+          if (saved && target && target !== saved) engine.applyTextStyle(target, el);
+          if (saved) engine.notify(`Saved ${event.detail.name} as a text style.`, 'success', { label: 'Undo', run: () => engine.undo() });
+          this.requestUpdate();
+        }}
+      ></heo-text-style-dialog>
+    </heo-section>`;
   }
 
   /** Which of the two the Motion section shows, once picked; until then, the one in use. */

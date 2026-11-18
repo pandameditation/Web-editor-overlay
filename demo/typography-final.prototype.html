@@ -1,0 +1,531 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PROTOTYPE — Typography: the last round</title>
+  <!--
+  PROTOTYPE — throwaway, not part of the overlay build. Open the file directly in a browser.
+
+  The last round, from round three (demo/typography-styles.prototype.html), with the feedback:
+    - leaving unsaved edits (picking another text style) asks first: save them, discard them, or stay;
+    - rows are named for what they do — Color, Font, Weight, Style, Line, Line style, Line thickness,
+      Line distance, Line color, Align, Case, Size, Line height, Letter spacing, Word spacing,
+      Outline, Shadow. Clicking a name opens the cascade popover, which says the real property
+      (text-decoration-thickness) and where its value comes from;
+    - Align and Case are back, after Line, with their own controls (icons, "As typed / AA / aa / Aa");
+    - Line keeps round one's editor: None / Under / Through / Over, then its style, thickness,
+      distance and color;
+    - Fine-tuning: each sample is laid out so the choices differ, measured in the browser; a choice
+      this font draws no differently is shown as such rather than pretending. "Numbers & letters"
+      (the OpenType features) is back: number shape, number width, fractions, small capitals,
+      joined letters;
+    - the font picker: every family drawn in its own face; hovering one restyles the heading live.
+  Scenes (?scene=): styles | font | leave | tune | cascade.
+-->
+  <style>
+    :root {
+      --heo-bg: #ffffff; --heo-raised: #ffffff; --heo-sunken: #f4f5f8; --heo-hover: #eff1f5;
+      --heo-text: #1f2330; --heo-text-dim: #4b5263; --heo-text-faint: #6b7385; --heo-line: #e3e6ec; --heo-line-strong: #d3d7e0;
+      --heo-accent: #6366f1; --heo-accent-soft: color-mix(in oklab, var(--heo-accent) 14%, transparent);
+      --heo-accent-line: color-mix(in oklab, var(--heo-accent) 50%, transparent); --heo-danger: #e11d48; --heo-warn: #b45309;
+      --heo-r-sm: 7px; --font: Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+      --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; --paper: #fffdf8; --ink: #1c1917;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; }
+    body { display: grid; grid-template-columns: minmax(0, 1fr) 400px; font-family: var(--font); background: #e9ecf2; color: var(--heo-text); }
+    button, input, select { font: inherit; }
+    .stage { padding: 24px 32px 60px; overflow: auto; }
+    .stage h1 { font: 600 11px/1 var(--font); letter-spacing: .08em; text-transform: uppercase; color: #64748b; margin: 0 0 12px; }
+    .scene { display: inline-flex; gap: 2px; padding: 2px; border-radius: 8px; background: #dfe3ea; margin-bottom: 14px; flex-wrap: wrap; }
+    .scene button { all: unset; padding: 5px 10px; border-radius: 6px; font-size: 12px; color: #475569; cursor: pointer; }
+    .scene button[aria-pressed=true] { background: #fff; color: #111827; font-weight: 600; box-shadow: 0 1px 2px rgb(0 0 0 / 10%); }
+    .site { position: relative; border-radius: 14px; background: var(--paper); padding: 36px 40px; border: 1px solid #e7e2d6; }
+    .site .kicker { font: 600 12px/1 system-ui; letter-spacing: .14em; text-transform: uppercase; color: #a16207; margin-bottom: 12px; }
+    #target { margin: 0 0 14px; outline: 2px solid var(--heo-accent); outline-offset: 6px; }
+    .site p { margin: 0; color: #57534e; font: 16px/1.6 Georgia, serif; max-width: 520px; }
+    .badge { position: absolute; top: 10px; right: 12px; padding: 3px 9px; border-radius: 999px; background: #111827; color: #fff; font: 600 11px var(--font); }
+    .out { margin-top: 16px; background: #111827; color: #e5e7eb; border-radius: 10px; padding: 12px 14px; font: 11.5px/1.6 var(--mono); white-space: pre-wrap; }
+    .out b { color: #a5b4fc; font-weight: 500; } .out .c { color: #8b93a5; }
+    .question { margin-top: 12px; color: #475569; font-size: 13px; line-height: 1.5; max-width: 720px; }
+
+    .panel { position: relative; background: var(--heo-bg); border-left: 1px solid var(--heo-line); padding: 12px 14px 60px; font-size: 12px; overflow: auto; }
+    .ptabs { display: flex; gap: 2px; margin-bottom: 8px; }
+    .ptabs span { padding: 4px 9px; border-radius: 6px; font-size: 12px; color: var(--heo-text-dim); }
+    .ptabs span.on { background: var(--heo-accent-soft); color: var(--heo-text); font-weight: 600; }
+    .sec { border-top: 1px solid var(--heo-line); padding: 10px 0; }
+    .sechead { display: flex; align-items: center; gap: 7px; font: 600 11px var(--font); letter-spacing: .06em; text-transform: uppercase; color: var(--heo-text-dim); }
+    .sechead .n { margin-left: auto; color: var(--heo-text-faint); font-weight: 500; }
+    .body { display: grid; gap: 6px; margin-top: 10px; min-width: 0; }
+    .group { display: flex; align-items: center; gap: 6px; color: var(--heo-text-faint); font-size: 9.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; margin-top: 6px; }
+    .group::after { content: ''; flex: 1; border-top: 1px solid var(--heo-line); }
+    .row { display: grid; grid-template-columns: 10px 104px minmax(0, 1fr) 22px; align-items: center; gap: 6px; min-height: 30px; }
+    .row.sub .name { padding-left: 10px; color: var(--heo-text-dim); }
+    .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--heo-accent); justify-self: center; }
+    .dot.off { background: transparent; }
+    .name { all: unset; font-size: 12px; color: var(--heo-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; border-radius: 4px; }
+    .name:hover { color: var(--heo-accent); text-decoration: underline dotted; text-underline-offset: 3px; }
+    .kill { all: unset; display: grid; place-items: center; width: 22px; height: 24px; border-radius: 5px; color: var(--heo-text-dim); cursor: pointer; font-size: 12px; }
+    .kill:hover { color: var(--heo-danger); background: var(--heo-hover); }
+    .kill.off { visibility: hidden; }
+    .vf { display: flex; align-items: center; gap: 6px; height: 30px; min-width: 0; padding: 0 6px 0 8px; border: 1px solid var(--heo-line-strong); border-radius: var(--heo-r-sm); background: var(--heo-raised); }
+    .vf:hover { border-color: var(--heo-accent-line); }
+    .vf .v { flex: 1; min-width: 0; font: 12px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .vf input { all: unset; flex: 1; min-width: 0; font: 12px var(--mono); }
+    .vf .scrub { width: 12px; height: 4px; border-radius: 2px; background: var(--heo-text-faint); opacity: .7; cursor: ew-resize; flex: none; }
+    .vf .unit { padding: 1px 5px; border-radius: 4px; background: var(--heo-sunken); color: var(--heo-text-faint); font: 10.5px var(--mono); }
+    .vf .tok { color: var(--heo-accent); font: 10.5px var(--mono); }
+    .vf .chev { color: var(--heo-text-faint); font-size: 10px; }
+    .vf .sw { width: 16px; height: 16px; border-radius: 4px; border: 1px solid var(--heo-line-strong); flex: none; }
+    .vf .opener { display: grid; place-items: center; width: 18px; height: 18px; border-radius: 4px; background: color-mix(in oklab, var(--heo-text) 12%, var(--heo-sunken)); font: 700 10px/1 system-ui; color: #fff; flex: none; cursor: pointer; }
+    .vf.fam { cursor: pointer; } .vf.fam .v { font: 15px/1 var(--fam, system-ui); }
+    .vf .fb { color: var(--heo-text-faint); font: 10px var(--mono); flex: none; }
+    .pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 6px; min-width: 0; }
+    .seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; height: 30px; padding: 2px; border-radius: var(--heo-r-sm); background: var(--heo-sunken); border: 1px solid var(--heo-line); }
+    .seg button { all: unset; display: grid; place-items: center; border-radius: 5px; font-size: 12px; color: var(--heo-text-dim); cursor: pointer; }
+    .seg button[aria-pressed=true] { background: var(--heo-raised); color: var(--heo-text); font-weight: 600; box-shadow: 0 1px 2px rgb(0 0 0 / 10%); }
+    .seg svg { width: 16px; height: 12px; }
+    .hint { color: var(--heo-text-faint); font-size: 10.5px; line-height: 1.45; margin: 0; }
+    .hint b { color: var(--heo-text-dim); font-weight: 600; }
+    .more { all: unset; color: var(--heo-accent); font-size: 12px; cursor: pointer; }
+    .btn { all: unset; display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 11px; border-radius: var(--heo-r-sm); border: 1px solid var(--heo-line-strong); font-size: 12px; font-weight: 600; cursor: pointer; background: var(--heo-raised); white-space: nowrap; }
+    .btn.primary { background: var(--heo-accent); border-color: var(--heo-accent); color: #fff; }
+    .btn.danger { color: var(--heo-danger); border-color: color-mix(in oklab, var(--heo-danger) 40%, transparent); }
+    .styles { display: grid; gap: 2px; }
+    .srow { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid transparent; border-radius: var(--heo-r-sm); cursor: pointer; }
+    .srow:hover { background: var(--heo-hover); }
+    .srow[aria-current=true] { border-color: var(--heo-accent-line); background: var(--heo-accent-soft); }
+    .srow .p { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--ink); }
+    .srow .m { color: var(--heo-text-faint); font: 10px var(--mono); text-align: right; }
+    .srow.mine { border-style: dashed; border-color: var(--heo-accent-line); }
+    .srow.mine .m { color: var(--heo-accent); }
+    .mineactions { display: flex; justify-content: flex-end; gap: 6px; }
+
+    /* popovers: the cascade popover and the font picker */
+    .pop { position: absolute; left: 14px; right: 14px; z-index: 20; display: grid; gap: 8px; padding: 10px; border: 1px solid var(--heo-line-strong); border-radius: 12px; background: var(--heo-bg); box-shadow: 0 22px 48px -14px rgb(15 23 42 / 40%); }
+    .phead { display: flex; align-items: center; gap: 7px; } .phead .t { font-weight: 600; } .phead .s2 { color: var(--heo-text-faint); font: 11px var(--mono); } .phead .sp { flex: 1; }
+    .x2 { all: unset; display: grid; place-items: center; width: 22px; height: 22px; border-radius: 5px; color: var(--heo-text-faint); cursor: pointer; }
+    .x2:hover { background: var(--heo-hover); }
+    .casc { display: grid; gap: 3px; }
+    .crow { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; gap: 6px; align-items: center; padding: 5px 7px; border-radius: 6px; font: 11px var(--mono); }
+    .crow.win { background: var(--heo-accent-soft); }
+    .crow.lost { color: var(--heo-text-faint); text-decoration: line-through; }
+    .crow .src { color: var(--heo-text-faint); font: 10px var(--font); text-decoration: none; }
+    .flist { max-height: 250px; overflow: auto; display: grid; gap: 1px; }
+    .fi { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 6px 8px; border-radius: var(--heo-r-sm); cursor: pointer; }
+    .fi:hover, .fi.hover { background: var(--heo-hover); }
+    .fi[aria-current=true] { box-shadow: inset 0 0 0 1px var(--heo-accent-line); }
+    .fi .nm { font-size: 18px; line-height: 1.15; color: #111827; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .fi .tag { color: var(--heo-text-faint); font: 9.5px var(--mono); }
+    .fbbox { display: grid; gap: 6px; padding: 8px; border-radius: var(--heo-r-sm); background: var(--heo-sunken); border: 1px solid var(--heo-line); }
+    .chain { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; font-size: 11px; color: var(--heo-text-faint); }
+    .chip { display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 7px 0 5px; border-radius: 999px; border: 1px solid var(--heo-line-strong); background: var(--heo-raised); font: 12px var(--fam, var(--mono)); color: var(--heo-text); }
+    .chip.first { border-color: var(--heo-accent-line); background: var(--heo-accent-soft); font-weight: 600; }
+    .chip.generic { border-style: dashed; } .chip.add { border-style: dashed; background: transparent; color: var(--heo-text-faint); font-family: var(--mono); }
+
+    /* the leave dialog, as the overlay's confirm dialog */
+    .scrim { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; background: rgb(15 23 42 / 30%); backdrop-filter: blur(3px); }
+    .confirm { width: 380px; display: grid; gap: 12px; padding: 16px; border-radius: 14px; background: var(--heo-bg); box-shadow: 0 30px 60px -20px rgb(15 23 42 / 50%); }
+    .confirm h3 { margin: 0; font-size: 14px; }
+    .confirm .cmp { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 6px; }
+    .confirm .cmp div { border: 1px solid var(--heo-line); border-radius: 8px; background: var(--paper); padding: 8px; color: var(--ink); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .confirm .cmp small { display: block; margin-top: 4px; font: 9.5px var(--mono); color: var(--heo-text-faint); }
+    .confirm .acts { display: flex; gap: 6px; justify-content: flex-end; }
+
+    /* fine-tuning */
+    .opt { display: grid; gap: 4px; }
+    .opt .what { display: flex; justify-content: space-between; align-items: baseline; font-size: 12px; color: var(--heo-text); }
+    .opt .what span { color: var(--heo-text-faint); font: 10px var(--mono); }
+    .pics { display: grid; grid-template-columns: repeat(var(--n, 3), minmax(0, 1fr)); gap: 4px; }
+    .pic { all: unset; display: grid; gap: 4px; padding: 6px; border: 1px solid var(--heo-line); border-radius: var(--heo-r-sm); background: var(--paper); cursor: pointer; min-width: 0; align-content: start; }
+    .pic[aria-pressed=true] { border-color: var(--heo-accent); box-shadow: 0 0 0 2px var(--heo-accent-soft); }
+    .pic.same { opacity: .5; cursor: default; }
+    .pic .cap { font: 600 10px var(--font); color: var(--heo-text-dim); text-align: center; }
+    .pic .box { justify-self: center; color: var(--ink); }
+    .pic .lone { background: color-mix(in oklab, var(--heo-warn) 25%, transparent); border-radius: 2px; }
+    .pic .figs { justify-self: stretch; font: 400 15px/1.35 var(--demo-font); }
+    .pic .figs span { display: block; width: max-content; border-right: 2px solid color-mix(in oklab, var(--heo-accent) 60%, transparent); padding-right: 2px; }
+    .pic .big { font: 400 20px/1.2 var(--demo-font); text-align: center; }
+    .nodiff { font: 10px var(--font); color: var(--heo-text-faint); }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <main class="stage">
+    <h1>Typography — the last round</h1>
+    <div class="scene" role="group" aria-label="Scene">
+      <button type="button" data-scene="styles">Editing</button>
+      <button type="button" data-scene="font">Font picker</button>
+      <button type="button" data-scene="leave">Leaving unsaved edits</button>
+      <button type="button" data-scene="tune">Fine-tuning</button>
+      <button type="button" data-scene="cascade">A name's cascade</button>
+    </div>
+    <div class="site">
+      <span class="badge" id="badge" hidden></span>
+      <div class="kicker">Studio journal</div>
+      <h2 id="target">Clay remembers every hand that shaped it</h2>
+      <p>Saturday workshops for beginners: wheel, glaze and kiln. Bring an apron and an afternoon. Classes: €45.00 · 3½ hours.</p>
+    </div>
+    <div class="out" id="out"></div>
+    <p class="question" id="question"></p>
+  </main>
+  <aside class="panel" id="panel"></aside>
+  <div id="modal"></div>
+
+  <script>
+    const q = new URLSearchParams(location.search);
+    const SCENES = ['styles', 'font', 'leave', 'tune', 'cascade'];
+    let scene = SCENES.includes(q.get('scene')) ? q.get('scene') : 'styles';
+
+    /*
+     * Fonts. Web fonts are loaded from Google Fonts for the mock; Fraunces with its OpenType
+     * features so Numbers & letters has something to show.
+     */
+    const FONTS = [
+      { name: 'Fraunces', tag: 'In this page · variable', web: true },
+      { name: 'Inter', tag: 'In this page', web: true },
+      { name: 'Georgia', tag: 'System' },
+      { name: 'Hoefler Text', tag: 'System' },
+      { name: 'Playfair Display', tag: 'Web font · Google', web: true },
+      { name: 'DM Serif Display', tag: 'Web font · Google', web: true },
+      { name: 'Instrument Serif', tag: 'Web font · Google', web: true },
+      { name: 'Space Grotesk', tag: 'Web font · Google', web: true },
+      { name: 'Caveat', tag: 'Web font · Google', web: true },
+    ];
+    for (const f of FONTS.filter((one) => one.web)) {
+      const link = document.createElement('link');
+      link.rel = 'stylesheet';
+      link.href = `https://fonts.googleapis.com/css2?family=${encodeURIComponent(f.name)}${f.name === 'Fraunces' ? ':ital,opsz,wght@0,9..144,300..900;1,9..144,300..900' : ''}&display=swap`;
+      document.head.append(link);
+    }
+    const STYLES = [
+      { name: 'Display', used: 1, d: { family: 'Fraunces', size: 48, weight: 600, lh: 1.05, ls: -0.02 } },
+      { name: 'Heading 1', used: 4, d: { family: 'Fraunces', size: 36, weight: 600, lh: 1.1, ls: -0.01 } },
+      { name: 'Heading 2', used: 7, d: { family: 'Fraunces', size: 28, weight: 600, lh: 1.15, ls: 0 } },
+      { name: 'Body', used: 23, d: { family: 'Georgia', size: 16, weight: 400, lh: 1.6, ls: 0 } },
+      { name: 'Caption', used: 9, d: { family: 'Inter', size: 12, weight: 500, lh: 1.4, ls: 0.02 } },
+      { name: 'Overline', used: 3, d: { family: 'Inter', size: 12, weight: 600, lh: 1, ls: 0.14, tt: 'uppercase' } },
+    ];
+    const BASE = { color: '#1c1917', style: 'normal', deco: 'none', decoStyle: 'solid', decoColor: '#a16207', decoThick: 2, decoOff: 4, align: 'left', tt: 'none', ws: 0, stroke: 0, strokeColor: '#1c1917', shadow: [],
+      wrap: 'wrap', hyph: 'manual', indent: 0, figShape: 'normal', figWidth: 'normal', frac: 'normal', caps: 'normal', liga: 'normal' };
+    const s = { from: 'Heading 1', own: { ls: -0.02, deco: 'underline', decoStyle: 'wavy', shadow: [{ x: 0, y: 2, blur: 0, color: 'rgb(161 98 7 / 35%)' }] }, hover: null, pending: null };
+    const edited = () => Object.keys(s.own).length > 0;
+    const styleOf = (n) => STYLES.find((one) => one.name === n);
+    const vals = () => ({ ...BASE, ...styleOf(s.from)?.d, ...s.own });
+    const stack = (fam) => `'${fam}', Georgia, serif`;
+
+    /** The real property behind each row, for the cascade popover. */
+    const CSS_NAME = { color: 'color', family: 'font-family', weight: 'font-weight', style: 'font-style', deco: 'text-decoration-line', decoStyle: 'text-decoration-style', decoThick: 'text-decoration-thickness', decoOff: 'text-underline-offset', decoColor: 'text-decoration-color', align: 'text-align', tt: 'text-transform', size: 'font-size', lh: 'line-height', ls: 'letter-spacing', ws: 'word-spacing', stroke: '-webkit-text-stroke', shadow: 'text-shadow' };
+
+    function paint() {
+      const v = vals();
+      const el = document.getElementById('target');
+      Object.assign(el.style, {
+        color: v.color, fontFamily: stack(s.hover ?? v.family), fontWeight: v.weight, fontStyle: v.style,
+        textDecorationLine: v.deco, textDecorationStyle: v.decoStyle, textDecorationColor: v.decoColor, textDecorationThickness: `${v.decoThick}px`, textUnderlineOffset: `${v.decoOff}px`,
+        textAlign: v.align, textTransform: v.tt, fontSize: `${v.size}px`, lineHeight: v.lh, letterSpacing: `${v.ls}em`, wordSpacing: `${v.ws}em`,
+        webkitTextStroke: v.stroke ? `${v.stroke}px ${v.strokeColor}` : '', textShadow: v.shadow.length ? v.shadow.map((o) => `${o.x}px ${o.y}px ${o.blur}px ${o.color}`).join(', ') : 'none',
+        textWrap: v.wrap, hyphens: v.hyph, textIndent: `${v.indent}em`,
+        fontVariantNumeric: [v.figShape, v.figWidth, v.frac].filter((one) => one !== 'normal').join(' ') || 'normal', fontVariantCaps: v.caps, fontVariantLigatures: v.liga,
+      });
+      const badge = document.getElementById('badge');
+      badge.hidden = !s.hover;
+      badge.textContent = s.hover ? `Previewing ${s.hover} · nothing written` : '';
+    }
+
+    // ------------------------------------------------------------------ controls
+    const isSet = (k) => k in s.own || k in (styleOf(s.from)?.d ?? {});
+    const row = (k, label, field, sub = false) => `<div class="row${sub ? ' sub' : ''}"><span class="dot${isSet(k) ? '' : ' off'}"></span><button class="name" type="button" data-cascade="${k}" title="${CSS_NAME[k]} — click for where it comes from">${label}</button><div style="min-width:0">${field}</div><button class="kill${isSet(k) ? '' : ' off'}" type="button" title="Remove ${CSS_NAME[k]}">🗑</button></div>`;
+    const length = (v, unit, token) => `<div class="vf"><span class="scrub" title="Drag to change"></span><input value="${v}" aria-label="value">${token ? `<span class="tok">${token}</span>` : ''}<span class="unit">${unit}</span><span class="chev">⌄</span></div>`;
+    const plain = (v) => `<div class="vf"><input value="${v}" aria-label="value"><span class="chev">⌄</span></div>`;
+    const color = (v) => `<div class="vf"><span class="sw" style="background:${v}"></span><input value="${v}" aria-label="color"><span class="chev">⌄</span></div>`;
+    const seg = (k, v, opts) => `<div class="seg">${opts.map(([o, t, title]) => `<button type="button" data-seg="${k}" data-v="${o}" aria-pressed="${String(v) === String(o)}" title="${title ?? o}">${t}</button>`).join('')}</div>`;
+    const ALIGN = (lines) => `<svg viewBox="0 0 16 12" aria-hidden="true">${lines.map(([x, w], i) => `<rect x="${x}" y="${i * 4 + 0.5}" width="${w}" height="2" rx="1" fill="currentColor"/>`).join('')}</svg>`;
+
+    function rows() {
+      const v = vals();
+      const sh = v.shadow;
+      const shText = sh.length ? sh.map((o) => `${o.x}px ${o.y}px ${o.blur}px ${o.color}`).join(', ') : 'none';
+      const weightName = { 300: 'Light', 400: 'Regular', 500: 'Medium', 600: 'Semibold', 700: 'Bold' }[v.weight];
+      return `
+        ${row('color', 'Color', color(v.color))}
+        ${row('family', 'Font', `<div class="vf fam" data-open-font style="--fam:${stack(v.family).replace(/"/g, "'")}" title="Pick a font; fallbacks are in the picker"><span class="v">${v.family}</span><span class="fb">+ 2 fallbacks</span><span class="chev">⌄</span></div>`)}
+        ${row('weight', 'Weight', plain(`${v.weight} ${weightName}`))}
+        ${row('style', 'Style', seg('style', v.style, [['normal', 'Upright'], ['italic', '<i>Italic</i>']]))}
+        ${row('deco', 'Line', seg('deco', v.deco, [['none', 'None'], ['underline', '<u>Under</u>', 'underline'], ['line-through', '<s>Through</s>', 'line-through'], ['overline', '<span style="text-decoration:overline">Over</span>', 'overline']]))}
+        ${v.deco !== 'none' ? `${row('decoStyle', 'Line style', seg('decoStyle', v.decoStyle, [['solid', '—'], ['dotted', '⋯'], ['dashed', '- -'], ['wavy', '∿'], ['double', '═']]), true)}
+          ${row('decoThick', 'Line thickness', length(v.decoThick, 'px'), true)}
+          ${row('decoOff', 'Line distance', length(v.decoOff, 'px'), true)}
+          ${row('decoColor', 'Line color', color(v.decoColor), true)}` : ''}
+        ${row('align', 'Align', seg('align', v.align, [['left', ALIGN([[0, 16], [0, 10], [0, 13]]), 'left'], ['center', ALIGN([[0, 16], [3, 10], [1.5, 13]]), 'center'], ['right', ALIGN([[0, 16], [6, 10], [3, 13]]), 'right'], ['justify', ALIGN([[0, 16], [0, 16], [0, 16]]), 'justify']]))}
+        ${row('tt', 'Case', seg('tt', v.tt, [['none', 'As typed'], ['uppercase', 'AA', 'uppercase'], ['lowercase', 'aa', 'lowercase'], ['capitalize', 'Aa', 'capitalize']]))}
+        ${row('size', 'Size', length(v.size, 'px', v.size === 36 ? '3xl' : ''))}
+        ${row('lh', 'Line height', plain(v.lh))}
+        ${row('ls', 'Letter spacing', length(v.ls, 'em'))}
+        ${row('ws', 'Word spacing', length(v.ws, 'em'))}
+        ${row('stroke', 'Outline', `<div class="pair" title="An outline around each letter. With a transparent color, only the outline shows.">${length(v.stroke, 'px')}${color(v.strokeColor)}</div>`)}
+        ${row('shadow', 'Shadow', `<div class="vf"><span class="opener" title="Open the shadow editor" style="text-shadow:${sh.length ? `${sh[0].x / 3}px ${sh[0].y / 3}px ${sh[0].blur / 3}px ${sh[0].color}` : 'none'}">A</span><input value="${shText}" aria-label="Shadow"><span class="chev">⌄</span></div>`)}`;
+    }
+
+    function stylesList() {
+      const v = vals();
+      return `<div class="styles">
+        ${edited() ? `<div class="srow mine" aria-current="true"><span class="p" style="font-family:${stack(v.family)};font-size:20px;font-weight:${v.weight};letter-spacing:${v.ls}em;text-decoration:${v.deco} ${v.decoStyle} ${v.decoColor};text-shadow:${v.shadow.map((o) => `${o.x}px ${o.y}px ${o.blur}px ${o.color}`).join(', ') || 'none'}">This heading</span><span class="m">edited from ${s.from} · not saved</span></div>` : ''}
+        ${STYLES.map((t) => `<div class="srow" data-style="${t.name}" aria-current="${!edited() && t.name === s.from}">
+          <span class="p" style="font-family:${stack(t.d.family)};font-size:${Math.min(22, t.d.size)}px;font-weight:${t.d.weight};letter-spacing:${t.d.ls}em;text-transform:${t.d.tt ?? 'none'}">${t.name}</span>
+          <span class="m">${t.d.size}/${t.d.lh} · ${t.used}×</span></div>`).join('')}</div>
+        ${edited() ? `<div class="mineactions"><button class="btn primary" type="button">Save as text style…</button></div>` : ''}`;
+    }
+
+    // ------------------------------------------------------------------ fine-tuning, measured
+    const WRAP_TEXT = 'Saturday workshops for beginners, by the wheel and the kiln, every week';
+    function tune() {
+      const v = vals();
+      const pic = (k, val, cap, inner, extra = '') => `<button class="pic" type="button" data-seg="${k}" data-v="${val}" data-pic="${k}:${val}" aria-pressed="${String(v[k]) === String(val)}" ${extra}>${inner}<span class="cap">${cap}</span></button>`;
+      const wrapBox = (mode) => `<span class="box" data-wrapdemo="${mode}" style="text-wrap:${mode};font:600 12px/1.3 Georgia, serif">${WRAP_TEXT}</span>`;
+      const fig = (css) => `<span class="figs" style="font-variant-numeric:${css}"><span>€11.10</span><span>€48.00</span><span>€71.11</span></span>`;
+      return `
+        <div class="group">Line breaks</div>
+        <div class="opt"><div class="what">Breaking lines <span>text-wrap</span></div><div class="pics">
+          ${pic('wrap', 'wrap', 'As it comes', wrapBox('wrap'))}${pic('wrap', 'balance', 'Even lines', wrapBox('balance'))}${pic('wrap', 'pretty', 'No lone last word', wrapBox('pretty'))}</div>
+          <p class="hint">Highlighted: a word alone on its line. Even lines suit headings; no lone last word suits paragraphs.</p></div>
+        <div class="opt"><div class="what">Long words at the edge <span>hyphens</span></div><div class="pics" style="--n:2">
+          ${pic('hyph', 'manual', 'Move the word', `<span class="box" lang="en" style="width:86px;hyphens:manual;font:400 12px/1.3 Georgia">Our pottery uncomplicatedly welcomes everyone</span>`)}
+          ${pic('hyph', 'auto', 'Split with a hyphen', `<span class="box" lang="en" style="width:86px;hyphens:auto;font:400 12px/1.3 Georgia">Our pottery uncomplicatedly welcomes everyone</span>`)}</div></div>
+        <div class="opt"><div class="what">First line <span>text-indent</span></div><div class="pics" style="--n:2">
+          ${pic('indent', 0, 'Flush', `<span class="box" style="width:120px;font:400 12px/1.3 Georgia">Saturday workshops for beginners, wheel and kiln.</span>`)}
+          ${pic('indent', 1.5, 'Indented', `<span class="box" style="width:120px;font:400 12px/1.3 Georgia;text-indent:1.5em">Saturday workshops for beginners, wheel and kiln.</span>`)}</div></div>
+        <div class="group" data-letters>Numbers &amp; letters <span style="order:2;text-transform:none;letter-spacing:0;font-weight:500">in ${v.family}</span></div>
+        <p class="hint" data-letters-note>Only what ${v.family} can draw differently is offered.</p>
+        <div class="opt"><div class="what">Number shape <span>font-variant-numeric</span></div><div class="pics" style="--n:2">
+          ${pic('figShape', 'lining-nums', 'Like capitals', `<span class="big" style="font-variant-numeric:lining-nums">1987 · 365</span>`, 'data-measure="figShape"')}
+          ${pic('figShape', 'oldstyle-nums', 'Like lowercase', `<span class="big" style="font-variant-numeric:oldstyle-nums">1987 · 365</span>`, 'data-measure="figShape"')}</div></div>
+        <div class="opt"><div class="what">Number width <span>font-variant-numeric</span></div><div class="pics" style="--n:2">
+          ${pic('figWidth', 'proportional-nums', 'Each its own width', fig('proportional-nums lining-nums'), 'data-measure="figWidth"')}
+          ${pic('figWidth', 'tabular-nums', 'All one width', fig('tabular-nums lining-nums'), 'data-measure="figWidth"')}</div>
+          <p class="hint">The bars mark where each price ends: they line up only when every figure is one width.</p></div>
+        <div class="opt"><div class="what">Fractions <span>font-variant-numeric</span></div><div class="pics" style="--n:2">
+          ${pic('frac', 'normal', 'As typed', `<span class="big">3 1/2 hours</span>`, 'data-measure="frac"')}
+          ${pic('frac', 'diagonal-fractions', 'Real fractions', `<span class="big" style="font-variant-numeric:diagonal-fractions">3 1/2 hours</span>`, 'data-measure="frac"')}</div></div>
+        <div class="opt"><div class="what">Small capitals <span>font-variant-caps</span></div><div class="pics" style="--n:2">
+          ${pic('caps', 'normal', 'Off', `<span class="big">Studio Journal</span>`, 'data-measure="caps"')}
+          ${pic('caps', 'small-caps', 'On', `<span class="big" style="font-variant-caps:small-caps">Studio Journal</span>`, 'data-measure="caps"')}</div></div>
+        <div class="opt"><div class="what">Joined letters <span>font-variant-ligatures</span></div><div class="pics" style="--n:2">
+          ${pic('liga', 'normal', 'Joined', `<span class="big" style="font-size:24px">office · fifty · flow</span>`, 'data-measure="liga"')}
+          ${pic('liga', 'none', 'Separate', `<span class="big" style="font-size:24px;font-variant-ligatures:none">office · fifty · flow</span>`, 'data-measure="liga"')}</div></div>`;
+    }
+
+    /*
+     * Make each sample show its difference, measured.
+     * - text-wrap: the width at which the three modes break the text three different ways, plain
+     *   wrapping leaving a lone last word.
+     * - Numbers & letters: drawn in the element's font; a pair the font draws identically (same
+     *   width, same lines) is not offered, and the group goes when nothing is left.
+     */
+    function fitDemos() {
+      const boxes = Array.from(document.querySelectorAll('[data-wrapdemo]'));
+      if (boxes.length) {
+        const words = WRAP_TEXT.split(' ');
+        const lines = (el) => {
+          el.innerHTML = words.map((w) => `<span>${w}</span>`).join(' ');
+          const tops = Array.from(el.children).map((sp) => sp.offsetTop);
+          const out = [];
+          tops.forEach((t, i) => { if (!out.length || out.at(-1).top !== t) out.push({ top: t, n: 0 }); out.at(-1).n += 1; });
+          return out.map((one) => one.n);
+        };
+        let chosen = 104;
+        for (let w = 80; w <= 112; w += 1) {
+          boxes.forEach((b) => (b.style.width = `${w}px`));
+          const sig = boxes.map((b) => lines(b).join(','));
+          if (new Set(sig).size === 3 && lines(boxes[0]).at(-1) === 1) { chosen = w; break; }
+        }
+        for (const b of boxes) {
+          b.style.width = `${chosen}px`;
+          lines(b);
+          // Only a lone last word: a narrow box may put any long word on a line of its own.
+          const kids = Array.from(b.children);
+          const last = kids.filter((k) => k.offsetTop === kids.at(-1).offsetTop);
+          if (last.length === 1) last[0].classList.add('lone');
+        }
+      }
+      const font = stack(vals().family);
+      document.querySelectorAll('.pic').forEach((p) => p.style.setProperty('--demo-font', font));
+      document.querySelectorAll('.pic .big').forEach((b) => (b.style.fontFamily = font));
+      for (const key of ['figShape', 'figWidth', 'frac', 'caps', 'liga']) {
+        const pair = Array.from(document.querySelectorAll(`[data-measure="${key}"]`));
+        if (pair.length !== 2) continue;
+        // The text's own box, through a range: the sample is a grid item stretched to its cell, so
+        // its box is the cell's whatever the font draws.
+        const ink = (node) => { const r = document.createRange(); r.selectNodeContents(node); const b = r.getBoundingClientRect(); return `${Math.round(b.width * 10)}x${Math.round(b.height)}`; };
+        const shape = (p) => {
+          const el = p.querySelector('.big, .figs');
+          const parts = el.querySelectorAll('span');
+          return (parts.length ? Array.from(parts) : [el]).map(ink).join(',');
+        };
+        // A choice this font does not have is not offered: the option goes, and the group with it
+        // when nothing is left.
+        pair[0].closest('.opt').hidden = shape(pair[0]) === shape(pair[1]);
+      }
+      const letters = document.querySelector('[data-letters]');
+      if (letters) {
+        const left = Array.from(document.querySelectorAll('[data-measure]')).filter((one) => !one.closest('.opt').hidden).length;
+        letters.hidden = left === 0;
+        document.querySelector('[data-letters-note]').hidden = left === 0;
+      }
+    }
+
+    // ------------------------------------------------------------------ popovers and dialog
+    function fontPicker() {
+      const v = vals();
+      return `<div class="pop" style="top:${s.popTop}px" role="dialog" aria-label="Font">
+        <div class="phead"><span class="t">Font</span><span class="sp"></span><button class="x2" type="button" data-close aria-label="Close">✕</button></div>
+        <div class="vf"><input placeholder="Search fonts" aria-label="Search fonts"></div>
+        <div class="flist" role="listbox">${FONTS.map((f) => `<div class="fi${s.hover === f.name ? ' hover' : ''}" role="option" data-font="${f.name}" aria-current="${f.name === v.family}"><span class="nm" style="font-family:'${f.name}', Georgia, serif">${f.name}</span><span class="tag">${f.tag}</span></div>`).join('')}</div>
+        <div class="fbbox"><div class="group" style="margin:0">If ${v.family} is not there yet</div>
+          <div class="chain"><span class="chip first" style="--fam:'${v.family}'">${v.family}</span>→<span class="chip" style="--fam:Georgia">Georgia ✕</span>→<span class="chip generic" style="--fam:serif">any serif ✕</span><span class="chip add">+ add</span></div></div>
+        <p class="hint">Hover a font: the heading shows it at once. Click to pick it; nothing is written before.</p>
+      </div>`;
+    }
+    function cascadePop() {
+      const k = s.cascadeKey;
+      const prop = CSS_NAME[k];
+      const v = vals();
+      const own = k in s.own;
+      const inStyle = k in (styleOf(s.from)?.d ?? {});
+      const shown = (val) => (k === 'shadow' ? val.map((o) => `${o.x}px ${o.y}px ${o.blur}px ${o.color}`).join(', ') : k === 'ls' || k === 'ws' ? `${val}em` : k === 'decoThick' || k === 'decoOff' || k === 'size' ? `${val}px` : val);
+      return `<div class="pop" style="top:${s.popTop}px" role="dialog" aria-label="${prop}">
+        <div class="phead"><span class="t">${{ ls: 'Letter spacing', deco: 'Line', decoThick: 'Line thickness', decoOff: 'Line distance', decoStyle: 'Line style', decoColor: 'Line color', size: 'Size', shadow: 'Shadow', align: 'Align', tt: 'Case' }[k] ?? k}</span><span class="s2">${prop}</span><span class="sp"></span><button class="x2" type="button" data-close aria-label="Close">✕</button></div>
+        <div class="casc">
+          ${own ? `<div class="crow win"><span>●</span><span>${shown(v[k])}</span><span class="src">.journal h2 · this element, unsaved</span></div>` : ''}
+          ${inStyle ? `<div class="crow ${own ? 'lost' : 'win'}"><span>●</span><span>${shown(styleOf(s.from).d[k])}</span><span class="src">.text-heading-1 · ${s.from}</span></div>` : ''}
+          <div class="crow lost"><span>○</span><span>${BASE[k] === undefined ? 'normal' : shown(BASE[k])}</span><span class="src">initial</span></div>
+        </div>
+        <p class="hint">The editor calls it <b>${{ ls: 'Letter spacing', decoThick: 'Line thickness', decoOff: 'Line distance' }[k] ?? 'by what it does'}</b>; in CSS it is <b>${prop}</b>. The cascade popover the panel already has, opened from the name.</p>
+      </div>`;
+    }
+    const slug = (name) => `text-${name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}`;
+    const look = (d, extra = '') => `font-family:${stack(d.family)};font-weight:${d.weight};letter-spacing:${d.ls}em;text-transform:${d.tt ?? 'none'};${extra}`;
+    function leaveDialog() {
+      const v = vals();
+      const to = styleOf(s.pending);
+      const typed = (s.name ?? '').trim();
+      const hit = STYLES.find((one) => one.name.toLowerCase() === typed.toLowerCase());
+      const mineExtra = `text-decoration:${v.deco} ${v.decoStyle} ${v.decoColor};text-shadow:${v.shadow.map((o) => `${o.x}px ${o.y}px ${o.blur}px ${o.color}`).join(', ') || 'none'}`;
+      return `<div class="scrim"><div class="confirm" role="dialog" aria-label="Save your changes" style="width:420px">
+        <h3>Save your changes?</h3>
+        <p class="hint" style="font-size:12px">This heading has <b>${Object.keys(s.own).length} changes</b> from ${s.from}, not saved as a text style. Save them before switching to <b>${to.name}</b>, or discard them.</p>
+        <div class="vf"><input value="${s.name}" data-name aria-label="Text style name" placeholder="A new name, or one to replace"><span class="chev">⌄</span></div>
+        <div class="ac" role="listbox" style="display:grid;gap:1px;max-height:200px;overflow:auto;border:1px solid var(--heo-line);border-radius:7px;padding:3px">
+          ${typed && !hit ? `<div class="acrow" data-pickname="${typed}" aria-selected="true" style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;padding:5px 7px;border-radius:5px;background:var(--heo-hover)"><span style="color:var(--heo-accent);font-size:12px">+ New: “${typed}”</span><span class="hint" style="font-family:var(--mono)">.${slug(typed)}</span></div>` : ''}
+          ${STYLES.map((t) => `<div class="acrow" data-pickname="${t.name}" aria-selected="${hit?.name === t.name}" style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;padding:5px 7px;border-radius:5px;cursor:pointer;${hit?.name === t.name ? 'background:var(--heo-hover)' : ''}">
+            <span style="${look(t.d)}font-size:${Math.min(17, t.d.size)}px;color:var(--ink);overflow:hidden;white-space:nowrap;text-overflow:ellipsis">${t.name}</span><span class="hint" style="font-family:var(--mono)">replace · ${t.used}×</span></div>`).join('')}
+        </div>
+        ${hit
+          ? `<div style="display:grid;gap:6px;padding:8px;border-radius:7px;border:1px solid color-mix(in oklab, var(--heo-warn) 40%, transparent);background:color-mix(in oklab, var(--heo-warn) 8%, transparent)">
+              <p class="hint" style="color:var(--heo-warn)"><b>${hit.name}</b> is used by <b>${hit.used} elements</b>. Saving replaces it: all ${hit.used} change to this look.</p>
+              <div class="cmp"><div style="${look(hit.d)}font-size:17px;line-height:1.1">Clay remembers<small>${hit.name} now</small></div><div style="${look(v, mineExtra)}font-size:17px;line-height:1.1">Clay remembers<small>after saving</small></div></div></div>`
+          : `<p class="hint">A new text style, <b>.${slug(typed || '…')}</b>, in the design system. This heading uses it, then switches to ${to.name}.</p>`}
+        <div class="acts"><button class="btn" type="button" data-stay>Cancel</button><button class="btn danger" type="button" data-discard>Discard changes</button><button class="btn primary" type="button" data-savefirst ${typed ? '' : 'disabled'} style="${hit ? 'background:var(--heo-danger);border-color:var(--heo-danger)' : ''}">${hit ? `Replace ${hit.name}` : 'Save'}</button></div>
+      </div></div>`;
+    }
+
+    // ------------------------------------------------------------------ render
+    function render() {
+      document.querySelectorAll('[data-scene]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.scene === scene)));
+      const showTune = scene === 'tune' || s.tune;
+      document.getElementById('panel').innerHTML = `<div class="ptabs"><span class="on">Styles</span><span>Tokens</span><span>Tree</span><span>Library</span></div>
+        <div class="sec"><div class="sechead">▸ Layout</div></div>
+        <div class="sec"><div class="sechead">▾ Typography <span class="n">${edited() ? 'unsaved text style' : s.from}</span></div><div class="body">
+          <div class="group">Text style</div>${stylesList()}
+          <div class="group">Properties</div>${rows()}
+          <button class="more" type="button" data-tune>${showTune ? 'Hide fine-tuning ▴' : 'Fine-tuning: line breaks, numbers & letters ▾'}</button>
+          ${showTune ? tune() : ''}
+        </div>${s.pop === 'font' ? fontPicker() : s.pop === 'cascade' ? cascadePop() : ''}</div>
+        <div class="sec"><div class="sechead">▸ Effects</div></div>`;
+      document.getElementById('modal').innerHTML = s.pending ? leaveDialog() : '';
+      paint();
+      fitDemos();
+      const v = vals();
+      document.getElementById('out').innerHTML = `<span class="c">/* ${edited() ? `edited from ${s.from}, on this element, unsaved` : s.from} */</span>\nh2 {\n${Object.entries(s.own).map(([k, val]) => `  <b>${CSS_NAME[k] ?? k}</b>: ${k === 'shadow' ? val.map((o) => `${o.x}px ${o.y}px ${o.blur}px ${o.color}`).join(', ') : k === 'ls' ? `${val}em` : val};`).join('\n')}\n}`;
+      document.getElementById('question').innerHTML = {
+        styles: 'Rows are named for what they do. Click a name for its CSS property and cascade. Line, Align and Case have their own controls.',
+        font: 'Hover a font in the list: the heading restyles at once (the badge says it is a preview). Each name is drawn in its own font.',
+        leave: 'Picking Heading 2 with unsaved changes opens <b>Save your changes</b>: a proposed name, the styles it could replace (previewed, with a warning and both looks when one is picked), and Cancel, Discard changes or Save.',
+        tune: 'Each sample is set up to show its difference. The wrap width is found by measuring; a feature this font does not have is not offered.',
+        cascade: 'Clicking "Letter spacing" opens the panel\'s cascade popover: the real property, letter-spacing, and each place a value comes from.',
+      }[scene];
+      const url = new URL(location.href);
+      url.searchParams.set('scene', scene);
+      history.replaceState(null, '', url);
+    }
+
+    function setScene(next) {
+      scene = next;
+      s.pop = null; s.pending = null; s.hover = null; s.tune = false;
+      if (next === 'font') { s.pop = 'font'; s.popTop = 560; s.hover = 'Playfair Display'; }
+      if (next === 'leave') { s.pending = 'Heading 2'; s.name = q.get('name') ?? `${s.from} alt`; }
+      // Hoefler Text has the number and letter variants (measured); the Google-served Fraunces has
+      // none of the number ones, so most of the group would be hidden.
+      if (next === 'tune') s.own.family = 'Hoefler Text';
+      else delete s.own.family;
+      if (next === 'cascade') { s.pop = 'cascade'; s.cascadeKey = 'ls'; s.popTop = 700; }
+      render();
+    }
+
+    document.addEventListener('click', (e) => {
+      const t = e.target.closest('button, [data-style], [data-font], [data-open-font], [data-pickname]');
+      if (!t) return;
+      const d = t.dataset;
+      if (d.scene) { setScene(d.scene); return; }
+      const panel = document.getElementById('panel');
+      const below = () => t.getBoundingClientRect().bottom - panel.getBoundingClientRect().top + panel.scrollTop + 6;
+      if (t.hasAttribute('data-open-font')) { s.pop = s.pop === 'font' ? null : 'font'; s.popTop = below(); render(); return; }
+      if (d.cascade) { s.pop = 'cascade'; s.cascadeKey = d.cascade; s.popTop = below(); render(); return; }
+      if (t.hasAttribute('data-close')) { s.pop = null; s.hover = null; render(); return; }
+      if (d.font) { s.own.family = d.font; s.pop = null; s.hover = null; render(); return; }
+      if (d.style) {
+        // Unsaved edits: ask before they go.
+        if (edited()) { s.pending = d.style; s.name = `${s.from} alt`; render(); return; }
+        s.from = d.style; render(); return;
+      }
+      if (t.hasAttribute('data-stay')) { s.pending = null; render(); return; }
+      if (t.hasAttribute('data-discard')) { s.from = s.pending; s.own = {}; s.pending = null; render(); return; }
+      if (d.pickname) { s.name = d.pickname; render(); return; }
+      if (t.hasAttribute('data-savefirst')) {
+        // Saved as named (a new style, or one replaced), then on to the style that was picked.
+        const typed = s.name.trim();
+        const v = vals();
+        const kept = { family: v.family, size: v.size, weight: v.weight, lh: v.lh, ls: v.ls, ...(v.tt !== 'none' ? { tt: v.tt } : {}) };
+        const hit = STYLES.find((one) => one.name.toLowerCase() === typed.toLowerCase());
+        if (hit) hit.d = kept; else STYLES.push({ name: typed, used: 1, d: kept });
+        s.from = s.pending; s.own = {}; s.pending = null; render(); return;
+      }
+      if (t.hasAttribute('data-tune')) { s.tune = !(scene === 'tune' || s.tune); if (scene === 'tune') scene = 'styles'; render(); return; }
+      if (d.seg) {
+        if (t.classList.contains('same')) return;
+        const raw = d.v; s.own[d.seg] = /^-?\d+(\.\d+)?$/.test(raw) ? Number(raw) : raw; render();
+      }
+    });
+    // Hovering a font restyles the heading live; leaving the list puts it back.
+    document.addEventListener('pointerover', (e) => {
+      const f = e.target.closest?.('[data-font]');
+      if (f && s.hover !== f.dataset.font) { s.hover = f.dataset.font; document.querySelectorAll('.fi').forEach((one) => one.classList.toggle('hover', one === f)); paint(); }
+    });
+    document.addEventListener('pointerout', (e) => {
+      if (e.target.closest?.('.flist') && !e.relatedTarget?.closest?.('.flist')) { s.hover = null; document.querySelectorAll('.fi.hover').forEach((one) => one.classList.remove('hover')); paint(); }
+    });
+    document.addEventListener('input', (e) => {
+      if (e.target.dataset.name === undefined) return;
+      s.name = e.target.value;
+      render();
+      const input = document.querySelector('[data-name]');
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    });
+    addEventListener('keydown', (e) => { if (e.key === 'Escape') { s.pop = null; s.pending = null; s.hover = null; render(); } });
+    document.fonts.ready.then(() => render());
+    setScene(scene);
+  </script>
+</body>
+</html>

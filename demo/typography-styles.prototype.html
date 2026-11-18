@@ -1,0 +1,1160 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PROTOTYPE — Typography: text styles, round three</title>
+  <!--
+  PROTOTYPE — throwaway, not part of the overlay build. Open the file directly in a browser.
+
+  Round three, from round two's design A, with the feedback:
+    - every property is an HEO property row: dot, CSS name, the value field the panel already uses
+      (scrub handle and unit chip for lengths, swatch for colors, segmented control for a handful of
+      keywords, chevron for the list) and the trash;
+    - order: color, font-family, font-weight, font-style, text-decoration (and its details), size,
+      line height, letter and word spacing, align, case, then -webkit-text-stroke and text-shadow
+      together at the end;
+    - text-shadow is the field the panel already has, its opener on the left, opening the existing
+      shadow editor (shown here as it is drawn);
+    - fine-tuning keeps only what can be seen: line breaks, hyphens, first-line indent, numbers.
+      Each sample is set up so the difference is on screen (the narrowest width where a lone word
+      falls to the last line, a long word at the edge, figures that do not line up);
+    - no "N differ from…" box. Editing anything leaves the text style: the list then shows the
+      element's own, unsaved, and "Save as text style…" names it — a new name, or an existing one
+      to replace, with a preview of each and a warning on replacing;
+    - Tokens › Text styles edits a style with the very same rows.
+  Scenes (top switch, ?scene=): styles | save | tokens. Fine-tuning shown with ?tune=1.
+  One structure this round, so no variant bar.
+-->
+  <style>
+    :root {
+      /* HEO's light theme, approximately. */
+      --heo-bg: #ffffff;
+      --heo-raised: #ffffff;
+      --heo-sunken: #f4f5f8;
+      --heo-hover: #eff1f5;
+      --heo-text: #1f2330;
+      --heo-text-dim: #4b5263;
+      --heo-text-faint: #6b7385;
+      --heo-line: #e3e6ec;
+      --heo-line-strong: #d3d7e0;
+      --heo-accent: #6366f1;
+      --heo-accent-soft: color-mix(in oklab, var(--heo-accent) 14%, transparent);
+      --heo-accent-line: color-mix(in oklab, var(--heo-accent) 50%, transparent);
+      --heo-danger: #e11d48;
+      --heo-warn: #b45309;
+      --heo-r-sm: 7px;
+      --font: Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+      --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+      --paper: #fffdf8;
+      --ink: #1c1917;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      height: 100%;
+    }
+
+    body {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 400px;
+      font-family: var(--font);
+      background: #e9ecf2;
+      color: var(--heo-text);
+    }
+
+    button,
+    input,
+    select {
+      font: inherit;
+    }
+
+    .stage {
+      padding: 24px 32px 60px;
+      overflow: auto;
+    }
+
+    .stage h1 {
+      font: 600 11px/1 var(--font);
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: #64748b;
+      margin: 0 0 12px;
+    }
+
+    .scene {
+      display: inline-flex;
+      gap: 2px;
+      padding: 2px;
+      border-radius: 8px;
+      background: #dfe3ea;
+      margin-bottom: 14px;
+    }
+
+    .scene button {
+      all: unset;
+      padding: 5px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      color: #475569;
+      cursor: pointer;
+    }
+
+    .scene button[aria-pressed=true] {
+      background: #fff;
+      color: #111827;
+      font-weight: 600;
+      box-shadow: 0 1px 2px rgb(0 0 0 / 10%);
+    }
+
+    .site {
+      border-radius: 14px;
+      background: var(--paper);
+      padding: 36px 40px;
+      border: 1px solid #e7e2d6;
+    }
+
+    .site .kicker {
+      font: 600 12px/1 system-ui;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+      color: #a16207;
+      margin-bottom: 12px;
+    }
+
+    #target {
+      margin: 0 0 14px;
+      outline: 2px solid var(--heo-accent);
+      outline-offset: 6px;
+    }
+
+    .site p {
+      margin: 0;
+      color: #57534e;
+      font: 16px/1.6 Georgia, serif;
+      max-width: 520px;
+    }
+
+    .out {
+      margin-top: 16px;
+      background: #111827;
+      color: #e5e7eb;
+      border-radius: 10px;
+      padding: 12px 14px;
+      font: 11.5px/1.6 var(--mono);
+      white-space: pre-wrap;
+    }
+
+    .out b {
+      color: #a5b4fc;
+      font-weight: 500;
+    }
+
+    .out .c {
+      color: #8b93a5;
+    }
+
+    .out .h {
+      color: #fbbf24;
+    }
+
+    .question {
+      margin-top: 12px;
+      color: #475569;
+      font-size: 13px;
+      line-height: 1.5;
+      max-width: 720px;
+    }
+
+    /* ---- the panel, drawn with HEO's own pieces ---- */
+    .panel {
+      position: relative;
+      background: var(--heo-bg);
+      border-left: 1px solid var(--heo-line);
+      padding: 12px 14px 60px;
+      font-size: 12px;
+      overflow: auto;
+    }
+
+    .ptabs {
+      display: flex;
+      gap: 2px;
+      margin-bottom: 8px;
+    }
+
+    .ptabs span {
+      padding: 4px 9px;
+      border-radius: 6px;
+      font-size: 12px;
+      color: var(--heo-text-dim);
+    }
+
+    .ptabs span.on {
+      background: var(--heo-accent-soft);
+      color: var(--heo-text);
+      font-weight: 600;
+    }
+
+    .sec {
+      border-top: 1px solid var(--heo-line);
+      padding: 10px 0;
+    }
+
+    .sechead {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      font: 600 11px var(--font);
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      color: var(--heo-text-dim);
+    }
+
+    .sechead .n {
+      margin-left: auto;
+      color: var(--heo-text-faint);
+      font-weight: 500;
+    }
+
+    .body {
+      display: grid;
+      gap: 6px;
+      margin-top: 10px;
+      min-width: 0;
+    }
+
+    .group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--heo-text-faint);
+      font-size: 9.5px;
+      font-weight: 600;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      margin-top: 6px;
+    }
+
+    .group::after {
+      content: '';
+      flex: 1;
+      border-top: 1px solid var(--heo-line);
+    }
+
+    /* A property row: dot · name · value field · trash. */
+    .row {
+      display: grid;
+      grid-template-columns: 10px 112px minmax(0, 1fr) 22px;
+      align-items: center;
+      gap: 6px;
+      min-height: 30px;
+    }
+
+    .row.sub {
+      grid-template-columns: 10px 112px minmax(0, 1fr) 22px;
+    }
+
+    .row.sub .name {
+      padding-left: 10px;
+      color: var(--heo-text-faint);
+    }
+
+    .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--heo-accent);
+      justify-self: center;
+    }
+
+    .dot.off {
+      background: transparent;
+    }
+
+    .name {
+      font: 11.5px var(--mono);
+      color: var(--heo-text);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .kill {
+      all: unset;
+      display: grid;
+      place-items: center;
+      width: 22px;
+      height: 24px;
+      border-radius: 5px;
+      color: var(--heo-text-dim);
+      cursor: pointer;
+      font-size: 12px;
+    }
+
+    .kill:hover {
+      color: var(--heo-danger);
+      background: var(--heo-hover);
+    }
+
+    .kill.off {
+      visibility: hidden;
+    }
+
+    /* value field, as heo-value-field draws it */
+    .vf {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      height: 30px;
+      min-width: 0;
+      padding: 0 6px 0 8px;
+      border: 1px solid var(--heo-line-strong);
+      border-radius: var(--heo-r-sm);
+      background: var(--heo-raised);
+    }
+
+    .vf:hover {
+      border-color: var(--heo-accent-line);
+    }
+
+    .vf .v {
+      flex: 1;
+      min-width: 0;
+      font: 12px var(--mono);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .vf input {
+      all: unset;
+      flex: 1;
+      min-width: 0;
+      font: 12px var(--mono);
+    }
+
+    .vf .scrub {
+      width: 12px;
+      height: 4px;
+      border-radius: 2px;
+      background: var(--heo-text-faint);
+      opacity: .7;
+      cursor: ew-resize;
+      flex: none;
+    }
+
+    .vf .unit {
+      padding: 1px 5px;
+      border-radius: 4px;
+      background: var(--heo-sunken);
+      color: var(--heo-text-faint);
+      font: 10.5px var(--mono);
+    }
+
+    .vf .tok {
+      color: var(--heo-accent);
+      font: 10.5px var(--mono);
+    }
+
+    .vf .chev {
+      color: var(--heo-text-faint);
+      font-size: 10px;
+    }
+
+    .vf .sw {
+      width: 16px;
+      height: 16px;
+      border-radius: 4px;
+      border: 1px solid var(--heo-line-strong);
+      flex: none;
+      background-image: linear-gradient(45deg, #ddd 25%, transparent 25%, transparent 75%, #ddd 75%), linear-gradient(45deg, #ddd 25%, transparent 25%, transparent 75%, #ddd 75%);
+      background-size: 6px 6px;
+      background-position: 0 0, 3px 3px;
+    }
+
+    .vf .sw i {
+      display: block;
+      width: 100%;
+      height: 100%;
+      border-radius: 3px;
+    }
+
+    .vf .opener {
+      display: grid;
+      place-items: center;
+      width: 18px;
+      height: 18px;
+      border-radius: 4px;
+      background: color-mix(in oklab, var(--heo-text) 12%, var(--heo-sunken));
+      font: 700 10px/1 system-ui;
+      color: #fff;
+      flex: none;
+      cursor: pointer;
+    }
+
+    .vf.fam .v {
+      font: 14px/1 var(--fam, system-ui);
+    }
+
+    .vf .fb {
+      color: var(--heo-text-faint);
+      font: 10px var(--mono);
+      flex: none;
+    }
+
+    .pair {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 6px;
+      min-width: 0;
+    }
+
+    .seg {
+      display: grid;
+      grid-auto-flow: column;
+      grid-auto-columns: 1fr;
+      height: 30px;
+      padding: 2px;
+      border-radius: var(--heo-r-sm);
+      background: var(--heo-sunken);
+      border: 1px solid var(--heo-line);
+    }
+
+    .seg button {
+      all: unset;
+      text-align: center;
+      border-radius: 5px;
+      font-size: 12px;
+      color: var(--heo-text-dim);
+      cursor: pointer;
+      line-height: 24px;
+    }
+
+    .seg button[aria-pressed=true] {
+      background: var(--heo-raised);
+      color: var(--heo-text);
+      font-weight: 600;
+      box-shadow: 0 1px 2px rgb(0 0 0 / 10%);
+    }
+
+    .hint {
+      color: var(--heo-text-faint);
+      font-size: 10.5px;
+      line-height: 1.45;
+      margin: 0;
+    }
+
+    .hint b {
+      color: var(--heo-text-dim);
+      font-weight: 600;
+    }
+
+    .hint.warn {
+      color: var(--heo-warn);
+    }
+
+    .more {
+      all: unset;
+      color: var(--heo-accent);
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    .btn {
+      all: unset;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      height: 26px;
+      padding: 0 10px;
+      border-radius: var(--heo-r-sm);
+      border: 1px solid var(--heo-line-strong);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      background: var(--heo-raised);
+      white-space: nowrap;
+    }
+
+    .btn.primary {
+      background: var(--heo-accent);
+      border-color: var(--heo-accent);
+      color: #fff;
+    }
+
+    .btn.danger {
+      background: var(--heo-danger);
+      border-color: var(--heo-danger);
+      color: #fff;
+    }
+
+    /* text styles list */
+    .styles {
+      display: grid;
+      gap: 2px;
+    }
+
+    .srow {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 8px;
+      border: 1px solid transparent;
+      border-radius: var(--heo-r-sm);
+      cursor: pointer;
+    }
+
+    .srow:hover {
+      background: var(--heo-hover);
+    }
+
+    .srow[aria-current=true] {
+      border-color: var(--heo-accent-line);
+      background: var(--heo-accent-soft);
+    }
+
+    .srow .p {
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      color: var(--ink);
+    }
+
+    .srow .m {
+      color: var(--heo-text-faint);
+      font: 10px var(--mono);
+      text-align: right;
+    }
+
+    .srow.mine {
+      border-style: dashed;
+      border-color: var(--heo-accent-line);
+    }
+
+    .srow.mine .m {
+      color: var(--heo-accent);
+    }
+
+    .mineactions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 6px;
+    }
+
+    /* the shadow editor, as heo-shadow-editor is drawn today */
+    .dialog {
+      position: absolute;
+      left: 14px;
+      right: 14px;
+      z-index: 20;
+      display: grid;
+      gap: 10px;
+      padding: 10px;
+      border: 1px solid var(--heo-line-strong);
+      border-radius: 12px;
+      background: var(--heo-bg);
+      box-shadow: 0 22px 48px -14px rgb(15 23 42 / 40%);
+    }
+
+    .dhead {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      cursor: grab;
+    }
+
+    .dhead .grip {
+      color: var(--heo-text-faint);
+    }
+
+    .dhead .t {
+      font-weight: 600;
+    }
+
+    .dhead .s2 {
+      color: var(--heo-text-faint);
+      font: 10.5px var(--mono);
+    }
+
+    .dhead .sp {
+      flex: 1;
+    }
+
+    .x2 {
+      all: unset;
+      display: grid;
+      place-items: center;
+      width: 22px;
+      height: 22px;
+      border-radius: 5px;
+      color: var(--heo-text-faint);
+      cursor: pointer;
+    }
+
+    .x2:hover {
+      background: var(--heo-hover);
+    }
+
+    .layer {
+      display: grid;
+      grid-template-columns: 14px 24px minmax(0, 1fr) 22px;
+      align-items: center;
+      gap: 7px;
+      padding: 2px 4px;
+      border: 1px solid var(--heo-accent-line);
+      border-radius: var(--heo-r-sm);
+      background: var(--heo-accent-soft);
+      font: 10.5px var(--mono);
+    }
+
+    .tile {
+      display: grid;
+      place-items: center;
+      width: 24px;
+      height: 18px;
+      border-radius: 4px;
+      background: #e4e7ed;
+      font: 700 11px/1 system-ui;
+      color: #fff;
+    }
+
+    .offset {
+      display: grid;
+      grid-template-columns: 88px minmax(0, 1fr);
+      gap: 10px;
+      align-items: center;
+    }
+
+    .pad {
+      position: relative;
+      width: 88px;
+      height: 88px;
+      border: 1px solid var(--heo-line-strong);
+      border-radius: var(--heo-r-sm);
+      background: linear-gradient(var(--heo-line), var(--heo-line)) center / 1px 100% no-repeat, linear-gradient(var(--heo-line), var(--heo-line)) center / 100% 1px no-repeat, var(--heo-sunken);
+    }
+
+    .pad .dotp {
+      position: absolute;
+      width: 12px;
+      height: 12px;
+      margin: -6px;
+      border-radius: 50%;
+      background: var(--heo-accent);
+      box-shadow: 0 0 0 3px #fff;
+      left: 50%;
+      top: 56%;
+    }
+
+    .line {
+      display: grid;
+      grid-template-columns: 52px minmax(0, 1fr) 92px;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .line label {
+      color: var(--heo-text-dim);
+      font-size: 11px;
+    }
+
+    .line.off {
+      opacity: .45;
+    }
+
+    .line input[type=range] {
+      width: 100%;
+      accent-color: var(--heo-accent);
+      margin: 0;
+    }
+
+    .swatches {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      align-items: center;
+    }
+
+    .swatch {
+      width: 24px;
+      height: 24px;
+      border-radius: 6px;
+      background: #e4e7ed;
+      display: grid;
+      place-items: center;
+      font: 700 12px/1 system-ui;
+      color: #fff;
+    }
+
+    .sep {
+      width: 1px;
+      height: 18px;
+      background: var(--heo-line-strong);
+    }
+
+    /* the save popover */
+    .savebox {
+      display: grid;
+      gap: 8px;
+      padding: 10px;
+      border: 1px solid var(--heo-line-strong);
+      border-radius: 12px;
+      background: var(--heo-bg);
+      box-shadow: 0 22px 48px -14px rgb(15 23 42 / 30%);
+    }
+
+    .ac {
+      display: grid;
+      gap: 1px;
+      max-height: 240px;
+      overflow: auto;
+      border: 1px solid var(--heo-line);
+      border-radius: var(--heo-r-sm);
+      padding: 3px;
+    }
+
+    .acrow {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+      padding: 5px 7px;
+      border-radius: 5px;
+      cursor: pointer;
+    }
+
+    .acrow:hover,
+    .acrow[aria-selected=true] {
+      background: var(--heo-hover);
+    }
+
+    .acrow .p {
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      color: var(--ink);
+    }
+
+    .acrow .m {
+      color: var(--heo-text-faint);
+      font: 10px var(--mono);
+    }
+
+    .acrow.new .p {
+      color: var(--heo-accent);
+      font-size: 12px;
+    }
+
+    .warnbox {
+      display: grid;
+      gap: 6px;
+      padding: 8px;
+      border-radius: var(--heo-r-sm);
+      border: 1px solid color-mix(in oklab, var(--heo-warn) 40%, transparent);
+      background: color-mix(in oklab, var(--heo-warn) 8%, transparent);
+    }
+
+    .cmp {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 6px;
+    }
+
+    .cmp div {
+      border: 1px solid var(--heo-line);
+      border-radius: 6px;
+      background: var(--paper);
+      padding: 6px;
+      overflow: hidden;
+      color: var(--ink);
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+
+    .cmp small {
+      display: block;
+      font: 9px var(--mono);
+      color: var(--heo-text-faint);
+      margin-top: 3px;
+    }
+
+    .actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 6px;
+    }
+
+    /* fine-tuning: drawn choices */
+    .opt {
+      display: grid;
+      gap: 4px;
+    }
+
+    .opt .what {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      font: 11.5px var(--mono);
+      color: var(--heo-text);
+    }
+
+    .opt .what span {
+      color: var(--heo-text-faint);
+      font: 10.5px var(--font);
+    }
+
+    .pics {
+      display: grid;
+      grid-template-columns: repeat(var(--n, 3), minmax(0, 1fr));
+      gap: 4px;
+    }
+
+    .pic {
+      all: unset;
+      display: grid;
+      gap: 4px;
+      padding: 6px;
+      border: 1px solid var(--heo-line);
+      border-radius: var(--heo-r-sm);
+      background: var(--paper);
+      cursor: pointer;
+      min-width: 0;
+      align-content: start;
+    }
+
+    .pic[aria-pressed=true] {
+      border-color: var(--heo-accent);
+      box-shadow: 0 0 0 2px var(--heo-accent-soft);
+    }
+
+    .pic .cap {
+      font: 10px var(--font);
+      color: var(--heo-text-dim);
+      text-align: center;
+      font-weight: 600;
+    }
+
+    .pic .box {
+      position: relative;
+      justify-self: center;
+      font: 600 12px/1.25 Georgia, serif;
+      color: var(--ink);
+    }
+
+    .pic .box .ln {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+    }
+
+    .pic .lone {
+      background: color-mix(in oklab, var(--heo-warn) 22%, transparent);
+      border-radius: 2px;
+    }
+
+    .pic .figs {
+      font: 400 13px/1.3 Georgia, serif;
+      text-align: right;
+      justify-self: stretch;
+    }
+
+    .pic .figs span {
+      display: block;
+    }
+
+    .pic .guide {
+      background: linear-gradient(90deg, transparent calc(100% - 1px), color-mix(in oklab, var(--heo-accent) 50%, transparent) 0) 0 0 / 1ch 100%;
+    }
+
+    [hidden] {
+      display: none !important;
+    }
+  </style>
+</head>
+
+<body>
+  <main class="stage">
+    <h1>Typography — text styles, round three</h1>
+    <div class="scene" role="group" aria-label="Scene">
+      <button type="button" data-scene="styles">Styles panel · editing</button>
+      <button type="button" data-scene="save">Save as text style…</button>
+      <button type="button" data-scene="tokens">Tokens · Text styles</button>
+    </div>
+    <div class="site">
+      <div class="kicker">Studio journal</div>
+      <h2 id="target">Clay remembers every hand that shaped it</h2>
+      <p>Saturday workshops for beginners: wheel, glaze and kiln. Bring an apron and an afternoon.</p>
+    </div>
+    <div class="out" id="out"></div>
+    <p class="question" id="question"></p>
+  </main>
+  <aside class="panel" id="panel"></aside>
+
+  <script>
+    const q = new URLSearchParams(location.search);
+    let scene = ['styles', 'save', 'tokens'].includes(q.get('scene')) ? q.get('scene') : 'styles';
+    const TOKENS = {
+      '--font-display': "'Fraunces', Georgia, serif", '--font-body': "Georgia, serif", '--font-ui': "Inter, system-ui, sans-serif",
+      '--text-5xl': 48, '--text-3xl': 36, '--text-2xl': 28, '--text-base': 16, '--text-sm': 12
+    };
+    const STYLES = [
+      { name: 'Display', cls: 'text-display', used: 1, d: { family: '--font-display', size: '--text-5xl', weight: 600, lh: 1.05, ls: -0.02 } },
+      { name: 'Heading 1', cls: 'text-heading-1', used: 4, d: { family: '--font-display', size: '--text-3xl', weight: 600, lh: 1.1, ls: -0.01 } },
+      { name: 'Heading 2', cls: 'text-heading-2', used: 7, d: { family: '--font-display', size: '--text-2xl', weight: 600, lh: 1.15, ls: 0 } },
+      { name: 'Body', cls: 'text-body', used: 23, d: { family: '--font-body', size: '--text-base', weight: 400, lh: 1.6, ls: 0 } },
+      { name: 'Caption', cls: 'text-caption', used: 9, d: { family: '--font-ui', size: '--text-sm', weight: 500, lh: 1.4, ls: 0.02 } },
+      { name: 'Overline', cls: 'text-overline', used: 3, d: { family: '--font-ui', size: '--text-sm', weight: 600, lh: 1, ls: 0.14, tt: 'uppercase' } },
+    ];
+    const BASE = { color: '#1c1917', style: 'normal', deco: 'none', decoStyle: 'solid', decoColor: '#a16207', decoThick: 2, decoOff: 4, ws: 0, align: 'left', tt: 'none', stroke: 0, strokeColor: '#1c1917', shadow: [], wrap: 'wrap', hyph: 'manual', indent: 0, nums: 'normal' };
+    // The heading started as Heading 1; one edit made it its own.
+    const s = { from: 'Heading 1', edited: true, own: { ls: -0.02, shadow: [{ x: 0, y: 2, blur: 0, color: 'rgb(161 98 7 / 35%)' }] }, shadowOpen: false, tune: q.get('tune') === '1', card: 'Heading 1', name: 'Heading 1', pick: 'Heading 1' };
+    if (q.get('shadow')) s.shadowOpen = true;
+    const styleOf = (name) => STYLES.find((one) => one.name === name);
+    // The values shown: the style's, then what was edited.
+    const vals = (base) => ({ ...BASE, ...styleOf(base)?.d, ...(scene === 'tokens' ? {} : s.own) });
+    const tok = (v) => (typeof v === 'string' && v.startsWith('--') ? TOKENS[v] : v);
+
+    function paint(v) {
+      const el = document.getElementById('target');
+      Object.assign(el.style, {
+        color: v.color, fontFamily: tok(v.family), fontWeight: v.weight, fontStyle: v.style,
+        textDecoration: v.deco === 'none' ? 'none' : `${v.deco} ${v.decoStyle} ${v.decoColor} ${v.decoThick}px`, textUnderlineOffset: `${v.decoOff}px`,
+        fontSize: `${tok(v.size)}px`, lineHeight: v.lh, letterSpacing: `${v.ls}em`, wordSpacing: `${v.ws}em`, textAlign: v.align, textTransform: v.tt,
+        webkitTextStroke: v.stroke ? `${v.stroke}px ${v.strokeColor}` : '', textShadow: v.shadow.length ? v.shadow.map((one) => `${one.x}px ${one.y}px ${one.blur}px ${one.color}`).join(', ') : 'none',
+        textWrap: v.wrap, hyphens: v.hyph, textIndent: `${v.indent}em`, fontVariantNumeric: v.nums,
+      });
+    }
+
+    // ------------------------------------------------------------------ rows, the panel's own
+    const isSet = (k) => scene === 'tokens' ? k in (styleOf(s.card)?.d ?? {}) : (k in s.own || k in (styleOf(s.from)?.d ?? {}));
+    const row = (k, name, field, sub = false) => `<div class="row${sub ? ' sub' : ''}"><span class="dot${isSet(k) ? '' : ' off'}"></span><span class="name" title="${name}">${name}</span><div style="min-width:0">${field}</div><button class="kill${isSet(k) ? '' : ' off'}" type="button" title="Remove ${name}" aria-label="Remove ${name}">🗑</button></div>`;
+    const length = (v, unit, token) => `<div class="vf"><span class="scrub" title="Drag to change"></span><input value="${v}" aria-label="value">${token ? `<span class="tok">${token}</span>` : ''}<span class="unit">${unit}</span><span class="chev">⌄</span></div>`;
+    const plain = (v) => `<div class="vf"><input value="${v}" aria-label="value"><span class="chev">⌄</span></div>`;
+    const color = (v) => `<div class="vf"><span class="sw"><i style="background:${v}"></i></span><input value="${v}" aria-label="color"><span class="chev">⌄</span></div>`;
+    const seg = (k, v, opts) => `<div class="seg">${opts.map(([o, t, title]) => `<button type="button" data-seg="${k}" data-v="${o}" aria-pressed="${String(v) === String(o)}" title="${title ?? o}">${t}</button>`).join('')}</div>`;
+
+    function rows(v) {
+      const fam = tok(v.family) ?? '';
+      const first = (fam.match(/'([^']+)'/) ?? fam.match(/^([^,]+)/) ?? [])[1] ?? fam;
+      const sh = v.shadow;
+      const shText = sh.length ? sh.map((one) => `${one.x}px ${one.y}px ${one.blur}px ${one.color}`).join(', ') : 'none';
+      return `
+        ${row('color', 'color', color(v.color))}
+        ${row('family', 'font-family', `<div class="vf fam" style="--fam:${fam.replace(/"/g, "'")}" title="Pick a font; fallbacks are in the picker"><span class="v">${first}</span><span class="fb">+ 2 fallbacks</span><span class="chev">⌄</span></div>`)}
+        ${row('weight', 'font-weight', plain(`${v.weight}`))}
+        ${row('style', 'font-style', seg('style', v.style, [['normal', 'Normal'], ['italic', '<i>Italic</i>']]))}
+        ${row('deco', 'text-decoration', seg('deco', v.deco, [['none', 'None'], ['underline', '<u>U</u>', 'underline'], ['line-through', '<s>S</s>', 'line-through'], ['overline', '<span style="text-decoration:overline">O</span>', 'overline']]))}
+        ${v.deco !== 'none' ? `${row('decoStyle', 'style', seg('decoStyle', v.decoStyle, [['solid', '—'], ['dotted', '⋯'], ['dashed', '- -'], ['wavy', '∿']]), true)}
+          ${row('decoThick', 'thickness', length(v.decoThick, 'px'), true)}
+          ${row('decoOff', 'offset', length(v.decoOff, 'px'), true)}
+          ${row('decoColor', 'color', color(v.decoColor), true)}` : ''}
+        ${row('size', 'font-size', length(tok(v.size), 'px', typeof v.size === 'string' ? v.size.replace('--text-', '') : ''))}
+        ${row('lh', 'line-height', plain(v.lh))}
+        ${row('ls', 'letter-spacing', length(v.ls, 'em'))}
+        ${row('ws', 'word-spacing', length(v.ws, 'em'))}
+        ${row('align', 'text-align', seg('align', v.align, [['left', 'L'], ['center', 'C'], ['right', 'R'], ['justify', 'J']]))}
+        ${row('tt', 'text-transform', plain(v.tt))}
+        ${row('stroke', '-webkit-text-stroke', `<div class="pair" title="An outline around each letter. With a transparent color, only the outline shows.">${length(v.stroke, 'px')}${color(v.strokeColor)}</div>`)}
+        ${row('shadow', 'text-shadow', `<div class="vf"><span class="opener" data-open-shadow title="Open the shadow editor" style="text-shadow:${sh.length ? `${sh[0].x / 3}px ${sh[0].y / 3}px ${sh[0].blur / 3}px ${sh[0].color}` : 'none'}">A</span><input value="${shText}" aria-label="text-shadow"><span class="chev">⌄</span></div>`)}
+`;
+    }
+
+    // ------------------------------------------------------------------ fine-tuning, drawn so it shows
+    function tune(v) {
+      const pic = (k, val, cap, inner) => `<button class="pic" type="button" data-seg="${k}" data-v="${val}" aria-pressed="${String(v[k]) === String(val)}">${inner}<span class="cap">${cap}</span></button>`;
+      const wrapBox = (mode) => `<span class="box" data-wrapdemo="${mode}" style="text-wrap:${mode}">A bowl, thrown and fired by hand, waits for you</span>`;
+      return `
+        <div class="opt"><div class="what">text-wrap <span>where the lines break</span></div><div class="pics">
+          ${pic('wrap', 'wrap', 'As it comes', wrapBox('wrap'))}${pic('wrap', 'balance', 'Even lines', wrapBox('balance'))}${pic('wrap', 'pretty', 'No lone last word', wrapBox('pretty'))}</div>
+          <p class="hint">The highlighted word is alone on its line. Even lines suit headings; no lone last word suits paragraphs.</p></div>
+        <div class="opt"><div class="what">hyphens <span>a long word at the edge</span></div><div class="pics" style="--n:2">
+          ${pic('hyph', 'manual', 'Move the whole word', `<span class="box" lang="en" style="width:86px;hyphens:manual;font-weight:400">Our pottery uncomplicatedly welcomes everyone</span>`)}
+          ${pic('hyph', 'auto', 'Split it with a hyphen', `<span class="box" lang="en" style="width:86px;hyphens:auto;font-weight:400">Our pottery uncomplicatedly welcomes everyone</span>`)}</div></div>
+        <div class="opt"><div class="what">text-indent <span>the first line</span></div><div class="pics" style="--n:2">
+          ${pic('indent', 0, 'Flush', `<span class="box" style="width:120px;font-weight:400">Saturday workshops for beginners, wheel and kiln.</span>`)}
+          ${pic('indent', 1.5, 'Indented', `<span class="box" style="width:120px;font-weight:400;text-indent:1.5em">Saturday workshops for beginners, wheel and kiln.</span>`)}</div></div>
+        <div class="opt"><div class="what">font-variant-numeric <span>numbers in a column</span></div><div class="pics" style="--n:2">
+          ${pic('nums', 'normal', 'Each its own width', `<span class="figs guide" style="font-variant-numeric:proportional-nums lining-nums"><span>€11.10</span><span>€88.80</span><span>€71.17</span></span>`)}
+          ${pic('nums', 'tabular-nums', 'Line up', `<span class="figs guide" style="font-variant-numeric:tabular-nums lining-nums"><span>€11.10</span><span>€88.80</span><span>€71.17</span></span>`)}</div>
+          <p class="hint">Shown only when the font has both. Small capitals and joined letters (ligatures) are left out: the difference is too small to see.</p></div>`;
+    }
+    // Make the wrap samples show their difference: the narrowest width where plain wrapping leaves one
+    // word alone on the last line. Measured, so it holds whatever font draws it.
+    function fitWrapDemos() {
+      const boxes = Array.from(document.querySelectorAll('[data-wrapdemo]'));
+      if (!boxes.length) return;
+      const plainBox = boxes.find((b) => b.dataset.wrapdemo === 'wrap');
+      const words = plainBox.textContent.split(' ');
+      const lastLineWords = (el) => {
+        el.innerHTML = words.map((w) => `<span>${w}</span>`).join(' ');
+        const spans = Array.from(el.children);
+        const lastTop = spans.at(-1).offsetTop;
+        return spans.filter((sp) => sp.offsetTop === lastTop);
+      };
+      let width = 104;
+      for (let w = 70; w <= 104; w += 2) { plainBox.style.width = `${w}px`; if (lastLineWords(plainBox).length === 1) { width = w; break; } }
+      for (const box of boxes) {
+        box.style.width = `${width}px`;
+        const last = lastLineWords(box);
+        if (last.length === 1) last[0].classList.add('lone');
+      }
+    }
+
+    // ------------------------------------------------------------------ the shadow editor, as it is
+    function shadowDialog(v) {
+      const one = v.shadow[0] ?? { x: 0, y: 4, blur: 12, color: 'rgb(0 0 0 / 20%)' };
+      return `<div class="dialog" style="top:${s.dialogTop ?? 520}px" role="dialog" aria-label="Text shadow">
+        <div class="dhead"><span class="grip">⋮⋮</span><span class="t">Text shadow</span><span class="s2">text-shadow</span><span class="sp"></span><button class="x2" type="button" data-close-shadow aria-label="Close">✕</button></div>
+        <div class="group" style="margin:0">Shadows <span style="order:2;color:var(--heo-text-dim)">＋</span></div>
+        <div class="layer"><span style="color:var(--heo-text-faint)">⋮⋮</span><span class="tile" style="text-shadow:${one.x / 3}px ${one.y / 3}px ${one.blur / 3}px ${one.color}">A</span><span>${one.x}px ${one.y}px · blur ${one.blur}px · 35%</span><span class="kill">🗑</span></div>
+        <div class="offset"><div class="pad"><span class="dotp"></span></div><div style="display:grid;gap:5px">${length(one.x, 'px')}${length(one.y, 'px')}</div></div>
+        <div class="line"><label>Blur</label><input type="range" min="0" max="80" value="${one.blur}">${length(one.blur, 'px')}</div>
+        <div class="line off" title="text-shadow has no spread"><label>Spread</label><input type="range" disabled>${length(0, 'px')}</div>
+        <div class="line"><label>Opacity</label><input type="range" min="0" max="100" value="35"><div class="vf"><input value="35"><span class="unit">%</span></div></div>
+        <div class="line" style="grid-template-columns:52px minmax(0,1fr)"><label>Color</label>${color(one.color)}</div>
+        <div class="group" style="margin:0">Swatches</div>
+        <div class="swatches"><span class="swatch" style="text-shadow:0 1px 0 rgb(161 98 7 / 35%)">A</span><span class="sep"></span>${['0 2px 4px rgb(0 0 0/30%)', '2px 2px 0 #0f172a', '0 0 6px rgb(99 102 241/80%)', '0 0 2px #22d3ee, 0 0 8px #22d3ee', '0 4px 10px rgb(0 0 0/40%)'].map((t) => `<span class="swatch" style="text-shadow:${t}">A</span>`).join('')}</div>
+        <p class="hint">The shadow editor the panel already has, in text mode: same stack, pad, sliders and swatches.</p>
+      </div>`;
+    }
+
+    // ------------------------------------------------------------------ the styles list
+    function stylesList(current, mineLabel) {
+      const v = vals(s.from);
+      return `<div class="styles">
+        ${mineLabel ? `<div class="srow mine" aria-current="true"><span class="p" style="font-family:${tok(v.family)};font-size:20px;font-weight:${v.weight};letter-spacing:${v.ls}em;text-shadow:${v.shadow.map((one) => `${one.x}px ${one.y}px ${one.blur}px ${one.color}`).join(', ') || 'none'}">This heading</span><span class="m">${mineLabel}</span></div>` : ''}
+        ${STYLES.map((t) => `<div class="srow" data-style="${t.name}" aria-current="${t.name === current}">
+          <span class="p" style="font-family:${tok(t.d.family)};font-size:${Math.min(22, tok(t.d.size))}px;font-weight:${t.d.weight};letter-spacing:${t.d.ls}em;text-transform:${t.d.tt ?? 'none'}">${t.name}</span>
+          <span class="m">${tok(t.d.size)}/${t.d.lh} · ${t.used}×</span></div>`).join('')}</div>`;
+    }
+
+    function stylesScene() {
+      const v = vals(s.from);
+      return `<div class="ptabs"><span class="on">Styles</span><span>Tokens</span><span>Tree</span><span>Library</span></div>
+        <div class="sec"><div class="sechead">▸ Layout</div></div>
+        <div class="sec"><div class="sechead">▾ Typography <span class="n">${s.edited ? 'unsaved text style' : s.from}</span></div><div class="body">
+          <div class="group">Text style</div>
+          ${stylesList(s.edited ? null : s.from, s.edited ? `edited from ${s.from} · not saved` : '')}
+          ${s.edited ? `<div class="mineactions"><button class="btn primary" type="button" data-scene="save">Save as text style…</button></div>` : ''}
+          <div class="group">Properties</div>
+          ${rows(v)}
+          <button class="more" type="button" data-tune>${s.tune ? 'Hide fine-tuning ▴' : 'Fine-tuning: line breaks, hyphens, indent, numbers ▾'}</button>
+          ${s.tune ? `<div class="body" style="margin-top:2px">${tune(v)}</div>` : ''}
+        </div></div>
+        <div class="sec"><div class="sechead">▸ Effects</div></div>
+        ${s.shadowOpen ? shadowDialog(v) : ''}`;
+    }
+
+    function saveScene() {
+      const v = vals(s.from);
+      const typed = s.name.trim();
+      const hit = STYLES.find((one) => one.name.toLowerCase() === typed.toLowerCase());
+      const list = STYLES.filter((one) => !typed || one.name.toLowerCase().includes(typed.toLowerCase().slice(0, 4)));
+      const preview = (d, label) => `<div style="font-family:${tok(d.family)};font-size:18px;font-weight:${d.weight};letter-spacing:${d.ls}em;line-height:1.1;${d.shadow?.length ? `text-shadow:${d.shadow.map((one) => `${one.x}px ${one.y}px ${one.blur}px ${one.color}`).join(', ')}` : ''}">Clay remembers<small>${label}</small></div>`;
+      return `<div class="ptabs"><span class="on">Styles</span><span>Tokens</span><span>Tree</span><span>Library</span></div>
+        <div class="sec"><div class="sechead">▾ Typography <span class="n">unsaved text style</span></div><div class="body">
+          <div class="savebox" role="dialog" aria-label="Save as text style">
+            <div class="dhead" style="cursor:default"><span class="t">Save as text style</span><span class="sp"></span><button class="x2" type="button" data-scene="styles" aria-label="Close">✕</button></div>
+            <div class="vf"><input value="${s.name}" data-name aria-label="Name" placeholder="A new name, or one to replace"><span class="chev">⌄</span></div>
+            <div class="ac" role="listbox">
+              ${typed && !hit ? `<div class="acrow new" data-pickname="${typed}" aria-selected="true"><span class="p">+ New: “${typed}”</span><span class="m">.text-${typed.toLowerCase().replace(/[^a-z0-9]+/g, '-')}</span></div>` : ''}
+              ${list.map((t) => `<div class="acrow" data-pickname="${t.name}" aria-selected="${hit?.name === t.name}"><span class="p" style="font-family:${tok(t.d.family)};font-size:${Math.min(18, tok(t.d.size))}px;font-weight:${t.d.weight};text-transform:${t.d.tt ?? 'none'}">${t.name}</span><span class="m">replace · ${t.used}×</span></div>`).join('')}
+            </div>
+            ${hit ? `<div class="warnbox"><p class="hint warn"><b>${hit.name}</b> exists and is used by <b>${hit.used} elements</b>. Saving replaces it: all ${hit.used} change to this look.</p>
+                <div class="cmp">${preview(hit.d, `${hit.name} now`)}${preview(v, 'after saving')}</div></div>` : `<p class="hint">A new class, <b>.text-${typed.toLowerCase().replace(/[^a-z0-9]+/g, '-') || '…'}</b>, in the design system. This heading uses it.</p>`}
+            <div class="actions"><button class="btn" type="button" data-scene="styles">Cancel</button><button class="btn ${hit ? 'danger' : 'primary'}" type="button" data-save>${hit ? `Replace ${hit.name}` : 'Save'}</button></div>
+          </div>
+          <div class="group">Properties</div>${rows(v)}
+        </div></div>`;
+    }
+
+    function tokensScene() {
+      const st = styleOf(s.card);
+      return `<div class="ptabs"><span>Styles</span><span class="on">Tokens</span><span>Tree</span><span>Library</span></div>
+        <div class="sec"><div class="sechead">▸ Color <span class="n">12</span></div></div>
+        <div class="sec"><div class="sechead">▸ Font <span class="n">3</span></div></div>
+        <div class="sec"><div class="sechead">▾ Text styles <span class="n">${STYLES.length}</span></div><div class="body">
+          ${stylesList(s.card, '')}
+          <div class="group">${st.name} <span style="order:2;text-transform:none;letter-spacing:0;font-weight:500">.${st.cls} · used ${st.used}×</span></div>
+          <div class="row"><span class="dot off"></span><span class="name">name</span><div class="vf"><input value="${st.name}" aria-label="Name"></div><span class="kill" title="Delete the style">🗑</span></div>
+          ${rows(vals(st.name))}
+          <p class="hint">The same rows as the Styles panel. Here they change the style itself, and its ${st.used} elements with it.</p>
+        </div></div>`;
+    }
+
+    function codeFor(v) {
+      if (scene === 'tokens') {
+        const st = styleOf(s.card);
+        return `<span class="c">// heo seed › designSystem.classes, kind: "text-style"</span>\n{ <b>"name"</b>: "${st.cls}", <b>"label"</b>: "${st.name}", <b>"kind"</b>: "text-style",\n  <b>"declarations"</b>: { "font-family": "var(${st.d.family})", "font-size": "var(${st.d.size})",\n    "font-weight": "${st.d.weight}", "line-height": "${st.d.lh}", "letter-spacing": "${st.d.ls}em" } }\n\n<span class="c">/* in the page's design CSS */</span>\n.${st.cls} { font-family: var(${st.d.family}); font-size: var(${st.d.size}); font-weight: ${st.d.weight}; line-height: ${st.d.lh}; letter-spacing: ${st.d.ls}em; }`;
+      }
+      const own = Object.entries(s.own).map(([k, val]) => `  <b>${({ ls: 'letter-spacing', shadow: 'text-shadow', color: 'color', style: 'font-style', deco: 'text-decoration-line', align: 'text-align', wrap: 'text-wrap', hyph: 'hyphens', indent: 'text-indent', nums: 'font-variant-numeric' })[k] ?? k}</b>: ${k === 'shadow' ? val.map((one) => `${one.x}px ${one.y}px ${one.blur}px ${one.color}`).join(', ') : k === 'ls' || k === 'indent' ? `${val}em` : val};`).join('\n');
+      return s.edited
+        ? `<span class="c">&lt;h2 class="</span><span class="h">text-heading-1</span><span class="c">"&gt; — still Heading 1's class, until saved</span>\n<span class="c">/* the edits, on this element only, while unsaved */</span>\n.journal h2 {\n${own}\n}\n<span class="c">/* Save as text style… folds them into a style: a new class, or Heading 1 replaced */</span>`
+        : `<span class="c">&lt;h2 class="</span><span class="h">${styleOf(s.from).cls}</span><span class="c">"&gt;</span>`;
+    }
+
+    function render() {
+      document.querySelectorAll('[data-scene]').forEach((b) => b.closest('.scene') && b.setAttribute('aria-pressed', String(b.dataset.scene === scene)));
+      const v = scene === 'tokens' ? vals(s.card) : vals(s.from);
+      document.getElementById('panel').innerHTML = scene === 'tokens' ? tokensScene() : scene === 'save' ? saveScene() : stylesScene();
+      paint(v);
+      fitWrapDemos();
+      document.getElementById('out').innerHTML = codeFor(v);
+      document.getElementById('question').innerHTML = {
+        styles: 'The heading was <b>Heading 1</b>; changing its letter spacing and adding a shadow made it its own. The list shows it, dashed, on top: <b>Save as text style…</b> names it. Click a style to go back to it.',
+        save: 'Typing a name: a new one creates a style; an existing one (pick it from the list, previewed) replaces it, with the elements it changes counted and both looks side by side.',
+        tokens: 'A text style is a named class in the design system (seed and export). Picked here, it is edited with the same rows as an element, and every element using it follows.',
+      }[scene];
+      const url = new URL(location.href);
+      url.searchParams.set('scene', scene);
+      history.replaceState(null, '', url);
+    }
+
+    document.addEventListener('click', (e) => {
+      const t = e.target.closest('button, [data-style], [data-pickname], [data-open-shadow]');
+      if (!t) return;
+      const d = t.dataset;
+      if (d.scene) { scene = d.scene; render(); return; }
+      if (t.hasAttribute('data-open-shadow')) {
+        const panel = document.getElementById('panel');
+        s.dialogTop = t.getBoundingClientRect().bottom - panel.getBoundingClientRect().top + panel.scrollTop + 8;
+        s.shadowOpen = !s.shadowOpen; render(); return;
+      }
+      if (t.hasAttribute('data-close-shadow')) { s.shadowOpen = false; render(); return; }
+      if (d.style) {
+        if (scene === 'tokens') s.card = d.style; else { s.from = d.style; s.own = {}; s.edited = false; }
+        render(); return;
+      }
+      if (d.pickname) { s.name = d.pickname; render(); return; }
+      if (t.hasAttribute('data-save')) {
+        const hit = STYLES.find((one) => one.name.toLowerCase() === s.name.trim().toLowerCase());
+        const v = vals(s.from);
+        const d2 = { family: v.family, size: v.size, weight: v.weight, lh: v.lh, ls: v.ls, ...(v.tt !== 'none' ? { tt: v.tt } : {}) };
+        if (hit) hit.d = d2; else STYLES.push({ name: s.name.trim(), cls: `text-${s.name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-')}`, used: 1, d: d2 });
+        s.from = hit?.name ?? s.name.trim(); s.own = {}; s.edited = false; scene = 'styles'; render(); return;
+      }
+      if (t.hasAttribute('data-tune')) { s.tune = !s.tune; render(); return; }
+      if (d.seg) {
+        const raw = d.v; const val = /^-?\d+(\.\d+)?$/.test(raw) ? Number(raw) : raw;
+        if (scene === 'tokens') styleOf(s.card).d[d.seg] = val;
+        else { s.own[d.seg] = val; s.edited = true; }
+        render();
+      }
+    });
+    document.addEventListener('input', (e) => {
+      if (e.target.dataset.name !== undefined) { s.name = e.target.value; render(); const i = document.querySelector('[data-name]'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }
+    });
+    addEventListener('keydown', (e) => { if (e.key === 'Escape' && s.shadowOpen) { s.shadowOpen = false; render(); } });
+    if (scene === 'save' && q.get('name')) s.name = q.get('name');
+    render();
+  </script>
+</body>
+
+</html>

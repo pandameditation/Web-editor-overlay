@@ -201,6 +201,8 @@ export function valueKindFor(property: string): ValueKind {
   if (property === 'box-shadow' || property === 'text-shadow') return 'shadow';
   // Typed as text, with the filter editor at its head.
   if (property === 'filter' || property === 'backdrop-filter') return 'filter';
+  // Typed as text, with the font picker at its head.
+  if (property === 'font-family') return 'font';
   const meta = propertyMeta(property);
   switch (meta.control) {
     case 'length':

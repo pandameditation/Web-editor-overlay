@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Typography and text styles</title>
+  <!--
+    Typography is text styles first, then labelled rows. A text style is a class carrying
+    --heo-text-style. The rows write to the element's style attribute, so an edit leaves the style:
+    "This text" shows, unsaved, and Save as text style names it (new, or replacing one). Picking
+    another style with edits unsaved asks first. The font picker previews on hover; fine-tuning
+    offers only what the font draws differently. Tokens › Text styles edits a style with the same rows.
+  -->
+  <style id="site">
+    .text-heading-1 { font-family: Georgia, serif; font-size: 36px; font-weight: 600; line-height: 1.1; letter-spacing: -0.01em; --heo-text-style: "Heading 1"; }
+    .text-body { font-family: Georgia, serif; font-size: 16px; line-height: 1.6; --heo-text-style: "Body"; }
+    .card { padding: 8px; }
+  </style>
+</head>
+
+<body>
+  <h2 id="h" class="text-heading-1">Clay remembers every hand that shaped it</h2>
+  <h2 id="h2" class="text-heading-1">Another heading</h2>
+  <p id="p" class="text-body card">Saturday workshops for beginners.</p>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const results = {};
+      const errors = [];
+      addEventListener('error', (event) => errors.push('error: ' + event.message));
+      addEventListener('unhandledrejection', (event) => errors.push('rejection: ' + event.reason));
+      const progress = document.getElementById('progress');
+      const settle = (ms = 300) => new Promise((resolve) => setTimeout(resolve, ms));
+      const check = async (name, fn) => {
+        progress.textContent = name;
+        try { results[name] = await fn(); } catch (err) { results[name] = 'THREW: ' + String(err && err.stack); }
+      };
+      const deep = (selector, root = document) => {
+        const direct = root.querySelector?.(selector);
+        if (direct) return direct;
+        for (const el of root.querySelectorAll?.('*') ?? []) {
+          if (!el.shadowRoot) continue;
+          const found = deep(selector, el.shadowRoot);
+          if (found) return found;
+        }
+        return null;
+      };
+      const flat = (node) => (node?.textContent ?? '').replace(/\s+/g, ' ').trim();
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark', presets: false, detectScriptContent: false });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      engine.setDockTab('styles');
+      const h = document.getElementById('h');
+      const sroot = () => deep('heo-styles-panel').shadowRoot;
+      const section = (heading) => Array.from(sroot().querySelectorAll('heo-section')).find((one) => one.getAttribute('heading') === heading);
+      const typo = () => section('Typography');
+      const rowNames = () => Array.from(typo().querySelectorAll('.rows .row .pn')).map(flat);
+      const field = (property) => typo().querySelector(`heo-value-field[data-property="${property}"]`);
+      const dialogEl = () => typo().querySelector('heo-text-style-dialog');
+      const dlg = () => dialogEl()?.shadowRoot;
+      const styleRow = (cls) => typo().querySelector(`[data-text-style="${cls}"]`);
+      const send = async (target, type, value) => {
+        target.dispatchEvent(new CustomEvent(type, { detail: { value }, bubbles: true, composed: true }));
+        await settle(300);
+      };
+      const select = async (el) => {
+        api.select(el);
+        await settle(600);
+      };
+      const typeName = async (text) => {
+        const input = dlg().querySelector('input');
+        input.value = text;
+        input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        await settle(200);
+      };
+
+      await select(h);
+
+      await check('rows', async () => {
+        const names = rowNames();
+        const effects = section('Effects');
+        const effectsOpen = effects && !effects.open ? (effects.shadowRoot?.querySelector('button')?.click(), await settle(200)) : null;
+        void effectsOpen;
+        return {
+          textStylesComeFirst: Boolean(typo().querySelector('[data-text-styles]')) && Boolean(styleRow('text-heading-1')),
+          theWornStyleIsPicked: styleRow('text-heading-1')?.getAttribute('aria-current') === 'true',
+          rowsAreNamedForWhatTheyDo: names.join(',') === 'Color,Font,Weight,Style,Line,Align,Case,Size,Line height,Letter spacing,Word spacing,Outline,Shadow',
+          theCssNameIsTheTooltip: typo().querySelector('.row[data-property="letter-spacing"] .name')?.getAttribute('title') === 'letter-spacing',
+          alignAndCaseAreSegmented: Boolean(typo().querySelector('.row[data-property="text-align"] heo-segmented')) && Boolean(typo().querySelector('.row[data-property="text-transform"] heo-segmented')),
+          shadowMovedHere: Boolean(field('text-shadow')) && !effects?.querySelector('heo-value-field[data-property="text-shadow"]'),
+          fontHasThePicker: field('font-family')?.kind === 'font',
+        };
+      });
+
+      await check('line', async () => {
+        const line = typo().querySelector('.row[data-property="text-decoration-line"] heo-segmented');
+        line.dispatchEvent(new CustomEvent('segment-change', { detail: { value: 'underline' }, bubbles: true, composed: true }));
+        await settle(400);
+        const names = rowNames();
+        return {
+          aLineShowsItsDetails: names.slice(4, 9).join(',') === 'Line,Line style,Line thickness,Line distance,Line color',
+          writtenOnTheElement: h.style.getPropertyValue('text-decoration-line') === 'underline',
+        };
+      });
+
+      await check('unsaved', async () => {
+        await send(field('letter-spacing'), 'value-change', '-0.03em');
+        const mine = typo().querySelector('[data-text-style="mine"]');
+        return {
+          anEditIsInline: h.style.getPropertyValue('letter-spacing') === '-0.03em',
+          theStyleIsLeft: styleRow('text-heading-1')?.getAttribute('aria-current') === 'false',
+          thisTextShowsUnsaved: Boolean(mine) && /edited from Heading 1/.test(flat(mine)),
+          withSaveAndDiscard: Boolean(typo().querySelector('[data-save-text-style]')) && /discard changes/i.test(flat(typo().querySelector('.tactions'))),
+          noDifferBox: !/differ from/i.test(flat(typo())),
+        };
+      });
+
+      await check('cascade', async () => {
+        typo().querySelector('.row[data-property="text-underline-offset"] .name')?.click();
+        await settle(300);
+        const pop = sroot().querySelector('.popover, [aria-label^="Cascade for"]');
+        const said = flat(pop);
+        sroot().querySelector('.row[data-property="text-underline-offset"] .name')?.click();
+        await settle(200);
+        return { theNameOpensTheCascadeWithTheRealProperty: /text-underline-offset/.test(said) };
+      });
+
+      await check('leave', async () => {
+        styleRow('text-body').click();
+        await settle(400);
+        const open = dialogEl().open && dlg().querySelector('dialog').open;
+        const title = flat(dlg().querySelector('h2'));
+        const name = dlg().querySelector('input').value;
+        const buttons = Array.from(dlg().querySelectorAll('.actions button')).map(flat);
+        dlg().querySelectorAll('.actions button')[0].click();
+        await settle(300);
+        const cancelled = !dlg().querySelector('dialog').open && h.classList.contains('text-heading-1') && h.style.letterSpacing === '-0.03em';
+        styleRow('text-body').click();
+        await settle(400);
+        Array.from(dlg().querySelectorAll('.actions button')).find((b) => /discard/i.test(flat(b))).click();
+        await settle(500);
+        return {
+          pickingAnotherStyleAsks: open && title === 'Save your changes?',
+          aNameIsProposed: name === 'Heading 1 alt',
+          cancelDiscardOrSave: buttons.join('|') === 'Cancel|Discard changes|Save',
+          cancelKeepsTheEdits: cancelled,
+          discardAppliesThePickedStyle: h.classList.contains('text-body') && !h.classList.contains('text-heading-1'),
+          andDropsTheEdits: !h.style.letterSpacing && !h.style.textDecorationLine,
+        };
+      });
+
+      await check('saveNew', async () => {
+        await send(field('letter-spacing'), 'value-change', '0.05em');
+        const recordsBefore = engine.history.records.length;
+        typo().querySelector('[data-save-text-style]').click();
+        await settle(400);
+        await typeName('Lede');
+        const newRow = flat(dlg().querySelector('.opt.new'));
+        dlg().querySelector('.actions button[type="submit"]').click();
+        await settle(500);
+        const entry = engine.classes.get('text-lede');
+        const seed = JSON.stringify(engine.designSystem?.export?.() ?? engine.classes.export());
+        return {
+          aNewNameOffersANewStyle: /New: “Lede”/.test(newRow) && /\.text-lede/.test(newRow),
+          savedAsAClassWithItsMarker: entry?.declarations['--heo-text-style'] === '"Lede"' && entry?.declarations['letter-spacing'] === '0.05em',
+          andWithTheLookItHad: entry?.declarations['font-size'] === '16px',
+          theElementWearsIt: h.classList.contains('text-lede') && !h.classList.contains('text-body'),
+          itsEditsMovedIntoTheStyle: !h.style.letterSpacing && getComputedStyle(h).letterSpacing === '0.8px',
+          listedAsAStyle: engine.textStyles().some((one) => one.name === 'Lede') && styleRow('text-lede')?.getAttribute('aria-current') === 'true',
+          inTheExport: seed.includes('--heo-text-style') && seed.includes('Lede'),
+          oneUndoStep: engine.history.records.length === recordsBefore + 1,
+        };
+      });
+
+      await check('replace', async () => {
+        await send(field('font-size'), 'value-change', '20px');
+        typo().querySelector('[data-save-text-style]').click();
+        await settle(400);
+        dlg().querySelector('.opt[data-style="text-body"]').click();
+        await settle(300);
+        const warn = flat(dlg().querySelector('.warn'));
+        const button = flat(dlg().querySelector('.actions button[type="submit"]'));
+        const p = document.getElementById('p');
+        dlg().querySelector('.actions button[type="submit"]').click();
+        await settle(500);
+        return {
+          pickingOneWarnsWithTheCount: /used by 1 element/.test(warn) && /replaces it/.test(warn) && Boolean(dlg().querySelector('.cmp')),
+          theButtonSaysReplace: button === 'Replace Body',
+          replacingChangesTheStyle: engine.classes.get('text-body')?.declarations['font-size'] === '20px',
+          andEveryElementUsingIt: getComputedStyle(p).fontSize === '20px',
+          theElementWearsIt: h.classList.contains('text-body'),
+        };
+      });
+
+      await check('font', async () => {
+        const f = field('font-family');
+        f.openShadowEditor();
+        await settle(700);
+        const picker = f.shadowRoot.querySelector('heo-font-picker');
+        const proot = picker?.shadowRoot;
+        const fonts = Array.from(proot?.querySelectorAll('[data-font]') ?? []).map((one) => one.dataset.font);
+        const ownFace = proot?.querySelector('[data-font="Georgia"] .nm')?.getAttribute('style') ?? '';
+        const target = proot.querySelector('[data-font="Courier New"], [data-font="Menlo"], [data-font="Arial"]');
+        const before = getComputedStyle(h).fontFamily;
+        const recordsBefore = engine.history.records.length;
+        target.dispatchEvent(new PointerEvent('pointerenter', { bubbles: false }));
+        await settle(300);
+        const previewed = getComputedStyle(h).fontFamily;
+        const notWritten = engine.history.records.length === recordsBefore;
+        proot.querySelector('.list').dispatchEvent(new PointerEvent('pointerleave', { bubbles: false }));
+        await settle(300);
+        const back = getComputedStyle(h).fontFamily;
+        target.click();
+        await settle(400);
+        const fallbacks = Boolean(proot.querySelector('.fallbacks .chain'));
+        return {
+          opensThePicker: Boolean(picker),
+          listsSystemFonts: fonts.includes('Georgia'),
+          eachInItsOwnFace: /Georgia/.test(ownFace),
+          hoverPreviewsOnTheElement: previewed !== before && previewed.includes(target.dataset.font),
+          withoutWriting: notWritten,
+          leavingPutsItBack: back === before,
+          clickingPicks: h.style.fontFamily.includes(target.dataset.font),
+          fallbacksAreInThePicker: fallbacks,
+          webFontsAskFirst: Boolean(proot.querySelector('.webask')) && !fonts.includes('Playfair Display'),
+        };
+      });
+
+      await check('tuning', async () => {
+        const f = field('font-family');
+        f.shadowRoot.querySelector('.dialog-head button[aria-label="Close"]')?.click();
+        await settle(300);
+        Array.from(typo().querySelectorAll('button.more')).at(-1).click();
+        await settle(800);
+        const tune = typo().querySelector('heo-type-tuning');
+        const troot = tune?.shadowRoot;
+        const wraps = Array.from(troot.querySelectorAll('[data-wrap]'));
+        const lines = (box) => { const tops = Array.from(box.children).map((one) => one.offsetTop); return tops.filter((t, i) => t !== tops[i - 1]).length + ':' + tops.at(-1); };
+        const shapes = wraps.map((box) => Array.from(box.children).map((one) => one.offsetTop).join(','));
+        const lone = wraps.map((box) => box.querySelectorAll('.lone').length);
+        const offered = Array.from(troot.querySelectorAll('[data-tune]')).map((one) => one.dataset.tune);
+        Array.from(troot.querySelectorAll('[data-tune="text-wrap"] .pic'))[1].click();
+        await settle(400);
+        void lines;
+        return {
+          threeWrapSamplesBreakDifferently: wraps.length === 3 && new Set(shapes).size === 3,
+          onlyPlainWrappingLeavesALoneWord: lone[0] === 1,
+          lineBreaksHyphensAndIndentAreOffered: ['text-wrap', 'hyphens', 'text-indent'].every((one) => offered.includes(one)),
+          aFeatureTheFontLacksIsNotOffered: offered.length < 8,
+          pickingWrites: h.style.getPropertyValue('text-wrap') === 'balance' || h.style.getPropertyValue('text-wrap-style') === 'balance',
+        };
+      });
+
+      await check('tokens', async () => {
+        engine.setDockTab('tokens');
+        await settle(700);
+        const troot = deep('heo-tokens-panel').shadowRoot;
+        const group = Array.from(troot.querySelectorAll('heo-section')).find((one) => one.getAttribute('heading') === 'Text styles');
+        if (group && !group.open) group.shadowRoot?.querySelector('button')?.click();
+        await settle(300);
+        const listed = Array.from(group.querySelectorAll('[data-text-style]')).map((one) => one.dataset.textStyle);
+        group.querySelector('[data-text-style="text-heading-1"]').click();
+        await settle(400);
+        const ed = group.querySelector('[data-text-style-editor="text-heading-1"]');
+        const names = Array.from(ed.querySelectorAll('.trow .tname')).map(flat);
+        const ls = ed.querySelector('heo-value-field[data-property="letter-spacing"]');
+        await send(ls, 'value-change', '0.1em');
+        const h2 = document.getElementById('h2');
+        engine.setDockTab('styles');
+        await settle(400);
+        return {
+          listsTheStyles: ['text-heading-1', 'text-body', 'text-lede'].every((one) => listed.includes(one)),
+          editedWithTheSameRows: names.slice(1).join(',') === 'Color,Font,Weight,Style,Line,Align,Case,Size,Line height,Letter spacing,Word spacing,Outline,Shadow',
+          writingChangesTheStyle: engine.classes.get('text-heading-1')?.declarations['letter-spacing'] === '0.1em',
+          andItsElements: getComputedStyle(h2).letterSpacing === '3.6px',
+        };
+      });
+
+      const failed = Object.entries(results)
+        .filter(([, group]) => group && typeof group === 'object')
+        .filter(([, group]) => Object.values(group).some((value) => value === false))
+        .map(([name]) => name);
+      const threw = Object.entries(results).filter(([, v]) => typeof v === 'string').map(([k]) => k);
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify({ ok: !failed.length && !threw.length && !errors.length, failed: [...failed, ...threw], errors, results }, null, 2) + ':END';
+    })();
+  </script>
+</body>
+
+</html>

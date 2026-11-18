@@ -70,6 +70,15 @@ export interface RowSpec {
   model: ElementModel;
   /** Placeholder text instead of the shortened computed value. */
   placeholder?: string;
+  /**
+   * What the row is called, when not its CSS name: Typography's "Line distance". The CSS name is
+   * then the name's tooltip, and the cascade popover the name opens says it too.
+   */
+  label?: string;
+  /** Drawn as a detail of the row before it, indented. */
+  sub?: boolean;
+  /** A segmented control instead of the value field, with these options. */
+  segments?: Array<{ value: string; label?: string; icon?: string; title?: string; ariaLabel?: string }>;
   /** The `data-declarations` id of the list the row sits in. */
   listId: string;
   /**
@@ -587,7 +596,7 @@ export function renderPropertyRow(spec: RowSpec, host: StylesHost): TemplateResu
     else engine.setImportance(shown.source.entry.target, shown.via ?? property, false);
   };
 
-  const segments = SEGMENTED[property];
+  const segments = spec.segments ?? SEGMENTED[property];
   const menuId = `dest-${rowId}`;
   const menuOpen = host.ui.menu?.id === menuId;
   const control = segments
@@ -595,7 +604,7 @@ export function renderPropertyRow(spec: RowSpec, host: StylesHost): TemplateResu
         .options=${segments}
         .value=${value || computed}
         clearable
-        label=${property}
+        label=${spec.label ?? property}
         @segment-change=${(event: CustomEvent<{ value: string }>) => commit(event.detail.value)}
       ></heo-segmented>`
     : html`<heo-value-field
@@ -679,8 +688,8 @@ export function renderPropertyRow(spec: RowSpec, host: StylesHost): TemplateResu
       if (expanded) host.focusSelector(`.row[data-row="${CSS.escape(rowId)}"] .dots`);
     },
     // The name and its source open the cascade too: one target, with the dot's tooltip over all of it.
-    name: html`<span class="name">
-        <span class="pn">${property}</span>
+    name: html`<span class="name" title=${spec.label ? property : ''}>
+        <span class=${spec.label ? `pn label${spec.sub ? ' sub' : ''}` : 'pn'}>${spec.label ?? property}</span>
         ${from ? html`<span class="from">${shortLabel(from)}</span>` : nothing}
       </span>`,
   })}
@@ -741,6 +750,21 @@ export const propertyRowStyles: CSSResult = css`
     max-width: 100%;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  /* A row named for what it does (Typography's "Line distance"): in the panel's own type. */
+  .row .pn.label {
+    font-family: var(--heo-font, inherit);
+    font-size: 11px;
+    letter-spacing: 0;
+    text-transform: none;
+  }
+  /* A labelled row has no room for the source hint: its dot and the cascade popover say it. */
+  .row .pn.label ~ .from {
+    display: none;
+  }
+  .row .pn.label.sub {
+    padding-left: 10px;
+    color: var(--heo-text-dim);
   }
   /* The selector the value arrived from: an edit here overrides it rather than changing it. */
   .row .from {

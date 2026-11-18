@@ -101,6 +101,11 @@ const PATHS: Record<string, string> = {
   grid: 'M2.6 2.6h4.6v4.6H2.6zM8.8 2.6h4.6v4.6H8.8zM2.6 8.8h4.6v4.6H2.6zM8.8 8.8h4.6v4.6H8.8z',
   masonry: 'M2.6 2.6h4.6v6.6H2.6zM8.8 2.6h4.6v3.6H8.8zM2.6 10.8h4.6v2.6H2.6zM8.8 7.8h4.6v5.6H8.8z',
   center: 'M2.6 2.6h10.8v10.8H2.6zM5.8 6.4h4.4v3.2H5.8z',
+  // Text alignment: three lines each, the short ones placed as the text would be.
+  alignLeft: 'M2.6 4h10.8M2.6 8h6.8M2.6 12h9',
+  alignCenter: 'M2.6 4h10.8M4.6 8h6.8M3.5 12h9',
+  alignRight: 'M2.6 4h10.8M6.6 8h6.8M4.4 12h9',
+  alignJustify: 'M2.6 4h10.8M2.6 8h10.8M2.6 12h10.8',
   sidebar: 'M2.6 3.4h10.8v9.2H2.6zM6.4 3.4v9.2',
   cluster: 'M2.8 6.4h3.4v3.2H2.8zM7.4 6.4h2.4v3.2H7.4zM11 6.4h2.2v3.2H11z',
   card: 'M2.6 3.4h10.8v9.2H2.6zM4.8 6.2h6.4M4.8 8.6h4.4',
