@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PROTOTYPE — Typography editor</title>
+  <!--
+  PROTOTYPE — throwaway, not part of the overlay build. Open the file directly in a browser.
+
+  Question: what replaces Typography's eleven rows with an editor at least as good as Figma's text
+  panel — font picker with in-place previews, fallback stack, -webkit-text-stroke, decoration
+  details, OpenType features, variable axes — while staying a Styles-panel section?
+
+  Shared by every variant: the font picker (one popover, opened from the family control):
+    - tabs In this page | System | Web fonts; search; categories (Sans, Serif, Mono, Display, Hand);
+    - every family drawn in its own face; hovering one previews it on the selected text in the page,
+      without writing anything; Enter or a click picks it;
+    - a web font is previewed by loading only the glyphs of its name (Google Fonts' `text=` request)
+      and, on hover, the page text's glyphs — nothing is installed. Picking one offers "Add to the
+      project" (an @font-face / <link> the save writes) or "Preview only";
+    - the fallback stack is edited beside the family: chips, drag to order, a generic family last,
+      and a note when a fallback's metrics differ a lot (the text would jump while the font loads).
+  What differs is the structure:
+    A — Inspector: Figma's text panel, dense, everything visible, More ▾ for the rest.
+    B — Specimen: a live sample of the element's own text on top, tabs Font | Spacing | Paint |
+        OpenType below it.
+    C — Styles first: the design system's text styles as rows drawn in their own style; the
+        element's style picked or detached, and its overrides listed.
+  Variants: ?variant=A (default) | B | C, the bottom bar, or ← →.
+-->
+  <style>
+    :root {
+      --bg: #ffffff; --sunken: #f3f4f7; --raised: #ffffff; --hover: #eef0f5;
+      --text: #1f2330; --dim: #4b5263; --faint: #6b7385; --line: #e3e6ec; --line2: #d3d7e0;
+      --accent: #6366f1; --accent-soft: color-mix(in oklab, var(--accent) 12%, transparent);
+      --accent-line: color-mix(in oklab, var(--accent) 45%, transparent); --warn: #b45309;
+      --r-sm: 7px; --font: Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+      --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; }
+    body { display: grid; grid-template-columns: minmax(0, 1fr) 380px; font-family: var(--font); background: #e9ecf2; color: var(--text); }
+    button, input, select { font: inherit; }
+    .stage { padding: 24px 32px 90px; overflow: auto; }
+    .stage h1 { font: 600 11px/1 var(--font); letter-spacing: .08em; text-transform: uppercase; color: #64748b; margin: 0 0 14px; }
+    .site { border-radius: 14px; background: #fffdf8; padding: 36px 40px; border: 1px solid #e7e2d6; }
+    .site .kicker { font: 600 12px/1 system-ui; letter-spacing: .14em; text-transform: uppercase; color: #a16207; margin-bottom: 12px; }
+    #target { margin: 0 0 14px; outline: 2px solid var(--accent); outline-offset: 6px; }
+    .site p { margin: 0; color: #57534e; font: 16px/1.6 Georgia, serif; max-width: 520px; }
+    .out { margin-top: 16px; background: #111827; color: #e5e7eb; border-radius: 10px; padding: 12px 14px; font: 11.5px/1.6 var(--mono); white-space: pre-wrap; }
+    .out b { color: #a5b4fc; font-weight: 500; } .out .c { color: #8b93a5; }
+    .question { margin-top: 12px; color: #475569; font-size: 13px; line-height: 1.5; max-width: 720px; }
+    /* panel */
+    .panel { position: relative; background: var(--bg); border-left: 1px solid var(--line); padding: 12px 14px 90px; font-size: 12px; overflow: auto; }
+    .sec { border-top: 1px solid var(--line); padding: 10px 0; }
+    .sechead { display: flex; align-items: center; gap: 7px; font: 600 10.5px var(--font); letter-spacing: .06em; text-transform: uppercase; color: var(--dim); }
+    .sechead .n { margin-left: auto; color: var(--faint); font-weight: 500; text-transform: none; letter-spacing: 0; }
+    .body { display: grid; gap: 8px; margin-top: 10px; min-width: 0; }
+    .group { display: flex; align-items: center; gap: 6px; color: var(--faint); font-size: 9.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; margin-top: 2px; }
+    .group::after { content: ''; flex: 1; border-top: 1px solid var(--line); }
+    .row { display: grid; gap: 6px; min-width: 0; }
+    .g2 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+    .g3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .gfam { grid-template-columns: minmax(0, 1fr) 110px; }
+    .f { display: flex; align-items: center; gap: 6px; height: 28px; min-width: 0; padding: 0 8px; border: 1px solid var(--line2); border-radius: var(--r-sm); background: var(--raised); }
+    .f .k { color: var(--faint); font: 10px var(--mono); flex: none; }
+    .f .v { flex: 1; min-width: 0; font: 11.5px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .f input { all: unset; flex: 1; min-width: 0; font: 11.5px var(--mono); }
+    .f .u { color: var(--faint); font: 10px var(--mono); }
+    .f .tok { color: var(--accent); font: 10px var(--mono); }
+    .f.btn { cursor: pointer; }
+    .f.btn:hover { border-color: var(--accent-line); }
+    .f .chev { color: var(--faint); font-size: 10px; }
+    .fam .v { font: 14px/1 var(--fam, system-ui); text-align: left; }
+    .seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; padding: 2px; border-radius: 8px; background: var(--sunken); border: 1px solid var(--line); }
+    .seg button { all: unset; text-align: center; padding: 3px 0; border-radius: 6px; font-size: 11.5px; color: var(--dim); cursor: pointer; }
+    .seg button[aria-pressed=true] { background: var(--raised); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgb(0 0 0 / 10%); }
+    .icons { display: flex; gap: 4px; flex-wrap: wrap; }
+    .ib { all: unset; display: grid; place-items: center; min-width: 28px; height: 26px; padding: 0 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--raised); color: var(--dim); font-size: 12px; cursor: pointer; }
+    .ib[aria-pressed=true] { border-color: var(--accent-line); background: var(--accent-soft); color: var(--text); }
+    .sw { width: 14px; height: 14px; border-radius: 4px; border: 1px solid var(--line2); flex: none; }
+    .stack { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+    .chip { display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 6px 0 4px; border-radius: 999px; border: 1px solid var(--line2); background: var(--sunken); font: 11px var(--fam, var(--mono)); }
+    .chip .g { color: var(--faint); font-size: 10px; cursor: grab; }
+    .chip .x { color: var(--faint); cursor: pointer; font-size: 10px; }
+    .chip.generic { border-style: dashed; background: transparent; color: var(--dim); }
+    .chip.first { border-color: var(--accent-line); background: var(--accent-soft); font-weight: 600; }
+    .chip.add { border-style: dashed; background: transparent; color: var(--faint); cursor: pointer; font-family: var(--mono); }
+    .hint { color: var(--faint); font-size: 10.5px; line-height: 1.45; margin: 0; }
+    .hint.warn { color: var(--warn); }
+    .more { all: unset; color: var(--accent); font-size: 11.5px; cursor: pointer; }
+    .feat { display: flex; flex-wrap: wrap; gap: 4px; }
+    .feat button { all: unset; font: 10.5px var(--mono); padding: 3px 7px; border-radius: 6px; border: 1px solid var(--line); cursor: pointer; color: var(--dim); background: var(--raised); }
+    .feat button[aria-pressed=true] { border-color: var(--accent-line); background: var(--accent-soft); color: var(--text); }
+    .axis { display: grid; grid-template-columns: 38px minmax(0, 1fr) 44px; gap: 8px; align-items: center; font: 10.5px var(--mono); color: var(--dim); }
+    .axis input[type=range] { width: 100%; accent-color: var(--accent); }
+    .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); }
+    .tabs button { all: unset; padding: 6px 9px; font-size: 11.5px; color: var(--dim); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+    .tabs button[aria-pressed=true] { color: var(--text); font-weight: 600; border-color: var(--accent); }
+    .specimen { border: 1px solid var(--line); border-radius: 10px; background: #fffdf8; padding: 12px; min-height: 92px; overflow: hidden; }
+    .specimen .s { color: #1c1917; overflow-wrap: anywhere; }
+    .specimen .meta { margin-top: 8px; display: flex; justify-content: space-between; color: var(--faint); font: 10px var(--mono); }
+    .styles { display: grid; gap: 2px; }
+    .srow { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid transparent; border-radius: var(--r-sm); cursor: pointer; }
+    .srow:hover { background: var(--hover); }
+    .srow[aria-current=true] { border-color: var(--accent-line); background: var(--accent-soft); }
+    .srow .p { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: #1c1917; }
+    .srow .m { color: var(--faint); font: 10px var(--mono); text-align: right; }
+    .over { display: grid; gap: 3px; padding: 8px; border: 1px dashed var(--accent-line); border-radius: var(--r-sm); }
+    .over .o { display: grid; grid-template-columns: 110px minmax(0, 1fr) 18px; gap: 6px; font: 10.5px var(--mono); color: var(--dim); align-items: center; }
+    .over .o i { font-style: normal; color: var(--text); }
+    /* the font picker */
+    .picker { position: absolute; left: 14px; right: 14px; z-index: 20; border: 1px solid var(--line2); border-radius: 12px; background: var(--bg); box-shadow: 0 22px 48px -14px rgb(15 23 42 / 40%); display: grid; gap: 8px; padding: 10px; animation: pop .14s ease-out; }
+    @keyframes pop { from { opacity: 0; transform: scale(.97); } }
+    .phead { display: flex; align-items: center; gap: 7px; }
+    .phead .t { font-weight: 600; } .phead .sp { flex: 1; }
+    .x2 { all: unset; display: grid; place-items: center; width: 22px; height: 22px; border-radius: 5px; color: var(--faint); cursor: pointer; }
+    .x2:hover { background: var(--hover); }
+    .cats { display: flex; gap: 4px; flex-wrap: wrap; }
+    .cats button { all: unset; font-size: 10.5px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--dim); cursor: pointer; }
+    .cats button[aria-pressed=true] { border-color: var(--accent-line); background: var(--accent-soft); color: var(--text); }
+    .flist { max-height: 300px; overflow: auto; display: grid; gap: 1px; margin: 0 -4px; padding: 0 4px; }
+    .fi { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 6px 8px; border-radius: var(--r-sm); cursor: pointer; }
+    .fi:hover, .fi[aria-selected=true] { background: var(--hover); }
+    .fi[aria-current=true] { box-shadow: inset 0 0 0 1px var(--accent-line); }
+    .fi .nm { font-size: 17px; line-height: 1.15; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: #111827; }
+    .fi .tag { color: var(--faint); font: 9.5px var(--mono); text-align: right; }
+    .fi .tag b { color: var(--accent); font-weight: 600; }
+    .pfoot { display: flex; align-items: center; gap: 6px; border-top: 1px solid var(--line); padding-top: 8px; }
+    .pfoot .hint { flex: 1; }
+    .bt { all: unset; display: inline-flex; align-items: center; height: 26px; padding: 0 10px; border-radius: var(--r-sm); border: 1px solid var(--line2); font-size: 11.5px; font-weight: 600; cursor: pointer; background: var(--raised); }
+    .bt.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .previewing { position: fixed; top: 14px; left: 50%; transform: translateX(-60%); padding: 4px 10px; border-radius: 999px; background: #111827; color: #fff; font: 600 11px var(--font); z-index: 60; }
+    [hidden] { display: none !important; }
+    .proto-bar { position: fixed; left: calc(50% - 190px); bottom: 18px; transform: translateX(-50%); display: flex; align-items: center; gap: 4px; padding: 4px; border-radius: 999px; background: #111; color: #fff; font: 600 12px var(--font); z-index: 50; }
+    .proto-bar button { border: 0; background: #333; color: #fff; border-radius: 999px; width: 28px; height: 28px; cursor: pointer; }
+    .proto-bar span { padding: 0 10px; min-width: 200px; text-align: center; }
+  </style>
+</head>
+<body>
+  <main class="stage">
+    <h1>Typography editor — prototype</h1>
+    <div class="site">
+      <div class="kicker">Studio journal</div>
+      <h2 id="target">Clay remembers every hand that shaped it</h2>
+      <p>Saturday workshops for beginners: wheel, glaze and kiln. Bring an apron and an afternoon.</p>
+    </div>
+    <div class="out" id="out"></div>
+    <p class="question" id="question">The heading is selected. Open the family control to see the font picker; hover a family to preview it on the heading (nothing is written until you pick).</p>
+    <div class="previewing" id="previewing" hidden></div>
+  </main>
+
+  <aside class="panel" id="panel">
+    <div class="sec"><div class="sechead">▸ Layout</div></div>
+    <div class="sec" id="typo"></div>
+    <div class="sec"><div class="sechead">▸ Background</div></div>
+  </aside>
+
+  <div class="proto-bar" role="toolbar" aria-label="Prototype variant switcher">
+    <button type="button" data-step="-1" aria-label="Previous variant">←</button>
+    <span id="proto-label"></span>
+    <button type="button" data-step="1" aria-label="Next variant">→</button>
+  </div>
+
+  <script>
+    const NAMES = { A: 'Inspector', B: 'Specimen', C: 'Styles first' };
+    const KEYS = Object.keys(NAMES);
+    let variant = new URLSearchParams(location.search).get('variant');
+    if (!KEYS.includes(variant)) variant = 'A';
+
+    /*
+     * The catalogue. `web` families are previewed from Google Fonts' CSS2 API with `text=` (only the
+     * glyphs shown), loaded on demand: the mock works offline, it just draws those in a fallback.
+     */
+    const FONTS = [
+      { name: 'Fraunces', cat: 'Serif', src: 'page', axes: { wght: [100, 900], opsz: [9, 144], SOFT: [0, 100] } },
+      { name: 'Inter', cat: 'Sans', src: 'page', axes: { wght: [100, 900], opsz: [14, 32] } },
+      { name: 'Georgia', cat: 'Serif', src: 'system' },
+      { name: 'Helvetica Neue', cat: 'Sans', src: 'system' },
+      { name: 'Avenir Next', cat: 'Sans', src: 'system' },
+      { name: 'Menlo', cat: 'Mono', src: 'system' },
+      { name: 'Didot', cat: 'Display', src: 'system' },
+      { name: 'Playfair Display', cat: 'Serif', src: 'web', axes: { wght: [400, 900] } },
+      { name: 'DM Serif Display', cat: 'Display', src: 'web' },
+      { name: 'Space Grotesk', cat: 'Sans', src: 'web', axes: { wght: [300, 700] } },
+      { name: 'Instrument Serif', cat: 'Serif', src: 'web' },
+      { name: 'JetBrains Mono', cat: 'Mono', src: 'web', axes: { wght: [100, 800] } },
+      { name: 'Caveat', cat: 'Hand', src: 'web', axes: { wght: [400, 700] } },
+      { name: 'Bricolage Grotesque', cat: 'Display', src: 'web', axes: { wght: [200, 800], wdth: [75, 100] } },
+    ];
+    const GENERIC = { Serif: 'serif', Sans: 'sans-serif', Mono: 'monospace', Display: 'serif', Hand: 'cursive' };
+    const TEXT_STYLES = [
+      { name: 'Display', fam: 'Fraunces', size: 48, lh: 1.05, ls: -0.02, w: 600 },
+      { name: 'Heading 1', fam: 'Fraunces', size: 36, lh: 1.1, ls: -0.01, w: 600 },
+      { name: 'Heading 2', fam: 'Fraunces', size: 28, lh: 1.15, ls: 0, w: 600 },
+      { name: 'Body', fam: 'Georgia', size: 16, lh: 1.6, ls: 0, w: 400 },
+      { name: 'Caption', fam: 'Inter', size: 12, lh: 1.4, ls: 0.02, w: 500 },
+      { name: 'Overline', fam: 'Inter', size: 12, lh: 1, ls: 0.14, w: 600, tt: 'uppercase' },
+    ];
+
+    const s = {
+      fam: 'Fraunces', stack: ['Georgia', 'serif'], size: 36, sizeTok: '--text-3xl', w: 600, italic: false,
+      lh: 1.1, ls: -0.01, ws: 0, align: 'left', tt: 'none', deco: 'none', decoStyle: 'solid', decoColor: '#a16207', decoThick: 2, decoOff: 4,
+      color: '#1c1917', stroke: 0, strokeColor: '#1c1917', wrap: 'balance', indent: 0, hyph: 'manual',
+      feats: { liga: true, kern: true, tnum: false, smcp: false, ss01: false, frac: false },
+      axes: { opsz: 72, SOFT: 30 }, textStyle: 'Heading 1', detached: true,
+      tab: 'Font', more: false, picker: false, ptab: 'page', pcat: 'All', q: '', hover: null,
+    };
+
+    // ------------------------------------------------------------------ web font previews
+    const loaded = new Set();
+    function preview(font, text) {
+      if (font.src !== 'web') return;
+      const key = `${font.name}|${text ?? ''}`;
+      if (loaded.has(key)) return;
+      loaded.add(key);
+      const link = document.createElement('link');
+      link.rel = 'stylesheet';
+      // Only the glyphs needed: the name in the list, the page's text on hover. Nothing installed.
+      link.href = `https://fonts.googleapis.com/css2?family=${encodeURIComponent(font.name)}${font.axes?.wght ? `:wght@${font.axes.wght[0]}..${font.axes.wght[1]}` : ''}&text=${encodeURIComponent(text ?? font.name)}&display=swap`;
+      document.head.append(link);
+    }
+    const famCss = (name) => {
+      const f = FONTS.find((one) => one.name === name);
+      return `'${name}', ${s.stack.map((one) => (/^(serif|sans-serif|monospace|cursive|system-ui)$/.test(one) ? one : `'${one}'`)).join(', ')}${f && !s.stack.includes(GENERIC[f.cat]) ? `, ${GENERIC[f.cat]}` : ''}`;
+    };
+
+    function paint() {
+      const el = document.getElementById('target');
+      const fam = s.hover ?? s.fam;
+      const varSet = Object.entries(s.axes).filter(([k]) => (FONTS.find((f) => f.name === fam)?.axes ?? {})[k]).map(([k, v]) => `"${k}" ${v}`).join(', ');
+      const feats = Object.entries(s.feats).filter(([k, v]) => v !== (k === 'liga' || k === 'kern')).map(([k, v]) => `"${k}" ${v ? 1 : 0}`).join(', ');
+      Object.assign(el.style, {
+        fontFamily: famCss(fam), fontSize: `${s.size}px`, fontWeight: s.w, fontStyle: s.italic ? 'italic' : 'normal',
+        lineHeight: s.lh, letterSpacing: `${s.ls}em`, wordSpacing: `${s.ws}em`, textAlign: s.align, textTransform: s.tt,
+        textDecorationLine: s.deco, textDecorationStyle: s.decoStyle, textDecorationColor: s.decoColor,
+        textDecorationThickness: `${s.decoThick}px`, textUnderlineOffset: `${s.decoOff}px`, color: s.color,
+        webkitTextStroke: s.stroke ? `${s.stroke}px ${s.strokeColor}` : '', textWrap: s.wrap, textIndent: `${s.indent}em`, hyphens: s.hyph,
+        fontVariationSettings: varSet || 'normal', fontFeatureSettings: feats || 'normal',
+      });
+      const tag = document.getElementById('previewing');
+      tag.hidden = !s.hover;
+      tag.textContent = s.hover ? `Previewing ${s.hover} — nothing written` : '';
+      const lines = [
+        `<b>font-family</b>: ${famCss(s.fam)};`,
+        `<b>font-size</b>: var(${s.sizeTok}); <span class="c">/* ${s.size}px */</span>`,
+        `<b>font-weight</b>: ${s.w};${s.italic ? '\n  <b>font-style</b>: italic;' : ''}`,
+        `<b>line-height</b>: ${s.lh};`,
+        `<b>letter-spacing</b>: ${s.ls}em;`,
+        s.ws ? `<b>word-spacing</b>: ${s.ws}em;` : '',
+        s.tt !== 'none' ? `<b>text-transform</b>: ${s.tt};` : '',
+        s.deco !== 'none' ? `<b>text-decoration</b>: ${s.deco} ${s.decoStyle} ${s.decoColor} ${s.decoThick}px;\n  <b>text-underline-offset</b>: ${s.decoOff}px;` : '',
+        `<b>color</b>: ${s.color};`,
+        s.stroke ? `<b>-webkit-text-stroke</b>: ${s.stroke}px ${s.strokeColor};` : '',
+        `<b>text-wrap</b>: ${s.wrap};`,
+        varSet ? `<b>font-variation-settings</b>: ${varSet};` : '',
+        feats ? `<b>font-feature-settings</b>: ${feats};` : '',
+      ].filter(Boolean);
+      document.getElementById('out').innerHTML = `h2 {\n  ${lines.join('\n  ')}\n}`;
+    }
+
+    // ------------------------------------------------------------------ shared pieces
+    const fam = () => `<div class="row gfam">
+        <button class="f btn fam" type="button" data-open-picker style="--fam:${famCss(s.fam)}" aria-haspopup="dialog" title="Pick a font: previews in place"><span class="v">${s.fam}</span><span class="chev">▾</span></button>
+        <label class="f"><select style="all:unset;flex:1;font:11.5px var(--mono)" data-set="w">${[300, 400, 500, 600, 700, 800].map((w) => `<option ${w === s.w ? 'selected' : ''} value="${w}">${w} ${({ 300: 'Light', 400: 'Regular', 500: 'Medium', 600: 'Semibold', 700: 'Bold', 800: 'Black' })[w]}</option>`).join('')}</select></label>
+      </div>`;
+    const stack = () => `<div class="stack" aria-label="Fallbacks, in order">
+        <span class="chip first" style="--fam:'${s.fam}'">${s.fam}</span>
+        ${s.stack.map((one, i) => `<span class="chip${/^(serif|sans-serif|monospace|cursive|system-ui)$/.test(one) ? ' generic' : ''}" style="--fam:${/^(serif|sans-serif|monospace|cursive)$/.test(one) ? one : `'${one}'`}"><span class="g">⋮⋮</span>${one}<span class="x" data-unstack="${i}">✕</span></span>`).join('')}
+        <span class="chip add" data-addfallback>+ fallback</span></div>
+      ${s.stack[0] === 'Georgia' ? `<p class="hint">Georgia is a close match to Fraunces (x-height within 4%): little shift while it loads.</p>` : ''}`;
+    const num = (k, label, v, unit, tok) => `<label class="f" title="${label}"><span class="k">${label}</span><input value="${v}" data-num="${k}" aria-label="${label}"><span class="u">${unit}</span>${tok ? `<span class="tok">${tok.replace('--text-', '')}</span>` : ''}</label>`;
+    const metrics = () => `<div class="row g3">${num('size', 'Size', s.size, 'px', s.sizeTok)}${num('lh', 'Line', s.lh, '×')}${num('ls', 'Letter', s.ls, 'em')}</div>`;
+    const align = () => `<div class="seg" role="group" aria-label="Align">${['left', 'center', 'right', 'justify'].map((a) => `<button type="button" data-align="${a}" aria-pressed="${s.align === a}" title="${a}">${({ left: '⟸', center: '≡', right: '⟹', justify: '☰' })[a]}</button>`).join('')}</div>`;
+    const caseDeco = () => `<div class="icons">
+        ${[['none', '—'], ['uppercase', 'AA'], ['lowercase', 'aa'], ['capitalize', 'Aa']].map(([v, t]) => `<button class="ib" type="button" data-tt="${v}" aria-pressed="${s.tt === v}" title="text-transform: ${v}">${t}</button>`).join('')}
+        <span style="width:6px"></span>
+        <button class="ib" type="button" data-italic aria-pressed="${s.italic}" title="font-style: italic"><i>I</i></button>
+        ${[['underline', '<u>U</u>'], ['line-through', '<s>S</s>'], ['overline', '<span style="text-decoration:overline">O</span>']].map(([v, t]) => `<button class="ib" type="button" data-deco="${v}" aria-pressed="${s.deco === v}" title="text-decoration-line: ${v}">${t}</button>`).join('')}</div>`;
+    const decoDetail = () => s.deco === 'none' ? '' : `<div class="row g3">
+        <label class="f"><select style="all:unset;flex:1;font:11px var(--mono)" data-set="decoStyle">${['solid', 'dotted', 'dashed', 'wavy', 'double'].map((v) => `<option ${v === s.decoStyle ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
+        ${num('decoThick', 'Thick', s.decoThick, 'px')}${num('decoOff', 'Offset', s.decoOff, 'px')}</div>
+        <label class="f"><span class="sw" style="background:${s.decoColor}"></span><span class="v">${s.decoColor}</span><span class="k">decoration color</span></label>`;
+    const paintRows = () => `<label class="f"><span class="sw" style="background:${s.color}"></span><span class="v">${s.color}</span><span class="k">color</span></label>
+        <div class="row g2">${num('stroke', 'Stroke', s.stroke, 'px')}<label class="f"><span class="sw" style="background:${s.strokeColor}"></span><span class="v">${s.strokeColor}</span></label></div>
+        <p class="hint">-webkit-text-stroke: every browser draws it; outlined text wants a transparent color.</p>
+        <button class="more" type="button" data-hollow>Make it outlined text</button>`;
+    const flow = () => `<div class="row g2">
+        <label class="f"><span class="k">wrap</span><select style="all:unset;flex:1;font:11px var(--mono)" data-set="wrap">${['wrap', 'balance', 'pretty', 'nowrap'].map((v) => `<option ${v === s.wrap ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
+        <label class="f"><span class="k">hyphens</span><select style="all:unset;flex:1;font:11px var(--mono)" data-set="hyph">${['manual', 'auto', 'none'].map((v) => `<option ${v === s.hyph ? 'selected' : ''}>${v}</option>`).join('')}</select></label></div>
+        <div class="row g2">${num('ws', 'Word', s.ws, 'em')}${num('indent', 'Indent', s.indent, 'em')}</div>`;
+    const opentype = () => {
+      const f = FONTS.find((one) => one.name === s.fam);
+      const axes = Object.entries(f?.axes ?? {}).filter(([k]) => k !== 'wght');
+      return `<div class="feat" role="group" aria-label="OpenType features">${Object.entries({ liga: 'Ligatures', kern: 'Kerning', tnum: 'Tabular 123', smcp: 'Small caps', ss01: 'Style set 1', frac: '½ Fractions' }).map(([k, label]) => `<button type="button" data-feat="${k}" aria-pressed="${s.feats[k]}" title="${k}">${label}</button>`).join('')}</div>
+        ${axes.length ? `<div class="group">Variable axes · ${s.fam}</div>${axes.map(([k, [lo, hi]]) => `<div class="axis"><span>${k}</span><input type="range" min="${lo}" max="${hi}" value="${s.axes[k] ?? lo}" data-axis="${k}"><span>${s.axes[k] ?? lo}</span></div>`).join('')}` : '<p class="hint">This font has no variable axes.</p>'}`;
+    };
+
+    // ------------------------------------------------------------------ variants
+    function variantA() {
+      return `${fam()}${metrics()}<div class="row g2">${align()}<span></span></div>${caseDeco()}${decoDetail()}
+        <div class="group">Fallbacks</div>${stack()}
+        <div class="group">Paint</div>${paintRows()}
+        <button class="more" type="button" data-more>${s.more ? 'Less ▴' : 'More: wrap, spacing, OpenType, axes ▾'}</button>
+        ${s.more ? `<div class="group">Flow</div>${flow()}<div class="group">OpenType</div>${opentype()}` : ''}`;
+    }
+    function specimen() {
+      const el = document.getElementById('target');
+      return `<div class="specimen"><div class="s" style="font-family:${famCss(s.fam).replace(/"/g, "'")};font-size:${Math.min(30, s.size)}px;font-weight:${s.w};font-style:${s.italic ? 'italic' : 'normal'};line-height:${s.lh};text-wrap:${s.wrap};letter-spacing:${s.ls}em;text-transform:${s.tt};-webkit-text-stroke:${s.stroke ? `${s.stroke}px ${s.strokeColor}` : '0'};color:${s.color};font-variation-settings:${getComputedStyle(el).fontVariationSettings}">${el.textContent}</div>
+        <div class="meta"><span>${s.fam} ${s.w}${s.italic ? ' italic' : ''}</span><span>${s.size}/${Math.round(s.size * s.lh)} · ${s.ls}em</span></div></div>`;
+    }
+    function variantB() {
+      const tabs = ['Font', 'Spacing', 'Paint', 'OpenType'];
+      const body = { Font: `${fam()}<div class="group">Fallbacks</div>${stack()}${caseDeco()}${decoDetail()}`, Spacing: `${metrics()}${align()}${flow()}`, Paint: paintRows(), OpenType: opentype() }[s.tab];
+      return `${specimen()}<div class="tabs" role="tablist">${tabs.map((t) => `<button type="button" data-tab="${t}" aria-pressed="${s.tab === t}">${t}</button>`).join('')}</div><div class="body" style="margin-top:4px">${body}</div>`;
+    }
+    function variantC() {
+      const st = TEXT_STYLES.find((one) => one.name === s.textStyle);
+      const overrides = st ? [
+        st.fam !== s.fam && ['font-family', s.fam],
+        st.size !== s.size && ['font-size', `${s.size}px`],
+        st.ls !== s.ls && ['letter-spacing', `${s.ls}em`],
+        s.stroke && ['-webkit-text-stroke', `${s.stroke}px`],
+        s.deco !== 'none' && ['text-decoration', s.deco],
+      ].filter(Boolean) : [];
+      return `<div class="group">Text styles <span style="margin-left:auto;text-transform:none;letter-spacing:0;font-weight:500">from your tokens</span></div>
+        <div class="styles">${TEXT_STYLES.map((t) => `<div class="srow" data-style="${t.name}" aria-current="${t.name === s.textStyle}">
+          <span class="p" style="font-family:'${t.fam}', Georgia, serif;font-size:${Math.min(22, t.size)}px;font-weight:${t.w};letter-spacing:${t.ls}em;text-transform:${t.tt ?? 'none'}">${t.name}</span>
+          <span class="m">${t.fam} · ${t.size}/${t.lh}</span></div>`).join('')}
+          <div class="srow" data-newstyle><span class="p" style="color:var(--accent);font-size:12px">+ Save this element's text as a style…</span><span></span></div></div>
+        ${overrides.length ? `<div class="over"><div class="group" style="margin:0">${overrides.length} overrides on ${s.textStyle}</div>${overrides.map(([k, v]) => `<div class="o"><span>${k}</span><i>${v}</i><span class="x2" title="Back to the style" style="width:18px;height:18px">↺</span></div>`).join('')}
+          <p class="hint">Edits below change this element only. <span class="more">Push to ${s.textStyle}</span> updates every element using it.</p></div>` : ''}
+        <div class="group">${s.textStyle}, here</div>${fam()}${metrics()}${caseDeco()}
+        <button class="more" type="button" data-more>${s.more ? 'Less ▴' : 'Fallbacks, paint, OpenType ▾'}</button>
+        ${s.more ? `${stack()}${paintRows()}${opentype()}` : ''}`;
+    }
+
+    // ------------------------------------------------------------------ the font picker
+    function picker() {
+      const tabs = { page: 'In this page', system: 'System', web: 'Web fonts' };
+      const list = FONTS.filter((f) => f.src === s.ptab && (s.pcat === 'All' || f.cat === s.pcat) && f.name.toLowerCase().includes(s.q.toLowerCase()));
+      list.forEach((f) => preview(f));
+      return `<div class="picker" role="dialog" aria-label="Font picker" style="top:${s.pickerTop}px">
+        <div class="phead"><span class="t">Font</span><span class="sp"></span><button class="x2" type="button" data-close-picker aria-label="Close">✕</button></div>
+        <label class="f"><span class="k">⌕</span><input placeholder="Search fonts" value="${s.q}" data-q aria-label="Search fonts"></label>
+        <div class="seg">${Object.entries(tabs).map(([k, t]) => `<button type="button" data-ptab="${k}" aria-pressed="${s.ptab === k}">${t}</button>`).join('')}</div>
+        <div class="cats">${['All', 'Sans', 'Serif', 'Mono', 'Display', 'Hand'].map((c) => `<button type="button" data-pcat="${c}" aria-pressed="${s.pcat === c}">${c}</button>`).join('')}</div>
+        <div class="flist" role="listbox">${list.map((f) => `<div class="fi" role="option" data-font="${f.name}" aria-current="${f.name === s.fam}">
+            <span class="nm" style="font-family:'${f.name}', ${GENERIC[f.cat]}">${f.name}</span>
+            <span class="tag">${f.axes ? '<b>variable</b> · ' : ''}${f.cat}${f.src === 'web' ? ' · Google' : f.src === 'page' ? ' · @font-face' : ''}</span></div>`).join('') || '<p class="hint" style="padding:8px">No font matches.</p>'}</div>
+        <div class="pfoot"><p class="hint">${s.ptab === 'web' ? 'Previews load only the glyphs shown. Nothing is added until you pick and choose to.' : 'Hover to preview on the selected text; click to pick.'}</p></div>
+        ${s.pendingWeb ? `<div class="pfoot"><p class="hint"><b>${s.pendingWeb}</b> is a web font: add it to the project (a &lt;link&gt; the save writes), or keep it as a preview.</p><button class="bt" type="button" data-webonly>Preview only</button><button class="bt primary" type="button" data-webadd>Add</button></div>` : ''}
+      </div>`;
+    }
+
+    function render() {
+      document.getElementById('proto-label').textContent = `${variant} — ${NAMES[variant]}`;
+      const body = variant === 'A' ? variantA() : variant === 'B' ? variantB() : variantC();
+      const count = 12;
+      paint();
+      document.getElementById('typo').innerHTML = `<div class="sechead">▾ Typography <span class="n">${count} set${variant === 'C' ? ` · ${s.textStyle}` : ''}</span></div><div class="body">${variant === 'B' ? body : body}</div>${s.picker ? picker() : ''}`;
+      if (variant === 'B') document.querySelector('.specimen').outerHTML = specimen();
+      const url = new URL(location.href);
+      url.searchParams.set('variant', variant);
+      if (s.picker) url.searchParams.set('picker', '1'); else url.searchParams.delete('picker');
+      history.replaceState(null, '', url);
+    }
+
+    document.addEventListener('click', (e) => {
+      const t = e.target.closest('button, [data-font], [data-style], [data-unstack], [data-addfallback], [data-open-picker]');
+      if (!t) return;
+      const d = t.dataset;
+      if (d.step) { variant = KEYS[(KEYS.indexOf(variant) + Number(d.step) + KEYS.length) % KEYS.length]; render(); return; }
+      if (t.hasAttribute('data-open-picker')) {
+        const box = t.getBoundingClientRect();
+        const panel = document.getElementById('panel');
+        s.pickerTop = box.bottom - panel.getBoundingClientRect().top + panel.scrollTop + 4;
+        s.picker = !s.picker; render(); document.querySelector('[data-q]')?.focus(); return;
+      }
+      if (t.hasAttribute('data-close-picker')) { s.picker = false; s.hover = null; s.pendingWeb = null; render(); return; }
+      if (d.font) {
+        const f = FONTS.find((one) => one.name === d.font);
+        s.fam = f.name; s.hover = null;
+        if (f.src === 'web') { s.pendingWeb = f.name; preview(f, document.getElementById('target').textContent); } else { s.picker = false; }
+        render(); return;
+      }
+      if (t.hasAttribute('data-webadd') || t.hasAttribute('data-webonly')) { s.pendingWeb = null; s.picker = false; render(); return; }
+      if (d.ptab) { s.ptab = d.ptab; render(); return; }
+      if (d.pcat) { s.pcat = d.pcat; render(); return; }
+      if (d.align) { s.align = d.align; render(); return; }
+      if (d.tt) { s.tt = d.tt; render(); return; }
+      if (d.deco) { s.deco = s.deco === d.deco ? 'none' : d.deco; render(); return; }
+      if (t.hasAttribute('data-italic')) { s.italic = !s.italic; render(); return; }
+      if (d.feat) { s.feats[d.feat] = !s.feats[d.feat]; render(); return; }
+      if (d.tab) { s.tab = d.tab; render(); return; }
+      if (t.hasAttribute('data-more')) { s.more = !s.more; render(); return; }
+      if (t.hasAttribute('data-hollow')) { s.stroke = 1; s.strokeColor = '#1c1917'; s.color = 'transparent'; render(); return; }
+      if (d.unstack !== undefined) { s.stack.splice(Number(d.unstack), 1); render(); return; }
+      if (t.hasAttribute('data-addfallback')) { s.stack.splice(Math.max(0, s.stack.length - 1), 0, 'Times New Roman'); render(); return; }
+      if (d.style) { const st = TEXT_STYLES.find((one) => one.name === d.style); Object.assign(s, { textStyle: st.name, fam: st.fam, size: st.size, lh: st.lh, ls: st.ls, w: st.w, tt: st.tt ?? 'none' }); render(); }
+    });
+    // Hovering a family previews it on the page's text: loads its glyphs, writes nothing.
+    document.addEventListener('pointerover', (e) => {
+      const row = e.target.closest?.('[data-font]');
+      if (!row || s.hover === row.dataset.font) return;
+      const f = FONTS.find((one) => one.name === row.dataset.font);
+      preview(f, document.getElementById('target').textContent);
+      s.hover = f.name; paint();
+    });
+    document.addEventListener('pointerout', (e) => {
+      if (e.target.closest?.('.flist') && !e.relatedTarget?.closest?.('.flist')) { s.hover = null; paint(); }
+    });
+    document.addEventListener('input', (e) => {
+      const d = e.target.dataset;
+      if (d.q !== undefined) { s.q = e.target.value; render(); const q = document.querySelector('[data-q]'); q.focus(); q.setSelectionRange(q.value.length, q.value.length); return; }
+      if (d.axis) { s.axes[d.axis] = Number(e.target.value); e.target.nextElementSibling.textContent = e.target.value; paint(); return; }
+      if (d.num) { const n = Number(e.target.value); if (Number.isFinite(n)) { s[d.num] = n; paint(); } }
+    });
+    document.addEventListener('change', (e) => {
+      const d = e.target.dataset;
+      if (d.set) { s[d.set] = d.set === 'w' ? Number(e.target.value) : e.target.value; render(); }
+      if (d.num) render();
+    });
+    addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && s.picker) { s.picker = false; s.hover = null; render(); return; }
+      if (e.target.closest('input, select')) return;
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { variant = KEYS[(KEYS.indexOf(variant) + (e.key === 'ArrowRight' ? 1 : -1) + KEYS.length) % KEYS.length]; render(); }
+    });
+    if (new URLSearchParams(location.search).get('picker')) { s.picker = true; s.pickerTop = 96; s.ptab = new URLSearchParams(location.search).get('ptab') || 'page'; }
+    render();
+  </script>
+</body>
+</html>
