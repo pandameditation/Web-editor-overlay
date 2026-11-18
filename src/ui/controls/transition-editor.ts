@@ -129,7 +129,7 @@ export class HeoTransitionEditor extends LitElement {
       }
       .trow {
         display: grid;
-        grid-template-columns: 14px minmax(0, 118px) minmax(0, 1fr) auto;
+        grid-template-columns: minmax(0, 138px) minmax(0, 1fr) auto;
         align-items: center;
         gap: 6px;
         padding: 3px 4px;
@@ -151,11 +151,22 @@ export class HeoTransitionEditor extends LitElement {
         outline: 2px solid var(--heo-focus-ring);
         outline-offset: 1px;
       }
+      /* The grip and the name: one handle to move the row by. The track beside it is the timing's. */
+      .handle {
+        display: grid;
+        grid-template-columns: 14px minmax(0, 1fr);
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+        cursor: grab;
+      }
+      .handle:active {
+        cursor: grabbing;
+      }
       .grip {
         display: grid;
         place-items: center;
         color: var(--heo-text-faint);
-        cursor: grab;
       }
       .what {
         min-width: 0;
@@ -196,18 +207,43 @@ export class HeoTransitionEditor extends LitElement {
         background: var(--heo-accent);
         cursor: grab;
       }
+      .bar:active {
+        cursor: grabbing;
+      }
+      /*
+       * The hit areas are larger than what is drawn: a 12px bar and a 4px end were hard to land on.
+       * The bar is grabbed over the row's height, the end over 20px across it.
+       */
+      .bar::before {
+        content: '';
+        position: absolute;
+        inset: -8px 0;
+      }
       .bar.idle {
         background: color-mix(in oklab, var(--heo-accent) 40%, var(--heo-line-strong));
       }
+      /* The end: drawn 4px wide, grabbed over 20px, most of it past the bar so a short bar keeps a body. */
       .bar .end {
         position: absolute;
-        right: 0;
-        top: 0;
-        bottom: 0;
-        width: 6px;
+        z-index: 1;
+        right: -14px;
+        top: -8px;
+        bottom: -8px;
+        width: 20px;
+        cursor: ew-resize;
+      }
+      .bar .end::after {
+        content: '';
+        position: absolute;
+        right: 14px;
+        top: 8px;
+        bottom: 8px;
+        width: 4px;
         border-radius: 0 3px 3px 0;
-        background: rgb(255 255 255 / 45%);
-        cursor: e-resize;
+        background: rgb(255 255 255 / 55%);
+      }
+      .bar .end:hover::after {
+        background: #fff;
       }
       .playhead {
         position: absolute;
@@ -221,7 +257,7 @@ export class HeoTransitionEditor extends LitElement {
       }
       .scale {
         display: grid;
-        grid-template-columns: 14px minmax(0, 118px) minmax(0, 1fr) 18px;
+        grid-template-columns: minmax(0, 138px) minmax(0, 1fr) 18px;
         gap: 6px;
         padding: 0 5px;
         color: var(--heo-text-faint);
@@ -571,7 +607,6 @@ export class HeoTransitionEditor extends LitElement {
           class="trow"
           role="listitem"
           tabindex="0"
-          draggable="true"
           data-row=${index}
           aria-current=${index === this.picked ? 'true' : 'false'}
           aria-label=${`${one.property}: ${duration}ms after ${delay}ms. Alt and an arrow move it.`}
@@ -579,7 +614,6 @@ export class HeoTransitionEditor extends LitElement {
             this.picked = index;
           }}
           @keydown=${(event: KeyboardEvent) => this.#rowKey(event, index)}
-          @dragstart=${(event: DragEvent) => this.#dragStart(event, index)}
           @dragover=${(event: DragEvent) => this.#dragOver(event)}
           @dragleave=${(event: DragEvent) => (event.currentTarget as HTMLElement).classList.remove('over')}
           @drop=${(event: DragEvent) => this.#drop(event, index)}
@@ -587,21 +621,25 @@ export class HeoTransitionEditor extends LitElement {
             this.#dragFrom = null;
           }}
         >
-          <span class="grip" title="Drag to reorder">${icon('grip', 12)}</span>
-          <span class="what">
+          <span
+            class="handle"
+            draggable="true"
+            title="Drag to reorder"
+            @dragstart=${(event: DragEvent) => this.#dragStart(event, index)}
+          ><span class="grip">${icon('grip', 12)}</span><span class="what">
             <span>${one.property}</span>
             ${change
               ? html`<small title=${`${change.from} → ${change.to}`}>${change.from} → ${change.to}</small>`
               : html`<small class="none">${this.#current ? `${this.#current.label} does not change it` : 'no state changes it'}</small>`}
-          </span>
+          </span></span>
           <span class="track">
             <span
               class=${change ? 'bar' : 'bar idle'}
               data-bar=${index}
               style=${`left:${(delay / span) * 100}%;width:${(duration / span) * 100}%`}
-              title=${`${duration}ms after ${delay}ms. Drag to delay it; drag its end to lengthen it.`}
+              title=${`${duration}ms after ${delay}ms. Drag to delay it.`}
               @pointerdown=${(event: PointerEvent) => this.#dragBar(event, index)}
-            ><span class="end"></span></span>
+            ><span class="end" title="Drag to lengthen or shorten it"></span></span>
             <span class="playhead"></span>
           </span>
           <span @click=${(event: Event) => event.stopPropagation()}>${renderKill({
@@ -611,7 +649,7 @@ export class HeoTransitionEditor extends LitElement {
           })}</span>
         </div>`;
       })}
-      <div class="scale" aria-hidden="true"><span></span><span></span>
+      <div class="scale" aria-hidden="true"><span></span>
         <div><span>0</span><span>${quarter(1)}</span><span>${quarter(2)}</span><span>${quarter(3)}</span><span>${span}ms</span></div><span></span></div>
     </div>`;
   }
@@ -745,12 +783,15 @@ export class HeoTransitionEditor extends LitElement {
 
   #dragFrom: number | null = null;
 
+  /*
+   * The grip and the name move a row; the track does not. The whole row used to be draggable, and
+   * a press on the bar's end — meant to lengthen it — started moving the row instead: the drag
+   * event names the row, not the bar under the pointer, so the check that was meant to stop it
+   * never saw the bar. The track is the timing's alone now.
+   */
   #dragStart(event: DragEvent, index: number): void {
-    // A drag on a bar retimes it; on the trash it is a press.
-    if ((event.composedPath()[0] as HTMLElement).closest?.('.bar, .kill')) {
-      event.preventDefault();
-      return;
-    }
+    const row = (event.currentTarget as HTMLElement).closest<HTMLElement>('.trow');
+    if (row) event.dataTransfer?.setDragImage(row, 12, row.offsetHeight / 2);
     this.#dragFrom = index;
     event.dataTransfer?.setData('text/plain', `transition:${index}`);
     if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';

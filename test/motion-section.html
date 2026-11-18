@@ -108,7 +108,10 @@
             const bars = Array.from(ed().querySelectorAll('.bar'));
             return bars.length === 2 && parseFloat(bars[0].style.width) < parseFloat(bars[1].style.width);
           })(),
-          rowsCanBeDraggedAndRemoved: rows().every((row) => row.draggable && row.querySelector('.grip') && row.querySelector('.kill')),
+          rowsCanBeDraggedAndRemoved: rows().every((row) => row.querySelector('.handle')?.draggable && row.querySelector('.kill')),
+          // The grip and the name move a row; the track, its bar and the bar's end are the timing's.
+          theNameIsPartOfTheHandle: rows().every((row) => row.querySelector('.handle .grip') && row.querySelector('.handle .what')),
+          onlyTheGripDrags: rows().every((row) => !row.draggable && !row.querySelector('.track').closest('[draggable="true"]')),
           // What :hover changes and nothing transitions yet comes first, tagged with the state.
           addOffersTheStatesOtherChangeFirst: adds[0] === 'box-shadow' && /:hover/.test(flat(changed)),
           thenAllAndTheCommonOnes: adds.includes('all') && adds.includes('opacity') && adds.at(-1) === 'other',
@@ -165,6 +168,40 @@
         };
       });
 
+      await check('barEnd', async () => {
+        const before = names().join(',');
+        const end = ed().querySelectorAll('.bar .end')[0];
+        const box = end.getBoundingClientRect();
+        const track = end.closest('.track').getBoundingClientRect();
+        const pointer = (type, x) => end.dispatchEvent(new PointerEvent(type, { pointerId: 6, button: 0, clientX: x, clientY: box.top + box.height / 2, bubbles: true, composed: true }));
+        const x = box.left + box.width / 2;
+        pointer('pointerdown', x);
+        pointer('pointermove', x + track.width / 6);
+        await settle(60);
+        pointer('pointerup', x + track.width / 6);
+        await settle(500);
+        // What is under the pointer a little off the drawn shapes: still the bar, still its end.
+        // Hit testing only answers on screen, so the row is scrolled into view first.
+        end.closest('.trow').scrollIntoView({ block: 'center' });
+        await settle(100);
+        const bar = end.parentElement.getBoundingClientRect();
+        const hit = (x, y) => ed().elementFromPoint(x, y);
+        const aboveTheBar = hit(bar.left + Math.min(10, bar.width / 3), bar.top - 5);
+        const pastTheEnd = hit(bar.right + 10, bar.top + bar.height / 2);
+        const belowTheEnd = hit(bar.right + 2, bar.bottom + 5);
+        const lane = end.closest('.track').getBoundingClientRect();
+        const justLeftOfTheTrack = hit(lane.left - 3, lane.top + lane.height / 2);
+        return {
+          theEndIsEasyToGrab: box.width >= 20 && box.height >= 26,
+          theBarIsGrabbedAboveWhatIsDrawn: Boolean(aboveTheBar?.closest?.('.bar')) && !aboveTheBar.closest('.end'),
+          theEndIsGrabbedPastAndBelowIt: Boolean(pastTheEnd?.closest?.('.end')) && Boolean(belowTheEnd?.closest?.('.end')),
+          // Left of the track is the row's handle (or the gap), never the timing.
+          noOverlapWithTheHandle: !justLeftOfTheTrack?.closest?.('.bar') && Boolean(justLeftOfTheTrack?.closest?.('.trow')),
+          draggingTheEndLengthensIt: /^background-color \d+ms ease-out/.test(ruleTransition()) && !/^background-color var\(--motion-fast\)/.test(ruleTransition()),
+          andDoesNotMoveTheRow: names().join(',') === before,
+        };
+      });
+
       await check('order', async () => {
         rows()[0].focus();
         rows()[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', altKey: true, bubbles: true, composed: true }));
@@ -172,7 +209,7 @@
         const moved = names().join(',');
         const movedRule = ruleTransition();
         const data = new DataTransfer();
-        rows()[1].dispatchEvent(new DragEvent('dragstart', { dataTransfer: data, bubbles: true, composed: true }));
+        rows()[1].querySelector('.what').dispatchEvent(new DragEvent('dragstart', { dataTransfer: data, bubbles: true, composed: true }));
         rows()[0].dispatchEvent(new DragEvent('dragover', { dataTransfer: data, bubbles: true, composed: true, cancelable: true }));
         rows()[0].dispatchEvent(new DragEvent('drop', { dataTransfer: data, bubbles: true, composed: true, cancelable: true }));
         await settle(500);
