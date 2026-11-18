@@ -302,6 +302,38 @@
         };
       });
 
+      /*
+       * A property no state changes is a transition for a script's change: added from any view, it
+       * stays on the timeline, said as such, instead of vanishing.
+       */
+      await check('scriptOnly', async () => {
+        await view(':hover');
+        ed().querySelector('.add[data-add="opacity"]').click();
+        await settle(500);
+        const row = rows().find((one) => flat(one.querySelector('.what span')) === 'opacity');
+        const written = /opacity var\(--motion-base\)/.test(ruleTransition());
+        await view(':focus-visible');
+        const inOtherView = names().includes('opacity');
+        // One another state changes, added here, stays here too until the view changes.
+        ed().querySelector('.add[data-add="other"]').click();
+        await settle(200);
+        const other = ed().querySelector('.other input');
+        other.value = 'transform';
+        other.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, composed: true }));
+        await settle(500);
+        const kept = names().includes('transform');
+        const note = flat(rows().find((one) => flat(one.querySelector('.what span')) === 'transform')?.querySelector('small'));
+        await view(':hover');
+        return {
+          itIsWrittenAndStaysListed: written && Boolean(row),
+          withTheWarning: /no state changes it/.test(flat(row?.querySelector('small.none'))),
+          andShowsInEveryView: inOtherView,
+          oneAddedForAnotherStateStaysInView: kept && /:focus-visible does not change it; :hover does/.test(note),
+          // Already listed (hidden here): shown, not written a second time.
+          notWrittenTwice: (ruleTransition().match(/\btransform\b/g) ?? []).length === 1,
+        };
+      });
+
       await check('animationTab', async () => {
         await tab('animation');
         const animationEditor = motion().querySelector('heo-animation-editor');

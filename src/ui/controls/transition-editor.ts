@@ -474,6 +474,7 @@ export class HeoTransitionEditor extends LitElement {
       if (this.picked >= this.items.length) this.picked = Math.max(0, this.items.length - 1);
     }
     if (changed.has('triggers') && this.trigger !== '*' && !this.triggers.some((one) => one.state === this.trigger)) {
+      this.#addedHere.clear();
       this.trigger = this.triggers[0]?.state ?? '';
     }
   }
@@ -519,12 +520,21 @@ export class HeoTransitionEditor extends LitElement {
     return this.triggers.filter((one) => property === 'all' ? one.changes.length > 0 : one.changes.some((c) => carries(property, c.property)));
   }
 
-  /** Whether a row belongs in the view: in "any change" every row; else what the state changes. */
+  /**
+   * Whether a row belongs in the view: in "any change" every row. In a state's view, what that
+   * state changes, and what no state changes at all — a transition for a change a script makes,
+   * which no view would otherwise show, so adding one made it vanish on the spot. Only a row
+   * another state changes is left out, unless it was added in this view.
+   */
   #shows(item: TransitionItem): boolean {
     const current = this.#current;
-    if (!current) return true;
-    return item.property === 'all' || current.changes.some((c) => carries(item.property, c.property));
+    if (!current || item.property === 'all') return true;
+    if (current.changes.some((c) => carries(item.property, c.property))) return true;
+    return !this.#statesOf(item.property).length || this.#addedHere.has(item.property);
   }
+
+  /** What was added while this view is up: shown in it whatever changes it. Cleared on switching. */
+  #addedHere = new Set<string>();
 
   /** The rows the view shows, by their place in the list. */
   get #shown(): number[] {
@@ -569,8 +579,19 @@ export class HeoTransitionEditor extends LitElement {
   }
 
   #add(...properties: string[]): void {
-    const names = properties.map((one) => one.trim().toLowerCase()).filter(Boolean);
-    if (!names.length) return;
+    const all = properties.map((one) => one.trim().toLowerCase()).filter(Boolean);
+    if (!all.length) return;
+    for (const name of all) this.#addedHere.add(name);
+    // One already listed (hidden in this view) is shown and picked, not written twice.
+    const names = all.filter((name) => !this.#list.some((one) => one.property === name));
+    if (!names.length) {
+      this.adding = false;
+      this.picked = this.#list.findIndex((one) => one.property === all[0]);
+      this.#focusAfter = this.picked;
+      this.requestUpdate();
+      void this.updateComplete.then(() => this.#row(this.picked)?.focus({ preventScroll: true }));
+      return;
+    }
     const items = [...this.#list.map((one) => ({ ...one })), ...names.map((name) => ({
       property: name,
       duration: this.#defaultDuration,
@@ -636,6 +657,7 @@ export class HeoTransitionEditor extends LitElement {
               .value=${this.trigger}
               @change=${(event: Event) => {
                 this.trigger = (event.target as HTMLSelectElement).value;
+                this.#addedHere.clear();
               }}
             >${this.triggers.map((one) => html`<option value=${one.state} ?selected=${one.state === this.trigger}>${one.label}</option>`)}
               <option value="*" ?selected=${this.trigger === '*'}>any change</option></select>
@@ -685,7 +707,9 @@ export class HeoTransitionEditor extends LitElement {
         const sub = current
           ? change
             ? html`<small title=${`${change.from} → ${change.to}${states.length ? ` · also ${states.join(', ')}` : ''}`}>${change.from} → ${change.to}${states.length ? ` · also ${states.join(', ')}` : ''}</small>`
-            : html`<small class="none">${current.label} does not change it</small>`
+            : states.length
+              ? html`<small class="none">${current.label} does not change it; ${states.join(', ')} does</small>`
+              : html`<small class="none" title="A change a script makes (a class added, a style set) still plays it.">no state changes it</small>`
           : states.length
             ? html`<small>${states.join(', ')}</small>`
             : html`<small class="none">${this.triggers.length ? 'no state changes it' : 'for a change a script makes'}</small>`;
