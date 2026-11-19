@@ -19,9 +19,12 @@
 
 <body>
   <p id="a">No background yet</p>
-  <p id="b" style='background: url("data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22/%3E") center / cover no-repeat #123456'>An image</p>
+  <p id="b"
+    style='background: url("data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22/%3E") center / cover no-repeat #123456'>
+    An image</p>
   <p id="c" class="c">A rule's colour</p>
-  <p id="d" style="background: linear-gradient(90deg, red 0%, blue 100%); background-size: 50% auto">A shorthand and a longhand</p>
+  <p id="d" style="background: linear-gradient(90deg, red 0%, blue 100%); background-size: 50% auto">A shorthand and a
+    longhand</p>
   <pre id="progress">start</pre>
   <pre id="out">pending</pre>
   <script src="../dist/html-editor-overlay.iife.js"></script>
@@ -144,6 +147,11 @@
           await mouse(point('move', track, 0.5, 0.3), point('down', track, 0.5, 0.3), point('up', track, 0.5, 0.3));
           const withStop = style(a);
           const stopCount = shadow().querySelectorAll('.stop').length;
+          const groups = () => Array.from(shadow().querySelectorAll('.group')).map((one) => one.textContent.trim());
+          // Placement is an image's business: a stack of only a gradient opened it, as noise.
+          results.placementNeedsAnImage = {
+            notForAGradientAlone: !groups().includes('Placement') && !shadow().querySelector('.canvas') && !shadow().querySelector('heo-segmented[label="Size"]'),
+          };
           results.gradient = {
             aGradientIsWritten: added === 'background: linear-gradient(180deg, #00000000 0%, #000000aa 100%);',
             oneEntry,
@@ -229,6 +237,15 @@
           const url = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E";
           await send(field('background-image'), 'value-change', url);
           const image = style(a);
+          const placed = () => Boolean(shadow().querySelector('.canvas')) && Array.from(shadow().querySelectorAll('.group')).some((one) => one.textContent.trim() === 'Placement');
+          results.placementNeedsAnImage.anImageLayerHasIt = placed();
+          // Re-query after each pick: the detail re-renders for the other layer.
+          shadow().querySelector('.layer[data-layer="1"]').click();
+          await settle(250);
+          // The panel belongs to the image layer, not to the stack: the gradient beside it has none.
+          results.placementNeedsAnImage.theGradientBesideItHasNone = !placed() && shadow().querySelector('[data-detail="1"]') !== null;
+          shadow().querySelector('.layer[data-layer="0"]').click();
+          await settle(250);
           results.image = {
             anImageWithNoAddressWritesNothing: waits,
             itGoesOnTop: image.startsWith(`background: url("${url}") center / cover no-repeat, radial-gradient(`),
@@ -299,6 +316,7 @@
           shadow().querySelector('.layer[data-layer="1"] .kill').click();
           await settle(300);
           results.placement.removingALayerTakesItsBlend = style(a) === 'background: radial-gradient(at right top, #6366f1 50%, #ec4899 75%) red;';
+          results.placementNeedsAnImage.removingTheImageClosesIt = !shadow().querySelector('.canvas');
         }
 
         progress.textContent = 'read';
@@ -336,6 +354,7 @@
           await send(field('gradient-angle'), 'value-change', '45');
           results.fold = {
             theLonghandIsARow: listed,
+            // No image here, but the gradient carries a size of its own: hiding it would leave it unreachable.
             theLonghandIsRead: Boolean(sized) && field('background-size')?.value === '50% auto',
             oneShorthandWithTheSizeFolded: style(d) === 'background: linear-gradient(45deg, red 0%, blue 100%) 0 0 / 50% auto;',
             thePageKeepsTheSize: getComputedStyle(d).backgroundSize === '50% auto',

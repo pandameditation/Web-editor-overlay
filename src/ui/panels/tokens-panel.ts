@@ -1683,69 +1683,9 @@ export class HeoTokensPanel extends HeoElement {
     this.editor.notify('Re-read the page stylesheets.', 'success');
   }
 
-  /**
-   * Token edits are recorded as undoable commands like any other change, so a
-   * mistaken value can be walked back with the same shortcut as everything else.
-   */
+  /** A token's new value, through the engine: one undoable command, written where it is declared. */
   #setToken(token: DesignToken, value: string): void {
-    if (!value.trim() || value === token.value) return;
-
-    /*
-     * A token the project already declares is edited where it is declared.
-     *
-     * The alternative — and what this used to do unconditionally — is to treat every edit as a new
-     * declaration the editor owns, emit it into the managed block, and let the save append that
-     * block to the end of the target stylesheet. For a token the editor invented that is right.
-     * For one the file already has it is not: the file ends up declaring `--brand` twice, the
-     * original left behind with the old value, and the reader has to know about cascade order to
-     * work out which one is in effect.
-     *
-     * `setRuleDeclaration` is the path that already does this correctly for every other
-     * declaration in the page — it captures the rule's position at edit time, patches that one
-     * line on save, and has its own undo handling. Reusing it means a token edit and a colour
-     * edit reach a stylesheet the same way, rather than by two mechanisms that agree until they
-     * do not.
-     */
-    const rule = this.editor.tokens.originRule(token.name);
-    if (rule) {
-      this.editor.setRuleDeclaration(rule, `--${token.name}`, value);
-      return;
-    }
-
-    const previous = { ...token };
-    this.editor.history.commit({
-      label: `Set --${token.name}`,
-      mergeKey: `token:${token.name}`,
-      subject: `token:${token.name}`,
-      record: {
-        id: `t${Date.now().toString(36)}`,
-        kind: 'token',
-        summary: `Set --${token.name} to ${value}`,
-        target: ':root',
-        before: token.value,
-        after: value,
-        detail: { token: `--${token.name}`, group: token.group },
-        at: Date.now(),
-      },
-      /*
-       * `origin: 'user'`, and that word is doing the work here.
-       *
-       * A token read out of the page's stylesheets is `'stylesheet'`, and `toCSS()`
-       * leaves those out of the generated sheet on purpose — emitting the page's whole
-       * theme back at it would turn a diff into a copy. But that filter also meant a
-       * token the user *changed* was left out, so the map held the new colour, the row
-       * showed the new colour, and the page went on rendering the old one.
-       *
-       * Once it has been edited it is this session's value, not the file's, so it is
-       * emitted, exported, counted as new and offered in the save prompt — which is
-       * what every other `origin` check in the codebase is asking about. Undo restores
-       * `previous` verbatim, origin included, so taking the edit back also takes the
-       * declaration out of the generated sheet and lets the file's own value show
-       * through again.
-       */
-      apply: () => this.editor.tokens.upsert({ ...token, value, origin: 'user' }),
-      revert: () => this.editor.tokens.upsert(previous),
-    });
+    this.editor.setTokenValue(token.name, value);
   }
 
   #tokenIssues(): FieldIssue[] {

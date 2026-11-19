@@ -284,10 +284,10 @@
         const f = field('font-family');
         const proot = () => f.shadowRoot.querySelector('heo-font-picker').shadowRoot;
         const chain = () => Array.from(proot().querySelectorAll('.chain .chip')).map((one) => one.dataset.family);
-        const select = proot().querySelector('.chain select');
+        // The adder is an autocomplete now; a family typed and submitted is added last.
+        const adder = proot().querySelector('.chain heo-value-field[data-fallback-add]');
         const extra = 'Times New Roman';
-        select.value = extra;
-        select.dispatchEvent(new Event('change'));
+        adder.dispatchEvent(new CustomEvent('value-submit', { detail: { value: extra }, bubbles: true, composed: true }));
         await settle(400);
         const added = chain();
         // Dragging the last chip onto the second moves it there: the stack is written in that order.

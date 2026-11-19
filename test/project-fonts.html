@@ -390,6 +390,64 @@
         };
       });
 
+      await check('tokenFont', async () => {
+        // A typography token's row has Edit font: the list then chooses the token's font.
+        const p = picker();
+        const tokenRow = p.querySelector('.frow[data-row="--display-face"]');
+        const action = tokenRow?.querySelector('[data-font-action]');
+        const offered = action?.dataset.fontAction === 'token';
+        action?.click();
+        await settle(400);
+        const bar = picker().querySelector('.tokenbar[data-token-edit="display-face"]');
+        const tokensHidden = !picker().querySelector('.frow[data-row="--brand-face"]');
+        const fieldBefore = field().value;
+        const recordsBefore = engine.history.records.length;
+        picker().querySelector('.frow[data-row="House Serif"] [data-font]').click();
+        await settle(400);
+        const token = engine.tokens.get('display-face')?.value ?? '';
+        const kicker = document.createElement('p');
+        kicker.className = 'kicker';
+        document.body.append(kicker);
+        const renders = getComputedStyle(kicker).fontFamily;
+        kicker.remove();
+        // Its chain is the token's now: a fallback added here goes into the token.
+        const chain = Array.from(picker().querySelectorAll('.chain .chip')).map((one) => one.dataset.family);
+        const label = engine.history.undoLabel;
+        picker().querySelector('.tokenbar button').click();
+        await settle(300);
+        return {
+          aTokenRowOffersEditFont: offered,
+          itSaysWhatIsBeingChosen: Boolean(bar) && /--display-face/.test(flat(bar)),
+          theOtherTokensAreNotAChoice: tokensHidden,
+          pickingSetsTheToken: /^"?House Serif"?/.test(token),
+          everyElementUsingItFollows: /House Serif/.test(renders),
+          notTheField: field().value === fieldBefore,
+          asOneStep: engine.history.records.length === recordsBefore + 1 && /--display-face/.test(label ?? ''),
+          theChainIsTheTokens: chain[0] === 'House Serif',
+          doneGoesBack: !picker().querySelector('.tokenbar') && Boolean(picker().querySelector('.frow[data-row="--brand-face"]')),
+        };
+      });
+
+      await check('fallbackAdd', async () => {
+        const adder = () => picker().querySelector('.chain heo-value-field[data-fallback-add]');
+        const isField = adder()?.tagName === 'HEO-VALUE-FIELD' && !picker().querySelector('.chain select');
+        const groups = [...new Set((adder()?.suggestions ?? []).map((one) => one.group))];
+        const before = field().value;
+        adder().dispatchEvent(new CustomEvent('value-submit', { detail: { value: 'var(--brand-face)' }, bubbles: true, composed: true }));
+        await settle(400);
+        const withToken = field().value;
+        const chain = Array.from(picker().querySelectorAll('.chain .chip')).map((one) => one.dataset.family);
+        engine.undo();
+        await settle(300);
+        return {
+          theAdderIsAnAutocomplete: isField,
+          inSections: ['Typography tokens', 'In this page', 'Generic families'].every((one) => groups.includes(one)),
+          aTokenCanBeAFallback: withToken !== before && withToken.endsWith('var(--brand-face)'),
+          shownInTheChain: chain.at(-1) === 'var(--brand-face)',
+          notOfferedTwice: !(adder()?.suggestions ?? []).some((one) => before.includes(one.value) && one.value.length > 3 && before.split(',').map((x) => x.trim().replace(/"/g, '')).includes(one.value)),
+        };
+      });
+
       await check('placement', async () => {
         // Too tall for below: beside the field, the left side (the page has room), its middle at the field's.
         field().shadowRoot.querySelector('.dialog-head button[aria-label="Close"]')?.click();

@@ -729,10 +729,23 @@ export class HeoBackgroundEditor extends LitElement {
         : nothing}
       </div>
       ${this.#renderFill(layer, index)}
-      <div class="group">Placement</div>
-      ${this.#renderCanvas(layer, index)}
-      ${this.#renderPlacement(layer, index)}
+      ${this.#showsPlacement(layer)
+        ? html`<div class="group">Placement</div>
+          ${this.#renderCanvas(layer, index)}
+          ${this.#renderPlacement(layer, index)}`
+        : nothing}
     </div>`;
+  }
+
+  /**
+   * Placement is offered on image layers: on a gradient or a colour, a panel of position, size and
+   * repeat was noise for what it draws. A layer that already carries placement of its own keeps
+   * the panel, so an authored value (a gradient's size, say) is never written to the page with no
+   * way left to see or change it.
+   */
+  #showsPlacement(layer: BackgroundLayer): boolean {
+    if (layer.kind === 'image') return true;
+    return (Object.keys(placement()) as Array<keyof Placement>).some((key) => Boolean(layer[key]?.trim()));
   }
 
   #renderFill(layer: BackgroundLayer, index: number): TemplateResult {
@@ -1239,7 +1252,7 @@ function layerSummary(layer: BackgroundLayer): string {
       // An inline image says what it is, not the tail of its encoded text.
       const name = !url ? 'no address yet'
         : url.startsWith('data:') ? `inline ${/^data:image\/([\w.+-]+)/i.exec(url)?.[1]?.replace('+xml', '') ?? 'image'}`
-        : url.split(/[?#]/)[0]!.split('/').pop()!.slice(0, 40) || url.slice(0, 40);
+          : url.split(/[?#]/)[0]!.split('/').pop()!.slice(0, 40) || url.slice(0, 40);
       return `${name}${blend}`;
     }
     case 'solid':

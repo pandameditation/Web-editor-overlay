@@ -15,13 +15,15 @@ import {
 } from '../../core/fonts.js';
 import { catalogueFont, type ProjectFont } from '../../core/project-fonts.js';
 import { maybeEngine } from '../context.js';
+import type { ValueSuggestion } from './value-field.js';
 import { looksFontFamily } from '../../core/tokens.js';
 import './font-editor.js';
 import { icon } from '../icons.js';
 import { baseStyles } from '../theme.js';
 
 const WEB_FONTS_KEY = 'heo:web-font-previews';
-const FALLBACK_CHOICES = ['Georgia', 'Times New Roman', 'Helvetica', 'Arial', 'system-ui', 'serif', 'sans-serif', 'monospace', 'cursive'];
+/** The generic families a chain can end with, in the order they are usually wanted. */
+const FALLBACK_GENERICS = ['serif', 'sans-serif', 'monospace', 'system-ui', 'cursive'];
 
 interface Choice {
   name: string;
@@ -329,14 +331,27 @@ export class HeoFontPicker extends LitElement {
       .chip button:hover {
         color: var(--heo-danger);
       }
-      .chain select {
-        height: 22px;
-        border: 1px dashed var(--heo-line-strong);
-        border-radius: 999px;
-        background: transparent;
-        color: var(--heo-text-faint);
-        font: inherit;
+      /* The fallback adder: the overlay's value field, as narrow as the chips it sits among. */
+      .chain .adder {
+        width: 150px;
+      }
+      /* Choosing a token's font: said above the list, with the way back. */
+      .tokenbar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 8px;
+        border: 1px solid var(--heo-accent-line);
+        border-radius: var(--heo-r-sm);
+        background: var(--heo-accent-soft);
         font-size: 11px;
+      }
+      .tokenbar .what {
+        flex: 1;
+        min-width: 0;
+      }
+      .tokenbar code {
+        font-family: var(--heo-mono);
       }
     `,
   ];
@@ -375,8 +390,21 @@ export class HeoFontPicker extends LitElement {
   }
   #hovered: string | null = null;
 
+  /**
+   * The typography token whose font is being chosen (its row's "Edit font"), or null for the
+   * field's own value. While one is, the list and the fallback chain edit the token: what is
+   * picked becomes its value, and every element that uses it follows.
+   */
+  @state() private tokenEdit: string | null = null;
+
+  /** The stack the list and the chain are about: the token's, while one is edited, or the field's. */
+  get #chainValue(): string {
+    if (this.tokenEdit) return fontTokens().find((one) => one.name === this.tokenEdit)?.value ?? '';
+    return this.value;
+  }
+
   get #families(): string[] {
-    return parseFamilies(this.value);
+    return parseFamilies(this.#chainValue);
   }
 
   get #fallbacks(): string[] {
@@ -493,7 +521,34 @@ export class HeoFontPicker extends LitElement {
       return;
     }
     this.#hovered = null;
+    if (this.tokenEdit) {
+      if (choice.token) return;
+      this.#writeToken(this.#stack(choice.name, choice.web));
+      return;
+    }
     this.#emit('font-change', { value: choice.token ?? this.#stack(choice.name, choice.web) });
+  }
+
+  /** A typography token's new font stack: written to the token, the element's preview taken back. */
+  #writeToken(stack: string): void {
+    const name = this.tokenEdit;
+    if (!name) return;
+    this.#preview(null);
+    maybeEngine()?.setTokenValue(name, stack);
+    this.#listKey = '';
+    this.requestUpdate();
+  }
+
+  #editToken(name: string | null): void {
+    this.#preview(null);
+    this.tokenEdit = name;
+    this.query = '';
+    void this.updateComplete.then(() => {
+      const target = name
+        ? this.renderRoot.querySelector<HTMLElement>('.tokenbar button')
+        : this.renderRoot.querySelector<HTMLElement>('.list [aria-current="true"], .list [data-font]');
+      target?.focus();
+    });
   }
 
   /* ---------------------------------------------------------------------- */
@@ -526,6 +581,10 @@ export class HeoFontPicker extends LitElement {
   }
 
   #setChain(next: string[]): void {
+    if (this.tokenEdit) {
+      this.#writeToken(formatFamilies(next));
+      return;
+    }
     this.#emit('font-change', { value: formatFamilies(next) });
   }
 
@@ -598,8 +657,20 @@ export class HeoFontPicker extends LitElement {
 
   override render(): TemplateResult {
     const current = (this.#families[0] ?? '').toLowerCase();
-    const groups = this.#choices();
+    // Choosing a token's font: the tokens themselves are not a choice for it.
+    const groups = this.tokenEdit ? this.#choices().filter((group) => !group.items.some((one) => one.token)) : this.#choices();
     return html`
+      ${this.tokenEdit && !this.draft
+        ? html`<div class="tokenbar" data-token-edit=${this.tokenEdit} @keydown=${(event: KeyboardEvent) => {
+            if (event.key !== 'Escape') return;
+            event.stopPropagation();
+            event.preventDefault();
+            this.#editToken(null);
+          }}>
+            <span class="what">Font of <code>--${this.tokenEdit}</code>, for every element that uses it</span>
+            <button class="btn sm" type="button" @click=${() => this.#editToken(null)}>Done</button>
+          </div>`
+        : nothing}
       <label class="search" ?hidden=${Boolean(this.draft)}>
         ${icon('search', 12)}
         <input
@@ -618,7 +689,7 @@ export class HeoFontPicker extends LitElement {
         ${groups.map((group) => html`
           <div class="group">${group.group}</div>
           ${group.items.map((choice) => {
-            const action = choice.project ? 'edit' : !choice.pickable ? 'add' : null;
+            const action = choice.token ? 'token' : choice.project ? 'edit' : !choice.pickable ? 'add' : null;
             return html`<div class="frow" data-row=${choice.name} @pointermove=${(event: PointerEvent) => this.#hover(event, choice)}>
               <button
                 class="font"
@@ -644,8 +715,9 @@ export class HeoFontPicker extends LitElement {
                     type="button"
                     data-font-action=${action}
                     aria-label=${`${action === 'add' ? 'Add font' : 'Edit font'} ${choice.name}`}
+                    title=${action === 'token' ? `Choose the font ${choice.name} sets, for every element that uses it` : nothing}
                     @focus=${() => this.#preview(choice)}
-                    @click=${() => this.#openDraft(choice.name, action)}
+                    @click=${() => (action === 'token' ? this.#editToken(choice.name.replace(/^--/, '')) : this.#openDraft(choice.name, action))}
                   >${action === 'add' ? html`${icon('plus', 10)} Add font` : html`${icon('sliders', 10)} Edit font`}</button>`
                 : nothing}
             </div>`;
@@ -665,8 +737,11 @@ export class HeoFontPicker extends LitElement {
               event.stopPropagation();
               this.draft = null;
               this.#hovered = null;
-              // "Add and use": once it is in the page, it is the font.
-              if (event.detail.mode === 'add') this.#emit('font-change', { value: this.#stack(event.detail.family, catalogueFont(event.detail.family)) });
+              // "Add and use": once it is in the page, it is the font — the token's, while one is edited.
+              if (event.detail.mode !== 'add') return;
+              const stack = this.#stack(event.detail.family, catalogueFont(event.detail.family));
+              if (this.tokenEdit) this.#writeToken(stack);
+              else this.#emit('font-change', { value: stack });
             }}
           ></heo-font-editor>`
         : nothing}
@@ -689,9 +764,33 @@ export class HeoFontPicker extends LitElement {
     `;
   }
 
+  /**
+   * What the fallback adder offers, in the sections the other fields' lists use: the typography
+   * tokens, the fonts in this page, this machine's, and the generic families. Typing filters them;
+   * any family name can still be typed and added.
+   */
+  #fallbackSuggestions(): ValueSuggestion[] {
+    const inChain = new Set(this.#families.map((one) => one.toLowerCase()));
+    const out: ValueSuggestion[] = [];
+    const add = (item: ValueSuggestion): void => {
+      if (inChain.has(item.value.toLowerCase()) || out.some((one) => one.value.toLowerCase() === item.value.toLowerCase())) return;
+      out.push(item);
+    };
+    for (const token of fontTokens()) {
+      if (token.name === this.tokenEdit) continue;
+      add({ value: `var(--${token.name})`, label: `--${token.name}`, hint: token.value, group: 'Typography tokens', token: true });
+    }
+    const engine = maybeEngine();
+    for (const font of engine?.fonts.list() ?? []) add({ value: font.family, hint: font.place === 'embedded' ? 'Embedded' : 'Stored', group: 'In this page' });
+    for (const name of pageFontFamilies()) if (!isGenericFamily(name)) add({ value: name, hint: 'Your stylesheet', group: 'In this page' });
+    for (const one of SYSTEM_FONTS) if (!isGenericFamily(one.name) && hasLocalFont(one.name)) add({ value: one.name, hint: one.category, group: 'System · only where installed' });
+    for (const one of FALLBACK_GENERICS) add({ value: one, label: `any ${one}`, group: 'Generic families' });
+    return out;
+  }
+
   #renderFallbacks(): TemplateResult {
     const [first, ...rest] = this.#families;
-    const missing = FALLBACK_CHOICES.filter((one) => !rest.some((r) => r.toLowerCase() === one.toLowerCase()) && one.toLowerCase() !== first.toLowerCase());
+    const suggestions = this.#fallbackSuggestions();
     return html`<div class="fallbacks">
       <div class="group" style="margin:0">If ${first} is not there</div>
       <div class="chain" role="list" aria-label="Fallback fonts, in order">
@@ -723,15 +822,28 @@ export class HeoFontPicker extends LitElement {
               : nothing}
           </span>`;
         })}
-        ${missing.length
-          ? html`<select aria-label="Add a fallback" @change=${(event: Event) => {
-              const select = event.target as HTMLSelectElement;
-              if (select.value) this.#setFallbacks([...rest, select.value]);
-              select.value = '';
-            }}>
-              <option value="">+ add</option>
-              ${missing.map((one) => html`<option value=${one}>${isGenericFamily(one) ? `any ${one}` : one}</option>`)}
-            </select>`
+        ${suggestions.length
+          ? html`<heo-value-field
+              class="adder"
+              data-fallback-add
+              field-label="Add a fallback"
+              placeholder="+ add"
+              action="Add this fallback"
+              action-hidden
+              chevron-hidden
+              .value=${''}
+              .suggestions=${suggestions}
+              @value-submit=${(event: CustomEvent<{ value: string }>) => {
+                event.stopPropagation();
+                const typed = event.detail.value.trim().replace(/^(['"])(.*)\1$/, '$2').trim();
+                if (typed && !this.#families.some((one) => one.toLowerCase() === typed.toLowerCase())) this.#setFallbacks([...rest, typed]);
+                const field = event.target as HTMLElement & { value: string; draft?: string };
+                field.value = '';
+                if ('draft' in field) field.draft = '';
+              }}
+              @value-change=${(event: Event) => event.stopPropagation()}
+              @value-input=${(event: Event) => event.stopPropagation()}
+            ></heo-value-field>`
           : nothing}
       </div>
       <p class="note">What visitors see while ${first} loads, or if it never does.</p>
