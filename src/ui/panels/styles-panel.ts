@@ -2738,7 +2738,6 @@ export class HeoStylesPanel extends HeoElement {
       badge=${edited ? 'unsaved' : current ? fromName : ''}
       ?open=${host.filtering ? true : sectionOpen(section.id, true)}
       @section-toggle=${(event: CustomEvent<{ open: boolean }>) => this.#remember(section.id, event.detail.open)}
-      @font-web=${(event: CustomEvent<{ href: string }>) => engine.addFontStylesheet(event.detail.href)}
     >
       <div class="typestyles" data-text-styles>
         <div class="tgroup">Text style</div>

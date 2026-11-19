@@ -118,11 +118,14 @@ export interface DesignSystemCSS {
   blockCSS?: string;
   /** The ready-made animations' keyframes the page uses. */
   animations?: string;
+  /** The `@font-face` rules of the fonts the page carries. */
+  fonts?: string;
 }
 
 /** The parts, in cascade order, as one block. Empty when nothing was authored. */
 export function designSystemCSSText(css: DesignSystemCSS): string {
-  return [css.tokens, css.classes, css.rules, css.blockCSS ?? '', css.animations ?? '']
+  // Fonts first: a face is conventionally declared before the rules that use it.
+  return [css.fonts ?? '', css.tokens, css.classes, css.rules, css.blockCSS ?? '', css.animations ?? '']
     .filter((part) => part.trim())
     .join('\n\n');
 }
@@ -135,6 +138,7 @@ function designSystemKinds(css: DesignSystemCSS): string[] {
   if (css.rules.trim()) kinds.push('rules');
   if (css.blockCSS?.trim()) kinds.push('scoped block CSS');
   if (css.animations?.trim()) kinds.push('animations');
+  if (css.fonts?.trim()) kinds.push('fonts');
   return kinds;
 }
 

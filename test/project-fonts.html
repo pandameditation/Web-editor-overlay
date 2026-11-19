@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Project fonts</title>
+  <!--
+    A Google font is kept with the page: "Add font" in the font picker fetches its files and writes
+    its @font-face rules into the design system, embedded as data URLs (no folder) or stored in the
+    fonts folder (a project connected). Only a font In this page can be picked; "Edit font" changes
+    one, Tokens › Fonts manages them, and a reload reads them back from the page's CSS.
+
+    Google is stubbed: the suite runs offline, and the test is of what is done with the answer.
+  -->
+  <style id="site">
+    .text-heading-1 {
+      font-family: Georgia, serif;
+      font-size: 36px;
+      --heo-text-style: "Heading 1";
+    }
+    /* The page's own font: not the editor's, never adopted. */
+    @font-face { font-family: "House Serif"; src: url("house.woff2") format("woff2"); }
+    /* A catalogue family the author hosts elsewhere: still theirs. */
+    @font-face { font-family: "Inter"; src: url("https://cdn.example.com/inter.woff2") format("woff2"); }
+  </style>
+</head>
+<body>
+  <h2 id="h" class="text-heading-1">Slow pottery for fast mornings</h2>
+  <p id="p">Wheel-thrown stoneware.</p>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script>
+    /*
+     * Google, stubbed. The stylesheet answers as the CSS2 API does — a comment naming each face's
+     * character set, then its @font-face — and every file is a few bytes. A font without italics
+     * is refused (400) when italics are asked for, as Google does.
+     */
+    const asked = [];
+    const realFetch = window.fetch.bind(window);
+    const NO_ITALIC = new Set(['Space Grotesk']);
+    window.fetch = async (input, init) => {
+      const url = String(input?.url ?? input);
+      if (url.startsWith('https://fonts.googleapis.com/css2')) {
+        asked.push(url);
+        const params = new URL(url).searchParams;
+        const [family, axis = ''] = params.get('family').split(':');
+        const name = family.replace(/\+/g, ' ');
+        if (params.get('text')) return new Response('', { status: 200, headers: { 'content-type': 'text/css' } });
+        const tuples = (axis.split('@')[1] ?? '').split(';').filter(Boolean);
+        const italics = tuples.some((one) => one.startsWith('1'));
+        if (italics && NO_ITALIC.has(name)) return new Response('bad', { status: 400 });
+        const faces = [];
+        for (const tuple of tuples) {
+          const [ital, weight] = tuple.split(',');
+          for (const subset of ['latin-ext', 'latin', 'cyrillic', 'math']) {
+            const slug = `${name.replace(/ /g, '')}-${ital}-${(weight ?? '400').replace('..', '-')}-${subset}`;
+            faces.push(`/* ${subset} */\n@font-face {\n  font-family: '${name}';\n  font-style: ${ital === '1' ? 'italic' : 'normal'};\n  font-weight: ${(weight ?? '400').replace('..', ' ')};\n  font-display: swap;\n  src: url(https://fonts.gstatic.com/s/stub/${slug}.woff2) format('woff2');\n  unicode-range: U+0000-00FF;\n}`);
+          }
+        }
+        return new Response(faces.join('\n'), { status: 200, headers: { 'content-type': 'text/css' } });
+      }
+      if (url.startsWith('https://fonts.gstatic.com/')) {
+        asked.push(url);
+        return new Response(new Uint8Array([119, 79, 70, 50, 0, 1, 0, 0]), { status: 200, headers: { 'content-type': 'font/woff2' } });
+      }
+      return realFetch(input, init);
+    };
+    localStorage.setItem('heo:web-font-previews', 'on');
+  </script>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const results = {};
+      const errors = [];
+      addEventListener('error', (event) => errors.push('error: ' + event.message));
+      addEventListener('unhandledrejection', (event) => errors.push('rejection: ' + event.reason));
+      const progress = document.getElementById('progress');
+      const settle = (ms = 300) => new Promise((resolve) => setTimeout(resolve, ms));
+      const check = async (name, fn) => {
+        progress.textContent = name;
+        try { results[name] = await fn(); } catch (err) { results[name] = 'THREW: ' + String(err && err.stack); }
+      };
+      const deep = (selector, root = document) => {
+        const direct = root.querySelector?.(selector);
+        if (direct) return direct;
+        for (const el of root.querySelectorAll?.('*') ?? []) {
+          if (!el.shadowRoot) continue;
+          const found = deep(selector, el.shadowRoot);
+          if (found) return found;
+        }
+        return null;
+      };
+      const flat = (node) => (node?.textContent ?? '').replace(/\s+/g, ' ').trim();
+      const until = async (test, ms = 4000) => {
+        for (let t = 0; t < ms; t += 50) {
+          if (test()) return true;
+          await settle(50);
+        }
+        return false;
+      };
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'light', presets: false, detectScriptContent: false });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      const h = document.getElementById('h');
+      api.select(h);
+      engine.setDockTab('styles');
+      await settle(700);
+
+      const field = () => deep('heo-styles-panel').shadowRoot.querySelector('heo-value-field[data-property="font-family"]');
+      const picker = () => field()?.shadowRoot.querySelector('heo-font-picker')?.shadowRoot;
+      const editor = () => picker()?.querySelector('heo-font-editor')?.shadowRoot;
+      const row = (name) => picker()?.querySelector(`.frow[data-row="${name}"]`);
+      const groupOf = (name) => {
+        let at = row(name)?.previousElementSibling;
+        while (at && !at.classList.contains('group')) at = at.previousElementSibling;
+        return flat(at);
+      };
+
+      await check('picker', async () => {
+        field().openShadowEditor();
+        await settle(700);
+        const recordsBefore = engine.history.records.length;
+        const before = h.style.fontFamily;
+        const lora = row('Lora');
+        const georgia = row('Georgia');
+        const house = row('House Serif');
+        // A Google font is not picked by its row: the row opens Add font.
+        lora.querySelector('[data-font]').click();
+        await until(() => editor()?.querySelector('[data-style]'));
+        const opened = Boolean(editor());
+        const notPicked = h.style.fontFamily === before && engine.history.records.length === recordsBefore;
+        const listHidden = picker().querySelector('.list').hidden;
+        // Escape closes the editor and leaves the dialog open.
+        editor().querySelector('.fpop').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true, cancelable: true }));
+        await settle(300);
+        return {
+          aGoogleFontIsNotPickable: lora?.querySelector('[data-font]').dataset.pickable === 'false',
+          itsRowOffersAddFont: lora?.querySelector('[data-font-action]')?.dataset.fontAction === 'add',
+          clickingItOpensAddFont: opened,
+          andPicksNothing: notPicked,
+          theEditorTakesTheListsPlace: listHidden,
+          escapeClosesOnlyTheEditor: !picker().querySelector('heo-font-editor') && Boolean(field().shadowRoot.querySelector('.popup.dialog')),
+          aSystemFontIsPickable: !georgia || georgia.querySelector('[data-font]').dataset.pickable === 'true',
+          thePagesOwnFontIsInThisPage: groupOf('House Serif') === 'In this page' && house.querySelector('[data-font]').dataset.pickable === 'true',
+          andHasNoEditButton: !house.querySelector('[data-font-action]'),
+        };
+      });
+
+      await check('add', async () => {
+        row('Lora').querySelector('[data-font-action]').click();
+        await until(() => editor()?.querySelector('[data-style]'));
+        const ed = editor();
+        const styles = Array.from(ed.querySelectorAll('[data-style]')).map((b) => `${b.dataset.style}:${b.getAttribute('aria-pressed')}`);
+        const subsets = Array.from(ed.querySelectorAll('[data-subset]')).map((b) => `${b.dataset.subset}:${b.getAttribute('aria-pressed')}`);
+        const stored = ed.querySelector('[data-place="stored"]');
+        const embedded = ed.querySelector('[data-place="embedded"]');
+        const tokensNote = /Also in Tokens › Fonts/.test(flat(ed));
+        // Adding previews the font on the element while it is decided on.
+        const previewed = /Lora/.test(getComputedStyle(h).fontFamily);
+        ed.querySelector('[data-font-save]').click();
+        await until(() => engine.fonts.has('Lora') && !picker()?.querySelector('heo-font-editor'));
+        await settle(400);
+        const font = engine.fonts.get('Lora');
+        const css = engine.designSystemParts().fonts ?? '';
+        const lora = row('Lora');
+        return {
+          offersUprightAndItalicInThatOrder: styles.join() === 'upright:true,italic:true',
+          latinToStartWith: subsets[0] === 'latin:true' && subsets.slice(1).every((one) => one.endsWith(':false')),
+          // Google's math and symbols sets are not offered.
+          onlyTextCharacterSets: !subsets.some((one) => one.startsWith('math')),
+          storingNeedsAFolder: stored.getAttribute('aria-disabled') === 'true' && /folder/.test(flat(stored)),
+          soItIsEmbedded: embedded.getAttribute('aria-checked') === 'true',
+          saysItIsAlsoInTokens: tokensNote,
+          previewsWhileAdding: previewed,
+          addedWithTwoFaces: font?.place === 'embedded' && font.faces.length === 2,
+          eachADataUrlThatNamesIt: font?.faces.every((face) => /^data:font\/woff2;heo-font=lora-(upright|italic)-latin;base64,/.test(face.src)),
+          writtenAsFontFaces: (css.match(/@font-face/g) ?? []).length === 2 && /font-family: "Lora"/.test(css) && /font-weight: 400 700/.test(css),
+          noLinkToGoogle: !document.head.querySelector('link[href*="fonts.googleapis"]') && !/googleapis|gstatic/.test(css),
+          andUsed: /^Lora\b/.test(field().value) || /Lora/.test(engine.classes.get('text-heading-1')?.declarations['font-family'] ?? '') || /Lora/.test(h.style.fontFamily),
+          nowInThisPage: groupOf('Lora') === 'In this page' && lora.querySelector('[data-font]').dataset.pickable === 'true',
+          withEditFont: lora.querySelector('[data-font-action]')?.dataset.fontAction === 'edit',
+          andWhereItLives: /Embedded/.test(flat(lora.querySelector('.tag'))),
+        };
+      });
+
+      await check('edit', async () => {
+        row('Lora').querySelector('[data-font-action]').click();
+        await until(() => editor()?.querySelector('[data-subset]'));
+        const ed = editor();
+        const save = () => ed.querySelector('[data-font-save]');
+        const unchangedCannotSave = save().disabled;
+        const used = flat(ed.querySelector('.used'));
+        const head = flat(ed.querySelector('.fhead'));
+        ed.querySelector('[data-subset="latin-ext"]').click();
+        await settle(100);
+        const fetchedBefore = asked.filter((one) => one.includes('gstatic')).length;
+        save().click();
+        await until(() => engine.fonts.get('Lora')?.faces.length === 4);
+        await settle(300);
+        // Only the two new faces were downloaded: the ones it had were kept.
+        const downloaded = asked.filter((one) => one.includes('gstatic')).length - fetchedBefore;
+        const four = engine.fonts.get('Lora')?.faces.length === 4;
+        const label = engine.history.undoLabel;
+        engine.undo();
+        await settle(300);
+        return {
+          opensInEditMode: /Edit font/.test(head),
+          nothingChangedNothingToSave: unchangedCannotSave,
+          saysWhatUsesIt: /Used by/.test(used) && !/nothing yet/.test(used),
+          addingACharacterSetAddsItsFaces: four,
+          withoutDownloadingTheOthersAgain: downloaded === 2,
+          asOneStep: label === 'Change the font Lora',
+          undoPutsItBack: engine.fonts.get('Lora')?.faces.length === 2,
+        };
+      });
+
+      await check('noItalic', async () => {
+        // A font Google has no italics for: asked once with, once without, and offered upright only.
+        const offer = await engine.fontOffer('Space Grotesk');
+        return { onlyUpright: offer?.styles.join() === 'upright' };
+      });
+
+      await check('tokens', async () => {
+        field().shadowRoot.querySelector('.dialog-head button[aria-label="Close"]')?.click();
+        await settle(300);
+        engine.setDockTab('tokens');
+        await settle(700);
+        const troot = deep('heo-tokens-panel').shadowRoot;
+        const sec = () => Array.from(troot.querySelectorAll('heo-section')).find((one) => one.getAttribute('heading') === 'Fonts');
+        if (sec() && !sec().open) sec().shadowRoot?.querySelector('button')?.click();
+        await settle(300);
+        const card = () => sec().querySelector('[data-project-font="Lora"]');
+        const listed = Boolean(card());
+        const own = Boolean(sec().querySelector('[data-page-font="House Serif"]'));
+        card().querySelector('.card-head').click();
+        await settle(300);
+        const faces = card().querySelectorAll('.face').length;
+        card().querySelector('[data-font-edit]').click();
+        await settle(600);
+        const sameEditor = Boolean(card().querySelector('heo-font-editor'));
+        card().querySelector('heo-font-editor').shadowRoot.querySelector('.x').click();
+        await settle(300);
+        // Find a Google font and add it from here.
+        const find = sec().querySelector('heo-value-field[data-font-find]');
+        find.dispatchEvent(new CustomEvent('value-input', { detail: { value: 'Space Gro' }, bubbles: true, composed: true }));
+        await settle(300);
+        const offerButton = sec().querySelector('[data-font-add="Space Grotesk"]');
+        offerButton?.click();
+        await until(() => sec().querySelector('heo-font-editor')?.shadowRoot.querySelector('[data-style]'));
+        sec().querySelector('heo-font-editor').shadowRoot.querySelector('[data-font-save]').click();
+        await until(() => engine.fonts.has('Space Grotesk'));
+        await settle(300);
+        const addedHere = engine.fonts.get('Space Grotesk')?.styles.join() === 'upright';
+        // Adding opened the new font's card; Lora's is opened again to remove it.
+        card().querySelector('.card-head').click();
+        await settle(300);
+        card().querySelector('[data-font-delete]')?.click();
+        await settle(300);
+        const removed = !engine.fonts.has('Lora');
+        engine.undo();
+        await settle(300);
+        engine.setDockTab('styles');
+        await settle(400);
+        return {
+          listsTheFont: listed,
+          andThePagesOwnAsItsOwn: own,
+          itsFilesAreListed: faces === 2,
+          editOpensTheSameEditor: sameEditor,
+          aSearchOffersGoogleFonts: Boolean(offerButton),
+          andAddsOne: addedHere,
+          removeRemoves: removed,
+          andUndoes: engine.fonts.has('Lora'),
+        };
+      });
+
+      await check('reload', async () => {
+        // What a save writes, read back by a later session: the page's CSS has the rules, the
+        // registry starts empty, and the scan finds them.
+        const saved = engine.designSystemParts().fonts;
+        engine.fonts.remove('Lora');
+        engine.fonts.remove('Space Grotesk');
+        const style = document.createElement('style');
+        style.textContent = saved;
+        document.head.append(style);
+        engine.fonts.scanDocument();
+        const lora = engine.fonts.get('Lora');
+        const grotesk = engine.fonts.get('Space Grotesk');
+        style.remove();
+        return {
+          readBackAsProjectFonts: Boolean(lora) && lora.place === 'embedded' && lora.faces.length === 2 && lora.styles.sort().join() === 'italic,upright',
+          withTheirWeightsAndSets: lora?.faces.every((face) => face.weight === '400 700' && face.subset === 'latin'),
+          everyFamily: Boolean(grotesk),
+          notThePagesOwn: !engine.fonts.has('House Serif'),
+          norACatalogueFontHostedElsewhere: !engine.fonts.has('Inter'),
+        };
+      });
+
+      await check('stored', async () => {
+        const written = new Map();
+        const pathOf = (url) => {
+          const path = decodeURIComponent(new URL(url, location.href).pathname);
+          const at = path.lastIndexOf('/test/');
+          return at === -1 ? null : path.slice(at + '/test/'.length);
+        };
+        await engine.attachProject({
+          kind: 'directory',
+          label: 'stub-project',
+          resolve: (url) => pathOf(url),
+          read: async () => null,
+          write: async (path, text) => { written.set(path, new TextEncoder().encode(text)); },
+          writeBytes: async (path, bytes) => { written.set(path, new Uint8Array(bytes)); },
+          remove: async () => {},
+          ensureWritable: async () => true,
+          release: async () => {},
+        }, { quiet: true });
+        const error = await engine.saveProjectFont({ family: 'Lora', styles: ['upright'], subsets: ['latin'], place: 'stored' });
+        const font = engine.fonts.get('Lora');
+        const css = engine.designSystemParts().fonts ?? '';
+        return {
+          noError: error === null,
+          storedInTheFontsFolder: font?.place === 'stored' && font.faces.length === 1 && font.faces[0].src === 'assets/fonts/lora-upright-latin.woff2',
+          theFileIsWritten: written.has('assets/fonts/lora-upright-latin.woff2') && written.get('assets/fonts/lora-upright-latin.woff2').length === 8,
+          theRuleLinksIt: /url\("assets\/fonts\/lora-upright-latin\.woff2"\)/.test(css),
+        };
+      });
+
+      const failed = Object.entries(results)
+        .filter(([, group]) => group && typeof group === 'object')
+        .filter(([, group]) => Object.values(group).some((value) => value === false))
+        .map(([name]) => name);
+      const threw = Object.entries(results).filter(([, v]) => typeof v === 'string').map(([k]) => k);
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify({ ok: !failed.length && !threw.length && !errors.length, failed: [...failed, ...threw], errors, results }, null, 2) + ':END';
+    })();
+  </script>
+</body>
+</html>

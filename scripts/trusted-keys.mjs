@@ -6,7 +6,7 @@
  * calls `window.__heoKeysDone(id)`. Synthetic `KeyboardEvent`s never move focus, so this is the only
  * way a fixture can test where Tab goes.
  *
- * The same call takes `mouse`, a list of `{ type: 'down' | 'move' | 'up', x, y, alt? }` in viewport
+ * The same call takes `mouse`, a list of `{ type: 'down' | 'move' | 'up' | 'hover', x, y, alt? }` in viewport
  * pixels, sent as real left-button input. Synthetic pointer events dispatched at `window` reach a
  * listener there whatever stands in between, so a drag that real input cannot do passed anyway.
  */
@@ -34,7 +34,8 @@ export async function answerKeys(payload, send) {
   } catch {
     return;
   }
-  const MOUSE = { down: 'mousePressed', move: 'mouseMoved', up: 'mouseReleased' };
+  // `hover` is a move with no button held: what a pointer passing over a list does.
+  const MOUSE = { down: 'mousePressed', move: 'mouseMoved', up: 'mouseReleased', hover: 'mouseMoved' };
   for (const step of Array.isArray(request.mouse) ? request.mouse : []) {
     const type = MOUSE[step.type];
     if (!type) continue;
@@ -42,8 +43,8 @@ export async function answerKeys(payload, send) {
       type,
       x: Number(step.x) || 0,
       y: Number(step.y) || 0,
-      button: 'left',
-      buttons: step.type === 'up' ? 0 : 1,
+      button: step.type === 'hover' ? 'none' : 'left',
+      buttons: step.type === 'up' || step.type === 'hover' ? 0 : 1,
       clickCount: step.type === 'move' ? 0 : 1,
       modifiers: step.alt ? 1 : 0,
     });

@@ -10,10 +10,12 @@ import {
   previewWebFont,
   SYSTEM_FONTS,
   WEB_FONTS,
-  webFontCss,
   type FontCategory,
   type WebFont,
 } from '../../core/fonts.js';
+import { catalogueFont, type ProjectFont } from '../../core/project-fonts.js';
+import { maybeEngine } from '../context.js';
+import './font-editor.js';
 import { icon } from '../icons.js';
 import { baseStyles } from '../theme.js';
 
@@ -25,7 +27,16 @@ interface Choice {
   tag: string;
   category?: FontCategory;
   web?: WebFont;
+  /** One the page carries (added here): it has "Edit font". */
+  project?: ProjectFont;
+  /**
+   * Whether clicking picks it. Only a font the page has, or one of this machine's: a Google font
+   * is added first ("Add font"), so the page is never saved with a font it does not carry.
+   */
+  pickable: boolean;
 }
+
+
 
 /**
  * The font picker, in the dialog a font field opens.
@@ -35,11 +46,15 @@ interface Choice {
  * null), and clicking picks it (`font-change`). The fallbacks are under the list, as a chain, since
  * they only matter for a family.
  *
- * Three sources: the page's own fonts (its `@font-face`s and its font tokens), this machine's
- * system fonts that are installed, and a set of Google Fonts. The last are off until asked for,
- * because showing them means asking Google for each one: the list says so before it does. A web
- * font is loaded for a preview into the document's font set, never into the page; picking one also
- * fires `font-web` with its stylesheet, for the host to link into the page.
+ * Three sources: the fonts in this page (the ones it carries, its own `@font-face`s and its font
+ * tokens), this machine's installed system fonts, and a set of Google Fonts. The last are off until
+ * asked for, because showing them means asking Google for each one: the list says so before it
+ * does. Hovering a Google font previews it (loaded into the document's font set, never the page);
+ * it cannot be picked until it is added, which its row offers: "Add font" opens the font popover,
+ * which downloads its files and keeps them with the page (project-fonts.ts). A font added here has
+ * "Edit font" instead, the same popover, to change its styles, its character sets, where its files
+ * live, or to remove it. The engine is reached directly, so every host of a font field — the
+ * Styles panel, Tokens' text styles — gets the same picker.
  */
 @customElement('heo-font-picker')
 export class HeoFontPicker extends LitElement {
@@ -47,6 +62,7 @@ export class HeoFontPicker extends LitElement {
     baseStyles,
     css`
       :host {
+        position: relative;
         display: grid;
         grid-template-columns: minmax(0, 1fr);
         gap: 8px;
@@ -139,6 +155,77 @@ export class HeoFontPicker extends LitElement {
         color: var(--heo-text-faint);
         font-family: var(--heo-mono);
         font-size: 9.5px;
+      }
+      /* Where a font the page carries lives, as the Files table says it. */
+      .font .tag.pill {
+        max-width: 130px;
+        overflow: hidden;
+        padding: 1px 6px;
+        border: 1px solid var(--heo-line-strong);
+        border-radius: 999px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .font .tag.pill.emb {
+        border-color: var(--heo-accent-line);
+        color: var(--heo-accent);
+        font-family: inherit;
+      }
+      /*
+       * A row and its action: Add font or Edit font, over the tag while the row is hovered or
+       * focused. A sibling of the row's button, not inside it, so each is its own control.
+       */
+      .frow {
+        position: relative;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+      }
+      .frow .fact {
+        position: absolute;
+        top: 50%;
+        right: 6px;
+        display: none;
+        align-items: center;
+        gap: 4px;
+        height: 22px;
+        padding: 0 8px;
+        border: 1px solid var(--heo-line-strong);
+        border-radius: var(--heo-r-sm);
+        background: var(--heo-raised);
+        color: var(--heo-text);
+        font: inherit;
+        font-size: 11px;
+        font-weight: 600;
+        cursor: pointer;
+        translate: 0 -50%;
+      }
+      .frow .fact:hover {
+        border-color: var(--heo-accent-line);
+      }
+      .frow:hover .fact,
+      .frow:focus-within .fact {
+        display: inline-flex;
+      }
+      .frow:has(.fact):hover .tag,
+      .frow:has(.fact):focus-within .tag {
+        visibility: hidden;
+      }
+      .font[data-pickable='false'] .nm {
+        color: var(--heo-text-dim);
+      }
+      /*
+       * The add / edit popover takes the list's place while it is open, and the list is hidden
+       * rather than covered: laid over it, the popover was cut off by the dialog's own height.
+       */
+      .search[hidden],
+      .list[hidden],
+      .below[hidden] {
+        display: none;
+      }
+      .below {
+        display: grid;
+        gap: 8px;
+        min-width: 0;
       }
       .note {
         margin: 0;
@@ -248,6 +335,24 @@ export class HeoFontPicker extends LitElement {
   })();
   /** Web fonts whose name glyphs have loaded, so they draw in their own face. */
   @state() private ready = new Set<string>();
+  /** The add / edit popover, when it is open. */
+  @state() private draft: { family: string; mode: 'add' | 'edit' } | null = null;
+  /** Bumped when the page's fonts change, which is part of the list's key. */
+  @state() private fontsRevision = 0;
+  #unlisten: (() => void) | null = null;
+
+  override connectedCallback(): void {
+    super.connectedCallback();
+    this.#unlisten = maybeEngine()?.fonts.onChange(() => {
+      this.fontsRevision += 1;
+    }) ?? null;
+  }
+
+  override disconnectedCallback(): void {
+    super.disconnectedCallback();
+    this.#unlisten?.();
+    this.#unlisten = null;
+  }
   #hovered: string | null = null;
 
   get #families(): string[] {
@@ -267,7 +372,7 @@ export class HeoFontPicker extends LitElement {
   #list: Array<{ group: string; items: Choice[] }> = [];
 
   #choices(): Array<{ group: string; items: Choice[] }> {
-    const key = `${this.query}|${this.web}|${this.tokenFamilies.join(',')}`;
+    const key = `${this.query}|${this.web}|${this.tokenFamilies.join(',')}|${this.fontsRevision}`;
     if (key === this.#listKey) return this.#list;
     this.#listKey = key;
     this.#list = this.#readChoices();
@@ -285,18 +390,32 @@ export class HeoFontPicker extends LitElement {
         seen.add(key);
         return true;
       });
-    const pageNames = [...pageFontFamilies(), ...this.tokenFamilies].filter((name) => name && !isGenericFamily(name));
-    const page = take(pageNames.map((name) => ({ name, tag: 'In this page' })));
+    const fonts = maybeEngine()?.fonts;
+    const carried = (fonts?.list() ?? []).map((font): Choice => ({
+      name: font.family,
+      tag: font.place === 'embedded' ? 'Embedded' : `${maybeEngine()?.fileFolders.font ?? 'assets/fonts'}/`,
+      category: font.category,
+      web: catalogueFont(font.family),
+      project: font,
+      pickable: true,
+    }));
+    const own = pageFontFamilies()
+      .filter((name) => name && !isGenericFamily(name))
+      .map((name): Choice => ({ name, tag: 'Your stylesheet', pickable: true }));
+    const tokens = this.tokenFamilies
+      .filter((name) => name && !isGenericFamily(name))
+      .map((name): Choice => ({ name, tag: 'Font token', pickable: true }));
+    const page = take([...carried, ...own, ...tokens]);
     const system = take(
-      SYSTEM_FONTS.filter((one) => hasLocalFont(one.name)).map((one) => ({ name: one.name, tag: 'System', category: one.category })),
+      SYSTEM_FONTS.filter((one) => hasLocalFont(one.name)).map((one): Choice => ({ name: one.name, tag: 'This machine', category: one.category, pickable: true })),
     );
     const web = this.web
-      ? take(WEB_FONTS.map((one) => ({ name: one.name, tag: `Google · ${one.category}`, category: one.category, web: one })))
+      ? take(WEB_FONTS.map((one): Choice => ({ name: one.name, tag: one.category, category: one.category, web: one, pickable: false })))
       : [];
     return [
       { group: 'In this page', items: page },
-      { group: 'System', items: system },
-      { group: 'Web fonts', items: web },
+      { group: 'System · only where installed', items: system },
+      { group: 'Google Fonts', items: web },
     ].filter((one) => one.items.length);
   }
 
@@ -318,7 +437,7 @@ export class HeoFontPicker extends LitElement {
     return formatFamilies([family, ...fallbacks]);
   }
 
-  #emit(type: 'font-preview' | 'font-change' | 'font-web', detail: Record<string, unknown>): void {
+  #emit(type: 'font-preview' | 'font-change', detail: Record<string, unknown>): void {
     this.dispatchEvent(new CustomEvent(type, { detail, bubbles: true, composed: true }));
   }
 
@@ -345,12 +464,36 @@ export class HeoFontPicker extends LitElement {
   }
 
   #pick(choice: Choice): void {
-    this.#hovered = null;
-    if (choice.web) {
-      void previewWebFont(choice.web);
-      this.#emit('font-web', { href: webFontCss(choice.web), family: choice.name });
+    // A font the page does not carry is added first: its row's click is "Add font".
+    if (!choice.pickable) {
+      this.#openDraft(choice.name, 'add');
+      return;
     }
+    this.#hovered = null;
     this.#emit('font-change', { value: this.#stack(choice.name, choice.web) });
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Add font / Edit font                                                    */
+  /* ---------------------------------------------------------------------- */
+
+  #openDraft(family: string, mode: 'add' | 'edit'): void {
+    const font = catalogueFont(family);
+    if (!font || !maybeEngine()) return;
+    this.draft = { family: font.name, mode };
+    // Adding shows the font on the element while it is decided on, as hovering it did.
+    if (mode === 'add') {
+      this.#hovered = null;
+      this.#preview({ name: font.name, tag: '', category: font.category, web: font, pickable: false });
+    }
+  }
+
+  #closeDraft(): void {
+    const draft = this.draft;
+    this.draft = null;
+    if (draft?.mode === 'add') this.#preview(null);
+    void this.updateComplete.then(() =>
+      this.renderRoot.querySelector<HTMLElement>(`[data-font="${CSS.escape(draft?.family ?? '')}"]`)?.focus());
   }
 
   #setFallbacks(next: string[]): void {
@@ -434,7 +577,7 @@ export class HeoFontPicker extends LitElement {
     const current = (this.#families[0] ?? '').toLowerCase();
     const groups = this.#choices();
     return html`
-      <label class="search">
+      <label class="search" ?hidden=${Boolean(this.draft)}>
         ${icon('search', 12)}
         <input
           type="text"
@@ -446,30 +589,67 @@ export class HeoFontPicker extends LitElement {
           }}
         />
       </label>
-      <div class="list" role="listbox" aria-label="Fonts" @pointerleave=${() => this.#preview(null)}>
+      <div class="list" role="listbox" aria-label="Fonts" ?hidden=${Boolean(this.draft)} @pointerleave=${() => {
+        if (!this.draft) this.#preview(null);
+      }}>
         ${groups.map((group) => html`
           <div class="group">${group.group}</div>
-          ${group.items.map((choice) => html`<button
-            class="font"
-            type="button"
-            role="option"
-            data-font=${choice.name}
-            aria-current=${choice.name.toLowerCase() === current ? 'true' : 'false'}
-            aria-selected=${choice.name.toLowerCase() === current ? 'true' : 'false'}
-            title=${`${choice.name}: hover to see it on the element, click to use it`}
-            @pointermove=${(event: PointerEvent) => this.#hover(event, choice)}
-            @focus=${() => this.#preview(choice)}
-            @blur=${() => this.#preview(null)}
-            @click=${() => this.#pick(choice)}
-          >
-            <span class="nm" style=${`font-family:${formatFamilies([choice.name, choice.category ? GENERIC_FOR[choice.category] : 'sans-serif'])}`}>${choice.name}</span>
-            <span class="tag">${choice.tag}</span>
-          </button>`)}
+          ${group.items.map((choice) => {
+            const action = choice.project ? 'edit' : !choice.pickable ? 'add' : null;
+            return html`<div class="frow" data-row=${choice.name} @pointermove=${(event: PointerEvent) => this.#hover(event, choice)}>
+              <button
+                class="font"
+                type="button"
+                role="option"
+                data-font=${choice.name}
+                data-pickable=${choice.pickable ? 'true' : 'false'}
+                aria-current=${choice.name.toLowerCase() === current ? 'true' : 'false'}
+                aria-selected=${choice.name.toLowerCase() === current ? 'true' : 'false'}
+                title=${choice.pickable
+                  ? `${choice.name}: hover to see it on the element, click to use it`
+                  : `${choice.name}: hover to see it on the element; add it to the page to use it`}
+                @focus=${() => this.#preview(choice)}
+                @blur=${() => this.#preview(null)}
+                @click=${() => this.#pick(choice)}
+              >
+                <span class="nm" style=${`font-family:${formatFamilies([choice.name, choice.category ? GENERIC_FOR[choice.category] : 'sans-serif'])}`}>${choice.name}</span>
+                <span class=${choice.project?.place === 'embedded' ? 'tag pill emb' : choice.project ? 'tag pill' : 'tag'}>${choice.tag}</span>
+              </button>
+              ${action
+                ? html`<button
+                    class="fact"
+                    type="button"
+                    data-font-action=${action}
+                    aria-label=${`${action === 'add' ? 'Add font' : 'Edit font'} ${choice.name}`}
+                    @focus=${() => this.#preview(choice)}
+                    @click=${() => this.#openDraft(choice.name, action)}
+                  >${action === 'add' ? html`${icon('plus', 10)} Add font` : html`${icon('sliders', 10)} Edit font`}</button>`
+                : nothing}
+            </div>`;
+          })}
         `)}
         ${!groups.length ? html`<p class="note">No font matches “${this.query}”.</p>` : nothing}
       </div>
+      ${this.draft
+        ? html`<heo-font-editor
+            .family=${this.draft.family}
+            .mode=${this.draft.mode}
+            @font-editor-close=${(event: Event) => {
+              event.stopPropagation();
+              this.#closeDraft();
+            }}
+            @font-editor-done=${(event: CustomEvent<{ family: string; mode: 'add' | 'edit' }>) => {
+              event.stopPropagation();
+              this.draft = null;
+              this.#hovered = null;
+              // "Add and use": once it is in the page, it is the font.
+              if (event.detail.mode === 'add') this.#emit('font-change', { value: this.#stack(event.detail.family, catalogueFont(event.detail.family)) });
+            }}
+          ></heo-font-editor>`
+        : nothing}
+      <div class="below" ?hidden=${Boolean(this.draft)}>
       ${this.web
-        ? html`<p class="note">Web fonts are previewed from Google Fonts. Picking one links its stylesheet into the page.</p>`
+        ? html`<p class="note">Google fonts are previewed from Google. Adding one keeps its files with the page, so visitors never ask Google for it.</p>`
         : html`<div class="webask">
             <p class="note">Web fonts from Google Fonts can be previewed here. Showing them asks Google for each font, which tells it this page's address.</p>
             <button class="btn sm" type="button" @click=${() => {
@@ -482,6 +662,7 @@ export class HeoFontPicker extends LitElement {
             }}>Show web fonts</button>
           </div>`}
       ${this.#families.length ? this.#renderFallbacks() : nothing}
+      </div>
     `;
   }
 

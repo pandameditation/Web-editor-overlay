@@ -1,10 +1,10 @@
 /**
  * The "create it" offer, worded once for every surface that makes it.
  *
- * A search that finds nothing is the moment someone decides to make the thing, so four places
- * turn what was typed into an offer to create it: the Library panel's search and the `+` insert
- * picker (a block), the Styles header's class finder (a class) and the conditions bar's "Add a
- * media query" (a media query). They read their label, title
+ * A search that finds nothing is the moment someone decides to make the thing, so every finder
+ * turns what was typed into an offer to create it: the Library panel's search and the `+` insert
+ * picker (a block), the Styles header's and Tokens' class finders (a class), Tokens' text style and
+ * rule finders, and the conditions bar's "Add a media query" (a media query). They read their label, title
  * and icon from here so they cannot drift into describing the same act differently.
  *
  * Rendering stays with each surface, because one is a button under a grid of cards, one an option
@@ -43,6 +43,21 @@ export function createClassLabel(name: string): string {
 }
 
 export const CREATE_CLASS_TITLE = 'Define this class and add it to the element';
+
+/** Tokens' class finder makes the class without putting it on anything. */
+export const CREATE_DESIGN_CLASS_TITLE = 'Define this class, ready for its properties';
+
+export function createTextStyleLabel(name: string): string {
+  return createLabel(name, 'Create a text style');
+}
+
+export const CREATE_TEXT_STYLE_TITLE = 'Make a text style with this name, to set its typography';
+
+export function createRuleLabel(selector: string): string {
+  return createLabel(selector, 'Create a rule');
+}
+
+export const CREATE_RULE_TITLE = 'Write a rule for this selector, ready for its properties';
 
 /** `Add "print"`: a media query to put on the conditions bar, as it will be written. */
 export function addMediaLabel(query: string): string {

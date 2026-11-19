@@ -85,6 +85,7 @@ export const FIXTURES = [
   { page: 'test/filter-editor.html', budget: 60000, weight: 2400, fast: true },
   { page: 'test/motion-section.html', budget: 60000, weight: 2400, fast: true },
   { page: 'test/typography.html', budget: 60000, weight: 2600, fast: true },
+  { page: 'test/project-fonts.html', budget: 60000, weight: 2200, fast: true },
   { page: 'test/split-save-modes.html', budget: 45000, weight: 2000, fast: true },
   { page: 'test/shield.html', budget: 45000, weight: 2900 },
   { page: 'test/bundle.html', budget: 45000, strict: true, weight: 2800 },

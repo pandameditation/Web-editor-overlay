@@ -56,6 +56,20 @@ import {
   ViewportPreview,
 } from './viewport.js';
 import {
+  catalogueFont,
+  catalogueStyles,
+  embeddedFontUrl,
+  fontCssUrl,
+  fontFileName,
+  FontRegistry,
+  FONT_STYLE_ID,
+  isItalicStyle,
+  parseGoogleCss,
+  type FontStyleKey,
+  type ProjectFont,
+  type ProjectFontFace,
+} from './project-fonts.js';
+import {
   isTextStyle,
   isTypography,
   sortTextStyles,
@@ -119,6 +133,7 @@ import {
 import { containTab } from './focus.js';
 import { inexpressibleAt, refusalFor } from './content-model.js';
 import { domRecorder, movesOf, revertOps, shadowRootsOf, within, type DomOp } from './dom-journal.js';
+import { parseFamilies } from './fonts.js';
 import { History, nextChangeId, type Command } from './history.js';
 import { handleKeyDown, handleKeyUp, matchesShortcut } from './keymap.js';
 import { findBreakRuns, type BreakRun } from './line-breaks.js';
@@ -1193,6 +1208,8 @@ export class EditorEngine {
    * had nowhere to live except the CSS panel's raw text.
    */
   readonly rules = new RuleRegistry();
+  /** The web fonts the page carries: their files kept with it, their `@font-face` rules managed. */
+  readonly fonts = new FontRegistry();
   /**
    * The ready-made animations' keyframes, all of them, so any animation the Styles panel writes
    * plays while editing. A save writes only the ones the page refers to (`designSystemParts`).
@@ -1471,6 +1488,7 @@ export class EditorEngine {
     this.tokens.scanDocument();
     this.classes.scanDocument();
     this.rules.scanDocument();
+    this.fonts.scanDocument();
     // Not awaited: everything below works without it, and it only ever improves the answers. See
     // the method for what it improves.
     void this.#cacheStylesheetTexts();
@@ -1509,6 +1527,7 @@ export class EditorEngine {
       this.tokens.onChange(() => this.#bumpRegistry()),
       this.classes.onChange(() => this.#bumpRegistry()),
       this.rules.onChange(() => this.#bumpRegistry()),
+      this.fonts.onChange(() => this.#bumpRegistry()),
       this.library.onChange(() => {
         this.#hydrateBlockInstances();
         // Async (deflate) seeds land here, after `start` has returned.
@@ -1666,6 +1685,7 @@ export class EditorEngine {
     this.tokens.destroy();
     this.classes.destroy();
     this.rules.destroy();
+    this.fonts.destroy();
     this.library.destroy();
     this.ai.destroy();
     // Before the evaluator goes: putting the page back needs nothing from it, but the order reads.
@@ -2892,46 +2912,176 @@ export class EditorEngine {
     this.#bumpRevision();
   }
 
+  /* ---------------------------------------------------------------------- */
+  /* Project fonts                                                          */
+  /* ---------------------------------------------------------------------- */
+
   /**
-   * Link a web font's stylesheet into the page's head, once: the font picker's "add to the
-   * project". Undoable, and written to the file like any head edit. Only https URLs.
+   * What a catalogue font is offered in: its styles (whether it has italics, asked of Google) and
+   * the character sets it has. Null when Google cannot be reached.
    */
-  addFontStylesheet(href: string): boolean {
-    let url: URL;
-    try {
-      url = new URL(href);
-    } catch {
-      return false;
+  async fontOffer(family: string): Promise<{ styles: FontStyleKey[]; subsets: string[] } | null> {
+    const font = catalogueFont(family);
+    if (!font) return null;
+    const cached = this.#fontOffers.get(font.name);
+    if (cached) return cached;
+    const ask = async (styles: FontStyleKey[]) => {
+      const response = await fetch(fontCssUrl(font, styles), { credentials: 'omit', referrerPolicy: 'no-referrer' }).catch(() => null);
+      return response?.ok ? parseGoogleCss(await response.text(), font) : null;
+    };
+    // With italics first; a font without them is refused outright (400), so ask again without.
+    const faces = (await ask(catalogueStyles(font, true))) ?? (await ask(catalogueStyles(font, false)));
+    if (!faces?.length) return null;
+    // Upright before italic, lighter before heavier: the order they are read in.
+    const rank = (style: FontStyleKey): number =>
+      (style === 'italic' || style.endsWith('i') ? 10000 : 0) + (Number.parseInt(style, 10) || 0);
+    const offer = {
+      styles: [...new Set(faces.map((face) => face.style))].sort((a, b) => rank(a) - rank(b)),
+      subsets: [...new Set(faces.map((face) => face.subset))],
+    };
+    this.#fontOffers.set(font.name, offer);
+    return offer;
+  }
+
+  #fontOffers = new Map<string, { styles: FontStyleKey[]; subsets: string[] }>();
+
+  /** Elements, classes, rules and tokens that name a family in `font-family`, for "Used by". */
+  fontUsers(family: string): string[] {
+    const name = family.trim().toLowerCase();
+    const names = (value: string | undefined): boolean =>
+      Boolean(value) && parseFamilies(value!).some((one) => one.toLowerCase() === name);
+    const out: string[] = [];
+    for (const entry of this.classes.list()) if (names(entry.declarations['font-family'])) out.push(`.${entry.name}`);
+    for (const entry of this.rules.list()) if (names(entry.declarations['font-family'])) out.push(entry.selector);
+    for (const token of this.tokens.list()) if (token.group === 'font' && names(token.value)) out.push(`--${token.name.replace(/^--/, '')}`);
+    const inline = Array.from(document.querySelectorAll<HTMLElement>('[style]')).filter((el) => !isEditorOwned(el) && names(el.style.fontFamily)).length;
+    if (inline) out.push(inline === 1 ? '1 element' : `${inline} elements`);
+    return out;
+  }
+
+  /**
+   * Give the page a web font, or change one it has: fetch its files for these styles and
+   * character sets, keep them where `place` says, and write its `@font-face` rules. One undo step.
+   *
+   * Embedded faces are data URLs; stored ones are written into the fonts folder and linked by a
+   * path relative to the page. Resolves to null on success, or a sentence saying what went wrong;
+   * nothing is changed then.
+   */
+  async saveProjectFont(spec: {
+    family: string;
+    styles: FontStyleKey[];
+    subsets: string[];
+    place: 'embedded' | 'stored';
+  }): Promise<string | null> {
+    const font = catalogueFont(spec.family);
+    if (!font) return `${spec.family} is not a font this editor can fetch.`;
+    if (!spec.styles.length || !spec.subsets.length) return 'Pick at least one style and one character set.';
+    const project = this.#project;
+    if (spec.place === 'stored') {
+      const blocker = this.storeFilesBlocker();
+      if (blocker) return blocker;
+      if (project && !(await project.ensureWritable())) return `${project.label} is not accepting writes right now.`;
     }
-    if (url.protocol !== 'https:') return false;
-    const already = Array.from(document.head.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"]'))
-      .some((link) => link.href === url.href);
-    if (already) return false;
-    const link = document.createElement('link');
-    link.rel = 'stylesheet';
-    link.href = url.href;
+    const response = await fetch(fontCssUrl(font, spec.styles), { credentials: 'omit', referrerPolicy: 'no-referrer' }).catch(() => null);
+    if (!response?.ok) return `Google Fonts could not be reached for ${font.name}.`;
+    // In the order they are picked from: upright before italic, Latin first.
+    const order = (face: { style: FontStyleKey; subset: string }): number =>
+      (isItalicStyle(face.style) ? 1000 : 0) + (Number.parseInt(face.style, 10) || 0) + (face.subset === 'latin' ? 0 : 1);
+    const wanted = parseGoogleCss(await response.text(), font)
+      .filter((face) => spec.styles.includes(face.style) && spec.subsets.includes(face.subset))
+      .sort((a, b) => order(a) - order(b));
+    if (!wanted.length) return `Google Fonts has none of those styles of ${font.name}.`;
+    const previous = this.fonts.get(font.name);
+    const reuse = new Map((previous?.faces ?? []).map((face) => [`${face.style}|${face.subset}`, face]));
+    const faces: ProjectFontFace[] = [];
+    for (const face of wanted) {
+      const name = fontFileName(font.name, face.style, face.subset);
+      const kept = reuse.get(`${face.style}|${face.subset}`);
+      // A face it has already, in the place asked for, is kept as it is: no second download.
+      if (kept && kept.src.startsWith('data:') === (spec.place === 'embedded')) {
+        faces.push({ ...kept });
+        continue;
+      }
+      let bytes: Uint8Array<ArrayBuffer>;
+      try {
+        const file = kept && !kept.src.startsWith('data:')
+          ? await fetchAsset(absolute(kept.src), project)
+          : null;
+        if (kept?.src.startsWith('data:')) {
+          bytes = decodeDataUrl(kept.src)?.bytes ?? new Uint8Array(await (await fetch(face.url)).arrayBuffer());
+        } else {
+          bytes = file?.bytes ?? new Uint8Array(await (await fetch(face.url, { credentials: 'omit' })).arrayBuffer());
+        }
+      } catch {
+        return `A file of ${font.name} could not be downloaded.`;
+      }
+      let src: string;
+      if (spec.place === 'embedded') {
+        src = embeddedFontUrl(bytes, name);
+      } else {
+        const relative = `${this.settings.value.fileFolders.font}/${name}`;
+        const path = project?.resolve(absolute(relative)) ?? null;
+        if (path === null || !project?.writeBytes) return `${relative} is outside ${project?.label ?? 'the project'}.`;
+        try {
+          await project.writeBytes(path, bytes);
+        } catch (error) {
+          return `${name}: ${error instanceof Error ? error.message : String(error)}`;
+        }
+        this.#storedBytes.set(absolute(relative), { bytes, mime: 'font/woff2' });
+        src = relative;
+      }
+      faces.push({
+        style: face.style,
+        subset: face.subset,
+        weight: face.weight,
+        fontStyle: face.fontStyle,
+        unicodeRange: face.unicodeRange,
+        src,
+      });
+    }
+    const next: ProjectFont = {
+      family: font.name,
+      category: font.category,
+      styles: [...spec.styles],
+      subsets: [...spec.subsets],
+      place: spec.place,
+      faces,
+    };
+    this.#commitProjectFont(previous ?? null, next, previous ? `Change the font ${font.name}` : `Add the font ${font.name}`);
+    return null;
+  }
+
+  /** Take a font out of the page: its rules go, and what used it falls back. One undo step. */
+  removeProjectFont(family: string): void {
+    const previous = this.fonts.get(family);
+    if (previous) this.#commitProjectFont(previous, null, `Remove the font ${previous.family}`);
+  }
+
+  #commitProjectFont(before: ProjectFont | null, after: ProjectFont | null, label: string): void {
+    const family = (after ?? before)!.family;
     this.history.commit({
-      label: 'Add a web font',
-      subject: `head:font:${url.href}`,
+      label,
+      subject: `font:${family}`,
       record: {
         id: nextChangeId(),
-        kind: 'attribute',
-        summary: `Link the web font stylesheet ${url.host}${url.pathname}`,
-        target: 'link',
-        group: 'document-head',
-        after: url.href,
-        anchor: { tag: 'link', attr: { name: 'href', value: url.href } },
-        detail: { scope: 'document head', tag: 'link', attribute: 'href', value: url.href },
+        kind: 'token',
+        summary: after
+          ? `${before ? 'Change' : 'Add'} the font ${family}: ${after.faces.length} file${after.faces.length === 1 ? '' : 's'}, ${after.place}`
+          : `Remove the font ${family}`,
+        target: `@font-face ${family}`,
+        detail: { font: family, place: after?.place ?? '', files: String(after?.faces.length ?? 0) },
         at: Date.now(),
       },
-      domOnly: true,
       apply: () => {
-        if (!link.isConnected) document.head.appendChild(link);
+        if (after) this.fonts.upsert(after);
+        else this.fonts.remove(family);
       },
-      revert: () => link.remove(),
+      revert: () => {
+        if (before) this.fonts.upsert(before);
+        else this.fonts.remove(family);
+      },
     });
     this.#bumpRevision();
-    return true;
   }
 
   /* ---------------------------------------------------------------------- */
@@ -10002,6 +10152,7 @@ export class EditorEngine {
     this.tokens.scanDocument();
     this.classes.scanDocument();
     this.rules.scanDocument();
+    this.fonts.scanDocument();
     /*
      * A folder makes the page's own HTML readable, and over `file://` that is the only
      * way it ever becomes readable — a fetch of the document is refused there for the
@@ -10749,6 +10900,7 @@ export class EditorEngine {
       [TOKEN_STYLE_ID]: parts.tokens,
       [CLASS_STYLE_ID]: parts.classes,
       [RULE_STYLE_ID]: parts.rules,
+      [FONT_STYLE_ID]: parts.fonts ?? '',
       [BLOCK_STYLE_ID]: parts.blockCSS,
       ...removal,
     };

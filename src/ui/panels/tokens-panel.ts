@@ -13,7 +13,19 @@ import { icon } from '../icons.js';
 import { classSuggestions, shadowSwatches } from '../suggestions.js';
 import { killStyles, renderKill } from '../kill.js';
 import { baseStyles } from '../theme.js';
-import { ClassEditor } from './class-editor.js';
+import { ClassEditor, renderCardHeader } from './class-editor.js';
+import { pageFontFamilies, WEB_FONTS } from '../../core/fonts.js';
+import { catalogueFont, styleLabel, type ProjectFont } from '../../core/project-fonts.js';
+import '../controls/font-editor.js';
+import {
+  CREATE_DESIGN_CLASS_TITLE,
+  CREATE_ICON,
+  CREATE_RULE_TITLE,
+  CREATE_TEXT_STYLE_TITLE,
+  createClassLabel,
+  createRuleLabel,
+  createTextStyleLabel,
+} from '../create-offer.js';
 import { RuleEditor, type RuleEditorHost } from './rule-editor.js';
 import { DesignTransfer, type DesignTransferHost } from './design-transfer.js';
 import '../controls/section.js';
@@ -117,10 +129,83 @@ export class HeoTokensPanel extends HeoElement {
         font-family: var(--heo-mono);
         font-size: 10px;
       }
+      /* A class's card, as Reusable classes and CSS rules draw theirs: the same frame and footer. */
+      .tstyle-card {
+        margin: 10px 0 0;
+      }
       .tstyle-ed {
         display: grid;
         gap: 6px;
-        margin-top: 10px;
+        padding: 7px 8px;
+      }
+      .font-body {
+        display: grid;
+        gap: 8px;
+        padding: 8px;
+      }
+      .font-body .faces {
+        display: grid;
+        gap: 2px;
+      }
+      .font-body .face {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 8px;
+        min-height: 24px;
+      }
+      .font-body .fs {
+        overflow: hidden;
+        font-size: 14px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .font-body .loc {
+        max-width: 170px;
+        overflow: hidden;
+        padding: 1px 7px;
+        border: 1px solid var(--heo-line-strong);
+        border-radius: 999px;
+        color: var(--heo-text-dim);
+        font-family: var(--heo-mono);
+        font-size: 10px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .font-body .loc.emb {
+        border-color: var(--heo-accent-line);
+        color: var(--heo-accent);
+        font-family: inherit;
+      }
+      .font-body .used {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 4px;
+        color: var(--heo-text-faint);
+        font-size: 10.5px;
+      }
+      .font-body .used span {
+        padding: 1px 6px;
+        border-radius: 999px;
+        background: var(--heo-sunken);
+        color: var(--heo-text-dim);
+        font-family: var(--heo-mono);
+      }
+      .font-body .apply {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+      }
+      /* Nothing matches: what the Library panel shows, a line and the offer to make it. */
+      .empty.create {
+        display: grid;
+        justify-items: center;
+        gap: 9px;
+        padding: 14px 12px;
+      }
+      .empty.create p {
+        margin: 0;
       }
       .trow {
         display: grid;
@@ -327,6 +412,11 @@ export class HeoTokensPanel extends HeoElement {
   @state() private textStyle: string | null = null;
   /** What is typed in Text styles' "find or create" field. */
   @state() private textStyleDraft = '';
+  /** What is typed in Fonts' "find or add" field. */
+  @state() private fontDraft = '';
+  /** The font card that is open, and the font being added or edited in it. */
+  @state() private openFont: string | null = null;
+  @state() private fontEditing: { family: string; mode: 'add' | 'edit' } | null = null;
   @state() private newClassProperty = '';
   @state() private version = 0;
   @state() private classDraft = '';
@@ -386,6 +476,7 @@ export class HeoTokensPanel extends HeoElement {
         ? TOKEN_GROUPS.map((group) => this.#renderGroup(group, usage)).filter(Boolean)
         : nothing}
       ${this.#shows('classes') ? this.#renderTextStyles() : nothing}
+      ${this.#shows('classes') ? this.#renderFonts() : nothing}
       ${this.#shows('classes') ? this.#renderClassList(el) : nothing}
       ${this.#shows('rules') ? this.#renderRules(el) : nothing}
       ${this.query ? this.#renderNoMatches() : nothing}
@@ -875,13 +966,161 @@ export class HeoTokensPanel extends HeoElement {
             </div>`)}
           </div>`
         : draft
-          ? html`<p class="hint" style="margin:0">No text style matches. Press Enter or + to create “${this.textStyleDraft.trim()}”.</p>`
+          ? this.#renderCreateOffer(
+              this.textStyleDraft,
+              createTextStyleLabel(this.textStyleDraft),
+              CREATE_TEXT_STYLE_TITLE,
+              () => this.#createTextStyle(this.textStyleDraft),
+            )
           : html`<p class="hint" style="margin:0">No text styles yet. Create one above, or style a text in Styles and save it from Typography.</p>`}
       ${picked ? this.#renderTextStyleEditor(picked.entry, picked.name, picked.used) : nothing}
     </heo-section>`;
   }
 
   #styleDragFrom: number | null = null;
+
+  /**
+   * The fonts the page carries: one card per family, its files and where each lives, what uses it,
+   * and the font editor the picker opens (Add font / Edit font), so both manage fonts the same way.
+   * The page's own `@font-face` families are listed after, as its own, and left alone.
+   */
+  #renderFonts(): TemplateResult | typeof nothing {
+    const engine = this.editor;
+    const needle = (this.query || this.fontDraft).trim().toLowerCase();
+    const carried = engine.fonts.list();
+    const shown = carried.filter((one) => !needle || one.family.toLowerCase().includes(needle));
+    const own = pageFontFamilies()
+      .filter((name) => !engine.fonts.has(name))
+      .filter((name) => !needle || name.toLowerCase().includes(needle))
+      .sort();
+    if (this.query.trim() && !shown.length && !own.length) return nothing;
+    // A catalogue font that matches what is typed and is not in the page yet: offered to add.
+    const typed = this.fontDraft.trim();
+    const addable = typed
+      ? WEB_FONTS.filter((one) => one.name.toLowerCase().includes(typed.toLowerCase()) && !engine.fonts.has(one.name)).slice(0, 4)
+      : [];
+    const size = (font: ProjectFont): number => font.faces.reduce((sum, face) => sum + (face.src.startsWith('data:') ? Math.round((face.src.length * 3) / 4) : 0), 0);
+    return html`<heo-section
+      heading="Fonts"
+      glyph="font"
+      badge=${String(carried.length)}
+      ?open=${openGroups.has('fonts') || Boolean(this.query.trim())}
+      @section-toggle=${(event: CustomEvent<{ open: boolean }>) => this.#remember('fonts', event.detail.open)}
+    >
+      <heo-value-field
+        data-font-find
+        style="margin-bottom:8px"
+        field-label="Find a font, or add one from Google"
+        leading-icon="search"
+        clearable
+        chevron-hidden
+        action-hidden
+        placeholder="find a font, or add one from Google…"
+        .value=${this.fontDraft}
+        @value-input=${(event: CustomEvent<{ value: string }>) => {
+          this.fontDraft = event.detail.value;
+        }}
+        @value-change=${(event: CustomEvent<{ value: string }>) => {
+          this.fontDraft = event.detail.value;
+        }}
+        @value-submit=${(event: CustomEvent<{ value: string }>) => {
+          const font = catalogueFont(event.detail.value) ?? addable[0];
+          if (font && !engine.fonts.has(font.name)) this.fontEditing = { family: font.name, mode: 'add' };
+        }}
+      ></heo-value-field>
+      ${this.fontEditing?.mode === 'add' ? this.#renderFontEditor(this.fontEditing.family, 'add') : nothing}
+      ${addable.length && !this.fontEditing
+        ? html`<div class="empty create" data-create-offer>
+            ${shown.length ? nothing : html`<p>Nothing in the page matches <strong>${typed}</strong>.</p>`}
+            ${addable.map((font) => html`<button class="btn sm" type="button" data-font-add=${font.name} title="Add it to the page: its files are kept with it" @click=${() => {
+              this.fontEditing = { family: font.name, mode: 'add' };
+            }}>${icon('plus', 12)} Add "${font.name}"</button>`)}
+          </div>`
+        : nothing}
+      ${shown.map((font) => {
+        const open = this.openFont === font.family;
+        const users = open ? engine.fontUsers(font.family) : [];
+        return html`<div class="cls" data-project-font=${font.family}>
+          ${renderCardHeader({
+            name: font.family,
+            plain: true,
+            meta: `${font.styles.length} style${font.styles.length === 1 ? '' : 's'} · ${font.place === 'embedded' ? `embedded${size(font) ? `, ${Math.round(size(font) / 1000)} kB` : ''}` : `${engine.fileFolders.font}/`}`,
+            expanded: open,
+            sessionDot: false,
+            onToggle: () => {
+              this.openFont = open ? null : font.family;
+              if (open && this.fontEditing?.family === font.family) this.fontEditing = null;
+            },
+          })}
+          ${open
+            ? html`<div class="font-body">
+                <div class="faces">
+                  ${font.faces.map((face) => html`<div class="face">
+                    <span class="fs" style=${`font-family:"${font.family}";font-style:${face.fontStyle}`}>${styleLabel(face.style)} <span class="hint">${face.subset}</span></span>
+                    <span class=${face.src.startsWith('data:') ? 'loc emb' : 'loc'} title=${face.src.startsWith('data:') ? 'Inside the design system, as a data URL' : face.src}>${face.src.startsWith('data:') ? 'Embedded' : face.src.split('/').pop()}</span>
+                  </div>`)}
+                </div>
+                <div class="used">Used by ${users.length ? users.map((one) => html`<span>${one}</span>`) : 'nothing yet'}</div>
+                ${this.fontEditing?.family === font.family && this.fontEditing.mode === 'edit'
+                  ? this.#renderFontEditor(font.family, 'edit')
+                  : html`<div class="apply">
+                      <button class="btn sm" type="button" data-font-edit=${font.family} @click=${() => {
+                        this.fontEditing = { family: font.family, mode: 'edit' };
+                      }}>${icon('sliders', 12)} Edit font</button>
+                      <button class="btn sm danger" type="button" data-font-delete=${font.family} @click=${() => {
+                        engine.removeProjectFont(font.family);
+                        this.openFont = null;
+                      }}>${icon('trash', 12)} Remove</button>
+                    </div>`}
+              </div>`
+            : nothing}
+        </div>`;
+      })}
+      ${own.map((name) => html`<div class="cls" data-page-font=${name}>
+        <header class="card-head" style="cursor:default">
+          <span class="n plain" style=${`font-family:"${name}"`}>${name}</span>
+          <span class="meta">Your stylesheet</span>
+        </header>
+      </div>`)}
+      ${!carried.length && !own.length && !typed
+        ? html`<p class="hint" style="margin:0">No fonts in the page yet. Find a Google font above, or add one from the font picker in Styles.</p>`
+        : nothing}
+    </heo-section>`;
+  }
+
+  #renderFontEditor(family: string, mode: 'add' | 'edit'): TemplateResult {
+    return html`<heo-font-editor
+      style="margin-bottom:8px"
+      .family=${family}
+      .mode=${mode}
+      @font-editor-close=${() => {
+        this.fontEditing = null;
+      }}
+      @font-editor-done=${(event: CustomEvent<{ family: string; mode: string }>) => {
+        this.fontEditing = null;
+        if (event.detail.mode === 'add') {
+          this.fontDraft = '';
+          this.openFont = event.detail.family;
+          openGroups.add('fonts');
+        }
+        if (event.detail.mode === 'remove') this.openFont = null;
+      }}
+    ></heo-font-editor>`;
+  }
+
+  /**
+   * A finder that found nothing: the Library panel's empty state, the line saying so and a button
+   * to make what was typed. Each section's field also makes it on Enter or +; the button is there
+   * because a list that just goes quiet does not say that is the next step.
+   */
+  #renderCreateOffer(typed: string, label: string, title: string, create: () => void): TemplateResult {
+    return html`<div class="empty create" data-create-offer>
+      <p>Nothing matches <strong>${typed.trim()}</strong>.</p>
+      <button class="btn sm" type="button" title=${title} @click=${create}>
+        ${icon(CREATE_ICON, 12)} ${label}
+      </button>
+    </div>`;
+  }
 
   /** Move a style in the whole list (only the unfiltered list moves), as one undo step. */
   #moveTextStyle(from: number, to: number): void {
@@ -908,13 +1147,25 @@ export class HeoTokensPanel extends HeoElement {
   /** A text style's rows: its name, then Typography's rows, writing to the class. */
   #renderTextStyleEditor(entry: DesignClass, name: string, used: number): TemplateResult {
     const engine = this.editor;
-    const decl = entry.declarations;
+    /*
+     * As the class editor reads them: from before any preview in flight. A preview is written into
+     * the registry this reads, so the font field was handed the font being hovered as its value —
+     * its own preview echoed back as though it had been picked — where the Styles panel's field
+     * keeps the value it had. The two fields now see the same thing.
+     */
+    const preview = engine.classPreviewTarget;
+    const decl = preview && preview.name === entry.name ? preview.declarations : entry.declarations;
     const write = (property: string, value: string): void => {
       if (value.trim()) engine.setClassDeclaration(entry.name, property, value);
       else if (property in decl) engine.removeClassDeclaration(entry.name, property);
     };
     const rows = shownTypographyRows(decl['text-decoration-line'] ?? '');
-    return html`<div class="tstyle-ed" data-text-style-editor=${entry.name}>
+    const el = engine.selected;
+    const worn = el ? engine.textStyleOf(el)?.name === entry.name : false;
+    return html`<div class="cls tstyle-card"><div
+      class="tstyle-ed"
+      data-text-style-editor=${entry.name}
+    >
       <div class="trow">
         <span class="dot off"></span>
         <span class="tname">Name</span>
@@ -928,10 +1179,7 @@ export class HeoTokensPanel extends HeoElement {
             if (next && next !== name) engine.setClassDeclaration(entry.name, TEXT_STYLE_MARKER, textStyleMarker(next), undefined, `Rename text style to ${next}`);
           }}
         ></heo-value-field>
-        ${renderKill({ label: `Delete the text style ${name}`, title: used ? `Delete ${name}: ${used} elements lose it` : `Delete ${name}`, tight: true, onClick: () => {
-          engine.removeClass(entry.name);
-          this.textStyle = null;
-        } })}
+        <span></span>
       </div>
       ${rows.map((row) => {
         const value = decl[row.property] ?? '';
@@ -967,7 +1215,33 @@ export class HeoTokensPanel extends HeoElement {
         </div>`;
       })}
       <p class="hint" style="margin:0">The rows the Styles panel's Typography has. Here they change ${name} itself: ${used === 1 ? 'the element using it follows' : `the ${used} elements using it follow`}.</p>
-    </div>`;
+    </div>
+    <!-- The class card's footer (class-editor.ts), so a text style is put on and deleted the same way. -->
+    <div class="apply">
+      ${el
+        ? html`<button
+            class="btn sm"
+            type="button"
+            aria-pressed=${worn}
+            title=${worn ? `Take ${labelFor(el)} out of ${name}` : `Put ${labelFor(el)} in ${name}`}
+            @click=${() => engine.applyTextStyle(worn ? null : entry.name, el)}
+          >
+            ${icon(worn ? 'check' : 'plus', 12)} ${worn ? 'Applied here' : 'Apply to selection'}
+          </button>`
+        : nothing}
+      <button
+        class="btn sm danger"
+        type="button"
+        data-text-style-delete
+        title=${used ? `Delete ${name}: ${used === 1 ? 'the element using it loses it' : `the ${used} elements using it lose it`}` : `Delete ${name}`}
+        @click=${() => {
+          engine.removeClass(entry.name);
+          this.textStyle = null;
+        }}
+      >
+        ${icon('trash', 12)} Delete
+      </button>
+    </div></div>`;
   }
 
   #renderClassList(el: HTMLElement | null): TemplateResult | typeof nothing {
@@ -993,6 +1267,8 @@ export class HeoTokensPanel extends HeoElement {
         clearable
         action="Create class"
         action-icon="plus"
+        create-label=${createClassLabel(normalizeClassName(this.classDraft) || this.classDraft)}
+        create-title=${CREATE_DESIGN_CLASS_TITLE}
         .suggestions=${classSuggestions(this.editor, this.classDraft)}
         placeholder="find or create a class"
         @value-input=${(event: CustomEvent<{ value: string }>) => {
@@ -1030,7 +1306,11 @@ export class HeoTokensPanel extends HeoElement {
       >
         ${icon('clipboard', 12)} Paste CSS…
       </button>
-      ${classes.length === 0
+      ${classes.length === 0 && localQuery && !this.editor.classes.get(normalizeClassName(localQuery) ?? '')
+        ? this.#renderCreateOffer(localQuery, createClassLabel(normalizeClassName(localQuery) || localQuery), CREATE_DESIGN_CLASS_TITLE, () => {
+            if (this.classForm.submit()) this.#createClass(this.classDraft);
+          })
+        : classes.length === 0
         ? html`<p class="hint" style="margin:0 0 8px">
             ${globalClasses.length || localQuery
             ? 'No reusable classes match the current filters.'
@@ -1127,7 +1407,11 @@ export class HeoTokensPanel extends HeoElement {
         ${icon('clipboard', 12)} Paste CSS…
       </button>
       ${this.#renderRuleComposer(el)}
-      ${rules.length === 0
+      ${rules.length === 0 && localQuery
+        ? this.#renderCreateOffer(localQuery, createRuleLabel(localQuery), CREATE_RULE_TITLE, () => {
+            if (this.ruleForm.submit()) this.#createRule(this.ruleDraft);
+          })
+        : rules.length === 0
         ? html`<p class="hint" style="margin:10px 0 0">
             ${globalRules.length || localQuery
             ? 'No CSS rules match the current filters.'

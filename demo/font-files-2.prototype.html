@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PROTOTYPE — Fonts that travel with the page, round 2</title>
+  <!--
+  PROTOTYPE — throwaway, not part of the overlay build. Open the file directly in a browser.
+
+  Round 2, from variant C of demo/font-files.prototype.html, with the feedback:
+    - only a font "In this page" can be picked: one the page carries (added here, or an @font-face
+      of its own stylesheet). Any other font is added first, so a page is never saved with a font
+      it does not have;
+    - every other font has "Add font" (on hover, on focus, or a click on its row), which opens the
+      font popover to add it; a font added here has "Edit font", which opens the same popover to
+      change its styles, characters and where it lives, or to remove it;
+    - no "variable: one file per style…" or "Until it is…" lines;
+    - Tokens › Fonts as it was.
+  Scenes (?scene=): browse | add | edit | remove | tokens. "Project folder" switches the default place.
+  The dark box is what a save writes: the @font-face rules in the heo:design-system section and the
+  files beside the page.
+-->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400..700;1,400..700&family=Space+Mono:ital,wght@0,400;0,700;1,400;1,700&family=Fraunces:wght@300..900&family=DM+Serif+Display:ital@0;1&family=Caveat:wght@400..700&family=Space+Grotesk:wght@300..700&display=swap" />
+  <style>
+    :root {
+      --heo-bg: #ffffff; --heo-raised: #ffffff; --heo-sunken: #f4f5f8; --heo-hover: #eff1f5;
+      --heo-text: #1f2330; --heo-text-dim: #4b5263; --heo-text-faint: #6b7385; --heo-line: #e3e6ec; --heo-line-strong: #d3d7e0;
+      --heo-accent: #6366f1; --heo-accent-soft: color-mix(in oklab, var(--heo-accent) 14%, transparent);
+      --heo-accent-line: color-mix(in oklab, var(--heo-accent) 50%, transparent); --heo-danger: #e11d48;
+      --heo-r-sm: 7px; --font: Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+      --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; --paper: #fffdf8; --ink: #1c1917;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; }
+    body { display: grid; grid-template-columns: minmax(0, 1fr) 400px; font-family: var(--font); background: #e9ecf2; color: var(--heo-text); }
+    button { font: inherit; }
+    .stage { padding: 24px 32px 60px; overflow: auto; }
+    .stage h1 { font: 600 11px/1 var(--font); letter-spacing: .08em; text-transform: uppercase; color: #64748b; margin: 0 0 12px; }
+    .bar { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
+    .scene { display: inline-flex; gap: 2px; padding: 2px; border-radius: 8px; background: #dfe3ea; flex-wrap: wrap; }
+    .scene button { all: unset; padding: 5px 10px; border-radius: 6px; font-size: 12px; color: #475569; cursor: pointer; }
+    .scene button[aria-pressed=true] { background: #fff; color: #111827; font-weight: 600; box-shadow: 0 1px 2px rgb(0 0 0 / 10%); }
+    .site { border-radius: 14px; background: var(--paper); padding: 36px 40px; border: 1px solid #e7e2d6; }
+    .site .kicker { font: 600 12px/1 system-ui; letter-spacing: .14em; text-transform: uppercase; color: #a16207; margin-bottom: 12px; }
+    #target { margin: 0 0 14px; font-size: 44px; line-height: 1.05; font-weight: 600; color: var(--ink); outline: 2px solid var(--heo-accent); outline-offset: 6px; }
+    .site p { margin: 0; color: #57534e; font: 16px/1.6 Georgia, serif; max-width: 520px; }
+    .out { margin-top: 16px; background: #111827; color: #e5e7eb; border-radius: 10px; padding: 12px 14px; font: 11.5px/1.6 var(--mono); white-space: pre-wrap; }
+    .out b { color: #a5b4fc; font-weight: 500; } .out .c { color: #8b93a5; } .out .f { color: #86efac; } .out .x { color: #fca5a5; }
+    .question { margin-top: 12px; color: #475569; font-size: 13px; line-height: 1.5; max-width: 760px; }
+    .question b { color: #1f2330; }
+
+    .panel { position: relative; background: var(--heo-bg); border-left: 1px solid var(--heo-line); padding: 12px 14px 60px; font-size: 12px; overflow: auto; }
+    .ptabs { display: flex; gap: 2px; margin-bottom: 8px; }
+    .ptabs span { padding: 4px 9px; border-radius: 6px; font-size: 12px; color: var(--heo-text-dim); }
+    .ptabs span.on { background: var(--heo-accent-soft); color: var(--heo-text); font-weight: 600; }
+    .sec { border-top: 1px solid var(--heo-line); padding: 10px 0; }
+    .sechead { display: flex; align-items: center; gap: 7px; font: 600 11px var(--font); letter-spacing: .06em; text-transform: uppercase; color: var(--heo-text-dim); }
+    .sechead .n { margin-left: auto; color: var(--heo-text-faint); font-weight: 500; }
+    .body { display: grid; gap: 6px; margin-top: 10px; min-width: 0; }
+    .row { display: grid; grid-template-columns: 10px 92px minmax(0, 1fr) 22px; align-items: center; gap: 6px; min-height: 30px; }
+    .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--heo-accent); justify-self: center; }
+    .kill { all: unset; display: grid; place-items: center; width: 22px; height: 24px; color: var(--heo-text-dim); font-size: 12px; }
+    .vf { display: flex; align-items: center; gap: 6px; height: 30px; min-width: 0; padding: 0 6px 0 8px; border: 1px solid var(--heo-line-strong); border-radius: var(--heo-r-sm); background: var(--heo-raised); }
+    .vf .v { flex: 1; min-width: 0; font: 15px/1 var(--fam, system-ui); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .vf .mono { font: 12px var(--mono); }
+    .vf .chev { color: var(--heo-text-faint); font-size: 10px; }
+    .vf .opener { display: grid; place-items: center; width: 18px; height: 18px; border-radius: 4px; background: color-mix(in oklab, var(--heo-text) 12%, var(--heo-sunken)); font: 700 10px/1 system-ui; color: #fff; flex: none; }
+    .hint { color: var(--heo-text-faint); font-size: 10.5px; line-height: 1.45; margin: 0; }
+    .hint b { color: var(--heo-text-dim); font-weight: 600; }
+    .btn { all: unset; display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 10px; border-radius: var(--heo-r-sm); border: 1px solid var(--heo-line-strong); font-size: 11.5px; font-weight: 600; cursor: pointer; background: var(--heo-raised); white-space: nowrap; }
+    .btn:hover { background: var(--heo-hover); }
+    .btn.primary { background: var(--heo-accent); border-color: var(--heo-accent); color: #fff; }
+    .btn.danger { color: var(--heo-danger); border-color: color-mix(in oklab, var(--heo-danger) 40%, transparent); }
+    .btn.sm { height: 22px; padding: 0 8px; font-size: 11px; }
+    .btn[aria-disabled=true] { opacity: .45; cursor: default; }
+    .linkish { all: unset; color: var(--heo-accent); cursor: pointer; }
+    .pill { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 7px; border-radius: 999px; border: 1px solid var(--heo-line-strong); font: 10.5px var(--mono); color: var(--heo-text-dim); white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+    .pill.emb { border-color: var(--heo-accent-line); color: var(--heo-accent); font-family: var(--font); }
+    .pill.emb::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--heo-accent); }
+    .pill.soft { font-family: var(--font); color: var(--heo-text-faint); border-style: dashed; }
+    .pill.page { font-family: var(--font); }
+
+    /* the picker */
+    .pop { position: absolute; left: 14px; right: 14px; z-index: 20; display: grid; gap: 8px; padding: 10px; border: 1px solid var(--heo-line-strong); border-radius: 12px; background: var(--heo-bg); box-shadow: 0 22px 48px -14px rgb(15 23 42 / 40%); }
+    .pop.under { filter: saturate(.85); }
+    .pop.under::after { content: ''; position: absolute; inset: 0; border-radius: 12px; background: rgb(255 255 255 / 45%); }
+    .phead { display: flex; align-items: center; gap: 7px; } .phead .t { font-weight: 600; } .phead .s2 { color: var(--heo-text-faint); font: 11px var(--mono); } .phead .sp { flex: 1; }
+    .x2 { all: unset; display: grid; place-items: center; width: 22px; height: 22px; border-radius: 5px; color: var(--heo-text-faint); cursor: pointer; }
+    .search { display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px; border: 1px solid var(--heo-line-strong); border-radius: var(--heo-r-sm); background: var(--heo-sunken); color: var(--heo-text-faint); }
+    .flist { max-height: 330px; overflow: auto; display: grid; gap: 1px; margin: 0 -4px; padding: 0 4px; }
+    .group { display: flex; align-items: center; gap: 6px; color: var(--heo-text-faint); font-size: 9.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; margin: 6px 0 2px; }
+    .group::after { content: ''; flex: 1; border-top: 1px solid var(--heo-line); }
+    .fi { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px; height: 34px; padding: 0 6px 0 8px; border: 1px solid transparent; border-radius: var(--heo-r-sm); cursor: pointer; }
+    .fi:hover, .fi.hover, .fi:focus-within { background: var(--heo-hover); }
+    .fi[aria-current=true] { border-color: var(--heo-accent-line); }
+    .fi .nm { font-size: 17px; line-height: 22px; height: 22px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: #111827; }
+    .fi.out-of-page .nm { color: #374151; }
+    .fi .end { display: flex; align-items: center; gap: 6px; }
+    /* The row's action replaces its tag while the row is hovered or focused. */
+    .fi .act { display: none; }
+    .fi:hover .act, .fi.hover .act, .fi:focus-within .act { display: inline-flex; }
+    .fi:hover .tag, .fi.hover .tag, .fi:focus-within .tag { display: none; }
+
+    /* the font popover: add and edit */
+    .fpop { position: absolute; left: 30px; right: 6px; z-index: 30; display: grid; gap: 10px; padding: 12px; border: 1px solid var(--heo-line-strong); border-radius: 12px; background: var(--heo-bg); box-shadow: 0 26px 56px -14px rgb(15 23 42 / 50%); }
+    .fpop h4 { margin: 0; display: flex; align-items: baseline; gap: 8px; font-size: 12px; }
+    .fpop h4 .fam { font-size: 22px; font-weight: 500; }
+    .fpop h4 .sp { flex: 1; }
+    .field { display: grid; gap: 5px; }
+    .field > .lbl { font-size: 10px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--heo-text-faint); }
+    .chips { display: flex; flex-wrap: wrap; gap: 4px; }
+    .ch { all: unset; display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 8px; border-radius: 999px; border: 1px solid var(--heo-line-strong); background: var(--heo-raised); font-size: 12px; cursor: pointer; }
+    .ch[aria-pressed=true] { border-color: var(--heo-accent); background: var(--heo-accent-soft); font-weight: 600; }
+    .ch .kb { color: var(--heo-text-faint); font: 10px var(--mono); font-weight: 400; }
+    .where { display: grid; gap: 4px; }
+    .opt { all: unset; display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 7px; padding: 7px 8px; border-radius: 8px; border: 1px solid var(--heo-line); background: var(--heo-raised); cursor: pointer; }
+    .opt[aria-checked=true] { border-color: var(--heo-accent); box-shadow: 0 0 0 1px var(--heo-accent) inset; }
+    .opt[aria-disabled=true] { opacity: .55; cursor: default; }
+    .opt .r { width: 12px; height: 12px; margin-top: 2px; border-radius: 50%; border: 1.5px solid var(--heo-line-strong); }
+    .opt[aria-checked=true] .r { border: 4px solid var(--heo-accent); }
+    .opt .tt { font-weight: 600; font-size: 12px; }
+    .opt .dd { color: var(--heo-text-faint); font-size: 10.5px; line-height: 1.4; }
+    .opt code { font: 10.5px var(--mono); color: var(--heo-text-dim); }
+    .foot { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--heo-text-dim); }
+    .foot .sp { flex: 1; }
+    .used { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; color: var(--heo-text-faint); font-size: 10.5px; }
+    .used span { padding: 1px 6px; border-radius: 999px; background: var(--heo-sunken); color: var(--heo-text-dim); font: 10.5px var(--mono); }
+    .confirm { display: grid; gap: 8px; padding: 9px; border-radius: 8px; border: 1px solid color-mix(in oklab, var(--heo-danger) 35%, transparent); background: color-mix(in oklab, var(--heo-danger) 5%, var(--heo-bg)); font-size: 11.5px; line-height: 1.45; }
+
+    /* Tokens › Fonts, as round 1's C */
+    .fam-card { border: 1px solid var(--heo-line); border-radius: var(--heo-r-sm); overflow: hidden; }
+    .fam-head { display: flex; align-items: center; gap: 7px; padding: 6px 8px; background: var(--heo-sunken); cursor: pointer; }
+    .fam-head .nm { flex: 1; min-width: 0; font-size: 16px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .fam-head .meta { color: var(--heo-text-faint); font: 10.5px var(--mono); }
+    .fam-body { display: grid; gap: 6px; padding: 8px; }
+    .face { display: grid; grid-template-columns: minmax(0, 1fr) 46px minmax(0, 132px); gap: 6px; align-items: center; min-height: 26px; }
+    .face .s { font-size: 15px; }
+    .face .kb { color: var(--heo-text-faint); font: 10.5px var(--mono); text-align: right; }
+    .actions { display: flex; flex-wrap: wrap; gap: 5px; }
+  </style>
+</head>
+<body>
+  <main class="stage" id="stage"></main>
+  <aside class="panel" id="panel"></aside>
+  <script>
+    /* ------------------------------------------------------------------ data */
+    const kb = (n) => `${Math.round(n)} kB`;
+    const b64 = (n) => Math.ceil(n * 4 / 3);
+    // Google families as their files are: a variable font is one file per style and character set,
+    // a static one one per weight, style and character set. Sizes are woff2, approximate.
+    const GOOGLE = {
+      Lora: { cat: 'Serif', styles: { upright: ['Upright', 46], italic: ['Italic', 49] }, ext: 22, more: ['cyrillic', 'vietnamese'] },
+      'Space Mono': { cat: 'Mono', styles: { 400: ['400', 18], 700: ['700', 18], '400i': ['400 italic', 20], '700i': ['700 italic', 20] }, ext: 9, more: ['vietnamese'] },
+      'DM Serif Display': { cat: 'Display', styles: { 400: ['400', 24], '400i': ['400 italic', 26] }, ext: 12, more: [] },
+      Caveat: { cat: 'Hand', styles: { upright: ['Upright', 64] }, ext: 30, more: ['cyrillic'] },
+      'Space Grotesk': { cat: 'Sans', styles: { upright: ['Upright', 38] }, ext: 14, more: ['vietnamese'] },
+    };
+    const SUBSET = { latin: 'Latin', 'latin-ext': 'Latin extended (é, ł, ő…)', cyrillic: 'Cyrillic', vietnamese: 'Vietnamese' };
+    const SYSTEM = ['Georgia', 'Helvetica Neue', 'Menlo'];
+    const isItalic = (f) => f === 'italic' || /^\d+i$/.test(f);
+    const weightOf = (f) => (/^\d/.test(f) ? parseInt(f) : null);
+    const slug = (name) => name.toLowerCase().replace(/\s+/g, '-');
+
+    const qs = new URLSearchParams(location.search);
+    const fresh = () => ({ 'Space Mono': { styles: ['400'], subsets: ['latin'], place: 'stored', uses: ['code', '.text-mono'] } });
+    const s = {
+      scene: qs.get('scene') || 'browse',
+      folder: qs.get('folder') !== 'none',
+      current: 'Fraunces',
+      page: fresh(),
+      pop: null, // { mode: 'add' | 'edit', name, styles, subsets, place, confirm }
+      hover: null,
+      open: 'Lora',
+    };
+
+    function setScene(scene) {
+      s.scene = scene; s.page = fresh(); s.current = 'Fraunces'; s.pop = null; s.hover = null;
+      if (!s.folder) s.page['Space Mono'].place = 'embedded';
+      if (scene === 'browse') s.hover = 'Lora';
+      if (scene === 'add') { s.hover = 'Lora'; s.pop = draftFor('Lora'); }
+      if (scene === 'edit' || scene === 'remove' || scene === 'tokens') {
+        s.page.Lora = { styles: ['upright', 'italic'], subsets: ['latin'], place: s.folder ? 'stored' : 'embedded', uses: ['h2', '.text-heading-1'] };
+        s.current = 'Lora';
+      }
+      if (scene === 'edit') { s.hover = 'Lora'; s.pop = editFor('Lora'); }
+      if (scene === 'remove') { s.hover = 'Lora'; s.pop = { ...editFor('Lora'), confirm: true }; }
+      render();
+    }
+
+    /** Adding starts from the regular style (and italic when the font has it), Latin, and the place the folder allows. */
+    function draftFor(name) {
+      const keys = Object.keys(GOOGLE[name].styles);
+      const styles = keys.filter((k) => k === 'upright' || k === 'italic' || k === '400' || k === '400i' || k === '700');
+      return { mode: 'add', name, styles, subsets: ['latin'], place: s.folder ? 'stored' : 'embedded' };
+    }
+    function editFor(name) {
+      const e = s.page[name];
+      return { mode: 'edit', name, styles: [...e.styles], subsets: [...e.subsets], place: e.place };
+    }
+    function sizeOf(name, styles, subsets) {
+      const g = GOOGLE[name];
+      return styles.reduce((sum, f) => sum + g.styles[f][1] + (subsets.includes('latin-ext') ? g.ext : 0) + subsets.filter((x) => x !== 'latin' && x !== 'latin-ext').length * 14, 0);
+    }
+    const files = (name, e) => e.styles.length * e.subsets.length;
+
+    /* -------------------------------------------------------------- picker */
+    function place(e) {
+      return e.place === 'embedded' ? `<span class="pill emb tag">Embedded</span>` : `<span class="pill tag">▢ assets/fonts/</span>`;
+    }
+    function item(name, { tag, action, selectable }) {
+      const hover = s.hover === name ? ' hover' : '';
+      return `<div class="fi${hover}${selectable ? '' : ' out-of-page'}" aria-current="${s.current === name}" tabindex="0"
+          data-act="${selectable ? 'pick' : 'add'}" data-font="${name}"
+          title="${selectable ? `${name}: click to use it` : `${name}: hover to see it on the element; add it to the page to use it`}">
+        <span class="nm" style="font-family:'${name}', serif">${name}</span>
+        <span class="end">${tag}${action}</span>
+      </div>`;
+    }
+    function picker() {
+      const managed = Object.entries(s.page).map(([name, e]) => item(name, {
+        tag: place(e),
+        action: `<button class="btn sm act" data-act="edit" data-font="${name}">✎ Edit font</button>`,
+        selectable: true,
+      }));
+      const google = Object.keys(GOOGLE).filter((n) => !s.page[n]).map((name) => item(name, {
+        tag: `<span class="pill soft tag">${GOOGLE[name].cat}</span>`,
+        action: `<button class="btn sm act" data-act="add" data-font="${name}">+ Add font</button>`,
+        selectable: false,
+      }));
+      return `<div class="pop${s.pop ? ' under' : ''}" style="top:118px">
+        <div class="phead"><span class="t">Font</span><span class="s2">font-family</span><span class="sp"></span><button class="x2">✕</button></div>
+        <div class="search">⌕ <span>Search fonts</span></div>
+        <div class="flist">
+          <div class="group">In this page</div>
+          ${item('Fraunces', { tag: '<span class="pill page tag" title="An @font-face in your stylesheet: yours, left as it is">Your stylesheet</span>', action: '<span class="pill page act">Your stylesheet</span>', selectable: true })}
+          ${managed.join('')}
+          <div class="group">System · only where installed</div>
+          ${SYSTEM.map((name) => item(name, { tag: '<span class="pill soft tag">This machine</span>', action: '<span class="pill soft act">This machine</span>', selectable: true })).join('')}
+          <div class="group">Google Fonts</div>
+          ${google.join('')}
+        </div>
+        <div class="hint" style="padding:6px 8px;border-radius:8px;background:var(--heo-sunken)">If ${s.current} is not there → <b>Georgia</b> → <b>any serif</b></div>
+      </div>`;
+    }
+
+    /* ------------------------------------------------------ font popover */
+    function popover() {
+      const p = s.pop;
+      if (!p) return '';
+      const g = GOOGLE[p.name];
+      const size = sizeOf(p.name, p.styles, p.subsets);
+      const opt = (id, title, desc, disabled) => `<div class="opt" role="radio" data-act="place" data-place="${id}" aria-checked="${p.place === id}" aria-disabled="${Boolean(disabled)}"><span class="r"></span><span><div class="tt">${title}</div><div class="dd">${desc}</div></span></div>`;
+      const e = s.page[p.name];
+      const changed = p.mode === 'edit' && (p.place !== e.place || p.styles.join() !== e.styles.join() || p.subsets.join() !== e.subsets.join());
+      const confirm = p.confirm ? `<div class="confirm">
+          <span><b>Remove ${p.name} from the page?</b> ${e.uses.length ? `${e.uses.join(' and ')} use it, and will show <b>Georgia</b>, the next font of their chain.` : 'Nothing uses it.'} ${e.place === 'stored' ? `Its ${files(p.name, e)} files in <code>assets/fonts/</code> are deleted on save.` : ''}</span>
+          <span class="foot"><span class="sp"></span><button class="btn" data-act="noremove">Keep it</button><button class="btn danger" data-act="doremove">Remove</button></span>
+        </div>` : '';
+      return `<div class="fpop" style="top:${p.mode === 'add' ? 300 : 252}px" role="dialog" aria-label="${p.mode === 'add' ? 'Add' : 'Edit'} ${p.name}">
+        <h4><span class="fam" style="font-family:'${p.name}'">${p.name}</span><span class="hint"><b>${p.mode === 'add' ? 'Add font' : 'Edit font'}</b> · Google Fonts · ${g.cat}</span><span class="sp"></span><button class="x2" data-act="cancel">✕</button></h4>
+        <div class="field"><div class="lbl">Styles</div>
+          <div class="chips">${Object.entries(g.styles).map(([key, [label, k]]) => `<button class="ch" data-act="style" data-style="${key}" aria-pressed="${p.styles.includes(key)}"><span style="font-family:'${p.name}';${isItalic(key) ? 'font-style:italic;' : ''}${weightOf(key) ? `font-weight:${weightOf(key)}` : ''}">${label}</span><span class="kb">${k} kB</span></button>`).join('')}</div></div>
+        <div class="field"><div class="lbl">Characters</div>
+          <div class="chips">${['latin', 'latin-ext', ...g.more].map((sub) => `<button class="ch" data-act="sub" data-sub="${sub}" aria-pressed="${p.subsets.includes(sub)}">${SUBSET[sub]}</button>`).join('')}</div></div>
+        <div class="field"><div class="lbl">Where</div><div class="where" role="radiogroup">
+          ${opt('stored', 'Store in a file', s.folder ? `In <code>assets/fonts/</code> beside the page. The design system stays small; the folder travels with the page.` : `Needs a project folder. <span class="linkish" data-act="folder">Connect one…</span>`, !s.folder)}
+          ${opt('embedded', 'Embed', `Inside the design system as a data URL: one self-contained file, a third heavier.`)}
+        </div><p class="hint">Also in Tokens › Fonts, with every font of the page.</p></div>
+        ${p.mode === 'edit' ? `<div class="used">Used by ${e.uses.map((u) => `<span>${u}</span>`).join('') || 'nothing yet'}</div>` : ''}
+        ${confirm || `<div class="foot"><span>${p.styles.length * p.subsets.length} file${p.styles.length * p.subsets.length === 1 ? '' : 's'} · <b>${kb(p.place === 'embedded' ? b64(size) : size)}</b></span><span class="sp"></span>
+          ${p.mode === 'edit'
+            ? `<button class="btn danger" data-act="askremove">🗑 Remove font</button><button class="btn" data-act="cancel">Cancel</button><button class="btn primary" data-act="save" aria-disabled="${!changed || !p.styles.length}">Save</button>`
+            : `<button class="btn" data-act="cancel">Cancel</button><button class="btn primary" data-act="doadd" aria-disabled="${!p.styles.length}">Add and use</button>`}
+        </div>`}
+      </div>`;
+    }
+
+    /* -------------------------------------------------------------- panel */
+    function styles() {
+      return `<div class="ptabs"><span class="on">Styles</span><span>Tokens</span><span>Tree</span><span>Library</span></div>
+        <div class="sec"><div class="sechead">Typography <span class="n">Heading 1 · edited</span></div>
+          <div class="body">
+            <div class="row"><span class="dot"></span><span>Color</span><div class="vf"><span class="v mono">#1c1917</span></div><span class="kill">🗑</span></div>
+            <div class="row"><span class="dot"></span><span>Font</span><div class="vf" style="--fam:'${s.current}'"><span class="opener">Aa</span><span class="v">${s.current}</span><span class="chev">▾</span></div><span class="kill">🗑</span></div>
+            <div class="row"><span class="dot"></span><span>Weight</span><div class="vf"><span class="v mono">600</span><span class="chev">▾</span></div><span class="kill">🗑</span></div>
+            <div class="row"><span class="dot"></span><span>Size</span><div class="vf"><span class="v mono">44px</span><span class="chev">▾</span></div><span class="kill">🗑</span></div>
+          </div></div>
+        ${picker()}${popover()}`;
+    }
+    function tokens() {
+      const total = Object.entries(s.page).reduce((n, [name, e]) => n + sizeOf(name, e.styles, e.subsets), 0);
+      const card = (name, e) => {
+        const open = s.open === name;
+        const g = GOOGLE[name];
+        return `<div class="fam-card">
+          <div class="fam-head" data-act="toggle" data-font="${name}"><span>${open ? '▾' : '▸'}</span><span class="nm" style="font-family:'${name}'">${name}</span><span class="meta">${e.styles.length} style${e.styles.length > 1 ? 's' : ''} · ${kb(sizeOf(name, e.styles, e.subsets))}</span>${place(e)}</div>
+          ${open ? `<div class="fam-body">
+            ${e.styles.flatMap((f) => e.subsets.map((sub) => `<div class="face"><span class="s" style="font-family:'${name}';${isItalic(f) ? 'font-style:italic;' : ''}">${g.styles[f][0]} <span class="hint">${sub}</span></span><span class="kb">${g.styles[f][1]} kB</span>${e.place === 'embedded' ? '<span class="pill emb">Embedded</span>' : `<span class="pill">${slug(name)}-${f}-${sub}.woff2</span>`}</div>`)).join('')}
+            <div class="used">Used by ${e.uses.map((u) => `<span>${u}</span>`).join('') || 'nothing yet'}</div>
+            <div class="actions"><button class="btn">✎ Edit font</button>${e.place === 'stored' ? '<button class="btn">⇡ Embed</button>' : `<button class="btn" ${s.folder ? '' : 'aria-disabled="true"'}>⇣ Store in a file</button>`}<button class="btn danger">🗑 Remove</button></div>
+          </div>` : ''}
+        </div>`;
+      };
+      return `<div class="ptabs"><span>Styles</span><span class="on">Tokens</span><span>Tree</span><span>Library</span></div>
+        <div class="sec"><div class="sechead">Text styles <span class="n">3</span></div></div>
+        <div class="sec"><div class="sechead">Fonts <span class="n">${Object.keys(s.page).length} · ${kb(total)}</span></div>
+          <div class="body">
+            <div class="vf"><span class="hint" style="font-size:12px">⌕ find a font, or add one from Google…</span></div>
+            ${Object.entries(s.page).map(([name, e]) => card(name, e)).join('')}
+            <div class="fam-card"><div class="fam-head" style="cursor:default"><span class="nm" style="font-family:Fraunces">Fraunces</span><span class="pill page">Your stylesheet</span></div></div>
+            <button class="btn" style="justify-self:start">⇪ Add a font file…</button>
+            <p class="hint">Where each file lives is also in Settings › Files, with the images and the rest.</p>
+          </div></div>
+        <div class="sec"><div class="sechead">Reusable classes <span class="n">5</span></div></div>`;
+    }
+
+    /* -------------------------------------------------------------- output */
+    function written() {
+      const lines = [`<span class="c">/* heo:design-system start — managed by html-editor-overlay */</span>`];
+      const out = [];
+      for (const [name, e] of Object.entries(s.page)) {
+        const g = GOOGLE[name];
+        for (const f of e.styles) for (const sub of e.subsets) {
+          const size = g.styles[f][1] + (sub === 'latin-ext' ? g.ext : 0);
+          const weight = weightOf(f) ?? (name === 'Lora' ? '400 700' : name === 'Caveat' ? '400 700' : '300 700');
+          const src = e.place === 'embedded'
+            ? `url(data:font/woff2;base64,d09GMgAB…) <span class="c">/* ${kb(b64(size))} */</span>`
+            : `url('assets/fonts/${slug(name)}-${f}-${sub}.woff2')`;
+          lines.push(`<b>@font-face</b> { font-family: '${name}'; font-weight: ${weight}; font-style: ${isItalic(f) ? 'italic' : 'normal'}; font-display: swap;\n  src: ${src} format('woff2');${sub !== 'latin' ? ` unicode-range: … <span class="c">/* ${sub} */</span>;` : ''} }`);
+          if (e.place === 'stored') out.push(`<span class="f">+ assets/fonts/${slug(name)}-${f}-${sub}.woff2</span>  ${kb(size)}`);
+        }
+      }
+      lines.push(`.text-heading-1 { font-family: ${s.current.includes(' ') || GOOGLE[s.current] ? `'${s.current}'` : s.current}, Georgia, serif; … }`);
+      lines.push(`<span class="c">/* heo:design-system end */</span>`);
+      return `${lines.join('\n')}${out.length ? `\n\n<span class="c">files beside the page</span>\n${out.join('\n')}` : ''}`;
+    }
+
+    const NOTES = {
+      browse: 'Only a font <b>In this page</b> can be picked. Lora is hovered: it previews on the heading, and its row offers <b>+ Add font</b> where its tag was. Clicking the row does the same: it opens the font popover, it does not pick. A font added here offers <b>✎ Edit font</b> on hover or focus; Fraunces, from your stylesheet, is picked as it is.',
+      add: '<b>Add font</b>: the regular styles and Latin to start with, and the place the folder allows. "Add and use" puts it In this page and picks it, as one undo step. Cancel leaves the heading as it was.',
+      edit: '<b>Edit font</b>: the same popover, with what Lora has now, what uses it, and Remove. Save rewrites its @font-face rules and files.',
+      remove: 'Removing says what falls back, and what happens to its files. The page then has no Lora: the heading shows Georgia, which is honest, rather than a font it no longer carries.',
+      tokens: '<b>Tokens › Fonts</b>, as before: one card per font In this page, its files, where each lives, what uses it. Its Edit font opens the same popover.',
+    };
+    const SCENES = [['browse', 'Hover a Google font'], ['add', 'Add font'], ['edit', 'Edit font'], ['remove', 'Remove'], ['tokens', 'Tokens › Fonts']];
+
+    function render() {
+      const url = new URL(location.href);
+      url.searchParams.set('scene', s.scene); url.searchParams.set('folder', s.folder ? 'yes' : 'none');
+      history.replaceState(null, '', url);
+      // Hovering a Google font previews it; the field and the saved CSS keep the picked one.
+      const shown = s.pop?.mode === 'add' ? s.pop.name : s.hover && GOOGLE[s.hover] && !s.page[s.hover] ? s.hover : s.current;
+      document.getElementById('stage').innerHTML = `<h1>Prototype · fonts that travel with the page · round 2</h1>
+        <div class="bar">
+          <div class="scene">${SCENES.map(([id, label]) => `<button data-scene="${id}" aria-pressed="${s.scene === id}">${label}</button>`).join('')}</div>
+          <div class="scene"><button data-act="folder-on" aria-pressed="${s.folder}">Project folder connected</button><button data-act="folder-off" aria-pressed="${!s.folder}">No folder</button></div>
+        </div>
+        <div class="site"><div class="kicker">Clay Studio · Journal</div>
+          <h2 id="target" style="font-family:'${shown}', Georgia, serif">Slow pottery for fast mornings</h2>
+          <p>Wheel-thrown stoneware, glazed in small batches. Every piece is a little different, and that is the point.</p></div>
+        <div class="out">${written()}</div>
+        <p class="question">${NOTES[s.scene]}</p>`;
+      document.getElementById('panel').innerHTML = s.scene === 'tokens' ? tokens() : styles();
+    }
+
+    function act(name, el) {
+      const font = el.dataset.font;
+      const p = s.pop;
+      switch (name) {
+        case 'pick': s.current = font; s.pop = null; break;
+        case 'add': s.pop = draftFor(font); s.hover = font; break;
+        case 'edit': s.pop = editFor(font); s.hover = font; break;
+        case 'style': p.styles = p.styles.includes(el.dataset.style) ? p.styles.filter((x) => x !== el.dataset.style) : [...p.styles, el.dataset.style]; break;
+        case 'sub': if (el.dataset.sub !== 'latin' || p.subsets.length > 1) p.subsets = p.subsets.includes(el.dataset.sub) ? p.subsets.filter((x) => x !== el.dataset.sub) : [...p.subsets, el.dataset.sub]; break;
+        case 'place': if (el.getAttribute('aria-disabled') !== 'true') p.place = el.dataset.place; break;
+        case 'doadd': if (p.styles.length) { s.page[p.name] = { styles: p.styles, subsets: p.subsets, place: p.place, uses: ['h2', '.text-heading-1'] }; s.current = p.name; s.pop = null; s.hover = null; } break;
+        case 'save': if (el.getAttribute('aria-disabled') !== 'true') { Object.assign(s.page[p.name], { styles: p.styles, subsets: p.subsets, place: p.place }); s.pop = null; } break;
+        case 'askremove': p.confirm = true; break;
+        case 'noremove': p.confirm = false; break;
+        case 'doremove': delete s.page[p.name]; if (s.current === p.name) s.current = 'Georgia'; s.pop = null; s.hover = null; break;
+        case 'cancel': s.pop = null; break;
+        case 'toggle': s.open = s.open === font ? null : font; break;
+        case 'folder-on': case 'folder': s.folder = true; if (p) p.place = 'stored'; break;
+        case 'folder-off': s.folder = false; if (p) p.place = 'embedded'; for (const e of Object.values(s.page)) e.place = 'embedded'; break;
+        default: return;
+      }
+      render();
+    }
+    addEventListener('click', (event) => {
+      const sc = event.target.closest('[data-scene]');
+      if (sc) { setScene(sc.dataset.scene); return; }
+      const a = event.target.closest('[data-act]');
+      if (a) { event.stopPropagation(); act(a.dataset.act, a); }
+    });
+    addEventListener('mouseover', (event) => {
+      const row = event.target.closest('.fi');
+      const next = row ? row.dataset.font : null;
+      if (s.pop || next === s.hover || !row) return;
+      s.hover = next; render();
+    });
+    addEventListener('keydown', (e) => { if (e.key === 'Escape' && s.pop) { s.pop = null; render(); } });
+    setScene(SCENES.some(([id]) => id === s.scene) ? s.scene : 'browse');
+    // For screenshots by scripts/browser-check.mjs: the verdict it waits for, once fonts drew.
+    if (qs.has('shot')) document.fonts.ready.then(() => setTimeout(() => {
+      const out = Object.assign(document.createElement('pre'), { id: 'out', hidden: true });
+      out.textContent = 'RESULTS:{"ok":true}:END';
+      document.body.append(out);
+    }, 800));
+  </script>
+</body>
+</html>

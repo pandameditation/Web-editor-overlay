@@ -16,7 +16,8 @@ import {
   textStyleName,
   TEXT_STYLE_MARKER,
 } from '../src/core/text-styles.ts';
-import { formatFamilies, parseFamilies } from '../src/core/fonts.ts';
+import { formatFamilies, parseFamilies, WEB_FONTS } from '../src/core/fonts.ts';
+import { fontCssUrl, managedFaceName, parseGoogleCss, readProjectFonts } from '../src/core/project-fonts.ts';
 
 let passed = 0;
 const failures: string[] = [];
@@ -71,6 +72,35 @@ test('the outline is stored as its longhands', () => {
   const stored = storedTextStyle('Outlined', { '-webkit-text-stroke-width': '1px', '-webkit-text-stroke-color': 'red' });
   assert.equal(stored['-webkit-text-stroke-width'], '1px');
   assert.equal(stored['-webkit-text-stroke-color'], 'red');
+});
+test('a project font asks Google for exactly the styles picked', () => {
+  const font = (name: string) => WEB_FONTS.find((one) => one.name === name)!;
+  assert.equal(fontCssUrl(font('Lora'), ['upright', 'italic']), 'https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400..700;1,400..700&display=swap');
+  assert.equal(fontCssUrl(font('Lora'), ['italic']), 'https://fonts.googleapis.com/css2?family=Lora:ital,wght@1,400..700&display=swap');
+  assert.equal(fontCssUrl(font('Space Mono'), ['700i', '400', '400i']), 'https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;1,400;1,700&display=swap');
+  assert.equal(fontCssUrl(font('Bebas Neue'), ['400']), 'https://fonts.googleapis.com/css2?family=Bebas+Neue:ital@0&display=swap');
+});
+test('Google\'s stylesheet reads as faces, each with its character set', () => {
+  const css = `/* latin-ext */\n@font-face {\n  font-family: 'Lora';\n  font-style: italic;\n  font-weight: 400 700;\n  src: url(https://fonts.gstatic.com/s/lora/a.woff2) format('woff2');\n  unicode-range: U+0100-02BA;\n}\n/* latin */\n@font-face {\n  font-family: 'Lora';\n  font-style: normal;\n  font-weight: 400 700;\n  src: url(https://fonts.gstatic.com/s/lora/b.woff2) format('woff2');\n}`;
+  const faces = parseGoogleCss(css, WEB_FONTS.find((one) => one.name === 'Lora')!);
+  assert.deepEqual(faces.map((face) => `${face.style}/${face.subset}/${face.weight}`), ['italic/latin-ext/400 700', 'upright/latin/400 700']);
+  assert.equal(faces[0].unicodeRange, 'U+0100-02BA');
+});
+test('only faces written here are read back as project fonts', () => {
+  assert.equal(managedFaceName('data:font/woff2;heo-font=lora-upright-latin;base64,AAAA'), 'lora-upright-latin');
+  assert.equal(managedFaceName('assets/fonts/space-mono-700i-latin-ext.woff2'), 'space-mono-700i-latin-ext');
+  assert.equal(managedFaceName('data:font/woff2;base64,AAAA'), null);
+  assert.equal(managedFaceName('fonts/inter.woff2'), null);
+  const read = readProjectFonts([
+    { family: '"Lora"', fontStyle: 'normal', weight: '400 700', src: 'assets/fonts/lora-upright-latin.woff2' },
+    { family: 'Lora', fontStyle: 'italic', weight: '400 700', src: 'assets/fonts/lora-italic-latin.woff2' },
+    // Another family with one face of the author's: theirs, whole.
+    { family: 'Inter', fontStyle: 'normal', weight: '400', src: 'assets/fonts/inter-upright-latin.woff2' },
+    { family: 'Inter', fontStyle: 'normal', weight: '700', src: 'inter-bold.woff2' },
+    // Not a catalogue family.
+    { family: 'House Serif', fontStyle: 'normal', weight: '400', src: 'assets/fonts/house-serif-upright-latin.woff2' },
+  ]);
+  assert.deepEqual(read.map((font) => `${font.family}:${font.place}:${font.styles.join('+')}`), ['Lora:stored:upright+italic']);
 });
 if (failures.length) {
   console.error(`text-styles: ${failures.length} failed, ${passed} passed\n\n${failures.join('\n\n')}`);

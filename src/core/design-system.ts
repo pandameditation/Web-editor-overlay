@@ -32,6 +32,7 @@ import { DEFAULT_FILE_FOLDERS, withoutEmbedded, type DesignFileKind } from './de
 import { safeSelector } from './selectors.js';
 import { portableSettings, type SettingsRegistry } from './settings.js';
 import type { TokenRegistry } from './tokens.js';
+import type { FontRegistry } from './project-fonts.js';
 import type {
   CaptureInfo,
   DesignClass,
@@ -74,6 +75,8 @@ export interface DesignRegistries {
   ai?: AiAgent;
   /** Editor preferences that travel with the seed. Optional for the same reason `ai` is. */
   settings?: SettingsRegistry;
+  /** The web fonts the page carries (project-fonts.ts). Optional for the same reason. */
+  fonts?: FontRegistry;
 }
 
 /**
@@ -223,6 +226,8 @@ export interface DesignSystemParts {
   blockCSS: string;
   /** The ready-made animations' keyframes the page refers to. */
   animations?: string;
+  /** The `@font-face` rules of the fonts the page carries. */
+  fonts?: string;
 }
 
 /** What `used` resolves to: the names that survive the pruning. */
@@ -349,6 +354,8 @@ export function designSystemParts(
 ): DesignSystemParts {
   if (scope === 'none') return { tokens: '', classes: '', rules: '', blockCSS: '' };
   const animations = animationLibraryCss(animationReferences(registries));
+  // At every extent: a font the page carries is one it was given to use, and a missing face falls back.
+  const fonts = registries.fonts?.toCSS() ?? '';
 
   /*
    * The library sheet already contains only generated CSS for blocks it has injected. It is
@@ -363,6 +370,7 @@ export function designSystemParts(
       rules: registries.rules.toCSS(),
       blockCSS,
       animations,
+      fonts,
     };
   }
   const used = designSystemUsage(registries);
@@ -372,6 +380,7 @@ export function designSystemParts(
     rules: registries.rules.cssFor(used.rules),
     blockCSS,
     animations,
+    fonts,
   };
 }
 

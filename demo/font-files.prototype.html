@@ -1,0 +1,1338 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PROTOTYPE — Fonts that travel with the page</title>
+  <!--
+  PROTOTYPE — throwaway, not part of the overlay build. Open the file directly in a browser.
+
+  Question: once a web font is self-hosted through the design files mechanism (a data: URL when no
+  folder is connected, a file in assets/fonts/ when one is), how does the font picker let you get a
+  font into the project, say where it goes, and manage the fonts already there?
+
+  Three variants, switchable with the bottom bar or ← / → (?variant=A|B|C), each with its scenes
+  (?scene=). "Project folder" at the top switches between connected and not, which changes the
+  default place and whether "Store in a file" is possible.
+
+    A — Add sheet: picking a Google font opens an "Add to the project" sheet inside the picker.
+    B — Two tabs: picking adds it at once with defaults; a "Project fonts" tab manages them.
+    C — Decide later: the picker only picks; the Font row says "not in the project yet", and
+        fonts are managed in Tokens › Fonts, as cards like classes.
+
+  The dark box under the page is what a save would write: the @font-face rules in the
+  heo:design-system section, and the files beside the page.
+  Previews here use Google Fonts directly, as the real picker does before anything is added.
+-->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="stylesheet"
+    href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400..700;1,400..700&family=Space+Mono:wght@400;700&family=Fraunces:wght@300..900&family=DM+Serif+Display&family=Caveat&family=Space+Grotesk:wght@300..700&display=swap" />
+  <style>
+    :root {
+      --heo-bg: #ffffff;
+      --heo-raised: #ffffff;
+      --heo-sunken: #f4f5f8;
+      --heo-hover: #eff1f5;
+      --heo-text: #1f2330;
+      --heo-text-dim: #4b5263;
+      --heo-text-faint: #6b7385;
+      --heo-line: #e3e6ec;
+      --heo-line-strong: #d3d7e0;
+      --heo-accent: #6366f1;
+      --heo-accent-soft: color-mix(in oklab, var(--heo-accent) 14%, transparent);
+      --heo-accent-line: color-mix(in oklab, var(--heo-accent) 50%, transparent);
+      --heo-danger: #e11d48;
+      --heo-warn: #b45309;
+      --heo-warn-soft: #fdf3e3;
+      --heo-ok: #15803d;
+      --heo-r-sm: 7px;
+      --font: Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+      --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+      --paper: #fffdf8;
+      --ink: #1c1917;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      height: 100%;
+    }
+
+    body {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 400px;
+      font-family: var(--font);
+      background: #e9ecf2;
+      color: var(--heo-text);
+    }
+
+    button,
+    input,
+    select {
+      font: inherit;
+    }
+
+    .stage {
+      padding: 24px 32px 90px;
+      overflow: auto;
+    }
+
+    .stage h1 {
+      font: 600 11px/1 var(--font);
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: #64748b;
+      margin: 0 0 12px;
+    }
+
+    .bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 14px;
+    }
+
+    .scene {
+      display: inline-flex;
+      gap: 2px;
+      padding: 2px;
+      border-radius: 8px;
+      background: #dfe3ea;
+      flex-wrap: wrap;
+    }
+
+    .scene button {
+      all: unset;
+      padding: 5px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      color: #475569;
+      cursor: pointer;
+    }
+
+    .scene button[aria-pressed=true] {
+      background: #fff;
+      color: #111827;
+      font-weight: 600;
+      box-shadow: 0 1px 2px rgb(0 0 0 / 10%);
+    }
+
+    .site {
+      position: relative;
+      border-radius: 14px;
+      background: var(--paper);
+      padding: 36px 40px;
+      border: 1px solid #e7e2d6;
+    }
+
+    .site .kicker {
+      font: 600 12px/1 system-ui;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+      color: #a16207;
+      margin-bottom: 12px;
+    }
+
+    #target {
+      margin: 0 0 14px;
+      font-size: 44px;
+      line-height: 1.05;
+      font-weight: 600;
+      color: var(--ink);
+      outline: 2px solid var(--heo-accent);
+      outline-offset: 6px;
+    }
+
+    .site p {
+      margin: 0;
+      color: #57534e;
+      font: 16px/1.6 Georgia, serif;
+      max-width: 520px;
+    }
+
+    .out {
+      margin-top: 16px;
+      background: #111827;
+      color: #e5e7eb;
+      border-radius: 10px;
+      padding: 12px 14px;
+      font: 11.5px/1.6 var(--mono);
+      white-space: pre-wrap;
+    }
+
+    .out b {
+      color: #a5b4fc;
+      font-weight: 500;
+    }
+
+    .out .c {
+      color: #8b93a5;
+    }
+
+    .out .f {
+      color: #86efac;
+    }
+
+    .question {
+      margin-top: 12px;
+      color: #475569;
+      font-size: 13px;
+      line-height: 1.5;
+      max-width: 760px;
+    }
+
+    .question b {
+      color: #1f2330;
+    }
+
+    .panel {
+      position: relative;
+      background: var(--heo-bg);
+      border-left: 1px solid var(--heo-line);
+      padding: 12px 14px 90px;
+      font-size: 12px;
+      overflow: auto;
+    }
+
+    .ptabs {
+      display: flex;
+      gap: 2px;
+      margin-bottom: 8px;
+    }
+
+    .ptabs span {
+      padding: 4px 9px;
+      border-radius: 6px;
+      font-size: 12px;
+      color: var(--heo-text-dim);
+    }
+
+    .ptabs span.on {
+      background: var(--heo-accent-soft);
+      color: var(--heo-text);
+      font-weight: 600;
+    }
+
+    .sec {
+      border-top: 1px solid var(--heo-line);
+      padding: 10px 0;
+    }
+
+    .sechead {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      font: 600 11px var(--font);
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      color: var(--heo-text-dim);
+    }
+
+    .sechead .n {
+      margin-left: auto;
+      color: var(--heo-text-faint);
+      font-weight: 500;
+    }
+
+    .body {
+      display: grid;
+      gap: 6px;
+      margin-top: 10px;
+      min-width: 0;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 10px 92px minmax(0, 1fr) 22px;
+      align-items: center;
+      gap: 6px;
+      min-height: 30px;
+    }
+
+    .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--heo-accent);
+      justify-self: center;
+    }
+
+    .dot.off {
+      background: transparent;
+    }
+
+    .name {
+      font-size: 12px;
+    }
+
+    .kill {
+      all: unset;
+      display: grid;
+      place-items: center;
+      width: 22px;
+      height: 24px;
+      border-radius: 5px;
+      color: var(--heo-text-dim);
+      cursor: pointer;
+      font-size: 12px;
+    }
+
+    .vf {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      height: 30px;
+      min-width: 0;
+      padding: 0 6px 0 8px;
+      border: 1px solid var(--heo-line-strong);
+      border-radius: var(--heo-r-sm);
+      background: var(--heo-raised);
+      cursor: pointer;
+    }
+
+    .vf .v {
+      flex: 1;
+      min-width: 0;
+      font: 15px/1 var(--fam, system-ui);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .vf .mono {
+      font: 12px var(--mono);
+    }
+
+    .vf .chev {
+      color: var(--heo-text-faint);
+      font-size: 10px;
+    }
+
+    .vf .opener {
+      display: grid;
+      place-items: center;
+      width: 18px;
+      height: 18px;
+      border-radius: 4px;
+      background: color-mix(in oklab, var(--heo-text) 12%, var(--heo-sunken));
+      font: 700 10px/1 system-ui;
+      color: #fff;
+      flex: none;
+    }
+
+    .hint {
+      color: var(--heo-text-faint);
+      font-size: 10.5px;
+      line-height: 1.45;
+      margin: 0;
+    }
+
+    .hint b {
+      color: var(--heo-text-dim);
+      font-weight: 600;
+    }
+
+    .btn {
+      all: unset;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      height: 26px;
+      padding: 0 10px;
+      border-radius: var(--heo-r-sm);
+      border: 1px solid var(--heo-line-strong);
+      font-size: 11.5px;
+      font-weight: 600;
+      cursor: pointer;
+      background: var(--heo-raised);
+      white-space: nowrap;
+    }
+
+    .btn:hover {
+      background: var(--heo-hover);
+    }
+
+    .btn.primary {
+      background: var(--heo-accent);
+      border-color: var(--heo-accent);
+      color: #fff;
+    }
+
+    .btn.danger {
+      color: var(--heo-danger);
+      border-color: color-mix(in oklab, var(--heo-danger) 40%, transparent);
+    }
+
+    .btn.ghost {
+      border-color: transparent;
+      color: var(--heo-accent);
+      padding: 0 4px;
+    }
+
+    .btn[disabled] {
+      opacity: .45;
+      pointer-events: none;
+    }
+
+    .linkish {
+      all: unset;
+      color: var(--heo-accent);
+      cursor: pointer;
+    }
+
+    /* where a file lives, as the Files table says it */
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      height: 20px;
+      padding: 0 7px;
+      border-radius: 999px;
+      border: 1px solid var(--heo-line-strong);
+      font: 10.5px var(--mono);
+      color: var(--heo-text-dim);
+      white-space: nowrap;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .pill.emb {
+      border-color: var(--heo-accent-line);
+      color: var(--heo-accent);
+      font-family: var(--font);
+    }
+
+    .pill.emb::before {
+      content: '';
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--heo-accent);
+    }
+
+    .pill.google {
+      font-family: var(--font);
+      color: var(--heo-text-faint);
+      border-style: dashed;
+    }
+
+    .pill.page {
+      font-family: var(--font);
+    }
+
+    .pill.warn {
+      border-color: color-mix(in oklab, var(--heo-warn) 50%, transparent);
+      color: var(--heo-warn);
+      background: var(--heo-warn-soft);
+      font-family: var(--font);
+    }
+
+    /* the picker, a dialog over the panel */
+    .pop {
+      position: absolute;
+      left: 14px;
+      right: 14px;
+      z-index: 20;
+      display: grid;
+      gap: 8px;
+      padding: 10px;
+      border: 1px solid var(--heo-line-strong);
+      border-radius: 12px;
+      background: var(--heo-bg);
+      box-shadow: 0 22px 48px -14px rgb(15 23 42 / 40%);
+    }
+
+    .phead {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+
+    .phead .t {
+      font-weight: 600;
+    }
+
+    .phead .s2 {
+      color: var(--heo-text-faint);
+      font: 11px var(--mono);
+    }
+
+    .phead .sp {
+      flex: 1;
+    }
+
+    .x2 {
+      all: unset;
+      display: grid;
+      place-items: center;
+      width: 22px;
+      height: 22px;
+      border-radius: 5px;
+      color: var(--heo-text-faint);
+      cursor: pointer;
+    }
+
+    .search {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      height: 28px;
+      padding: 0 8px;
+      border: 1px solid var(--heo-line-strong);
+      border-radius: var(--heo-r-sm);
+      background: var(--heo-sunken);
+      color: var(--heo-text-faint);
+    }
+
+    .flist {
+      max-height: 300px;
+      overflow: auto;
+      display: grid;
+      gap: 1px;
+      margin: 0 -4px;
+      padding: 0 4px;
+    }
+
+    .group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--heo-text-faint);
+      font-size: 9.5px;
+      font-weight: 600;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      margin: 6px 0 2px;
+    }
+
+    .group::after {
+      content: '';
+      flex: 1;
+      border-top: 1px solid var(--heo-line);
+    }
+
+    .fi {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      align-items: center;
+      gap: 6px;
+      height: 34px;
+      padding: 0 6px 0 8px;
+      border: 1px solid transparent;
+      border-radius: var(--heo-r-sm);
+      cursor: pointer;
+    }
+
+    .fi:hover {
+      background: var(--heo-hover);
+    }
+
+    .fi[aria-current=true] {
+      border-color: var(--heo-accent-line);
+    }
+
+    .fi .nm {
+      font-size: 17px;
+      line-height: 22px;
+      height: 22px;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      color: #111827;
+    }
+
+    .fi .more {
+      all: unset;
+      display: grid;
+      place-items: center;
+      width: 22px;
+      height: 22px;
+      border-radius: 5px;
+      color: var(--heo-text-faint);
+      visibility: hidden;
+    }
+
+    .fi:hover .more,
+    .fi.menuopen .more {
+      visibility: visible;
+      background: var(--heo-raised);
+      box-shadow: inset 0 0 0 1px var(--heo-line-strong);
+    }
+
+    .fi .get {
+      visibility: hidden;
+    }
+
+    .fi:hover .get {
+      visibility: visible;
+    }
+
+    .tabs2 {
+      display: grid;
+      grid-auto-flow: column;
+      grid-auto-columns: 1fr;
+      height: 28px;
+      padding: 2px;
+      border-radius: var(--heo-r-sm);
+      background: var(--heo-sunken);
+      border: 1px solid var(--heo-line);
+    }
+
+    .tabs2 button {
+      all: unset;
+      display: grid;
+      place-items: center;
+      border-radius: 5px;
+      font-size: 12px;
+      color: var(--heo-text-dim);
+      cursor: pointer;
+    }
+
+    .tabs2 button[aria-pressed=true] {
+      background: var(--heo-raised);
+      color: var(--heo-text);
+      font-weight: 600;
+      box-shadow: 0 1px 2px rgb(0 0 0 / 10%);
+    }
+
+    .menu {
+      position: absolute;
+      right: 20px;
+      z-index: 30;
+      display: grid;
+      min-width: 210px;
+      padding: 4px;
+      border: 1px solid var(--heo-line-strong);
+      border-radius: 9px;
+      background: var(--heo-bg);
+      box-shadow: 0 14px 30px -10px rgb(15 23 42 / 35%);
+    }
+
+    .menu button {
+      all: unset;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      padding: 6px 8px;
+      border-radius: 6px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    .menu button:hover {
+      background: var(--heo-hover);
+    }
+
+    .menu .sep {
+      border-top: 1px solid var(--heo-line);
+      margin: 4px 0;
+    }
+
+    .menu .d {
+      color: var(--heo-danger);
+    }
+
+    .menu .note {
+      padding: 2px 8px 4px;
+      color: var(--heo-text-faint);
+      font-size: 10.5px;
+    }
+
+    /* the add sheet and the face lists */
+    .sheet {
+      display: grid;
+      gap: 9px;
+      padding: 10px;
+      border: 1px solid var(--heo-accent-line);
+      border-radius: 10px;
+      background: color-mix(in oklab, var(--heo-accent) 4%, var(--heo-bg));
+    }
+
+    .sheet h4 {
+      margin: 0;
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      font-size: 13px;
+    }
+
+    .sheet h4 .fam {
+      font-size: 20px;
+      font-weight: 500;
+    }
+
+    .field {
+      display: grid;
+      gap: 5px;
+    }
+
+    .field>.lbl {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+      color: var(--heo-text-faint);
+    }
+
+    .field>.lbl span {
+      text-transform: none;
+      letter-spacing: 0;
+      font-weight: 400;
+    }
+
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+
+    .ch {
+      all: unset;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      height: 24px;
+      padding: 0 8px;
+      border-radius: 999px;
+      border: 1px solid var(--heo-line-strong);
+      background: var(--heo-raised);
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    .ch[aria-pressed=true] {
+      border-color: var(--heo-accent);
+      background: var(--heo-accent-soft);
+      font-weight: 600;
+    }
+
+    .ch .u {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: var(--heo-ok);
+    }
+
+    .ch .kb {
+      color: var(--heo-text-faint);
+      font: 10px var(--mono);
+    }
+
+    .where {
+      display: grid;
+      gap: 4px;
+    }
+
+    .opt {
+      all: unset;
+      display: grid;
+      grid-template-columns: 16px minmax(0, 1fr);
+      gap: 7px;
+      padding: 7px 8px;
+      border-radius: 8px;
+      border: 1px solid var(--heo-line);
+      background: var(--heo-raised);
+      cursor: pointer;
+    }
+
+    .opt[aria-checked=true] {
+      border-color: var(--heo-accent);
+      box-shadow: 0 0 0 1px var(--heo-accent) inset;
+    }
+
+    .opt[aria-disabled=true] {
+      opacity: .55;
+      cursor: default;
+    }
+
+    .opt .r {
+      width: 12px;
+      height: 12px;
+      margin-top: 2px;
+      border-radius: 50%;
+      border: 1.5px solid var(--heo-line-strong);
+    }
+
+    .opt[aria-checked=true] .r {
+      border: 4px solid var(--heo-accent);
+    }
+
+    .opt .tt {
+      font-weight: 600;
+      font-size: 12px;
+    }
+
+    .opt .dd {
+      color: var(--heo-text-faint);
+      font-size: 10.5px;
+      line-height: 1.4;
+    }
+
+    .opt code,
+    .hint code {
+      font: 10.5px var(--mono);
+      color: var(--heo-text-dim);
+    }
+
+    .total {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      color: var(--heo-text-dim);
+    }
+
+    .total .sp {
+      flex: 1;
+    }
+
+    .strip {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+      padding: 8px;
+      border-radius: 8px;
+      background: var(--heo-sunken);
+      border: 1px solid var(--heo-line);
+      font-size: 11px;
+      color: var(--heo-text-dim);
+    }
+
+    .strip b {
+      color: var(--heo-text);
+    }
+
+    .fam-card {
+      border: 1px solid var(--heo-line);
+      border-radius: var(--heo-r-sm);
+      overflow: hidden;
+    }
+
+    .fam-card+.fam-card {
+      margin-top: 6px;
+    }
+
+    .fam-head {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 6px 8px;
+      background: var(--heo-sunken);
+      cursor: pointer;
+    }
+
+    .fam-head .nm {
+      flex: 1;
+      min-width: 0;
+      font-size: 16px;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+
+    .fam-head .meta {
+      color: var(--heo-text-faint);
+      font: 10.5px var(--mono);
+    }
+
+    .fam-body {
+      display: grid;
+      gap: 6px;
+      padding: 8px;
+    }
+
+    .faces {
+      display: grid;
+      gap: 2px;
+    }
+
+    .face {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 46px minmax(0, 132px);
+      gap: 6px;
+      align-items: center;
+      min-height: 26px;
+      font-size: 11.5px;
+    }
+
+    .face .s {
+      font-size: 15px;
+    }
+
+    .face .kb {
+      color: var(--heo-text-faint);
+      font: 10.5px var(--mono);
+      text-align: right;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+    }
+
+    .used {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      align-items: center;
+      color: var(--heo-text-faint);
+      font-size: 10.5px;
+    }
+
+    .used span {
+      padding: 1px 6px;
+      border-radius: 999px;
+      background: var(--heo-sunken);
+      color: var(--heo-text-dim);
+      font: 10.5px var(--mono);
+    }
+
+    .rowstatus {
+      grid-column: 3 / 5;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: -2px;
+    }
+
+    .drop {
+      display: grid;
+      place-items: center;
+      gap: 2px;
+      padding: 10px;
+      border: 1px dashed var(--heo-line-strong);
+      border-radius: 8px;
+      color: var(--heo-text-faint);
+      font-size: 11px;
+      text-align: center;
+    }
+
+    /* the switcher: not part of the design */
+    .switch {
+      position: fixed;
+      left: 50%;
+      bottom: 16px;
+      z-index: 99;
+      translate: -50% 0;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 5px;
+      border-radius: 999px;
+      background: #0f172a;
+      color: #e2e8f0;
+      box-shadow: 0 10px 30px -8px rgb(0 0 0 / 45%);
+      font: 12px var(--font);
+    }
+
+    .switch button {
+      all: unset;
+      display: grid;
+      place-items: center;
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      cursor: pointer;
+    }
+
+    .switch button:hover {
+      background: #1e293b;
+    }
+
+    .switch .lab {
+      padding: 0 10px;
+      min-width: 250px;
+      text-align: center;
+    }
+
+    .switch .lab b {
+      color: #a5b4fc;
+    }
+  </style>
+</head>
+
+<body>
+  <main class="stage" id="stage"></main>
+  <aside class="panel" id="panel"></aside>
+  <div class="switch" role="toolbar" aria-label="Prototype variants">
+    <button type="button" id="prev" aria-label="Previous variant">←</button>
+    <span class="lab" id="lab"></span>
+    <button type="button" id="next" aria-label="Next variant">→</button>
+  </div>
+  <script>
+    /* ------------------------------------------------------------------ data */
+    const kb = (n) => `${Math.round(n)} kB`;
+    const b64 = (n) => Math.ceil(n * 4 / 3);
+    // Google families, as their files are: a variable font is one file per style and subset whatever
+    // its weights; a static one is one file per weight, style and subset. Sizes are woff2, approximate.
+    const GOOGLE = {
+      Lora: { cat: 'Serif', variable: '400–700', faces: { upright: 46, italic: 49 }, ext: 22 },
+      'Space Mono': { cat: 'Mono', weights: [400, 700], faces: { 400: 18, 700: 18, '400i': 20, '700i': 20 }, ext: 9 },
+      'DM Serif Display': { cat: 'Display', weights: [400], faces: { 400: 24, '400i': 26 }, ext: 12 },
+      Caveat: { cat: 'Hand', variable: '400–700', faces: { upright: 64 }, ext: 30 },
+      'Space Grotesk': { cat: 'Sans', variable: '300–700', faces: { upright: 38 }, ext: 14 },
+    };
+    const SYSTEM = ['Georgia', 'Helvetica Neue', 'Avenir Next', 'Menlo'];
+    // Used on this page (measured in the real thing): what a new font is first offered with.
+    const USED = { weights: [400, 600], italic: true };
+
+    const qs = new URLSearchParams(location.search);
+    const s = {
+      variant: qs.get('variant') || 'A',
+      scene: qs.get('scene') || '',
+      folder: qs.get('folder') !== 'none',
+      current: 'Fraunces',
+      // Fonts the project carries: Fraunces is the page's own (its stylesheet), not managed here.
+      project: {
+        'Space Mono': { faces: ['400'], subsets: ['latin'], place: 'stored', uses: ['code', '.text-mono'] },
+      },
+      draft: null, // the add sheet / popover being filled in
+      menu: null,
+      open: null, // expanded family card
+    };
+    const SCENES = {
+      A: [['browse', 'Browse'], ['add', 'Pick Lora: add sheet'], ['manage', 'A project font\u2019s menu']],
+      B: [['added', 'Pick Lora: added at once'], ['project', 'Project fonts tab'], ['face', 'Change its styles']],
+      C: [['row', 'Picked, not in the project'], ['add', 'Add to the project'], ['tokens', 'Tokens › Fonts']],
+    };
+    const NAMES = { A: 'Add sheet in the picker', B: 'Picker tabs: Fonts | Project fonts', C: 'Decide later: Font row + Tokens › Fonts' };
+
+    function setScene(scene) {
+      s.scene = scene; s.menu = null; s.open = null;
+      const pick = (name) => { s.current = name; };
+      if (s.variant === 'A') {
+        if (scene === 'add') { pick('Lora'); s.draft = newDraft('Lora'); }
+        else s.draft = null;
+        if (scene === 'manage') s.menu = 'Space Mono';
+      }
+      if (s.variant === 'B') {
+        s.draft = null;
+        if (scene === 'added' || scene === 'project' || scene === 'face') { pick('Lora'); addFont('Lora', newDraft('Lora')); }
+        if (scene === 'face') s.open = 'Lora';
+      }
+      if (s.variant === 'C') {
+        delete s.project.Lora;
+        if (scene === 'row' || scene === 'add') pick('Lora');
+        s.draft = scene === 'add' ? newDraft('Lora') : null;
+        if (scene === 'tokens') { pick('Lora'); addFont('Lora', newDraft('Lora')); s.open = 'Lora'; }
+      }
+      render();
+    }
+
+    /** What a new font starts with: the styles this page uses, Latin, and the place the folder allows. */
+    function newDraft(name) {
+      const g = GOOGLE[name];
+      const faces = g.variable
+        ? ['upright', ...(USED.italic && g.faces.italic ? ['italic'] : [])]
+        : g.weights.filter((w) => USED.weights.includes(w) || w === 400).map(String);
+      return { name, faces, subsets: ['latin'], place: s.folder ? 'stored' : 'embedded' };
+    }
+    function addFont(name, draft) {
+      s.project[name] = { faces: [...draft.faces], subsets: [...draft.subsets], place: draft.place, uses: name === 'Lora' ? ['h2', '.text-heading-1'] : [] };
+    }
+    function sizeOf(name, faces, subsets) {
+      const g = GOOGLE[name];
+      return faces.reduce((sum, f) => sum + (g.faces[f] ?? 0) + (subsets.includes('latin-ext') ? g.ext : 0), 0);
+    }
+    const faceLabel = (name, f) => {
+      const g = GOOGLE[name];
+      if (f === 'upright') return `Upright ${g.variable}`;
+      if (f === 'italic') return `Italic ${g.variable}`;
+      return f.endsWith('i') ? `${f.slice(0, -1)} italic` : f;
+    };
+    const isItalic = (f) => f === 'italic' || /^\d+i$/.test(f);
+    const fileName = (name, f, sub) => `${name.toLowerCase().replace(/\s+/g, '-')}-${f}-${sub}.woff2`;
+
+    /* ------------------------------------------------------------- shared */
+    function place(entry) {
+      return entry.place === 'embedded'
+        ? `<span class="pill emb">Embedded</span>`
+        : `<span class="pill" title="Stored beside the page">▢ assets/fonts/</span>`;
+    }
+    function fontRow(extra = '') {
+      return `<div class="row">
+        <span class="dot"></span><span class="name">Font</span>
+        <div class="vf" data-act="openpicker" style="--fam:'${s.current}'"><span class="opener">Aa</span><span class="v">${s.current}</span><span class="chev">▾</span></div>
+        <button class="kill" title="Remove">🗑</button>
+      </div>${extra}`;
+    }
+    function typographyFrame(inner) {
+      return `<div class="ptabs"><span class="on">Styles</span><span>Tokens</span><span>Tree</span><span>Library</span></div>
+        <div class="sec"><div class="sechead">Typography <span class="n">Heading 1 · edited</span></div>
+          <div class="body">
+            <div class="row"><span class="dot"></span><span class="name">Color</span><div class="vf"><span class="v mono">#1c1917</span></div><button class="kill">🗑</button></div>
+            ${inner}
+            <div class="row"><span class="dot"></span><span class="name">Weight</span><div class="vf"><span class="v mono">600</span><span class="chev">▾</span></div><button class="kill">🗑</button></div>
+            <div class="row"><span class="dot"></span><span class="name">Size</span><div class="vf"><span class="v mono">44px</span><span class="chev">▾</span></div><button class="kill">🗑</button></div>
+          </div></div>`;
+    }
+    function pickerHead() {
+      return `<div class="phead"><span class="t">Font</span><span class="s2">font-family</span><span class="sp"></span><button class="x2" data-act="close">✕</button></div>
+        <div class="search">⌕ <span>Search fonts</span></div>`;
+    }
+    function fontItem(name, tag, opts = {}) {
+      return `<div class="fi${s.menu === name ? ' menuopen' : ''}" aria-current="${s.current === name}" data-act="${opts.act ?? 'pick'}" data-font="${name}">
+        <span class="nm" style="font-family:'${name}', serif">${name}</span>
+        ${tag}
+        ${opts.more ? `<button class="more" data-act="menu" data-font="${name}" title="${name}: where it lives, its styles">⋯</button>` : '<span></span>'}
+      </div>`;
+    }
+    function projectList(withMore) {
+      const items = Object.entries(s.project).map(([name, e]) => fontItem(name, place(e), { more: withMore }));
+      return `<div class="group">In this project</div>
+        ${fontItem('Fraunces', '<span class="pill page" title="An @font-face in your stylesheet: yours, left as it is">Your stylesheet</span>')}
+        ${items.join('')}`;
+    }
+    function googleList(opts = {}) {
+      return `<div class="group">Google Fonts · previews</div>
+        ${Object.keys(GOOGLE).filter((n) => !s.project[n]).map((n) => fontItem(n, opts.get ? `<button class="btn ghost get" data-act="pick" data-font="${n}">+ Add</button>` : `<span class="pill google">${GOOGLE[n].cat}</span>`, {})).join('')}`;
+    }
+    function systemList() {
+      return `<div class="group">System · only where installed</div>
+        ${SYSTEM.slice(0, 3).map((n) => fontItem(n, '<span class="pill google" title="Not carried with the page: a visitor without it sees the next font of the chain">This machine</span>')).join('')}`;
+    }
+    function fallbacks() {
+      return `<div class="hint" style="padding:6px 8px;border-radius:8px;background:var(--heo-sunken)">If ${s.current} is not there → <b>Georgia</b> → <b>any serif</b></div>`;
+    }
+    function whereChoice(draft) {
+      const opt = (id, title, desc, disabled) => `<div class="opt" role="radio" data-act="place" data-place="${id}" aria-checked="${draft.place === id}" aria-disabled="${Boolean(disabled)}"><span class="r"></span><span><div class="tt">${title}</div><div class="dd">${desc}</div></span></div>`;
+      const size = sizeOf(draft.name, draft.faces, draft.subsets);
+      return `<div class="where" role="radiogroup">
+        ${opt('stored', 'Store in a file', s.folder ? `In <code>assets/fonts/</code> beside the page, linked by the @font-face. The design system stays small; the folder travels with it.` : `Needs a project folder. <span class="linkish" data-act="folder">Connect one…</span>`, !s.folder)}
+        ${opt('embedded', 'Embed', `Inside the @font-face as a data URL: one self-contained file, ${kb(b64(size))} heavier (${kb(size)} of font, as base64).`)}
+      </div>`;
+    }
+    function facesChoice(draft) {
+      const g = GOOGLE[draft.name];
+      const list = Object.keys(g.faces);
+      const usedFace = (f) => f === 'upright' || (f === 'italic' && USED.italic) || USED.weights.includes(Number(f)) || (f.endsWith('i') && USED.italic && USED.weights.includes(Number(f.slice(0, -1))));
+      return `<div class="field"><div class="lbl">Styles <span>${g.variable ? `variable: one file per style holds every weight ${g.variable}` : 'one file each'} · <span style="color:var(--heo-ok)">●</span> used on this page</span></div>
+        <div class="chips">${list.map((f) => `<button class="ch" data-act="face" data-face="${f}" aria-pressed="${draft.faces.includes(f)}">${usedFace(f) ? '<span class="u"></span>' : ''}<span style="font-family:'${draft.name}';${isItalic(f) ? 'font-style:italic;' : ''}${/^\d/.test(f) ? `font-weight:${parseInt(f)}` : ''}">${faceLabel(draft.name, f)}</span><span class="kb">${g.faces[f]} kB</span></button>`).join('')}</div></div>
+        <div class="field"><div class="lbl">Characters</div>
+          <div class="chips">${['latin', 'latin-ext', 'cyrillic', 'greek', 'vietnamese'].filter((x, i) => i < 2 || draft.name === 'Lora').map((sub) => `<button class="ch" data-act="sub" data-sub="${sub}" aria-pressed="${draft.subsets.includes(sub)}">${{ latin: 'Latin', 'latin-ext': 'Latin extended (é, ł, ő…)', cyrillic: 'Cyrillic', greek: 'Greek', vietnamese: 'Vietnamese' }[sub]}${sub === 'latin-ext' ? `<span class="kb">+${g.ext} kB</span>` : ''}</button>`).join('')}</div></div>`;
+    }
+
+    /* ------------------------------------------------------------- variant A */
+    function variantA() {
+      const showPicker = s.scene !== '' || true;
+      const d = s.draft;
+      let picker = '';
+      if (showPicker) {
+        const sheet = d ? `<div class="sheet">
+            <h4><span class="fam" style="font-family:'${d.name}'">${d.name}</span><span class="hint">Google Fonts · ${GOOGLE[d.name].cat}</span></h4>
+            <p class="hint">Previewing on the element. To keep it, the page carries the font itself: nobody's browser asks Google for it.</p>
+            ${facesChoice(d)}
+            <div class="field"><div class="lbl">Where</div>${whereChoice(d)}</div>
+            <div class="total"><span>${d.faces.length * d.subsets.length} file${d.faces.length * d.subsets.length > 1 ? 's' : ''} · <b>${kb(d.place === 'embedded' ? b64(sizeOf(d.name, d.faces, d.subsets)) : sizeOf(d.name, d.faces, d.subsets))}</b></span><span class="sp"></span>
+              <button class="btn" data-act="cancel">Cancel</button><button class="btn primary" data-act="add">Add and use</button></div>
+          </div>` : '';
+        const menu = s.menu ? `<div class="menu" style="top:208px">
+            <div class="note">${s.menu}: ${s.project[s.menu].faces.map((f) => faceLabel(s.menu, f)).join(', ')} · ${kb(sizeOf(s.menu, s.project[s.menu].faces, s.project[s.menu].subsets))}</div>
+            <button data-act="edit" data-font="${s.menu}">✎ Styles and characters…</button>
+            ${s.project[s.menu].place === 'stored' ? `<button data-act="toembed" data-font="${s.menu}">⇡ Embed</button>` : `<button data-act="tostore" data-font="${s.menu}" ${s.folder ? '' : 'disabled'}>⇣ Store in a file</button>`}
+            <button>↗ Show in Settings › Files</button>
+            <div class="sep"></div>
+            <button class="d" data-act="remove" data-font="${s.menu}">🗑 Remove from the project</button>
+            <div class="note">Used by ${s.project[s.menu].uses.join(', ') || 'nothing'}: they fall back to the next font.</div>
+          </div>` : '';
+        picker = `<div class="pop" style="top:118px">${pickerHead()}
+          <div class="flist">${projectList(true)}${googleList({ get: true })}${systemList()}</div>
+          ${sheet || fallbacks()}${menu}
+        </div>`;
+      }
+      return typographyFrame(fontRow()) + picker;
+    }
+
+    /* ------------------------------------------------------------- variant B */
+    function variantB() {
+      const tab = s.scene === 'project' || s.scene === 'face' ? 'project' : 'fonts';
+      const lora = s.project.Lora;
+      let body = '';
+      if (tab === 'fonts') {
+        body = `<div class="flist">${projectList(false)}${googleList()}${systemList()}</div>
+          ${lora ? `<div class="strip"><span><b>Lora added</b>: ${lora.faces.map((f) => faceLabel('Lora', f)).join(' + ')}, Latin · ${lora.place === 'embedded' ? 'embedded' : 'in assets/fonts/'} · ${kb(sizeOf('Lora', lora.faces, lora.subsets))}. The styles this page uses.</span><span class="actions"><button class="btn" data-act="undo">Undo</button><button class="btn" data-act="tab-project">Change…</button></span></div>` : ''}
+          ${fallbacks()}`;
+      } else {
+        const total = Object.entries(s.project).reduce((n, [name, e]) => n + sizeOf(name, e.faces, e.subsets), 0);
+        body = `<p class="hint">Fonts the page carries. Hover one in Fonts to preview it; picking a Google font adds it here with the styles the page uses.</p>
+          <div>${Object.entries(s.project).map(([name, e]) => familyCard(name, e)).join('')}
+            <div class="fam-card"><div class="fam-head" style="cursor:default"><span class="nm" style="font-family:Fraunces">Fraunces</span><span class="pill page">Your stylesheet</span></div></div></div>
+          <div class="drop">⇪ Drop a font file here (.woff2, .ttf, .otf)<span class="hint">or <span class="linkish">choose one…</span> It is added like a Google font: embedded or stored.</span></div>
+          <div class="total"><span>${Object.keys(s.project).length} fonts · ${kb(total)} · <span class="linkish">Settings › Files</span></span></div>`;
+      }
+      const picker = `<div class="pop" style="top:118px">${pickerHead()}
+        <div class="tabs2"><button data-act="tab-fonts" aria-pressed="${tab === 'fonts'}">Fonts</button><button data-act="tab-project" aria-pressed="${tab === 'project'}">Project fonts · ${Object.keys(s.project).length + 1}</button></div>
+        ${body}</div>`;
+      return typographyFrame(fontRow()) + picker;
+    }
+    function familyCard(name, e) {
+      const open = s.open === name;
+      const g = GOOGLE[name];
+      return `<div class="fam-card">
+        <div class="fam-head" data-act="toggle" data-font="${name}"><span>${open ? '▾' : '▸'}</span><span class="nm" style="font-family:'${name}'">${name}</span><span class="meta">${e.faces.length} style${e.faces.length > 1 ? 's' : ''} · ${kb(sizeOf(name, e.faces, e.subsets))}</span>${place(e)}</div>
+        ${open ? `<div class="fam-body">
+          <div class="faces">${e.faces.flatMap((f) => e.subsets.map((sub) => `<div class="face"><span class="s" style="font-family:'${name}';${isItalic(f) ? 'font-style:italic' : ''}">${faceLabel(name, f)} <span class="hint">${sub}</span></span><span class="kb">${(g.faces[f] ?? 0) + (sub === 'latin-ext' ? g.ext : 0)} kB</span>${e.place === 'embedded' ? '<span class="pill emb">Embedded</span>' : `<span class="pill" title="assets/fonts/${fileName(name, f, sub)}">${fileName(name, f, sub)}</span>`}</div>`)).join('')}</div>
+          ${s.scene === 'face' ? `<div class="sheet" style="background:var(--heo-bg)">${facesChoice({ name, faces: e.faces, subsets: e.subsets })}</div>` : ''}
+          <div class="used">Used by ${e.uses.map((u) => `<span>${u}</span>`).join('') || 'nothing yet'}</div>
+          <div class="actions">${e.place === 'stored' ? `<button class="btn" data-act="toembed" data-font="${name}">⇡ Embed</button>` : `<button class="btn" data-act="tostore" data-font="${name}" ${s.folder ? '' : 'disabled'}>⇣ Store in a file</button>`}
+            <button class="btn danger" data-act="remove" data-font="${name}">🗑 Remove</button></div>
+        </div>` : ''}
+      </div>`;
+    }
+
+    /* ------------------------------------------------------------- variant C */
+    function variantC() {
+      if (s.scene === 'tokens') {
+        const total = Object.entries(s.project).reduce((n, [name, e]) => n + sizeOf(name, e.faces, e.subsets), 0);
+        return `<div class="ptabs"><span>Styles</span><span class="on">Tokens</span><span>Tree</span><span>Library</span></div>
+          <div class="sec"><div class="sechead">Text styles <span class="n">3</span></div></div>
+          <div class="sec"><div class="sechead">Fonts <span class="n">${Object.keys(s.project).length} · ${kb(total)}</span></div>
+            <div class="body">
+              <div class="vf" style="cursor:text"><span class="hint" style="font-size:12px">⌕ find a font, or add one from Google…</span></div>
+              ${Object.entries(s.project).map(([name, e]) => familyCard(name, e)).join('')}
+              <div class="fam-card"><div class="fam-head" style="cursor:default"><span class="nm" style="font-family:Fraunces">Fraunces</span><span class="pill page">Your stylesheet</span></div></div>
+              <button class="btn" style="justify-self:start">⇪ Add a font file…</button>
+              <p class="hint">Where each file lives is also in Settings › Files, with the images and the rest.</p>
+            </div></div>
+          <div class="sec"><div class="sechead">Reusable classes <span class="n">5</span></div></div>`;
+      }
+      const inProject = Boolean(s.project[s.current]) || s.current === 'Fraunces' || SYSTEM.includes(s.current);
+      const status = !inProject && GOOGLE[s.current]
+        ? `<div class="row"><span></span><span></span><div class="rowstatus" style="grid-column:3/5"><span class="pill warn" title="Shown from Google while you decide. Saved like this, visitors see the fallback.">◐ Not in the project yet</span><button class="btn ghost" data-act="cadd">Add…</button></div></div>`
+        : '';
+      const pop = s.draft ? `<div class="pop" style="top:156px">
+          <div class="phead"><span class="t">Add ${s.draft.name} to the project</span><span class="sp"></span><button class="x2" data-act="cancel">✕</button></div>
+          <p class="hint">Until it is, the page shows it from Google here only: a save keeps <code>font-family: Lora</code> and visitors see <b>Georgia</b>.</p>
+          ${facesChoice(s.draft)}
+          <div class="field"><div class="lbl">Where</div>${whereChoice(s.draft)}</div>
+          <div class="total"><span><b>${kb(s.draft.place === 'embedded' ? b64(sizeOf(s.draft.name, s.draft.faces, s.draft.subsets)) : sizeOf(s.draft.name, s.draft.faces, s.draft.subsets))}</b></span><span class="sp"></span><button class="btn" data-act="cancel">Later</button><button class="btn primary" data-act="add">Add</button></div>
+        </div>` : '';
+      return typographyFrame(fontRow(status)) + pop;
+    }
+
+    /* -------------------------------------------------------------- output */
+    function written() {
+      const lines = [`<span class="c">/* heo:design-system start — managed by html-editor-overlay */</span>`];
+      const files = [];
+      for (const [name, e] of Object.entries(s.project)) {
+        const g = GOOGLE[name];
+        for (const f of e.faces) for (const sub of e.subsets) {
+          const size = (g.faces[f] ?? 0) + (sub === 'latin-ext' ? g.ext : 0);
+          const weight = g.variable ? g.variable.replace('–', ' ') : parseInt(f);
+          const italic = isItalic(f);
+          const src = e.place === 'embedded'
+            ? `url(data:font/woff2;base64,d09GMgAB…) format('woff2') <span class="c">/* ${kb(b64(size))} */</span>`
+            : `url('assets/fonts/${fileName(name, f, sub)}') format('woff2')`;
+          lines.push(`<b>@font-face</b> { font-family: '${name}'; font-weight: ${weight}; font-style: ${italic ? 'italic' : 'normal'};\n  font-display: swap; src: ${src};${sub !== 'latin' ? `\n  unicode-range: U+0100-02BA, U+1E00-1EFF <span class="c">/* ${sub} */</span>;` : ''} }`);
+          if (e.place === 'stored') files.push(`<span class="f">+ assets/fonts/${fileName(name, f, sub)}</span>  ${kb(size)}`);
+        }
+      }
+      lines.push(`.text-heading-1 { font-family: ${s.current === 'Fraunces' ? 'Fraunces' : `'${s.current}'`}, Georgia, serif; … }`);
+      lines.push(`<span class="c">/* heo:design-system end */</span>`);
+      const notAdded = GOOGLE[s.current] && !s.project[s.current];
+      return `${lines.join('\n')}${files.length ? `\n\n<span class="c">files beside the page</span>\n${files.join('\n')}` : ''}${notAdded ? `\n\n<span class="c">${s.current} is not in the project: nothing of it is written, and nothing links Google.\nVisitors see Georgia.</span>` : ''}`;
+    }
+
+    const QUESTIONS = {
+      A: '<b>A</b> — the decision happens where you pick. A Google font previews on hover as now; picking it opens the sheet: the styles (the ones this page uses ticked, a variable font as one file per style), the characters, and where. Nothing is kept until "Add and use". Fonts in the project are first in the list, each with where it lives and a ⋯ menu to change its styles, move it, or remove it.',
+      B: '<b>B</b> — picking never asks. A Google font is added at once with the styles the page uses, Latin, and stored when a folder is connected (embedded when not); the strip under the list says so, with Undo and Change. The Project fonts tab is the manager: one card per family, its files, where each lives, what uses it, and a drop zone for a font file of your own.',
+      C: '<b>C</b> — picking and keeping are separate acts. The picker only picks; a Google font is shown from Google while you try it, and the Font row says it is not in the project yet, with Add…. Fonts are managed in Tokens › Fonts, as cards like classes. Risk: a page saved before adding falls back for visitors, which the row and the save dialog have to say.',
+    };
+
+    /* -------------------------------------------------------------- render */
+    function render() {
+      if (!s.scene) { setScene(SCENES[s.variant][0][0]); return; }
+      const url = new URL(location.href);
+      url.searchParams.set('variant', s.variant); url.searchParams.set('scene', s.scene); url.searchParams.set('folder', s.folder ? 'yes' : 'none');
+      history.replaceState(null, '', url);
+      document.getElementById('lab').innerHTML = `<b>${s.variant}</b> — ${NAMES[s.variant]}`;
+      document.getElementById('stage').innerHTML = `<h1>Prototype · fonts that travel with the page</h1>
+        <div class="bar">
+          <div class="scene">${SCENES[s.variant].map(([id, label]) => `<button data-scene="${id}" aria-pressed="${s.scene === id}">${label}</button>`).join('')}</div>
+          <div class="scene"><button data-act="folder-on" aria-pressed="${s.folder}">Project folder connected</button><button data-act="folder-off" aria-pressed="${!s.folder}">No folder</button></div>
+        </div>
+        <div class="site"><div class="kicker">Clay Studio · Journal</div>
+          <h2 id="target" style="font-family:'${s.current}', Georgia, serif">Slow pottery for fast mornings</h2>
+          <p>Wheel-thrown stoneware, glazed in small batches. Every piece is a little different, and that is the point.</p></div>
+        <div class="out">${written()}</div>
+        <p class="question">${QUESTIONS[s.variant]}</p>`;
+      document.getElementById('panel').innerHTML = { A: variantA, B: variantB, C: variantC }[s.variant]();
+    }
+
+    function act(name, el) {
+      const font = el.dataset.font;
+      const d = s.draft;
+      switch (name) {
+        case 'pick':
+          s.current = font; s.menu = null;
+          if (s.variant === 'A' && GOOGLE[font] && !s.project[font]) s.draft = newDraft(font);
+          else if (s.variant === 'A') s.draft = null;
+          if (s.variant === 'B' && GOOGLE[font] && !s.project[font]) addFont(font, newDraft(font));
+          break;
+        case 'menu': s.menu = s.menu === font ? null : font; break;
+        case 'face': if (d) d.faces = d.faces.includes(el.dataset.face) ? d.faces.filter((f) => f !== el.dataset.face) : [...d.faces, el.dataset.face]; break;
+        case 'sub': if (d) d.subsets = d.subsets.includes(el.dataset.sub) ? d.subsets.filter((x) => x !== el.dataset.sub) : [...d.subsets, el.dataset.sub]; break;
+        case 'place': if (d && el.getAttribute('aria-disabled') !== 'true') d.place = el.dataset.place; break;
+        case 'add': if (d) { addFont(d.name, d); s.draft = null; } break;
+        case 'cancel': if (s.variant === 'A') s.current = 'Fraunces'; s.draft = null; break;
+        case 'cadd': s.draft = newDraft(s.current); s.scene = 'add'; break;
+        case 'undo': delete s.project.Lora; s.current = 'Fraunces'; break;
+        case 'remove': delete s.project[font]; s.menu = null; if (s.current === font) s.current = 'Fraunces'; break;
+        case 'toembed': s.project[font].place = 'embedded'; s.menu = null; break;
+        case 'tostore': if (s.folder) s.project[font].place = 'stored'; s.menu = null; break;
+        case 'edit': s.draft = { ...newDraft(font), ...s.project[font], name: font }; s.menu = null; break;
+        case 'toggle': s.open = s.open === font ? null : font; break;
+        case 'tab-project': s.scene = 'project'; break;
+        case 'tab-fonts': s.scene = 'added'; break;
+        case 'folder-on': s.folder = true; if (d) d.place = 'stored'; break;
+        case 'folder-off': s.folder = false; if (d) d.place = 'embedded'; for (const e of Object.values(s.project)) e.place = 'embedded'; break;
+        case 'folder': s.folder = true; if (d) d.place = 'stored'; break;
+        default: return;
+      }
+      render();
+    }
+    addEventListener('click', (event) => {
+      const sc = event.target.closest('[data-scene]');
+      if (sc) { setScene(sc.dataset.scene); return; }
+      const a = event.target.closest('[data-act]');
+      if (a) { event.stopPropagation(); act(a.dataset.act, a); }
+    });
+    const cycle = (step) => {
+      const keys = ['A', 'B', 'C'];
+      s.variant = keys[(keys.indexOf(s.variant) + step + keys.length) % keys.length];
+      s.project = { 'Space Mono': { faces: ['400'], subsets: ['latin'], place: s.folder ? 'stored' : 'embedded', uses: ['code', '.text-mono'] } };
+      s.current = 'Fraunces';
+      setScene(SCENES[s.variant][0][0]);
+    };
+    document.getElementById('prev').onclick = () => cycle(-1);
+    document.getElementById('next').onclick = () => cycle(1);
+    addEventListener('keydown', (e) => {
+      if (e.target.closest?.('input, textarea, [contenteditable]')) return;
+      if (e.key === 'ArrowLeft') cycle(-1);
+      if (e.key === 'ArrowRight') cycle(1);
+    });
+    if (!s.folder) s.project['Space Mono'].place = 'embedded';
+    // The scene in the URL is set up like a click on it, so a shared link opens on the same state.
+    setScene(SCENES[s.variant].some(([id]) => id === s.scene) ? s.scene : SCENES[s.variant][0][0]);
+    // For screenshots by scripts/browser-check.mjs: the verdict it waits for, once fonts drew.
+    if (qs.has('shot')) document.fonts.ready.then(() => setTimeout(() => {
+      const out = Object.assign(document.createElement('pre'), { id: 'out', hidden: true });
+      out.textContent = 'RESULTS:{"ok":true}:END';
+      document.body.append(out);
+    }, 800));
+  </script>
+</body>
+
+</html>

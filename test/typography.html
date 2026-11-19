@@ -368,6 +368,64 @@
         };
       });
 
+      /*
+       * The font picker in Tokens › Text styles, hovered with a real pointer as in Styles: each row
+       * previews once, nothing in the list moves, and the field keeps the value it had. Its preview
+       * goes through the class registry, which the field used to read back as its value.
+       */
+      await check('tokensHover', async () => {
+        engine.setDockTab('tokens');
+        await settle(700);
+        const troot = deep('heo-tokens-panel').shadowRoot;
+        const group = Array.from(troot.querySelectorAll('heo-section')).find((one) => one.getAttribute('heading') === 'Text styles');
+        if (group && !group.open) group.shadowRoot?.querySelector('button')?.click();
+        await settle(300);
+        if (!group.querySelector('[data-text-style-editor="text-heading-1"]')) group.querySelector('[data-text-style="text-heading-1"]').click();
+        await settle(400);
+        const f = () => group.querySelector('[data-text-style-editor="text-heading-1"] heo-value-field[data-property="font-family"]');
+        f().scrollIntoView({ block: 'start' });
+        await settle(200);
+        const committed = f().value;
+        f().openShadowEditor();
+        await settle(800);
+        const proot = f().shadowRoot.querySelector('heo-font-picker').shadowRoot;
+        const press = (mouse) => new Promise((resolve) => {
+          const id = Math.random().toString(36).slice(2);
+          window.__heoKeysDone = (done) => { if (done === id) resolve(); };
+          window.__heoPressKeys(JSON.stringify({ id, mouse }));
+        });
+        const rows = Array.from(proot.querySelectorAll('[data-font]')).filter((one) => one.dataset.pickable === 'true').slice(0, 5);
+        let flips = 0;
+        let last = getComputedStyle(h2).fontFamily;
+        const watch = setInterval(() => {
+          const now = getComputedStyle(h2).fontFamily;
+          if (now !== last) { flips += 1; last = now; }
+        }, 16);
+        const moved = [];
+        const values = new Set();
+        for (const one of rows) {
+          const box = one.getBoundingClientRect();
+          await press([{ type: 'hover', x: box.left + 20, y: box.top + box.height / 2 }]);
+          await settle(350);
+          moved.push(Math.round(one.getBoundingClientRect().top - box.top));
+          values.add(f().value);
+          values.add(f().shadowRoot.querySelector('heo-font-picker').value);
+        }
+        clearInterval(watch);
+        const previewed = /\w/.test(last) && last !== committed;
+        f().shadowRoot.querySelector('.dialog-head button[aria-label="Close"]')?.click();
+        await settle(300);
+        engine.setDockTab('styles');
+        await settle(400);
+        return {
+          hovered: rows.length >= 3,
+          eachRowPreviewsOnce: flips === rows.length,
+          nothingInTheListMoves: moved.every((one) => one === 0),
+          theFieldKeepsItsValue: values.size === 1 && values.has(committed),
+          andThePreviewReachesTheStyle: previewed,
+        };
+      });
+
       await check('tokensList', async () => {
         engine.setDockTab('tokens');
         await settle(700);
@@ -436,6 +494,75 @@
           theFocusStaysOnIt: focusKept,
           theStylesPanelListsThemInThatOrder: inStyles.filter((one) => keyed.includes(one)).join(',') === keyed.join(','),
           oneUndoPerMove: afterOneUndo,
+        };
+      });
+
+      // Tokens' three finders: nothing matching offers a button to make it, as the Library does.
+      await check('createOffers', async () => {
+        engine.setDockTab('tokens');
+        await settle(700);
+        const troot = deep('heo-tokens-panel').shadowRoot;
+        const sec = (name) => Array.from(troot.querySelectorAll('heo-section')).find((one) => one.getAttribute('heading') === name);
+        for (const name of ['Text styles', 'Reusable classes', 'CSS rules']) {
+          const g = sec(name);
+          if (g && !g.open) g.shadowRoot?.querySelector('button')?.click();
+        }
+        await settle(300);
+        const offer = (name) => sec(name)?.querySelector('[data-create-offer] button');
+
+        await send(sec('Text styles').querySelector('heo-value-field[data-text-style-create]'), 'value-input', 'Pull quote');
+        const styleOffer = offer('Text styles');
+        const styleLabel = flat(styleOffer);
+        styleOffer?.click();
+        await settle(400);
+        const quote = engine.textStyles().find((one) => one.name === 'Pull quote');
+        // Its card: the class card's frame, and its footer's Delete rather than a trash by the name.
+        const card = sec('Text styles').querySelector('.tstyle-card');
+        const nameRowHasNoTrash = !sec('Text styles').querySelector('[data-text-style-editor] .trow:first-child button');
+        const del = card?.querySelector('[data-text-style-delete]');
+        const deleteLooksLikeAClasses = Boolean(del) && del.classList.contains('danger') && /Delete/.test(flat(del));
+        del?.click();
+        await settle(400);
+        const deleted = !engine.classes.get(quote?.entry.name);
+        engine.undo();
+        await settle(300);
+        const backOnUndo = Boolean(engine.classes.get(quote?.entry.name));
+
+        const classField = sec('Reusable classes').querySelector('heo-value-field');
+        await send(classField, 'value-input', 'promo-band');
+        const classOffer = offer('Reusable classes');
+        const classLabel = flat(classOffer);
+        classOffer?.click();
+        await settle(500);
+        const classMade = Boolean(engine.classes.get('promo-band'));
+        // The style dialog a new class opens: closed, so the next finder can be typed in.
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        await settle(300);
+
+        const ruleField = sec('CSS rules').querySelector('heo-selector-field');
+        ruleField.dispatchEvent(new CustomEvent('selector-input', { detail: { value: '.promo-band h3' }, bubbles: true, composed: true }));
+        await settle(400);
+        const ruleOffer = offer('CSS rules');
+        const ruleLabel = flat(ruleOffer);
+        ruleOffer?.click();
+        await settle(500);
+        const ruleMade = engine.rules.has('.promo-band h3');
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        await settle(300);
+        engine.setDockTab('styles');
+        await settle(400);
+        return {
+          aTextStyleIsOffered: styleLabel === 'Create "Pull quote"',
+          andMadeFromTheButton: Boolean(quote),
+          itsEditorIsACard: Boolean(card) && card.classList.contains('cls'),
+          nameRowHasNoTrash,
+          deleteLooksLikeAClasses,
+          deleteDeletes: deleted,
+          andUndoes: backOnUndo,
+          aClassIsOffered: classLabel === 'Create ".promo-band"',
+          andMade: classMade,
+          aRuleIsOffered: ruleLabel === 'Create ".promo-band h3"',
+          andMadeToo: ruleMade,
         };
       });
 
