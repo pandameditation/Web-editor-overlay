@@ -14,6 +14,27 @@ import type { DesignClass } from './types.js';
 
 export const TEXT_STYLE_MARKER = '--heo-text-style';
 
+/**
+ * A text style's place in the list, beside its marker: `--heo-text-style-order: 2`. In the class
+ * for the marker's reason — the order then travels wherever the styles do. Styles without one (made
+ * before an order was set, or by hand) come after, by name.
+ */
+export const TEXT_STYLE_ORDER = '--heo-text-style-order';
+
+/** A style's place, or null without one. */
+export function textStyleOrder(entry: Pick<DesignClass, 'declarations'>): number | null {
+  const raw = entry.declarations[TEXT_STYLE_ORDER]?.trim();
+  if (!raw) return null;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : null;
+}
+
+/** Text styles in their order: by place, then the unplaced by name. */
+export function sortTextStyles<T extends { entry: Pick<DesignClass, 'declarations' | 'name'> }>(styles: readonly T[]): T[] {
+  const place = (one: T): number => textStyleOrder(one.entry) ?? Number.POSITIVE_INFINITY;
+  return [...styles].sort((a, b) => place(a) - place(b) || a.entry.name.localeCompare(b.entry.name));
+}
+
 /** The properties a text style holds and the Typography section edits, in the section's order. */
 export const TYPOGRAPHY_PROPERTIES: readonly string[] = [
   'color',
@@ -31,7 +52,8 @@ export const TYPOGRAPHY_PROPERTIES: readonly string[] = [
   'line-height',
   'letter-spacing',
   'word-spacing',
-  '-webkit-text-stroke',
+  '-webkit-text-stroke-width',
+  '-webkit-text-stroke-color',
   'text-shadow',
   // Fine-tuning.
   'text-wrap',
@@ -43,7 +65,7 @@ export const TYPOGRAPHY_PROPERTIES: readonly string[] = [
 ];
 
 /** Shorthands that set some of them: removed with them, so an old `text-decoration` cannot win over a style. */
-export const TYPOGRAPHY_SHORTHANDS: readonly string[] = ['text-decoration', 'font', 'font-variant'];
+export const TYPOGRAPHY_SHORTHANDS: readonly string[] = ['text-decoration', 'font', 'font-variant', '-webkit-text-stroke'];
 
 const isTypography = (property: string): boolean => {
   const name = property.trim().toLowerCase();
@@ -85,20 +107,21 @@ export function textStyleClass(name: string): string {
 export function textStyleDeclarations(entry: DesignClass): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [property, value] of Object.entries(entry.declarations)) {
-    if (property === TEXT_STYLE_MARKER || !value.trim()) continue;
+    if (property === TEXT_STYLE_MARKER || property === TEXT_STYLE_ORDER || !value.trim()) continue;
     out[property] = value;
   }
   return out;
 }
 
-/** The declarations a style is stored with: its typography, and its marker last. */
-export function storedTextStyle(name: string, declarations: Record<string, string>): Record<string, string> {
+/** The declarations a style is stored with: its typography, then its marker and its place. */
+export function storedTextStyle(name: string, declarations: Record<string, string>, order: number | null = null): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [property, value] of Object.entries(declarations)) {
     if (property === TEXT_STYLE_MARKER || !value.trim() || !isTypography(property)) continue;
     out[property] = value.trim();
   }
   out[TEXT_STYLE_MARKER] = textStyleMarker(name);
+  if (order !== null) out[TEXT_STYLE_ORDER] = String(order);
   return out;
 }
 

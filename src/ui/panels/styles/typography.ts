@@ -80,7 +80,12 @@ export const TYPOGRAPHY_ROWS: readonly TypographyRow[] = [
   { property: 'line-height', label: 'Line height' },
   { property: 'letter-spacing', label: 'Letter spacing' },
   { property: 'word-spacing', label: 'Word spacing' },
-  { property: '-webkit-text-stroke', label: 'Outline' },
+  /*
+   * The outline as its two longhands, each its own row: the shorthand's one field hid the color
+   * behind the width, in one string to type.
+   */
+  { property: '-webkit-text-stroke-width', label: 'Outline' },
+  { property: '-webkit-text-stroke-color', label: 'Outline color' },
   { property: 'text-shadow', label: 'Shadow' },
 ];
 

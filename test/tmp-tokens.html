@@ -1,0 +1,27 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+.text-heading-1 { font-family: Georgia, serif; font-size: 36px; font-weight: 600; --heo-text-style: "Heading 1"; }
+.text-body { font-family: Georgia, serif; font-size: 16px; line-height: 1.6; --heo-text-style: "Body"; }
+.card { padding: 12px; border-radius: 8px; }
+</style></head><body><h2 id="h" class="text-heading-1">Clay</h2><p class="text-body card">Body text</p><pre id="progress">start</pre><pre id="out">pending</pre>
+<script src="../dist/html-editor-overlay.iife.js"></script><script>
+(async () => {
+  const settle = (ms) => new Promise((r) => setTimeout(r, ms));
+  const deep = (sel, root = document) => { const d = root.querySelector?.(sel); if (d) return d; for (const el of root.querySelectorAll?.('*') ?? []) { if (!el.shadowRoot) continue; const f = deep(sel, el.shadowRoot); if (f) return f; } return null; };
+  const api = window.HtmlEditorOverlay.mount({ theme: new URLSearchParams(location.search).get('t') || 'light', presets: false, detectScriptContent: false });
+  api.setEditing(true); await api.engine.whenReady(); api.select(document.getElementById('h')); api.engine.setDockTab('tokens'); await settle(900);
+  const troot = deep('heo-tokens-panel').shadowRoot;
+  const sec = (name) => Array.from(troot.querySelectorAll('heo-section')).find((one) => one.getAttribute('heading') === name);
+  for (const name of ['Text styles', 'Reusable classes']) { const g = sec(name); if (!g.open) g.shadowRoot.querySelector('button').click(); }
+  await settle(400);
+  sec('Text styles').querySelector('[data-text-style="text-body"]').click();
+  sec('Reusable classes').querySelector('.card-head')?.click();
+  await settle(500);
+  const q = new URLSearchParams(location.search).get('q');
+  if (q) {
+    const f = sec(q === 'rule' ? 'CSS rules' : 'Text styles');
+  }
+  const scroll = new URLSearchParams(location.search).get('s');
+  sec(scroll === 'c' ? 'Reusable classes' : 'Text styles').scrollIntoView({ block: 'start' }); await settle(300);
+  document.getElementById('out').textContent = 'RESULTS:' + JSON.stringify({ ok: true }) + ':END';
+})();
+</script></body></html>

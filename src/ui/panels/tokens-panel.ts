@@ -64,6 +64,25 @@ export class HeoTokensPanel extends HeoElement {
         display: grid;
         gap: 2px;
       }
+      .tslot {
+        display: grid;
+        grid-template-columns: 16px minmax(0, 1fr);
+        align-items: center;
+        border-radius: var(--heo-r-sm);
+      }
+      .tslot.over {
+        box-shadow: 0 -2px 0 var(--heo-accent);
+      }
+      .tslot .grip {
+        display: grid;
+        place-items: center;
+        height: 100%;
+        color: var(--heo-text-faint);
+        cursor: grab;
+      }
+      .tslot .grip:hover {
+        color: var(--heo-text);
+      }
       .tstyle {
         display: grid;
         grid-template-columns: minmax(0, 1fr) auto;
@@ -306,6 +325,8 @@ export class HeoTokensPanel extends HeoElement {
   @state() private expandedClass: string | null = null;
   /** The text style being edited in Text styles, by class. */
   @state() private textStyle: string | null = null;
+  /** What is typed in Text styles' "find or create" field. */
+  @state() private textStyleDraft = '';
   @state() private newClassProperty = '';
   @state() private version = 0;
   @state() private classDraft = '';
@@ -751,8 +772,15 @@ export class HeoTokensPanel extends HeoElement {
    */
   #renderTextStyles(): TemplateResult | typeof nothing {
     const needle = this.query.trim().toLowerCase();
-    const styles = this.editor.textStyles().filter((one) => !needle || one.name.toLowerCase().includes(needle) || one.entry.name.includes(needle));
-    if (needle && !styles.length) return nothing;
+    const draft = this.textStyleDraft.trim().toLowerCase();
+    const matches = (one: { name: string; entry: DesignClass }, text: string): boolean =>
+      !text || one.name.toLowerCase().includes(text) || one.entry.name.includes(text);
+    const all = this.editor.textStyles();
+    const inPanel = all.filter((one) => matches(one, needle));
+    if (needle && !inPanel.length && !draft) return nothing;
+    const styles = inPanel.filter((one) => matches(one, draft));
+    // Reordering a filtered list would move styles past ones it hides: only the whole list drags.
+    const movable = !needle && !draft && all.length > 1;
     const picked = styles.find((one) => one.entry.name === this.textStyle) ?? null;
     const look = (decl: Record<string, string>): string => Object.entries(decl)
       .filter(([property]) => !property.startsWith('--') && property !== 'line-height')
@@ -765,25 +793,116 @@ export class HeoTokensPanel extends HeoElement {
       ?open=${openGroups.has('text-styles') || Boolean(needle)}
       @section-toggle=${(event: CustomEvent<{ open: boolean }>) => this.#remember('text-styles', event.detail.open)}
     >
+      <heo-value-field
+        data-text-style-create
+        style="margin-bottom:8px"
+        field-label="Find or create a text style"
+        leading-icon="search"
+        clearable
+        chevron-hidden
+        action="Create text style"
+        action-icon="plus"
+        placeholder="find or create a text style"
+        .value=${this.textStyleDraft}
+        @value-input=${(event: CustomEvent<{ value: string }>) => {
+          this.textStyleDraft = event.detail.value;
+        }}
+        @value-change=${(event: CustomEvent<{ value: string }>) => {
+          this.textStyleDraft = event.detail.value;
+        }}
+        @value-submit=${(event: CustomEvent<{ value: string }>) => this.#createTextStyle(event.detail.value)}
+      ></heo-value-field>
       ${styles.length
-        ? html`<div class="tstyles" role="list">
-            ${styles.map((one) => html`<button
-              class="tstyle"
-              type="button"
+        ? html`<div class="tstyles" role="list" aria-label="Text styles, in order">
+            ${repeat(styles, (one) => one.entry.name, (one, index) => html`<div
+              class="tslot"
               role="listitem"
-              data-text-style=${one.entry.name}
-              aria-current=${picked?.entry.name === one.entry.name ? 'true' : 'false'}
-              @click=${() => {
-                this.textStyle = picked?.entry.name === one.entry.name ? null : one.entry.name;
+              data-text-style-slot=${one.entry.name}
+              @dragover=${(event: DragEvent) => {
+                if (this.#styleDragFrom === null) return;
+                event.preventDefault();
+                (event.currentTarget as HTMLElement).classList.add('over');
+              }}
+              @dragleave=${(event: DragEvent) => (event.currentTarget as HTMLElement).classList.remove('over')}
+              @drop=${(event: DragEvent) => {
+                (event.currentTarget as HTMLElement).classList.remove('over');
+                const from = this.#styleDragFrom;
+                this.#styleDragFrom = null;
+                if (from === null || from === index) return;
+                event.preventDefault();
+                this.#moveTextStyle(from, index);
               }}
             >
-              <span class="p" style=${look(textStyleDeclarations(one.entry))}>${one.name}</span>
-              <span class="m">.${one.entry.name} · ${one.used}×</span>
-            </button>`)}
+              ${movable
+                ? html`<span
+                    class="grip"
+                    draggable="true"
+                    title="Drag to reorder. The Styles panel lists them in this order."
+                    aria-hidden="true"
+                    @dragstart=${(event: DragEvent) => {
+                      this.#styleDragFrom = index;
+                      event.dataTransfer?.setData('text/plain', `text-style:${one.entry.name}`);
+                      if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+                    }}
+                    @dragend=${() => {
+                      this.#styleDragFrom = null;
+                    }}
+                  >${icon('grip', 12)}</span>`
+                : html`<span></span>`}
+              <button
+                class="tstyle"
+                type="button"
+                data-text-style=${one.entry.name}
+                aria-current=${picked?.entry.name === one.entry.name ? 'true' : 'false'}
+                aria-keyshortcuts=${movable ? 'Alt+ArrowUp Alt+ArrowDown' : nothing}
+                title=${movable ? `Edit ${one.name}. Alt and an arrow move it.` : `Edit ${one.name}`}
+                @click=${() => {
+                  this.textStyle = picked?.entry.name === one.entry.name ? null : one.entry.name;
+                }}
+                @keydown=${(event: KeyboardEvent) => {
+                  if (!movable || !event.altKey || (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')) return;
+                  event.preventDefault();
+                  const to = Math.max(0, Math.min(styles.length - 1, index + (event.key === 'ArrowUp' ? -1 : 1)));
+                  if (to === index) return;
+                  this.#moveTextStyle(index, to);
+                  void this.updateComplete.then(() =>
+                    this.renderRoot.querySelector<HTMLElement>(`[data-text-style="${CSS.escape(one.entry.name)}"]`)?.focus());
+                }}
+              >
+                <span class="p" style=${look(textStyleDeclarations(one.entry))}>${one.name}</span>
+                <span class="m">.${one.entry.name} · ${one.used}×</span>
+              </button>
+            </div>`)}
           </div>`
-        : html`<p class="hint" style="margin:0">No text styles yet. In Styles, style a text and save it as one from Typography.</p>`}
+        : draft
+          ? html`<p class="hint" style="margin:0">No text style matches. Press Enter or + to create “${this.textStyleDraft.trim()}”.</p>`
+          : html`<p class="hint" style="margin:0">No text styles yet. Create one above, or style a text in Styles and save it from Typography.</p>`}
       ${picked ? this.#renderTextStyleEditor(picked.entry, picked.name, picked.used) : nothing}
     </heo-section>`;
+  }
+
+  #styleDragFrom: number | null = null;
+
+  /** Move a style in the whole list (only the unfiltered list moves), as one undo step. */
+  #moveTextStyle(from: number, to: number): void {
+    const order = this.editor.textStyles().map((one) => one.entry.name);
+    const [one] = order.splice(from, 1);
+    if (!one) return;
+    order.splice(to, 0, one);
+    this.editor.reorderTextStyles(order);
+  }
+
+  /** "Find or create": an exact name opens that style; anything else new is created and opened. */
+  #createTextStyle(raw: string): void {
+    const name = raw.trim();
+    if (!name) return;
+    const existing = this.editor.textStyles().find((one) => one.name.toLowerCase() === name.toLowerCase());
+    const className = existing?.entry.name ?? this.editor.createTextStyle(name);
+    if (!className) return;
+    if (!existing) this.editor.notify(`Created the text style ${name}.`, 'success');
+    this.textStyleDraft = '';
+    this.textStyle = className;
+    openGroups.add('text-styles');
   }
 
   /** A text style's rows: its name, then Typography's rows, writing to the class. */

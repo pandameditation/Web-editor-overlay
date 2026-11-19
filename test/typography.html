@@ -12,9 +12,25 @@
     offers only what the font draws differently. Tokens › Text styles edits a style with the same rows.
   -->
   <style id="site">
-    .text-heading-1 { font-family: Georgia, serif; font-size: 36px; font-weight: 600; line-height: 1.1; letter-spacing: -0.01em; --heo-text-style: "Heading 1"; }
-    .text-body { font-family: Georgia, serif; font-size: 16px; line-height: 1.6; --heo-text-style: "Body"; }
-    .card { padding: 8px; }
+    .text-heading-1 {
+      font-family: Georgia, serif;
+      font-size: 36px;
+      font-weight: 600;
+      line-height: 1.1;
+      letter-spacing: -0.01em;
+      --heo-text-style: "Heading 1";
+    }
+
+    .text-body {
+      font-family: Georgia, serif;
+      font-size: 16px;
+      line-height: 1.6;
+      --heo-text-style: "Body";
+    }
+
+    .card {
+      padding: 8px;
+    }
   </style>
 </head>
 
@@ -87,11 +103,27 @@
         return {
           textStylesComeFirst: Boolean(typo().querySelector('[data-text-styles]')) && Boolean(styleRow('text-heading-1')),
           theWornStyleIsPicked: styleRow('text-heading-1')?.getAttribute('aria-current') === 'true',
-          rowsAreNamedForWhatTheyDo: names.join(',') === 'Color,Font,Weight,Style,Line,Align,Case,Size,Line height,Letter spacing,Word spacing,Outline,Shadow',
+          rowsAreNamedForWhatTheyDo: names.join(',') === 'Color,Font,Weight,Style,Line,Align,Case,Size,Line height,Letter spacing,Word spacing,Outline,Outline color,Shadow',
           theCssNameIsTheTooltip: typo().querySelector('.row[data-property="letter-spacing"] .name')?.getAttribute('title') === 'letter-spacing',
           alignAndCaseAreSegmented: Boolean(typo().querySelector('.row[data-property="text-align"] heo-segmented')) && Boolean(typo().querySelector('.row[data-property="text-transform"] heo-segmented')),
           shadowMovedHere: Boolean(field('text-shadow')) && !effects?.querySelector('heo-value-field[data-property="text-shadow"]'),
           fontHasThePicker: field('font-family')?.kind === 'font',
+          // One editor per outline longhand, not the shorthand's single string.
+          theOutlineIsALengthAndAColor: field('-webkit-text-stroke-width')?.kind === 'length' && field('-webkit-text-stroke-color')?.kind === 'color' && !field('-webkit-text-stroke'),
+        };
+      });
+      await check('outline', async () => {
+        await send(field('-webkit-text-stroke-width'), 'value-change', '1px');
+        await send(field('-webkit-text-stroke-color'), 'value-change', 'rgb(255, 0, 0)');
+        const cs = getComputedStyle(h);
+        const drawn = cs.webkitTextStrokeWidth === '1px' && cs.webkitTextStrokeColor === 'rgb(255, 0, 0)';
+        const written = h.style.getPropertyValue('-webkit-text-stroke-width') === '1px' && h.style.getPropertyValue('-webkit-text-stroke-color') === 'rgb(255, 0, 0)';
+        await send(field('-webkit-text-stroke-width'), 'value-change', '');
+        await send(field('-webkit-text-stroke-color'), 'value-change', '');
+        return {
+          eachLonghandIsWritten: written,
+          andDrawn: drawn,
+          clearingRemovesThem: !h.style.getPropertyValue('-webkit-text-stroke-width') && !h.style.getPropertyValue('-webkit-text-stroke-color'),
         };
       });
 
@@ -248,6 +280,44 @@
         };
       });
 
+      await check('fallbacks', async () => {
+        const f = field('font-family');
+        const proot = () => f.shadowRoot.querySelector('heo-font-picker').shadowRoot;
+        const chain = () => Array.from(proot().querySelectorAll('.chain .chip')).map((one) => one.dataset.family);
+        const select = proot().querySelector('.chain select');
+        const extra = 'Times New Roman';
+        select.value = extra;
+        select.dispatchEvent(new Event('change'));
+        await settle(400);
+        const added = chain();
+        // Dragging the last chip onto the second moves it there: the stack is written in that order.
+        const chips = () => Array.from(proot().querySelectorAll('.chain .chip'));
+        const transfer = new DataTransfer();
+        const last = chips().at(-1);
+        last.dispatchEvent(new DragEvent('dragstart', { bubbles: true, composed: true, dataTransfer: transfer }));
+        const onto = chips()[1];
+        onto.dispatchEvent(new DragEvent('dragover', { bubbles: true, composed: true, cancelable: true, dataTransfer: transfer }));
+        onto.dispatchEvent(new DragEvent('drop', { bubbles: true, composed: true, cancelable: true, dataTransfer: transfer }));
+        await settle(400);
+        const dragged = chain();
+        const written = h.style.fontFamily;
+        // Alt and an arrow on a focused chip move it, and the focus stays on it.
+        const second = chips()[1];
+        second.focus();
+        second.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', altKey: true, bubbles: true, composed: true, cancelable: true }));
+        await settle(400);
+        const keyed = chain();
+        const focused = proot().activeElement?.dataset?.family;
+        return {
+          addingAppendsAFallback: added.length === 3 && added.at(-1) === extra,
+          dragReordersTheChain: dragged.length === 3 && dragged[1] === extra && dragged[2] === added[1],
+          andWritesThatOrder: written.indexOf(extra) < written.indexOf(added[1]) && written.indexOf(extra) > written.indexOf(added[0]),
+          altArrowMovesAChip: keyed[2] === extra && keyed[1] === added[1],
+          theFocusStaysOnIt: focused === extra,
+          everyChipHasAGrip: proot().querySelectorAll('.chain .chip .g').length === 3,
+        };
+      });
+
       await check('tuning', async () => {
         const f = field('font-family');
         f.shadowRoot.querySelector('.dialog-head button[aria-label="Close"]')?.click();
@@ -292,9 +362,80 @@
         await settle(400);
         return {
           listsTheStyles: ['text-heading-1', 'text-body', 'text-lede'].every((one) => listed.includes(one)),
-          editedWithTheSameRows: names.slice(1).join(',') === 'Color,Font,Weight,Style,Line,Align,Case,Size,Line height,Letter spacing,Word spacing,Outline,Shadow',
+          editedWithTheSameRows: names.slice(1).join(',') === 'Color,Font,Weight,Style,Line,Align,Case,Size,Line height,Letter spacing,Word spacing,Outline,Outline color,Shadow',
           writingChangesTheStyle: engine.classes.get('text-heading-1')?.declarations['letter-spacing'] === '0.1em',
           andItsElements: getComputedStyle(h2).letterSpacing === '3.6px',
+        };
+      });
+
+      await check('tokensList', async () => {
+        engine.setDockTab('tokens');
+        await settle(700);
+        const troot = deep('heo-tokens-panel').shadowRoot;
+        const group = () => Array.from(troot.querySelectorAll('heo-section')).find((one) => one.getAttribute('heading') === 'Text styles');
+        const listed = () => Array.from(group().querySelectorAll('.tstyles [data-text-style]')).map((one) => one.dataset.textStyle);
+        const create = () => group().querySelector('heo-value-field[data-text-style-create]');
+        const before = listed();
+        // The field filters the list as it is typed.
+        await send(create(), 'value-input', 'bod');
+        const filtered = listed();
+        const gripsWhileFiltered = group().querySelectorAll('.tslot .grip').length;
+        // A new name, submitted, makes a style and opens it.
+        await send(create(), 'value-submit', 'Caption');
+        const made = engine.textStyles().find((one) => one.name === 'Caption');
+        const opened = Boolean(group().querySelector(`[data-text-style-editor="${made?.entry.name}"]`));
+        // Nothing is ordered yet, so it takes its place by name rather than jumping ahead of all.
+        const byName = engine.textStyles().map((one) => one.entry.name).join(',') === [...before, made?.entry.name].sort().join(',');
+        const cleared = listed().length === before.length + 1;
+        // Dragging the last style's grip onto the first slot puts it first, everywhere.
+        const transfer = new DataTransfer();
+        const grips = Array.from(group().querySelectorAll('.tslot .grip'));
+        const movedName = listed().at(-1);
+        grips.at(-1).dispatchEvent(new DragEvent('dragstart', { bubbles: true, composed: true, dataTransfer: transfer }));
+        const first = group().querySelector('.tslot');
+        first.dispatchEvent(new DragEvent('dragover', { bubbles: true, composed: true, cancelable: true, dataTransfer: transfer }));
+        first.dispatchEvent(new DragEvent('drop', { bubbles: true, composed: true, cancelable: true, dataTransfer: transfer }));
+        await settle(400);
+        const dragged = listed();
+        const engineOrder = engine.textStyles().map((one) => one.entry.name);
+        const undoLabel = engine.history.undoLabel;
+        // Alt and Down on a focused style moves it one down, and keeps the focus on it.
+        const button = group().querySelector(`[data-text-style="${dragged[0]}"]`);
+        button.focus();
+        button.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', altKey: true, bubbles: true, composed: true, cancelable: true }));
+        await settle(400);
+        const keyed = listed();
+        const focusKept = troot.activeElement?.dataset?.textStyle === dragged[0];
+        // Once ordered, a new style goes last.
+        await send(create(), 'value-submit', 'Footnote');
+        const lastOnceOrdered = engine.textStyles().at(-1)?.name === 'Footnote';
+        const footnote = engine.textStyles().at(-1)?.entry.name;
+        engine.undo();
+        await settle(200);
+        const undoneCreate = !engine.classes.get(footnote);
+        engine.setDockTab('styles');
+        await settle(600);
+        const inStyles = Array.from(typo().querySelectorAll('[data-text-style]')).map((one) => one.dataset.textStyle);
+        // One undo puts the keyboard move back, a second the drag.
+        engine.undo();
+        await settle(200);
+        const afterOneUndo = engine.textStyles().map((one) => one.entry.name).join(',') === dragged.join(',');
+        return {
+          theFieldFilters: filtered.length === 1 && filtered[0] === 'text-body',
+          andCannotReorderAFilteredList: gripsWhileFiltered === 0,
+          submittingANewNameCreatesAStyle: Boolean(made) && made.entry.declarations['--heo-text-style'] === '"Caption"',
+          andOpensIt: opened,
+          anUnorderedListPlacesItByName: byName,
+          onceOrderedANewStyleGoesLast: lastOnceOrdered,
+          andCreatingUndoes: undoneCreate,
+          andTheFieldIsEmptiedForTheWholeList: cleared,
+          dragMovesAStyleFirst: dragged[0] === movedName && dragged.length === before.length + 1,
+          theEngineHasThatOrder: engineOrder.join(',') === dragged.join(','),
+          asOneStep: undoLabel === 'Reorder text styles',
+          altArrowMovesAStyle: keyed[1] === dragged[0] && keyed[0] === dragged[1],
+          theFocusStaysOnIt: focusKept,
+          theStylesPanelListsThemInThatOrder: inStyles.filter((one) => keyed.includes(one)).join(',') === keyed.join(','),
+          oneUndoPerMove: afterOneUndo,
         };
       });
 

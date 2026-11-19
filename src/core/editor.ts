@@ -58,9 +58,12 @@ import {
 import {
   isTextStyle,
   isTypography,
+  sortTextStyles,
   storedTextStyle,
+  TEXT_STYLE_ORDER,
   textStyleClass,
   textStyleName,
+  textStyleOrder,
 } from './text-styles.js';
 import {
   addClassToBlockElements,
@@ -2704,13 +2707,81 @@ export class EditorEngine {
   /* Text styles                                                            */
   /* ---------------------------------------------------------------------- */
 
-  /** The design system's text styles: its classes carrying the text-style marker, by name. */
+  /**
+   * The design system's text styles, in their order (`reorderTextStyles`): the Tokens list and the
+   * Styles panel's both read this, so a reorder in one is the order in the other.
+   */
   textStyles(): Array<{ entry: DesignClass; name: string; used: number }> {
     const usage = this.classes.usage();
-    return this.classes
-      .list()
-      .filter((entry) => isTextStyle(entry))
-      .map((entry) => ({ entry, name: textStyleName(entry), used: usage.get(entry.name) ?? 0 }));
+    return sortTextStyles(
+      this.classes
+        .list()
+        .filter((entry) => isTextStyle(entry))
+        .map((entry) => ({ entry, name: textStyleName(entry), used: usage.get(entry.name) ?? 0 })),
+    );
+  }
+
+  /**
+   * The place a new text style gets: last, once the list has an order. Before one is set — no style
+   * placed, or some not — none: it sorts by name with the rest, rather than a first place making it
+   * jump ahead of every unplaced style.
+   */
+  #nextTextStyleOrder(): number | null {
+    const places = this.textStyles().map((one) => textStyleOrder(one.entry));
+    if (!places.length || places.some((one) => one === null)) return null;
+    return Math.max(0, ...(places as number[])) + 1;
+  }
+
+  /**
+   * A new text style, from Tokens' "find or create": a name and a plain size and leading to start
+   * from, last in the list once it has an order (see #nextTextStyleOrder). One undo step. Returns its class, or null for an empty name.
+   */
+  createTextStyle(name: string, declarations: Record<string, string> = { 'font-size': '16px', 'line-height': '1.5' }): string | null {
+    const label = name.trim();
+    if (!label) return null;
+    const entry: DesignClass = {
+      name: this.classes.uniqueName(textStyleClass(label)),
+      label,
+      declarations: storedTextStyle(label, declarations, this.#nextTextStyleOrder()),
+      origin: 'user',
+    };
+    this.history.commit({
+      label: `Create text style ${label}`,
+      subject: `text-style:${entry.name}`,
+      record: {
+        id: nextChangeId(),
+        kind: 'token-class',
+        summary: `Create text style .${entry.name}`,
+        target: `.${entry.name}`,
+        detail: { ...entry.declarations },
+        at: Date.now(),
+      },
+      apply: () => this.classes.upsert(entry),
+      revert: () => this.classes.remove(entry.name),
+    });
+    this.#bumpRevision();
+    return entry.name;
+  }
+
+  /**
+   * Put the text styles in this order, by class: each gets its place (`--heo-text-style-order`),
+   * written where the class is declared like any other declaration. One undo step. Styles left
+   * out keep their places after the listed ones.
+   */
+  reorderTextStyles(classNames: readonly string[]): void {
+    const known = new Set(this.textStyles().map((one) => one.entry.name));
+    const order = classNames.filter((name) => known.has(name));
+    const rest = this.textStyles().map((one) => one.entry.name).filter((name) => !order.includes(name));
+    const all = [...order, ...rest];
+    if (all.every((name, index) => textStyleOrder(this.classes.get(name)!) === index + 1)) return;
+    this.#asOneEntry('Reorder text styles', () => {
+      all.forEach((name, index) => {
+        if (textStyleOrder(this.classes.get(name)!) !== index + 1) {
+          this.setClassDeclaration(name, TEXT_STYLE_ORDER, String(index + 1), undefined, 'Reorder text styles');
+        }
+      });
+    });
+    this.#bumpRevision();
   }
 
   /** The text style an element wears: its first class that is one. */
@@ -2766,7 +2837,8 @@ export class EditorEngine {
       ...(existing ?? {}),
       name: className,
       label: name.trim(),
-      declarations: storedTextStyle(name, declarations),
+      // Its place in the list: a replaced style keeps it, a new one goes last.
+      declarations: storedTextStyle(name, declarations, existing ? textStyleOrder(existing) : this.#nextTextStyleOrder()),
       origin: 'user',
     };
     this.#commitTextStyle(el, next, className, existing ? `Replace text style ${name.trim()}` : `Save text style ${name.trim()}`);

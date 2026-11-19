@@ -183,8 +183,22 @@ export class HeoFontPicker extends LitElement {
         color: var(--heo-text);
         font-size: 12px;
       }
+      .chip[draggable='true'] {
+        cursor: grab;
+      }
+      .chip .g {
+        display: grid;
+        margin-left: -3px;
+        color: var(--heo-text-faint);
+      }
+      .chip.over {
+        box-shadow: -2px 0 0 var(--heo-accent);
+      }
+      .chip:focus-visible {
+        outline: 2px solid var(--heo-accent);
+        outline-offset: 1px;
+      }
       .chip.first {
-        padding-right: 7px;
         border-color: var(--heo-accent-line);
         background: var(--heo-accent-soft);
         font-weight: 600;
@@ -286,7 +300,7 @@ export class HeoFontPicker extends LitElement {
     ].filter((one) => one.items.length);
   }
 
-  override updated(): void {
+  #loadWebNames(): void {
     if (!this.web) return;
     // Each web font's name, in its own face: only those glyphs are asked for.
     for (const font of WEB_FONTS) {
@@ -342,7 +356,78 @@ export class HeoFontPicker extends LitElement {
   #setFallbacks(next: string[]): void {
     const first = this.#families[0];
     if (!first) return;
-    this.#emit('font-change', { value: formatFamilies([first, ...next]) });
+    this.#setChain([first, ...next]);
+  }
+
+  #setChain(next: string[]): void {
+    this.#emit('font-change', { value: formatFamilies(next) });
+  }
+
+  /*
+   * The chain reorders as the filter editor's chips do: drag a chip onto another, or Alt and an
+   * arrow on a focused one. The family itself moves too: a fallback dragged to the front becomes the
+   * family, since the order is all a stack is.
+   */
+  #dragFrom: number | null = null;
+
+  #move(from: number, to: number): void {
+    const chain = [...this.#families];
+    if (from === to || from < 0 || to < 0 || from >= chain.length || to >= chain.length) return;
+    const [one] = chain.splice(from, 1);
+    chain.splice(to, 0, one);
+    this.#refocus = to;
+    this.#setChain(chain);
+  }
+
+  /** The chip to keep the focus on once the moved chain has rendered. */
+  #refocus: number | null = null;
+
+  override updated(): void {
+    this.#loadWebNames();
+    if (this.#refocus === null) return;
+    const at = this.#refocus;
+    this.#refocus = null;
+    this.renderRoot.querySelector<HTMLElement>(`.chip[data-at="${at}"]`)?.focus();
+  }
+
+  #chipKey(event: KeyboardEvent, index: number): void {
+    if (!event.altKey) return;
+    const step = ({ ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1 } as Record<string, number>)[event.key];
+    if (!step) return;
+    event.preventDefault();
+    this.#move(index, Math.max(0, Math.min(this.#families.length - 1, index + step)));
+  }
+
+  #chipEvents(index: number) {
+    return {
+      dragstart: (event: DragEvent) => {
+        // A drag from the cross is a press of the cross.
+        if ((event.composedPath()[0] as HTMLElement).closest?.('button')) {
+          event.preventDefault();
+          return;
+        }
+        this.#dragFrom = index;
+        event.dataTransfer?.setData('text/plain', `font:${index}`);
+        if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+      },
+      dragover: (event: DragEvent) => {
+        if (this.#dragFrom === null) return;
+        event.preventDefault();
+        (event.currentTarget as HTMLElement).classList.add('over');
+      },
+      dragleave: (event: DragEvent) => (event.currentTarget as HTMLElement).classList.remove('over'),
+      drop: (event: DragEvent) => {
+        (event.currentTarget as HTMLElement).classList.remove('over');
+        const from = this.#dragFrom;
+        this.#dragFrom = null;
+        if (from === null || from === index) return;
+        event.preventDefault();
+        this.#move(from, index);
+      },
+      dragend: () => {
+        this.#dragFrom = null;
+      },
+    };
   }
 
   override render(): TemplateResult {
@@ -406,11 +491,34 @@ export class HeoFontPicker extends LitElement {
     return html`<div class="fallbacks">
       <div class="group" style="margin:0">If ${first} is not there</div>
       <div class="chain" role="list" aria-label="Fallback fonts, in order">
-        <span class="chip first" role="listitem" style=${`font-family:${formatFamilies([first, 'serif'])}`}>${first}</span>
-        ${rest.map((one, index) => html`→<span class=${isGenericFamily(one) ? 'chip generic' : 'chip'} role="listitem" style=${`font-family:${formatFamilies([one])}`}>
-          ${isGenericFamily(one) ? `any ${one}` : one}
-          <button type="button" aria-label=${`Remove ${one}`} title=${`Remove ${one}`} @click=${() => this.#setFallbacks(rest.filter((_x, at) => at !== index))}>${icon('close', 9)}</button>
-        </span>`)}
+        ${this.#families.map((one, at) => {
+          const on = this.#chipEvents(at);
+          const name = isGenericFamily(one) ? `any ${one}` : one;
+          const movable = this.#families.length > 1;
+          return html`${at ? '→' : nothing}<span
+            class=${at === 0 ? 'chip first' : isGenericFamily(one) ? 'chip generic' : 'chip'}
+            role="listitem"
+            data-at=${at}
+            data-family=${one}
+            draggable=${movable ? 'true' : 'false'}
+            tabindex=${movable ? '0' : '-1'}
+            aria-label=${`${name}, ${at + 1} of ${this.#families.length}${movable ? '. Alt and an arrow move it.' : ''}`}
+            title=${movable ? (at === 0 ? `${one}. Drag to reorder: what is first is the font.` : `${name}. Drag to reorder; Alt and an arrow move it.`) : one}
+            style=${`font-family:${formatFamilies(at === 0 ? [one, 'serif'] : [one])}`}
+            @keydown=${(event: KeyboardEvent) => this.#chipKey(event, at)}
+            @dragstart=${on.dragstart}
+            @dragover=${on.dragover}
+            @dragleave=${on.dragleave}
+            @drop=${on.drop}
+            @dragend=${on.dragend}
+          >
+            ${movable ? html`<span class="g" aria-hidden="true">${icon('grip', 10)}</span>` : nothing}
+            ${name}
+            ${at > 0
+              ? html`<button type="button" aria-label=${`Remove ${one}`} title=${`Remove ${one}`} @click=${() => this.#setFallbacks(rest.filter((_x, index) => index !== at - 1))}>${icon('close', 9)}</button>`
+              : nothing}
+          </span>`;
+        })}
         ${missing.length
           ? html`<select aria-label="Add a fallback" @change=${(event: Event) => {
               const select = event.target as HTMLSelectElement;

@@ -37,7 +37,11 @@ export interface WebFont {
   weights: string;
 }
 
-/** A curated set of Google Fonts, offered once web fonts are turned on. */
+/**
+ * A curated set of Google Fonts, offered once web fonts are turned on. A range (`100..900`) is only
+ * for a variable font: asked of a static one, Google answers 400 with no CORS header (IBM Plex Mono
+ * did, and never drew in its face). Static fonts list their weights.
+ */
 export const WEB_FONTS: readonly WebFont[] = [
   { name: 'Inter', category: 'Sans', weights: '100..900' },
   { name: 'Roboto', category: 'Sans', weights: '100..900' },
@@ -66,7 +70,7 @@ export const WEB_FONTS: readonly WebFont[] = [
   { name: 'Bebas Neue', category: 'Display', weights: '400' },
   { name: 'Archivo Black', category: 'Display', weights: '400' },
   { name: 'JetBrains Mono', category: 'Mono', weights: '100..800' },
-  { name: 'IBM Plex Mono', category: 'Mono', weights: '100..700' },
+  { name: 'IBM Plex Mono', category: 'Mono', weights: '100;200;300;400;500;600;700' },
   { name: 'Space Mono', category: 'Mono', weights: '400;700' },
   { name: 'Fira Code', category: 'Mono', weights: '300..700' },
   { name: 'Caveat', category: 'Hand', weights: '400..700' },
@@ -174,8 +178,11 @@ export function previewWebFont(font: WebFont, text?: string): Promise<boolean> {
   if (known) return known;
   const job = (async (): Promise<boolean> => {
     try {
-      const response = await fetch(href, { credentials: 'omit', referrerPolicy: 'no-referrer' });
-      if (!response.ok) return false;
+      const ask = (url: string): Promise<Response> => fetch(url, { credentials: 'omit', referrerPolicy: 'no-referrer' });
+      let response = await ask(href).catch(() => null);
+      // Weights Google will not serve (see WEB_FONTS): the regular face is better than none.
+      if (!response?.ok) response = await ask(webFontCss({ ...font, weights: '400' }, text)).catch(() => null);
+      if (!response?.ok) return false;
       const css = await response.text();
       const faces = css.match(/@font-face\s*{[^}]*}/g) ?? [];
       const added: FontFace[] = [];
