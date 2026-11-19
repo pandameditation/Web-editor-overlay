@@ -5,7 +5,7 @@ import { normalizeClassName } from '../../core/classes.js';
 import { designRuleKey } from '../../core/rules.js';
 import { labelFor } from '../../core/dom.js';
 import { type SeedTarget } from '../../core/seed.js';
-import { TOKEN_GROUP_LABELS, TOKEN_GROUPS, prettifyTokenName } from '../../core/tokens.js';
+import { namesAFont, TOKEN_GROUP_LABELS, TOKEN_GROUPS, prettifyTokenName } from '../../core/tokens.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import type { DesignClass, DesignRule, DesignToken, TokenGroup } from '../../core/types.js';
 import { HeoElement } from '../context.js';
@@ -728,7 +728,9 @@ export class HeoTokensPanel extends HeoElement {
      */
     // A shadow's field draws the shadow at its head and opens the shadow editor, as Styles does.
     const isShadow = token.group === 'shadow';
-    const ownsItsPreview = isColor || isShadow || DIMENSIONAL_GROUPS.has(token.group);
+    // A typography token naming a font gets the font field, its button opening the font picker.
+    const isFont = token.group === 'font' && namesAFont(token.value);
+    const ownsItsPreview = isColor || isShadow || isFont || DIMENSIONAL_GROUPS.has(token.group);
     return html`<div class=${`token${ownsItsPreview ? ' no-preview' : ''}`}>
       ${ownsItsPreview
         ? nothing
@@ -736,8 +738,10 @@ export class HeoTokensPanel extends HeoElement {
       <heo-value-field
         label=${token.name}
         .value=${token.value}
-        .kind=${isColor ? 'color' : isShadow ? 'shadow' : DIMENSIONAL_GROUPS.has(token.group) ? 'length' : 'text'}
-        .property=${isShadow ? 'box-shadow' : ''}
+        data-token-name=${token.name}
+        self-token=${isFont ? token.name : ''}
+        .kind=${isColor ? 'color' : isShadow ? 'shadow' : isFont ? 'font' : DIMENSIONAL_GROUPS.has(token.group) ? 'length' : 'text'}
+        .property=${isShadow ? 'box-shadow' : isFont ? 'font-family' : ''}
         .computed=${isShadow ? token.value : ''}
         .shadowTokens=${isShadow ? shadowSwatches(this.editor).filter((one) => one.value !== `var(--${token.name})`) : []}
         .suggestions=${[]}

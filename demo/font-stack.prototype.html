@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PROTOTYPE — The font stack</title>
+  <!--
+  PROTOTYPE — throwaway, not part of the overlay build. Open the file directly in a browser.
+
+  Question: a font-family value is a stack — a font, then its fallbacks. How should the picker
+  manage it, so choosing the main font and choosing a fallback are the same act, as the
+  background editor's layers are?
+
+  Asked with it:
+    - the fallback adder is an autocomplete like the others: a chevron at its right opens the list;
+    - a fallback is selectable, and selecting it lets its value be changed;
+    - "Your stylesheet" names the stylesheet (site.css), as the class finder does;
+    - the Google note is not sticky: it sits with the Google fonts;
+    - every section of the list (In this page, Typography tokens, System, Google Fonts, Generic
+      families) collapses.
+
+  Variants (bottom bar or ← / →, ?variant=A|B|C), each with scenes (?scene=):
+    A — Stack and list: the stack on top, as background layers; the list below edits the
+        selected slot. "+ Font" adds a slot and selects it.
+    B — Stack of autocompletes: each slot is a field with its chevron; selecting one drops the
+        sectioned list under it. "+ Font" adds an empty field, its list open.
+    C — List first, stack under it: today's layout, the chain made of selectable slots and an
+        autocomplete adder with its chevron; the list above follows the selected slot.
+  Hovering a font previews the stack on the heading, with that font in the selected slot.
+-->
+  <style>
+    :root {
+      --heo-bg: #ffffff; --heo-raised: #ffffff; --heo-sunken: #f4f5f8; --heo-hover: #eff1f5;
+      --heo-text: #1f2330; --heo-text-dim: #4b5263; --heo-text-faint: #6b7385; --heo-line: #e3e6ec; --heo-line-strong: #d3d7e0;
+      --heo-accent: #6366f1; --heo-accent-soft: color-mix(in oklab, var(--heo-accent) 14%, transparent);
+      --heo-accent-line: color-mix(in oklab, var(--heo-accent) 50%, transparent); --heo-danger: #e11d48;
+      --heo-r-sm: 7px; --font: Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+      --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; --paper: #fffdf8; --ink: #1c1917;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; }
+    body { display: grid; grid-template-columns: minmax(0, 1fr) 420px; font-family: var(--font); background: #e9ecf2; color: var(--heo-text); }
+    button { font: inherit; }
+    .stage { padding: 24px 32px 90px; overflow: auto; }
+    .stage h1 { font: 600 11px/1 var(--font); letter-spacing: .08em; text-transform: uppercase; color: #64748b; margin: 0 0 12px; }
+    .scene { display: inline-flex; gap: 2px; padding: 2px; border-radius: 8px; background: #dfe3ea; margin-bottom: 14px; flex-wrap: wrap; }
+    .scene button { all: unset; padding: 5px 10px; border-radius: 6px; font-size: 12px; color: #475569; cursor: pointer; }
+    .scene button[aria-pressed=true] { background: #fff; color: #111827; font-weight: 600; box-shadow: 0 1px 2px rgb(0 0 0 / 10%); }
+    .site { border-radius: 14px; background: var(--paper); padding: 36px 40px; border: 1px solid #e7e2d6; }
+    .site .kicker { font: 600 12px/1 system-ui; letter-spacing: .14em; text-transform: uppercase; color: #a16207; margin-bottom: 12px; }
+    #target { margin: 0 0 14px; font-size: 44px; line-height: 1.05; font-weight: 600; color: var(--ink); outline: 2px solid var(--heo-accent); outline-offset: 6px; }
+    .site p { margin: 0; color: #57534e; font: 16px/1.6 Georgia, serif; max-width: 520px; }
+    .out { margin-top: 16px; background: #111827; color: #e5e7eb; border-radius: 10px; padding: 12px 14px; font: 12px/1.6 var(--mono); }
+    .out b { color: #a5b4fc; font-weight: 500; } .out .c { color: #8b93a5; }
+    .question { margin-top: 12px; color: #475569; font-size: 13px; line-height: 1.55; max-width: 760px; }
+    .question b { color: #1f2330; }
+
+    .panel { position: relative; background: #f6f7f9; border-left: 1px solid var(--heo-line); padding: 14px; font-size: 12px; overflow: auto; }
+    .dialog { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--heo-line-strong); border-radius: 12px; background: var(--heo-bg); box-shadow: 0 22px 48px -14px rgb(15 23 42 / 35%); }
+    .dhead { display: flex; align-items: center; gap: 7px; } .dhead .t { font-weight: 600; } .dhead .s2 { color: var(--heo-text-faint); font: 11px var(--mono); } .dhead .sp { flex: 1; }
+    .x2 { all: unset; display: grid; place-items: center; width: 22px; height: 22px; border-radius: 5px; color: var(--heo-text-faint); cursor: pointer; }
+    .hint { color: var(--heo-text-faint); font-size: 10.5px; line-height: 1.45; margin: 0; }
+    .hint b { color: var(--heo-text-dim); }
+    .btn { all: unset; display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 9px; border-radius: var(--heo-r-sm); border: 1px solid var(--heo-line-strong); font-size: 11.5px; font-weight: 600; cursor: pointer; background: var(--heo-raised); white-space: nowrap; }
+    .btn:hover { background: var(--heo-hover); }
+    .btn.add { border-style: dashed; color: var(--heo-text-dim); }
+    .search { display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px; border: 1px solid var(--heo-line-strong); border-radius: var(--heo-r-sm); background: var(--heo-sunken); color: var(--heo-text-faint); }
+    .search .q { flex: 1; color: var(--heo-text); }
+
+    /* the stack, as the background editor's layers */
+    .stack { display: grid; gap: 3px; }
+    .slot { display: grid; grid-template-columns: 12px 26px minmax(0, 1fr) auto 18px; align-items: center; gap: 7px; height: 36px; padding: 0 6px; border: 1px solid var(--heo-line); border-radius: var(--heo-r-sm); background: var(--heo-raised); cursor: pointer; }
+    .slot:hover { background: var(--heo-hover); }
+    .slot[aria-pressed=true] { border-color: var(--heo-accent); box-shadow: inset 0 0 0 1px var(--heo-accent); background: color-mix(in oklab, var(--heo-accent) 5%, var(--heo-raised)); }
+    .slot .g { color: var(--heo-text-faint); cursor: grab; font-size: 10px; }
+    .slot .aa { display: grid; place-items: center; width: 26px; height: 24px; border-radius: 5px; background: var(--heo-sunken); font-size: 15px; }
+    .slot .nm { overflow: hidden; font-size: 15px; white-space: nowrap; text-overflow: ellipsis; }
+    .slot .role { color: var(--heo-text-faint); font-size: 10px; }
+    .slot .x { all: unset; display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; color: var(--heo-text-faint); cursor: pointer; }
+    .slot .x:hover { color: var(--heo-danger); }
+    .slot.empty .nm { color: var(--heo-text-faint); font-style: italic; font-size: 12px; }
+    .stackfoot { display: flex; align-items: center; gap: 6px; }
+    .stackfoot .sp { flex: 1; }
+
+    /* the list */
+    .list { display: grid; gap: 1px; max-height: 330px; overflow: auto; margin: 0 -4px; padding: 0 4px; }
+    .grp { all: unset; display: flex; align-items: center; gap: 6px; margin: 6px 0 2px; color: var(--heo-text-faint); font-size: 9.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; cursor: pointer; }
+    .grp::after { content: ''; flex: 1; border-top: 1px solid var(--heo-line); }
+    .grp .ch { width: 10px; transition: rotate .15s; }
+    .grp[aria-expanded=false] .ch { rotate: -90deg; }
+    .grp .n { color: var(--heo-text-faint); font-weight: 500; letter-spacing: 0; order: 3; }
+    .fi { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; height: 32px; padding: 0 8px; border: 1px solid transparent; border-radius: var(--heo-r-sm); cursor: pointer; }
+    .fi:hover { background: var(--heo-hover); }
+    .fi[aria-current=true] { border-color: var(--heo-accent-line); }
+    .fi .nm { overflow: hidden; font-size: 17px; line-height: 22px; white-space: nowrap; text-overflow: ellipsis; }
+    .fi .tag { color: var(--heo-text-faint); font: 9.5px var(--mono); }
+    .fi .tag.file { padding: 1px 6px; border: 1px solid var(--heo-line-strong); border-radius: 999px; }
+    .fi .act { display: none; }
+    .fi:hover .act { display: inline-flex; } .fi:hover .tag { display: none; }
+    .fi.off .nm { color: var(--heo-text-dim); }
+    .gnote { margin: 0 8px 4px; color: var(--heo-text-faint); font-size: 10.5px; line-height: 1.45; }
+
+    /* the autocomplete field, as the overlay's value field */
+    .vf { display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 4px 0 8px; border: 1px solid var(--heo-line-strong); border-radius: var(--heo-r-sm); background: var(--heo-raised); }
+    .vf.on { border-color: var(--heo-accent); box-shadow: 0 0 0 3px color-mix(in oklab, var(--heo-accent) 18%, transparent); }
+    .vf .v { flex: 1; min-width: 0; overflow: hidden; font-size: 14px; white-space: nowrap; text-overflow: ellipsis; }
+    .vf .v.ph { color: var(--heo-text-faint); font: 12px var(--font); }
+    .vf .chev { all: unset; display: grid; place-items: center; width: 22px; height: 22px; border-radius: 5px; color: var(--heo-text-faint); cursor: pointer; }
+    .vf .chev:hover { background: var(--heo-hover); color: var(--heo-text); }
+    .dropdown { display: grid; gap: 1px; max-height: 300px; overflow: auto; margin-top: 4px; padding: 4px; border: 1px solid var(--heo-line-strong); border-radius: 9px; background: var(--heo-raised); box-shadow: 0 14px 30px -10px rgb(15 23 42 / 35%); }
+    .brow { display: grid; grid-template-columns: 12px minmax(0, 1fr) 18px; align-items: center; gap: 6px; }
+    .brow .g { color: var(--heo-text-faint); font-size: 10px; }
+    .brow .x { all: unset; display: grid; place-items: center; width: 18px; height: 18px; color: var(--heo-text-faint); cursor: pointer; }
+    .arrow { color: var(--heo-text-faint); font-size: 10px; padding-left: 20px; }
+
+    /* C: chain of slots */
+    .fallbacks { display: grid; gap: 6px; padding: 8px; border: 1px solid var(--heo-line); border-radius: var(--heo-r-sm); background: var(--heo-sunken); }
+    .chain { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; color: var(--heo-text-faint); }
+    .chip { all: unset; display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 4px 0 7px; border: 1px solid var(--heo-line-strong); border-radius: 999px; background: var(--heo-raised); color: var(--heo-text); font-size: 12.5px; cursor: pointer; }
+    .chip[aria-pressed=true] { border-color: var(--heo-accent); background: var(--heo-accent-soft); font-weight: 600; }
+    .chip .g { color: var(--heo-text-faint); font-size: 9px; }
+    .chip .x { color: var(--heo-text-faint); font-size: 10px; padding: 0 3px; }
+    .chip.generic { border-style: dashed; }
+    .chainfield { width: 150px; }
+    .chainfield .vf { height: 24px; border-radius: 999px; }
+    .chainfield .vf .v { font-size: 12px; }
+
+    .switch { position: fixed; left: 50%; bottom: 16px; z-index: 99; translate: -50% 0; display: flex; align-items: center; gap: 4px; padding: 5px; border-radius: 999px; background: #0f172a; color: #e2e8f0; box-shadow: 0 10px 30px -8px rgb(0 0 0 / 45%); font: 12px var(--font); }
+    .switch button { all: unset; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; cursor: pointer; }
+    .switch button:hover { background: #1e293b; }
+    .switch .lab { padding: 0 10px; min-width: 300px; text-align: center; } .switch .lab b { color: #a5b4fc; }
+  </style>
+</head>
+<body>
+  <main class="stage" id="stage"></main>
+  <aside class="panel" id="panel"></aside>
+  <div class="switch" role="toolbar" aria-label="Prototype variants">
+    <button type="button" id="prev" aria-label="Previous variant">←</button>
+    <span class="lab" id="lab"></span>
+    <button type="button" id="next" aria-label="Next variant">→</button>
+  </div>
+  <script>
+    /* ----------------------------------------------------------- the list */
+    const SECTIONS = [
+      { id: 'page', label: 'In this page', items: [
+        { name: 'Fraunces', tag: 'site.css', file: true },
+        { name: 'Lora', tag: 'Embedded', file: true, edit: true },
+        { name: 'Space Mono', tag: 'assets/fonts/', file: true, edit: true },
+      ] },
+      { id: 'tokens', label: 'Typography tokens', items: [
+        { name: '--font-display', face: 'Fraunces, Georgia, serif', tag: 'Fraunces', token: true, edit: true },
+        { name: '--font-body', face: 'Georgia, serif', tag: 'Georgia', token: true, edit: true },
+      ] },
+      { id: 'system', label: 'System · only where installed', items: [
+        { name: 'Georgia', tag: 'This machine' },
+        { name: 'Iowan Old Style', tag: 'This machine' },
+        { name: 'Helvetica Neue', tag: 'This machine' },
+        { name: 'Menlo', tag: 'This machine' },
+      ] },
+      { id: 'google', label: 'Google Fonts', note: 'Previewed from Google. Adding one keeps its files with the page, so visitors never ask Google for it.', items: [
+        { name: 'Playfair Display', tag: 'Serif', add: true },
+        { name: 'DM Serif Display', tag: 'Display', add: true },
+        { name: 'Caveat', tag: 'Hand', add: true },
+      ] },
+      { id: 'generic', label: 'Generic families', fallbackOnly: true, items: [
+        { name: 'serif', label: 'any serif', tag: 'Last resort' },
+        { name: 'sans-serif', label: 'any sans-serif', tag: 'Last resort' },
+        { name: 'monospace', label: 'any monospace', tag: 'Last resort' },
+        { name: 'system-ui', label: 'the system’s UI font', tag: 'Last resort' },
+      ] },
+    ];
+    const NAMES = {
+      A: 'Stack and list (as background layers)',
+      B: 'Stack of autocompletes',
+      C: 'List first, selectable chain under it',
+    };
+    const SCENES = [
+      ['main', 'Main font selected'],
+      ['fallback', 'A fallback selected'],
+      ['adding', '+ Font: a new fallback'],
+      ['collapsed', 'Sections collapsed'],
+    ];
+    const qs = new URLSearchParams(location.search);
+    const s = {
+      variant: qs.get('variant') || 'A',
+      scene: qs.get('scene') || 'main',
+      stack: ['Fraunces', 'Georgia', 'serif'],
+      sel: 0,
+      open: { page: true, tokens: true, system: true, google: true, generic: true },
+      hover: null,
+      typed: '',
+    };
+    function setScene(scene) {
+      s.scene = scene;
+      s.stack = ['Fraunces', 'Georgia', 'serif'];
+      s.sel = 0; s.hover = null; s.typed = '';
+      s.open = { page: true, tokens: true, system: true, google: true, generic: true };
+      if (scene === 'fallback') s.sel = 1;
+      if (scene === 'adding') { s.stack.splice(2, 0, ''); s.sel = 2; }
+      if (scene === 'collapsed') { s.open = { page: true, tokens: false, system: false, google: false, generic: false }; }
+      render();
+    }
+
+    const label = (name) => name.startsWith('--') ? name : ({ serif: 'any serif', 'sans-serif': 'any sans-serif', monospace: 'any monospace', 'system-ui': 'the system’s UI font' }[name] ?? name);
+    const faceOf = (name) => {
+      for (const sec of SECTIONS) for (const it of sec.items) if (it.name === name && it.face) return it.face;
+      return `'${name}', serif`;
+    };
+    function stackText(list) {
+      return list.filter(Boolean).map((one) => /^(serif|sans-serif|monospace|system-ui)$/.test(one) ? one : one.startsWith('--') ? `var(${one})` : /\s/.test(one) ? `"${one}"` : one).join(', ');
+    }
+    function shownStack() {
+      const list = [...s.stack];
+      if (s.hover) list[s.sel] = s.hover;
+      return list;
+    }
+
+    /* list rows; the generic families only for a fallback, and a Google font only adds */
+    function list(opts = {}) {
+      const fallback = s.sel > 0;
+      const current = s.stack[s.sel];
+      const q = s.typed.toLowerCase();
+      return SECTIONS.filter((sec) => !sec.fallbackOnly || fallback).map((sec) => {
+        const items = sec.items.filter((it) => !q || it.name.toLowerCase().includes(q) || (it.label ?? '').includes(q));
+        if (!items.length) return '';
+        const open = s.open[sec.id];
+        return `<button class="grp" data-act="toggle" data-sec="${sec.id}" aria-expanded="${open}"><span class="ch">▾</span>${sec.label}<span class="n">${items.length}</span></button>
+          ${open ? `${sec.note ? `<p class="gnote">${sec.note}</p>` : ''}${items.map((it) => `<div class="fi${it.add ? ' off' : ''}" data-act="${it.add ? 'add' : 'pick'}" data-font="${it.name}" aria-current="${it.name === current}">
+              <span class="nm" style="font-family:${it.face ?? `'${it.name}', ${it.name === 'serif' ? 'serif' : 'serif'}`}">${it.label ?? it.name}</span>
+              <span><span class="tag${it.file && it.tag !== 'Embedded' && !it.tag.endsWith('/') ? ' file' : it.file ? ' file' : ''}">${it.tag}</span>${it.add ? '<span class="btn act">+ Add font</span>' : it.edit ? '<span class="btn act">Edit font</span>' : ''}</span>
+            </div>`).join('')}` : ''}`;
+      }).join('');
+    }
+
+    function slotRole(i) {
+      return i === 0 ? 'Font' : i === s.stack.length - 1 && /^(serif|sans-serif|monospace|system-ui)$/.test(s.stack[i]) ? 'Last resort' : `Fallback ${i}`;
+    }
+
+    /* ---------------------------------------------------------- variant A */
+    function variantA() {
+      const shown = shownStack();
+      return `<div class="dialog">
+        <div class="dhead"><span class="t">Font</span><span class="s2">font-family</span><span class="sp"></span><button class="x2">✕</button></div>
+        <div class="stack" role="listbox" aria-label="The font, then its fallbacks">
+          ${s.stack.map((one, i) => `<div class="slot${one ? '' : ' empty'}" data-act="select" data-i="${i}" aria-pressed="${i === s.sel}">
+            <span class="g">⋮⋮</span>
+            <span class="aa" style="font-family:${one ? faceOf(shown[i]) : 'inherit'}">Aa</span>
+            <span class="nm" style="font-family:${one ? faceOf(shown[i]) : 'inherit'}">${one ? label(shown[i]) : 'Choose a fallback below'}</span>
+            <span class="role">${slotRole(i)}</span>
+            ${i ? '<button class="x" title="Remove">✕</button>' : '<span></span>'}
+          </div>`).join('')}
+        </div>
+        <div class="stackfoot"><button class="btn add" data-act="plus">＋ Font</button><span class="sp"></span><span class="hint">Top first: each one shows where the one above is missing.</span></div>
+        <div class="search">⌕ <span class="q">${s.typed || `<span class="hint" style="font-size:12px">Search fonts for <b>${s.sel ? `fallback ${s.sel}` : 'the font'}</b></span>`}</span></div>
+        <div class="list">${list()}</div>
+      </div>`;
+    }
+
+    /* ---------------------------------------------------------- variant B */
+    function variantB() {
+      const shown = shownStack();
+      return `<div class="dialog">
+        <div class="dhead"><span class="t">Font</span><span class="s2">font-family</span><span class="sp"></span><button class="x2">✕</button></div>
+        <div class="stack">
+          ${s.stack.map((one, i) => `${i ? '<div class="arrow">↓ if it is missing</div>' : ''}<div class="brow">
+            <span class="g">⋮⋮</span>
+            <div>
+              <div class="vf${i === s.sel ? ' on' : ''}" data-act="select" data-i="${i}">
+                <span class="v${one ? '' : ' ph'}" style="font-family:${one ? faceOf(shown[i]) : 'inherit'}">${one ? label(shown[i]) : 'type or pick a fallback'}</span>
+                <span class="hint">${slotRole(i)}</span>
+                <button class="chev" title="Show the fonts">▾</button>
+              </div>
+              ${i === s.sel ? `<div class="dropdown">${list()}</div>` : ''}
+            </div>
+            ${i ? '<button class="x" title="Remove">✕</button>' : '<span></span>'}
+          </div>`).join('')}
+        </div>
+        <div class="stackfoot"><button class="btn add" data-act="plus">＋ Font</button></div>
+      </div>`;
+    }
+
+    /* ---------------------------------------------------------- variant C */
+    function variantC() {
+      const shown = shownStack();
+      return `<div class="dialog">
+        <div class="dhead"><span class="t">Font</span><span class="s2">font-family</span><span class="sp"></span><button class="x2">✕</button></div>
+        <div class="search">⌕ <span class="q"><span class="hint" style="font-size:12px">Search fonts for <b>${s.sel ? label(s.stack[s.sel]) || 'the new fallback' : 'the font'}</b></span></span></div>
+        <div class="list">${list()}</div>
+        <div class="fallbacks">
+          <div class="hint" style="text-transform:uppercase;letter-spacing:.06em;font-weight:600;font-size:9.5px">The stack · pick one to change it</div>
+          <div class="chain">
+            ${s.stack.map((one, i) => `${i ? '→' : ''}${one
+              ? `<button class="chip${/^(serif|sans-serif|monospace|system-ui)$/.test(one) ? ' generic' : ''}" data-act="select" data-i="${i}" aria-pressed="${i === s.sel}" style="font-family:${faceOf(shown[i])}"><span class="g">⋮⋮</span>${label(shown[i])}${i ? '<span class="x">✕</span>' : ''}</button>`
+              : `<span class="chainfield"><span class="vf on"><span class="v ph">+ add</span><button class="chev">▾</button></span></span>`}`).join('')}
+            ${s.stack.every(Boolean) ? '<span class="chainfield"><span class="vf"><span class="v ph">+ add</span><button class="chev" data-act="plus">▾</button></span></span>' : ''}
+          </div>
+          <p class="hint">The list above changes the picked one. What visitors see while ${s.stack[0]} loads, or if it never does.</p>
+        </div>
+      </div>`;
+    }
+
+    const QUESTIONS = {
+      A: '<b>A</b> — the background editor\'s pattern. The stack is the subject, top first: the font, then each fallback, each a row to select, drag or remove. The list below edits the <b>selected</b> slot, so choosing a fallback is the same act as choosing the font. "＋ Font" adds a slot under the selection and selects it. The generic families are a section of the list only while a fallback is selected.',
+      B: '<b>B</b> — every slot is an autocomplete, as other fields are: type in it, or open its list with the chevron. The sectioned list drops under the selected slot only, so the stack stays readable and the dialog grows by one list. "＋ Font" adds an empty field with its list open.',
+      C: '<b>C</b> — closest to today: the list first, the stack under it as a chain. Each chip is selectable and the list above follows it; the adder is an autocomplete with its chevron. Cheapest change, but the list and what it edits are far apart, which is what the round-trip of "pick a chip, scroll up" costs.',
+    };
+
+    function render() {
+      const url = new URL(location.href);
+      url.searchParams.set('variant', s.variant); url.searchParams.set('scene', s.scene);
+      history.replaceState(null, '', url);
+      document.getElementById('lab').innerHTML = `<b>${s.variant}</b> — ${NAMES[s.variant]}`;
+      const shown = shownStack().filter(Boolean);
+      document.getElementById('stage').innerHTML = `<h1>Prototype · the font stack</h1>
+        <div class="scene">${SCENES.map(([id, l]) => `<button data-scene="${id}" aria-pressed="${s.scene === id}">${l}</button>`).join('')}</div>
+        <div class="site"><div class="kicker">Clay Studio · Journal</div>
+          <h2 id="target" style="font-family:${shown.map((one) => one.startsWith('--') ? faceOf(one) : /^(serif|sans-serif|monospace|system-ui)$/.test(one) ? one : `'${one}'`).join(', ')}">Slow pottery for fast mornings</h2>
+          <p>Wheel-thrown stoneware, glazed in small batches.</p></div>
+        <div class="out"><span class="c">/* what is written */</span>\n<b>font-family</b>: ${stackText(s.stack) || '…'};</div>
+        <p class="question">${QUESTIONS[s.variant]}</p>`;
+      document.getElementById('panel').innerHTML = { A: variantA, B: variantB, C: variantC }[s.variant]();
+    }
+
+    addEventListener('click', (event) => {
+      const sc = event.target.closest('[data-scene]');
+      if (sc) { setScene(sc.dataset.scene); return; }
+      const el = event.target.closest('[data-act]');
+      if (!el) return;
+      const act = el.dataset.act;
+      if (act === 'toggle') s.open[el.dataset.sec] = !s.open[el.dataset.sec];
+      if (act === 'select') s.sel = Number(el.dataset.i);
+      if (act === 'pick') { s.stack[s.sel] = el.dataset.font; s.hover = null; }
+      if (act === 'plus') { s.stack.splice(s.sel + 1, 0, ''); s.sel += 1; }
+      render();
+    });
+    addEventListener('mouseover', (event) => {
+      const row = event.target.closest('.fi[data-act="pick"]');
+      const next = row ? row.dataset.font : null;
+      if (next === s.hover) return;
+      s.hover = next; render();
+    });
+    const cycle = (step) => {
+      const keys = ['A', 'B', 'C'];
+      s.variant = keys[(keys.indexOf(s.variant) + step + keys.length) % keys.length];
+      setScene(s.scene);
+    };
+    document.getElementById('prev').onclick = () => cycle(-1);
+    document.getElementById('next').onclick = () => cycle(1);
+    addEventListener('keydown', (e) => { if (e.key === 'ArrowLeft') cycle(-1); if (e.key === 'ArrowRight') cycle(1); });
+    setScene(s.scene);
+    if (qs.has('shot')) setTimeout(() => {
+      const out = Object.assign(document.createElement('pre'), { id: 'out', hidden: true });
+      out.textContent = 'RESULTS:{"ok":true}:END';
+      document.body.append(out);
+    }, 600);
+  </script>
+</body>
+</html>

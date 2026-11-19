@@ -800,6 +800,8 @@ export class HeoValueField extends LitElement {
   @property({ type: String, attribute: 'create-title' }) createTitle = '';
   /** What the list says when nothing matches, where the default wording does not fit. */
   @property({ type: String, attribute: 'empty-text' }) emptyText = '';
+  /** For a font field that is a token's own value: that token, left out of the picker's tokens. */
+  @property({ type: String, attribute: 'self-token' }) selfToken = '';
   @property({ type: String, attribute: 'action-icon' }) actionIcon = 'plus';
   /**
    * Submit without the action button: Enter and a pick from the list submit, and nothing beside
@@ -1290,6 +1292,7 @@ export class HeoValueField extends LitElement {
       ${this.#renderDialogHead('Font', this.property || 'font-family')}
       <heo-font-picker
         .value=${this.#painted ? this.#fontBase : this.value || this.computed}
+        .selfToken=${this.selfToken}
         @font-preview=${(event: CustomEvent<{ value: string | null }>) => {
           event.stopPropagation();
           if (event.detail.value) {

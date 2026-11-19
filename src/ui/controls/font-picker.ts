@@ -16,7 +16,7 @@ import {
 import { catalogueFont, type ProjectFont } from '../../core/project-fonts.js';
 import { maybeEngine } from '../context.js';
 import type { ValueSuggestion } from './value-field.js';
-import { looksFontFamily } from '../../core/tokens.js';
+import { namesAFont } from '../../core/tokens.js';
 import './font-editor.js';
 import { icon } from '../icons.js';
 import { baseStyles } from '../theme.js';
@@ -73,9 +73,7 @@ function fontTokens(): Array<{ name: string; value: string }> {
   const root = getComputedStyle(document.documentElement);
   return engine.tokens.list('font').flatMap((token) => {
     const value = (root.getPropertyValue(`--${token.name}`).trim() || token.value).trim();
-    const words = /^(?:normal|bold|bolder|lighter|italic|oblique|inherit|initial|unset|revert|auto|none)$/i;
-    const family = looksFontFamily(value) || (!/^-?[\d.]/.test(value) && !words.test(value) && parseFamilies(value).length > 0);
-    return family ? [{ name: token.name, value }] : [];
+    return namesAFont(value) ? [{ name: token.name, value }] : [];
   });
 }
 
@@ -358,6 +356,11 @@ export class HeoFontPicker extends LitElement {
 
   /** The `font-family` value as it is: the family, then its fallbacks. */
   @property({ type: String }) value = '';
+  /**
+   * The token this value belongs to, when the picker edits a token's own value (Tokens ›
+   * Typography): left out of the tokens offered, since a token cannot be its own font.
+   */
+  @property({ type: String }) selfToken = '';
   /** The page's font tokens' families, offered with its `@font-face` ones. */
 
   @state() private query = '';
@@ -454,6 +457,7 @@ export class HeoFontPicker extends LitElement {
     const page = take([...carried, ...own]);
     // Every typography token that names a font, as its own row: picking one writes `var(--…)`.
     const tokens = fontTokens()
+      .filter((one) => one.name !== this.selfToken)
       .filter((one) => match(one.name) || match(one.value))
       .map((one): Choice => ({ name: `--${one.name}`, tag: parseFamilies(one.value)[0] ?? '', face: one.value, token: `var(--${one.name})`, pickable: true }));
     const system = take(
@@ -777,7 +781,7 @@ export class HeoFontPicker extends LitElement {
       out.push(item);
     };
     for (const token of fontTokens()) {
-      if (token.name === this.tokenEdit) continue;
+      if (token.name === this.tokenEdit || token.name === this.selfToken) continue;
       add({ value: `var(--${token.name})`, label: `--${token.name}`, hint: token.value, group: 'Typography tokens', token: true });
     }
     const engine = maybeEngine();

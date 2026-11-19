@@ -448,6 +448,42 @@
         };
       });
 
+      await check('tokenField', async () => {
+        // Tokens › Typography: a token naming a font has the font field, and its button opens the picker.
+        field().shadowRoot.querySelector('.dialog-head button[aria-label="Close"]')?.click();
+        await settle(300);
+        engine.setDockTab('tokens');
+        await settle(700);
+        const troot = deep('heo-tokens-panel').shadowRoot;
+        const tokenField = (name) => troot.querySelector(`heo-value-field[data-token-name="${name}"]`);
+        const brand = tokenField('brand-face');
+        const size = tokenField('text-lg');
+        const isFont = brand?.kind === 'font' && size?.kind !== 'font';
+        brand.openShadowEditor();
+        await settle(700);
+        const tp = brand.shadowRoot.querySelector('heo-font-picker')?.shadowRoot;
+        const notItself = Boolean(tp) && !tp.querySelector('.frow[data-row="--brand-face"]') && Boolean(tp.querySelector('.frow[data-row="--display-face"]'));
+        // A font of this machine, so it is there in any browser the suite runs in.
+        const other = tp.querySelector('.frow[data-row="Georgia"] [data-font], .frow[data-row="Arial"] [data-font], .frow[data-row="system-ui"] [data-font]');
+        other.click();
+        await settle(400);
+        const written = engine.tokens.get('brand-face')?.value ?? '';
+        const picked = other.dataset.font;
+        engine.undo();
+        await settle(300);
+        brand.shadowRoot.querySelector('.dialog-head button[aria-label="Close"]')?.click();
+        await settle(200);
+        engine.setDockTab('styles');
+        await settle(500);
+        return {
+          aFontTokenHasTheFontField: isFont,
+          itsButtonOpensThePicker: Boolean(tp),
+          withoutOfferingTheTokenItself: notItself,
+          // The picked family first, the token's other fallbacks kept after it.
+          pickingSetsTheToken: written.startsWith(picked) && /serif$/.test(written),
+        };
+      });
+
       await check('placement', async () => {
         // Too tall for below: beside the field, the left side (the page has room), its middle at the field's.
         field().shadowRoot.querySelector('.dialog-head button[aria-label="Close"]')?.click();

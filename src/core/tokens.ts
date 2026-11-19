@@ -100,6 +100,18 @@ export function looksFontFamily(value: string): boolean {
   return /^(['"]).+\1$/.test(parts[0] ?? '');
 }
 
+/**
+ * Whether a typography token's value names a font: a stack (`looksFontFamily`), or a lone family
+ * name such as `Fraunces`. Not a size, a weight, a line height or a keyword — those are type too.
+ */
+export function namesAFont(value: string): boolean {
+  const v = value.trim();
+  if (looksFontFamily(v)) return true;
+  if (!v || /^var\(/i.test(v) || /^-?[\d.]/.test(v)) return false;
+  if (/^(?:normal|bold|bolder|lighter|italic|oblique|inherit|initial|unset|revert|auto|none|small-caps|uppercase|lowercase|capitalize)$/i.test(v)) return false;
+  return /^[a-z][\w -]*$/i.test(v.split(',')[0].trim());
+}
+
 /** The custom properties a CSS value names with `var()`: `var(--a, var(--b))` names both. */
 function varNames(value: string): string[] {
   return [...value.matchAll(/var\(\s*--([\w-]+)/g)].map((match) => match[1]);
