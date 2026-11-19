@@ -433,7 +433,8 @@
          * The popover follows its row when the dock scrolls. A scroll does not leave the dock's
          * shadow root, so a panel listening only at the window never heard it, and the popover
          * stayed where it was opened while its row moved away. Measured as the 4px placement gap
-         * to the row, above or below it (placement flips to whichever side has room).
+         * to the row, above or below it, or beside it with its middle at the row's when it is too
+         * tall for the space below (place.ts).
          */
         {
           const scroller = deep('heo-dock')?.shadowRoot?.querySelector('.body');
@@ -441,7 +442,14 @@
           const hugs = () => {
             const p = pop()?.getBoundingClientRect();
             const r = padRowNow()?.getBoundingClientRect();
-            return Boolean(p && r) && (Math.abs(p.top - r.bottom - 4) <= 1 || Math.abs(r.top - p.bottom - 4) <= 1);
+            if (!p || !r) return false;
+            // Above or below it, 4px off; or, too tall for below, beside it with its middle at the row's.
+            const stacked = Math.abs(p.top - r.bottom - 4) <= 1 || Math.abs(r.top - p.bottom - 4) <= 1;
+            const middle = (box) => box.top + box.height / 2;
+            const clamped = p.top <= 9 || p.bottom >= innerHeight - 9;
+            const beside = (Math.abs(r.left - p.right - 4) <= 1 || Math.abs(p.left - (r.left + 4)) <= 1 || p.right <= r.left || p.left >= r.right) &&
+              (clamped || Math.abs(middle(p) - middle(r)) <= 2);
+            return stacked || beside;
           };
           const start = scroller?.scrollTop ?? 0;
           const rowTop = () => padRowNow()?.getBoundingClientRect().top ?? NaN;

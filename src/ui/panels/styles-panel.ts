@@ -727,7 +727,7 @@ export class HeoStylesPanel extends HeoElement {
       if (!add) this.ui = { ...this.ui, finderOpen: false };
       // Across the header's line rather than from the "+": the "+" sits near the panel's right
       // edge, and a layer starting there ran out past it.
-      else placeLayer(root.querySelector<HTMLElement>('.finderpop'), root.querySelector('.ident .line') ?? add, { gap: 6, source: add });
+      else placeLayer(root.querySelector<HTMLElement>('.finderpop'), root.querySelector('.ident .line') ?? add, { gap: 6, source: add, beside: false });
       /*
        * Placed again whenever the field resizes: its list is drawn inside it, a frame after this
        * placement and again with every keystroke, and a layer sized before that is capped at the
@@ -746,7 +746,7 @@ export class HeoStylesPanel extends HeoElement {
     if (cardPop) {
       const anchor = root.querySelector<HTMLElement>(cardPop.anchor);
       if (!anchor) this.ui = { ...this.ui, cardPop: null };
-      else placeLayer(root.querySelector<HTMLElement>('.cardpop'), anchor, { ...this.#cardPopFrame(), source: anchor });
+      else placeLayer(root.querySelector<HTMLElement>('.cardpop'), anchor, { ...this.#cardPopFrame(), source: anchor, beside: false });
     }
     const menu = this.ui.menu;
     if (menu) {

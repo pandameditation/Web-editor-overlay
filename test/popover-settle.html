@@ -77,8 +77,20 @@
           const popup = field.shadowRoot.querySelector('.popup');
           if (!popup) return 'no popup';
           let writes = 0;
+          /*
+           * Only a write the popover made to itself. The headless window is still settling its
+           * height in these first seconds, and a popover placed beside its field (place.ts) is
+           * clamped to the viewport's height, so it rightly moves when that changes: a reply to a
+           * resize, not a loop. A loop writes again with nothing outside having moved.
+           */
+          let viewport = `${innerWidth}x${innerHeight}`;
           const observer = new MutationObserver((records) => {
-            for (const record of records) if (record.attributeName === 'style') writes += 1;
+            for (const record of records) {
+              if (record.attributeName !== 'style') continue;
+              const now = `${innerWidth}x${innerHeight}`;
+              if (now === viewport) writes += 1;
+              viewport = now;
+            }
           });
           observer.observe(popup, { attributes: true, attributeFilter: ['style'] });
           await wait(2000);

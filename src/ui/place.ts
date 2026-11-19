@@ -46,6 +46,11 @@ export interface PlaceRequest {
   gap?: number;
   /** Distance kept from every viewport edge. */
   margin?: number;
+  /**
+   * Whether a popover too tall for below may go beside its anchor (the default) rather than above.
+   * Off for the panel's own layers, which are drawn over the panel's column and belong in it.
+   */
+  beside?: boolean;
 }
 
 export interface Placement {
@@ -54,7 +59,7 @@ export interface Placement {
   width: number;
   /** The tallest it may be here. Callers must apply it, or the guarantee does not hold. */
   maxHeight: number;
-  side: 'above' | 'below';
+  side: 'above' | 'below' | 'left' | 'right';
 }
 
 /**
@@ -97,6 +102,10 @@ export function placeAnchored(request: PlaceRequest): Placement {
    * and preferred below on a tie, so a popover that would have fitted above was squeezed into a
    * smaller space below.
    */
+  if (below < wanted && request.beside !== false) {
+    const beside = placeBeside(anchor, width, wanted, gap, margin);
+    if (beside) return beside;
+  }
   const side: 'above' | 'below' = below >= wanted || below >= above ? 'below' : 'above';
   const room = side === 'below' ? below : above;
   const maxHeight = Math.max(LEAST_HEIGHT, Math.min(wanted, Math.max(room, LEAST_HEIGHT)));
@@ -111,6 +120,35 @@ export function placeAnchored(request: PlaceRequest): Placement {
     left: Math.round(left),
     width: Math.round(width),
     maxHeight: Math.round(maxHeight),
+    side,
+  };
+}
+
+/**
+ * Beside the anchor, its middle level with the anchor's: the left side, or the right when the left
+ * has no room for it. For a popover too tall for the space below.
+ *
+ * Above was the old answer, and it sent the eye to the top of the screen — away from the field the
+ * user was looking at, and above everything they had been reading down to it. Beside keeps the
+ * popover where they are already looking: the panel's fields sit at the right of the screen, so
+ * the page to their left is usually free. Null when neither side has the width; above and below
+ * decide then, as before.
+ */
+function placeBeside(anchor: DOMRect, width: number, wanted: number, gap: number, margin: number): Placement | null {
+  const roomLeft = anchor.left - gap - margin;
+  const roomRight = innerWidth - anchor.right - gap - margin;
+  const side = roomLeft >= width ? 'left' : roomRight >= width ? 'right' : null;
+  if (!side) return null;
+  const tallest = Math.max(LEAST_HEIGHT, innerHeight - margin * 2);
+  const height = Math.min(wanted, tallest);
+  const middle = anchor.top + anchor.height / 2;
+  const top = clamp(middle - height / 2, margin, Math.max(margin, innerHeight - height - margin));
+  const left = side === 'left' ? anchor.left - gap - width : anchor.right + gap;
+  return {
+    top: Math.round(top),
+    left: Math.round(left),
+    width: Math.round(width),
+    maxHeight: Math.round(height),
     side,
   };
 }

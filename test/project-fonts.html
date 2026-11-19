@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="utf-8">
   <title>Project fonts</title>
@@ -12,17 +13,32 @@
     Google is stubbed: the suite runs offline, and the test is of what is done with the answer.
   -->
   <style id="site">
+    :root {
+      --brand-face: "House Serif", Georgia, serif;
+      --display-face: Fraunces;
+      --text-lg: 20px;
+    }
+    .kicker { font-family: var(--display-face); }
     .text-heading-1 {
       font-family: Georgia, serif;
       font-size: 36px;
       --heo-text-style: "Heading 1";
     }
+
     /* The page's own font: not the editor's, never adopted. */
-    @font-face { font-family: "House Serif"; src: url("house.woff2") format("woff2"); }
+    @font-face {
+      font-family: "House Serif";
+      src: url("house.woff2") format("woff2");
+    }
+
     /* A catalogue family the author hosts elsewhere: still theirs. */
-    @font-face { font-family: "Inter"; src: url("https://cdn.example.com/inter.woff2") format("woff2"); }
+    @font-face {
+      font-family: "Inter";
+      src: url("https://cdn.example.com/inter.woff2") format("woff2");
+    }
   </style>
 </head>
+
 <body>
   <h2 id="h" class="text-heading-1">Slow pottery for fast mornings</h2>
   <p id="p">Wheel-thrown stoneware.</p>
@@ -111,6 +127,11 @@
       const picker = () => field()?.shadowRoot.querySelector('heo-font-picker')?.shadowRoot;
       const editor = () => picker()?.querySelector('heo-font-editor')?.shadowRoot;
       const row = (name) => picker()?.querySelector(`.frow[data-row="${name}"]`);
+      const groupOfEl = (el) => {
+        let at = el?.previousElementSibling;
+        while (at && !at.classList.contains('group')) at = at.previousElementSibling;
+        return flat(at);
+      };
       const groupOf = (name) => {
         let at = row(name)?.previousElementSibling;
         while (at && !at.classList.contains('group')) at = at.previousElementSibling;
@@ -310,9 +331,9 @@
           read: async () => null,
           write: async (path, text) => { written.set(path, new TextEncoder().encode(text)); },
           writeBytes: async (path, bytes) => { written.set(path, new Uint8Array(bytes)); },
-          remove: async () => {},
+          remove: async () => { },
           ensureWritable: async () => true,
-          release: async () => {},
+          release: async () => { },
         }, { quiet: true });
         const error = await engine.saveProjectFont({ family: 'Lora', styles: ['upright'], subsets: ['latin'], place: 'stored' });
         const font = engine.fonts.get('Lora');
@@ -322,6 +343,75 @@
           storedInTheFontsFolder: font?.place === 'stored' && font.faces.length === 1 && font.faces[0].src === 'assets/fonts/lora-upright-latin.woff2',
           theFileIsWritten: written.has('assets/fonts/lora-upright-latin.woff2') && written.get('assets/fonts/lora-upright-latin.woff2').length === 8,
           theRuleLinksIt: /url\("assets\/fonts\/lora-upright-latin\.woff2"\)/.test(css),
+        };
+      });
+
+      await check('storeChoice', async () => {
+        // A project is connected (the group above): storing is offered, picked by default, and can
+        // be picked again after Embed. A null "nothing in the way" read as a blocker before.
+        field().openShadowEditor();
+        await settle(700);
+        row('Lora').querySelector('[data-font-action]').click();
+        await until(() => editor()?.querySelector('[data-place]'));
+        const ed = editor();
+        const stored = () => ed.querySelector('[data-place="stored"]');
+        const offered = stored().getAttribute('aria-disabled') === 'false' && !/folder connected/.test(flat(stored()));
+        const pickedByDefault = stored().getAttribute('aria-checked') === 'true';
+        ed.querySelector('[data-place="embedded"]').click();
+        await settle(100);
+        const switched = ed.querySelector('[data-place="embedded"]').getAttribute('aria-checked') === 'true';
+        stored().click();
+        await settle(100);
+        const back = stored().getAttribute('aria-checked') === 'true';
+        ed.querySelector('.x').click();
+        await settle(200);
+        return { storingIsOffered: offered, pickedByDefault, embedCanBePicked: switched, andStoringAgain: back };
+      });
+
+      await check('typographyTokens', async () => {
+        const p = picker();
+        const rows = Array.from(p.querySelectorAll('.frow')).filter((one) => groupOfEl(one) === 'Typography tokens').map((one) => one.dataset.row);
+        const brand = p.querySelector('.frow[data-row="--brand-face"] [data-font]');
+        const before = h.style.fontFamily;
+        brand?.click();
+        await settle(400);
+        const written = field().value;
+        engine.undo();
+        await settle(300);
+        void before;
+        return {
+          // By value: a font stack.
+          aFamilyValuedTokenIsTypography: engine.tokens.get('brand-face')?.group === 'font',
+          // By use: a single unquoted word, which only its use in font-family gives away.
+          aTokenUsedForAFontIsTypography: engine.tokens.get('display-face')?.group === 'font',
+          bothAreOfferedInThePicker: rows.includes('--brand-face') && rows.includes('--display-face'),
+          butNotASizeToken: !rows.includes('--text-lg'),
+          pickingOneWritesTheToken: written === 'var(--brand-face)',
+        };
+      });
+
+      await check('placement', async () => {
+        // Too tall for below: beside the field, the left side (the page has room), its middle at the field's.
+        field().shadowRoot.querySelector('.dialog-head button[aria-label="Close"]')?.click();
+        await settle(300);
+        const scroller = deep('heo-dock')?.shadowRoot?.querySelector('.body');
+        const target = field();
+        target.scrollIntoView({ block: 'end' });
+        await settle(300);
+        const anchor = target.getBoundingClientRect();
+        target.openShadowEditor();
+        await settle(800);
+        const box = target.shadowRoot.querySelector('.popup.dialog').getBoundingClientRect();
+        const middle = (one) => one.top + one.height / 2;
+        const clamped = box.bottom >= innerHeight - 9 || box.top <= 9;
+        target.shadowRoot.querySelector('.dialog-head button[aria-label="Close"]')?.click();
+        await settle(200);
+        if (scroller) scroller.scrollTop = 0;
+        return {
+          theFieldIsLow: innerHeight - anchor.bottom < 300,
+          onItsLeft: box.right <= anchor.left && anchor.left - box.right <= 8,
+          levelWithIt: clamped || Math.abs(middle(box) - middle(anchor)) <= 2,
+          onScreen: box.top >= 0 && box.bottom <= innerHeight,
         };
       });
 
@@ -335,4 +425,5 @@
     })();
   </script>
 </body>
+
 </html>

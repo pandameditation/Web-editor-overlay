@@ -24,7 +24,6 @@ import { firstFocusable } from '../../core/modal.js';
 import './shadow-editor.js';
 import './filter-editor.js';
 import './font-picker.js';
-import { parseFamilies } from '../../core/fonts.js';
 import { icon } from '../icons.js';
 import { baseStyles, swatchStyle } from '../theme.js';
 
@@ -1278,10 +1277,6 @@ export class HeoValueField extends LitElement {
 
   /** The font picker, in the shadow editor's dialog. Hovering a font previews it; leaving puts the value back. */
   #renderFontPicker(): TemplateResult {
-    const families = this.suggestions
-      .filter((item) => item.token && item.hint)
-      .map((item) => parseFamilies(item.hint ?? '')[0])
-      .filter((one): one is string => Boolean(one));
     return html`<div
       class="popup picker shadowing dialog"
       popover="manual"
@@ -1295,7 +1290,6 @@ export class HeoValueField extends LitElement {
       ${this.#renderDialogHead('Font', this.property || 'font-family')}
       <heo-font-picker
         .value=${this.#painted ? this.#fontBase : this.value || this.computed}
-        .tokenFamilies=${families}
         @font-preview=${(event: CustomEvent<{ value: string | null }>) => {
           event.stopPropagation();
           if (event.detail.value) {

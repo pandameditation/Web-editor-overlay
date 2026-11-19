@@ -61,6 +61,8 @@ export function inferGroup(name: string, value: string): TokenGroup {
   if (looksShadow) return 'shadow';
   if (looksColor) return 'color';
   if (looksTime) return 'motion';
+  // A font stack, whatever the name: `"Fraunces", Georgia, serif` is a family, not "other".
+  if (looksFontFamily(v)) return 'font';
 
   // Unambiguous name signals, whatever the value looks like.
   if (/(?:radius|rounded|corner)/.test(n)) return 'radius';
@@ -81,6 +83,47 @@ export function inferGroup(name: string, value: string): TokenGroup {
   if (!looksSingleLength && isColorValue(v)) return 'color';
   if (looksSingleLength) return 'size';
   return 'other';
+}
+
+const GENERIC_FAMILY = /^(?:serif|sans-serif|monospace|cursive|fantasy|system-ui|ui-serif|ui-sans-serif|ui-monospace|ui-rounded|math|emoji|fangsong)$/i;
+
+/**
+ * Whether a value reads as a `font-family` stack: a generic family at its end, or a quoted name
+ * first. Not a lone unquoted word — `bold`, `auto` and `inherit` are words too.
+ */
+export function looksFontFamily(value: string): boolean {
+  const v = value.trim();
+  if (!v || /^var\(/i.test(v) || /^-?[\d.]/.test(v)) return false;
+  const parts = v.split(',').map((one) => one.trim()).filter(Boolean);
+  const last = parts.at(-1) ?? '';
+  if (GENERIC_FAMILY.test(last) && (parts.length > 1 || /^(?:system-ui|ui-)/i.test(last))) return true;
+  return /^(['"]).+\1$/.test(parts[0] ?? '');
+}
+
+/** The custom properties a CSS value names with `var()`: `var(--a, var(--b))` names both. */
+function varNames(value: string): string[] {
+  return [...value.matchAll(/var\(\s*--([\w-]+)/g)].map((match) => match[1]);
+}
+
+/**
+ * The tokens a page uses to set a font, read off every `font-family` (and `font`) it declares.
+ * What makes `--brand-face: Fraunces` a typography token although nothing in it says so.
+ */
+function collectFontUsage(container: CSSStyleSheet | CSSGroupingRule, out: Set<string>): void {
+  let list: CSSRuleList;
+  try {
+    list = container.cssRules;
+  } catch {
+    return;
+  }
+  for (const rule of Array.from(list)) {
+    if (rule instanceof CSSStyleRule) {
+      for (const property of ['font-family', 'font']) {
+        for (const name of varNames(rule.style.getPropertyValue(property))) out.add(name);
+      }
+    }
+    if ('cssRules' in rule) collectFontUsage(rule as CSSGroupingRule, out);
+  }
 }
 
 /** `brand-blue-500` becomes `Brand blue 500`. */
@@ -122,6 +165,16 @@ export class TokenRegistry {
     for (const sheet of document.adoptedStyleSheets ?? []) {
       collectTokens(sheet, found, this.#origins);
     }
+    // A token the page sets a font with is a typography token, whatever its value looked like.
+    const fonts = new Set<string>();
+    for (const sheet of Array.from(document.styleSheets)) {
+      if (sheet.ownerNode instanceof Element && sheet.ownerNode.hasAttribute('data-heo-internal')) continue;
+      collectFontUsage(sheet, fonts);
+    }
+    for (const el of Array.from(document.querySelectorAll<HTMLElement>('[style*="font"]'))) {
+      for (const name of varNames(el.style.fontFamily || el.style.getPropertyValue('font'))) fonts.add(name);
+    }
+    for (const token of found) if (fonts.has(token.name)) token.group = 'font';
     this.#adopt(found);
   }
 

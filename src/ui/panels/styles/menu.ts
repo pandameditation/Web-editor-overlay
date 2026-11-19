@@ -140,7 +140,7 @@ export function menuKeydown(event: KeyboardEvent, onClose: () => void): void {
 export function placeLayer(
   layer: HTMLElement | null,
   anchor: Element | null,
-  options: { minWidth?: number; gap?: number; left?: number; source?: HTMLElement | null } = {},
+  options: { minWidth?: number; gap?: number; left?: number; source?: HTMLElement | null; beside?: boolean } = {},
 ): void {
   if (!layer || !anchor) return;
   showLayer(layer, options.source ?? null);
@@ -157,6 +157,7 @@ export function placeLayer(
     content: layer.scrollHeight,
     minWidth: options.minWidth ?? 220,
     gap: options.gap ?? 4,
+    beside: options.beside,
   });
   if (layer.getAttribute('style') !== next) layer.setAttribute('style', next);
 }

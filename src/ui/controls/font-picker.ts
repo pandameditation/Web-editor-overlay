@@ -15,6 +15,7 @@ import {
 } from '../../core/fonts.js';
 import { catalogueFont, type ProjectFont } from '../../core/project-fonts.js';
 import { maybeEngine } from '../context.js';
+import { looksFontFamily } from '../../core/tokens.js';
 import './font-editor.js';
 import { icon } from '../icons.js';
 import { baseStyles } from '../theme.js';
@@ -29,6 +30,10 @@ interface Choice {
   web?: WebFont;
   /** One the page carries (added here): it has "Edit font". */
   project?: ProjectFont;
+  /** A token's value: what its row is drawn in, rather than its name. */
+  face?: string;
+  /** For a token, what picking it writes: `var(--font-display)`. */
+  token?: string;
   /**
    * Whether clicking picks it. Only a font the page has, or one of this machine's: a Google font
    * is added first ("Add font"), so the page is never saved with a font it does not carry.
@@ -56,6 +61,22 @@ interface Choice {
  * live, or to remove it. The engine is reached directly, so every host of a font field — the
  * Styles panel, Tokens' text styles — gets the same picker.
  */
+/**
+ * The typography tokens that name a font: their value, resolved through any `var()`, reads as a
+ * family stack. Not the others in the group — `--text-lg: 20px` and `--leading: 1.4` are type too.
+ */
+function fontTokens(): Array<{ name: string; value: string }> {
+  const engine = maybeEngine();
+  if (!engine) return [];
+  const root = getComputedStyle(document.documentElement);
+  return engine.tokens.list('font').flatMap((token) => {
+    const value = (root.getPropertyValue(`--${token.name}`).trim() || token.value).trim();
+    const words = /^(?:normal|bold|bolder|lighter|italic|oblique|inherit|initial|unset|revert|auto|none)$/i;
+    const family = looksFontFamily(value) || (!/^-?[\d.]/.test(value) && !words.test(value) && parseFamilies(value).length > 0);
+    return family ? [{ name: token.name, value }] : [];
+  });
+}
+
 @customElement('heo-font-picker')
 export class HeoFontPicker extends LitElement {
   static override styles = [
@@ -323,7 +344,6 @@ export class HeoFontPicker extends LitElement {
   /** The `font-family` value as it is: the family, then its fallbacks. */
   @property({ type: String }) value = '';
   /** The page's font tokens' families, offered with its `@font-face` ones. */
-  @property({ attribute: false }) tokenFamilies: readonly string[] = [];
 
   @state() private query = '';
   @state() private web = (() => {
@@ -372,7 +392,8 @@ export class HeoFontPicker extends LitElement {
   #list: Array<{ group: string; items: Choice[] }> = [];
 
   #choices(): Array<{ group: string; items: Choice[] }> {
-    const key = `${this.query}|${this.web}|${this.tokenFamilies.join(',')}|${this.fontsRevision}`;
+    // The tokens by content, not by registry revision: a preview bumps that on every hover.
+    const key = `${this.query}|${this.web}|${fontTokens().map((one) => `${one.name}=${one.value}`).join(';')}|${this.fontsRevision}`;
     if (key === this.#listKey) return this.#list;
     this.#listKey = key;
     this.#list = this.#readChoices();
@@ -402,10 +423,11 @@ export class HeoFontPicker extends LitElement {
     const own = pageFontFamilies()
       .filter((name) => name && !isGenericFamily(name))
       .map((name): Choice => ({ name, tag: 'Your stylesheet', pickable: true }));
-    const tokens = this.tokenFamilies
-      .filter((name) => name && !isGenericFamily(name))
-      .map((name): Choice => ({ name, tag: 'Font token', pickable: true }));
-    const page = take([...carried, ...own, ...tokens]);
+    const page = take([...carried, ...own]);
+    // Every typography token that names a font, as its own row: picking one writes `var(--…)`.
+    const tokens = fontTokens()
+      .filter((one) => match(one.name) || match(one.value))
+      .map((one): Choice => ({ name: `--${one.name}`, tag: parseFamilies(one.value)[0] ?? '', face: one.value, token: `var(--${one.name})`, pickable: true }));
     const system = take(
       SYSTEM_FONTS.filter((one) => hasLocalFont(one.name)).map((one): Choice => ({ name: one.name, tag: 'This machine', category: one.category, pickable: true })),
     );
@@ -414,6 +436,7 @@ export class HeoFontPicker extends LitElement {
       : [];
     return [
       { group: 'In this page', items: page },
+      { group: 'Typography tokens', items: tokens },
       { group: 'System · only where installed', items: system },
       { group: 'Google Fonts', items: web },
     ].filter((one) => one.items.length);
@@ -446,7 +469,7 @@ export class HeoFontPicker extends LitElement {
     if (name === this.#hovered) return;
     this.#hovered = name;
     if (choice?.web) void previewWebFont(choice.web);
-    this.#emit('font-preview', { value: choice ? this.#stack(choice.name, choice.web) : null });
+    this.#emit('font-preview', { value: choice ? (choice.token ?? this.#stack(choice.name, choice.web)) : null });
   }
 
   #pointer: { x: number; y: number } | null = null;
@@ -470,7 +493,7 @@ export class HeoFontPicker extends LitElement {
       return;
     }
     this.#hovered = null;
-    this.#emit('font-change', { value: this.#stack(choice.name, choice.web) });
+    this.#emit('font-change', { value: choice.token ?? this.#stack(choice.name, choice.web) });
   }
 
   /* ---------------------------------------------------------------------- */
@@ -603,8 +626,8 @@ export class HeoFontPicker extends LitElement {
                 role="option"
                 data-font=${choice.name}
                 data-pickable=${choice.pickable ? 'true' : 'false'}
-                aria-current=${choice.name.toLowerCase() === current ? 'true' : 'false'}
-                aria-selected=${choice.name.toLowerCase() === current ? 'true' : 'false'}
+                aria-current=${(choice.token ?? choice.name).toLowerCase() === current ? 'true' : 'false'}
+                aria-selected=${(choice.token ?? choice.name).toLowerCase() === current ? 'true' : 'false'}
                 title=${choice.pickable
                   ? `${choice.name}: hover to see it on the element, click to use it`
                   : `${choice.name}: hover to see it on the element; add it to the page to use it`}
@@ -612,7 +635,7 @@ export class HeoFontPicker extends LitElement {
                 @blur=${() => this.#preview(null)}
                 @click=${() => this.#pick(choice)}
               >
-                <span class="nm" style=${`font-family:${formatFamilies([choice.name, choice.category ? GENERIC_FOR[choice.category] : 'sans-serif'])}`}>${choice.name}</span>
+                <span class="nm" style=${`font-family:${choice.face ? choice.face.replace(/[;{}<>]/g, '') : formatFamilies([choice.name, choice.category ? GENERIC_FOR[choice.category] : 'sans-serif'])}`}>${choice.name}</span>
                 <span class=${choice.project?.place === 'embedded' ? 'tag pill emb' : choice.project ? 'tag pill' : 'tag'}>${choice.tag}</span>
               </button>
               ${action
@@ -661,7 +684,7 @@ export class HeoFontPicker extends LitElement {
               }
             }}>Show web fonts</button>
           </div>`}
-      ${this.#families.length ? this.#renderFallbacks() : nothing}
+      ${this.#families.length && !/^var\(/i.test(this.#families[0]) ? this.#renderFallbacks() : nothing}
       </div>
     `;
   }

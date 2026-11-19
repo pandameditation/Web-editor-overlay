@@ -305,7 +305,8 @@ export class HeoFontEditor extends LitElement {
     const offer = draft.offer || null;
     const styles = offer?.styles ?? draft.styles;
     const subsets = OFFERED_SUBSETS.filter((one) => (offer?.subsets ?? draft.subsets).includes(one));
-    const blocker = engine?.storeFilesBlocker() ?? 'No editor.';
+    // Not `engine?.storeFilesBlocker() ?? …`: null is its "nothing in the way", and that read as a blocker.
+    const blocker = engine ? engine.storeFilesBlocker() : 'No editor.';
     const folder = engine?.fileFolders.font ?? 'assets/fonts';
     const existing = engine?.fonts.get(draft.family);
     const changed = draft.mode === 'add' || !existing ||
