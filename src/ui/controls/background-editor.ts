@@ -170,6 +170,15 @@ export class HeoBackgroundEditor extends LitElement {
         height: 26px;
         border-radius: 5px;
       }
+      button.thumb {
+        padding: 0;
+        border: 0;
+        cursor: pointer;
+      }
+      button.thumb:focus-visible {
+        outline: 2px solid var(--heo-accent);
+        outline-offset: 1px;
+      }
       .name {
         display: grid;
         gap: 1px;
@@ -574,6 +583,16 @@ export class HeoBackgroundEditor extends LitElement {
   #dragFrom: { list: 'layer' | 'stop'; index: number } | null = null;
   /** The host's value last taken, as text: the host hands a new object on every render. */
   #taken = '';
+  /**
+   * The field being typed into, and what it held before the first keystroke.
+   *
+   * Every field here is drawn from the draft, and a keystroke's preview changes the draft, so the
+   * field was handed its own preview back as its value. Leaving it then found nothing to commit
+   * (the text equalled the value) and announced a revert instead, which threw the edit away: type a
+   * stop's colour, Tab out, and it snapped back. Until it commits or reverts, the field keeps being
+   * told the value it started from, as every other host's fields are.
+   */
+  #typing: { key: string; value: string } | null = null;
 
   override willUpdate(changed: Map<string, unknown>): void {
     // A new answer from the host, and not the same one again: a preview re-renders the host, which
@@ -604,7 +623,13 @@ export class HeoBackgroundEditor extends LitElement {
         ${this.draft.layers.map((one, index) => this.#renderLayerRow(one, index))}
         <div class="base">
           <span></span>
-          <span class="thumb checker"><i style=${this.draft.color ? `background:${this.draft.color}` : ''}></i></span>
+          <button
+            type="button"
+            class="thumb checker"
+            aria-label="Pick background color"
+            title="Pick background color"
+            @click=${() => (this.renderRoot.querySelector('.base heo-value-field[data-property="background-color"]') as HeoValueField | null)?.pickColor()}
+          ><i style=${this.draft.color ? `background:${this.draft.color}` : ''}></i></button>
           <b>Color</b>
           ${this.#field('background-color', 'color', this.draft.color, this.computedColor, 'Background color', (value, commit) =>
       this.#change((next) => { next.color = value; }, commit))}
@@ -1133,21 +1158,29 @@ export class HeoBackgroundEditor extends LitElement {
     stop = '',
   ): TemplateResult {
     const spec = this.fields[property] ?? (kind === 'color' ? this.fields['background-color'] : undefined);
+    const key = `${this.selected}\u0000${label}`;
+    const typing = this.#typing?.key === key ? this.#typing : null;
+    const settled = (): void => { if (this.#typing?.key === key) this.#typing = null; };
     return html`<heo-value-field
       data-property=${property}
       data-stop=${stop || nothing}
       field-label=${label}
-      .value=${value}
+      .value=${typing ? typing.value : value}
       .kind=${kind}
       .property=${property.startsWith('background-') ? property : kind === 'color' ? 'background-color' : ''}
       .computed=${computed}
       .suggestions=${spec?.suggestions ?? []}
       .head=${spec?.head ?? null}
       placeholder=${placeholder || computed}
-      @value-input=${(event: CustomEvent<{ value: string }>) => { event.stopPropagation(); write(event.detail.value, false); }}
-      @value-change=${(event: CustomEvent<{ value: string }>) => { event.stopPropagation(); write(event.detail.value, true); }}
+      @value-input=${(event: CustomEvent<{ value: string }>) => {
+        event.stopPropagation();
+        if (!typing) this.#typing = { key, value };
+        write(event.detail.value, false);
+      }}
+      @value-change=${(event: CustomEvent<{ value: string }>) => { event.stopPropagation(); settled(); write(event.detail.value, true); }}
       @value-revert=${(event: Event) => {
         event.stopPropagation();
+        settled();
         this.#reset();
         this.dispatchEvent(new CustomEvent('background-revert', { bubbles: true, composed: true }));
       }}

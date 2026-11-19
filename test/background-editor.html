@@ -25,6 +25,7 @@
   <p id="c" class="c">A rule's colour</p>
   <p id="d" style="background: linear-gradient(90deg, red 0%, blue 100%); background-size: 50% auto">A shorthand and a
     longhand</p>
+  <p id="e" style="background: linear-gradient(90deg, #ff0000 0%, #0000ff 100%) #00ff00">Typed into</p>
   <pre id="progress">start</pre>
   <pre id="out">pending</pre>
   <script src="../dist/html-editor-overlay.iife.js"></script>
@@ -364,6 +365,56 @@
           await settle(300);
           // The attribute exactly as it was, unterminated last declaration and all.
           results.fold.undoPutsBothBack = style(d) === 'background: linear-gradient(90deg, red 0%, blue 100%); background-size: 50% auto';
+        }
+
+        progress.textContent = 'typing';
+        {
+          const e = await select('e');
+          await apart();
+          const entries = engine.history.size;
+          const stopField = (k) => shadow().querySelectorAll('heo-value-field[data-property="gradient-stop"]')[k];
+          const away = async () => {
+            const head = shadow().querySelector('.detail-head');
+            await into(head);
+            await mouse(point('down', head, 0.02, 0.5), point('up', head, 0.02, 0.5));
+            await settle(300);
+          };
+          const typeInto = async (k, text) => {
+            const input = stopField(k).shadowRoot.querySelector('input');
+            await into(input);
+            await mouse(point('down', input, 0.3, 0.5), point('up', input, 0.3, 0.5));
+            input.value = text;
+            input.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true }));
+            await settle(300);
+          };
+          await typeInto(0, '#123456');
+          const previewed = style(e);
+          await away();
+          const kept = style(e);
+          const committed = engine.history.size === entries + 1;
+          await apart();
+          await typeInto(1, '#abcdef');
+          await away();
+          // The field was handed its own preview back as its value, so leaving it found nothing to
+          // commit and reverted instead: the typed colour snapped back, the earlier one with it.
+          results.typing = {
+            theTypedColourIsPreviewed: previewed === 'background: linear-gradient(90deg, #123456 0%, #0000ff 100%) #00ff00;',
+            leavingTheFieldKeepsIt: kept === previewed,
+            andCommitsIt: committed,
+            aSecondEditKeepsBoth: style(e) === 'background: linear-gradient(90deg, #123456 0%, #abcdef 100%) #00ff00;',
+            theFieldShowsTheCommittedValue: stopField(1).value === '#abcdef',
+          };
+          // The colour's own swatch is the obvious thing to press, so it opens the picker too.
+          // The real picker, not the recording stub the stops group installed.
+          proto.pickColor = pickColor;
+          const swatch = shadow().querySelector('.base button.thumb');
+          await into(swatch);
+          await mouse(point('down', swatch, 0.5, 0.5), point('up', swatch, 0.5, 0.5));
+          await settle(300);
+          const colour = shadow().querySelector('.base heo-value-field[data-property="background-color"]');
+          results.typing.theColourSwatchOpensThePicker = colour?.picking === true && Boolean(colour.shadowRoot.querySelector('heo-color-picker'));
+          colour?.shadowRoot.querySelector('heo-color-picker')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true }));
+          await settle(250);
         }
 
         progress.textContent = 'search';
