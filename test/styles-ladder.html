@@ -219,6 +219,12 @@
         const nowIn = () => rungs().filter((one) => one.querySelector('.now')).map((one) => one.dataset.place);
         // One badge, on what the element renders with: the important rule, not the inline value.
         results.menu.theNowBadgeIsOnTheWinner = nowIn().join(',') === '.promo .card|base';
+        // An empty place (`.featured` declares no colour) is one line like the others: its dash once
+        // wore the theme's empty-state class, whose 28px padding made the rung three lines tall.
+        const heightOf = (key) => rung(key)?.getBoundingClientRect().height ?? 0;
+        results.menu.anEmptyRungIsAsTallAsASetOne =
+          !rung('.featured|base')?.querySelector('.cv')?.textContent.match(/\w/) &&
+          heightOf('inline') > 0 && Math.abs(heightOf('.featured|base') - heightOf('inline')) < 1;
         await pick('.card|base');
         // The badge is the cascade's answer, not the pick: picking `.card` does not move it.
         results.menu.theNowBadgeStaysOnTheWinnerWhenAnotherRungIsPicked =
@@ -498,25 +504,32 @@
           const bar = () => root().querySelector('[data-strip="panel"]');
           // The same adder, Other's, under the condition picked on the strip.
           const hover = 'other';
-          const defaultUnderHover = async () => {
-            bar()?.querySelector('[data-cond="state::hover"]')?.click();
-            await settle();
+          const defaultUnder = async (cond) => {
+            bar()?.querySelector(`[data-cond="${CSS.escape(cond)}"]`)?.click();
+            await settle(100);
             await openAdder(hover);
             await typeIn(nameField(hover), 'outline-offset');
             await pressEnter(nameField(hover));
             await settle(60);
             const key = pickedKey(hover);
             await cancelAdder(hover);
-            bar()?.querySelector('[data-cond="state::hover"]')?.click();
-            await settle();
+            // A size not in effect moved the preview to its width: Actual brings the strip back.
+            if (engine.store.value.previewWidth !== null) engine.setPreviewWidth(null);
+            else bar()?.querySelector(`[data-cond="${CSS.escape(cond)}"]`)?.click();
+            await settle(100);
             return key;
           };
           // `.featured` is worn by this card alone: its hover rule is the element's own (decision 8).
-          results.adder.underAStateItDefaultsToTheOwnClass = (await defaultUnderHover()) === '.featured|state::hover';
+          results.adder.underAStateItDefaultsToTheOwnClass = (await defaultUnder('state::hover')) === '.featured|state::hover';
+          // The user's own words: a new declaration under a media query goes to a specific class, the
+          // element's own one at that size, not inline (inline cannot hold a media query).
+          const tablet = engine.elementModel(target).slots().find((one) => one.media === '(min-width: 768px)')?.key;
+          results.adder.underASizeItDefaultsToTheOwnClassAtThatSize =
+            Boolean(tablet) && (await defaultUnder(tablet)) === `.featured|${tablet}`;
           // A card wearing only the shared `.card`: never write into a class four cards share.
           api.select(target.nextElementSibling);
           await settle(100);
-          results.adder.withNoOwnClassItDefaultsToANewClass = (await defaultUnderHover()) === 'new-class|state::hover';
+          results.adder.withNoOwnClassItDefaultsToANewClass = (await defaultUnder('state::hover')) === 'new-class|state::hover';
           api.select(target);
           await settle(100);
         }

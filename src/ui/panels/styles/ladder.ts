@@ -68,7 +68,7 @@ const isNewClass = (place: Place): boolean => place.key.startsWith('new-class|')
 /** A rung's current value: the declaration's text and its `!`, or a dash for an empty place. */
 function currentValue(place: Place): TemplateResult {
   const one = place.declared;
-  if (!one) return html`<span class="cv empty">—</span>`;
+  if (!one) return html`<span class="cv vacant">—</span>`;
   return html`<span class="cv" title=${`${one.value}${one.important ? ' !important' : ''}`}>${one.value}${one.important
     ? html` <span class="imp" aria-label="!important">!</span>`
     : nothing}</span>`;
@@ -277,7 +277,11 @@ export const ladderStyles: CSSResult = css`
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .lr .cv.empty {
+  /*
+   * Not the class "empty": theme.ts gives that one the panel's empty-state padding (28px), which
+   * made an empty rung three lines tall.
+   */
+  .lr .cv.vacant {
     color: var(--heo-text-dim);
     font-family: var(--heo-font, inherit);
   }

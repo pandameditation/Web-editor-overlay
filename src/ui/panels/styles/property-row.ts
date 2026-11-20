@@ -1,4 +1,3 @@
-import { leanBlockSelector } from '../../../core/block-rule-edit.js';
 import { css, html, nothing, type CSSResult, type TemplateResult } from 'lit';
 import { isPseudoElement, mediaLabel } from '../../../core/breakpoints.js';
 import type {
@@ -93,20 +92,6 @@ export interface RowSpec {
   ownIn?: WriteTarget;
 }
 
-/**
- * One line per source: a block that declares both a shorthand and its side competes with itself
- * by order, which its family control shows, so the cascade keeps only that block's winning line.
- */
-export function onePerSource(contributions: readonly Contribution[]): Contribution[] {
-  const out: Contribution[] = [];
-  for (const one of contributions) {
-    const block = one.source.kind === 'inline' ? 'inline' : one.source.entry.rule;
-    if (out.some((kept) => (kept.source.kind === 'inline' ? 'inline' : kept.source.entry.rule) === block)) continue;
-    out.push(one);
-  }
-  return out;
-}
-
 /** Whether two write targets are the same declaration block. */
 export function sameTarget(a: WriteTarget, b: WriteTarget): boolean {
   switch (a.kind) {
@@ -182,14 +167,6 @@ export function previewSlot(model: ElementModel, width: number | null): string {
     .filter((one) => mediaApplies(one.media, width))
     .sort((a, b) => a.at - b.at);
   return applying.at(-1)?.key ?? 'base';
-}
-
-
-/** Where a value comes from, in full: `inline style`, `.card @media (min-width: 768px)`. */
-export function sourceLabel(contribution: Contribution): string {
-  if (contribution.source.kind === 'inline') return 'inline style';
-  const entry = contribution.source.entry;
-  return `${leanBlockSelector(entry.selector)}${entry.media ? ` @media ${entry.media}` : ''}`;
 }
 
 
@@ -609,8 +586,7 @@ export function renderPropertyRow(spec: RowSpec, host: StylesHost): TemplateResu
 
   const removable = shown && targetOf(shown, element).kind !== 'readonly' ? shown : null;
   const where = `${picked.label}${picked.media ? ` ${mediaLabel(picked.media)}` : ''}`;
-  const label = `${property}: ${winner ? `from ${shortLabel(winner)}` : 'not declared for this element'}; edits ${where}, ${
-    picked.reach === 1 ? 'only this element' : reachText(picked.reach)}. Show cascade`;
+  const label = `${property}: ${winner ? `from ${shortLabel(winner)}` : 'not declared for this element'}; edits ${where}, ${picked.reach === 1 ? 'only this element' : reachText(picked.reach)}. Show cascade`;
 
   return html`<div class="prow">
     <div

@@ -304,7 +304,7 @@
         const fieldIn = (list, property) => rowIn(list, property)?.querySelector('heo-value-field');
         // The cascade ladder's rungs, and those holding a declaration (a value, not a dash).
         const rungsOf = () => Array.from(pop()?.querySelectorAll('.ladder > [data-place]') ?? []);
-        const declaredRungs = () => rungsOf().filter((one) => one.querySelector('.cv:not(.empty)'));
+        const declaredRungs = () => rungsOf().filter((one) => one.querySelector('.cv:not(.vacant)'));
         const rungAt = (key) => pop()?.querySelector(`.ladder > [data-place="${CSS.escape(key)}"]`);
         const checkedRung = () => rungsOf().find((one) => (one.matches('[role="radio"]') ? one : one.querySelector('[role="radio"]'))?.getAttribute('aria-checked') === 'true');
         // The cascade popover, not a card opened over the panel from one of its links.
