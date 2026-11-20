@@ -127,15 +127,23 @@
       const picker = () => field()?.shadowRoot.querySelector('heo-font-picker')?.shadowRoot;
       const editor = () => picker()?.querySelector('heo-font-editor')?.shadowRoot;
       const row = (name) => picker()?.querySelector(`.frow[data-row="${name}"]`);
+      // The selected slot's list closes once something is picked, as an autocomplete's does.
+      const openList = async () => {
+        const chevron = picker()?.querySelector('.slot[aria-current="true"] [data-chevron]');
+        if (chevron?.getAttribute('aria-expanded') === 'false') {
+          chevron.click();
+          await settle(250);
+        }
+      };
       const groupOfEl = (el) => {
         let at = el?.previousElementSibling;
         while (at && !at.classList.contains('group')) at = at.previousElementSibling;
-        return flat(at);
+        return at?.dataset.group ?? flat(at);
       };
       const groupOf = (name) => {
         let at = row(name)?.previousElementSibling;
         while (at && !at.classList.contains('group')) at = at.previousElementSibling;
-        return flat(at);
+        return at?.dataset.group ?? flat(at);
       };
 
       await check('picker', async () => {
@@ -143,6 +151,7 @@
         await settle(700);
         const recordsBefore = engine.history.records.length;
         const before = h.style.fontFamily;
+        await openList();
         const lora = row('Lora');
         const georgia = row('Georgia');
         const house = row('House Serif');
@@ -151,7 +160,7 @@
         await until(() => editor()?.querySelector('[data-style]'));
         const opened = Boolean(editor());
         const notPicked = h.style.fontFamily === before && engine.history.records.length === recordsBefore;
-        const listHidden = picker().querySelector('.list').hidden;
+        const listHidden = picker().querySelector('.slots').hidden;
         // Escape closes the editor and leaves the dialog open.
         editor().querySelector('.fpop').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true, cancelable: true }));
         await settle(300);
@@ -169,6 +178,7 @@
       });
 
       await check('add', async () => {
+        await openList();
         row('Lora').querySelector('[data-font-action]').click();
         await until(() => editor()?.querySelector('[data-style]'));
         const ed = editor();
@@ -184,6 +194,7 @@
         await settle(400);
         const font = engine.fonts.get('Lora');
         const css = engine.designSystemParts().fonts ?? '';
+        await openList();
         const lora = row('Lora');
         return {
           offersUprightAndItalicInThatOrder: styles.join() === 'upright:true,italic:true',
@@ -206,6 +217,7 @@
       });
 
       await check('edit', async () => {
+        await openList();
         row('Lora').querySelector('[data-font-action]').click();
         await until(() => editor()?.querySelector('[data-subset]'));
         const ed = editor();
@@ -351,6 +363,7 @@
         // be picked again after Embed. A null "nothing in the way" read as a blocker before.
         field().openShadowEditor();
         await settle(700);
+        await openList();
         row('Lora').querySelector('[data-font-action]').click();
         await until(() => editor()?.querySelector('[data-place]'));
         const ed = editor();
@@ -369,6 +382,7 @@
       });
 
       await check('typographyTokens', async () => {
+        await openList();
         const p = picker();
         const rows = Array.from(p.querySelectorAll('.frow')).filter((one) => groupOfEl(one) === 'Typography tokens').map((one) => one.dataset.row);
         const brand = p.querySelector('.frow[data-row="--brand-face"] [data-font]');
@@ -386,12 +400,14 @@
           aTokenUsedForAFontIsTypography: engine.tokens.get('display-face')?.group === 'font',
           bothAreOfferedInThePicker: rows.includes('--brand-face') && rows.includes('--display-face'),
           butNotASizeToken: !rows.includes('--text-lg'),
-          pickingOneWritesTheToken: written === 'var(--brand-face)',
+          // Into the font's slot: the stack's fallbacks stay after it.
+          pickingOneWritesTheToken: written.startsWith('var(--brand-face)'),
         };
       });
 
       await check('tokenFont', async () => {
         // A typography token's row has Edit font: the list then chooses the token's font.
+        await openList();
         const p = picker();
         const tokenRow = p.querySelector('.frow[data-row="--display-face"]');
         const action = tokenRow?.querySelector('[data-font-action]');
@@ -402,6 +418,7 @@
         const tokensHidden = !picker().querySelector('.frow[data-row="--brand-face"]');
         const fieldBefore = field().value;
         const recordsBefore = engine.history.records.length;
+        await openList();
         picker().querySelector('.frow[data-row="House Serif"] [data-font]').click();
         await settle(400);
         const token = engine.tokens.get('display-face')?.value ?? '';
@@ -411,7 +428,7 @@
         const renders = getComputedStyle(kicker).fontFamily;
         kicker.remove();
         // Its chain is the token's now: a fallback added here goes into the token.
-        const chain = Array.from(picker().querySelectorAll('.chain .chip')).map((one) => one.dataset.family);
+        const chain = Array.from(picker().querySelectorAll('.slot')).map((one) => one.dataset.family);
         const label = engine.history.undoLabel;
         picker().querySelector('.tokenbar button').click();
         await settle(300);
@@ -424,27 +441,49 @@
           notTheField: field().value === fieldBefore,
           asOneStep: engine.history.records.length === recordsBefore + 1 && /--display-face/.test(label ?? ''),
           theChainIsTheTokens: chain[0] === 'House Serif',
-          doneGoesBack: !picker().querySelector('.tokenbar') && Boolean(picker().querySelector('.frow[data-row="--brand-face"]')),
+          doneGoesBack: !picker().querySelector('.tokenbar') && (await openList(), Boolean(picker().querySelector('.frow[data-row="--brand-face"]'))),
         };
       });
 
       await check('fallbackAdd', async () => {
-        const adder = () => picker().querySelector('.chain heo-value-field[data-fallback-add]');
-        const isField = adder()?.tagName === 'HEO-VALUE-FIELD' && !picker().querySelector('.chain select');
-        const groups = [...new Set((adder()?.suggestions ?? []).map((one) => one.group))];
+        // "+ Font": an empty slot under the selected one, its list open, and a token as good as a font.
         const before = field().value;
-        adder().dispatchEvent(new CustomEvent('value-submit', { detail: { value: 'var(--brand-face)' }, bubbles: true, composed: true }));
+        const slotsBefore = picker().querySelectorAll('.slot').length;
+        picker().querySelector('[data-add-slot]').click();
+        await settle(400);
+        const pending = picker().querySelector('.slot[aria-current="true"]');
+        const empty = pending?.dataset.family === '' && picker().querySelectorAll('.slot').length === slotsBefore + 1;
+        const focused = picker().activeElement === pending?.querySelector('input');
+        const groups = Array.from(picker().querySelectorAll('.list .group')).map((one) => one.dataset.group);
+        // Hovering previews what the fallback gives: the stack from it on, as if the font were missing.
+        const brandRow = picker().querySelector('.frow[data-row="--brand-face"] [data-font]');
+        const box = brandRow.getBoundingClientRect();
+        brandRow.dispatchEvent(new PointerEvent('pointermove', { clientX: box.left + 8, clientY: box.top + 8, bubbles: true, composed: true }));
+        await settle(300);
+        const previewed = getComputedStyle(h).fontFamily;
+        brandRow.click();
         await settle(400);
         const withToken = field().value;
-        const chain = Array.from(picker().querySelectorAll('.chain .chip')).map((one) => one.dataset.family);
+        const slots = Array.from(picker().querySelectorAll('.slot')).map((one) => one.dataset.family);
         engine.undo();
         await settle(300);
+        // A section folds away, and stays folded.
+        await openList();
+        picker().querySelector('.list .group[data-group="System · only where installed"]').click();
+        await settle(200);
+        const folded = picker().querySelector('.list .group[data-group="System · only where installed"]').getAttribute('aria-expanded') === 'false' &&
+          !picker().querySelector('.frow[data-row="Georgia"]');
+        picker().querySelector('.list .group[data-group="System · only where installed"]').click();
+        await settle(200);
         return {
-          theAdderIsAnAutocomplete: isField,
-          inSections: ['Typography tokens', 'In this page', 'Generic families'].every((one) => groups.includes(one)),
-          aTokenCanBeAFallback: withToken !== before && withToken.endsWith('var(--brand-face)'),
-          shownInTheChain: chain.at(-1) === 'var(--brand-face)',
-          notOfferedTwice: !(adder()?.suggestions ?? []).some((one) => before.includes(one.value) && one.value.length > 3 && before.split(',').map((x) => x.trim().replace(/"/g, '')).includes(one.value)),
+          plusFontAddsAnEmptySlot: empty,
+          readyToType: focused,
+          aFallbackIsOfferedGenericFamilies: groups.includes('Generic families'),
+          andTokens: groups.includes('Typography tokens'),
+          thePreviewShowsTheFallbackAtWork: previewed.startsWith('"House Serif"') || previewed.startsWith('var('),
+          aTokenCanBeAFallback: withToken !== before && /var\(--brand-face\)/.test(withToken) && parseInt(withToken.indexOf('var(--brand-face)'), 10) > 0,
+          inItsSlot: slots.includes('var(--brand-face)') && slots.length === slotsBefore + 1,
+          sectionsFold: folded,
         };
       });
 

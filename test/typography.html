@@ -260,9 +260,11 @@
         proot.querySelector('.list').dispatchEvent(new PointerEvent('pointerleave', { bubbles: false }));
         await settle(300);
         const back = getComputedStyle(h).fontFamily;
+        // Google fonts are asked for first, in their own section of the list.
+        const asks = Boolean(proot.querySelector('.list [data-web-fonts]'));
         target.click();
         await settle(400);
-        const fallbacks = Boolean(proot.querySelector('.fallbacks .chain'));
+        const fallbacks = proot.querySelectorAll('.slot').length >= 2;
         return {
           opensThePicker: Boolean(picker),
           listsSystemFonts: fonts.includes('Georgia'),
@@ -276,45 +278,52 @@
           leavingPutsItBack: back === before,
           clickingPicks: h.style.fontFamily.includes(target.dataset.font),
           fallbacksAreInThePicker: fallbacks,
-          webFontsAskFirst: Boolean(proot.querySelector('.webask')) && !fonts.includes('Playfair Display'),
+          webFontsAskFirst: asks && !fonts.includes('Playfair Display'),
         };
       });
 
       await check('fallbacks', async () => {
         const f = field('font-family');
         const proot = () => f.shadowRoot.querySelector('heo-font-picker').shadowRoot;
-        const chain = () => Array.from(proot().querySelectorAll('.chain .chip')).map((one) => one.dataset.family);
-        // The adder is an autocomplete now; a family typed and submitted is added last.
-        const adder = proot().querySelector('.chain heo-value-field[data-fallback-add]');
+        const chain = () => Array.from(proot().querySelectorAll('.slot')).map((one) => one.dataset.family).filter(Boolean);
+        // "+ Font" adds a slot under the selected one; a family typed in it and Enter puts it there.
+        const before = chain();
+        proot().querySelector('.slot[data-at="0"] .vf').click();
+        await settle(200);
+        proot().querySelector('[data-add-slot]').click();
+        await settle(300);
         const extra = 'Times New Roman';
-        adder.dispatchEvent(new CustomEvent('value-submit', { detail: { value: extra }, bubbles: true, composed: true }));
+        const input = proot().querySelector('.slot[aria-current="true"] input');
+        input.value = extra;
+        input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        await settle(200);
+        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, composed: true, cancelable: true }));
         await settle(400);
         const added = chain();
-        // Dragging the last chip onto the second moves it there: the stack is written in that order.
-        const chips = () => Array.from(proot().querySelectorAll('.chain .chip'));
+        // Dragging the last slot's grip onto the second slot moves it there: the stack is written in that order.
+        const slots = () => Array.from(proot().querySelectorAll('.slot'));
         const transfer = new DataTransfer();
-        const last = chips().at(-1);
-        last.dispatchEvent(new DragEvent('dragstart', { bubbles: true, composed: true, dataTransfer: transfer }));
-        const onto = chips()[1];
+        slots().at(-1).querySelector('.g').dispatchEvent(new DragEvent('dragstart', { bubbles: true, composed: true, dataTransfer: transfer }));
+        const onto = slots()[1];
         onto.dispatchEvent(new DragEvent('dragover', { bubbles: true, composed: true, cancelable: true, dataTransfer: transfer }));
         onto.dispatchEvent(new DragEvent('drop', { bubbles: true, composed: true, cancelable: true, dataTransfer: transfer }));
         await settle(400);
         const dragged = chain();
         const written = h.style.fontFamily;
-        // Alt and an arrow on a focused chip move it, and the focus stays on it.
-        const second = chips()[1];
-        second.focus();
-        second.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', altKey: true, bubbles: true, composed: true, cancelable: true }));
+        // Alt and an arrow on a focused grip move its slot, and the focus stays on it.
+        const grip = slots()[1].querySelector('.g');
+        grip.focus();
+        grip.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', altKey: true, bubbles: true, composed: true, cancelable: true }));
         await settle(400);
         const keyed = chain();
-        const focused = proot().activeElement?.dataset?.family;
+        const focused = proot().activeElement?.closest('.slot')?.dataset.family;
         return {
-          addingAppendsAFallback: added.length === 3 && added.at(-1) === extra,
-          dragReordersTheChain: dragged.length === 3 && dragged[1] === extra && dragged[2] === added[1],
-          andWritesThatOrder: written.indexOf(extra) < written.indexOf(added[1]) && written.indexOf(extra) > written.indexOf(added[0]),
-          altArrowMovesAChip: keyed[2] === extra && keyed[1] === added[1],
-          theFocusStaysOnIt: focused === extra,
-          everyChipHasAGrip: proot().querySelectorAll('.chain .chip .g').length === 3,
+          plusFontAddsUnderTheSelected: added.length === before.length + 1 && added[1] === extra,
+          dragReordersTheStack: dragged[1] === added.at(-1) && dragged.length === added.length,
+          andWritesThatOrder: written.indexOf(added.at(-1)) < written.indexOf(extra),
+          altArrowMovesASlot: keyed[2] === dragged[1] && keyed[1] === dragged[2],
+          theFocusStaysOnIt: focused === dragged[1],
+          everySlotHasAGrip: proot().querySelectorAll('.slot .g svg').length === keyed.length,
         };
       });
 

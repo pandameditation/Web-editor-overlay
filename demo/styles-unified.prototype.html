@@ -1,0 +1,2667 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PROTOTYPE — Styles panel: one list, category cards, a destination picker</title>
+  <!--
+  PROTOTYPE — throwaway, not part of the overlay build. Delete or move to a prototype branch once a
+  direction is picked.
+
+  The question: can the Styles panel be one list (what the element renders with, grouped by
+  category, with the rich editors inside), with categories added from a card gallery, and with the
+  "where does this change go" answer made explicit through a destination autocomplete instead of a
+  static source label?
+
+  Three directions, which disagree about how much one destination choice covers:
+    A — per row:     every row carries its own "goes to" dropdown; + Add opens a category sheet.
+    B — per panel:   one sticky "Changes go to" target for everything; categories at the end of the list.
+    C — per category: the panel is a 2-column card grid; open a card, it picks its own destination.
+  All three share the cascade editor: every source is a dropdown (pick another one to move the
+  value), and "+ Add a value in…" takes a new class name and creates it.
+
+  The model is real: values are written to an in-memory stylesheet, the page on the left renders
+  with it, and the stylesheet panel shows exactly where each change landed. Nothing persists.
+
+  Switch: ?variant=A|B|C, the yellow bar, or ← → when no field has focus.
+-->
+  <style id="base-css">
+    /* base.css — page chrome, not part of the editable model */
+    #site {
+      font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+      background: #f6f7fb;
+      padding: 28px;
+      border-radius: 14px;
+      color: #1f2433;
+    }
+
+    #site p {
+      margin: 0;
+    }
+
+    .promo h2 {
+      margin: 0 0 14px;
+      font-size: 20px;
+    }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      align-items: start;
+    }
+
+    .plain {
+      margin-top: 18px;
+    }
+  </style>
+  <style id="site-css"></style>
+  <style>
+    :root {
+      /* src/ui/theme.ts, dark theme */
+      --bg: oklch(19% 0.014 265);
+      --raised: oklch(23.5% 0.016 265);
+      --sunken: oklch(16% 0.012 265);
+      --hover: oklch(28% 0.018 265);
+      --text: oklch(96% 0.005 265);
+      --dim: oklch(74% 0.012 265);
+      --faint: oklch(62% 0.014 265);
+      --line: oklch(100% 0 0 / 9%);
+      --line2: oklch(100% 0 0 / 16%);
+      --accent: #6366f1;
+      --accent-text: color-mix(in oklab, var(--accent) 55%, white);
+      --accent-soft: color-mix(in oklab, var(--accent) 18%, transparent);
+      --accent-line: color-mix(in oklab, var(--accent) 55%, transparent);
+      --focus: color-mix(in oklab, var(--accent) 60%, white);
+      --warn: oklch(80% 0.14 85);
+      --success: oklch(74% 0.15 155);
+      --r-sm: 7px;
+      --r-md: 10px;
+      --font: Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+      --mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      height: 100%;
+    }
+
+    body {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 340px;
+      font-family: var(--font);
+      background: #e9ecf2;
+    }
+
+    button {
+      font: inherit;
+      color: inherit;
+    }
+
+    :focus-visible {
+      outline: 2px solid var(--focus);
+      outline-offset: 1px;
+    }
+
+    /* ------------------------------------------------------------ page side (not part of the design) */
+    .stage {
+      overflow: auto;
+      padding: 28px 32px 100px;
+      min-width: 0;
+    }
+
+    .stage-h {
+      margin: 0 0 12px;
+      color: #5b6275;
+      font-size: 12px;
+    }
+
+    #frame {
+      position: relative;
+    }
+
+    #sel-box {
+      position: absolute;
+      pointer-events: none;
+      border: 2px solid #6366f1;
+      border-radius: 4px;
+    }
+
+    #sel-tag {
+      position: absolute;
+      pointer-events: none;
+      background: #6366f1;
+      color: #fff;
+      font: 600 10.5px/1 var(--mono);
+      padding: 3px 6px;
+      border-radius: 4px 4px 0 0;
+    }
+
+    .inspector {
+      display: grid;
+      grid-template-columns: 1.3fr 1fr;
+      gap: 14px;
+      margin-top: 22px;
+    }
+
+    .ins {
+      background: #fff;
+      border: 1px solid #d9dde7;
+      border-radius: 10px;
+      padding: 12px 14px;
+      min-width: 0;
+    }
+
+    .ins h3 {
+      margin: 0 0 8px;
+      font-size: 12px;
+      color: #343a4d;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .ins h3 .c {
+      color: #8a90a2;
+      font-weight: 400;
+    }
+
+    .ins pre {
+      margin: 0;
+      font: 11.5px/1.55 var(--mono);
+      color: #343a4d;
+      white-space: pre-wrap;
+    }
+
+    .ins pre .hl {
+      background: #fef08a;
+      border-radius: 3px;
+    }
+
+    .ins pre .sel {
+      color: #6d28d9;
+    }
+
+    .ins pre .imp {
+      color: #b91c1c;
+    }
+
+    .last {
+      margin-top: 10px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: #eef2ff;
+      color: #312e81;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .last:empty {
+      display: none;
+    }
+
+    #reset {
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 6px;
+      border: 1px solid #cfd4df;
+      background: #f6f7fb;
+      cursor: pointer;
+      color: #343a4d;
+    }
+
+    /* ------------------------------------------------------------ the panel */
+    #panel {
+      position: relative;
+      height: 100vh;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 12px;
+      line-height: 1.4;
+      border-left: 1px solid #0006;
+    }
+
+    #scroll {
+      height: 100%;
+      overflow: auto;
+      padding-bottom: 90px;
+    }
+
+    .ph {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      flex-wrap: wrap;
+      padding: 12px 12px 10px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .tag {
+      font: 600 11px/1 var(--mono);
+      color: var(--text);
+      padding: 5px 7px;
+      border-radius: 6px;
+      background: var(--raised);
+      box-shadow: inset 0 0 0 1px var(--line2);
+    }
+
+    .cchip {
+      font: 11px/1 var(--mono);
+      padding: 5px 7px;
+      border-radius: 6px;
+      background: var(--accent-soft);
+      color: var(--accent-text);
+      box-shadow: inset 0 0 0 1px var(--accent-line);
+      border: 0;
+      cursor: pointer;
+    }
+
+    .cchip.fresh {
+      box-shadow: inset 0 0 0 1px var(--success);
+      color: var(--success);
+      background: color-mix(in oklab, var(--success) 12%, transparent);
+    }
+
+    .cchip.on {
+      background: var(--accent);
+      color: #fff;
+    }
+
+    .cadd {
+      font-size: 11px;
+      padding: 4px 7px;
+      border-radius: 6px;
+      border: 1px dashed var(--line2);
+      background: transparent;
+      color: var(--dim);
+      cursor: pointer;
+    }
+
+    .sticky {
+      position: sticky;
+      top: 0;
+      z-index: 8;
+      background: var(--bg);
+    }
+
+    .top {
+      display: flex;
+      gap: 6px;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .search {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0 8px;
+      height: 30px;
+      border-radius: var(--r-sm);
+      background: var(--sunken);
+      box-shadow: inset 0 0 0 1px var(--line);
+    }
+
+    .search:focus-within {
+      box-shadow: inset 0 0 0 1px var(--accent-line);
+    }
+
+    .search svg {
+      flex: none;
+      color: var(--faint);
+    }
+
+    .search input {
+      flex: 1;
+      min-width: 0;
+      border: 0;
+      background: transparent;
+      color: var(--text);
+      font: inherit;
+      outline: none;
+    }
+
+    .addbtn {
+      flex: none;
+      height: 30px;
+      padding: 0 11px;
+      border-radius: var(--r-sm);
+      border: 0;
+      background: var(--accent);
+      color: #fff;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .addbtn:hover {
+      filter: brightness(1.1);
+    }
+
+    /* B: the one target */
+    .tbar {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      align-items: center;
+      gap: 4px 8px;
+      padding: 9px 12px 10px;
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(180deg, color-mix(in oklab, var(--accent) 10%, var(--bg)), var(--bg));
+    }
+
+    .tbar .tl {
+      color: var(--dim);
+      font-size: 11px;
+    }
+
+    .tbar .combo {
+      height: 30px;
+    }
+
+    .tbar .combo input {
+      font-size: 12px;
+    }
+
+    .tbar .tmeta {
+      grid-column: 2;
+      color: var(--faint);
+      font-size: 10.5px;
+    }
+
+    .tbar .tmeta b {
+      color: var(--dim);
+      font-weight: 500;
+    }
+
+    /* sections */
+    .sec {
+      padding: 4px 12px 10px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .sec.flash {
+      animation: flash 1.2s ease;
+    }
+
+    @keyframes flash {
+      0% {
+        background: var(--accent-soft);
+      }
+
+      100% {
+        background: transparent;
+      }
+    }
+
+    .sec-h {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      height: 34px;
+    }
+
+    .sec-h .tog {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border: 0;
+      background: transparent;
+      padding: 0;
+      cursor: pointer;
+      text-align: left;
+      font-weight: 600;
+      font-size: 12px;
+    }
+
+    .sec-h .tog .ic {
+      display: grid;
+      place-items: center;
+      width: 22px;
+      height: 22px;
+      border-radius: 6px;
+      background: oklch(30% 0.05 var(--h));
+      color: oklch(85% 0.12 var(--h));
+    }
+
+    .sec-h .cnt {
+      color: var(--faint);
+      font-weight: 400;
+      font-size: 11px;
+    }
+
+    .sec-h .chev {
+      color: var(--faint);
+      transition: transform .15s;
+    }
+
+    .sec.closed .chev {
+      transform: rotate(-90deg);
+    }
+
+    .sec.closed .sec-b {
+      display: none;
+    }
+
+    .iconbtn {
+      display: grid;
+      place-items: center;
+      width: 24px;
+      height: 24px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--faint);
+      cursor: pointer;
+    }
+
+    .iconbtn:hover {
+      background: var(--hover);
+      color: var(--text);
+    }
+
+    /* rows */
+    .rows {
+      display: grid;
+      gap: 3px;
+    }
+
+    .rw {
+      position: relative;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 12px minmax(0, .95fr) minmax(0, 1.25fr) 92px;
+      align-items: center;
+      gap: 6px;
+      min-height: 28px;
+    }
+
+    .v-B .row,
+    .v-C .row {
+      grid-template-columns: 12px minmax(0, .95fr) minmax(0, 1.25fr) 76px;
+    }
+
+    .dot {
+      width: 12px;
+      height: 12px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      cursor: pointer;
+      display: grid;
+      place-items: center;
+    }
+
+    .dot::before {
+      content: '';
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--faint);
+    }
+
+    .dot.multi::before {
+      box-shadow: 0 0 0 2px var(--bg), 0 0 0 3px var(--faint);
+    }
+
+    .dot.on::before {
+      background: var(--accent-text);
+    }
+
+    .dot:hover::before {
+      background: var(--text);
+    }
+
+    .pn {
+      color: var(--dim);
+      font-family: var(--mono);
+      font-size: 11px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .val {
+      min-width: 0;
+      height: 26px;
+      padding: 0 7px;
+      border-radius: 6px;
+      border: 0;
+      background: var(--sunken);
+      box-shadow: inset 0 0 0 1px var(--line);
+      color: var(--text);
+      font: 11px var(--mono);
+      outline: none;
+    }
+
+    .val:hover {
+      box-shadow: inset 0 0 0 1px var(--line2);
+    }
+
+    .val:focus {
+      box-shadow: inset 0 0 0 1px var(--accent);
+    }
+
+    .val::placeholder {
+      color: var(--faint);
+    }
+
+    .v-B .from,
+    .v-C .from {
+      justify-self: end;
+    }
+
+    .from {
+      max-width: 84px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font: 10px var(--mono);
+      color: var(--faint);
+    }
+
+    .from.here {
+      color: var(--accent-text);
+    }
+
+    .srow {
+      display: grid;
+      grid-template-columns: 12px minmax(0, .95fr) minmax(0, 1.25fr) 92px;
+      align-items: center;
+      gap: 6px;
+      min-height: 26px;
+    }
+
+    .v-B .srow,
+    .v-C .srow {
+      grid-template-columns: 12px minmax(0, .95fr) minmax(0, 1.25fr) 76px;
+    }
+
+    .state {
+      justify-self: end;
+      font: 10px var(--mono);
+      color: oklch(82% 0.1 300);
+      padding: 2px 5px;
+      border-radius: 4px;
+      background: oklch(30% 0.06 300);
+    }
+
+    .warn {
+      margin: 3px 0 4px 18px;
+      padding: 7px 9px;
+      border-radius: var(--r-sm);
+      background: color-mix(in oklab, var(--warn) 9%, transparent);
+      box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--warn) 35%, transparent);
+      color: var(--text);
+      font-size: 11px;
+      line-height: 1.45;
+    }
+
+    .warn b {
+      font-family: var(--mono);
+      font-weight: 500;
+      font-size: 10.5px;
+    }
+
+    .warn .wa {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 6px;
+    }
+
+    .mini {
+      height: 24px;
+      padding: 0 8px;
+      border-radius: 6px;
+      border: 0;
+      background: var(--raised);
+      box-shadow: inset 0 0 0 1px var(--line2);
+      color: var(--text);
+      font-size: 11px;
+      cursor: pointer;
+    }
+
+    .mini:hover {
+      background: var(--hover);
+    }
+
+    .mini.pri {
+      background: var(--accent);
+      box-shadow: none;
+      color: #fff;
+    }
+
+    .more {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      margin-top: 6px;
+      padding: 2px 0;
+      border: 0;
+      background: transparent;
+      color: var(--accent-text);
+      font-size: 11.5px;
+      cursor: pointer;
+    }
+
+    .addin {
+      display: flex;
+      gap: 6px;
+      margin-top: 6px;
+    }
+
+    .addin input {
+      flex: 1;
+    }
+
+    /* destination combobox: the thing this prototype is about */
+    .combo {
+      position: relative;
+      display: flex;
+      align-items: center;
+      min-width: 0;
+      height: 26px;
+      border-radius: 6px;
+      background: var(--raised);
+      box-shadow: inset 0 0 0 1px var(--line2);
+    }
+
+    .combo:hover {
+      background: var(--hover);
+    }
+
+    .combo:focus-within {
+      box-shadow: inset 0 0 0 1px var(--accent);
+      background: var(--sunken);
+    }
+
+    .combo input {
+      flex: 1;
+      min-width: 0;
+      width: 100%;
+      height: 100%;
+      padding: 0 0 0 7px;
+      border: 0;
+      background: transparent;
+      color: var(--text);
+      font: 10.5px var(--mono);
+      outline: none;
+      cursor: pointer;
+      text-overflow: ellipsis;
+    }
+
+    .combo input:focus {
+      cursor: text;
+    }
+
+    .combo input::placeholder {
+      color: var(--faint);
+      font-family: var(--font);
+    }
+
+    .combo .rc {
+      flex: none;
+      margin-right: 2px;
+      min-width: 16px;
+      padding: 0 4px;
+      border-radius: 4px;
+      background: oklch(100% 0 0 / 8%);
+      color: var(--dim);
+      font: 9.5px/16px var(--mono);
+      text-align: center;
+    }
+
+    .combo .rc.many {
+      background: color-mix(in oklab, var(--warn) 22%, transparent);
+      color: var(--warn);
+    }
+
+    .combo:focus-within .rc {
+      display: none;
+    }
+
+    .combo .car {
+      flex: none;
+      width: 16px;
+      color: var(--faint);
+      font-size: 9px;
+      text-align: center;
+      pointer-events: none;
+    }
+
+    .combo.pending {
+      box-shadow: inset 0 0 0 1px var(--accent-line);
+      background: transparent;
+    }
+
+    .combo.pending input {
+      color: var(--accent-text);
+    }
+
+    #clist {
+      position: fixed;
+      z-index: 100;
+      max-height: 360px;
+      overflow: auto;
+      padding: 5px;
+      border-radius: var(--r-md);
+      background: var(--raised);
+      box-shadow: 0 0 0 1px var(--line2), 0 18px 40px -12px #000c;
+      color: var(--text);
+      font-size: 11.5px;
+    }
+
+    #clist[hidden] {
+      display: none;
+    }
+
+    #clist .cap {
+      padding: 5px 7px 6px;
+      color: var(--dim);
+      font-size: 10.5px;
+      border-bottom: 1px solid var(--line);
+      margin-bottom: 3px;
+    }
+
+    #clist .cap b {
+      color: var(--text);
+      font: 500 10.5px var(--mono);
+    }
+
+    #clist .grp {
+      padding: 7px 7px 3px;
+      color: var(--faint);
+      font-size: 9.5px;
+      font-weight: 600;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+
+    #clist .opt {
+      display: grid;
+      grid-template-columns: 12px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 3px 7px;
+      padding: 6px 7px;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    #clist .opt[aria-selected='true'] {
+      background: var(--accent-soft);
+      box-shadow: inset 0 0 0 1px var(--accent-line);
+    }
+
+    #clist .opt[aria-disabled='true'] {
+      opacity: .5;
+      cursor: default;
+    }
+
+    #clist .opt .ok {
+      color: var(--accent-text);
+      font-size: 10px;
+    }
+
+    #clist .opt .os {
+      font: 11px var(--mono);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    #clist .opt .os.sans {
+      font-family: var(--font);
+    }
+
+    #clist .opt .om {
+      grid-column: 2 / 4;
+      color: var(--faint);
+      font-size: 10.5px;
+    }
+
+    #clist .opt .st {
+      font-size: 10px;
+      padding: 1px 6px;
+      border-radius: 99px;
+      white-space: nowrap;
+    }
+
+    #clist .opt .st.win {
+      color: var(--success);
+      background: color-mix(in oklab, var(--success) 14%, transparent);
+    }
+
+    #clist .opt .st.lose {
+      color: var(--warn);
+      background: color-mix(in oklab, var(--warn) 14%, transparent);
+    }
+
+    #clist .opt.new .os {
+      color: var(--success);
+    }
+
+    #clist .foot {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      margin-top: 4px;
+      padding: 7px 7px 3px;
+      border-top: 1px solid var(--line);
+      color: var(--dim);
+      font-size: 10.5px;
+    }
+
+    #clist .foot button {
+      white-space: nowrap;
+      height: 22px;
+      padding: 0 7px;
+      border-radius: 5px;
+      border: 0;
+      background: transparent;
+      color: var(--dim);
+      font: 10.5px var(--mono);
+      cursor: pointer;
+    }
+
+    #clist .foot button[aria-pressed='true'] {
+      background: var(--accent-soft);
+      color: var(--accent-text);
+      box-shadow: inset 0 0 0 1px var(--accent-line);
+    }
+
+    /* cascade editor */
+    .casc {
+      display: grid;
+      gap: 5px;
+      padding: 9px 10px 10px;
+      border-radius: var(--r-md);
+      background: var(--raised);
+      box-shadow: 0 0 0 1px var(--line2), 0 18px 40px -14px #000c;
+    }
+
+    .casc.float {
+      position: absolute;
+      z-index: 20;
+      top: calc(100% + 3px);
+      left: -6px;
+      right: -6px;
+    }
+
+    .casc.drawer {
+      margin: 4px 0 6px 18px;
+      box-shadow: inset 0 0 0 1px var(--line);
+      background: var(--sunken);
+    }
+
+    .casc .cap {
+      display: flex;
+      justify-content: space-between;
+      color: var(--dim);
+      font-size: 10px;
+      margin-bottom: 2px;
+    }
+
+    .casc .cap b {
+      color: var(--text);
+      font: 400 10.5px var(--mono);
+    }
+
+    .cl {
+      display: grid;
+      grid-template-columns: 8px minmax(0, 1.15fr) minmax(0, 1fr) 20px;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .cl .cd {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--success);
+    }
+
+    .cl.lost .cd {
+      background: transparent;
+      box-shadow: inset 0 0 0 1.5px var(--faint);
+    }
+
+    .cl.lost .val {
+      text-decoration: line-through;
+      color: var(--faint);
+    }
+
+    .cl.idle .cd {
+      background: oklch(70% 0.1 300);
+    }
+
+    .cl .x {
+      width: 20px;
+      height: 20px;
+      padding: 0;
+      border: 0;
+      border-radius: 5px;
+      background: transparent;
+      color: var(--faint);
+      cursor: pointer;
+    }
+
+    .cl .x:hover {
+      background: var(--hover);
+      color: var(--text);
+    }
+
+    .casc .sub {
+      margin: 4px 0 0;
+      padding-top: 6px;
+      border-top: 1px solid var(--line);
+      color: var(--dim);
+      font-size: 10px;
+    }
+
+    .casc .none {
+      margin: 0;
+      color: var(--dim);
+      font-size: 10.5px;
+      line-height: 1.5;
+    }
+
+    .casc .none code {
+      color: var(--text);
+      font: 10.5px var(--mono);
+    }
+
+    .casc .hint {
+      margin: 2px 0 0;
+      color: var(--faint);
+      font-size: 10px;
+      line-height: 1.45;
+    }
+
+    /* hero editors (stand-ins for the real Typography, Background, Box, Border, Shadow, Motion editors) */
+    .hero {
+      margin: 2px 0 9px;
+    }
+
+    .tstyles {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 5px;
+    }
+
+    .tst {
+      display: grid;
+      gap: 2px;
+      padding: 7px 8px;
+      border-radius: var(--r-sm);
+      border: 0;
+      background: var(--sunken);
+      box-shadow: inset 0 0 0 1px var(--line);
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .tst:hover {
+      box-shadow: inset 0 0 0 1px var(--line2);
+      background: var(--hover);
+    }
+
+    .tst[aria-current='true'] {
+      box-shadow: inset 0 0 0 1px var(--accent-line);
+      background: var(--accent-soft);
+    }
+
+    .tst .tp {
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      line-height: 1.15;
+    }
+
+    .tst .tm {
+      color: var(--faint);
+      font: 9.5px var(--mono);
+    }
+
+    .seg {
+      display: flex;
+      padding: 2px;
+      gap: 2px;
+      border-radius: var(--r-sm);
+      background: var(--sunken);
+      box-shadow: inset 0 0 0 1px var(--line);
+    }
+
+    .seg button {
+      flex: 1;
+      height: 24px;
+      border: 0;
+      border-radius: 5px;
+      background: transparent;
+      color: var(--dim);
+      font-size: 11px;
+      cursor: pointer;
+    }
+
+    .seg button[aria-pressed='true'] {
+      background: var(--raised);
+      color: var(--text);
+      box-shadow: inset 0 0 0 1px var(--line2);
+    }
+
+    .layer {
+      display: grid;
+      grid-template-columns: 30px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+      padding: 5px;
+      border-radius: var(--r-sm);
+      background: var(--sunken);
+      box-shadow: inset 0 0 0 1px var(--line);
+    }
+
+    .layer input[type=color] {
+      width: 30px;
+      height: 26px;
+      padding: 0;
+      border: 0;
+      border-radius: 5px;
+      background: none;
+      cursor: pointer;
+    }
+
+    .layer input[type=color]::-webkit-color-swatch-wrapper {
+      padding: 0;
+    }
+
+    .layer input[type=color]::-webkit-color-swatch {
+      border: 0;
+      border-radius: 5px;
+      box-shadow: inset 0 0 0 1px #0003;
+    }
+
+    .layer .lv {
+      font: 11px var(--mono);
+      color: var(--text);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .layer .lk {
+      color: var(--faint);
+      font-size: 10.5px;
+    }
+
+    .boxed {
+      position: relative;
+      padding: 20px 26px;
+      border-radius: var(--r-sm);
+      background: repeating-linear-gradient(135deg, oklch(30% 0.04 40 / 50%) 0 4px, transparent 4px 8px);
+      box-shadow: inset 0 0 0 1px oklch(60% 0.08 40 / 40%);
+      font: 10px var(--mono);
+      color: var(--dim);
+    }
+
+    .boxed .pad {
+      position: relative;
+      padding: 18px 26px;
+      border-radius: 5px;
+      background: oklch(30% 0.05 150 / 55%);
+      box-shadow: inset 0 0 0 1px oklch(65% 0.1 150 / 40%);
+    }
+
+    .boxed .core {
+      padding: 6px;
+      border-radius: 4px;
+      background: var(--raised);
+      color: var(--text);
+      text-align: center;
+    }
+
+    .boxed .k {
+      position: absolute;
+      top: 3px;
+      left: 6px;
+      font-size: 9px;
+      color: var(--faint);
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      font-family: var(--font);
+    }
+
+    .boxed .n {
+      position: absolute;
+    }
+
+    .boxed .n.t {
+      top: 3px;
+      left: 50%;
+      transform: translateX(-50%);
+    }
+
+    .boxed .n.b {
+      bottom: 3px;
+      left: 50%;
+      transform: translateX(-50%);
+    }
+
+    .boxed .n.l {
+      left: 7px;
+      top: 50%;
+      transform: translateY(-50%);
+    }
+
+    .boxed .n.r {
+      right: 7px;
+      top: 50%;
+      transform: translateY(-50%);
+    }
+
+    .bprev {
+      display: grid;
+      grid-template-columns: 54px minmax(0, 1fr);
+      gap: 10px;
+      align-items: center;
+    }
+
+    .bprev .sq {
+      width: 54px;
+      height: 40px;
+      background: var(--sunken);
+    }
+
+    .bprev label {
+      display: grid;
+      gap: 4px;
+      color: var(--dim);
+      font-size: 10.5px;
+    }
+
+    .bprev input[type=range] {
+      width: 100%;
+      accent-color: var(--accent);
+    }
+
+    .shadows {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 6px;
+    }
+
+    .shp {
+      display: grid;
+      gap: 6px;
+      justify-items: center;
+      padding: 8px 4px 6px;
+      border: 0;
+      border-radius: var(--r-sm);
+      background: var(--sunken);
+      box-shadow: inset 0 0 0 1px var(--line);
+      color: var(--dim);
+      font-size: 10px;
+      cursor: pointer;
+    }
+
+    .shp i {
+      width: 30px;
+      height: 20px;
+      border-radius: 4px;
+      background: #e9ecf4;
+    }
+
+    .shp[aria-current='true'] {
+      box-shadow: inset 0 0 0 1px var(--accent-line);
+      background: var(--accent-soft);
+      color: var(--text);
+    }
+
+    .trans {
+      display: grid;
+      gap: 5px;
+      margin-top: 7px;
+    }
+
+    .tchip {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto 30px;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 8px;
+      border-radius: var(--r-sm);
+      background: var(--sunken);
+      box-shadow: inset 0 0 0 1px var(--line);
+      font: 11px var(--mono);
+    }
+
+    .tchip .d {
+      color: var(--dim);
+    }
+
+    .tchip svg {
+      color: oklch(80% 0.12 300);
+    }
+
+    .hnote {
+      margin: 6px 0 0;
+      color: var(--faint);
+      font-size: 10.5px;
+    }
+
+    /* category cards */
+    .cats {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .cat {
+      position: relative;
+      display: grid;
+      align-content: start;
+      gap: 3px;
+      padding: 6px 6px 9px;
+      border: 0;
+      border-radius: 12px;
+      background: var(--raised);
+      box-shadow: inset 0 0 0 1px var(--line);
+      text-align: left;
+      cursor: pointer;
+      transition: transform .15s, box-shadow .15s;
+    }
+
+    .cat:hover {
+      transform: translateY(-1px);
+      box-shadow: inset 0 0 0 1px oklch(70% 0.12 var(--h) / 55%), 0 10px 24px -14px oklch(60% 0.15 var(--h) / 60%);
+    }
+
+    .cat .art {
+      position: relative;
+      height: 66px;
+      margin-bottom: 4px;
+      overflow: hidden;
+      border-radius: 8px;
+      background: radial-gradient(120% 120% at 20% 0%, oklch(34% 0.07 var(--h)), oklch(22% 0.035 var(--h)));
+      display: grid;
+      place-items: center;
+    }
+
+    .cat .ct {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      padding: 0 3px;
+    }
+
+    .cat .cn {
+      font-weight: 600;
+      font-size: 12px;
+    }
+
+    .cat .cs {
+      padding: 0 3px;
+      color: var(--faint);
+      font-size: 10.5px;
+      line-height: 1.35;
+    }
+
+    .cat .used {
+      white-space: nowrap;
+      flex: none;
+      font-size: 9.5px;
+      padding: 1px 6px;
+      border-radius: 99px;
+      color: oklch(85% 0.1 var(--h));
+      background: oklch(32% 0.06 var(--h));
+    }
+
+    .cat.add {
+      background: transparent;
+      box-shadow: inset 0 0 0 1px var(--line2);
+    }
+
+    .cat.add .art {
+      opacity: .8;
+    }
+
+    .cat.add .cn::before {
+      content: '+ ';
+      color: oklch(80% 0.12 var(--h));
+    }
+
+    .cat.live .sum {
+      padding: 0 3px;
+      color: var(--dim);
+      font: 10px var(--mono);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .ink {
+      color: oklch(82% 0.12 var(--h));
+    }
+
+    /* art */
+    .a-layout {
+      display: flex;
+      gap: 5px;
+      align-items: flex-end;
+    }
+
+    .a-layout i {
+      width: 16px;
+      border-radius: 3px;
+      background: oklch(78% 0.12 var(--h));
+    }
+
+    .a-layout i:nth-child(1) {
+      height: 22px;
+    }
+
+    .a-layout i:nth-child(2) {
+      height: 34px;
+      opacity: .8;
+    }
+
+    .a-layout i:nth-child(3) {
+      height: 16px;
+      opacity: .6;
+    }
+
+    .a-spacing {
+      padding: 8px 12px;
+      border: 1px dashed oklch(75% 0.12 var(--h));
+      border-radius: 5px;
+    }
+
+    .a-spacing span {
+      display: block;
+      width: 34px;
+      height: 18px;
+      border-radius: 3px;
+      background: oklch(78% 0.12 var(--h));
+    }
+
+    .a-size {
+      position: relative;
+      width: 56px;
+      height: 34px;
+      border-radius: 4px;
+      background: oklch(78% 0.12 var(--h) / 30%);
+      box-shadow: inset 0 0 0 1.5px oklch(78% 0.12 var(--h));
+    }
+
+    .a-size::before,
+    .a-size::after {
+      content: '';
+      position: absolute;
+      background: oklch(78% 0.12 var(--h));
+    }
+
+    .a-size::before {
+      left: 0;
+      right: 0;
+      bottom: -7px;
+      height: 1px;
+    }
+
+    .a-size::after {
+      top: 0;
+      bottom: 0;
+      right: -8px;
+      width: 1px;
+    }
+
+    .a-pos {
+      position: relative;
+      width: 60px;
+      height: 40px;
+      border-radius: 4px;
+      box-shadow: inset 0 0 0 1px oklch(78% 0.12 var(--h) / 40%);
+      background: linear-gradient(oklch(78% 0.12 var(--h) / 25%) 1px, transparent 1px) 0 0 / 10px 10px, linear-gradient(90deg, oklch(78% 0.12 var(--h) / 25%) 1px, transparent 1px) 0 0 / 10px 10px;
+    }
+
+    .a-pos span {
+      position: absolute;
+      top: 9px;
+      left: 22px;
+      width: 22px;
+      height: 16px;
+      border-radius: 3px;
+      background: oklch(78% 0.12 var(--h));
+      box-shadow: -4px -4px 0 -2px oklch(78% 0.12 var(--h) / 40%);
+    }
+
+    .a-text {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .a-text b {
+      font: 700 30px/1 Georgia, serif;
+      color: oklch(86% 0.1 var(--h));
+    }
+
+    .a-text span {
+      display: grid;
+      gap: 4px;
+    }
+
+    .a-text i {
+      display: block;
+      height: 3px;
+      border-radius: 2px;
+      background: oklch(78% 0.1 var(--h) / 70%);
+    }
+
+    .a-text i:nth-child(1) {
+      width: 34px;
+    }
+
+    .a-text i:nth-child(2) {
+      width: 26px;
+    }
+
+    .a-text i:nth-child(3) {
+      width: 30px;
+    }
+
+    .a-bg {
+      width: 62px;
+      height: 40px;
+      border-radius: 6px;
+      background: linear-gradient(135deg, oklch(75% 0.17 var(--h)), oklch(70% 0.15 calc(var(--h) + 60)));
+      box-shadow: 0 0 0 3px oklch(100% 0 0 / 8%);
+    }
+
+    .a-border {
+      width: 54px;
+      height: 38px;
+      border-radius: 12px;
+      border: 3px solid oklch(80% 0.14 var(--h));
+      outline: 1px dashed oklch(80% 0.14 var(--h) / 45%);
+      outline-offset: 4px;
+    }
+
+    .a-fx {
+      width: 50px;
+      height: 32px;
+      border-radius: 6px;
+      background: oklch(92% 0.02 var(--h));
+      box-shadow: 0 12px 18px -6px #000a, 0 0 0 1px #fff2;
+      transform: translateY(-3px);
+    }
+
+    .a-motion {
+      position: relative;
+      width: 70px;
+      height: 20px;
+    }
+
+    .a-motion::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 50%;
+      height: 2px;
+      border-radius: 2px;
+      background: linear-gradient(90deg, transparent, oklch(78% 0.12 var(--h) / 50%));
+    }
+
+    .a-motion span {
+      position: absolute;
+      top: 2px;
+      left: 0;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: oklch(82% 0.14 var(--h));
+      animation: slide 1.8s cubic-bezier(.5, 0, .2, 1) infinite alternate;
+    }
+
+    @keyframes slide {
+      to {
+        left: 54px;
+      }
+    }
+
+    .a-int {
+      position: relative;
+    }
+
+    .a-int .btn {
+      display: inline-block;
+      padding: 6px 12px;
+      border-radius: 6px;
+      background: oklch(78% 0.12 var(--h));
+      color: oklch(22% 0.05 var(--h));
+      font-size: 10.5px;
+      font-weight: 700;
+    }
+
+    .a-int svg {
+      position: absolute;
+      right: -10px;
+      bottom: -10px;
+      color: #fff;
+      filter: drop-shadow(0 1px 1px #000a);
+    }
+
+    /* A: the add sheet */
+    .sheet {
+      position: absolute;
+      inset: 0;
+      z-index: 30;
+      display: flex;
+      flex-direction: column;
+      background: color-mix(in oklab, var(--bg) 96%, black);
+      animation: rise .18s ease;
+    }
+
+    @keyframes rise {
+      from {
+        transform: translateY(10px);
+        opacity: 0;
+      }
+    }
+
+    .sh-h {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 12px 8px;
+    }
+
+    .sh-h b {
+      font-size: 13px;
+    }
+
+    .sh-b {
+      flex: 1;
+      overflow: auto;
+      padding: 2px 12px 90px;
+    }
+
+    .sh-b .search {
+      margin-bottom: 10px;
+      height: 34px;
+    }
+
+    .pmatch {
+      display: grid;
+      gap: 2px;
+      margin-bottom: 12px;
+    }
+
+    .pmatch button {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      height: 28px;
+      padding: 0 8px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      cursor: pointer;
+      font: 11px var(--mono);
+      text-align: left;
+    }
+
+    .pmatch button:hover,
+    .pmatch button:focus-visible {
+      background: var(--hover);
+    }
+
+    .pmatch button span {
+      color: var(--faint);
+      font: 10.5px var(--font);
+    }
+
+    .glabel {
+      margin: 14px 0 7px;
+      color: var(--faint);
+      font-size: 9.5px;
+      font-weight: 600;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+
+    .sh-f {
+      margin: 12px 0 0;
+      color: var(--faint);
+      font-size: 10.5px;
+      line-height: 1.5;
+    }
+
+    .sh-f b {
+      color: var(--dim);
+      font: 500 10.5px var(--mono);
+    }
+
+    .gallery {
+      padding: 4px 12px 12px;
+    }
+
+    .gallery .gh {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+    }
+
+    /* C: drill-in */
+    .cgridwrap {
+      padding: 12px;
+    }
+
+    .drill .dh {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .drill .back {
+      border: 0;
+      background: transparent;
+      color: var(--accent-text);
+      cursor: pointer;
+      padding: 4px 0;
+      font-size: 11.5px;
+    }
+
+    .drill .dt {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      margin-left: auto;
+      font-weight: 600;
+    }
+
+    .drill .dt .ic {
+      display: grid;
+      place-items: center;
+      width: 22px;
+      height: 22px;
+      border-radius: 6px;
+      background: oklch(30% 0.05 var(--h));
+      color: oklch(85% 0.12 var(--h));
+    }
+
+    .drill .dbar {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: 3px 8px;
+      align-items: center;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      background: oklch(24% 0.03 var(--h) / 60%);
+    }
+
+    .drill .dbar .tl {
+      color: var(--dim);
+      font-size: 11px;
+    }
+
+    .drill .dbar .tmeta {
+      grid-column: 2;
+      color: var(--faint);
+      font-size: 10.5px;
+    }
+
+    .drill .dbody {
+      padding: 12px;
+    }
+
+    .empty {
+      margin: 0;
+      padding: 6px 0;
+      color: var(--faint);
+      font-size: 11px;
+    }
+
+    /* ------------------------------------------------------------ switcher (not part of the design) */
+    .switcher {
+      position: fixed;
+      left: calc((100% - 340px) / 2);
+      bottom: 18px;
+      transform: translateX(-50%);
+      z-index: 200;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      background: #fde047;
+      color: #111;
+      border-radius: 999px;
+      padding: 5px;
+      box-shadow: 0 10px 30px -8px rgb(0 0 0 / 50%), 0 0 0 1px rgb(0 0 0 / 20%);
+      font: 600 12.5px/1 system-ui, sans-serif;
+    }
+
+    .switcher button {
+      width: 30px;
+      height: 30px;
+      border-radius: 999px;
+      border: 0;
+      background: #111;
+      color: #fde047;
+      cursor: pointer;
+      font-size: 14px;
+    }
+
+    .switcher .lab {
+      padding: 0 12px;
+      min-width: 330px;
+      text-align: center;
+    }
+
+    .switcher .lab small {
+      display: block;
+      font-weight: 500;
+      font-size: 10.5px;
+      opacity: .7;
+      margin-top: 3px;
+    }
+
+    #out {
+      display: none;
+    }
+  </style>
+</head>
+
+<body>
+  <main class="stage">
+    <p class="stage-h">Sample page — rendered from the stylesheet the panel edits. The selected card is
+      <code>p.card.featured</code>.
+    </p>
+    <div id="frame">
+      <div id="site">
+        <section class="promo">
+          <h2>Plans</h2>
+          <div class="cards">
+            <p class="card">Starter — for side projects and quick experiments.</p>
+            <p class="card featured" id="target">Pro — everything a growing team needs, billed monthly.</p>
+            <p class="card">Team — shared workspaces, roles and SSO.</p>
+          </div>
+        </section>
+        <section class="plain">
+          <p class="card">Need help choosing? Our support team answers within a day.</p>
+        </section>
+      </div>
+      <div id="sel-box"></div>
+      <div id="sel-tag"></div>
+    </div>
+    <div class="inspector">
+      <div class="ins">
+        <h3>site.css <span class="c">what the panel wrote, highlighted</span></h3>
+        <pre id="ins-css"></pre>
+      </div>
+      <div class="ins">
+        <h3>Selected element <button type="button" id="reset">Reset sample</button></h3>
+        <pre id="ins-el"></pre>
+        <div class="last" id="ins-last"></div>
+      </div>
+    </div>
+  </main>
+  <aside id="panel" aria-label="Styles panel (prototype)"></aside>
+  <div id="clist" role="listbox" hidden></div>
+  <div class="switcher" role="group" aria-label="Prototype variant switcher">
+    <button type="button" id="prev" aria-label="Previous variant">←</button>
+    <div class="lab" id="vlabel" aria-live="polite"></div>
+    <button type="button" id="next" aria-label="Next variant">→</button>
+  </div>
+  <div id="out"></div>
+
+  <script>
+    /* =========================================================================== data */
+    const $ = (s, r = document) => r.querySelector(s);
+    const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+    const target = document.getElementById('target');
+    const site = document.getElementById('site');
+    const panel = document.getElementById('panel');
+    const clist = document.getElementById('clist');
+
+    const VARIANTS = [
+      { k: 'A', label: 'A — Every row picks where it goes', note: 'A destination dropdown on each row · + Add opens a category sheet' },
+      { k: 'B', label: 'B — One "Changes go to" target', note: 'One destination for the whole panel · categories wait at the end of the list' },
+      { k: 'C', label: 'C — Category cards, drill in', note: 'The panel is a 2-column card grid · each category picks its destination' },
+    ];
+
+    const ICON = {
+      layout: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/>',
+      spacing: '<rect x="3" y="3" width="18" height="18" rx="2"/><rect x="8" y="8" width="8" height="8" rx="1"/>',
+      size: '<path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>',
+      position: '<path d="M5 9l-3 3 3 3M9 5l3-3 3 3M15 19l-3 3-3-3M19 9l3 3-3 3M2 12h20M12 2v20"/>',
+      text: '<path d="M4 7V4h16v3M9 20h6M12 4v16"/>',
+      background: '<path d="M12 22a7 7 0 0 0 7-7c0-2-1-3.9-3-5.5s-3.5-4-4-6.5c-.5 2.5-2 4.9-4 6.5C6 11.1 5 13 5 15a7 7 0 0 0 7 7z"/>',
+      border: '<rect x="3" y="3" width="18" height="18" rx="6"/>',
+      effects: '<path d="M12 3l1.9 5.8L20 10l-6.1 1.2L12 17l-1.9-5.8L4 10l6.1-1.2z"/>',
+      motion: '<polygon points="6 3 20 12 6 21 6 3"/>',
+      interaction: '<path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/>',
+    };
+    const svg = (k, s = 13) => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[k]}</svg>`;
+
+    const SECTIONS = [
+      { id: 'layout', name: 'Layout', hue: 255, sub: 'Display, flex, grid and gap', props: ['display', 'flex-direction', 'flex-wrap', 'justify-content', 'align-items', 'gap', 'grid-template-columns', 'overflow'], seed: ['display'] },
+      { id: 'spacing', name: 'Spacing', hue: 160, sub: 'Margin and padding', props: ['margin', 'margin-top', 'margin-bottom', 'padding', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left'], seed: ['padding', 'margin'] },
+      { id: 'size', name: 'Size', hue: 200, sub: 'Width, height and limits', props: ['width', 'height', 'min-width', 'max-width', 'min-height', 'max-height', 'aspect-ratio'], seed: ['width', 'height'] },
+      { id: 'position', name: 'Position', hue: 120, sub: 'Offsets and stacking', props: ['position', 'top', 'right', 'bottom', 'left', 'z-index'], seed: ['position'] },
+      { id: 'text', name: 'Text style', hue: 285, sub: 'Text styles, font, size, color', props: ['font-family', 'font-size', 'font-weight', 'line-height', 'letter-spacing', 'color', 'text-align', 'text-transform', 'text-decoration', 'text-shadow'], seed: ['font-size', 'color'] },
+      { id: 'background', name: 'Background', hue: 330, sub: 'Colors, gradients, images', props: ['background', 'background-color', 'background-image', 'background-size'], seed: ['background'] },
+      { id: 'border', name: 'Border', hue: 30, sub: 'Lines, radius, outline', props: ['border', 'border-color', 'border-width', 'border-style', 'border-radius', 'outline', 'outline-offset'], seed: ['border', 'border-radius'] },
+      { id: 'effects', name: 'Shadow & effects', hue: 70, sub: 'Shadow, opacity, filter, transform', props: ['box-shadow', 'opacity', 'transform', 'filter', 'backdrop-filter', 'mix-blend-mode'], seed: ['box-shadow'] },
+      { id: 'motion', name: 'Motion', hue: 305, sub: 'Transitions and animations', props: ['transition', 'animation'], seed: ['transition'] },
+      { id: 'interaction', name: 'Interaction', hue: 100, sub: 'Cursor, pointer, selection', props: ['cursor', 'pointer-events', 'user-select'], seed: ['cursor'] },
+    ];
+    const SEC = Object.fromEntries(SECTIONS.map((s) => [s.id, s]));
+    const SEC_OF = {};
+    SECTIONS.forEach((s) => s.props.forEach((p) => (SEC_OF[p] ??= s.id)));
+    const ALL_PROPS = Object.keys(SEC_OF);
+
+    const ART = {
+      layout: '<div class="a-layout"><i></i><i></i><i></i></div>',
+      spacing: '<div class="a-spacing"><span></span></div>',
+      size: '<div class="a-size"></div>',
+      position: '<div class="a-pos"><span></span></div>',
+      text: '<div class="a-text"><b>Aa</b><span><i></i><i></i><i></i></span></div>',
+      background: '<div class="a-bg"></div>',
+      border: '<div class="a-border"></div>',
+      effects: '<div class="a-fx"></div>',
+      motion: '<div class="a-motion"><span></span></div>',
+      interaction: '<div class="a-int"><span class="btn">Hover</span><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" stroke="#111" stroke-width="1.5"><path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/></svg></div>',
+    };
+
+    const TEXT_STYLES = [
+      { name: 'Display', css: { 'font-size': '22px', 'font-weight': '700', 'line-height': '1.2' } },
+      { name: 'Body', css: { 'font-size': '14px', 'font-weight': '400', 'line-height': '1.5' } },
+      { name: 'Body strong', css: { 'font-size': '14px', 'font-weight': '600', 'line-height': '1.5' } },
+      { name: 'Caption', css: { 'font-size': '12px', 'font-weight': '500', 'line-height': '1.4' } },
+    ];
+    const SHADOWS = [
+      { name: 'None', v: 'none' },
+      { name: 'Soft', v: '0 1px 2px rgb(0 0 0 / 6%)' },
+      { name: 'Lifted', v: '0 10px 24px -10px rgb(30 40 80 / 35%)' },
+      { name: 'Glow', v: '0 0 0 4px rgb(99 102 241 / 25%)' },
+    ];
+    const CONDS = ['', ':hover', ':focus-visible'];
+
+    const INITIAL_SOURCES = [
+      { id: 'inline', kind: 'inline', sel: '' },
+      { id: 'card', kind: 'class', sel: '.card' },
+      { id: 'featured', kind: 'class', sel: '.featured' },
+      { id: 'promo', kind: 'rule', sel: '.promo .card' },
+    ];
+    const INITIAL_DECLS = [
+      ['card', '', 'padding', '16px 18px'], ['card', '', 'border', '1px solid #dfe3ec'], ['card', '', 'border-radius', '10px'],
+      ['card', '', 'background', '#ffffff'], ['card', '', 'color', '#3b4256'], ['card', '', 'font-size', '14px'], ['card', '', 'line-height', '1.5'],
+      ['card', '', 'transition', 'transform 200ms ease, box-shadow 200ms ease'],
+      ['card', ':hover', 'transform', 'translateY(-2px)'], ['card', ':hover', 'box-shadow', '0 10px 24px -10px rgb(30 40 80 / 35%)'],
+      ['featured', '', 'background', '#eef2ff'], ['featured', '', 'border-color', '#6366f1'], ['featured', '', 'font-weight', '600'], ['featured', '', 'color', '#1e1b4b'],
+      ['promo', '', 'padding', '20px'], ['promo', '', 'box-shadow', '0 1px 2px rgb(0 0 0 / 6%)'],
+    ];
+
+    /* =========================================================================== state */
+    let variant = VARIANTS.some((v) => v.k === new URLSearchParams(location.search).get('variant')) ? new URLSearchParams(location.search).get('variant') : 'A';
+    let uid = 0;
+    let S;
+    function reset() {
+      uid = 0;
+      S = {
+        sources: INITIAL_SOURCES.map((s) => ({ ...s })),
+        decls: INITIAL_DECLS.map(([src, cond, prop, value]) => ({ id: ++uid, src, cond, prop, value, important: false })),
+        openRows: new Set(), openSecs: new Set(), closed: new Set(),
+        rowDest: new Map(), target: { src: 'featured', cond: '' }, secDest: new Map(),
+        drill: null, sheet: false, sheetQ: '', pop: null, draft: null, lost: new Map(),
+        filter: '', addIn: null, motionTab: 'transition', flash: null, last: '', lastIds: new Set(),
+      };
+      target.className = 'card featured';
+      target.removeAttribute('style');
+    }
+
+    /* =========================================================================== cascade model */
+    const srcById = (id) => S.sources.find((s) => s.id === id);
+    function spec(sel) {
+      if (!sel) return 0;
+      const ids = (sel.match(/#[\w-]+/g) || []).length;
+      const cls = (sel.match(/\.[\w-]+|:(?!:)[\w-]+|\[[^\]]*\]/g) || []).length;
+      const tags = (sel.replace(/[#.:][\w-]+|\[[^\]]*\]/g, ' ').match(/\b[a-z][\w-]*/gi) || []).length;
+      return ids * 100 + cls * 10 + tags;
+    }
+    function rankOf(srcId, cond) {
+      const s = srcById(srcId);
+      if (s.kind === 'inline') return 1e7;
+      return spec(s.sel + cond) * 1000 + S.sources.indexOf(s);
+    }
+    const drank = (d) => rankOf(d.src, d.cond) + (d.important ? 1e8 : 0);
+    /** The winning declaration of a property in a state ('' = at rest). */
+    function winnerOf(prop, cond = '') {
+      return S.decls.filter((d) => d.prop === prop && (d.cond === '' || d.cond === cond)).sort((a, b) => drank(b) - drank(a))[0] ?? null;
+    }
+    /** Whether a value written at `dest` would show; if not, what beats it. */
+    function wouldWin(prop, dest) {
+      const others = S.decls.filter((d) => d.prop === prop && (d.cond === '' || d.cond === dest.cond) && !(d.src === dest.src && d.cond === dest.cond));
+      const top = others.sort((a, b) => drank(b) - drank(a))[0];
+      const own = S.decls.find((d) => d.prop === prop && d.src === dest.src && d.cond === dest.cond);
+      const mine = rankOf(dest.src, dest.cond) + (own?.important ? 1e8 : 0);
+      return !top || mine > drank(top) ? { win: true } : { win: false, by: top };
+    }
+    function uses(srcId) {
+      const s = srcById(srcId);
+      if (s.kind === 'inline') return 1;
+      try { return site.querySelectorAll(s.sel).length; } catch { return 0; }
+    }
+    const short = (dest) => { const s = srcById(dest.src); return (s.kind === 'inline' ? 'inline' : s.sel) + (dest.cond || ''); };
+    const long = (dest) => { const s = srcById(dest.src); return (s.kind === 'inline' ? 'This element (inline)' : s.sel) + (dest.cond ? ` ${dest.cond}` : ''); };
+    const elementsWord = (n) => `${n} element${n === 1 ? '' : 's'}`;
+    function defaultDest() {
+      const own = S.sources.find((s) => s.kind === 'class' && target.classList.contains(s.sel.slice(1)) && uses(s.id) === 1);
+      return { src: own?.id ?? 'inline', cond: '' };
+    }
+    function destFor(prop) {
+      if (variant === 'B') return S.target;
+      if (variant === 'C') return S.secDest.get(SEC_OF[prop]) ?? defaultDest();
+      const d = S.rowDest.get(prop);
+      if (d) return d;
+      const w = winnerOf(prop);
+      return w ? { src: w.src, cond: '' } : defaultDest();
+    }
+    function heroDest(secId) {
+      if (variant === 'A') {
+        const first = SEC[secId].props.find((p) => S.decls.some((d) => d.prop === p && d.cond === '')) ?? SEC[secId].props[0];
+        return destFor(first);
+      }
+      return variant === 'B' ? S.target : S.secDest.get(secId) ?? defaultDest();
+    }
+
+    /** Write one value: the only mutation everything goes through. */
+    function write(prop, value, dest, { quiet = false } = {}) {
+      value = String(value).trim();
+      const at = S.decls.find((d) => d.prop === prop && d.src === dest.src && d.cond === dest.cond);
+      if (!value) { if (at) S.decls = S.decls.filter((d) => d !== at); }
+      else if (at) at.value = value;
+      else S.decls.push({ id: ++uid, src: dest.src, cond: dest.cond, prop, value, important: false });
+      const now = S.decls.find((d) => d.prop === prop && d.src === dest.src && d.cond === dest.cond);
+      S.lastIds = new Set(now ? [now.id] : []);
+      if (!quiet) {
+        const n = uses(dest.src);
+        const lost = value && !wouldWin(prop, dest).win;
+        S.last = value
+          ? `<b>${esc(prop)}: ${esc(value)}</b> written to <b>${esc(long(dest))}</b>, which styles ${elementsWord(n)}.${lost ? ` It doesn't show: <b>${esc(short(wouldWin(prop, dest).by))}</b> wins.` : ''}`
+          : `<b>${esc(prop)}</b> removed from <b>${esc(long(dest))}</b>.`;
+      }
+      if (value && !wouldWin(prop, dest).win) S.lost.set(prop, dest); else S.lost.delete(prop);
+      applyCss();
+    }
+    function moveDecl(d, dest) {
+      if (d.src === dest.src && d.cond === dest.cond) return;
+      const from = { src: d.src, cond: d.cond };
+      S.decls = S.decls.filter((x) => !(x !== d && x.prop === d.prop && x.src === dest.src && x.cond === dest.cond));
+      d.src = dest.src; d.cond = dest.cond;
+      S.lastIds = new Set([d.id]);
+      S.last = `Moved <b>${esc(d.prop)}</b> from <b>${esc(long(from))}</b> (${elementsWord(uses(from.src))}) to <b>${esc(long(dest))}</b> (${elementsWord(uses(dest.src))}).`;
+      applyCss();
+    }
+    function createClass(name) {
+      name = name.replace(/^\./, '');
+      let s = S.sources.find((x) => x.kind === 'class' && x.sel === `.${name}`);
+      if (!s) { s = { id: `c-${name}`, kind: 'class', sel: `.${name}`, fresh: true }; S.sources.push(s); }
+      target.classList.add(name);
+      return s.id;
+    }
+    function createRule(sel) {
+      const s = { id: `r-${++uid}`, kind: 'rule', sel, fresh: true };
+      S.sources.push(s);
+      return s.id;
+    }
+
+    /* =========================================================================== page rendering */
+    function applyCss() {
+      const out = [];
+      for (const s of S.sources) {
+        if (s.kind === 'inline') continue;
+        for (const cond of CONDS) {
+          const ds = S.decls.filter((d) => d.src === s.id && d.cond === cond);
+          if (ds.length) out.push({ sel: s.sel + cond, ds });
+        }
+      }
+      $('#site-css').textContent = out.map((r) => `${r.sel} {\n${r.ds.map((d) => `  ${d.prop}: ${d.value}${d.important ? ' !important' : ''};`).join('\n')}\n}`).join('\n');
+      const inl = S.decls.filter((d) => d.src === 'inline');
+      target.setAttribute('style', inl.map((d) => `${d.prop}: ${d.value}${d.important ? ' !important' : ''}`).join('; '));
+      if (!inl.length) target.removeAttribute('style');
+      $('#ins-css').innerHTML = out.map((r) => `<span class="sel">${esc(r.sel)}</span> {\n${r.ds.map((d) => `<span class="${S.lastIds.has(d.id) ? 'hl' : ''}">  ${esc(d.prop)}: ${esc(d.value)}${d.important ? ' <span class="imp">!important</span>' : ''};</span>`).join('\n')}\n}`).join('\n\n');
+      const style = inl.map((d) => `<span class="${S.lastIds.has(d.id) ? 'hl' : ''}">${esc(d.prop)}: ${esc(d.value)}</span>`).join('; ');
+      $('#ins-el').innerHTML = `&lt;p class="${esc(target.className)}"${inl.length ? ` style="${style}"` : ''}&gt;`;
+      $('#ins-last').innerHTML = S.last;
+      placeSel();
+    }
+    function placeSel() {
+      const f = $('#frame').getBoundingClientRect();
+      const r = target.getBoundingClientRect();
+      Object.assign($('#sel-box').style, { left: `${r.left - f.left - 3}px`, top: `${r.top - f.top - 3}px`, width: `${r.width + 6}px`, height: `${r.height + 6}px` });
+      const tag = $('#sel-tag');
+      tag.textContent = `p.${[...target.classList].join('.')}`;
+      Object.assign(tag.style, { left: `${r.left - f.left - 3}px`, top: `${r.top - f.top - 3 - 17}px` });
+    }
+
+    /* =========================================================================== destination combobox */
+    const COMBOS = new Map();
+    let combo = null; // { id, query, active, cond, items }
+    /**
+     * A destination field: shows where something goes, and on focus becomes an autocomplete of
+     * every place it could go instead, with whether the value would show there and how many
+     * elements that place styles. Typing a name offers to create it.
+     */
+    function comboHtml(id, def) {
+      COMBOS.set(id, def);
+      const cur = def.current;
+      const lab = cur ? (def.long ? long(cur) : short(cur)) : '';
+      const n = cur ? uses(cur.src) : 0;
+      return `<span class="combo ${def.cls ?? ''}">
+        <input data-combo="${esc(id)}" data-key="combo:${esc(id)}" data-label="${esc(lab)}" value="${esc(lab)}" placeholder="${esc(def.placeholder ?? 'Where?')}"
+          role="combobox" aria-expanded="false" aria-controls="clist" aria-autocomplete="list" aria-label="${esc(def.aria ?? 'Where this value goes')}" title="${cur ? esc(`${long(cur)} · styles ${elementsWord(n)}`) : ''}">
+        ${cur && def.reach !== false ? `<span class="rc ${n > 1 ? 'many' : ''}" title="Styles ${elementsWord(n)}">${n}</span>` : ''}
+        <span class="car">▾</span>
+      </span>`;
+    }
+    function comboItems(def, query, cond) {
+      const q = query.trim().toLowerCase().replace(/^\./, '');
+      const fit = (text) => !q || text.toLowerCase().replace(/^\./, '').includes(q);
+      const items = [];
+      const opt = (group, srcId, extra = {}) => {
+        const dest = { src: srcId, cond };
+        const s = srcById(srcId);
+        const disabled = s.kind === 'inline' && cond !== '';
+        const stat = def.prop ? wouldWin(def.prop, dest) : null;
+        items.push({ group, kind: 'src', dest, disabled, stat, n: uses(srcId), s, ...extra });
+      };
+      if (fit('this element inline')) opt('Only this element', 'inline');
+      S.sources.filter((s) => s.kind === 'class' && target.classList.contains(s.sel.slice(1)) && fit(s.sel)).forEach((s) => opt('Classes on it', s.id));
+      S.sources.filter((s) => s.kind === 'rule' && target.matches(s.sel) && fit(s.sel)).forEach((s) => opt('Rules that reach it', s.id));
+      const raw = query.trim();
+      if (raw) {
+        if (/^\.?-?[_a-zA-Z][\w-]*$/.test(raw) && !S.sources.some((s) => s.sel === `.${raw.replace(/^\./, '')}`)) {
+          items.push({ group: 'Create', kind: 'new-class', name: raw.replace(/^\./, '') });
+        } else if (!S.sources.some((s) => s.sel === raw)) {
+          let ok = false, n = 0;
+          try { ok = target.matches(raw); n = site.querySelectorAll(raw).length; } catch { ok = null; }
+          if (ok !== null) items.push({ group: 'Create', kind: 'new-rule', sel: raw, n, disabled: !ok });
+        }
+      } else {
+        items.push({ group: 'Create', kind: 'hint', disabled: true });
+      }
+      return items;
+    }
+    function drawCombo() {
+      if (!combo) { clist.hidden = true; return; }
+      const input = panel.querySelector(`[data-combo="${CSS.escape(combo.id)}"]`);
+      const def = COMBOS.get(combo.id);
+      if (!input || !def) { closeCombo(); return; }
+      combo.items = comboItems(def, combo.query, combo.cond);
+      if (combo.active >= combo.items.length || combo.items[combo.active]?.disabled) combo.active = combo.items.findIndex((i) => !i.disabled);
+      let html = `<div class="cap">${def.prop ? `<b>${esc(def.prop)}</b> — ` : ''}${esc(def.question ?? 'where should it go?')}</div>`;
+      let group = '';
+      combo.items.forEach((it, i) => {
+        if (it.group !== group) { group = it.group; html += `<div class="grp">${esc(group)}</div>`; }
+        const sel = i === combo.active ? 'true' : 'false';
+        const dis = it.disabled ? 'true' : 'false';
+        if (it.kind === 'src') {
+          const cur = def.current && def.current.src === it.dest.src && def.current.cond === it.dest.cond;
+          const name = it.s.kind === 'inline' ? 'This element' : it.s.sel + (combo.cond || '');
+          const meta = it.disabled ? 'Inline styles can’t hold a state' : `${it.s.kind === 'inline' ? 'inline style · ' : ''}${elementsWord(it.n)}${it.s.fresh ? ' · new' : ''}`;
+          const st = !it.stat || it.disabled ? '' : it.stat.win ? '<span class="st win">shows</span>' : `<span class="st lose" title="${esc(short(it.stat.by))} wins">loses to ${esc(short(it.stat.by))}</span>`;
+          html += `<div class="opt" role="option" id="opt-${i}" data-i="${i}" aria-selected="${sel}" aria-disabled="${dis}"><span class="ok">${cur ? '✓' : ''}</span><span class="os ${it.s.kind === 'inline' ? 'sans' : ''}">${esc(name)}</span>${st}<span class="om">${esc(meta)}</span></div>`;
+        } else if (it.kind === 'new-class') {
+          html += `<div class="opt new" role="option" id="opt-${i}" data-i="${i}" aria-selected="${sel}" aria-disabled="false"><span class="ok">+</span><span class="os">.${esc(it.name)}${esc(combo.cond)}</span><span></span><span class="om">New class, added to this element</span></div>`;
+        } else if (it.kind === 'new-rule') {
+          html += `<div class="opt new" role="option" id="opt-${i}" data-i="${i}" aria-selected="${sel}" aria-disabled="${dis}"><span class="ok">+</span><span class="os">${esc(it.sel)}${esc(combo.cond)}</span><span></span><span class="om">${it.disabled ? 'Doesn’t select this element' : `New rule · ${elementsWord(it.n)}`}</span></div>`;
+        } else {
+          html += `<div class="opt" role="option" id="opt-${i}" aria-disabled="true"><span class="ok"></span><span class="os sans">Type a name to create a class</span><span></span></div>`;
+        }
+      });
+      if (def.conds !== false) {
+        html += `<div class="foot">When ${CONDS.map((c) => `<button type="button" data-cond="${c}" aria-pressed="${combo.cond === c}">${c ? c.replace('-visible', '') : 'always'}</button>`).join('')}</div>`;
+      }
+      clist.innerHTML = html;
+      clist.hidden = false;
+      input.setAttribute('aria-expanded', 'true');
+      if (combo.active > -1) input.setAttribute('aria-activedescendant', `opt-${combo.active}`);
+      const r = input.closest('.combo').getBoundingClientRect();
+      const w = Math.max(r.width, 270);
+      clist.style.width = `${w}px`;
+      clist.style.left = `${Math.max(8, Math.min(r.right - w, innerWidth - w - 8))}px`;
+      const h = clist.offsetHeight;
+      clist.style.top = r.bottom + 4 + h > innerHeight - 8 ? `${Math.max(8, r.top - 4 - h)}px` : `${r.bottom + 4}px`;
+      clist.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
+    }
+    function openCombo(input) {
+      const id = input.dataset.combo;
+      const def = COMBOS.get(id);
+      combo = { id, query: '', active: 0, cond: def.current?.cond ?? '' };
+      const items = comboItems(def, '', combo.cond);
+      const cur = items.findIndex((i) => i.kind === 'src' && def.current && i.dest.src === def.current.src);
+      combo.active = cur > -1 ? cur : 0;
+      input.select();
+      drawCombo();
+    }
+    function closeCombo() {
+      if (combo) {
+        const input = panel.querySelector(`[data-combo="${CSS.escape(combo.id)}"]`);
+        if (input) { input.value = input.dataset.label; input.setAttribute('aria-expanded', 'false'); input.removeAttribute('aria-activedescendant'); }
+      }
+      combo = null;
+      clist.hidden = true;
+    }
+    function pickCombo(i) {
+      const it = combo?.items[i];
+      if (!it || it.disabled || it.kind === 'hint') return;
+      const def = COMBOS.get(combo.id);
+      const cond = combo.cond;
+      let dest;
+      if (it.kind === 'src') dest = it.dest;
+      else if (it.kind === 'new-class') dest = { src: createClass(it.name), cond };
+      else dest = { src: createRule(it.sel), cond };
+      closeCombo();
+      def.onPick(dest);
+      later();
+    }
+    clist.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      const c = e.target.closest('[data-cond]');
+      if (c && combo) { combo.cond = c.dataset.cond; drawCombo(); return; }
+      const o = e.target.closest('.opt[data-i]');
+      if (o) pickCombo(Number(o.dataset.i));
+    });
+
+    /* =========================================================================== panel pieces */
+    const declsOf = (prop) => S.decls.filter((d) => d.prop === prop);
+    function propsShown(secId) {
+      return SEC[secId].props.filter((p) => S.decls.some((d) => d.prop === p) || S.openRows.has(p));
+    }
+    function matchesFilter(prop) {
+      const q = S.filter.trim().toLowerCase();
+      if (!q) return true;
+      return prop.includes(q) || declsOf(prop).some((d) => d.value.toLowerCase().includes(q) || srcById(d.src).sel.toLowerCase().includes(q));
+    }
+    const secInUse = (secId) => propsShown(secId).length > 0 || S.openSecs.has(secId);
+    const computed = (prop) => getComputedStyle(target).getPropertyValue(prop).trim();
+
+    function header() {
+      const chips = [...target.classList].map((c) => {
+        const s = S.sources.find((x) => x.sel === `.${c}`);
+        const on = variant === 'B' && s && S.target.src === s.id;
+        return `<button type="button" class="cchip ${s?.fresh ? 'fresh' : ''} ${on ? 'on' : ''}" ${variant === 'B' && s ? `data-act="target-class" data-src="${s.id}" title="Send changes to .${esc(c)}"` : 'tabindex="-1"'}>.${esc(c)}</button>`;
+      }).join('');
+      const add = variant === 'A' ? '<button type="button" class="addbtn" data-act="open-sheet">+ Add</button>'
+        : variant === 'B' ? '<button type="button" class="addbtn" data-act="goto-gallery">+ Add</button>' : '';
+      return `<div class="ph"><span class="tag">p</span>${chips}<button type="button" class="cadd" tabindex="-1">+ class</button></div>
+        <div class="top"><label class="search"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+        <input data-edit="filter" data-key="filter" value="${esc(S.filter)}" placeholder="Search or add a property…" aria-label="Search or add a property"></label>${add}</div>`;
+    }
+
+    function targetBar() {
+      const n = uses(S.target.src);
+      const others = n - 1;
+      return `<div class="tbar"><span class="tl">Changes go to</span>
+        ${comboHtml('target', { current: S.target, long: true, question: 'where should every change go?', aria: 'Where every change goes', onPick: (d) => { S.target = d; S.lost.clear(); } })}
+        <span class="tmeta">${others ? `<b>Also changes ${elementsWord(others)}</b> that use it` : 'Only this element'}${S.target.cond ? ` · while ${esc(S.target.cond)}` : ''}</span></div>`;
+    }
+
+    function row(prop) {
+      const w = winnerOf(prop);
+      const ds = declsOf(prop);
+      const dest = destFor(prop);
+      const pop = S.pop === prop;
+      const dot = `<button type="button" class="dot ${ds.length > 1 ? 'multi' : ''} ${pop ? 'on' : ''}" data-act="cascade" data-prop="${prop}" aria-label="Everything that sets ${prop}" aria-expanded="${pop}"></button>`;
+      const input = `<input class="val" data-edit="row" data-prop="${prop}" data-key="row:${prop}" value="${esc(w?.value ?? '')}" placeholder="${esc(computed(prop) || '—')}" aria-label="${prop}">`;
+      let tail = '';
+      if (variant === 'A') {
+        const pending = !w || w.src !== dest.src;
+        tail = comboHtml(`row:${prop}`, { prop, current: dest, cls: pending ? 'pending' : '', onPick: (d) => { S.rowDest.set(prop, d); S.lost.delete(prop); S.focus = `row:${prop}`; } });
+      } else {
+        const here = w && w.src === dest.src;
+        tail = w ? `<span class="from ${here ? 'here' : ''}" title="${here ? 'Set where your changes go' : `Comes from ${esc(long(w))}`}">${here ? '✓ ' : ''}${esc(short(w))}</span>` : '<span class="from">default</span>';
+      }
+      const states = ds.filter((d) => d.cond).map((d) => `<div class="srow"><span></span><span class="state">${esc(d.cond)}</span>
+        <input class="val" data-edit="decl" data-id="${d.id}" data-key="decl:${d.id}" value="${esc(d.value)}" aria-label="${prop} ${d.cond}">
+        ${variant === 'A' ? comboHtml(`state:${d.id}`, { prop, current: { src: d.src, cond: d.cond }, onPick: (dd) => moveDecl(d, dd) }) : `<span class="from">${esc(short(d))}</span>`}</div>`).join('');
+      const lost = S.lost.get(prop);
+      const warn = lost && !wouldWin(prop, lost).win ? (() => {
+        const by = wouldWin(prop, lost).by;
+        return `<div class="warn" role="status">Saved in <b>${esc(short(lost))}</b>, but <b>${esc(short(by))}</b> wins, so the page doesn't change.
+          <div class="wa"><button type="button" class="mini pri" data-act="fix-there" data-prop="${prop}">Put it in ${esc(short(by))} (${elementsWord(uses(by.src))})</button><button type="button" class="mini" data-act="fix-imp" data-prop="${prop}">Make ${esc(short(lost))} win</button></div></div>`;
+      })() : '';
+      const casc = pop ? cascade(prop) : '';
+      return `<div class="rw" data-row="${prop}"><div class="row">${dot}<span class="pn" title="${prop}">${prop}</span>${input}${tail}</div>${states}${warn}${casc}</div>`;
+    }
+
+    /** The cascade editor: every place that sets the property, each place a dropdown. */
+    function cascade(prop) {
+      const ds = declsOf(prop);
+      const base = ds.filter((d) => !d.cond).sort((a, b) => drank(b) - drank(a));
+      const idle = ds.filter((d) => d.cond);
+      const line = (d, kind) => `<div class="cl ${kind}"><span class="cd" title="${kind === 'win' ? 'Shows' : kind === 'lost' ? 'Overridden' : `Only on ${d.cond}`}"></span>
+        ${comboHtml(`line:${d.id}`, { prop, current: { src: d.src, cond: d.cond }, question: 'move this value to…', onPick: (dd) => moveDecl(d, dd) })}
+        <input class="val" data-edit="decl" data-id="${d.id}" data-key="cdecl:${d.id}" value="${esc(d.value)}" aria-label="${prop} in ${esc(short(d))}">
+        <button type="button" class="x" data-act="rm-decl" data-id="${d.id}" aria-label="Remove from ${esc(short(d))}">×</button></div>`;
+      const draft = S.draft?.prop === prop ? `<div class="cl"><span class="cd" style="background:var(--accent-text)"></span>
+        ${comboHtml('draft', { prop, current: null, placeholder: 'Class, rule, or a new name', question: 'add a value in…', onPick: (dd) => { write(prop, S.draft.value || computed(prop), dd); S.draft = null; } })}
+        <input class="val" data-edit="draft" data-key="draft-val" value="${esc(S.draft.value)}" aria-label="New ${prop} value">
+        <button type="button" class="x" data-act="rm-draft" aria-label="Cancel">×</button></div>` : '';
+      const none = base.length ? '' : `<p class="none">Nothing sets it at rest. It resolves to <code>${esc(computed(prop) || 'nothing')}</code> (inherited or the browser's default).</p>`;
+      return `<div class="casc ${variant === 'B' ? 'drawer' : 'float'}" role="dialog" aria-label="Cascade for ${prop}">
+        <div class="cap"><b>${prop}</b><span>winner first</span></div>
+        ${base.map((d, i) => line(d, i === 0 ? 'win' : 'lost')).join('')}${none}
+        ${idle.length ? `<p class="sub">In other states</p>${idle.map((d) => line(d, 'idle')).join('')}` : ''}
+        ${draft}
+        ${S.draft?.prop === prop ? '' : `<button type="button" class="more" data-act="add-val" data-prop="${prop}">+ Add a value in…</button>`}
+        <p class="hint">Change a source to move its value there. Type a new name to create a class.</p></div>`;
+    }
+
+    function hero(secId) {
+      const dest = heroDest(secId);
+      switch (secId) {
+        case 'text': {
+          const cur = TEXT_STYLES.findIndex((t) => Object.entries(t.css).every(([p, v]) => computed(p) === (p === 'line-height' ? `${parseFloat(computed('font-size')) * Number(v)}px` : v)));
+          return `<div class="hero"><div class="tstyles">${TEXT_STYLES.map((t, i) => `<button type="button" class="tst" data-act="text-style" data-i="${i}" aria-current="${i === cur}" title="Apply to ${esc(long(dest))}">
+            <span class="tp" style="font-size:${Math.min(parseFloat(t.css['font-size']), 18)}px;font-weight:${t.css['font-weight']}">${t.name}</span><span class="tm">${parseFloat(t.css['font-size'])}/${t.css['line-height']} · ${t.css['font-weight']}</span></button>`).join('')}</div>
+            <p class="hnote">Text styles apply to <b>${esc(short(dest))}</b>.</p></div>`;
+        }
+        case 'background': {
+          const c = getComputedStyle(target).backgroundColor;
+          const hex = toHex(c);
+          return `<div class="hero"><div class="layer"><input type="color" data-edit="bg-color" data-key="bg-color" value="${hex}" aria-label="Background color"><span class="lv">${esc(winnerOf('background')?.value ?? hex)}</span><span class="lk">Solid ▾</span></div></div>`;
+        }
+        case 'spacing': {
+          const cs = getComputedStyle(target);
+          const n = (v) => Math.round(parseFloat(v));
+          return `<div class="hero"><div class="boxed"><span class="k">margin</span><span class="n t">${n(cs.marginTop)}</span><span class="n b">${n(cs.marginBottom)}</span><span class="n l">${n(cs.marginLeft)}</span><span class="n r">${n(cs.marginRight)}</span>
+            <div class="pad"><span class="k">padding</span><span class="n t">${n(cs.paddingTop)}</span><span class="n b">${n(cs.paddingBottom)}</span><span class="n l">${n(cs.paddingLeft)}</span><span class="n r">${n(cs.paddingRight)}</span>
+            <div class="core">${Math.round(target.clientWidth - n(cs.paddingLeft) - n(cs.paddingRight))} × ${Math.round(target.clientHeight - n(cs.paddingTop) - n(cs.paddingBottom))}</div></div></div></div>`;
+        }
+        case 'border': {
+          const cs = getComputedStyle(target);
+          const r = Math.round(parseFloat(cs.borderTopLeftRadius) || 0);
+          return `<div class="hero"><div class="bprev"><span class="sq" style="border:${cs.borderTopWidth} ${cs.borderTopStyle} ${cs.borderTopColor};border-radius:${r}px"></span>
+            <label>Radius · ${r}px<input type="range" min="0" max="24" value="${r}" data-edit="radius" data-key="radius" aria-label="Border radius"></label></div></div>`;
+        }
+        case 'effects': {
+          const cur = winnerOf('box-shadow')?.value ?? 'none';
+          return `<div class="hero"><div class="shadows">${SHADOWS.map((s, i) => `<button type="button" class="shp" data-act="shadow" data-i="${i}" aria-current="${s.v === cur}"><i style="box-shadow:${s.v}"></i>${s.name}</button>`).join('')}</div></div>`;
+        }
+        case 'motion': {
+          const t = winnerOf('transition')?.value ?? '';
+          const parts = t ? t.split(/,(?![^(]*\))/).map((x) => x.trim()) : [];
+          const curve = '<svg width="30" height="16" viewBox="0 0 30 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1 15 C 10 15, 12 1, 29 1"/></svg>';
+          return `<div class="hero"><div class="seg" role="group" aria-label="Motion kind"><button type="button" data-act="motion-tab" data-v="transition" aria-pressed="${S.motionTab === 'transition'}">Transition</button><button type="button" data-act="motion-tab" data-v="animation" aria-pressed="${S.motionTab === 'animation'}">Animation</button></div>
+            ${S.motionTab === 'transition'
+              ? `<div class="trans">${parts.map((p) => { const [prop, dur, ...rest] = p.split(/\s+/); return `<div class="tchip"><span>${esc(prop)}</span><span class="d">${esc(dur ?? '')} ${esc(rest.join(' '))}</span>${curve}</div>`; }).join('') || '<p class="empty">No transition yet.</p>'}</div><p class="hnote">Plays when a state such as :hover starts or ends.</p>`
+              : '<p class="hnote">No animation. Keyframes that play on their own: on load, on hover, on scroll.</p>'}</div>`;
+        }
+        case 'layout': {
+          const d = computed('display');
+          return `<div class="hero"><div class="seg" role="group" aria-label="Display">${['block', 'flex', 'grid', 'inline-block', 'none'].map((v) => `<button type="button" data-act="display" data-v="${v}" aria-pressed="${d === v}">${v === 'inline-block' ? 'inline' : v}</button>`).join('')}</div></div>`;
+        }
+        default: return '';
+      }
+    }
+    function toHex(c) {
+      const m = c.match(/\d+(\.\d+)?/g);
+      if (!m) return '#ffffff';
+      return `#${m.slice(0, 3).map((x) => Number(x).toString(16).padStart(2, '0')).join('')}`;
+    }
+
+    function sectionBlock(secId) {
+      const sec = SEC[secId];
+      const props = propsShown(secId).filter(matchesFilter);
+      if (S.filter && !props.length) return '';
+      const closed = S.closed.has(secId) && !S.filter;
+      const left = sec.props.filter((p) => !propsShown(secId).includes(p));
+      return `<section class="sec ${closed ? 'closed' : ''} ${S.flash === secId ? 'flash' : ''}" data-sec="${secId}" style="--h:${sec.hue}">
+        <div class="sec-h"><button type="button" class="tog" data-act="toggle-sec" data-sec="${secId}" aria-expanded="${!closed}"><span class="ic">${svg(secId)}</span>${sec.name}<span class="cnt">${props.length || ''}</span></button>
+          <svg class="chev" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></div>
+        <div class="sec-b">${S.filter ? '' : hero(secId)}<div class="rows">${props.map(row).join('')}</div>
+          ${S.addIn === secId
+          ? `<div class="addin"><input class="val" list="dl-${secId}" data-edit="addin" data-sec="${secId}" data-key="addin:${secId}" placeholder="${sec.name.toLowerCase()} property" aria-label="Add a ${sec.name} property"><datalist id="dl-${secId}">${left.map((p) => `<option value="${p}"></option>`).join('')}</datalist></div>`
+          : left.length ? `<button type="button" class="more" data-act="add-in" data-sec="${secId}">+ ${sec.name.toLowerCase()} property</button>` : ''}
+        </div></section>`;
+    }
+
+    function catCard(sec, mode) {
+      const inUse = secInUse(sec.id);
+      return `<button type="button" class="cat ${mode === 'add' ? 'add' : ''}" style="--h:${sec.hue}" data-act="pick-cat" data-cat="${sec.id}">
+        <span class="art">${ART[sec.id]}</span>
+        <span class="ct"><span class="cn">${sec.name}</span>${inUse && mode !== 'add' ? '<span class="used">In use</span>' : ''}</span>
+        <span class="cs">${sec.sub}</span></button>`;
+    }
+    function liveCard(sec) {
+      const cs = getComputedStyle(target);
+      const props = propsShown(sec.id);
+      const srcs = [...new Set(props.flatMap((p) => declsOf(p).map((d) => short({ src: d.src, cond: '' }))))];
+      let art = ART[sec.id];
+      if (sec.id === 'text') art = `<span style="font:${cs.fontWeight} 28px/1 ${cs.fontFamily};color:${toHex(cs.color) === '#000000' ? '#fff' : cs.color};background:${cs.backgroundColor};padding:6px 12px;border-radius:6px">Aa</span>`;
+      if (sec.id === 'background') art = `<span style="width:62px;height:40px;border-radius:6px;background:${cs.backgroundColor};background-image:${cs.backgroundImage};box-shadow:0 0 0 3px #fff2"></span>`;
+      if (sec.id === 'border') art = `<span style="width:56px;height:38px;background:#fff1;border:${cs.borderTopWidth} ${cs.borderTopStyle} ${cs.borderTopColor};border-radius:${cs.borderTopLeftRadius}"></span>`;
+      if (sec.id === 'effects') art = `<span style="width:52px;height:32px;border-radius:6px;background:#eef0f6;box-shadow:${winnerOf('box-shadow', ':hover')?.value ?? 'none'}"></span>`;
+      if (sec.id === 'spacing') art = `<span style="display:block;padding:${Math.min(parseFloat(cs.paddingTop), 14)}px ${Math.min(parseFloat(cs.paddingLeft), 18)}px;border:1px dashed oklch(78% 0.12 160);border-radius:5px"><span style="display:block;width:30px;height:14px;border-radius:3px;background:oklch(78% 0.12 160)"></span></span>`;
+      const sum = props.slice(0, 3).map((p) => (winnerOf(p)?.value ?? declsOf(p)[0]?.value ?? '').split(',')[0]).filter(Boolean).join(' · ');
+      return `<button type="button" class="cat live" style="--h:${sec.hue}" data-act="drill" data-sec="${sec.id}">
+        <span class="art">${art}</span>
+        <span class="ct"><span class="cn">${sec.name}</span><span class="used">${props.length}</span></span>
+        <span class="sum">${esc(sum || '—')}</span><span class="cs">from ${esc(srcs.join(', ') || '—')}</span></button>`;
+    }
+
+    function sheet() {
+      const q = S.sheetQ.trim().toLowerCase();
+      const cats = SECTIONS.filter((s) => !q || s.name.toLowerCase().includes(q) || s.sub.toLowerCase().includes(q) || s.props.some((p) => p.includes(q)));
+      const props = q ? ALL_PROPS.filter((p) => p.includes(q)).slice(0, 6) : [];
+      const dd = defaultDest();
+      return `<div class="sheet" role="dialog" aria-label="Add styles">
+        <div class="sh-h"><b>Add to this element</b><button type="button" class="iconbtn" data-act="close-sheet" aria-label="Close">✕</button></div>
+        <div class="sh-b"><label class="search"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+          <input data-edit="sheet-q" data-key="sheet-q" value="${esc(S.sheetQ)}" placeholder="A property, or a kind of style…" aria-label="Find a property or category"></label>
+          ${props.length ? `<p class="glabel">Properties</p><div class="pmatch">${props.map((p) => `<button type="button" data-act="pick-prop" data-prop="${p}">${p}<span>${SEC[SEC_OF[p]].name}</span></button>`).join('')}</div>` : ''}
+          ${cats.length ? `<p class="glabel">${q ? 'Categories' : 'Pick a category'}</p><div class="cats">${cats.map((s) => catCard(s, 'sheet')).join('')}</div>` : ''}
+          <p class="sh-f">New values go to <b>${esc(long(dd))}</b>, which styles only this element. Each row's dropdown changes that.</p>
+        </div></div>`;
+    }
+
+    function renderList() {
+      const used = SECTIONS.filter((s) => secInUse(s.id));
+      const unused = SECTIONS.filter((s) => !secInUse(s.id));
+      const body = used.map((s) => sectionBlock(s.id)).join('');
+      const gallery = variant === 'B' && !S.filter && unused.length
+        ? `<div class="gallery" id="gallery"><p class="glabel">Add a category</p><div class="cats">${unused.map((s) => catCard(s, 'add')).join('')}</div></div>` : '';
+      return `<div class="sticky">${header()}${variant === 'B' ? targetBar() : ''}</div>${body}${S.filter && !body ? '<p class="empty" style="padding:12px">No property matches. Press Enter to add it.</p>' : ''}${gallery}`;
+    }
+
+    function renderC() {
+      if (S.drill) {
+        const sec = SEC[S.drill];
+        const dest = S.secDest.get(sec.id) ?? defaultDest();
+        const n = uses(dest.src);
+        const props = propsShown(sec.id);
+        const left = sec.props.filter((p) => !props.includes(p));
+        return `<div class="sticky">${header()}</div><div class="drill" style="--h:${sec.hue}">
+          <div class="dh"><button type="button" class="back" data-act="back">‹ All styles</button><span class="dt"><span class="ic">${svg(sec.id)}</span>${sec.name}</span></div>
+          <div class="dbar"><span class="tl">Writes to</span>${comboHtml(`sec:${sec.id}`, { current: dest, long: true, question: `where should ${sec.name.toLowerCase()} changes go?`, onPick: (d) => { S.secDest.set(sec.id, d); S.lost.clear(); } })}
+            <span class="tmeta">${n > 1 ? `Also changes ${elementsWord(n - 1)} that use it` : 'Only this element'}</span></div>
+          <div class="dbody">${hero(sec.id)}<div class="rows">${props.map(row).join('') || '<p class="empty">Nothing set yet.</p>'}</div>
+          ${S.addIn === sec.id
+            ? `<div class="addin"><input class="val" list="dl-${sec.id}" data-edit="addin" data-sec="${sec.id}" data-key="addin:${sec.id}" placeholder="${sec.name.toLowerCase()} property" aria-label="Add a ${sec.name} property"><datalist id="dl-${sec.id}">${left.map((p) => `<option value="${p}"></option>`).join('')}</datalist></div>`
+            : left.length ? `<button type="button" class="more" data-act="add-in" data-sec="${sec.id}">+ ${sec.name.toLowerCase()} property</button>` : ''}</div></div>`;
+      }
+      const q = S.filter.trim().toLowerCase();
+      const fit = (s) => !q || s.name.toLowerCase().includes(q) || s.props.some((p) => p.includes(q) && (secInUse(s.id) ? true : true));
+      const used = SECTIONS.filter((s) => secInUse(s.id) && fit(s));
+      const unused = SECTIONS.filter((s) => !secInUse(s.id) && fit(s));
+      return `<div class="sticky">${header()}</div><div class="cgridwrap">
+        ${used.length ? `<p class="glabel" style="margin-top:0">On this element</p><div class="cats">${used.map(liveCard).join('')}</div>` : ''}
+        ${unused.length ? `<p class="glabel">Add</p><div class="cats">${unused.map((s) => catCard(s, 'add')).join('')}</div>` : ''}</div>`;
+    }
+
+    /* =========================================================================== render */
+    let pending = 0;
+    const later = () => { clearTimeout(pending); pending = setTimeout(render, 0); };
+    function render() {
+      clearTimeout(pending);
+      const scroller = $('#scroll');
+      const top = scroller?.scrollTop ?? 0;
+      const sheetTop = $('.sh-b')?.scrollTop ?? 0;
+      const active = document.activeElement;
+      const explicit = Boolean(S.focus);
+      const key = S.focus ?? (panel.contains(active) ? active?.dataset?.key : null);
+      const caret = active && 'selectionStart' in active && panel.contains(active) && !S.focus ? [active.selectionStart, active.selectionEnd] : null;
+      S.focus = null;
+      COMBOS.clear();
+      for (const [p, d] of S.lost) if (wouldWin(p, d).win) S.lost.delete(p);
+      panel.className = `v-${variant}`;
+      panel.innerHTML = `<div id="scroll">${variant === 'C' ? renderC() : renderList()}</div>${variant === 'A' && S.sheet ? sheet() : ''}`;
+      $('#scroll').scrollTop = top;
+      if ($('.sh-b')) $('.sh-b').scrollTop = sheetTop;
+      if (key) {
+        const el = panel.querySelector(`[data-key="${CSS.escape(key)}"]`);
+        if (el && (explicit || !el.dataset.combo)) { el.focus({ preventScroll: true }); if (caret && el.type !== 'color' && el.type !== 'range') try { el.setSelectionRange(...caret); } catch { } }
+      }
+      if (S.flash) {
+        const el = panel.querySelector(`[data-sec="${S.flash}"]`);
+        el?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+        S.flash = null;
+      }
+      const v = VARIANTS.find((x) => x.k === variant);
+      $('#vlabel').innerHTML = `${esc(v.label)}<small>${esc(v.note)}</small>`;
+    }
+
+    /* =========================================================================== events */
+    function addRow(prop, { focus = true } = {}) {
+      const sec = SEC_OF[prop];
+      if (!sec) return false;
+      S.openRows.add(prop); S.openSecs.add(sec); S.closed.delete(sec);
+      if (variant === 'C') S.drill = sec;
+      if (focus) S.focus = `row:${prop}`;
+      return true;
+    }
+    function pickCategory(id) {
+      S.openSecs.add(id); S.closed.delete(id); S.sheet = false; S.sheetQ = '';
+      if (!propsShown(id).length) SEC[id].seed.forEach((p) => S.openRows.add(p));
+      if (variant === 'C') S.drill = id; else S.flash = id;
+      S.focus = `row:${propsShown(id)[0]}`;
+      render();
+    }
+
+    panel.addEventListener('click', (e) => {
+      const a = e.target.closest('[data-act]');
+      if (!a) return;
+      const { act, prop } = a.dataset;
+      switch (act) {
+        case 'open-sheet': S.sheet = true; S.focus = 'sheet-q'; break;
+        case 'close-sheet': S.sheet = false; S.sheetQ = ''; break;
+        case 'goto-gallery': $('#gallery')?.scrollIntoView({ behavior: 'smooth' }); $('#gallery .cat')?.focus({ preventScroll: true }); return;
+        case 'pick-cat': pickCategory(a.dataset.cat); return;
+        case 'pick-prop': S.sheet = false; S.sheetQ = ''; addRow(prop); S.flash = SEC_OF[prop]; break;
+        case 'toggle-sec': S.closed.has(a.dataset.sec) ? S.closed.delete(a.dataset.sec) : S.closed.add(a.dataset.sec); break;
+        case 'add-in': S.addIn = a.dataset.sec; S.focus = `addin:${a.dataset.sec}`; break;
+        case 'cascade': S.pop = S.pop === prop ? null : prop; S.draft = null; break;
+        case 'add-val': S.draft = { prop, value: winnerOf(prop)?.value ?? computed(prop) }; S.focus = 'combo:draft'; break;
+        case 'rm-draft': S.draft = null; break;
+        case 'rm-decl': {
+          const d = S.decls.find((x) => x.id === Number(a.dataset.id));
+          if (d) write(d.prop, '', { src: d.src, cond: d.cond });
+          break;
+        }
+        case 'fix-there': {
+          const lost = S.lost.get(prop);
+          const by = wouldWin(prop, lost).by;
+          const mine = S.decls.find((d) => d.prop === prop && d.src === lost.src && d.cond === lost.cond);
+          const value = mine.value;
+          S.decls = S.decls.filter((d) => d !== mine);
+          write(prop, value, { src: by.src, cond: by.cond });
+          if (variant === 'A') S.rowDest.set(prop, { src: by.src, cond: by.cond });
+          break;
+        }
+        case 'fix-imp': {
+          const lost = S.lost.get(prop);
+          const mine = S.decls.find((d) => d.prop === prop && d.src === lost.src && d.cond === lost.cond);
+          mine.important = true; S.lastIds = new Set([mine.id]);
+          S.last = `<b>${esc(prop)}</b> in <b>${esc(short(lost))}</b> marked <b>!important</b>.`;
+          S.lost.delete(prop); applyCss();
+          break;
+        }
+        case 'text-style': {
+          const t = TEXT_STYLES[Number(a.dataset.i)];
+          const dest = heroDest('text');
+          Object.entries(t.css).forEach(([p, v]) => write(p, v, dest, { quiet: true }));
+          S.lastIds = new Set(S.decls.filter((d) => d.src === dest.src && d.cond === dest.cond && t.css[d.prop]).map((d) => d.id));
+          S.last = `Text style <b>${t.name}</b> written to <b>${esc(long(dest))}</b> (${elementsWord(uses(dest.src))}).`;
+          applyCss();
+          break;
+        }
+        case 'shadow': write('box-shadow', SHADOWS[Number(a.dataset.i)].v, heroDest('effects')); break;
+        case 'display': write('display', a.dataset.v, heroDest('layout')); S.openRows.add('display'); break;
+        case 'motion-tab': S.motionTab = a.dataset.v; break;
+        case 'drill': S.drill = a.dataset.sec; S.pop = null; break;
+        case 'back': S.drill = null; S.pop = null; S.addIn = null; break;
+        case 'target-class': S.target = { src: a.dataset.src, cond: '' }; S.lost.clear(); break;
+        default: return;
+      }
+      render();
+    });
+
+    panel.addEventListener('input', (e) => {
+      const el = e.target;
+      const ed = el.dataset.edit;
+      if (el.dataset.combo && combo?.id === el.dataset.combo) { combo.query = el.value; combo.active = 0; drawCombo(); return; }
+      if (ed === 'row') write(el.dataset.prop, el.value, destFor(el.dataset.prop));
+      else if (ed === 'decl') { const d = S.decls.find((x) => x.id === Number(el.dataset.id)); if (d) write(d.prop, el.value, { src: d.src, cond: d.cond }); }
+      else if (ed === 'draft') S.draft.value = el.value;
+      else if (ed === 'filter') { S.filter = el.value; later(); }
+      else if (ed === 'sheet-q') { S.sheetQ = el.value; later(); }
+      else if (ed === 'bg-color') write('background', el.value, heroDest('background'));
+      else if (ed === 'radius') write('border-radius', `${el.value}px`, heroDest('border'));
+    });
+    panel.addEventListener('change', (e) => {
+      const ed = e.target.dataset.edit;
+      if (ed === 'row' || ed === 'decl' || ed === 'bg-color' || ed === 'radius') later();
+      if (ed === 'addin' && SEC_OF[e.target.value.trim()]) { addRow(e.target.value.trim()); S.addIn = null; later(); }
+    });
+    panel.addEventListener('focusin', (e) => { if (e.target.dataset.combo) openCombo(e.target); });
+    panel.addEventListener('focusout', (e) => { if (e.target.dataset.combo && combo?.id === e.target.dataset.combo) setTimeout(() => { if (document.activeElement !== e.target) closeCombo(); }, 0); });
+    panel.addEventListener('keydown', (e) => {
+      const el = e.target;
+      if (el.dataset.combo && combo) {
+        const moveBy = (step) => {
+          const n = combo.items.length;
+          let i = combo.active;
+          for (let k = 0; k < n; k++) { i = (i + step + n) % n; if (!combo.items[i].disabled) break; }
+          combo.active = i; drawCombo();
+        };
+        if (e.key === 'ArrowDown') { e.preventDefault(); moveBy(1); }
+        else if (e.key === 'ArrowUp') { e.preventDefault(); moveBy(-1); }
+        else if (e.key === 'Enter') { e.preventDefault(); pickCombo(combo.active); }
+        else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeCombo(); el.blur(); }
+        return;
+      }
+      if (e.key === 'Enter' && el.dataset.edit === 'filter') {
+        const p = el.value.trim().toLowerCase();
+        if (SEC_OF[p]) { S.filter = ''; addRow(p); S.flash = SEC_OF[p]; render(); }
+        else if (variant === 'A') { S.sheet = true; S.sheetQ = el.value; S.filter = ''; S.focus = 'sheet-q'; render(); }
+      }
+      if (e.key === 'Enter' && el.dataset.edit === 'sheet-q') {
+        const p = el.value.trim().toLowerCase();
+        if (SEC_OF[p]) { S.sheet = false; S.sheetQ = ''; addRow(p); S.flash = SEC_OF[p]; render(); }
+      }
+      if (e.key === 'Enter' && el.dataset.edit === 'addin') {
+        e.preventDefault();
+        const p = el.value.trim().toLowerCase();
+        if (SEC_OF[p]) { addRow(p); S.addIn = null; render(); }
+      }
+      if (e.key === 'Enter' && (el.dataset.edit === 'row' || el.dataset.edit === 'decl')) el.blur();
+    });
+    document.addEventListener('mousedown', (e) => {
+      if (S.pop && !e.target.closest('.casc') && !e.target.closest('.dot') && !e.target.closest('#clist')) { S.pop = null; S.draft = null; later(); }
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        if (S.pop) { const p = S.pop; S.pop = null; S.draft = null; S.focus = null; render(); panel.querySelector(`[data-act="cascade"][data-prop="${p}"]`)?.focus(); return; }
+        if (S.sheet) { S.sheet = false; render(); return; }
+        if (S.addIn) { S.addIn = null; render(); return; }
+      }
+      const t = document.activeElement;
+      if (t && (t.matches('input, textarea, select') || t.isContentEditable)) return;
+      if (e.key === 'ArrowLeft') cycle(-1);
+      if (e.key === 'ArrowRight') cycle(1);
+    });
+    function setVariant(k) {
+      variant = k;
+      S.pop = null; S.draft = null; S.sheet = false; S.drill = null; S.addIn = null; S.lost.clear(); closeCombo();
+      const u = new URL(location.href); u.searchParams.set('variant', k); history.replaceState(null, '', u);
+      render();
+    }
+    const cycle = (step) => setVariant(VARIANTS[(VARIANTS.findIndex((v) => v.k === variant) + step + VARIANTS.length) % VARIANTS.length].k);
+    $('#prev').addEventListener('click', () => cycle(-1));
+    $('#next').addEventListener('click', () => cycle(1));
+    $('#reset').addEventListener('click', () => { reset(); applyCss(); render(); });
+    addEventListener('resize', () => { placeSel(); if (combo) drawCombo(); });
+    panel.addEventListener('scroll', () => { if (combo) drawCombo(); }, true);
+
+    reset();
+    applyCss();
+    render();
+
+    /* =========================================================================== scenes, for screenshots (?scene=…) */
+    const scene = new URLSearchParams(location.search).get('scene');
+    if (scene) {
+      requestAnimationFrame(() => {
+        const focusCombo = (id, query = '') => {
+          const i = panel.querySelector(`[data-combo="${id}"]`);
+          i.focus();
+          if (!combo) openCombo(i); // a headless, unfocused window sends no focusin
+          if (query) { i.value = query; combo.query = query; combo.active = 0; drawCombo(); }
+        };
+        if (scene === 'sheet') { S.sheet = true; render(); }
+        if (scene === 'sheet-q') { S.sheet = true; S.sheetQ = 'sha'; render(); }
+        if (scene === 'row-combo') focusCombo('row:font-size');
+        if (scene === 'row-new') focusCombo('row:font-size', 'pro-plan');
+        if (scene === 'cascade') { S.pop = 'padding'; render(); }
+        if (scene === 'cascade-combo') { S.pop = 'padding'; render(); focusCombo(`line:${S.decls.find((d) => d.prop === 'padding' && d.src === 'card').id}`); }
+        if (scene === 'lost') { write('padding', '28px', { src: 'featured', cond: '' }); S.rowDest.set('padding', { src: 'featured', cond: '' }); render(); }
+        if (scene === 'target') focusCombo('target');
+        if (scene === 'drawer') { S.pop = 'box-shadow'; render(); }
+        if (scene === 'gallery') { render(); $('#gallery')?.scrollIntoView(); }
+        if (scene === 'drill') { S.drill = 'text'; render(); }
+        if (scene === 'drill-combo') { S.drill = 'text'; render(); focusCombo('sec:text', 'pro'); }
+        if (scene === 'lost-b') { write('padding', '28px', S.target); render(); }
+        const errors = [];
+        const expect = (ok, what) => { if (!ok) errors.push(what); };
+        if (scene === 'flow') {
+          // A: retarget font-size to a new class, type a value, and see it land and show.
+          focusCombo('row:font-size', 'pro-plan');
+          pickCombo(combo.items.findIndex((i) => i.kind === 'new-class'));
+          render();
+          const inp = panel.querySelector('[data-key="row:font-size"]');
+          inp.value = '16px'; inp.dispatchEvent(new Event('input', { bubbles: true }));
+          expect(target.classList.contains('pro-plan'), 'class added to element');
+          expect(/\.pro-plan \{\n  font-size: 16px;/.test($('#site-css').textContent), 'value written to .pro-plan');
+          expect(getComputedStyle(target).fontSize === '16px', 'value shows on the page');
+          // A losing destination warns, and "put it there" moves the value to the winner.
+          write('padding', '28px', { src: 'featured', cond: '' }); render();
+          expect(panel.querySelector('[data-act="fix-there"]'), 'losing write warns');
+          panel.querySelector('[data-act="fix-there"]').click();
+          expect(getComputedStyle(target).paddingTop === '28px', 'fix moves value to the winner');
+          expect(!S.decls.some((d) => d.src === 'featured' && d.prop === 'padding'), 'loser removed');
+          // The cascade line dropdown moves a declaration.
+          S.pop = 'color'; render();
+          const line = S.decls.find((d) => d.prop === 'color' && d.src === 'featured');
+          focusCombo(`line:${line.id}`);
+          pickCombo(combo.items.findIndex((i) => i.kind === 'src' && i.dest.src === 'inline'));
+          expect(target.getAttribute('style')?.includes('color: #1e1b4b'), 'moved to inline');
+          // B: the one target, and C: a section destination.
+          setVariant('B');
+          const b = panel.querySelector('[data-key="row:line-height"]');
+          b.value = '1.7'; b.dispatchEvent(new Event('input', { bubbles: true }));
+          expect(S.decls.some((d) => d.src === 'featured' && d.prop === 'line-height' && d.value === '1.7'), 'B writes to the target');
+          setVariant('C'); S.drill = 'text'; render();
+          focusCombo('sec:text', 'type-x'); pickCombo(combo.items.findIndex((i) => i.kind === 'new-class'));
+          panel.querySelector('[data-act="text-style"][data-i="0"]').click();
+          expect(/\.type-x \{[^}]*font-size: 22px/.test($('#site-css').textContent), 'C text style lands in the section destination');
+        }
+        setTimeout(() => { $('#out').textContent = `RESULTS:${JSON.stringify({ variant, scene, errors, combo: !clist.hidden })}:END`; }, 400);
+      });
+    }
+  </script>
+</body>
+
+</html>

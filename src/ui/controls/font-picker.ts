@@ -6,6 +6,7 @@ import {
   hasLocalFont,
   isGenericFamily,
   pageFontFamilies,
+  pageFontSources,
   parseFamilies,
   previewWebFont,
   SYSTEM_FONTS,
@@ -15,7 +16,6 @@ import {
 } from '../../core/fonts.js';
 import { catalogueFont, type ProjectFont } from '../../core/project-fonts.js';
 import { maybeEngine } from '../context.js';
-import type { ValueSuggestion } from './value-field.js';
 import { namesAFont } from '../../core/tokens.js';
 import './font-editor.js';
 import { icon } from '../icons.js';
@@ -24,6 +24,13 @@ import { baseStyles } from '../theme.js';
 const WEB_FONTS_KEY = 'heo:web-font-previews';
 /** The generic families a chain can end with, in the order they are usually wanted. */
 const FALLBACK_GENERICS = ['serif', 'sans-serif', 'monospace', 'system-ui', 'cursive'];
+const GENERIC_LABELS: Record<string, string> = {
+  serif: 'any serif',
+  'sans-serif': 'any sans-serif',
+  monospace: 'any monospace',
+  'system-ui': 'the system’s UI font',
+  cursive: 'any handwriting',
+};
 
 interface Choice {
   name: string;
@@ -34,6 +41,10 @@ interface Choice {
   project?: ProjectFont;
   /** A token's value: what its row is drawn in, rather than its name. */
   face?: string;
+  /** What the row says, where it is not the name: `any serif`. */
+  label?: string;
+  /** A generic family: offered for a fallback only, as the last resort. */
+  generic?: boolean;
   /** For a token, what picking it writes: `var(--font-display)`. */
   token?: string;
   /**
@@ -91,49 +102,192 @@ export class HeoFontPicker extends LitElement {
         min-width: 0;
         font-size: 11.5px;
       }
-      .search {
+      /* The stack: one slot per font, top first, each an autocomplete with its chevron. */
+      .slots {
+        display: grid;
+        gap: 2px;
+        min-width: 0;
+      }
+      .slots[hidden] {
+        display: none;
+      }
+      .slot {
+        display: grid;
+        grid-template-columns: 14px minmax(0, 1fr) 20px;
+        align-items: start;
+        gap: 4px;
+        min-width: 0;
+      }
+      .slot.over .vf {
+        box-shadow: 0 -2px 0 var(--heo-accent);
+      }
+      .slot .g {
+        display: grid;
+        place-items: center;
+        height: 30px;
+        color: var(--heo-text-faint);
+        cursor: grab;
+      }
+      .slot .g:focus-visible {
+        outline: 2px solid var(--heo-accent);
+        border-radius: 4px;
+      }
+      .slotbody {
+        display: grid;
+        gap: 4px;
+        min-width: 0;
+      }
+      .vf {
         display: flex;
         align-items: center;
         gap: 6px;
-        height: 28px;
-        padding: 0 8px;
+        height: 30px;
+        min-width: 0;
+        padding: 0 3px 0 8px;
         border: 1px solid var(--heo-line-strong);
         border-radius: var(--heo-r-sm);
-        background: var(--heo-sunken);
-        color: var(--heo-text-faint);
+        background: var(--heo-raised);
+        cursor: pointer;
       }
-      .search input {
+      .vf.on {
+        border-color: var(--heo-accent);
+        box-shadow: 0 0 0 3px color-mix(in oklab, var(--heo-accent) 16%, transparent);
+        cursor: text;
+      }
+      .vf input,
+      .vf .v {
         flex: 1;
         min-width: 0;
+        overflow: hidden;
+        padding: 0;
         border: 0;
         background: transparent;
         color: var(--heo-text);
-        font: inherit;
+        font-size: 15px;
+        text-align: left;
+        text-overflow: ellipsis;
+        white-space: nowrap;
         outline: none;
+        cursor: inherit;
       }
+      .vf input::placeholder {
+        color: var(--heo-text);
+        opacity: 0.75;
+      }
+      .vf .role {
+        flex: none;
+        color: var(--heo-text-faint);
+        font-size: 10px;
+      }
+      .vf .chev {
+        display: grid;
+        place-items: center;
+        width: 22px;
+        height: 22px;
+        padding: 0;
+        border: 0;
+        border-radius: 5px;
+        background: transparent;
+        color: var(--heo-text-faint);
+        cursor: pointer;
+      }
+      .vf .chev:hover {
+        background: var(--heo-hover);
+        color: var(--heo-text);
+      }
+      .vf .chev[aria-expanded='true'] {
+        rotate: 180deg;
+      }
+      .slot .x {
+        display: grid;
+        place-items: center;
+        width: 20px;
+        height: 30px;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: var(--heo-text-faint);
+        cursor: pointer;
+      }
+      .slot .x:hover {
+        color: var(--heo-danger);
+      }
+      .then {
+        padding-left: 26px;
+        color: var(--heo-text-faint);
+        font-size: 10px;
+      }
+      .slotfoot {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-top: 4px;
+        padding-left: 18px;
+      }
+      .slotfoot .add {
+        border-style: dashed;
+      }
+      /* The selected slot's list, under it, as an autocomplete's. */
       .list {
         display: grid;
         gap: 1px;
-        max-height: 260px;
+        max-height: 280px;
         overflow: auto;
-        margin: 0 -4px;
-        padding: 0 4px;
+        padding: 4px;
+        border: 1px solid var(--heo-line-strong);
+        border-radius: var(--heo-r-md);
+        background: var(--heo-raised);
+        box-shadow: var(--heo-shadow-md, 0 10px 24px -12px rgb(15 23 42 / 30%));
       }
       .group {
         display: flex;
         align-items: center;
         gap: 6px;
         margin: 6px 0 2px;
+        padding: 0;
+        border: 0;
+        background: transparent;
         color: var(--heo-text-faint);
+        font: inherit;
         font-size: 9.5px;
         font-weight: 600;
         letter-spacing: 0.06em;
+        text-align: left;
         text-transform: uppercase;
+        cursor: pointer;
       }
       .group::after {
         content: '';
         flex: 1;
+        order: 2;
         border-top: 1px solid var(--heo-line);
+      }
+      .group .tw {
+        display: grid;
+        transition: rotate var(--heo-fast);
+      }
+      .group[aria-expanded='false'] .tw {
+        rotate: -90deg;
+      }
+      .group .n {
+        order: 3;
+        font-weight: 500;
+        letter-spacing: 0;
+      }
+      .webask {
+        display: grid;
+        justify-items: start;
+        gap: 6px;
+        padding: 0 8px 6px;
+      }
+      .webask .gnote {
+        margin: 0;
+      }
+      .gnote {
+        margin: 0 8px 4px;
+        color: var(--heo-text-faint);
+        font-size: 10.5px;
+        line-height: 1.45;
       }
       /*
        * One height for every row, whatever its face. Each name is drawn in its own font, and a face
@@ -234,104 +388,11 @@ export class HeoFontPicker extends LitElement {
       .font[data-pickable='false'] .nm {
         color: var(--heo-text-dim);
       }
-      /*
-       * The add / edit popover takes the list's place while it is open, and the list is hidden
-       * rather than covered: laid over it, the popover was cut off by the dialog's own height.
-       */
-      .search[hidden],
-      .list[hidden],
-      .below[hidden] {
-        display: none;
-      }
-      .below {
-        display: grid;
-        gap: 8px;
-        min-width: 0;
-      }
       .note {
         margin: 0;
         color: var(--heo-text-hint);
         font-size: 10.5px;
         line-height: 1.45;
-      }
-      .webask {
-        display: grid;
-        gap: 6px;
-        padding: 8px;
-        border: 1px dashed var(--heo-line-strong);
-        border-radius: var(--heo-r-sm);
-      }
-      .webask .btn {
-        justify-self: start;
-      }
-      .fallbacks {
-        display: grid;
-        gap: 6px;
-        padding: 8px;
-        border: 1px solid var(--heo-line);
-        border-radius: var(--heo-r-sm);
-        background: var(--heo-sunken);
-      }
-      .chain {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 4px;
-        color: var(--heo-text-faint);
-      }
-      .chip {
-        display: inline-flex;
-        align-items: center;
-        gap: 4px;
-        height: 22px;
-        padding: 0 3px 0 7px;
-        border: 1px solid var(--heo-line-strong);
-        border-radius: 999px;
-        background: var(--heo-raised);
-        color: var(--heo-text);
-        font-size: 12px;
-      }
-      .chip[draggable='true'] {
-        cursor: grab;
-      }
-      .chip .g {
-        display: grid;
-        margin-left: -3px;
-        color: var(--heo-text-faint);
-      }
-      .chip.over {
-        box-shadow: -2px 0 0 var(--heo-accent);
-      }
-      .chip:focus-visible {
-        outline: 2px solid var(--heo-accent);
-        outline-offset: 1px;
-      }
-      .chip.first {
-        border-color: var(--heo-accent-line);
-        background: var(--heo-accent-soft);
-        font-weight: 600;
-      }
-      .chip.generic {
-        border-style: dashed;
-      }
-      .chip button {
-        display: grid;
-        place-items: center;
-        width: 16px;
-        height: 16px;
-        padding: 0;
-        border: 0;
-        border-radius: 50%;
-        background: transparent;
-        color: var(--heo-text-dim);
-        cursor: pointer;
-      }
-      .chip button:hover {
-        color: var(--heo-danger);
-      }
-      /* The fallback adder: the overlay's value field, as narrow as the chips it sits among. */
-      .chain .adder {
-        width: 150px;
       }
       /* Choosing a token's font: said above the list, with the way back. */
       .tokenbar {
@@ -410,9 +471,6 @@ export class HeoFontPicker extends LitElement {
     return parseFamilies(this.#chainValue);
   }
 
-  get #fallbacks(): string[] {
-    return this.#families.slice(1);
-  }
 
   /*
    * The list, worked out once per search and per web-font switch, not on every render. A render
@@ -451,9 +509,10 @@ export class HeoFontPicker extends LitElement {
       project: font,
       pickable: true,
     }));
+    const sources = pageFontSources();
     const own = pageFontFamilies()
       .filter((name) => name && !isGenericFamily(name))
-      .map((name): Choice => ({ name, tag: 'Your stylesheet', pickable: true }));
+      .map((name): Choice => ({ name, tag: sources.get(name) ?? 'Your stylesheet', pickable: true }));
     const page = take([...carried, ...own]);
     // Every typography token that names a font, as its own row: picking one writes `var(--…)`.
     const tokens = fontTokens()
@@ -466,11 +525,13 @@ export class HeoFontPicker extends LitElement {
     const web = this.web
       ? take(WEB_FONTS.map((one): Choice => ({ name: one.name, tag: one.category, category: one.category, web: one, pickable: false })))
       : [];
+    const generic = FALLBACK_GENERICS.filter(match).map((name): Choice => ({ name, label: GENERIC_LABELS[name] ?? `any ${name}`, tag: 'Last resort', pickable: true, generic: true }));
     return [
       { group: 'In this page', items: page },
       { group: 'Typography tokens', items: tokens },
       { group: 'System · only where installed', items: system },
       { group: 'Google Fonts', items: web },
+      { group: 'Generic families', items: generic },
     ].filter((one) => one.items.length);
   }
 
@@ -485,23 +546,70 @@ export class HeoFontPicker extends LitElement {
     }
   }
 
-  #stack(family: string, web?: WebFont): string {
-    const rest = this.#fallbacks.filter((one) => one.toLowerCase() !== family.toLowerCase());
-    // A web font picked with no fallbacks of its own gets its kind's generic family.
-    const fallbacks = rest.length ? rest : web ? [GENERIC_FOR[web.category]] : [];
-    return formatFamilies([family, ...fallbacks]);
+  /*
+   * The stack, as slots: the font, then each fallback, top first. One slot is selected, and the
+   * list under it chooses what that slot holds — the font and a fallback are chosen the same way.
+   * `+ Font` puts an empty slot under the selected one; it is written once something is picked.
+   */
+  @state() private sel = 0;
+  /** Where an empty slot from `+ Font` sits, until it is filled or left. */
+  @state() private pending: number | null = null;
+  /** Whether the selected slot's list is open (its chevron). */
+  @state() private listOpen = true;
+  /** Sections folded away, by name. */
+  @state() private collapsed = new Set<string>();
+
+  get #slots(): string[] {
+    const slots = [...this.#families];
+    if (this.pending !== null) slots.splice(Math.min(this.pending, slots.length), 0, '');
+    return slots;
+  }
+
+  /** The stack with the selected slot holding `value`, empty slots left out. */
+  #withSlot(value: string, web?: WebFont): string {
+    const slots = this.#slots;
+    const at = Math.min(this.sel, Math.max(0, slots.length - 1));
+    slots[at] = value;
+    const families = slots.filter(Boolean);
+    // A web font made the font with nothing after it gets its kind's generic family.
+    if (at === 0 && families.length === 1 && web) families.push(GENERIC_FOR[web.category]);
+    // The same family twice is read once: keep it where it was just put.
+    const seen = new Set<string>();
+    const unique = families.filter((one, index) => {
+      const key = one.toLowerCase();
+      if (seen.has(key) && index !== at) return false;
+      seen.add(key);
+      return true;
+    });
+    return formatFamilies(unique);
+  }
+
+  /** What a choice puts in a slot: a token's `var()`, or the family. */
+  #valueOf(choice: Choice): string {
+    return choice.token ?? choice.name;
   }
 
   #emit(type: 'font-preview' | 'font-change', detail: Record<string, unknown>): void {
     this.dispatchEvent(new CustomEvent(type, { detail, bubbles: true, composed: true }));
   }
 
+  /**
+   * Show what picking this would give: the whole stack, with the hovered font in the selected
+   * slot — a fallback previewed is the page as it will look where the font above it is missing.
+   */
   #preview(choice: Choice | null): void {
-    const name = choice?.name ?? null;
+    const name = choice ? `${this.sel}:${choice.name}` : null;
     if (name === this.#hovered) return;
     this.#hovered = name;
     if (choice?.web) void previewWebFont(choice.web);
-    this.#emit('font-preview', { value: choice ? (choice.token ?? this.#stack(choice.name, choice.web)) : null });
+    if (!choice) {
+      this.#emit('font-preview', { value: null });
+      return;
+    }
+    // A fallback is seen as what it is: the stack from that slot on, the fonts above it missing.
+    const stack = this.#withSlot(this.#valueOf(choice), choice.web);
+    const value = this.sel > 0 ? formatFamilies(parseFamilies(stack).slice(this.sel)) : stack;
+    this.#emit('font-preview', { value });
   }
 
   #pointer: { x: number; y: number } | null = null;
@@ -524,13 +632,61 @@ export class HeoFontPicker extends LitElement {
       this.#openDraft(choice.name, 'add');
       return;
     }
+    if (this.tokenEdit && choice.token) return;
+    this.#put(this.#withSlot(this.#valueOf(choice), choice.web));
+  }
+
+  /** Write a stack: the slot just filled stays selected, its list closed. */
+  #put(stack: string): void {
     this.#hovered = null;
-    if (this.tokenEdit) {
-      if (choice.token) return;
-      this.#writeToken(this.#stack(choice.name, choice.web));
+    this.pending = null;
+    this.query = '';
+    this.listOpen = false;
+    this.#setChain(parseFamilies(stack));
+  }
+
+  #select(index: number): void {
+    if (this.pending !== null && index !== this.pending) {
+      // Leaving an empty slot drops it, and what was under it moves up.
+      const from = this.pending;
+      this.pending = null;
+      if (index > from) index -= 1;
+    }
+    if (index !== this.sel) this.#preview(null);
+    this.sel = index;
+    this.query = '';
+    this.listOpen = true;
+  }
+
+  #addSlot(): void {
+    const at = Math.min(this.sel + 1, this.#families.length);
+    this.#preview(null);
+    this.pending = at;
+    this.sel = at;
+    this.query = '';
+    this.listOpen = true;
+    void this.updateComplete.then(() => this.renderRoot.querySelector<HTMLInputElement>(`.slot[data-at="${at}"] input`)?.focus());
+  }
+
+  #removeSlot(index: number): void {
+    if (index === this.pending) {
+      this.pending = null;
+      this.sel = Math.max(0, index - 1);
       return;
     }
-    this.#emit('font-change', { value: choice.token ?? this.#stack(choice.name, choice.web) });
+    const families = this.#families.filter((_one, at) => at !== index);
+    if (!families.length) return;
+    this.sel = Math.min(this.sel, families.length - 1);
+    this.#setChain(families);
+  }
+
+  /** Enter in a slot: the first match that can be picked, or what was typed as a family name. */
+  #submitTyped(): void {
+    const typed = this.query.trim().replace(/^(['"])(.*)\1$/, '$2').trim();
+    if (!typed) return;
+    const first = this.#visibleGroups().flatMap((group) => group.items).find((one) => one.pickable);
+    if (first) this.#pick(first);
+    else this.#put(this.#withSlot(typed));
   }
 
   /** A typography token's new font stack: written to the token, the element's preview taken back. */
@@ -547,10 +703,13 @@ export class HeoFontPicker extends LitElement {
     this.#preview(null);
     this.tokenEdit = name;
     this.query = '';
+    this.sel = 0;
+    this.pending = null;
+    this.listOpen = true;
     void this.updateComplete.then(() => {
       const target = name
         ? this.renderRoot.querySelector<HTMLElement>('.tokenbar button')
-        : this.renderRoot.querySelector<HTMLElement>('.list [aria-current="true"], .list [data-font]');
+        : this.renderRoot.querySelector<HTMLElement>('.slot[data-at="0"] input');
       target?.focus();
     });
   }
@@ -578,12 +737,6 @@ export class HeoFontPicker extends LitElement {
       this.renderRoot.querySelector<HTMLElement>(`[data-font="${CSS.escape(draft?.family ?? '')}"]`)?.focus());
   }
 
-  #setFallbacks(next: string[]): void {
-    const first = this.#families[0];
-    if (!first) return;
-    this.#setChain([first, ...next]);
-  }
-
   #setChain(next: string[]): void {
     if (this.tokenEdit) {
       this.#writeToken(formatFamilies(next));
@@ -605,6 +758,7 @@ export class HeoFontPicker extends LitElement {
     const [one] = chain.splice(from, 1);
     chain.splice(to, 0, one);
     this.#refocus = to;
+    this.sel = to;
     this.#setChain(chain);
   }
 
@@ -616,7 +770,7 @@ export class HeoFontPicker extends LitElement {
     if (this.#refocus === null) return;
     const at = this.#refocus;
     this.#refocus = null;
-    this.renderRoot.querySelector<HTMLElement>(`.chip[data-at="${at}"]`)?.focus();
+    this.renderRoot.querySelector<HTMLElement>(`.slot[data-at="${at}"] .g`)?.focus();
   }
 
   #chipKey(event: KeyboardEvent, index: number): void {
@@ -659,10 +813,16 @@ export class HeoFontPicker extends LitElement {
     };
   }
 
+  /** The list's sections, as the selected slot sees them. */
+  #visibleGroups(): Array<{ group: string; items: Choice[] }> {
+    return this.#choices()
+      // A token is not a choice for a token's own font, and a generic family only for a fallback.
+      .filter((group) => !(this.tokenEdit && group.items.some((one) => one.token)))
+      .filter((group) => this.sel > 0 || !group.items.some((one) => one.generic));
+  }
+
   override render(): TemplateResult {
-    const current = (this.#families[0] ?? '').toLowerCase();
-    // Choosing a token's font: the tokens themselves are not a choice for it.
-    const groups = this.tokenEdit ? this.#choices().filter((group) => !group.items.some((one) => one.token)) : this.#choices();
+    const slots = this.#slots;
     return html`
       ${this.tokenEdit && !this.draft
         ? html`<div class="tokenbar" data-token-edit=${this.tokenEdit} @keydown=${(event: KeyboardEvent) => {
@@ -675,59 +835,11 @@ export class HeoFontPicker extends LitElement {
             <button class="btn sm" type="button" @click=${() => this.#editToken(null)}>Done</button>
           </div>`
         : nothing}
-      <label class="search" ?hidden=${Boolean(this.draft)}>
-        ${icon('search', 12)}
-        <input
-          type="text"
-          placeholder="Search fonts"
-          aria-label="Search fonts"
-          .value=${this.query}
-          @input=${(event: Event) => {
-            this.query = (event.target as HTMLInputElement).value;
-          }}
-        />
-      </label>
-      <div class="list" role="listbox" aria-label="Fonts" ?hidden=${Boolean(this.draft)} @pointerleave=${() => {
-        if (!this.draft) this.#preview(null);
-      }}>
-        ${groups.map((group) => html`
-          <div class="group">${group.group}</div>
-          ${group.items.map((choice) => {
-            const action = choice.token ? 'token' : choice.project ? 'edit' : !choice.pickable ? 'add' : null;
-            return html`<div class="frow" data-row=${choice.name} @pointermove=${(event: PointerEvent) => this.#hover(event, choice)}>
-              <button
-                class="font"
-                type="button"
-                role="option"
-                data-font=${choice.name}
-                data-pickable=${choice.pickable ? 'true' : 'false'}
-                aria-current=${(choice.token ?? choice.name).toLowerCase() === current ? 'true' : 'false'}
-                aria-selected=${(choice.token ?? choice.name).toLowerCase() === current ? 'true' : 'false'}
-                title=${choice.pickable
-                  ? `${choice.name}: hover to see it on the element, click to use it`
-                  : `${choice.name}: hover to see it on the element; add it to the page to use it`}
-                @focus=${() => this.#preview(choice)}
-                @blur=${() => this.#preview(null)}
-                @click=${() => this.#pick(choice)}
-              >
-                <span class="nm" style=${`font-family:${choice.face ? choice.face.replace(/[;{}<>]/g, '') : formatFamilies([choice.name, choice.category ? GENERIC_FOR[choice.category] : 'sans-serif'])}`}>${choice.name}</span>
-                <span class=${choice.project?.place === 'embedded' ? 'tag pill emb' : choice.project ? 'tag pill' : 'tag'}>${choice.tag}</span>
-              </button>
-              ${action
-                ? html`<button
-                    class="fact"
-                    type="button"
-                    data-font-action=${action}
-                    aria-label=${`${action === 'add' ? 'Add font' : 'Edit font'} ${choice.name}`}
-                    title=${action === 'token' ? `Choose the font ${choice.name} sets, for every element that uses it` : nothing}
-                    @focus=${() => this.#preview(choice)}
-                    @click=${() => (action === 'token' ? this.#editToken(choice.name.replace(/^--/, '')) : this.#openDraft(choice.name, action))}
-                  >${action === 'add' ? html`${icon('plus', 10)} Add font` : html`${icon('sliders', 10)} Edit font`}</button>`
-                : nothing}
-            </div>`;
-          })}
-        `)}
-        ${!groups.length ? html`<p class="note">No font matches “${this.query}”.</p>` : nothing}
+      <div class="slots" role="list" aria-label="The font, then its fallbacks, in order" ?hidden=${Boolean(this.draft)}>
+        ${(slots.length ? slots : ['']).map((one, at) => this.#renderSlot(one, at, slots.length))}
+        <div class="slotfoot">
+          <button class="btn sm add" type="button" data-add-slot @click=${() => this.#addSlot()} ?disabled=${this.pending !== null || !this.#families.length}>${icon('plus', 11)} Font</button>
+        </div>
       </div>
       ${this.draft
         ? html`<heo-font-editor
@@ -741,117 +853,186 @@ export class HeoFontPicker extends LitElement {
               event.stopPropagation();
               this.draft = null;
               this.#hovered = null;
-              // "Add and use": once it is in the page, it is the font — the token's, while one is edited.
+              // "Add and use": once it is in the page, it is what the selected slot holds.
               if (event.detail.mode !== 'add') return;
-              const stack = this.#stack(event.detail.family, catalogueFont(event.detail.family));
-              if (this.tokenEdit) this.#writeToken(stack);
-              else this.#emit('font-change', { value: stack });
+              this.#put(this.#withSlot(event.detail.family, catalogueFont(event.detail.family)));
             }}
           ></heo-font-editor>`
         : nothing}
-      <div class="below" ?hidden=${Boolean(this.draft)}>
+    `;
+  }
+
+  #renderSlot(family: string, at: number, count: number): TemplateResult {
+    const selected = at === this.sel;
+    const generic = isGenericFamily(family);
+    const token = /^var\(\s*--([\w-]+)/i.exec(family)?.[1];
+    const tokenValue = token ? fontTokens().find((one) => one.name === token)?.value : undefined;
+    const face = !family
+      ? 'inherit'
+      : tokenValue ?? formatFamilies([family, generic ? family : 'serif']);
+    const label = !family ? '' : token ? `--${token}` : generic ? GENERIC_LABELS[family] ?? `any ${family}` : family;
+    const role = at === 0 ? 'Font' : generic && at === count - 1 ? 'Last resort' : `Fallback ${at}`;
+    const on = this.#chipEvents(at);
+    const movable = Boolean(family) && this.#families.length > 1;
+    return html`${at ? html`<div class="then" aria-hidden="true">↓ if it is missing</div>` : nothing}
+      <div
+        class="slot"
+        role="listitem"
+        data-at=${at}
+        data-family=${family}
+        aria-current=${selected ? 'true' : 'false'}
+        @dragover=${on.dragover}
+        @dragleave=${on.dragleave}
+        @drop=${on.drop}
+      >
+        <span
+          class="g"
+          aria-label=${movable ? `Move ${label}. Alt and an arrow move it.` : nothing}
+          tabindex=${movable ? '0' : '-1'}
+          draggable=${movable ? 'true' : 'false'}
+          @dragstart=${on.dragstart}
+          @dragend=${on.dragend}
+          @keydown=${(event: KeyboardEvent) => this.#chipKey(event, at)}
+        >${movable ? icon('grip', 10) : nothing}</span>
+        <div class="slotbody">
+          <div class=${selected ? 'vf on' : 'vf'} @click=${() => {
+            if (!selected) this.#select(at);
+          }}>
+            ${selected
+              ? html`<input
+                  type="text"
+                  aria-label=${`${role}: search fonts, or type a family`}
+                  placeholder=${label || (at ? 'type or pick a fallback' : 'type or pick a font')}
+                  style=${`font-family:${face.replace(/[;{}<>]/g, '')}`}
+                  .value=${this.query}
+                  @focus=${() => {
+                    this.listOpen = true;
+                  }}
+                  @input=${(event: Event) => {
+                    this.query = (event.target as HTMLInputElement).value;
+                    this.listOpen = true;
+                  }}
+                  @keydown=${(event: KeyboardEvent) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault();
+                      this.#submitTyped();
+                    } else if (event.key === 'ArrowDown') {
+                      event.preventDefault();
+                      this.listOpen = true;
+                      void this.updateComplete.then(() => this.renderRoot.querySelector<HTMLElement>('.list [data-font]')?.focus());
+                    }
+                  }}
+                />`
+              : html`<button class="v" type="button" style=${`font-family:${face.replace(/[;{}<>]/g, '')}`} title=${`${role}: change it`}>${label || (at ? 'type or pick a fallback' : 'type or pick a font')}</button>`}
+            <span class="role">${role}</span>
+            <button
+              class="chev"
+              type="button"
+              data-chevron
+              aria-label=${`Show the fonts for ${role.toLowerCase()}`}
+              aria-expanded=${selected && this.listOpen ? 'true' : 'false'}
+              @click=${(event: Event) => {
+                event.stopPropagation();
+                if (!selected) this.#select(at);
+                else this.listOpen = !this.listOpen;
+              }}
+            >${icon('chevronDown', 11)}</button>
+          </div>
+          ${selected && this.listOpen ? this.#renderList(family) : nothing}
+        </div>
+        ${at > 0
+          ? html`<button class="x" type="button" aria-label=${`Remove ${label || 'this fallback'}`} title=${`Remove ${label || 'this fallback'}`} @click=${() => this.#removeSlot(at)}>${icon('close', 10)}</button>`
+          : html`<span></span>`}
+      </div>`;
+  }
+
+  #renderList(current: string): TemplateResult {
+    const groups = this.#visibleGroups();
+    const value = current.toLowerCase();
+    return html`<div class="list" role="listbox" aria-label="Fonts" @pointerleave=${() => this.#preview(null)}>
+      ${groups.map((group) => {
+        const open = !this.collapsed.has(group.group);
+        return html`<button
+            class="group"
+            type="button"
+            data-group=${group.group}
+            aria-expanded=${open ? 'true' : 'false'}
+            @click=${() => {
+              const next = new Set(this.collapsed);
+              if (open) next.add(group.group);
+              else next.delete(group.group);
+              this.collapsed = next;
+            }}
+          ><span class="tw" aria-hidden="true">${icon('chevronDown', 9)}</span>${group.group}<span class="n">${group.items.length}</span></button>
+          ${open && group.group === 'Google Fonts'
+            ? html`<p class="gnote">Previewed from Google. Adding one keeps its files with the page, so visitors never ask Google for it.</p>`
+            : nothing}
+          ${open ? group.items.map((choice) => this.#renderRow(choice, value)) : nothing}`;
+      })}
+      ${!groups.length ? html`<p class="note">No font matches “${this.query}”. Enter uses it as typed.</p>` : nothing}
       ${this.web
-        ? html`<p class="note">Google fonts are previewed from Google. Adding one keeps its files with the page, so visitors never ask Google for it.</p>`
-        : html`<div class="webask">
-            <p class="note">Web fonts from Google Fonts can be previewed here. Showing them asks Google for each font, which tells it this page's address.</p>
-            <button class="btn sm" type="button" @click=${() => {
+        ? nothing
+        : html`<div class="group" data-group="Google Fonts">Google Fonts</div>
+          <div class="webask">
+            <p class="gnote">Google fonts can be previewed here. Showing them asks Google for each font, which tells it this page's address.</p>
+            <button class="btn sm" type="button" data-web-fonts @click=${() => {
               this.web = true;
               try {
                 localStorage.setItem(WEB_FONTS_KEY, 'on');
               } catch {
                 // No storage: on for this session.
               }
-            }}>Show web fonts</button>
+            }}>Show Google fonts</button>
           </div>`}
-      ${this.#families.length && !/^var\(/i.test(this.#families[0]) ? this.#renderFallbacks() : nothing}
-      </div>
-    `;
-  }
-
-  /**
-   * What the fallback adder offers, in the sections the other fields' lists use: the typography
-   * tokens, the fonts in this page, this machine's, and the generic families. Typing filters them;
-   * any family name can still be typed and added.
-   */
-  #fallbackSuggestions(): ValueSuggestion[] {
-    const inChain = new Set(this.#families.map((one) => one.toLowerCase()));
-    const out: ValueSuggestion[] = [];
-    const add = (item: ValueSuggestion): void => {
-      if (inChain.has(item.value.toLowerCase()) || out.some((one) => one.value.toLowerCase() === item.value.toLowerCase())) return;
-      out.push(item);
-    };
-    for (const token of fontTokens()) {
-      if (token.name === this.tokenEdit || token.name === this.selfToken) continue;
-      add({ value: `var(--${token.name})`, label: `--${token.name}`, hint: token.value, group: 'Typography tokens', token: true });
-    }
-    const engine = maybeEngine();
-    for (const font of engine?.fonts.list() ?? []) add({ value: font.family, hint: font.place === 'embedded' ? 'Embedded' : 'Stored', group: 'In this page' });
-    for (const name of pageFontFamilies()) if (!isGenericFamily(name)) add({ value: name, hint: 'Your stylesheet', group: 'In this page' });
-    for (const one of SYSTEM_FONTS) if (!isGenericFamily(one.name) && hasLocalFont(one.name)) add({ value: one.name, hint: one.category, group: 'System · only where installed' });
-    for (const one of FALLBACK_GENERICS) add({ value: one, label: `any ${one}`, group: 'Generic families' });
-    return out;
-  }
-
-  #renderFallbacks(): TemplateResult {
-    const [first, ...rest] = this.#families;
-    const suggestions = this.#fallbackSuggestions();
-    return html`<div class="fallbacks">
-      <div class="group" style="margin:0">If ${first} is not there</div>
-      <div class="chain" role="list" aria-label="Fallback fonts, in order">
-        ${this.#families.map((one, at) => {
-          const on = this.#chipEvents(at);
-          const name = isGenericFamily(one) ? `any ${one}` : one;
-          const movable = this.#families.length > 1;
-          return html`${at ? '→' : nothing}<span
-            class=${at === 0 ? 'chip first' : isGenericFamily(one) ? 'chip generic' : 'chip'}
-            role="listitem"
-            data-at=${at}
-            data-family=${one}
-            draggable=${movable ? 'true' : 'false'}
-            tabindex=${movable ? '0' : '-1'}
-            aria-label=${`${name}, ${at + 1} of ${this.#families.length}${movable ? '. Alt and an arrow move it.' : ''}`}
-            title=${movable ? (at === 0 ? `${one}. Drag to reorder: what is first is the font.` : `${name}. Drag to reorder; Alt and an arrow move it.`) : one}
-            style=${`font-family:${formatFamilies(at === 0 ? [one, 'serif'] : [one])}`}
-            @keydown=${(event: KeyboardEvent) => this.#chipKey(event, at)}
-            @dragstart=${on.dragstart}
-            @dragover=${on.dragover}
-            @dragleave=${on.dragleave}
-            @drop=${on.drop}
-            @dragend=${on.dragend}
-          >
-            ${movable ? html`<span class="g" aria-hidden="true">${icon('grip', 10)}</span>` : nothing}
-            ${name}
-            ${at > 0
-              ? html`<button type="button" aria-label=${`Remove ${one}`} title=${`Remove ${one}`} @click=${() => this.#setFallbacks(rest.filter((_x, index) => index !== at - 1))}>${icon('close', 9)}</button>`
-              : nothing}
-          </span>`;
-        })}
-        ${suggestions.length
-          ? html`<heo-value-field
-              class="adder"
-              data-fallback-add
-              field-label="Add a fallback"
-              placeholder="+ add"
-              action="Add this fallback"
-              action-hidden
-              chevron-hidden
-              .value=${''}
-              .suggestions=${suggestions}
-              @value-submit=${(event: CustomEvent<{ value: string }>) => {
-                event.stopPropagation();
-                const typed = event.detail.value.trim().replace(/^(['"])(.*)\1$/, '$2').trim();
-                if (typed && !this.#families.some((one) => one.toLowerCase() === typed.toLowerCase())) this.#setFallbacks([...rest, typed]);
-                const field = event.target as HTMLElement & { value: string; draft?: string };
-                field.value = '';
-                if ('draft' in field) field.draft = '';
-              }}
-              @value-change=${(event: Event) => event.stopPropagation()}
-              @value-input=${(event: Event) => event.stopPropagation()}
-            ></heo-value-field>`
-          : nothing}
-      </div>
-      <p class="note">What visitors see while ${first} loads, or if it never does.</p>
     </div>`;
+  }
+
+  #renderRow(choice: Choice, current: string): TemplateResult {
+    const action = choice.token ? 'token' : choice.project ? 'edit' : !choice.pickable ? 'add' : null;
+    const picked = this.#valueOf(choice).toLowerCase() === current;
+    return html`<div class="frow" data-row=${choice.name} @pointermove=${(event: PointerEvent) => this.#hover(event, choice)}>
+      <button
+        class="font"
+        type="button"
+        role="option"
+        data-font=${choice.name}
+        data-pickable=${choice.pickable ? 'true' : 'false'}
+        aria-current=${picked ? 'true' : 'false'}
+        aria-selected=${picked ? 'true' : 'false'}
+        title=${choice.pickable
+          ? `${choice.label ?? choice.name}: hover to see it on the element, click to use it`
+          : `${choice.name}: hover to see it on the element; add it to the page to use it`}
+        @focus=${() => this.#preview(choice)}
+        @blur=${() => this.#preview(null)}
+        @click=${() => this.#pick(choice)}
+        @keydown=${(event: KeyboardEvent) => this.#rowKey(event)}
+      >
+        <span class="nm" style=${`font-family:${choice.face ? choice.face.replace(/[;{}<>]/g, '') : formatFamilies([choice.name, choice.generic ? choice.name : choice.category ? GENERIC_FOR[choice.category] : 'sans-serif'])}`}>${choice.label ?? choice.name}</span>
+        <span class=${choice.project?.place === 'embedded' ? 'tag pill emb' : choice.project || choice.tag.includes('.') ? 'tag pill' : 'tag'}>${choice.tag}</span>
+      </button>
+      ${action
+        ? html`<button
+            class="fact"
+            type="button"
+            data-font-action=${action}
+            aria-label=${`${action === 'add' ? 'Add font' : 'Edit font'} ${choice.name}`}
+            title=${action === 'token' ? `Choose the font ${choice.name} sets, for every element that uses it` : nothing}
+            @focus=${() => this.#preview(choice)}
+            @click=${() => (action === 'token' ? this.#editToken(choice.name.replace(/^--/, '')) : this.#openDraft(choice.name, action))}
+          >${action === 'add' ? html`${icon('plus', 10)} Add font` : html`${icon('sliders', 10)} Edit font`}</button>`
+        : nothing}
+    </div>`;
+  }
+
+  /** Up and down through the list's rows; up from the first goes back to the slot's field. */
+  #rowKey(event: KeyboardEvent): void {
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+    event.preventDefault();
+    const rows = Array.from(this.renderRoot.querySelectorAll<HTMLElement>('.list [data-font]'));
+    const at = rows.indexOf(event.currentTarget as HTMLElement);
+    const next = rows[at + (event.key === 'ArrowDown' ? 1 : -1)];
+    if (next) next.focus();
+    else if (event.key === 'ArrowUp') this.renderRoot.querySelector<HTMLElement>('.slot[aria-current="true"] input')?.focus();
   }
 }
 

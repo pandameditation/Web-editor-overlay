@@ -165,6 +165,35 @@ export function pageFontFamilies(): string[] {
   return [...names];
 }
 
+/**
+ * Where each of the page's own `@font-face` families is declared: the stylesheet's file name
+ * (`site.css`), or `this page` for a `<style>` in it. The editor's own sheets are left out.
+ */
+export function pageFontSources(): Map<string, string> {
+  const out = new Map<string, string>();
+  const visit = (rules: CSSRuleList, where: string): void => {
+    for (const rule of Array.from(rules)) {
+      if (rule instanceof CSSFontFaceRule) {
+        const name = rule.style.getPropertyValue('font-family').replace(/^(['"])(.*)\1$/, '$2').trim();
+        if (name && !out.has(name)) out.set(name, where);
+      } else if ('cssRules' in rule) {
+        visit((rule as CSSGroupingRule).cssRules, where);
+      }
+    }
+  };
+  for (const sheet of Array.from(document.styleSheets)) {
+    const owner = sheet.ownerNode;
+    if (owner instanceof Element && owner.hasAttribute('data-heo-generated')) continue;
+    const where = sheet.href ? decodeURIComponent(new URL(sheet.href).pathname.split('/').pop() || sheet.href) : 'this page';
+    try {
+      visit(sheet.cssRules, where);
+    } catch {
+      // Cross-origin: its fonts are listed by name only.
+    }
+  }
+  return out;
+}
+
 const loading = new Map<string, Promise<boolean>>();
 
 /**
