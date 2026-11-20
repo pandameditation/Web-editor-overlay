@@ -839,6 +839,12 @@ export class HeoValueField extends LitElement {
    * to step it (`head-step`), so the choice is reachable without leaving the value being typed.
    */
   @property({ attribute: false }) head: TemplateResult | null = null;
+  /**
+   * The list's least width. The Styles panel's rows ask for 280: their lists were that wide while
+   * the destination switch sat at their head, and the value grid, the list's placement and its
+   * measured room are tuned to it. Without it, the rows' lists fell to 200 and lost a column.
+   */
+  @property({ type: Number, attribute: 'list-min-width' }) listMinWidth = 200;
 
   @state() private draft = '';
   @state() private open = false;
@@ -2737,7 +2743,7 @@ export class HeoValueField extends LitElement {
       anchor: this.getBoundingClientRect(),
       // A composer is wider than a list: three labelled rows each holding a field of their own.
       // A head (the destination switch) needs room for its choices on one or two lines.
-      minWidth: this.shadowing ? 320 : this.picking ? 268 : this.composer ? 296 : this.head ? 280 : 200,
+      minWidth: this.shadowing ? 320 : this.picking ? 268 : this.composer ? 296 : this.head ? 280 : this.listMinWidth,
     });
     if (style !== null) this.popupStyle = style;
     // A dialog takes this placement as its own once it has drawn at it, and stays there.

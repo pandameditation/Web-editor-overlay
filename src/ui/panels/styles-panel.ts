@@ -1,7 +1,7 @@
 import { css, html, nothing, type PropertyValues, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { isPseudoElement, isWidthQuery, mediaIcon, mediaKind, mediaNow, needsGeneratedContent } from '../../core/breakpoints.js';
-import { inlineDeclarations, rulesPass, stateTrigger, withState, type ElementModel, type WriteTarget } from '../../core/cascade.js';
+import { inlineDeclarations, rulesPass, stateTrigger, type ElementModel, type WriteTarget } from '../../core/cascade.js';
 import {
   escapeRegExp,
   parentLayoutProperties,
@@ -10,13 +10,12 @@ import {
   sizeConstraints,
   type SizeConstraint,
 } from '../../core/css.js';
-import { toRecord } from '../../core/declaration-list.js';
 import { normalizeProperty, propertyIsKnown } from '../../core/declarations.js';
 import { labelFor, selectableParent } from '../../core/dom.js';
 import { listen, unlisten } from '../../core/shield.js';
 import { resolvesOffsets } from '../../core/transform.js';
 import { normalizeClassName, simpleClassName } from '../../core/classes.js';
-import { entryLabel, reachText } from '../../core/save-plan.js';
+import { reachText } from '../../core/save-plan.js';
 import type { CssPasteOptions } from '../../core/editor.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import { HeoElement } from '../context.js';
@@ -73,12 +72,15 @@ import {
   writeChosen,
   sameTarget,
   rowIdOf,
-  destinationChoice,
+  rowPlace,
   shownValue,
   targetOf,
   renderPropertyRow,
+  type RowPlace,
   type RowSpec,
 } from './styles/property-row.js';
+import { candidatePlaces, type PlaceCondition } from '../../core/cascade-places.js';
+import { NEW_CLASS_FIELD } from './styles/cascade-popover.js';
 import type { RowScope, StylesHost, StylesUiState } from './styles/types.js';
 import type { HeoValueField } from '../controls/value-field.js';
 import '../controls/value-field.js';
@@ -327,7 +329,9 @@ const EMPTY_UI: StylesUiState = {
   effPick: null,
   popover: null,
   cardPop: null,
-  rowDest: null,
+  places: new Map(),
+  pendingImportant: new Set(),
+  newClass: null,
   effPseudo: null,
   menu: null,
   adder: null,
@@ -593,6 +597,8 @@ export class HeoStylesPanel extends HeoElement {
   });
   /** The one open adder's errors; checks run on commit, through `form.fail`. */
   protected adderForm = new FormErrors(this, () => []);
+  /** The cascade ladder's new-class name: checked when Enter picks the rung under that name. */
+  protected newClassForm = new FormErrors(this, () => classNameIssues(NEW_CLASS_FIELD, this.ui.newClass?.name ?? ''));
   /** "Add a media query…" in a strip's menu. */
   protected mediaForm = new FormErrors(this, () => stripMediaIssues(this.ui.mediaDraft?.text ?? null));
   /** The element whose size cap has already auto-opened the parent section. */
@@ -642,7 +648,9 @@ export class HeoStylesPanel extends HeoElement {
         ...this.ui,
         popover: null,
         cardPop: null,
-        rowDest: null,
+        places: new Map(),
+        pendingImportant: new Set(),
+        newClass: null,
         effPseudo: null,
         menu: null,
         adder: null,
@@ -661,6 +669,10 @@ export class HeoStylesPanel extends HeoElement {
         ...this.ui,
         effPick: null,
         cardPicks: new Map(),
+        // A place picked at one width is a question asked at that width.
+        places: new Map(),
+        pendingImportant: new Set(),
+        newClass: null,
         popover: null,
         menu: null,
         pendingStates: [],
@@ -800,7 +812,7 @@ export class HeoStylesPanel extends HeoElement {
         if (adder) this.#patch({ adder: { ...adder, draft: value } });
       },
       flashRow: (property, listId) => this.#flashRow(property, listId),
-      destinationsFor: (spec) => this.#rowDestinations(spec.element, spec.model, spec.property, spec.scope),
+      newClassForm: this.newClassForm,
     };
     return host;
   }
@@ -995,14 +1007,13 @@ export class HeoStylesPanel extends HeoElement {
             element: el,
             model,
             listId: EFFECTIVE_LIST_ID,
-            destinations: this.#rowDestinations(el, model, property, scope),
           };
         }, host)}
             </div>
             ${own.length ? nothing : html`<p class="hint" style="margin:0">
               ${filtering ? 'No property matches.' : 'Nothing declares anything for this element yet.'}
             </p>`}
-            ${renderBlockAdder(host, EFFECTIVE_LIST_ID, this.#elementDestinations(el, model), '', { choose: true })}
+            ${renderBlockAdder(host, EFFECTIVE_LIST_ID, this.#adderDestinations(el, model, { media: 'base', state: '' }), '', { choose: true })}
             ${groups.map((group) => this.#renderPseudoGroup(el, model, host, group.state, group.properties))}
             ${pendingPseudo ? this.#renderPseudoGroup(el, model, host, pendingPseudo, []) : nothing}
             ${filtering
@@ -1057,45 +1068,11 @@ export class HeoStylesPanel extends HeoElement {
       element: el,
       model,
       listId,
-      destinations: this.#rowDestinations(el, model, property, scope),
     }), host)}
       </div>
       ${properties.length ? nothing : html`<p class="hint" style="margin:0">No declarations yet.</p>`}
-      ${renderBlockAdder(host, listId, this.#stateDestinations(el, model, state), state, { choose: true })}
+      ${renderBlockAdder(host, listId, this.#adderDestinations(el, model, { media: 'base', state }), state, { choose: true })}
     </div>`;
-  }
-
-  /**
-   * Where an Effective row's edit can go: what its block's adder offers, and the rule the value is
-   * written in now when that is not among them (another family, another size), first.
-   */
-  #rowDestinations(el: HTMLElement, model: ElementModel, property: string, scope: RowScope): AdderDestination[] {
-    const offered = scope.kind === 'size'
-      ? this.#sizeDestinations(el, model, scope.slot, slotMedia(model, scope.slot) ?? '', slotName(model, scope.slot))
-      : scope.kind === 'state'
-        ? this.#stateDestinations(el, model, scope.state, scope.slot)
-        : this.#elementDestinations(el, model);
-    const { shown } = readRow({ property, scope, element: el, model, listId: '' });
-    const entry = shown?.source.kind === 'rule' ? shown.source.entry : null;
-    if (entry && entry.target.kind !== 'readonly' &&
-      !offered.some((one) => one.dest?.kind === 'target' && sameTarget(one.dest.target, entry.target))) {
-      const label = entryLabel(entry);
-      const impact = model.reach(entry.family);
-      offered.unshift(stylesDestination(
-        label,
-        reachText(impact),
-        { kind: 'target', target: entry.target },
-        toRecord(entry.declarations),
-        label,
-        { short: entry.family, name: withState(entry.family, entry.state) ?? entry.matched, media: entry.media, impact },
-      ));
-    }
-    // The switch names a rule by its family; two at once under different conditions say which.
-    const shorts = offered.map((one) => one.short);
-    return offered.map((one, at) =>
-      shorts.indexOf(one.short) !== at || shorts.lastIndexOf(one.short) !== at
-        ? { ...one, short: one.label }
-        : one);
   }
 
   /** Open or close one of the panel's menus; closing hands focus back to what opened it. */
@@ -1202,7 +1179,6 @@ export class HeoStylesPanel extends HeoElement {
       element: el,
       model,
       listId,
-      destinations: this.#rowDestinations(el, model, property, scope),
     }), host)}
       </div>
       ${properties.length
@@ -1213,145 +1189,44 @@ export class HeoStylesPanel extends HeoElement {
       ${renderBlockAdder(
           host,
           listId,
-          state ? this.#stateDestinations(el, model, state, slot) : this.#sizeDestinations(el, model, slot, media ?? '', short),
+          this.#adderDestinations(el, model, { media: slot, state }),
           state,
           { choose: true },
         )}
     </div>`;
   }
-  /** Where a size group's adder writes: every family at that size, then a new class of its own. */
-  #sizeDestinations(
-    el: HTMLElement,
-    model: ElementModel,
-    slot: string,
-    media: string,
-    short: string,
-  ): AdderDestination[] {
-    const { classes, others } = model.families();
-    return [
-      ...[...classes, ...others].map((family) => {
-        const entry = model.entries.find((one) =>
-          one.family === family.key &&
-          one.state === '' &&
-          model.slotOf(one) === slot &&
-          one.target.kind !== 'readonly');
-        const reach = model.reach(family.key);
-        return stylesDestination(
-          `${family.key} ${short}`,
-          reachText(reach),
-          entry ? { kind: 'target', target: entry.target } : { kind: 'new-rule', selector: family.key, media },
-          entry ? toRecord(entry.declarations) : {},
-          `${family.key} ${short}`,
-          { short: family.key, media, impact: reach },
-        );
-      }),
-      stylesDestination(
-        `a new class ${short}`,
-        'this element only',
-        { kind: 'auto-class', element: el, media, state: '' },
-        {},
-        `a new class ${short}`,
-        { media, impact: 1 },
-      ),
-    ];
-  }
-
-  /** Where the element block's adder writes: inline (the default), each class, a new class. */
-  #elementDestinations(el: HTMLElement, model: ElementModel): AdderDestination[] {
-    const destinations = [
-      stylesDestination(
-        'inline style',
-        'this element only, every size',
-        { kind: 'target', target: { kind: 'inline', element: el } },
-        toRecord(model.inline),
-        'this element',
-        { impact: 1 },
-      ),
-    ];
-    for (const name of Array.from(el.classList)) {
-      if (name.startsWith('heo-')) continue;
-      const base = model.entries.find((entry) =>
-        simpleClassName(entry.family) === name &&
-        entry.state === '' &&
-        entry.media === null &&
-        entry.target.kind !== 'readonly');
-      const owned = this.editor.classes.get(name);
-      const target: WriteTarget | null = base
-        ? base.target
-        : owned && owned.origin !== 'stylesheet'
-          ? { kind: 'class', name }
-          : null;
-      const reach = model.reach(`.${CSS.escape(name)}`);
-      destinations.push(
-        stylesDestination(
-          `.${name}`,
-          `${reachText(reach)}, every size`,
-          target ? { kind: 'target', target } : { kind: 'new-rule', selector: `.${CSS.escape(name)}`, media: null },
-          base ? toRecord(base.declarations) : owned ? { ...owned.declarations } : {},
-          `.${name}`,
-          { impact: reach },
-        ),
-      );
-    }
-    destinations.push(
-      stylesDestination(
-        'a new class',
-        'this element only',
-        { kind: 'auto-class', element: el, media: null, state: '' },
-        {},
-        'a new class',
-        { impact: 1 },
-      ),
-    );
-    return destinations;
-  }
-
   /**
-   * Where a state group's adder writes: the families that already have that state first, then the
-   * rest, then a new class of the element's own in that state.
+   * What a block's adder offers under a condition: its candidate places (cascade-places.ts), named
+   * the way the adder's switch and its validation name them. At Element: inline (the default), each
+   * class, a new class; under a size or a state every family reaching the element too, those with a
+   * rule under a state first, then a new class of the element's own.
    */
-  #stateDestinations(el: HTMLElement, model: ElementModel, state: string, slot = 'base'): AdderDestination[] {
-    const { classes, others } = model.families();
-    // A state on another element (`:hover on .nav`) has a rule only where the family has that
-    // element: `.nav a` does, the link's own class does not. And no new class: one of the
-    // element's own cannot say "while the nav is hovered".
-    const contextual = stateTrigger(state).on !== null;
-    const keys = [...classes, ...others].map((family) => family.key).filter((key) => withState(key, state) !== null);
-    // Under the group's media too: `:hover ≥768px` writes into the `≥768px` hover rule.
-    const media = slotMedia(model, slot);
-    const short = slotName(model, slot);
-    const existing = (key: string) =>
-      model.entries.find((entry) =>
-        entry.family === key && entry.state === state && model.slotOf(entry) === slot && entry.target.kind !== 'readonly');
-    const ordered = [...keys.filter((key) => existing(key)), ...keys.filter((key) => !existing(key))];
-    return [
-      ...ordered.map((key) => {
-        const entry = existing(key);
-        const reach = model.reach(key);
-        const selector = withState(key, state)!;
-        const label = `${selector}${short ? ` ${short}` : ''}`;
-        return stylesDestination(
-          label,
-          reachText(reach),
-          entry ? { kind: 'target', target: entry.target } : { kind: 'new-rule', selector, media },
-          entry ? toRecord(entry.declarations) : {},
-          label,
-          { short: key, name: selector, media, impact: reach },
-        );
-      }),
-      ...(contextual
-        ? []
-        : [stylesDestination(
-          `a new class${state}${short ? ` ${short}` : ''}`,
-          'this element only',
-          { kind: 'auto-class', element: el, media, state },
-          {},
-          `a new class${state}${short ? ` ${short}` : ''}`,
-          { media, impact: 1 },
-        )]),
-    ];
+  #adderDestinations(el: HTMLElement, model: ElementModel, cond: PlaceCondition): AdderDestination[] {
+    const short = slotName(model, cond.media);
+    const atElement = cond.media === 'base' && !cond.state;
+    const places = candidatePlaces(model, cond, el, { ownedClass: (name) => this.editor.classes.get(name) ?? null });
+    const ordered = cond.state
+      ? [...places.filter((one) => one.family !== null && one.target), ...places.filter((one) => one.family === null || !one.target)]
+      : places;
+    return ordered.map((place) => {
+      if (place.key === 'inline') {
+        return stylesDestination('inline style', 'this element only, every size', place.dest, place.existing, 'this element', { impact: 1 });
+      }
+      if (place.family === null) {
+        const label = `a new class${cond.state}${short ? ` ${short}` : ''}`;
+        return stylesDestination(label, 'this element only', place.dest, {}, label, { media: place.media, impact: 1 });
+      }
+      const label = `${place.label}${short ? ` ${short}` : ''}`;
+      return stylesDestination(
+        label,
+        atElement ? `${reachText(place.reach)}, every size` : reachText(place.reach),
+        place.dest,
+        place.existing,
+        label,
+        atElement ? { impact: place.reach } : { short: place.family, name: place.label, media: place.media, impact: place.reach },
+      );
+    });
   }
-
 
   /**
    * Open the Effective styles adder, seeded with what was being looked for.
@@ -2100,14 +1975,12 @@ export class HeoStylesPanel extends HeoElement {
   #commitBox(declarations: Record<string, string>, scope: RowScope, el: HTMLElement, model: ElementModel, host: StylesHost): void {
     const writes = Object.entries(declarations).map(([property, value]) => {
       const spec: RowSpec = { property, scope, element: el, model, listId: 'spacing' };
-      const { shown } = readRow(spec);
-      const choice = destinationChoice(spec, host, rowIdOf(scope, property, el), shown);
+      const choice = rowPlace(spec, host, rowIdOf(scope, property, el));
       return { property, value, choice };
     });
-    this.#patch({ rowDest: null });
     this.editor.writeDeclarationsTo(
       writes.map(({ property, value, choice }) => ({
-        dest: choice.picked.dest!,
+        dest: choice.picked.dest,
         property,
         value,
         move: choice.current?.dest?.kind === 'target' && choice.current.dest.target.kind === 'inline' &&
@@ -2140,19 +2013,18 @@ export class HeoStylesPanel extends HeoElement {
     const choiceOf = (property: string) => {
       const spec = specOf(property);
       const { shown } = readRow(spec);
-      return { spec, shown, choice: destinationChoice(spec, host, rowIdOf(scope, property, el), shown) };
+      return { spec, shown, choice: rowPlace(spec, host, rowIdOf(scope, property, el)) };
     };
 
     const lines = { border: this.#lineView('border', model, computed), outline: this.#lineView('outline', model, computed) };
     const fields: Record<string, BorderFieldSpec> = {};
     for (const kind of BORDER_SHORTHANDS) {
-      const head = choiceOf(kind).choice.head;
       for (const part of LINE_PARTS) {
-        fields[`${kind}-${part}`] = { suggestions: buildSuggestions(this.editor, `${kind}-${part}`, el), head };
+        fields[`${kind}-${part}`] = { suggestions: buildSuggestions(this.editor, `${kind}-${part}`, el) };
       }
     }
-    fields['border-radius'] = { suggestions: buildSuggestions(this.editor, 'border-radius', el), head: choiceOf('border-radius').choice.head };
-    fields['outline-offset'] = { suggestions: buildSuggestions(this.editor, 'outline-offset', el), head: choiceOf('outline-offset').choice.head };
+    fields['border-radius'] = { suggestions: buildSuggestions(this.editor, 'border-radius', el) };
+    fields['outline-offset'] = { suggestions: buildSuggestions(this.editor, 'outline-offset', el) };
     const radius = { value: shownValue(model.cascade('border-radius').applying[0]), computed: computed.borderRadius };
     const offset = { value: shownValue(model.cascade('outline-offset').applying[0]), computed: computed.outlineOffset };
 
@@ -2307,7 +2179,7 @@ export class HeoStylesPanel extends HeoElement {
    */
   #commitEdge(
     writes: Record<string, string>,
-    choice: ReturnType<typeof destinationChoice>,
+    choice: RowPlace,
     el: HTMLElement,
     model: ElementModel,
     label: string,
@@ -2315,7 +2187,6 @@ export class HeoStylesPanel extends HeoElement {
     const dest = choice.picked.dest;
     if (!dest) return;
     this.editor.cancelPreview();
-    this.#patch({ rowDest: null });
     const into = dest.kind === 'target' ? dest.target : null;
     const declaredHere = (property: string): boolean => Boolean(into) &&
       model.cascade(property).applying.some((one) => !one.via && sameTarget(targetOf(one, el), into!));
@@ -2341,11 +2212,10 @@ export class HeoStylesPanel extends HeoElement {
    * declares on their own: kept, they would compete with the new shorthand by order, which is how
    * `border-width` came to override a border just set. One undo entry.
    */
-  #commitLine(kind: LineKind, value: string, choice: ReturnType<typeof destinationChoice>, el: HTMLElement, model: ElementModel): void {
+  #commitLine(kind: LineKind, value: string, choice: RowPlace, el: HTMLElement, model: ElementModel): void {
     const dest = choice.picked.dest;
     if (!dest) return;
     this.editor.cancelPreview();
-    this.#patch({ rowDest: null });
     const into = dest.kind === 'target' ? dest.target : null;
     const folded = into
       ? LINE_PARTS.map((part) => `${kind}-${part}`).filter((property) =>
@@ -2386,13 +2256,12 @@ export class HeoStylesPanel extends HeoElement {
     const choiceOf = (property: string) => {
       const spec = specOf(property);
       const { shown } = readRow(spec);
-      return { spec, shown, choice: destinationChoice(spec, host, rowIdOf(scope, property, el), shown) };
+      return { spec, shown, choice: rowPlace(spec, host, rowIdOf(scope, property, el)) };
     };
     const value = this.#backgroundView(model);
-    const head = choiceOf('background').choice.head;
     const fields: Record<string, BackgroundFieldSpec> = {};
     for (const property of BACKGROUND_LONGHANDS) {
-      fields[property] = { suggestions: buildSuggestions(this.editor, property, el), head };
+      fields[property] = { suggestions: buildSuggestions(this.editor, property, el) };
     }
     const own = (property: string): boolean => model.cascade(property).applying.some((one) => !one.via);
     const rowsShown = ['background', ...BACKGROUND_LONGHANDS.filter(own)].filter((property) => hits.includes(property));
@@ -2453,14 +2322,14 @@ export class HeoStylesPanel extends HeoElement {
   #commitBackground(
     before: Background,
     next: Background,
-    shorthandChoice: ReturnType<typeof destinationChoice>,
-    colourChoice: ReturnType<typeof destinationChoice>,
+    shorthandChoice: RowPlace,
+    colourChoice: RowPlace,
     el: HTMLElement,
     model: ElementModel,
   ): void {
     const declaredIn = (property: string, into: WriteTarget | null): boolean => Boolean(into) &&
       model.cascade(property).applying.some((one) => !one.via && sameTarget(targetOf(one, el), into!));
-    const targetOfChoice = (choice: ReturnType<typeof destinationChoice>): WriteTarget | null =>
+    const targetOfChoice = (choice: RowPlace): WriteTarget | null =>
       choice.picked.dest?.kind === 'target' ? choice.picked.dest.target : null;
     const layersOf = (background: Background): string => composeBackground({ ...background, color: '' });
     const blend = composeBlend(next);
@@ -2471,7 +2340,6 @@ export class HeoStylesPanel extends HeoElement {
     const dest = choice.picked.dest;
     if (!dest) return;
     this.editor.cancelPreview();
-    this.#patch({ rowDest: null });
     const into = targetOfChoice(choice);
     const declaredHere = (property: string): boolean => declaredIn(property, into);
     const moving = choice.current?.dest?.kind === 'target' && choice.current.dest.target.kind === 'inline' && into?.kind !== 'inline';
@@ -2510,8 +2378,7 @@ export class HeoStylesPanel extends HeoElement {
     const anchor = !model.cascade('animation-name').applying[0] && model.cascade('animation').applying[0] ? 'animation' : 'animation-name';
     const choice = (() => {
       const spec = specOf(anchor);
-      const { shown } = readRow(spec);
-      return destinationChoice(spec, host, rowIdOf(scope, anchor, el), shown);
+      return rowPlace(spec, host, rowIdOf(scope, anchor, el));
     })();
     const winner = (property: string, onHover: boolean): Contribution | undefined =>
       model.cascade(property, onHover ? hover : undefined).applying[0];
@@ -2534,7 +2401,6 @@ export class HeoStylesPanel extends HeoElement {
       const base = choice.picked.dest;
       if (!base) return;
       this.editor.cancelPreview();
-      this.#patch({ rowDest: null });
       const homeTarget = home ? targetOf(home, el) : null;
       // Hover: into the state block it is already in, else the element's own `:hover` class.
       const dest: AddDestination = next?.trigger === 'hover'
@@ -2570,7 +2436,6 @@ export class HeoStylesPanel extends HeoElement {
         <heo-animation-editor
           .value=${value}
           .targets=${this.editor.selection.length ? [...this.editor.selection] : [el]}
-          .head=${choice.head}
           @animation-change=${(event: CustomEvent<{ value: AnimationConfig | null }>) => commit(event.detail.value)}
         ></heo-animation-editor>
         ${rowsShown.length
@@ -2597,8 +2462,7 @@ export class HeoStylesPanel extends HeoElement {
     const anchor = winner('transition') || !winner('transition-property') ? 'transition' : 'transition-property';
     const choice = (() => {
       const spec = specOf(anchor);
-      const { shown } = readRow(spec);
-      return destinationChoice(spec, host, rowIdOf(scope, anchor, el), shown);
+      return rowPlace(spec, host, rowIdOf(scope, anchor, el));
     })();
     const items = readTransitions((property) => winner(property)?.value ?? '');
     const own = (property: string): boolean => model.cascade(property).applying.some((one) => !one.via);
@@ -2617,7 +2481,6 @@ export class HeoStylesPanel extends HeoElement {
       const dest = choice.picked.dest;
       if (!dest) return;
       this.editor.cancelPreview();
-      this.#patch({ rowDest: null });
       const into = dest.kind === 'target' ? dest.target : null;
       const declaredIn = (property: string): boolean => Boolean(into) &&
         model.cascade(property).applying.some((one) => !one.via && sameTarget(targetOf(one, el), into!));
@@ -2635,7 +2498,6 @@ export class HeoStylesPanel extends HeoElement {
       touched: rowsShown.length,
       set: Boolean(items?.length),
       body: html`
-        ${choice.head ? html`<div style="margin-bottom:8px">${choice.head}</div>` : nothing}
         ${items === null
           ? html`<p class="hint" style="margin:0 0 9px">
               This transition is written in a way the timeline cannot read (a token for the whole list): edit it in its row below.
@@ -2678,16 +2540,9 @@ export class HeoStylesPanel extends HeoElement {
      * Under a text style, one place to write: the element's own style attribute, so an edit makes
      * the element its own rather than changing the style every other element wears (that is done
      * from Tokens, or by saving over it). Without one, rows write where the value is written now,
-     * as every section of the panel does.
+     * as every section of the panel does. The ladder can still pick the style's class by hand.
      */
-    const inline = !current ? undefined : [stylesDestination(
-      'inline style',
-      'this element only, every size',
-      { kind: 'target', target: { kind: 'inline', element: el } },
-      toRecord(model.inline),
-      'this element',
-      { impact: 1 },
-    )];
+    const inline = Boolean(current);
     const value = (property: string): string => model.cascade(property).applying[0]?.value ?? '';
     const rows = shownTypographyRows(value('text-decoration-line') || getComputedStyle(el).textDecorationLine)
       .filter((row) => host.hit(row.property, row.label, value(row.property)));
@@ -2786,7 +2641,7 @@ export class HeoStylesPanel extends HeoElement {
           label: row.label,
           sub: row.sub,
           segments: row.segments,
-          destinations: inline,
+          ...(inline ? { preferInline: true } : {}),
         }, host))}
       </div>
       ${tuneShown

@@ -2,8 +2,7 @@ import type { ElementModel } from '../../../core/cascade.js';
 import type { EditorEngine } from '../../../core/editor.js';
 import type { AddDestination } from '../../../core/save-plan.js';
 import type { FormErrors } from '../../form-errors.js';
-import type { AdderDestination, AdderHost } from './property-adder.js';
-import type { RowSpec } from './property-row.js';
+import type { AdderHost } from './property-adder.js';
 
 /**
  * The Styles panel's pieces program against these.
@@ -46,8 +45,20 @@ export interface StylesUiState {
    * it is placed against.
    */
   cardPop: { key: string; anchor: string; cards?: string[] } | null;
-  /** The destination picked in one Effective row's value list, until that edit is written. */
-  rowDest: { rowId: string; key: string } | null;
+  /**
+   * The place each row edits, picked on its cascade ladder, by row id (`rowIdOf`): a place key
+   * (`cascade-places.ts`). A row with no pick edits where its value is written, else the default
+   * place. Kept until the selection or the preview width changes: the ladder is a choice, not a
+   * one-off, and a rich editor writes every one of its properties through the same pick.
+   */
+  places: ReadonlyMap<string, string>;
+  /**
+   * `!important` asked for on an empty place, before anything is written there, by
+   * `<row id>|<place key>`: the first value typed there is written with it.
+   */
+  pendingImportant: ReadonlySet<string>;
+  /** The name being typed on a ladder's new-class rung, for one row at a time. */
+  newClass: { rowId: string; name: string } | null;
   /** A pseudo-element added to Effective styles, shown empty until its first property. */
   effPseudo: string | null;
   /** The one open menu, by id. */
@@ -91,8 +102,8 @@ export interface PendingState {
 }
 
 export interface StylesHost extends AdderHost {
-  /** Where a row's edit can go: the same places everywhere the panel shows a property. */
-  destinationsFor(spec: RowSpec): AdderDestination[];
+  /** The ladder's new-class name field. */
+  newClassForm: FormErrors;
   /** Flash a property's row in a list once it has rendered: where an add landed. */
   flashRow(property: string, listId: string): void;
   engine: EditorEngine;

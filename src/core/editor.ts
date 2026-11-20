@@ -4107,6 +4107,22 @@ export class EditorEngine {
   }
 
   /**
+   * The class an `auto-class` destination writes: the name the user typed (normalised), else the
+   * automatic one. A typed name is "reused" when it is a class already: its rule is then added to,
+   * as naming an existing class anywhere else in the editor does.
+   */
+  #autoClassOf(dest: Extract<AddDestination, { kind: 'auto-class' }>): { name: string; reuse: boolean } {
+    const typed = dest.name ? normalizeClassName(dest.name) : '';
+    if (typed) {
+      const known = this.classes.get(typed) !== undefined ||
+        this.rules.list().some((rule) => mentionsClass(rule.selector, typed)) ||
+        document.querySelector(`.${CSS.escape(typed)}`) !== null;
+      return { name: typed, reuse: known };
+    }
+    return this.#autoClass(dest.element, this.#suffixFor(dest.media, dest.state));
+  }
+
+  /**
    * An automatic class on one element, with its declarations, as one command.
    *
    * With a media condition or a state it is a managed rule (`.card-tablet` in `@media …`), since a
@@ -4234,7 +4250,7 @@ export class EditorEngine {
         break;
       }
       case 'auto-class': {
-        const { name: cls } = this.#autoClass(dest.element, this.#suffixFor(dest.media, dest.state));
+        const { name: cls } = this.#autoClassOf(dest);
         const command = this.#autoClassCommand(dest.element, cls, dest.state, dest.media, declarations, label);
         if (command) {
           this.history.commit(command);
@@ -4387,7 +4403,7 @@ export class EditorEngine {
       case 'new-rule':
         return nonEmpty(this.rules.get(designRuleKey(dest.selector, dest.media))?.declarations);
       case 'auto-class': {
-        const { name, reuse } = this.#autoClass(dest.element, this.#suffixFor(dest.media, state));
+        const { name, reuse } = this.#autoClassOf({ ...dest, state });
         return reuse && nonEmpty(this.rules.get(designRuleKey(`.${CSS.escape(name)}${state}`, dest.media))?.declarations);
       }
       case 'target': {

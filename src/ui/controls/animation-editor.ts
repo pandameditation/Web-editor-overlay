@@ -142,8 +142,6 @@ export class HeoAnimationEditor extends LitElement {
   @property({ attribute: false }) value: AnimationConfig | null = null;
   /** The elements a preview plays on: the selection. */
   @property({ attribute: false }) targets: HTMLElement[] = [];
-  /** The destination switch, at the head of the preset list. */
-  @property({ attribute: false }) head: TemplateResult | null = null;
 
   /** The easing being dragged, ahead of the host. */
   @state() private easingDraft: string | null = null;
@@ -169,7 +167,6 @@ export class HeoAnimationEditor extends LitElement {
           placeholder="Pick an animation…"
           .value=${preset?.label ?? ''}
           .suggestions=${SUGGESTIONS}
-          .head=${this.head}
           fuzzy
           @suggestion-hover=${(event: CustomEvent<{ value: string | null }>) => {
             event.stopPropagation();

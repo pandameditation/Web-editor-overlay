@@ -73,14 +73,15 @@
         const elsewhereRows = () => Array.from(list()?.querySelectorAll('.fam-elsewhere .row') ?? []).map((row) => row.dataset.property).join(',');
         const noteText = (selector) => list()?.querySelector(selector)?.textContent.replace(/\s+/g, ' ').trim() ?? '';
         const key = (input, name) => input.dispatchEvent(new KeyboardEvent('keydown', { key: name, bubbles: true, composed: true, cancelable: true }));
-        /** margin-left's value list: pick a destination on its switch, type a value, Enter. */
-        const writeVia = async (label, value) => {
+        /** margin-left's cascade menu: pick a place (by its key's start), then type a value in the row, Enter. */
+        const writeVia = async (place, value) => {
           const field = () => list()?.querySelector('.row[data-property="margin-left"] heo-value-field');
-          field()?.focusInput();
-          field()?.openList();
+          list()?.querySelector('.row[data-property="margin-left"] .dots')?.click();
           await settle(200);
-          const seg = field()?.shadowRoot?.querySelector('.list-head heo-segmented');
-          Array.from(seg?.shadowRoot?.querySelectorAll('button') ?? []).find((one) => one.textContent.trim() === label)?.click();
+          const rung = Array.from(sroot().querySelectorAll('.pop .ladder > [data-place]')).find((one) => one.dataset.place.startsWith(place));
+          (rung?.matches('[role="radio"]') ? rung : rung?.querySelector('[role="radio"]'))?.click();
+          await settle(200);
+          sroot().querySelector('.pop')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true }));
           await settle(200);
           const input = field()?.shadowRoot?.querySelector('input[type="text"]');
           input.focus();
@@ -117,7 +118,7 @@
 
         progress.textContent = 'moved';
         // Moved to a new class: two blocks, so no order control, but listed under margin with a note.
-        await writeVia('New class', '21px');
+        await writeVia('new-class|', '21px');
         results.moved = {
           writtenInTheClass: !/margin-left/.test(el.getAttribute('style') ?? '') && el.classList.length === 2,
           listedUnderItsShorthand: !familyRows() && elsewhereRows() === 'margin-left' &&
@@ -129,7 +130,7 @@
 
         progress.textContent = 'back';
         // Back inline, over the class: one block again, one family again.
-        await writeVia('Inline', '31px');
+        await writeVia('inline', '31px');
         results.back = {
           isOneFamilyAgain: familyRows() === 'margin,margin-left' && !elsewhereRows() &&
             /margin-left:\s*31px/.test(el.getAttribute('style') ?? ''),

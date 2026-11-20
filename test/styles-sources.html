@@ -1216,10 +1216,11 @@
           const everyCardRowHasOne = cardRowsAll().every((row) => row.querySelectorAll('.promote').length === 1);
           sroot().querySelector('.rows[data-declarations="effective"] .row[data-property="color"] .dots')?.click();
           await settle(250);
-          const lines = Array.from(sroot().querySelectorAll('.pop .c-line'));
-          results.promote.presentOnEveryCardRowAndPopoverLine =
+          // The cascade menu's toggle sits with the picked rung's field: one, for the place being edited.
+          const rungCount = sroot().querySelectorAll('.pop .ladder > [data-place]').length;
+          results.promote.presentOnEveryCardRowAndThePickedRung =
             everyCardRowHasOne &&
-            lines.length > 1 && lines.every((line) => line.querySelectorAll('.promote').length === 1);
+            rungCount > 1 && sroot().querySelectorAll('.pop .open .promote').length === 1;
           key(sroot().querySelector('.pop'), 'Escape');
           await settle(200);
           await pop('.card');
@@ -1584,17 +1585,30 @@
             const effList = () => sroot().querySelector('[data-declarations="effective"]');
             const effRow = (property) => effList()?.querySelector(`.row[data-property="${property}"]`);
             const effField = (property) => effRow(property)?.querySelector('heo-value-field');
-            const switchOf = (fieldEl) => fieldEl?.shadowRoot?.querySelector('.list-head heo-segmented');
-            const pressSwitch = (fieldEl, label) => Array.from(switchOf(fieldEl)?.shadowRoot?.querySelectorAll('button') ?? [])
-              .find((one) => textOf(one) === label)?.click();
+            // The row's cascade menu: its ladder, its picked rung, and a pick by place key.
+            const ladderPop = () => sroot().querySelector('.pop:not(.cardpop):not(.finderpop)');
+            const radioOf = (one) => (one?.matches('[role="radio"]') ? one : one?.querySelector('[role="radio"]'));
+            const rungsIn = () => Array.from(ladderPop()?.querySelectorAll('.ladder > [data-place]') ?? []);
+            const checkedKey = () => rungsIn().find((one) => radioOf(one)?.getAttribute('aria-checked') === 'true')?.dataset.place ?? '';
+            const openLadder = async (row) => {
+              row?.querySelector('.dots')?.click();
+              await settle(200);
+            };
+            const closeLadder = async () => {
+              key(ladderPop(), 'Escape');
+              await settle(200);
+            };
+            const pickRung = async (placeKey) => {
+              radioOf(ladderPop()?.querySelector(`.ladder > [data-place="${CSS.escape(placeKey)}"]`))?.click();
+              await settle(200);
+            };
             /*
-             * A row's edit goes where its value is written now: font-weight is .card's, so the switch
+             * A row's edit goes where its value is written now: font-weight is .card's, so the ladder
              * starts there, and writing changes .card rather than adding an inline override.
              */
-            effField('font-weight')?.focusInput();
-            effField('font-weight')?.openList();
-            await settle(200);
-            const startsOnTheSource = switchOf(effField('font-weight'))?.value === 'target:.card';
+            await openLadder(effRow('font-weight'));
+            const startsOnTheSource = checkedKey() === '.card|base';
+            await closeLadder();
             let before = engine.history.size;
             const weightInput = effField('font-weight')?.shadowRoot?.querySelector('input[type="text"]');
             await typeInto(weightInput, '700');
@@ -1609,12 +1623,10 @@
              * Picking another destination for the element's own value moves it there: font-size is
              * inline, and written into .card it leaves the style attribute, as one undo entry.
              */
-            effField('font-size')?.focusInput();
-            effField('font-size')?.openList();
-            await settle(200);
-            const inlineFirst = switchOf(effField('font-size'))?.value === 'target:inline style';
-            pressSwitch(effField('font-size'), '.card');
-            await settle(200);
+            await openLadder(effRow('font-size'));
+            const inlineFirst = checkedKey() === 'inline';
+            await pickRung('.card|base');
+            await closeLadder();
             before = engine.history.size;
             const sizeInput = effField('font-size')?.shadowRoot?.querySelector('input[type="text"]');
             await typeInto(sizeInput, '17px');
@@ -1697,47 +1709,37 @@
             // No line under an edited row: the switch's own line says where it goes.
             results.effective.noWhereLineUnderARow = !sroot().querySelector('.prow .under, .prow .where');
             /*
-             * A segmented row (text-align) has no value list, so the line sits under it while it is in
-             * use, its source a menu of the same destinations, the current one first chosen.
+             * A segmented row (text-align) has no value list: where it writes is picked from its name,
+             * like any row, on the same ladder, the current place first picked.
              */
             const alignRow = () => effRow('text-align')?.closest('.prow');
-            const line = () => alignRow()?.querySelector('.dest-line');
-            alignRow()?.querySelector('heo-segmented')?.shadowRoot?.querySelector('button')?.focus();
-            await settle(120);
-            const shownWhileInUse = line() && getComputedStyle(line()).display !== 'none';
-            const lineText = textOf(line());
-            line()?.querySelector('.dest-pick')?.click();
-            await settle(200);
-            const destMenu = () => sroot().querySelector('.menu[data-menu^="dest-"]');
-            const menuItems = Array.from(destMenu()?.querySelectorAll('.mi') ?? []).map((one) => textOf(one.querySelector('.lbl')));
-            const stillShown = line() && getComputedStyle(line()).display !== 'none';
-            Array.from(destMenu()?.querySelectorAll('.mi') ?? []).find((one) => textOf(one.querySelector('.lbl')) === 'inline style')?.click();
-            await settle(200);
-            const lineAfter = textOf(line());
+            await openLadder(effRow('text-align'));
+            const startsOnCard = checkedKey() === '.card|base';
+            const alignPlaces = rungsIn().map((one) => one.dataset.place);
+            await pickRung('inline');
+            await closeLadder();
             before = engine.history.size;
             Array.from(alignRow()?.querySelector('heo-segmented')?.shadowRoot?.querySelectorAll('button') ?? [])
               .find((one) => textOf(one) === 'C')?.click();
             await settle(250);
-            results.effective.aSegmentedRowSaysWhereUnderIt =
-              Boolean(shownWhileInUse) && lineText === 'Edits .card • impacting 4 elements' &&
-              menuItems.join(',') === 'inline style,.card,.featured,a new class' && Boolean(stillShown) &&
-              lineAfter === 'Adds inline style • impacting this element only' &&
+            results.effective.aSegmentedRowPicksWhereFromItsName =
+              startsOnCard && !sroot().querySelector('.dest-line, .dest-pick') &&
+              ['inline', '.card|base', '.featured|base'].every((one) => alignPlaces.includes(one)) &&
+              alignPlaces.at(-1)?.startsWith('new-class|') &&
               target.style.textAlign === 'center' && engine.history.size === before + 1;
             engine.undo();
             await settle(250);
-            /* Under a media query, the switch names the rule alone: the bar already says which query. */
+            /* Under a media query, a rung names the rule, its size a tag beside it. */
             sroot().querySelector('[data-strip="effective"] [data-slot="tablet"]')?.click();
             await settle(250);
-            const tabletPadding = sroot().querySelector('[data-egroup="size:tablet"] .row[data-property="padding"] heo-value-field');
-            tabletPadding?.focusInput();
-            tabletPadding?.openList();
-            await settle(200);
-            results.effective.underAMediaQueryTheSwitchNamesTheRule =
-              (switchOf(tabletPadding)?.options ?? []).map((one) => one.label).slice(0, 2).join(',') === '.card,.featured' &&
-              (switchOf(tabletPadding)?.options ?? []).every((one) => !/[≤≥(]/.test(one.label)) &&
-              textOf(tabletPadding?.shadowRoot?.querySelector('.list-head .explain')) ===
-                'Edits .card (min-width: 768px) • impacting 4 elements';
-            tabletPadding?.closePopup();
+            await openLadder(sroot().querySelector('[data-egroup="size:tablet"] .row[data-property="padding"]'));
+            const tabletRung = ladderPop()?.querySelector(`.ladder > [data-place="${CSS.escape(checkedKey())}"]`);
+            results.effective.underAMediaQueryTheLadderNamesTheRuleAndItsSize =
+              checkedKey() === '.card|tablet' &&
+              textOf(tabletRung?.querySelector('.pl')) === '.card' &&
+              textOf(tabletRung?.querySelector('.sz')) === '≥768px' &&
+              rungsIn().every((one) => !/[≤≥(]/.test(textOf(one.querySelector('.pl'))));
+            await closeLadder();
             sroot().querySelector('[data-strip="effective"] .base')?.click();
             await settle(250);
             /* The bar: a picked size shows that size's rows alone, as in a card. */

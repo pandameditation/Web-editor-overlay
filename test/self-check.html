@@ -1301,22 +1301,18 @@
       const valueOf = (property) => rowFor(property)?.querySelector('heo-value-field')?.value;
       check('rowShowsAuthoredExpression', () => valueOf('width'));
       check('rowShowsStylesheetKeyword', () => valueOf('overflow'));
-      check('rowNamesTheRuleItCameFrom', () =>
-        rowFor('width')?.querySelector('.from')?.textContent.trim());
+      // The name's label says where the value comes from (the row has no source hint any more).
+      const nameLabel = (property) => rowFor(property)?.querySelector('.dots')?.getAttribute('aria-label') ?? '';
+      check('rowNamesTheRuleItCameFrom', () => /: from (.+?);/.exec(nameLabel('width'))?.[1]);
       check('rowCountsAsSet', () => rowFor('width')?.classList.contains('set'));
-      // Said by the switch at the head of the value's list: an edit goes where the value is written.
-      rowFor('width')?.querySelector('heo-value-field')?.openList();
-      await frame();
-      check('rowTooltipExplainsWhereTheEditGoes', () =>
-        /^Edits #declared-probe • impacting /.test(rowFor('width')?.querySelector('heo-value-field')
-          ?.shadowRoot?.querySelector('.list-head .explain')?.textContent.trim() ?? ''));
-      rowFor('width')?.querySelector('heo-value-field')?.closePopup();
+      // Said by the name's label (and its cascade menu's pick): an edit goes where the value is written.
+      check('rowTooltipExplainsWhereTheEditGoes', () => /; edits #declared-probe, /.test(nameLabel('width')));
 
       /* An inline style still wins, and is attributed to the element. */
       engine.setStyle('width', '120px', probeEl);
       await frame();
       check('inlineValueWinsOverTheRule', () => valueOf('width'));
-      check('inlineValueHasNoRuleTag', () => !rowFor('width')?.querySelector('.from'));
+      check('inlineValueHasNoRuleTag', () => /: from inline style;/.test(nameLabel('width')));
 
       /* The resolved value is one click away, and only when it differs.
        *

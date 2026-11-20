@@ -662,16 +662,16 @@
         const historyBefore = engine.history.size;
         await ui(() => {
           engine.setStyle('letter-spacing', '1px', byId('a'));
+          // A second element wearing .card, so a row editing the class shows its reach chip (2×).
+          byId('b').classList.add('card');
           for (const section of deepAll((el) => el.localName === 'heo-section' && inside('heo-styles-panel')(el))) section.open = true;
         });
         const shown = (el) => el.getClientRects().length > 0;
         const inPanel = (test) => () => deep((el) => test(el) && shown(el) && inside('heo-styles-panel')(el));
         const SP = 'src/ui/panels/styles';
         const firstOf = (selector) => inPanel((el) => el.matches(selector));
-        const undeclaredRow = inPanel((el) => el.matches('.prow') && Boolean(el.querySelector('.dot.none')));
+        const undeclaredRow = inPanel((el) => el.matches('.prow') && Boolean(el.querySelector('.row:not(.set) .dots .pn')));
         const stripCounted = firstOf('.slots button[data-slot]:not(.empty)');
-        // The ring is an inset box-shadow; its colour is the first token of the computed value.
-        const ringInk = (el) => (getComputedStyle(el).boxShadow.match(/^(?:[a-z-]+\([^)]*\)|#[0-9a-f]+)/i) ?? [''])[0];
         await measureInteractive([
           // The !important toggle at rest (it is always visible, never revealed on hover) and pressed.
           { name: 'styles.promote', component: 'promote', file: `${SP}/promote.ts`, cat: 'styles', kind: 'icon', min: 3, host: firstOf('.cls .promote[aria-pressed="false"]') },
@@ -696,29 +696,34 @@
           { name: 'styles.ruleChip', component: 'header', file: `${SP}/header.ts`, cat: 'styles', kind: 'text', min: 4.5, host: firstOf('.ident .cchip.rule .name') },
         ], 'default');
         await measure([
-          // The cascade dot is the row's only mark of a declared value.
-          { name: 'styles.dot', component: 'property-row', file: `${SP}/property-row.ts`, cat: 'styles', kind: 'icon', min: 3, host: firstOf('.dots .dot:not(.none)'), inkOf: (el) => getComputedStyle(el).backgroundColor },
+          // The reach chip on a row's name: where an edit would change more than this element.
+          { name: 'styles.reachChip', component: 'property-row', file: `${SP}/property-row.ts`, cat: 'styles', kind: 'text', min: 4.5, host: firstOf('.row .dots .uses') },
           // The card's "N rules • N×" was the faint ink; the reach is what the card is read for.
           { name: 'styles.cardMeta', component: 'class-editor', file: 'src/ui/panels/class-editor.ts', cat: 'styles', kind: 'text', min: 4.5, host: firstOf('.cls > header .meta') },
         ], 'default');
-        // L8: an undeclared row's dot is nothing at rest and a ring on hover, the control's only visual there.
+        // L8: an undeclared row's name is the dim ink, and stays readable on the hover tint that says it opens the cascade.
         await measure([
-          { name: 'styles.dotRingOnHover', component: 'property-row', file: `${SP}/property-row.ts`, cat: 'styles', kind: 'icon', min: 3, host: undeclaredRow, part: () => undeclaredRow()?.querySelector('.dot.none') ?? null, inkOf: ringInk },
+          { name: 'styles.unsetNameOnHover', component: 'property-row', file: `${SP}/property-row.ts`, cat: 'styles', kind: 'text', min: 4.5, host: () => undeclaredRow()?.querySelector('.dots') ?? null, part: () => undeclaredRow()?.querySelector('.dots .pn') ?? null },
         ], 'hover');
         engine.undo();
         /*
-         * The line under the destination switch, at the head of a value's list: what picking a place
-         * does. Small text, so the 4.5:1 a reading needs.
+         * The cascade menu's ladder: the result line under the picked rung (what a value there does),
+         * the "now" badge on the winning rung and a rung's reach chip. Small text, so the 4.5:1 a
+         * reading needs, on the popover's raised surface and the picked rung's tint.
          */
-        const colourField = () => deep((el) => el.localName === 'heo-value-field' && el.dataset.property === 'color' && Boolean(el.closest('[data-declarations="typography"]')) && inside('heo-styles-panel')(el));
-        await ui(() => colourField()?.openList());
+        const colourName = () => deep((el) => el.localName === 'button' && el.classList.contains('dots') && Boolean(el.closest('[data-declarations="typography"] .row[data-property="color"]')) && inside('heo-styles-panel')(el));
+        await ui(() => colourName()?.click());
         await measure([
-          { name: 'styles.destExplain', component: 'property-row', file: `${SP}/property-row.ts`, cat: 'styles', kind: 'text', min: 4.5, host: () => colourField()?.shadowRoot?.querySelector('.list-head .explain') ?? null },
+          { name: 'styles.ladderResult', component: 'ladder', file: `${SP}/ladder.ts`, cat: 'styles', kind: 'text', min: 4.5, host: firstOf('.pop .open .res .ok, .pop .open .res .ko') },
+          { name: 'styles.ladderResultLine', component: 'ladder', file: `${SP}/ladder.ts`, cat: 'styles', kind: 'text', min: 4.5, host: firstOf('.pop .open .res') },
+          { name: 'styles.nowBadge', component: 'ladder', file: `${SP}/ladder.ts`, cat: 'styles', kind: 'text', min: 4.5, host: firstOf('.pop .lr .now') },
+          { name: 'styles.ladderReach', component: 'ladder', file: `${SP}/ladder.ts`, cat: 'styles', kind: 'text', min: 4.5, host: firstOf('.pop .lr .uses') },
         ], 'default');
-        await ui(() => colourField()?.closePopup());
+        await ui(() => colourName()?.click());
         await ui(() => engine.setPreviewWidth(null));
         if (engine.history.size !== historyBefore) notes.push(`stylesPanel left the history changed (${historyBefore} → ${engine.history.size})`);
         engine.classes.remove('card');
+        byId('b').classList.remove('card');
         engine.setDock(false);
         engine.select(null);
       });
@@ -1241,12 +1246,15 @@
           trashHover: inBothThemesWhen('styles.trash', 'hover'),
           reset: inBothThemes('styles.reset'),
           chipKill: inBothThemes('styles.chipKill'),
-          dot: inBothThemes('styles.dot'),
-          dotRingOnHover: inBothThemesWhen('styles.dotRingOnHover', 'hover'),
+          reachChip: inBothThemes('styles.reachChip'),
+          unsetNameOnHover: inBothThemesWhen('styles.unsetNameOnHover', 'hover'),
           stripCount: inBothThemes('styles.stripCount'),
           notNowStrip: inBothThemes('styles.notNowStrip'),
           cardMeta: inBothThemes('styles.cardMeta'),
-          destExplain: inBothThemes('styles.destExplain'),
+          ladderResult: inBothThemes('styles.ladderResult'),
+          ladderResultLine: inBothThemes('styles.ladderResultLine'),
+          nowBadge: inBothThemes('styles.nowBadge'),
+          ladderReach: inBothThemes('styles.ladderReach'),
           // Every new Styles control's focus ring, measured on the control's own outline.
           focusRing: (() => {
             const selected = rows.filter((r) => r.name.startsWith('styles.') && r.kind === 'focus');

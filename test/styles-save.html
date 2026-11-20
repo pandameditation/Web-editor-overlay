@@ -434,11 +434,14 @@
         await settle();
         results.edit.aPickedStateShowsOnlyItsRows = Boolean(rowIn('effective', 'background-color'));
 
+        // The cascade menu's `.card` rung, picked, edits that rule through its own field.
+        const radioOf = (one) => (one?.matches('[role="radio"]') ? one : one?.querySelector('[role="radio"]'));
+        const rungIn = (placeKey) => root().querySelector(`.pop .ladder > [data-place="${CSS.escape(placeKey)}"]`);
         rowIn('effective', 'background-color')?.querySelector('.dots')?.click();
         await settle();
-        const baseLine = Array.from(root().querySelectorAll('.pop .c-line'))
-          .find((line) => line.querySelector('.src')?.textContent.trim().startsWith('.card'));
-        await send(baseLine?.querySelector('heo-value-field'), 'value-change', '#fafafa');
+        radioOf(rungIn('.card|base'))?.click();
+        await settle();
+        await send(root().querySelector('.pop .open heo-value-field'), 'value-change', '#fafafa');
         results.edit.popoverEditWritesDirectly =
           baseCard.style.getPropertyValue('background-color') === 'rgb(250, 250, 250)' &&
           !second.hasAttribute('style') && !anyBox();
@@ -494,17 +497,17 @@
           Boolean(option) && /^(?:bold|700)$/.test(baseCard.style.getPropertyValue('font-weight')) && !inlineText(second, 'font-weight');
         engine.undo();
         await settle();
-        // The switch in that list sends it elsewhere instead: inline, this element only.
+        // The row's cascade menu sends it elsewhere instead: the inline rung, this element only.
         const surfaceField = () => fieldIn('surface', 'background-color');
-        surfaceField()?.focusInput();
-        surfaceField()?.openList();
+        rowIn('surface', 'background-color')?.querySelector('.dots')?.click();
         await settle();
-        const surfaceSwitch = surfaceField()?.shadowRoot?.querySelector('.list-head heo-segmented');
-        const startsOnTheRule = surfaceSwitch?.value === 'target:.card';
-        Array.from(surfaceSwitch?.shadowRoot?.querySelectorAll('button') ?? []).find((one) => one.textContent.trim() === 'Inline')?.click();
+        const startsOnTheRule = radioOf(rungIn('.card|base'))?.getAttribute('aria-checked') === 'true';
+        radioOf(rungIn('inline'))?.click();
+        await settle();
+        root().querySelector('.pop')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true }));
         await settle();
         await send(surfaceField(), 'value-change', 'rgb(2, 2, 2)');
-        results.edit.theSwitchSendsItInline =
+        results.edit.theLadderSendsItInline =
           startsOnTheRule && inlineText(second, 'background-color') === 'rgb(2, 2, 2)' && !anyBox();
         engine.undo();
         await settle();

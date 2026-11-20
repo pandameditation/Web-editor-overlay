@@ -10,8 +10,11 @@ export type AddDestination =
   | { kind: 'target'; target: WriteTarget }
   /** A rule to create, e.g. `.card` at `(max-width: 767px)`, or `.card:hover`. */
   | { kind: 'new-rule'; selector: string; media: string | null }
-  /** This element's automatic class, at a size and in a state. */
-  | { kind: 'auto-class'; element: HTMLElement; media: string | null; state: string };
+  /**
+   * This element's own new class, at a size and in a state: named by the editor (`card-tablet`),
+   * or `name` when the user typed one in the cascade ladder's last rung.
+   */
+  | { kind: 'auto-class'; element: HTMLElement; media: string | null; state: string; name?: string };
 
 /** Where a value comes from, short: `inline style`, `.card ≥768px`. */
 export function shortLabel(by: Contribution): string {

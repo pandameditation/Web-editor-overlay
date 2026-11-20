@@ -1,33 +1,31 @@
-import { displayName } from './property-adder.js';
 import { css, html, nothing, type CSSResult, type TemplateResult } from 'lit';
-import { isPseudoElement, mediaShort } from '../../../core/breakpoints.js';
-import type { Contribution, ElementModel } from '../../../core/cascade.js';
+import { inactivePlaces, placeConditionKey, placeOutcome, type Place, type PlaceCondition } from '../../../core/cascade-places.js';
+import type { ElementModel } from '../../../core/cascade.js';
+import { normalizeClassName } from '../../../core/classes.js';
+import { splitImportant } from '../../../core/declaration-list.js';
+import { shortLabel } from '../../../core/save-plan.js';
 import { buildSuggestions, valueKindFor } from '../../suggestions.js';
+import { ladderStyles, renderLadder, renderResult } from './ladder.js';
 import { renderPromote } from './promote.js';
 import { conditionKey, conditionName } from './size-strip.js';
-import { shortLabel } from '../../../core/save-plan.js';
-import { renderUses } from '../class-editor.js';
-import {
-  onePerSource,
-  readRow,
-  shownValue,
-  slotWidth,
-  sourceLabel,
-  targetOf,
-  type RowSpec,
-} from './property-row.js';
+import { readRow, rowPlace, shownValue, slotWidth, type RowSpec } from './property-row.js';
 import type { StylesHost, StylesUiState } from './types.js';
 
 /**
- * Everything that declares one property for this element, winner first.
+ * The cascade menu of one row: the property's ladder (design J), strongest first.
  *
- * The answer to "why is it this value", and the place to change any of the answers: each line
- * edits the declaration it shows, in the rule it lives in, so fixing the shared rule is as close
- * at hand as overriding it on this element. Losers are struck, idle ones (another size, a state)
- * are listed apart, and a property nothing declares says where its value comes from instead.
+ * The answer to "why is it this value", and the place to decide where an edit goes: every place
+ * that holds the property or could, with the one the element renders with marked "now". Picking a
+ * rung makes the row (and its rich editor) edit that place, and opens the place's own value field
+ * right under it, with `!important` and a line saying whether a value there applies, what it beats
+ * or what hides it, and how many elements it changes. A property nothing declares says where its
+ * value comes from first.
  */
 
 type Popover = NonNullable<StylesUiState['popover']>;
+
+/** The form field of the new-class rung's name. */
+export const NEW_CLASS_FIELD = 'new-class';
 
 /** The popover for a row: the row's element and model, and what the panel needs to place it. */
 export function renderCascadePopover(
@@ -36,11 +34,11 @@ export function renderCascadePopover(
   element: HTMLElement,
   model: ElementModel,
 ): TemplateResult {
-  const { scope, property } = state;
+  const { scope, property, rowId } = state;
   const spec: RowSpec = { property, scope, element, model, listId: '' };
-  const { list: read } = readRow(spec);
-  // One line per source: a block's shorthand and side compete in its family control, not here.
-  const list = { ...read, applying: onePerSource(read.applying), idle: onePerSource(read.idle) };
+  const { list } = readRow(spec);
+  const choice = rowPlace(spec, host, rowId);
+  const { cond, picked } = choice;
   // The condition the row is read under: `≥768px`, `@media print`, `:hover`, `:hover ≥768px`.
   const ctx = scope.kind === 'state'
     ? conditionName(model, conditionKey(scope.slot ?? 'base', scope.state))
@@ -50,22 +48,8 @@ export function renderCascadePopover(
   const at = scope.kind === 'size' || (scope.kind === 'state' && scope.slot)
     ? slotWidth(model, scope.slot ?? '') ?? (scope.slot?.startsWith('other:') ? null : host.previewWidth)
     : host.previewWidth;
-
-  /*
-   * Not in effect now, but declared: other sizes and states at Actual, other states while
-   * previewing (a rule for another width is hidden then, like everywhere else). Element rows only:
-   * a size or state group already is one of those.
-   */
-  const elementScope = scope.kind === 'element' || scope.kind === 'section' || scope.kind === 'parent';
-  const idle = elementScope
-    ? list.idle.filter((one) => {
-      if (one.source.kind !== 'rule') return false;
-      const entry = one.source.entry;
-      if (isPseudoElement(entry.state)) return false;
-      return host.previewWidth === null || (entry.state !== '' && model.applies(entry));
-    })
-    : [];
-  const all = [...list.applying, ...idle];
+  const inactive = inactivePlaces(model, property, cond);
+  const all = [...list.applying, ...inactive];
   const notes = [
     all.some((one) => one.source.kind === 'rule' && one.source.entry.container)
       ? "Depends on its container; the editor can't tell."
@@ -75,95 +59,151 @@ export function renderCascadePopover(
       : '',
   ].filter(Boolean);
 
+  const pick = (place: Place, keyboard: boolean): void => {
+    host.engine.cancelPreview();
+    const places = new Map(host.ui.places);
+    places.set(rowId, place.key);
+    host.patch({ places });
+    // An arrow key moves along the group; a press goes to the value it opened.
+    host.focusSelector(keyboard
+      ? `.pop [role="radio"][data-place="${CSS.escape(place.key)}"], .pop [data-place="${CSS.escape(place.key)}"] [role="radio"]`
+      : '.pop .open heo-value-field');
+  };
+  const draft = host.ui.newClass?.rowId === rowId ? host.ui.newClass.name : '';
+
   return html`<div
     class="pop"
     role="dialog"
     popover="manual"
     tabindex="-1"
-    data-pop=${state.rowId}
+    data-pop=${rowId}
     aria-label=${`Cascade for ${property}${ctx ? ` ${ctx}` : ''}`}
   >
     <div class="cap">
       <b>${property}${ctx ? html` <span class="ctx">${ctx}</span>` : nothing}</b>
-      <span>winner first${at !== null ? ` · at ${at}px` : ''}</span>
+      <span>${at !== null ? `at ${at}px` : ''}</span>
     </div>
-    <div class="lines" role="list">
-      ${list.applying.map((one, index) => renderLine(one, index === 0 ? 'win' : 'lost', host, element, model, property))}
-    </div>
-    ${list.applying.length
-      ? nothing
-      : renderUndeclared(host, element, model, property, scope.kind !== 'state')}
-    ${idle.length
-      ? html`<p class="sub">${host.previewWidth === null ? 'At other sizes or states' : 'In other states'}</p>
-          <div class="lines" role="list">
-            ${idle.map((one) => renderLine(one, 'idle', host, element, model, property))}
-          </div>`
-      : nothing}
+    ${list.applying.length ? nothing : renderUndeclared(host, element, model, property, cond.media === 'base' && !cond.state)}
+    ${renderLadder({
+    property,
+    label: 'Strongest first',
+    places: choice.places,
+    picked: picked.key,
+    onPick: pick,
+    open: (place) => renderOpen(place, host, spec, rowId, cond, list.applying[0]?.value),
+    inactive,
+    newClass: {
+      draft,
+      onDraft: (text) => host.patch({ newClass: { rowId, name: text } }),
+      onSubmit: (text) => {
+        host.patch({ newClass: { rowId, name: text } });
+        if (!host.newClassForm.submit()) return;
+        const rung = choice.places.find((one) => one.key === `new-class|${placeConditionKey(cond)}`);
+        if (rung) pick(rung, false);
+      },
+      form: host.newClassForm,
+      field: NEW_CLASS_FIELD,
+    },
+  })}
     ${notes.map((note) => html`<p class="note">${note}</p>`)}
   </div>`;
 }
 
-function renderLine(
-  one: Contribution,
-  kind: 'win' | 'lost' | 'idle',
+/**
+ * Under the picked rung: the place's own value field, its `!important`, and the result line. A set
+ * place edits its declaration where it is; an empty one writes the first value there (creating the
+ * rule or the class), with `!important` when that was asked for first.
+ */
+function renderOpen(
+  place: Place,
   host: StylesHost,
-  element: HTMLElement,
-  model: ElementModel,
-  property: string,
+  spec: RowSpec,
+  rowId: string,
+  cond: PlaceCondition,
+  winnerValue: string | undefined,
 ): TemplateResult {
   const engine = host.engine;
-  const target = targetOf(one, element);
-  const entry = one.source.kind === 'rule' ? one.source.entry : null;
-  const label = sourceLabel(one);
-  const reach = entry ? model.reach(entry.family) : 1;
-  const why = entry && kind === 'idle'
-    ? entry.state
-      ? ` (only on ${entry.state})`
-      : entry.media
-        ? ` (only at ${mediaShort(entry.media)})`
-        : ''
-    : '';
+  const { property, element, model } = spec;
+  const target = place.target;
+  if (target?.kind === 'readonly') {
+    return html`<p class="note">Read-only here: ${target.reason}</p>`;
+  }
+  const declared = place.declared;
+  const pendingKey = `${rowId}|${place.key}`;
+  const pending = host.ui.pendingImportant.has(pendingKey);
+  const important = declared ? declared.important : pending;
   // A longhand supplied by a shorthand is not declared by that name, so there is nothing to toggle.
-  const readonly = target.kind === 'readonly'
-    ? target.reason
-    : one.via
-      ? `Declared through ${one.via}`
-      : undefined;
-  return html`<div class="pl" role="listitem">
-    <div class=${`c-line ${kind}`}>
-      <span
-        class="cdot"
-        aria-hidden="true"
-        title=${kind === 'win' ? 'Applies' : kind === 'lost' ? 'Overridden' : why.trim()}
-      ></span>
-      <span class="srcgroup">
-        <span class="src" title=${`${label}${why}`}><span>${entry ? displayName(shortLabel(one), 40) : 'inline style'}</span></span>
-        ${renderUses(reach)}
-      </span>
+  const via = declared?.via ? `Declared through ${declared.via}` : undefined;
+  const setPending = (next: boolean): void => {
+    const set = new Set(host.ui.pendingImportant);
+    if (next) set.add(pendingKey);
+    else set.delete(pendingKey);
+    host.patch({ pendingImportant: set });
+  };
+  const toggle = (next: boolean): void => {
+    if (declared && target) engine.setImportance(target, declared.via ?? property, next);
+    else setPending(next);
+  };
+  const preview = (text: string): void => {
+    if (target?.kind === 'inline') engine.previewStyle(property, text, element);
+    else if (target) engine.previewDeclaration(target, property, text);
+  };
+  const commit = (text: string): void => {
+    engine.cancelPreview();
+    const typed = splitImportant(text);
+    if (declared && target) {
+      if (!typed.value) return;
+      engine.setDeclaration(target, property, text);
+      return;
+    }
+    if (!typed.value) return;
+    const written = pending && typed.important === null ? `${typed.value} !important` : text;
+    if (pending) setPending(false);
+    if (place.key.startsWith('new-class|')) {
+      // The class exists once written: the row edits it from then on, under its own key.
+      const places = new Map(host.ui.places);
+      const name = place.dest.kind === 'auto-class' && place.dest.name ? normalizeClassName(place.dest.name) : '';
+      if (name) places.set(rowId, `.${CSS.escape(name)}|${placeConditionKey(cond)}`);
+      else places.delete(rowId);
+      host.patch({ places, newClass: null });
+    }
+    const { hint } = engine.writeDeclarationTo(place.dest, property, written);
+    if (hint) engine.notify(hint, 'info');
+  };
+  // Judged under the ladder's condition: a rule at rest read under a hover competes with the hover.
+  const outcome = placeOutcome(model, property, cond, place, important);
+  const withImportant = placeOutcome(model, property, cond, place, true);
+  return html`<div class="vrow">
       <heo-value-field
         data-property=${property}
-        .value=${shownValue(one)}
-        ?important=${one.important}
-        ?important-removable=${!readonly}
+        field-label=${`${property} in ${place.label}`}
+        .value=${declared ? shownValue(declared) : ''}
+        ?important=${Boolean(declared?.important)}
+        ?important-removable=${Boolean(declared) && !via}
         .kind=${valueKindFor(property)}
         .property=${property}
         .suggestions=${buildSuggestions(engine, property, element)}
-        @value-input=${(event: CustomEvent<{ value: string }>) =>
-      engine.previewDeclaration(target, property, event.detail.value)}
+        placeholder=${winnerValue ?? getComputedStyle(element).getPropertyValue(property).trim()}
+        @value-input=${(event: CustomEvent<{ value: string }>) => preview(event.detail.value)}
         @value-revert=${() => engine.cancelPreview()}
-        @value-change=${(event: CustomEvent<{ value: string }>) =>
-      engine.setDeclaration(target, property, event.detail.value)}
-        @important-change=${() => engine.setImportance(target, property, false)}
+        @value-change=${(event: CustomEvent<{ value: string }>) => commit(event.detail.value)}
+        @important-change=${() => toggle(false)}
       ></heo-value-field>
       ${renderPromote({
-        property,
-        source: label,
-        important: one.important,
-        disabled: readonly,
-        onToggle: (next) => engine.setImportance(target, property, next),
-      })}
+    property,
+    source: place.label,
+    important,
+    disabled: via,
+    onToggle: toggle,
+  })}
     </div>
-  </div>`;
+    ${renderResult({
+    place,
+    outcome,
+    wouldApplyImportant: withImportant.applies,
+    important,
+    onMakeImportant: () => toggle(true),
+  })}`;
 }
 
 /** Nothing declares it: say where the value comes from, and what typing one would do. */
@@ -192,7 +232,7 @@ function renderUndeclared(
   </p>`;
 }
 
-export const popoverStyles: CSSResult = css`
+export const popoverStyles: CSSResult[] = [ladderStyles, css`
   .pop {
     position: fixed;
     inset: auto;
@@ -229,17 +269,6 @@ export const popoverStyles: CSSResult = css`
   .pop .cap .ctx {
     color: var(--heo-text-dim);
   }
-  .pop .lines {
-    display: grid;
-    gap: 5px;
-  }
-  .pop .sub {
-    margin: 4px 0 0;
-    padding-top: 6px;
-    border-top: 1px solid var(--heo-line);
-    color: var(--heo-text-dim);
-    font-size: 10px;
-  }
   .pop .none,
   .pop .note {
     margin: 0;
@@ -252,56 +281,4 @@ export const popoverStyles: CSSResult = css`
     font-family: var(--heo-mono);
     font-size: 10.5px;
   }
-  .c-line {
-    display: grid;
-    grid-template-columns: 6px minmax(0, 1fr) minmax(0, 1.4fr) 18px;
-    gap: 3px 7px;
-    align-items: center;
-  }
-  .c-line .cdot {
-    width: 6px;
-    height: 6px;
-    border-radius: 999px;
-    background: var(--heo-accent);
-  }
-  .c-line.lost .cdot {
-    background: transparent;
-    box-shadow: inset 0 0 0 1.5px var(--heo-accent);
-  }
-  .c-line.idle .cdot {
-    background: transparent;
-    box-shadow: inset 0 0 0 1px var(--heo-text-dim);
-  }
-  /* The source and its reach, one cell: the pill sits right after the name, not at the cell's end. */
-  .c-line .srcgroup {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    min-width: 0;
-  }
-  .c-line .src {
-    display: inline-flex;
-    align-items: center;
-    gap: 3px;
-    min-width: 0;
-    padding: 0;
-    border: 0;
-    background: transparent;
-    color: var(--heo-text-dim);
-    font-family: var(--heo-mono);
-    font-size: 10.5px;
-    text-align: left;
-    white-space: nowrap;
-  }
-  .c-line .src span {
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  /* Overridden: struck through, in the dim ink (never fainter, so it stays readable). */
-  .c-line.lost .src span {
-    text-decoration: line-through;
-  }
-  .c-line.idle .src span {
-    font-style: italic;
-  }
-`;
+`];

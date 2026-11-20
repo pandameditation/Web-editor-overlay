@@ -27,10 +27,9 @@ export interface LineView {
   edges?: Record<Side, EdgeView>;
 }
 
-/** Everything a field needs from the host: its list, and the switch at the list's head. */
+/** Everything a field needs from the host: its list. */
 export interface BorderFieldSpec {
   suggestions: ValueSuggestion[];
-  head: TemplateResult | null;
 }
 
 type Scope = 'all' | Side;
@@ -457,7 +456,6 @@ export class HeoBorderEditor extends LitElement {
       .property=${property}
       .computed=${computed === 'mixed' ? '' : computed}
       .suggestions=${spec?.suggestions ?? []}
-      .head=${spec?.head ?? null}
       placeholder=${shortValue(computed) || (kind === 'keyword' ? 'none' : '')}
       @value-input=${(event: CustomEvent<{ value: string }>) => this.#draft('line-input', property, event.detail.value)}
       @value-change=${(event: CustomEvent<{ value: string }>) => this.#draft('line-change', property, event.detail.value)}

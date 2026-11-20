@@ -21,10 +21,9 @@ import type { SegmentOption } from './segmented.js';
 import './value-field.js';
 import './segmented.js';
 
-/** Everything a field needs from the host: its list, and the switch at the list's head. */
+/** Everything a field needs from the host: its list. */
 export interface BackgroundFieldSpec {
   suggestions: ValueSuggestion[];
-  head: TemplateResult | null;
 }
 
 /** Gradients to start from, one click each. */
@@ -1170,7 +1169,6 @@ export class HeoBackgroundEditor extends LitElement {
       .property=${property.startsWith('background-') ? property : kind === 'color' ? 'background-color' : ''}
       .computed=${computed}
       .suggestions=${spec?.suggestions ?? []}
-      .head=${spec?.head ?? null}
       placeholder=${placeholder || computed}
       @value-input=${(event: CustomEvent<{ value: string }>) => {
         event.stopPropagation();

@@ -1,6 +1,6 @@
 import { leanBlockSelector } from '../../../core/block-rule-edit.js';
 import { css, html, nothing, type CSSResult, type TemplateResult } from 'lit';
-import { isPseudoElement } from '../../../core/breakpoints.js';
+import { isPseudoElement, mediaLabel } from '../../../core/breakpoints.js';
 import type {
   CascadeContext,
   CascadeList,
@@ -13,10 +13,10 @@ import { longhandsOf, shorthandChain, shorthandGroups, splitImportant, type Decl
 import { renderFamilies } from '../class-editor.js';
 import { entryLabel, reachText, shortLabel } from '../../../core/save-plan.js';
 import { mediaApplies } from '../../../core/viewport.js';
+import { defaultPlace, placesFor, type Place, type PlaceCondition } from '../../../core/cascade-places.js';
 import { icon } from '../../icons.js';
 import { buildSuggestions, shadowSwatches, valueKindFor } from '../../suggestions.js';
-import { destinationParts, displayName, explainDestination, type AdderDestination } from './property-adder.js';
-import { renderMenu } from './menu.js';
+import { renderUses } from '../class-editor.js';
 import type { RowScope, StylesHost } from './types.js';
 
 /**
@@ -24,15 +24,14 @@ import type { RowScope, StylesHost } from './types.js';
  * In its parent all draw this, so a value means the same thing and an edit goes the same way
  * wherever it is made.
  *
- * Left of the name sits a dot that is a button: it opens the cascade for the property, and its
- * crescents count the applying declarations the winner beats. The name says where the winning
- * value comes from. In Effective styles an edit goes where the value is written now, or wherever
- * the switch at the head of its value list says. Elsewhere it writes an inline override by
- * default, asks where it should stay when the value depends on the viewport, and writes into the
- * state's own rule in a state group.
+ * Name · value · trash. The name is a button that opens the property's cascade ladder, where the
+ * place the row edits is picked; it carries the reach chip when that place styles more than this
+ * element, so an edit that changes other elements says so before it is typed. Without a pick the
+ * row edits where its value is written under the row's condition, else the default place
+ * (`defaultPlace`): inline at Element, the element's own class under a state or a size.
  *
  * The grid element keeps today's `div.row[data-property]` (fixtures find fields that way), inside
- * an attribute-less `div.prow` that also holds a segmented row's destination line under it.
+ * an attribute-less `div.prow` that also holds the row's side note.
  */
 
 /** Properties drawn as a segmented control instead of a text field. */
@@ -82,10 +81,10 @@ export interface RowSpec {
   /** The `data-declarations` id of the list the row sits in. */
   listId: string;
   /**
-   * Effective styles: where an edit can go, offered as a switch at the head of the value's list.
-   * The row's current source is picked until another is, and the panel includes it.
+   * Edit inline unless a place is picked, even where the value is written elsewhere: Typography
+   * under a text style, whose class every element wearing the style shares.
    */
-  destinations?: readonly AdderDestination[];
+  preferInline?: boolean;
   /** A line under the row: a side written in another block than its shorthand says which wins. */
   note?: TemplateResult;
   /**
@@ -127,18 +126,6 @@ export function sameTarget(a: WriteTarget, b: WriteTarget): boolean {
       return false;
   }
 }
-
-/** The destination a row's value is written in now, among those offered, or null. */
-function currentDestination(
-  destinations: readonly AdderDestination[],
-  shown: Contribution | undefined,
-  element: HTMLElement,
-): AdderDestination | null {
-  const now: WriteTarget = shown ? targetOf(shown, element) : { kind: 'inline', element };
-  return destinations.find((one) => one.dest?.kind === 'target' && sameTarget(one.dest.target, now)) ?? null;
-}
-const isInline = (one: AdderDestination | null | undefined): boolean =>
-  one?.dest?.kind === 'target' && one.dest.target.kind === 'inline';
 
 /* -------------------------------------------------------------------------- */
 /* What a row shows                                                            */
@@ -294,129 +281,126 @@ export function shorten(value: string, max = 22): string {
 }
 
 /* -------------------------------------------------------------------------- */
-/* The dot                                                                     */
-/* -------------------------------------------------------------------------- */
-
-/**
- * The dot and its crescents: one crescent per applying declaration the winner beats, at most
- * three. Idle declarations (another size, a state) do not count; the popover lists them.
- */
-export function renderCascadeDot(spec: {
-  property: string;
-  list: CascadeList;
-  expanded: boolean;
-  onToggle(): void;
-  /** Drawn inside the button after the dot: the property's name and where its value comes from. */
-  name?: TemplateResult;
-}): TemplateResult {
-  const winner = spec.list.applying[0];
-  const beaten = Math.max(0, onePerSource(spec.list.applying).length - 1);
-  const label = winner
-    ? `${spec.property} from ${sourceLabel(winner)}${beaten ? `, ${beaten} overridden` : ''}. Show cascade`
-    : `${spec.property} is not declared for this element. Show cascade`;
-  return html`<button
-    class="dots"
-    type="button"
-    aria-haspopup="dialog"
-    aria-expanded=${spec.expanded ? 'true' : 'false'}
-    aria-label=${label}
-    title=${label}
-    @click=${() => spec.onToggle()}
-  >
-    <span class="marks" aria-hidden="true">
-      <span class=${winner ? 'dot' : 'dot none'}></span>
-      ${Array.from({ length: Math.min(beaten, 3) }, () => html`<span class="moon"></span>`)}
-    </span>
-    ${spec.name ?? nothing}
-  </button>`;
-}
-
-/* -------------------------------------------------------------------------- */
 /* The row                                                                     */
 /* -------------------------------------------------------------------------- */
 
+/** The block a contribution is in: the style attribute, or its rule. */
+const blockOf = (one: Contribution): unknown => (one.source.kind === 'inline' ? 'inline' : one.source.entry.rule);
+
+/** The condition a row is read and written under. */
+export function rowCondition(scope: RowScope): PlaceCondition {
+  if (scope.kind === 'size') return { media: scope.slot, state: '' };
+  if (scope.kind === 'state') return { media: scope.slot ?? 'base', state: scope.state };
+  return { media: 'base', state: '' };
+}
+
 /**
- * Where a row's edit goes: the destinations offered for it, the one its value is written in now,
- * and the one picked (the current one until the user picks another). The one question about
- * where, asked the same way by a value list's switch, a segmented row's line and the box editor.
+ * Where a row's edit goes: the ladder's places for it, the one its value is written in now, and the
+ * one picked. The one question about where, asked the same way by the cascade menu, the row, and
+ * every rich editor (box, border, background, motion), which write through their rows' picks.
  */
-export interface DestinationChoice {
-  offered: readonly AdderDestination[];
-  current: AdderDestination | null;
-  picked: AdderDestination;
-  pick(key: string): void;
-  /** Alt+Left/Right from a field: the next destination either way. */
-  step(delta: number): void;
-  /** The switch and its line, for a value list's head; null with one place to write. */
-  head: TemplateResult | null;
+export interface RowPlace {
+  cond: PlaceCondition;
+  places: readonly Place[];
+  /** The place the row's value is written in now, under the row's condition; null for none. */
+  current: Place | null;
+  picked: Place;
+  rowId: string;
 }
 
-export function destinationChoice(spec: RowSpec, host: StylesHost, rowId: string, shown: Contribution | undefined): DestinationChoice {
-  const offered = spec.destinations?.length ? spec.destinations : host.destinationsFor(spec);
-  const current = currentDestination(offered, shown, spec.element);
-  const pickedKey = host.ui.rowDest?.rowId === rowId ? host.ui.rowDest.key : current?.key;
-  const picked = offered.find((one) => one.key === pickedKey) ?? current ?? offered[0];
-  const pick = (key: string): void => {
-    host.engine.cancelPreview();
-    host.patch({ rowDest: { rowId, key }, menu: null });
-  };
-  const step = (delta: number): void => {
-    const keys = offered.map((one) => one.key);
-    pick(keys[(keys.indexOf(picked.key) + delta + keys.length) % keys.length]);
-  };
-  const head = offered.length > 1
-    ? html`<heo-segmented
-        .options=${offered.map((one) => ({ value: one.key, label: displayName(one.short ?? one.label, 24), title: explainDestination(one, spec.property, true) }))}
-        .value=${picked.key}
-        label="Where it goes"
-        wrap
-        @segment-change=${(event: CustomEvent<{ value: string }>) => {
-        if (event.detail.value) pick(event.detail.value);
-      }}
-      ></heo-segmented>
-      <p class="explain" title=${explainDestination(picked, spec.property, true)}>${explainDestination(picked, spec.property)}</p>`
-    : null;
-  return { offered, current, picked, pick, step, head };
+/** Whether a rule's declaration is written under the row's own condition. */
+function underCondition(spec: RowSpec, cond: PlaceCondition, one: Contribution): boolean {
+  if (one.source.kind === 'inline') return cond.media === 'base' && !cond.state;
+  const entry = one.source.entry;
+  if (entry.state !== cond.state) return false;
+  // At Element any size that applies now is where the value is; a pseudo-element group reads any.
+  if (cond.media === 'base') return !cond.state || isPseudoElement(cond.state) || entry.media === null;
+  return spec.model.slotOf(entry) === cond.media;
 }
+
+/** The places for one row and its pick, built from `placesFor` and the panel's `ui.places`. */
+export function rowPlace(spec: RowSpec, host: StylesHost, rowId = rowIdOf(spec.scope, spec.property, host.element)): RowPlace {
+  const cond = rowCondition(spec.scope);
+  const { shown } = readRow(spec);
+  const named = host.ui.newClass?.rowId === rowId ? host.ui.newClass.name.trim() : '';
+  const places = placesFor(spec.model, spec.property, cond, spec.element, {
+    ownedClass: (name) => host.engine.classes.get(name) ?? null,
+  }).map((place) => place.key.startsWith('new-class|') && named && place.dest.kind === 'auto-class'
+    ? { ...place, label: `.${named.replace(/^\./, '')}`, dest: { ...place.dest, name: named } }
+    : place);
+  const writable = (place: Place | undefined): Place | undefined =>
+    place && place.target?.kind !== 'readonly' ? place : undefined;
+  const current = shown
+    ? places.find((place) => place.declared && blockOf(place.declared) === blockOf(shown)) ?? null
+    : null;
+  const pickedKey = host.ui.places.get(rowId);
+  /*
+   * A value read from somewhere outside the row's condition (the rule at rest, under a hover) is
+   * not where the row writes: that would change the element at rest, or every element the rule
+   * styles. The default place is, as for a new declaration (decision 8).
+   */
+  const picked =
+    writable(places.find((place) => place.key === pickedKey)) ??
+    (spec.preferInline ? places.find((place) => place.key === 'inline') : undefined) ??
+    (shown && underCondition(spec, cond, shown) ? writable(current ?? undefined) : undefined) ??
+    defaultPlace(spec.model, spec.element, cond, places);
+  return { cond, places, current, picked, rowId };
+}
+
+const isInlinePlace = (place: Place | null | undefined): boolean =>
+  place?.dest.kind === 'target' && place.dest.target.kind === 'inline';
 
 /**
- * Write one value where the choice says: the element's own value moves when another destination is
+ * Write one value where the row's place says: the element's own value moves when another place is
  * picked for it, so the inline copy does not go on beating it. Empty removes the element's own
- * value; a shared rule's declaration is removed with the trash, which asks first.
+ * value; a shared rule's declaration is removed with the trash, which asks first. A pending
+ * `!important` asked for on an empty place goes in with the first value.
  */
 export function writeChosen(
   host: StylesHost,
   spec: RowSpec,
-  choice: DestinationChoice,
+  choice: RowPlace,
   shown: Contribution | undefined,
   text: string,
 ): void {
   const { engine } = host;
   const { property, element } = spec;
   const { picked, current } = choice;
-  host.patch({ rowDest: null });
   engine.cancelPreview();
   const typed = splitImportant(text);
   if (!typed.value) {
-    if (isInline(picked)) engine.overrideStyle(property, '', element);
+    if (isInlinePlace(picked)) engine.overrideStyle(property, '', element);
     return;
   }
   if (picked === current && shown && typed.important === null && shown.value === typed.value) return;
-  if (!picked.dest) return;
-  const moving = isInline(current) && !isInline(picked);
-  const { hint } = engine.writeDeclarationTo(picked.dest, property, text, moving ? { move: element } : {});
+  const pendingKey = `${choice.rowId}|${picked.key}`;
+  const pending = host.ui.pendingImportant.has(pendingKey);
+  const written = pending && typed.important === null ? `${typed.value} !important` : text;
+  if (pending) {
+    const next = new Set(host.ui.pendingImportant);
+    next.delete(pendingKey);
+    host.patch({ pendingImportant: next });
+  }
+  // A new class, once made, is the class the row's value is in: the row follows it from there.
+  if (picked.key.startsWith('new-class|')) {
+    const places = new Map(host.ui.places);
+    places.delete(choice.rowId);
+    host.patch({ places, newClass: null });
+  }
+  const moving = isInlinePlace(current) && !isInlinePlace(picked);
+  const { hint } = engine.writeDeclarationTo(picked.dest, property, written, moving ? { move: element } : {});
   if (hint) engine.notify(hint, 'info');
 }
 
-/** Paint a value being typed where the choice would write it. */
-export function previewChosen(host: StylesHost, spec: RowSpec, picked: AdderDestination, text: string): void {
+/** Paint a value being typed where the place would write it. */
+export function previewChosen(host: StylesHost, spec: RowSpec, picked: Place, text: string): void {
   const { engine } = host;
   const { property, element, model } = spec;
-  if (isInline(picked)) {
+  if (isInlinePlace(picked)) {
     const typed = splitImportant(text);
     const strong = typed.important === null && typed.value && needsImportant(model, property);
     engine.previewStyle(property, strong ? `${typed.value} !important` : text, element);
-  } else if (picked.dest?.kind === 'target') {
+  } else if (picked.dest.kind === 'target' && picked.dest.target.kind !== 'readonly') {
     engine.previewDeclaration(picked.dest.target, property, text);
   } else {
     // A rule or class not made yet shows once it is written.
@@ -573,20 +557,20 @@ export function renderPropertyRow(spec: RowSpec, host: StylesHost): TemplateResu
   const { property, scope, element } = spec;
   const engine = host.engine;
   const rowId = rowIdOf(scope, property, host.element);
-  const { list, winner, shown } = readRow(spec);
+  const { winner, shown } = readRow(spec);
   const pseudo = scope.kind === 'state' && isPseudoElement(scope.state);
   const computed = (pseudo ? getComputedStyle(element, scope.state) : getComputedStyle(element))
     .getPropertyValue(property)
     .trim();
   const value = shownValue(shown);
   const expanded = host.ui.popover?.rowId === rowId;
-  const choice = destinationChoice(spec, host, rowId, shown);
+  const choice = rowPlace(spec, host, rowId);
   const { picked, current } = choice;
 
   /*
    * Who may drop a shown `!important` from the field's tag: a row writing the declaration it shows.
-   * A rule's importance shown while another destination is picked is not this edit's to change; the
-   * tag stays text and points to the popover, where that rule's own line has the toggle.
+   * A rule's importance shown while another place is picked is not this edit's to change; the tag
+   * stays text and points to the cascade menu, where that place's own toggle is.
    */
   const tagWrites = Boolean(shown && current && picked === current);
   const commit = (text: string): void => writeChosen(host, spec, choice, shown, text);
@@ -597,8 +581,6 @@ export function renderPropertyRow(spec: RowSpec, host: StylesHost): TemplateResu
   };
 
   const segments = spec.segments ?? SEGMENTED[property];
-  const menuId = `dest-${rowId}`;
-  const menuOpen = host.ui.menu?.id === menuId;
   const control = segments
     ? html`<heo-segmented
         .options=${segments}
@@ -609,14 +591,13 @@ export function renderPropertyRow(spec: RowSpec, host: StylesHost): TemplateResu
       ></heo-segmented>`
     : html`<heo-value-field
         data-property=${property}
+        list-min-width="280"
         .value=${value}
         ?important=${Boolean(shown?.important)}
         ?important-removable=${tagWrites}
         important-title=${shown && !tagWrites
-        ? `!important in ${shortLabel(shown)}. Change it from the dot's popover.`
+        ? `!important in ${shortLabel(shown)}. Change it from the name's cascade menu.`
         : ''}
-        .head=${choice.head}
-        @head-step=${(event: CustomEvent<{ delta: number }>) => choice.step(event.detail.delta)}
         .kind=${valueKindFor(property)}
         .property=${property}
         .computed=${computed}
@@ -630,46 +611,9 @@ export function renderPropertyRow(spec: RowSpec, host: StylesHost): TemplateResu
       ></heo-value-field>`;
 
   const removable = shown && targetOf(shown, element).kind !== 'readonly' ? shown : null;
-  const from = winner && winner.source.kind === 'rule' ? winner : null;
-
-  /*
-   * A segmented row has no value list to hold the switch, so its line sits under the row while the
-   * row is in use, the destination a menu in it. Focusable, so a press in the line keeps it open.
-   */
-  const parts = destinationParts(picked, property);
-  const destLine = segments && choice.offered.length > 1
-    ? html`<p class=${menuOpen || host.ui.rowDest?.rowId === rowId ? 'dest-line on' : 'dest-line'} tabindex="-1">
-        ${parts.verb}
-        <button
-          class="dest-pick"
-          type="button"
-          aria-haspopup="menu"
-          aria-expanded=${menuOpen ? 'true' : 'false'}
-          data-menu-anchor=${menuId}
-          title=${`Choose where it goes. Now: ${parts.fullName}`}
-          @click=${() => host.toggleMenu(menuId, !menuOpen)}
-        >${parts.name} ${icon('chevronDown', 10)}</button>
-        ${parts.media} • impacting ${parts.impact}
-      </p>
-      ${menuOpen
-        ? renderMenu({
-          id: menuId,
-          label: 'Where it goes',
-          groups: [{
-            caption: 'Where it goes',
-            items: choice.offered.map((one) => ({
-              key: one.key,
-              label: destinationParts(one, property).name,
-              title: destinationParts(one, property).fullName,
-              note: destinationParts(one, property).impact,
-              checked: one.key === picked.key,
-              onSelect: () => choice.pick(one.key),
-            })),
-          }],
-          onClose: () => host.toggleMenu(menuId, false),
-        })
-        : nothing}`
-    : nothing;
+  const where = `${picked.label}${picked.media ? ` ${mediaLabel(picked.media)}` : ''}`;
+  const label = `${property}: ${winner ? `from ${shortLabel(winner)}` : 'not declared for this element'}; edits ${where}, ${
+    picked.reach === 1 ? 'only this element' : reachText(picked.reach)}. Show cascade`;
 
   return html`<div class="prow">
     <div
@@ -678,21 +622,24 @@ export function renderPropertyRow(spec: RowSpec, host: StylesHost): TemplateResu
       data-heo-part="row"
       data-row=${rowId}
     >
-      ${renderCascadeDot({
-    property,
-    list,
-    expanded,
-    onToggle: () => {
+      <button
+        class="dots"
+        type="button"
+        aria-haspopup="dialog"
+        aria-expanded=${expanded ? 'true' : 'false'}
+        aria-label=${label}
+        title=${label}
+        @click=${() => {
       host.patch({ popover: expanded ? null : { scope, property, rowId }, menu: null, cardPop: null });
-      // Closed by its dot, focus is on the dot: Safari does not focus a pressed button by itself.
+      // Closed by its name, focus is on the name: Safari does not focus a pressed button by itself.
       if (expanded) host.focusSelector(`.row[data-row="${CSS.escape(rowId)}"] .dots`);
-    },
-    // The name and its source open the cascade too: one target, with the dot's tooltip over all of it.
-    name: html`<span class="name" title=${spec.label ? property : ''}>
-        <span class=${spec.label ? `pn label${spec.sub ? ' sub' : ''}` : 'pn'}>${spec.label ?? property}</span>
-        ${from ? html`<span class="from">${shortLabel(from)}</span>` : nothing}
-      </span>`,
-  })}
+    }}
+      >
+        <span class="name" title=${spec.label ? property : ''}>
+          <span class=${spec.label ? `pn label${spec.sub ? ' sub' : ''}` : 'pn'}>${spec.label ?? property}</span>
+          ${picked.reach > 1 ? renderUses(picked.reach) : nothing}
+        </span>
+      </button>
       ${control}
       ${removable
       ? html`<button
@@ -707,7 +654,6 @@ export function renderPropertyRow(spec: RowSpec, host: StylesHost): TemplateResu
       : nothing}
     </div>
     ${spec.note ? html`<p class="side-note">${spec.note}</p>` : nothing}
-    ${destLine}
   </div>`;
 }
 
@@ -721,12 +667,12 @@ export const propertyRowStyles: CSSResult = css`
     border-radius: var(--heo-r-sm);
   }
   /*
-   * Dot slot · name · value · trash: a card's row with the dot in front. The trash column is kept
-   * when there is nothing to remove, so every value field in the panel ends at the same line.
+   * Name · value · trash. The trash column is kept when there is nothing to remove, so every value
+   * field in the panel ends at the same line.
    */
   .row {
     display: grid;
-    grid-template-columns: 20px 92px minmax(0, 1fr) 18px;
+    grid-template-columns: 92px minmax(0, 1fr) 18px;
     align-items: center;
     gap: 6px;
   }
@@ -744,9 +690,10 @@ export const propertyRowStyles: CSSResult = css`
   .row.set .name {
     color: var(--heo-text);
   }
-  /* The name keeps its room; the source hint takes what is left, and goes first when there is none. */
+  /* The name takes what the reach chip leaves; the chip is never cut. */
   .row .pn {
-    flex: 0 0 auto;
+    flex: 0 1 auto;
+    min-width: 0;
     max-width: 100%;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -758,43 +705,19 @@ export const propertyRowStyles: CSSResult = css`
     letter-spacing: 0;
     text-transform: none;
   }
-  /* A labelled row has no room for the source hint: its dot and the cascade popover say it. */
-  .row .pn.label ~ .from {
-    display: none;
-  }
   .row .pn.label.sub {
     padding-left: 10px;
     color: var(--heo-text-dim);
-  }
-  /* The selector the value arrived from: an edit here overrides it rather than changing it. */
-  .row .from {
-    flex: 0 1 auto;
-    min-width: 0;
-    overflow: hidden;
-    color: var(--heo-accent-text);
-    font-size: 9.5px;
-    text-overflow: ellipsis;
   }
   .dots:focus-visible {
     outline: 2px solid var(--heo-focus-ring);
     outline-offset: 1px;
   }
 
-  /*
-   * The dot, and the declarations it beats behind it: the winner a plain accent dot, each override
-   * an empty grey circle tucked under its right edge, at most three. Nothing rings the dot: the
-   * row's own surface shows around it.
-   */
-  /*
-   * The cascade's button spans the dot's slot and the name's column: the dot, the property and its
-   * source are one target, so the cascade opens from anywhere on the left of the row.
-   */
+  /* The name is the cascade menu's button: the whole name column opens it. */
   .dots {
-    display: grid;
-    grid-column: 1 / span 2;
-    grid-template-columns: 20px minmax(0, 1fr);
+    display: flex;
     align-items: center;
-    gap: 6px;
     min-width: 0;
     height: 24px;
     margin: 0 -2px;
@@ -805,49 +728,19 @@ export const propertyRowStyles: CSSResult = css`
     text-align: left;
     cursor: pointer;
   }
-  .dots .marks {
-    display: inline-flex;
-    align-items: center;
-    padding: 0 3px;
-  }
   .dots:hover,
   .dots[aria-expanded='true'] {
     background: var(--heo-hover);
   }
-  .dot,
-  .moon {
-    position: relative;
+  /*
+   * The reach chip on an opaque base: over the glass panel on a white page its orange ink read
+   * 4.15:1 (a11y-contrast styles.reachChip).
+   */
+  .dots .uses {
     flex: 0 0 auto;
-    width: 6px;
-    height: 6px;
-    border-radius: 999px;
   }
-  .dot {
-    z-index: 4;
-    background: var(--heo-accent);
-  }
-  /* Nothing declares it: nothing at rest, a dim ring when the row is hovered, focused or open. */
-  .dot.none {
-    background: transparent;
-  }
-  .prow:hover .dot.none,
-  .dots:focus-visible .dot.none,
-  .dots[aria-expanded='true'] .dot.none {
-    box-shadow: inset 0 0 0 1px var(--heo-text-dim);
-  }
-  /* Decorative: what they say is in the dot's name. */
-  .moon {
-    margin-left: -3px;
-    box-shadow: inset 0 0 0 1px var(--heo-text-faint);
-  }
-  .moon:nth-child(2) {
-    z-index: 3;
-  }
-  .moon:nth-child(3) {
-    z-index: 2;
-  }
-  .moon:nth-child(4) {
-    z-index: 1;
+  .dots .uses.many {
+    background: color-mix(in oklab, var(--heo-shared) 20%, var(--heo-raised));
   }
   /*
    * A side written in another block than its shorthand: under it, indented and ruled like a family's
@@ -866,7 +759,7 @@ export const propertyRowStyles: CSSResult = css`
     gap: 6px;
   }
   .side-note {
-    margin: 2px 0 0 26px;
+    margin: 2px 0 0;
     color: var(--heo-text-dim);
     font-size: 10px;
     line-height: 1.4;
@@ -875,44 +768,6 @@ export const propertyRowStyles: CSSResult = css`
     color: var(--heo-text);
     font-family: var(--heo-mono);
     font-weight: 400;
-  }
-  /* A segmented row's "where it goes", under the row while the row is in use. */
-  .dest-line {
-    overflow-wrap: anywhere;
-    display: none;
-    margin: 4px 0 0 26px;
-    color: var(--heo-text-dim);
-    font-size: 10.5px;
-    line-height: 1.5;
-    outline: none;
-  }
-  .prow:focus-within .dest-line,
-  .dest-line.on {
-    display: block;
-  }
-  .dest-pick {
-    max-width: 100%;
-    overflow: hidden;
-    white-space: nowrap;
-    display: inline-flex;
-    align-items: center;
-    gap: 3px;
-    height: 18px;
-    padding: 0 4px 0 6px;
-    border: 1px solid var(--heo-line-strong);
-    border-radius: 999px;
-    background: var(--heo-raised);
-    color: var(--heo-text);
-    font-family: var(--heo-mono);
-    font-size: 10.5px;
-    cursor: pointer;
-  }
-  .dest-pick:hover {
-    border-color: var(--heo-accent-line);
-  }
-  .dest-pick:focus-visible {
-    outline: 2px solid var(--heo-focus-ring);
-    outline-offset: 1px;
   }
   .flash {
     animation: heo-row-flash 1.2s ease-out;

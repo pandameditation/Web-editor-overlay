@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The cascade ladder: where a value is, and where an edit goes</title>
+  <!--
+    The shared sample from styles-cascade.html (design §8). `.promo .card { color … !important }`
+    beats the element's inline colour; `.card` is worn by four cards, `.featured` by the target only.
+  -->
+  <style id="site">
+    .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .card {
+      padding: 12px 16px;
+      margin: 0 0 12px;
+      color: #1f2937;
+      background-color: #ffffff;
+      border-radius: 8px;
+      font-size: 15px;
+      font-weight: 600;
+      text-transform: none;
+      text-align: left;
+      opacity: 1;
+      display: block;
+    }
+    .featured { border: 1px solid #a5b4fc; }
+    .card.featured { background-color: #eef2ff; }
+    .promo .card { color: #3730a3 !important; }
+    section p { letter-spacing: 0.01em; }
+    @media (max-width: 767px) {
+      .cards { grid-template-columns: 1fr; }
+      .card { padding: 10px 12px; }
+    }
+    @media (min-width: 768px) {
+      .card { padding: 20px 28px; }
+    }
+    @media print {
+      .card { color: #000000; }
+    }
+    .card:hover { background-color: #f9fafb; }
+    @media (min-width: 768px) {
+      .card:hover { box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1); }
+    }
+    .featured:focus-within { outline: 2px solid #6366f1; }
+    .featured::before { content: "★"; color: #f59e0b; }
+  </style>
+  <style id="inherit">
+    .promo { font-family: Georgia, serif; }
+  </style>
+</head>
+<body>
+  <section class="promo">
+    <div class="cards">
+      <p id="target" class="card featured" style="color: #b91c1c; font-size: 16px">The selected card</p>
+      <p class="card">Second</p>
+      <p class="card">Third</p>
+      <p class="card">Fourth</p>
+    </div>
+  </section>
+
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const results = {};
+      const errors = [];
+      addEventListener('error', (event) => errors.push('error: ' + event.message));
+      addEventListener('unhandledrejection', (event) => errors.push('rejection: ' + String(event.reason)));
+      const progress = document.getElementById('progress');
+      const frames = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const deep = (selector, root = document) => {
+        const direct = root.querySelector?.(selector);
+        if (direct) return direct;
+        for (const el of root.querySelectorAll?.('*') ?? []) {
+          if (!el.shadowRoot) continue;
+          const found = deep(selector, el.shadowRoot);
+          if (found) return found;
+        }
+        return null;
+      };
+      const text = (el) => (el?.textContent ?? '').replace(/\s+/g, ' ').trim();
+
+      try {
+        const api = window.HtmlEditorOverlay.mount({ theme: 'dark', presets: false, detectScriptContent: false });
+        const engine = api.engine;
+        api.setEditing(true);
+        await engine.whenReady();
+        const target = document.getElementById('target');
+        const site = document.getElementById('site').sheet;
+        const ruleOf = (selector, media = null) => {
+          for (const rule of Array.from(site.cssRules)) {
+            if (media === null && rule.selectorText === selector) return rule;
+            if (media !== null && rule.media?.mediaText === media) {
+              const inner = Array.from(rule.cssRules).find((one) => one.selectorText === selector);
+              if (inner) return inner;
+            }
+          }
+          return null;
+        };
+        api.select(target);
+        engine.setDockTab('styles');
+        await frames();
+        await wait(300);
+
+        // Re-queried every time: the panel re-renders on every store change.
+        const panel = () => deep('heo-styles-panel');
+        const root = () => panel().shadowRoot;
+        const settle = async (ms = 0) => {
+          await panel().updateComplete;
+          await frames();
+          if (ms) await wait(ms);
+        };
+        const rowIn = (list, property) => root().querySelector(`[data-declarations="${list}"] .row[data-property="${property}"]`);
+        const pop = () => root().querySelector('.pop:not(.cardpop):not(.finderpop)');
+        const openMenu = async (list, property) => {
+          if (pop()) await closeMenu();
+          rowIn(list, property)?.querySelector('.dots')?.click();
+          await settle();
+        };
+        const closeMenu = async () => {
+          pop()?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true, cancelable: true }));
+          await settle();
+        };
+        const rungs = () => Array.from(pop()?.querySelectorAll('.ladder > [data-place]') ?? []);
+        const rung = (key) => pop()?.querySelector(`.ladder > [data-place="${CSS.escape(key)}"]`);
+        const radioOf = (one) => (one?.matches('[role="radio"]') ? one : one?.querySelector('[role="radio"]'));
+        const labels = () => rungs().map((one) => text(one.querySelector('.pl')));
+        const pick = async (key) => {
+          radioOf(rung(key))?.click();
+          await settle();
+        };
+        const openField = () => pop()?.querySelector('.open heo-value-field');
+        const result = () => text(pop()?.querySelector('.open .res'));
+        const fire = (el, type, value) =>
+          el?.dispatchEvent(new CustomEvent(type, { detail: { value }, bubbles: true, composed: true }));
+        const below768 = matchMedia('(max-width: 767px)').matches;
+        const nowSize = below768 ? '≤767px' : '≥768px';
+
+        /* ------------------------------------------------------------------ *
+         * The menu: the ladder for one row.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'menu: order';
+        results.menu = {};
+        await openMenu('effective', 'color');
+        const colourLabels = labels();
+        await openMenu('effective', 'padding');
+        const paddingLabels = labels();
+        const paddingSizes = rungs().map((one) => text(one.querySelector('.sz')));
+        /*
+         * Strongest first, the cascade's own order: an important rule over the inline value, inline
+         * over every rule, then by specificity and order. An empty place ranks where a value written
+         * there would land (`.featured` after `.card` in the sheet, so above it); the new class last.
+         */
+        results.menu.rungsAreStrongestFirst =
+          colourLabels.join(',') === '.promo .card,inline,.featured,.card,new class' &&
+          paddingLabels.join(',') === 'inline,.card,.featured,.card,new class' &&
+          paddingSizes[1] === nowSize && paddingSizes[3] === '';
+
+        progress.textContent = 'menu: now badge';
+        await openMenu('effective', 'color');
+        const nowIn = () => rungs().filter((one) => one.querySelector('.now')).map((one) => one.dataset.place);
+        // One badge, on what the element renders with: the important rule, not the inline value.
+        results.menu.theNowBadgeIsOnTheWinner = nowIn().join(',') === '.promo .card|base';
+        await pick('.card|base');
+        // The badge is the cascade's answer, not the pick: picking `.card` does not move it.
+        results.menu.theNowBadgeStaysOnTheWinnerWhenAnotherRungIsPicked =
+          radioOf(rung('.card|base'))?.getAttribute('aria-checked') === 'true' &&
+          nowIn().join(',') === '.promo .card|base';
+        const struck = (key) => getComputedStyle(rung(key)?.querySelector('.cv') ?? document.body).textDecorationLine.includes('line-through');
+        results.menu.aHiddenValueIsStruckThrough =
+          rung('.card|base')?.classList.contains('hid') && struck('.card|base') && struck('inline') && !struck('.promo .card|base');
+        // Its own field, right under it, holding that place's value: what is edited and where, together.
+        const under = rung('.card|base')?.nextElementSibling;
+        results.menu.pickedRungOpensItsValueFieldRightUnderIt =
+          Boolean(under?.matches('.open')) && under?.querySelector('heo-value-field')?.value === '#1f2937' &&
+          pop()?.querySelectorAll('.open').length === 1;
+        results.menu.pickedRungHasAnImportantToggle =
+          Boolean(pop()?.querySelector('.open .promote[aria-pressed="false"]'));
+        await pick('.promo .card|base');
+        results.menu.resultLineSaysAppliesOverAndReach =
+          /^Applies, over inline style · changes 4 elements$/.test(result());
+
+        progress.textContent = 'menu: hidden place';
+        await openMenu('effective', 'font-size');
+        await pick('.card|base');
+        const hiddenText = result();
+        // Hidden by the inline value, and !important would win: the fix is offered where it is read.
+        results.menu.aHiddenPlaceSaysHiddenByAndOffersMakeItImportant =
+          /^Hidden by inline style · changes 4 elements\. Make it !important$/.test(hiddenText) &&
+          Boolean(pop()?.querySelector('.open .res .make-important'));
+        pop()?.querySelector('.open .res .make-important')?.click();
+        await settle();
+        results.menu.makeItImportantMakesItApply =
+          ruleOf('.card')?.style.getPropertyPriority('font-size') === 'important' &&
+          getComputedStyle(target).fontSize === '15px' &&
+          /^Applies, over inline style/.test(result());
+        engine.undo();
+        await settle();
+
+        progress.textContent = 'menu: keyboard';
+        {
+          await openMenu('effective', 'font-size');
+          const before = rungs().findIndex((one) => radioOf(one)?.getAttribute('aria-checked') === 'true');
+          radioOf(rungs()[before])?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, composed: true, cancelable: true }));
+          await settle();
+          const after = rungs().findIndex((one) => radioOf(one)?.getAttribute('aria-checked') === 'true');
+          // A radio group: one stop in the tab order, the arrows move the pick.
+          results.menu.arrowKeysMoveThePick =
+            before >= 0 && after === before + 1 &&
+            rungs().filter((one) => radioOf(one)?.getAttribute('tabindex') === '0').length === 1;
+        }
+
+        progress.textContent = 'menu: row edits the pick';
+        {
+          await openMenu('effective', 'font-size');
+          await pick('.featured|base');
+          await closeMenu();
+          fire(rowIn('effective', 'font-size')?.querySelector('heo-value-field'), 'value-change', '19px');
+          await settle();
+          // Checked on the rule, not the panel: the value lands in the picked place.
+          results.menu.pickingARungMakesTheRowEditThatPlace =
+            ruleOf('.featured')?.style.getPropertyValue('font-size') === '19px' &&
+            getComputedStyle(target).fontSize === '19px';
+          engine.undo();
+          await settle();
+        }
+
+        progress.textContent = 'menu: new class';
+        {
+          await openMenu('effective', 'letter-spacing');
+          const nameField = () => pop()?.querySelector('.lr.new heo-value-field');
+          fire(nameField(), 'value-input', 'ink-own');
+          await settle();
+          fire(nameField(), 'value-submit', 'ink-own');
+          await settle();
+          const picked = radioOf(pop()?.querySelector('.lr.new'))?.getAttribute('aria-checked') === 'true';
+          await wait(2600); // past the merge window, so one entry is one entry
+          const before = engine.history.size;
+          fire(openField(), 'value-change', '0.2em');
+          await settle();
+          const written = target.classList.contains('ink-own') &&
+            engine.classes.get('ink-own')?.declarations['letter-spacing'] === '0.2em' &&
+            getComputedStyle(target).letterSpacing !== getComputedStyle(target.nextElementSibling).letterSpacing;
+          const oneEntry = engine.history.size === before + 1;
+          engine.undo();
+          await settle();
+          const undone = !target.classList.contains('ink-own') && !engine.classes.get('ink-own');
+          // Named on the last rung, then one value: the class on the element and its rule, one undo.
+          results.menu.theLastRungCreatesANewClassByName = picked && written && oneEntry && undone;
+          await closeMenu();
+        }
+
+        progress.textContent = 'menu: reach chip';
+        {
+          const chipOf = (property) => text(rowIn('effective', property)?.querySelector('.dots .uses'));
+          // The padding row edits `.card` at this size, which styles four cards; font-size edits inline.
+          results.menu.theRowShowsAReachChipWhenItsPlaceStylesMoreThanOne =
+            chipOf('padding') === '4×' && chipOf('font-size') === '';
+          // Rows in a closed section have no layout to measure.
+          const rows = Array.from(root().querySelectorAll('.row[data-heo-part="row"]')).filter((row) => row.getClientRects().length);
+          // No source hint, no dot, no crescents: name · value · trash.
+          results.menu.rowsHaveNoSourceHint =
+            rows.length > 10 &&
+            !root().querySelector('.row .from, .row .dot, .row .moon, .row .marks') &&
+            rows.every((row) => getComputedStyle(row).gridTemplateColumns.split(' ').length === 3);
+        }
+
+        progress.textContent = 'menu: state';
+        {
+          const bar = () => root().querySelector('[data-strip="effective"]');
+          bar()?.querySelector('[data-cond="state::hover"]')?.click();
+          await settle();
+          await openMenu('state-:hover', 'background-color');
+          const keys = rungs().map((one) => one.dataset.place);
+          // A hover colour cannot be inline: no inline rung, and the hover rule is one.
+          results.menu.inlineIsNotOfferedUnderAState =
+            keys.length > 2 && !keys.includes('inline') && keys.includes('.card|state::hover');
+          await closeMenu();
+          bar()?.querySelector('[data-cond="state::hover"]')?.click();
+          await settle();
+        }
+
+        progress.textContent = 'menu: inactive';
+        {
+          engine.setPreviewWidth(320);
+          await settle(100);
+          // At 320 Effective styles follows the preview to the phone size (R13): its group holds the row.
+          await openMenu(rowIn('effective', 'padding') ? 'effective' : 'size-phone', 'padding');
+          const idle = text(pop()?.querySelector('.idle'));
+          // Another size's value is not a rung (it does not compete here) but it is listed.
+          results.menu.inactiveSizesAreListedAtTheBottom =
+            idle.startsWith('Not active at this width:') && idle.includes('.card ≥768px 20px 28px') &&
+            !rungs().some((one) => text(one.querySelector('.sz')) === '≥768px') &&
+            Boolean(pop()?.querySelector('.ladder ~ .idle'));
+          await closeMenu();
+          engine.setPreviewWidth(null);
+          await settle(100);
+        }
+
+        const failed = Object.entries(results)
+          .filter(([, group]) => group && typeof group === 'object')
+          .filter(([, group]) => Object.values(group).some((value) => value === false))
+          .map(([name]) => name);
+        document.getElementById('out').textContent =
+          'RESULTS:' + JSON.stringify({ ...results, errors, failed }, null, 2) + ':END';
+      } catch (e) {
+        document.getElementById('out').textContent =
+          'RESULTS:' + JSON.stringify({ threw: String((e && e.stack) || e), errors, failed: ['threw'] }, null, 2) + ':END';
+      }
+    })();
+  </script>
+</body>
+</html>
