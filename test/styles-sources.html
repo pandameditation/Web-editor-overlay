@@ -992,7 +992,7 @@
           results.adder.escapeCancels =
             !cardAdder() && Boolean(addButton(block('.card', 'base'))) && engine.history.size === before &&
             engine.selected === target;
-          // Several destinations: a switch at the head of the value's list, each with what it does.
+          // Several destinations: the cascade ladder in the value step, the value in the picked rung.
           sroot().querySelector('.block-add [data-adder="effective"]')?.click();
           await settle(200);
           const effAdder = () => sroot().querySelector('.property-adder[data-adder="effective"]');
@@ -1007,32 +1007,35 @@
             effLook.inputTop <= 10 && Math.abs(cardLook.inputTop - effLook.inputTop) <= 2 &&
             Math.abs(cardLook.inputLeft - effLook.inputLeft) <= 2;
           // The name asks nothing about where.
-          const nameAsksNothing = !effAdder()?.querySelector('.dest, .chip, heo-segmented') && !fieldOf(effAdder())?.head;
+          const nameAsksNothing = !effAdder()?.querySelector('.dest, .chip, heo-segmented, .ladder');
           await typeInto(inputOf(effAdder()), 'letter-spacing');
           key(inputOf(effAdder()), 'Enter');
           await settle(300);
+          const effRungs = () => Array.from(effAdder()?.querySelectorAll('.ladder > [data-place]') ?? []);
+          const effPicked = () => effAdder()?.querySelector('.ladder [role="radio"][aria-checked="true"]');
+          const effResult = () => textOf(effAdder()?.querySelector('.open .res'));
+          // Every place letter-spacing can go, strongest first: the empty inline style above the
+          // classes, `section p` (which sets it now) under them, and the element's new class last.
+          results.adder.severalDestinationsAreTheLadderInTheValueStep =
+            nameAsksNothing && stepOf(effAdder()) === 'value' &&
+            effRungs().map((one) => textOf(one.querySelector('.pl'))).join(',') === 'inline,.featured,.card,section p,new class' &&
+            // Nothing writes it yet at Element, so inline is where it goes until another is picked.
+            effPicked()?.dataset.place === 'inline';
+          // Each rung says how far it reaches, and the picked one what a value there would do.
+          results.adder.theResultLineSaysWhatThePickDoes =
+            effResult() === 'A value here will apply, over section p · only this element' &&
+            effRungs().map((one) => textOf(one.querySelector('.uses'))).join(',') === '1×,1×,4×,4×,1×';
+          // The arrows step the pick, as in any radio group; the result follows it.
+          key(effPicked(), 'ArrowDown');
+          await settle(200);
+          key(effPicked(), 'ArrowDown');
+          await settle(200);
+          results.adder.arrowKeysStepThePick =
+            effPicked()?.dataset.place === '.card|base' &&
+            effResult() === 'A value here will apply, over section p · changes 4 elements';
+          // Escape closes the list first, then the adder.
           fieldOf(effAdder())?.openList();
           await settle(200);
-          const destSwitch = () => fieldOf(effAdder())?.shadowRoot?.querySelector('.list-head heo-segmented');
-          const explain = () => textOf(fieldOf(effAdder())?.shadowRoot?.querySelector('.list-head .explain'));
-          const switchButton = (label) => Array.from(destSwitch()?.shadowRoot?.querySelectorAll('button') ?? [])
-            .find((one) => textOf(one) === label);
-          results.adder.severalDestinationsAreASwitchInTheValueList =
-            nameAsksNothing && stepOf(effAdder()) === 'value' &&
-            (destSwitch()?.options ?? []).map((one) => one.label).join(',') === 'Inline,.card,.featured,New class' &&
-            // Nothing writes it yet, so inline is where it goes until another is picked.
-            destSwitch()?.value === 'target:inline style';
-          results.adder.theLineSaysWhatEachDoes =
-            explain() === 'Adds inline style • impacting this element only' &&
-            (destSwitch()?.options ?? []).map((one) => one.title).join(';') ===
-              'Adds inline style • impacting this element only;Adds .card • impacting 4 elements;' +
-              'Adds .featured • impacting this element only;Adds a new class • impacting this element only';
-          // Alt+Right steps it from the field, the caret staying there.
-          key(inputOf(effAdder()), 'ArrowRight', { altKey: true });
-          await settle(200);
-          results.adder.altArrowStepsTheSwitch =
-            destSwitch()?.value === 'target:.card' && explain() === 'Adds .card • impacting 4 elements';
-          // Escape closes the list first, then the adder.
           key(inputOf(effAdder()), 'Escape');
           await settle(200);
           const listShutFirst = !fieldOf(effAdder())?.listIsOpen && Boolean(effAdder());
@@ -1070,9 +1073,7 @@
           await typeInto(inputOf(effAdder()), 'letter-spacing');
           key(inputOf(effAdder()), 'Enter');
           await settle(300);
-          fieldOf(effAdder())?.openList();
-          await settle(200);
-          switchButton('New class')?.click();
+          effAdder()?.querySelector('.ladder .lr.new .pick')?.click();
           await settle(200);
           const classesBefore = Array.from(target.classList);
           before = engine.history.size;

@@ -63,8 +63,11 @@ export interface StylesUiState {
   effPseudo: string | null;
   /** The one open menu, by id. */
   menu: { id: string } | null;
-  /** The one open adder: its id, the draft, and the destination picked in it. */
-  adder: { id: string; draft: string; dest: string } | null;
+  /**
+   * The one open adder: its id, the draft, the destination picked in it (a place key on a ladder)
+   * and the `!important` asked for there before the value is written.
+   */
+  adder: { id: string; draft: string; dest: string; important?: boolean } | null;
   /** Effective styles' hand-picked size; null follows the preview (R13). */
   effPick: string | null;
   /** The header's "find or create a class" field is showing. */

@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="utf-8">
   <title>The cascade ladder: where a value is, and where an edit goes</title>
@@ -8,7 +9,12 @@
     beats the element's inline colour; `.card` is worn by four cards, `.featured` by the target only.
   -->
   <style id="site">
-    .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+
     .card {
       padding: 12px 16px;
       margin: 0 0 12px;
@@ -22,31 +28,71 @@
       opacity: 1;
       display: block;
     }
-    .featured { border: 1px solid #a5b4fc; }
-    .card.featured { background-color: #eef2ff; }
-    .promo .card { color: #3730a3 !important; }
-    section p { letter-spacing: 0.01em; }
+
+    .featured {
+      border: 1px solid #a5b4fc;
+    }
+
+    .card.featured {
+      background-color: #eef2ff;
+    }
+
+    .promo .card {
+      color: #3730a3 !important;
+    }
+
+    section p {
+      letter-spacing: 0.01em;
+    }
+
     @media (max-width: 767px) {
-      .cards { grid-template-columns: 1fr; }
-      .card { padding: 10px 12px; }
+      .cards {
+        grid-template-columns: 1fr;
+      }
+
+      .card {
+        padding: 10px 12px;
+      }
     }
+
     @media (min-width: 768px) {
-      .card { padding: 20px 28px; }
+      .card {
+        padding: 20px 28px;
+      }
     }
+
     @media print {
-      .card { color: #000000; }
+      .card {
+        color: #000000;
+      }
     }
-    .card:hover { background-color: #f9fafb; }
+
+    .card:hover {
+      background-color: #f9fafb;
+    }
+
     @media (min-width: 768px) {
-      .card:hover { box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1); }
+      .card:hover {
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+      }
     }
-    .featured:focus-within { outline: 2px solid #6366f1; }
-    .featured::before { content: "★"; color: #f59e0b; }
+
+    .featured:focus-within {
+      outline: 2px solid #6366f1;
+    }
+
+    .featured::before {
+      content: "★";
+      color: #f59e0b;
+    }
   </style>
   <style id="inherit">
-    .promo { font-family: Georgia, serif; }
+    .promo {
+      font-family: Georgia, serif;
+    }
   </style>
 </head>
+
 <body>
   <section class="promo">
     <div class="cards">
@@ -299,6 +345,169 @@
           await settle(100);
         }
 
+        /* ------------------------------------------------------------------ *
+         * The adder: its value step is the same ladder, with ✓ in the picked rung.
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'adder: name step';
+        results.adder = {};
+        const adderOf = (id) => root().querySelector(`.property-adder[data-adder="${CSS.escape(id)}"]`);
+        const openAdder = async (id) => {
+          root().querySelector(`.add-prop[data-adder="${CSS.escape(id)}"]`)?.click();
+          await settle(60);
+        };
+        const cancelAdder = async (id) => {
+          adderOf(id)?.querySelector('.cancel')?.click();
+          await settle();
+        };
+        const nameField = (id) => adderOf(id)?.querySelector('heo-value-field.name-field');
+        const valueField = (id) => adderOf(id)?.querySelector('.open heo-value-field.new-value');
+        const confirmOf = (id) => adderOf(id)?.querySelector('.open .vrow button.confirm');
+        const inputIn = (field) => field?.shadowRoot?.querySelector('input[type="text"]');
+        const typeIn = async (field, value) => {
+          const input = inputIn(field);
+          if (!input) return;
+          input.focus();
+          input.value = value;
+          input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+          await settle();
+        };
+        const pressEnter = async (field) => {
+          inputIn(field)?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, composed: true, cancelable: true }));
+          await settle(60);
+        };
+        const pickedIn = (id) => adderOf(id)?.querySelector('.ladder [role="radio"][aria-checked="true"]');
+        const pickedKey = (id) => {
+          const radio = pickedIn(id);
+          return radio?.dataset.place ?? radio?.closest('[data-place]')?.dataset.place ?? null;
+        };
+        const adderRung = (id, key) => adderOf(id)?.querySelector(`.ladder > [data-place="${CSS.escape(key)}"]`);
+        const inlineText = (property) => target.style.getPropertyValue(property);
+        {
+          await openAdder('effective');
+          await typeIn(nameField('effective'), 'letter-spac');
+          const option = Array.from(nameField('effective')?.shadowRoot?.querySelectorAll('[role="option"]') ?? [])
+            .find((one) => text(one).startsWith('letter-spacing'));
+          option?.click();
+          await settle(60);
+          // A name is picked with the mouse from the list, not only typed and Entered.
+          results.adder.nameStepOffersClickableSuggestions =
+            Boolean(option) && adderOf('effective')?.dataset.step === 'value' &&
+            text(adderOf('effective')?.querySelector('.rename')) === 'letter-spacing';
+          await cancelAdder('effective');
+        }
+        {
+          await openAdder('effective');
+          await typeIn(nameField('effective'), 'word-spacing');
+          nameField('effective')?.shadowRoot?.querySelector('.action')?.click();
+          await settle(60);
+          // "Next: its value" is a button: the click affordance beside the name.
+          results.adder.nextOpensTheValueStep =
+            adderOf('effective')?.dataset.step === 'value' &&
+            text(adderOf('effective')?.querySelector('.rename')) === 'word-spacing';
+          await cancelAdder('effective');
+        }
+
+        progress.textContent = 'adder: value step';
+        {
+          await openAdder('effective');
+          await typeIn(nameField('effective'), 'letter-spacing');
+          await pressEnter(nameField('effective'));
+          await settle(60);
+          const adder = adderOf('effective');
+          valueField('effective')?.openList();
+          await settle(60);
+          const keys = Array.from(adder?.querySelectorAll('.ladder > [data-place]') ?? []).map((one) => one.dataset.place);
+          // Where it goes is the ladder (strongest first, inline on top at Element), not a switch
+          // at the head of the value's list.
+          results.adder.valueStepShowsTheLadderNotASegmentedHead =
+            Boolean(adder?.querySelector('.ladder[role="radiogroup"]')) &&
+            keys[0] === 'inline' && keys.includes('.card|base') && keys.at(-1) === 'new-class|base' &&
+            !adder?.querySelector('heo-segmented') &&
+            !valueField('effective')?.shadowRoot?.querySelector('.list-head') &&
+            !('head' in (valueField('effective') ?? {}));
+          valueField('effective')?.closePopup();
+          await settle();
+          // Nothing picked yet: a new declaration at Element goes inline (decision 8).
+          results.adder.aNewDeclarationDefaultsToInline = pickedKey('effective') === 'inline';
+          // ✓ in the picked rung, on the value field's own line, after it.
+          const field = valueField('effective')?.getBoundingClientRect();
+          const tick = confirmOf('effective')?.getBoundingClientRect();
+          results.adder.confirmSitsBesideTheValueField =
+            Boolean(field && tick) &&
+            adderRung('effective', 'inline')?.nextElementSibling?.contains(confirmOf('effective')) &&
+            Math.abs((field.top + field.height / 2) - (tick.top + tick.height / 2)) < 4 &&
+            tick.left >= field.right - 1;
+          const disabledEmpty = confirmOf('effective')?.disabled === true;
+          await wait(2600); // past the merge window, so an entry is counted as one
+          const history = engine.history.size;
+          const records = engine.records.length;
+          await typeIn(valueField('effective'), '0.3em');
+          const enabledTyped = confirmOf('effective')?.disabled === false;
+          // The field commits by itself when looked away from: that is not a confirmation.
+          fire(valueField('effective'), 'value-change', '0.3em');
+          await settle();
+          results.adder.confirmIsDisabledUntilAValueIsTyped = disabledEmpty && enabledTyped;
+          const unwrittenWhileTyping = engine.history.size === history && engine.records.length === records;
+          // Another rung after typing: the value moves with the pick, nothing lands where it was typed.
+          radioOf(adderRung('effective', '.card|base'))?.click();
+          await settle(60);
+          results.adder.nothingIsWrittenBeforeConfirm =
+            unwrittenWhileTyping &&
+            engine.history.size === history && engine.records.length === records &&
+            inlineText('letter-spacing') === '' && ruleOf('.card')?.style.getPropertyValue('letter-spacing') === '' &&
+            pickedKey('effective') === '.card|base' && inputIn(valueField('effective'))?.value === '0.3em';
+          confirmOf('effective')?.click();
+          await settle(60);
+          // One click on ✓ writes the value to the picked place, as one undo entry.
+          results.adder.clickingConfirmWritesToThePickedPlace =
+            ruleOf('.card')?.style.getPropertyValue('letter-spacing') === '0.3em' &&
+            inlineText('letter-spacing') === '' && engine.history.size === history + 1 && !adderOf('effective');
+          engine.undo();
+          await settle();
+        }
+
+        progress.textContent = 'adder: enter';
+        {
+          await openAdder('effective');
+          await typeIn(nameField('effective'), 'word-spacing');
+          await pressEnter(nameField('effective'));
+          await settle(60);
+          await typeIn(valueField('effective'), '4px');
+          await pressEnter(valueField('effective'));
+          await settle(60);
+          // Enter is the keyboard's ✓, at the default place (inline).
+          results.adder.enterStillCommits = inlineText('word-spacing') === '4px' && !adderOf('effective');
+          engine.undo();
+          await settle();
+        }
+
+        progress.textContent = 'adder: under a state';
+        {
+          const bar = () => root().querySelector('[data-strip="effective"]');
+          const hover = 'state-:hover';
+          const defaultUnderHover = async () => {
+            bar()?.querySelector('[data-cond="state::hover"]')?.click();
+            await settle();
+            await openAdder(hover);
+            await typeIn(nameField(hover), 'outline-offset');
+            await pressEnter(nameField(hover));
+            await settle(60);
+            const key = pickedKey(hover);
+            await cancelAdder(hover);
+            bar()?.querySelector('[data-cond="state::hover"]')?.click();
+            await settle();
+            return key;
+          };
+          // `.featured` is worn by this card alone: its hover rule is the element's own (decision 8).
+          results.adder.underAStateItDefaultsToTheOwnClass = (await defaultUnderHover()) === '.featured|state::hover';
+          // A card wearing only the shared `.card`: never write into a class four cards share.
+          api.select(target.nextElementSibling);
+          await settle(100);
+          results.adder.withNoOwnClassItDefaultsToANewClass = (await defaultUnderHover()) === 'new-class|state::hover';
+          api.select(target);
+          await settle(100);
+        }
+
         const failed = Object.entries(results)
           .filter(([, group]) => group && typeof group === 'object')
           .filter(([, group]) => Object.values(group).some((value) => value === false))
@@ -312,4 +521,5 @@
     })();
   </script>
 </body>
+
 </html>

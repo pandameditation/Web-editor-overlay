@@ -1,12 +1,30 @@
 import { css, html, nothing, type CSSResult, type TemplateResult } from 'lit';
+import { leanBlockSelector } from '../../../core/block-rule-edit.js';
 import { mediaLabel } from '../../../core/breakpoints.js';
 import type { Place } from '../../../core/cascade-places.js';
 import type { Contribution } from '../../../core/cascade.js';
 import { shortLabel } from '../../../core/save-plan.js';
 import { field, type FormErrors } from '../../form-errors.js';
 import { renderUses } from '../class-editor.js';
-import { displayName } from './property-adder.js';
 import '../../controls/value-field.js';
+
+/** How long a place's name may be where it is shown inline; the full name is in its tooltip. */
+export const SOURCE_NAME_MAX = 32;
+
+/**
+ * A place's name short enough for a rung, a line or a menu.
+ *
+ * A block's scoped selector is named as its author wrote it (`.title`, not the hooks repeated six
+ * times), and anything still longer is cut in the middle: the start says where the rule is, the
+ * end is the element it styles, and both matter more than the part between.
+ */
+export function displayName(name: string, max = SOURCE_NAME_MAX): string {
+  const lean = leanBlockSelector(name).replace(/\s+/g, ' ').trim();
+  if (lean.length <= max) return lean;
+  const head = Math.ceil((max - 1) * 0.4);
+  const tail = max - 1 - head;
+  return `${lean.slice(0, head).trimEnd()}…${lean.slice(lean.length - tail).trimStart()}`;
+}
 
 /**
  * The cascade ladder (design J): every place one property can be written for the element, strongest
@@ -18,7 +36,7 @@ import '../../controls/value-field.js';
  * through. Picking a rung opens it: the caller's value field, `!important` and the result line sit
  * right under the picked rung, so what is being edited and where are read together. The last rung
  * is a class of the element's own, named here or automatically. The same control is the cascade
- * menu of a row and (in a later step) the adder's "where it goes", so the two never disagree.
+ * menu of a row and the adder's "where it goes", so the two never disagree.
  */
 export interface LadderSpec {
   property: string;

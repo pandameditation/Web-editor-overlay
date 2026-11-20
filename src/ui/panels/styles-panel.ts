@@ -62,7 +62,7 @@ import {
 } from './styles/size-strip.js';
 import { menuStyles, placeLayer } from './styles/menu.js';
 import { searchPopoverStyles } from './styles/search-popover.js';
-import { stylesDestination, valueStepDraft, type AdderDestination } from './styles/property-adder.js';
+import { stylesDestination, valueStepDraft, type AdderPlaces } from './styles/property-adder.js';
 import {
   previewSlot,
   propertyRowStyles,
@@ -79,7 +79,7 @@ import {
   type RowPlace,
   type RowSpec,
 } from './styles/property-row.js';
-import { candidatePlaces, type PlaceCondition } from '../../core/cascade-places.js';
+import { defaultPlace, inactivePlaces, placeOutcome, placesFor, type PlaceCondition } from '../../core/cascade-places.js';
 import { NEW_CLASS_FIELD } from './styles/cascade-popover.js';
 import type { RowScope, StylesHost, StylesUiState } from './styles/types.js';
 import type { HeoValueField } from '../controls/value-field.js';
@@ -294,6 +294,13 @@ const BORDER_PARTS = ['border-width', 'border-style', 'border-color', 'outline-w
 /** A side's own family: `border-bottom` and its three longhands. Rows, likewise, only where declared. */
 const BORDER_SIDE_PROPERTIES = SIDES.flatMap((side) => [`border-${side}`, ...LINE_PARTS.map((part) => `border-${side}-${part}`)]);
 const BORDER_PROPERTIES = [...BORDER_SHORTHANDS, 'border-radius', ...BORDER_PARTS, ...BORDER_SIDE_PROPERTIES, 'outline-offset'];
+
+/** The section a property shows in besides Effective styles, for the adder's "shows in" hint. */
+function ownerOf(property: string): string | undefined {
+  if (SPACING_PROPERTIES.includes(property)) return 'Spacing';
+  if (BORDER_PROPERTIES.includes(property)) return 'Border';
+  return SECTIONS.find((section) => section.properties.includes(property))?.heading;
+}
 
 /** The Effective styles element block: its rows' list and its adder share the id. */
 const EFFECTIVE_LIST_ID = 'effective';
@@ -1013,7 +1020,7 @@ export class HeoStylesPanel extends HeoElement {
             ${own.length ? nothing : html`<p class="hint" style="margin:0">
               ${filtering ? 'No property matches.' : 'Nothing declares anything for this element yet.'}
             </p>`}
-            ${renderBlockAdder(host, EFFECTIVE_LIST_ID, this.#adderDestinations(el, model, { media: 'base', state: '' }), '', { choose: true })}
+            ${renderBlockAdder(host, EFFECTIVE_LIST_ID, [], '', { places: this.#adderPlaces(el, model, { media: 'base', state: '' }) })}
             ${groups.map((group) => this.#renderPseudoGroup(el, model, host, group.state, group.properties))}
             ${pendingPseudo ? this.#renderPseudoGroup(el, model, host, pendingPseudo, []) : nothing}
             ${filtering
@@ -1071,7 +1078,7 @@ export class HeoStylesPanel extends HeoElement {
     }), host)}
       </div>
       ${properties.length ? nothing : html`<p class="hint" style="margin:0">No declarations yet.</p>`}
-      ${renderBlockAdder(host, listId, this.#adderDestinations(el, model, { media: 'base', state }), state, { choose: true })}
+      ${renderBlockAdder(host, listId, [], state, { places: this.#adderPlaces(el, model, { media: 'base', state }) })}
     </div>`;
   }
 
@@ -1186,46 +1193,26 @@ export class HeoStylesPanel extends HeoElement {
         : html`<p class="hint" style="margin:0">
             Nothing ${state ? `on ${state}` : media !== null && isWidthQuery(media) ? 'changes at this size' : 'changes under this media query'} yet.
           </p>`}
-      ${renderBlockAdder(
-          host,
-          listId,
-          this.#adderDestinations(el, model, { media: slot, state }),
-          state,
-          { choose: true },
-        )}
+      ${renderBlockAdder(host, listId, [], state, { places: this.#adderPlaces(el, model, { media: slot, state }) })}
     </div>`;
   }
   /**
-   * What a block's adder offers under a condition: its candidate places (cascade-places.ts), named
-   * the way the adder's switch and its validation name them. At Element: inline (the default), each
-   * class, a new class; under a size or a state every family reaching the element too, those with a
-   * rule under a state first, then a new class of the element's own.
+   * What an element adder offers under a condition, for the property being added: the ladder's
+   * places (cascade-places.ts), strongest first, the default pick (inline at Element, the
+   * element's own class under a condition) and what a value at each would do.
    */
-  #adderDestinations(el: HTMLElement, model: ElementModel, cond: PlaceCondition): AdderDestination[] {
-    const short = slotName(model, cond.media);
-    const atElement = cond.media === 'base' && !cond.state;
-    const places = candidatePlaces(model, cond, el, { ownedClass: (name) => this.editor.classes.get(name) ?? null });
-    const ordered = cond.state
-      ? [...places.filter((one) => one.family !== null && one.target), ...places.filter((one) => one.family === null || !one.target)]
-      : places;
-    return ordered.map((place) => {
-      if (place.key === 'inline') {
-        return stylesDestination('inline style', 'this element only, every size', place.dest, place.existing, 'this element', { impact: 1 });
-      }
-      if (place.family === null) {
-        const label = `a new class${cond.state}${short ? ` ${short}` : ''}`;
-        return stylesDestination(label, 'this element only', place.dest, {}, label, { media: place.media, impact: 1 });
-      }
-      const label = `${place.label}${short ? ` ${short}` : ''}`;
-      return stylesDestination(
-        label,
-        atElement ? `${reachText(place.reach)}, every size` : reachText(place.reach),
-        place.dest,
-        place.existing,
-        label,
-        atElement ? { impact: place.reach } : { short: place.family, name: place.label, media: place.media, impact: place.reach },
-      );
-    });
+  #adderPlaces(el: HTMLElement, model: ElementModel, cond: PlaceCondition): (property: string) => AdderPlaces {
+    const ownedClass = (name: string) => this.editor.classes.get(name) ?? null;
+    return (property) => {
+      const list = placesFor(model, property, cond, el, { ownedClass });
+      return {
+        list,
+        inactive: inactivePlaces(model, property, cond),
+        owner: ownerOf(property),
+        fallback: defaultPlace(model, el, cond, list).key,
+        outcome: (place, important) => placeOutcome(model, property, cond, place, important),
+      };
+    };
   }
 
   /**

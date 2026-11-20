@@ -342,9 +342,8 @@
         const pickedOf = async (property) => {
           await openDot('effective', property);
           const key = checkedRung()?.dataset.place ?? '';
-          const list = fieldIn('effective', property)?.shadowRoot?.querySelector('.list-head');
           await closePop();
-          return { key, list: Boolean(list) };
+          return { key };
         };
         const padPicked = await pickedOf('padding');
         const bgPicked = await pickedOf('background-color');
@@ -353,7 +352,7 @@
           padPicked.key === `.card|${below768 ? 'phone' : 'tablet'}` &&
           bgPicked.key === '.card.featured|base' &&
           sizePicked.key === 'inline' &&
-          !padPicked.list && !root().querySelector('.prow .under, .prow .where, .dest-line');
+          !root().querySelector('.prow .under, .prow .where, .dest-line');
         /* ---- the dot ---- */
         const dotsLabel = (row) => row?.querySelector('.dots')?.getAttribute('aria-label') ?? '';
         const allRows = Array.from(root().querySelectorAll('.row[data-heo-part="row"]'));
@@ -914,7 +913,19 @@
         await settle();
         const sizeAdder = sizeGroup(otherSlot)?.querySelector('.property-adder');
         const namesFirst = sizeAdder?.dataset.step === 'name' && Boolean(sizeAdder?.querySelector('heo-value-field.name-field'));
-        sizeAdder?.querySelector('.cancel')?.click();
+        {
+          const input = sizeAdder?.querySelector('heo-value-field.name-field')?.shadowRoot?.querySelector('input');
+          if (input) {
+            input.value = 'outline-offset';
+            input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+            await settle();
+            input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, composed: true, cancelable: true }));
+            await settle();
+          }
+        }
+        const sizeAdderNow = () => sizeGroup(otherSlot)?.querySelector('.property-adder');
+        const sizeRungs = Array.from(sizeAdderNow()?.querySelectorAll('.ladder > [data-place]') ?? []).map((one) => one.dataset.place);
+        sizeAdderNow()?.querySelector('.cancel')?.click();
         await settle();
         await pickSize(nowSlot);
         const nowNote = sizeGroup(nowSlot)?.querySelector('.note')?.textContent.trim();
@@ -928,6 +939,11 @@
           saysInEffectOrNot: otherNote === `not at ${innerWidth}px` && nowNote === `in effect at ${innerWidth}px`,
           hasItsOwnAddProperty:
             Boolean(sizeAdderButton) && namesFirst,
+          // Its value step is the ladder at that size: no inline rung (a size cannot be inline), the
+          // element's classes at that size, and its own new class last.
+          itsValueStepIsTheLadderAtThatSize:
+            sizeRungs.length > 2 && !sizeRungs.includes('inline') &&
+            sizeRungs.includes(`.featured|${otherSlot}`) && sizeRungs.at(-1) === `new-class|${otherSlot}`,
         };
 
         const failed = Object.entries(results)

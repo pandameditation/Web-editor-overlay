@@ -609,20 +609,6 @@ export class HeoValueField extends LitElement {
         font-size: 10px;
       }
 
-      /* A host's control at the head of the list (the Effective styles destination switch). */
-      .list-head {
-        display: grid;
-        gap: 5px;
-        margin: 0 0 4px;
-        padding: 4px 4px 7px;
-        border-bottom: 1px solid var(--heo-line);
-      }
-      .list-head .explain {
-        margin: 0 2px;
-        color: var(--heo-text-dim);
-        font-size: 10.5px;
-        line-height: 1.4;
-      }
       .group {
         padding: 6px 8px 3px;
         color: var(--heo-text-faint);
@@ -834,14 +820,8 @@ export class HeoValueField extends LitElement {
   /** The tag's title when it is text: where the `!important` lives and how to change it. */
   @property({ type: String, reflect: true, attribute: 'important-title' }) importantTitle = '';
   /**
-   * A host's control drawn at the head of the list, above the values: where Effective styles says
-   * where the value goes. Pressing it keeps the caret in the field, and Alt+Left/Right ask the host
-   * to step it (`head-step`), so the choice is reachable without leaving the value being typed.
-   */
-  @property({ attribute: false }) head: TemplateResult | null = null;
-  /**
    * The list's least width. The Styles panel's rows ask for 280: their lists were that wide while
-   * the destination switch sat at their head, and the value grid, the list's placement and its
+   * a destination switch sat at their head, and the value grid, the list's placement and its
    * measured room are tuned to it. Without it, the rows' lists fell to 200 and lost a column.
    */
   @property({ type: Number, attribute: 'list-min-width' }) listMinWidth = 200;
@@ -1631,7 +1611,6 @@ export class HeoValueField extends LitElement {
 
   /** True when there is a list worth showing, i.e. when opening it does something. */
   get #canOpen(): boolean {
-    if (this.head) return true;
     if (this.fixedUnit) return this.suggestions.length > 0;
     return (
       this.suggestions.length > 0 || this.isNumeric || this.#computedSuggestion().length > 0
@@ -2227,7 +2206,6 @@ export class HeoValueField extends LitElement {
         style=${this.inlineList ? '' : this.popupStyle}
         role="listbox"
       >
-        ${this.#renderHead()}
         ${this.action && this.createLabel
           ? html`<div class="none create">
               ${typed ? html`<p>Nothing matches <strong>${typed}</strong>.</p>` : nothing}
@@ -2268,7 +2246,6 @@ export class HeoValueField extends LitElement {
       style=${this.inlineList ? '' : this.popupStyle}
       role="listbox"
     >
-      ${this.#renderHead()}
       ${repeat(
       groups,
       (group) => group.name,
@@ -2358,11 +2335,6 @@ export class HeoValueField extends LitElement {
     </div>`;
   }
 
-  /** The host's head control, pressed without taking the caret out of the field. */
-  #renderHead(): TemplateResult | typeof nothing {
-    if (!this.head) return nothing;
-    return html`<div class="list-head" @pointerdown=${(event: Event) => event.preventDefault()}>${this.head}</div>`;
-  }
 
   /* ---------------------------------------------------------------------- */
   /* Interaction                                                            */
@@ -2424,7 +2396,7 @@ export class HeoValueField extends LitElement {
   }
 
   #onFocus(): void {
-    if (this.filtered.length || this.head) this.#openPopup();
+    if (this.filtered.length) this.#openPopup();
   }
 
   /**
@@ -2546,17 +2518,6 @@ export class HeoValueField extends LitElement {
   #onKeyDown(event: KeyboardEvent): void {
     const items = this.filtered;
 
-    // The head's control, stepped from the field: the caret stays where it is.
-    if (this.head && event.altKey && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
-      event.preventDefault();
-      if (!this.open) this.#openPopup();
-      this.dispatchEvent(new CustomEvent('head-step', {
-        detail: { delta: event.key === 'ArrowLeft' ? -1 : 1 },
-        bubbles: true,
-        composed: true,
-      }));
-      return;
-    }
 
     if (event.key === 'Escape') {
       /*
@@ -2742,8 +2703,7 @@ export class HeoValueField extends LitElement {
     const style = this.#placer.style(this.renderRoot.querySelector<HTMLElement>('.popup'), {
       anchor: this.getBoundingClientRect(),
       // A composer is wider than a list: three labelled rows each holding a field of their own.
-      // A head (the destination switch) needs room for its choices on one or two lines.
-      minWidth: this.shadowing ? 320 : this.picking ? 268 : this.composer ? 296 : this.head ? 280 : this.listMinWidth,
+      minWidth: this.shadowing ? 320 : this.picking ? 268 : this.composer ? 296 : this.listMinWidth,
     });
     if (style !== null) this.popupStyle = style;
     // A dialog takes this placement as its own once it has drawn at it, and stays there.

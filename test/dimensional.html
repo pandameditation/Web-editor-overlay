@@ -627,12 +627,26 @@
         await panel.updateComplete;
         await frames();
         await wait(150);
-        const adder = panel.shadowRoot.querySelector('.property-adder[data-adder="effective"]');
-        results.placement.addPopupFitsOnScreen = adder
-          ? onScreen(adder.getBoundingClientRect())
+        const adderNow = () => panel.shadowRoot.querySelector('.property-adder[data-adder="effective"]');
+        results.placement.addPopupFitsOnScreen = adderNow()
+          ? onScreen(adderNow().getBoundingClientRect())
           : null;
+        // Named, so the value step is open: its ✓ sits in the ladder's picked rung, by the field.
+        {
+          const nameInput = adderNow()?.querySelector('heo-value-field.name-field')?.shadowRoot?.querySelector('input[type="text"]');
+          if (nameInput) {
+            nameInput.value = 'opacity';
+            nameInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+            await panel.updateComplete;
+            nameInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, composed: true, cancelable: true }));
+            await panel.updateComplete;
+            await frames();
+            await wait(150);
+          }
+        }
+        const adder = adderNow();
         results.placement.addPopupFooterIsReachable = (() => {
-          const confirm = adder?.querySelector('.confirm');
+          const confirm = adder?.querySelector('button.confirm');
           return confirm ? onScreen(confirm.getBoundingClientRect()) : null;
         })();
         adder?.querySelector('.cancel')?.click();

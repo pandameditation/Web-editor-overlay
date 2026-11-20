@@ -245,6 +245,20 @@
           const row = dialog()?.shadowRoot.querySelector('heo-value-field[data-property="color"]');
           return Boolean(row) && Boolean(focused) && row.shadowRoot.contains(focused);
         })(),
+        /*
+         * The one adder everywhere: a class has one place to write, so its value step is the row
+         * (name · value · ✓ · trash) with no ladder, and ✓ waits for a value as it does in Styles.
+         */
+        aSingleDestinationAdderHasConfirmAndNoLadder: (() => {
+          const adder = dialog()?.shadowRoot.querySelector('.property-adder');
+          const tick = adder?.querySelector('button.confirm');
+          const field = adder?.querySelector('heo-value-field[data-property="color"]');
+          if (!tick || !field) return false;
+          const a = tick.getBoundingClientRect();
+          const b = field.getBoundingClientRect();
+          return !adder.querySelector('.ladder, [role="radiogroup"]') && tick.disabled === true &&
+            Math.abs((a.top + a.height / 2) - (b.top + b.height / 2)) < 4 && a.left >= b.right - 1;
+        })(),
       };
 
       // Typed, not blurred: this is a value the user is still in the middle of when they reach

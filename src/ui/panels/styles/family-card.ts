@@ -24,7 +24,7 @@ import {
   renderFamilies,
   type DeclarationTarget,
 } from '../class-editor.js';
-import { renderAdder, stylesDestination, valueStepDraft, type AdderDestination } from './property-adder.js';
+import { renderAdder, stylesDestination, valueStepDraft, type AdderDestination, type AdderPlaces } from './property-adder.js';
 import { bestRow, renderSearchField, renderSearchPopover } from './search-popover.js';
 import { pseudoElementSuggestions } from '../../suggestions.js';
 import type { HeoValueField } from '../../controls/value-field.js';
@@ -172,8 +172,9 @@ export function renderBlockHeader(
   </div>`;
 }
 /**
- * "+ Add property" under a block, with the places it can write. One open at a time, through the
- * panel's state; hidden while searching (R8).
+ * "+ Add property" under a block: its one destination, or (`places`) the cascade ladder of every
+ * place the property can go. One open at a time, through the panel's state; hidden while
+ * searching (R8).
  */
 export function renderBlockAdder(
   host: StylesHost,
@@ -183,8 +184,8 @@ export function renderBlockAdder(
   options: {
     /** After a property is written, with the engine's note when there is one; else it is notified. */
     onAdded?: (hint: string | null) => void;
-    /** Effective styles: the value's list offers the destinations as a switch. */
-    choose?: boolean;
+    /** The element's adders: the value step is the ladder of these places (`destinations` empty). */
+    places?: (property: string) => AdderPlaces;
   } = {},
 ): TemplateResult | typeof nothing {
   if (host.filtering) return nothing;
@@ -199,7 +200,12 @@ export function renderBlockAdder(
       selected: open?.dest,
       disclosure: true,
       open: Boolean(open),
-      choose: options.choose,
+      places: options.places,
+      important: Boolean(open?.important),
+      onImportant: (next) => {
+        const adder = host.ui.adder;
+        if (adder) host.patch({ adder: { ...adder, important: next } });
+      },
       onOpen: () => {
         host.form.reset();
         host.patch({ adder: { id, draft: '', dest: '' }, menu: null, popover: null });

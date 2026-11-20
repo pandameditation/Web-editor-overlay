@@ -13,6 +13,7 @@ import {
 } from '../panels/class-editor.js';
 import { RuleEditor, type RuleEditorHost } from '../panels/rule-editor.js';
 import type { HeoValueField } from '../controls/value-field.js';
+import { flushAdderField } from '../panels/styles/property-adder.js';
 import { FormErrors } from '../form-errors.js';
 
 /**
@@ -427,8 +428,9 @@ export class HeoStyleDialog extends HeoElement {
    * mean what it says.
    */
   #close(): void {
+    // The adder's value waits for ✓ or Enter; Done is that confirmation for a value typed there.
     for (const field of this.renderRoot.querySelectorAll<HeoValueField>('heo-value-field')) {
-      field.commitNow();
+      flushAdderField(field);
     }
     this.editor.closeStyleEditor();
   }
