@@ -19,6 +19,7 @@ import { maybeEngine } from '../context.js';
 import { namesAFont } from '../../core/tokens.js';
 import './font-editor.js';
 import { icon } from '../icons.js';
+import { killStyles, renderKill } from '../kill.js';
 import { baseStyles } from '../theme.js';
 
 const WEB_FONTS_KEY = 'heo:web-font-previews';
@@ -92,6 +93,7 @@ function fontTokens(): Array<{ name: string; value: string }> {
 export class HeoFontPicker extends LitElement {
   static override styles = [
     baseStyles,
+    killStyles,
     css`
       :host {
         position: relative;
@@ -198,19 +200,11 @@ export class HeoFontPicker extends LitElement {
       .vf .chev[aria-expanded='true'] {
         rotate: 180deg;
       }
+      /* The trash every other row removes with (kill.ts), level with the slot's field. */
       .slot .x {
         display: grid;
         place-items: center;
-        width: 20px;
         height: 30px;
-        padding: 0;
-        border: 0;
-        background: transparent;
-        color: var(--heo-text-faint);
-        cursor: pointer;
-      }
-      .slot .x:hover {
-        color: var(--heo-danger);
       }
       .then {
         padding-left: 26px;
@@ -941,7 +935,7 @@ export class HeoFontPicker extends LitElement {
           ${selected && this.listOpen ? this.#renderList(family) : nothing}
         </div>
         ${at > 0
-          ? html`<button class="x" type="button" aria-label=${`Remove ${label || 'this fallback'}`} title=${`Remove ${label || 'this fallback'}`} @click=${() => this.#removeSlot(at)}>${icon('close', 10)}</button>`
+          ? html`<span class="x">${renderKill({ label: `Remove ${label || 'this fallback'}`, tight: true, onClick: () => this.#removeSlot(at) })}</span>`
           : html`<span></span>`}
       </div>`;
   }
