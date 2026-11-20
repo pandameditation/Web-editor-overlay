@@ -37,6 +37,11 @@ export interface MenuItem {
   icon?: string;
   /** For a choice among items: rendered as a radio with a tick. */
   checked?: boolean;
+  /**
+   * 'check' for an on/off item beside the choices (the viewport menu's "Fit wider sizes"): a
+   * menuitemcheckbox, so it is not announced as one more option of the radio group.
+   */
+  kind?: 'check';
   title?: string;
   disabled?: boolean;
   onSelect(): void;
@@ -56,7 +61,7 @@ export interface MenuSpec {
 }
 
 export function renderMenu(spec: MenuSpec): TemplateResult {
-  const radio = spec.groups.some((group) => group.items.some((item) => item.checked !== undefined));
+  const radio = spec.groups.some((group) => group.items.some((item) => item.checked !== undefined && item.kind !== 'check'));
   return html`<div
     class="menu"
     role="menu"
@@ -76,11 +81,13 @@ export function renderMenu(spec: MenuSpec): TemplateResult {
 }
 
 function renderItem(item: MenuItem, radio: boolean): TemplateResult {
+  const check = item.kind === 'check';
+  const ticks = radio || check;
   return html`<button
             class="mi"
             type="button"
-            role=${radio ? 'menuitemradio' : 'menuitem'}
-            aria-checked=${radio ? (item.checked ? 'true' : 'false') : nothing}
+            role=${check ? 'menuitemcheckbox' : radio ? 'menuitemradio' : 'menuitem'}
+            aria-checked=${ticks ? (item.checked ? 'true' : 'false') : nothing}
             title=${item.title ?? nothing}
             ?disabled=${Boolean(item.disabled)}
             data-key=${item.key}
@@ -88,7 +95,7 @@ function renderItem(item: MenuItem, radio: boolean): TemplateResult {
             @click=${() => item.onSelect()}
           >
             <span class="l">
-              ${radio ? html`<span class="tick">${item.checked ? icon('check', 11) : nothing}</span>` : nothing}
+              ${ticks ? html`<span class="tick">${item.checked ? icon('check', 11) : nothing}</span>` : nothing}
               ${item.icon ? icon(item.icon, 12) : nothing}
               <span class="lbl">${item.label}</span>
             </span>

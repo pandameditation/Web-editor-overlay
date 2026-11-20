@@ -50,7 +50,6 @@ import {
 } from './styles/family-card.js';
 import { renderCascadePopover, popoverStyles } from './styles/cascade-popover.js';
 import { headerStyles, renderElementHeader } from './styles/header.js';
-import { previewBarStyles, renderPreviewBar } from './styles/preview-bar.js';
 import { CREATE_CLASS_TITLE, createClassLabel } from '../create-offer.js';
 import {
   barConditions,
@@ -449,7 +448,6 @@ export class HeoStylesPanel extends HeoElement {
     popoverStyles,
     menuStyles,
     headerStyles,
-    previewBarStyles,
     sizeStripStyles,
     searchPopoverStyles,
     sourcesStyles,
@@ -1041,11 +1039,9 @@ export class HeoStylesPanel extends HeoElement {
   }
   override render(): TemplateResult {
     const el = this.editor.selected;
-    // The preview bar comes first and works with or without a selection: the width is the page's.
-    const bar = this.#renderPreviewBar(el && el.isConnected ? el : null);
+    // The preview size is the toolbar's now: the width is the page's, not the element's.
     if (!el || !el.isConnected) {
-      return html`${bar}
-      <div class="empty">
+      return html`<div class="empty">
         Select an element on the page to edit its styles.<br />
         Arrow keys move the selection once something is selected.
       </div>`;
@@ -1063,7 +1059,6 @@ export class HeoStylesPanel extends HeoElement {
       : el;
 
     return html`
-      ${bar}
       ${renderElementHeader({
       element: el,
       reach: (key) => model.reach(key),
@@ -1579,9 +1574,8 @@ export class HeoStylesPanel extends HeoElement {
   #toggleMenu(id: string, open: boolean, refocus = true): void {
     this.mediaForm.reset();
     this.#patch({ menu: open ? { id } : null, popover: null, mediaDraft: null });
-    // A dialog of fields (the viewport sizes, a search popover) is focused at its first; a menu at
-    // its first item.
-    const inside = id === 'preview' ? 'heo-viewport-sizes' : ':is(heo-value-field, .mi)';
+    // A search popover is focused at its field; a menu at its first item.
+    const inside = ':is(heo-value-field, .mi)';
     if (open || refocus) this.#focusSelector(
       open ? `.menu[data-menu="${CSS.escape(id)}"] ${inside}` : `[data-menu-anchor="${CSS.escape(id)}"]`,
       open,
@@ -2264,18 +2258,6 @@ export class HeoStylesPanel extends HeoElement {
     return name ? { context: 'class', element: el, className: name } : fallback;
   }
 
-  /** The preview bar: the page's width, set with or without a selected element. */
-  #renderPreviewBar(el: HTMLElement | null): TemplateResult {
-    return renderPreviewBar({
-      engine: this.editor,
-      previewWidth: this.editor.store.value.previewWidth,
-      viewports: this.editor.viewports(),
-      menuOpen: this.ui.menu?.id === 'preview',
-      onMenu: (open) => this.#toggleMenu('preview', open),
-      onLayout: () => this.#placeLayers(),
-      inShadowRoot: el !== null && el.getRootNode() instanceof ShadowRoot,
-    });
-  }
 
   /** The header's "find or create a class" field: today's finder, with its form and suggestions. */
   #renderFinder(el: HTMLElement): TemplateResult {

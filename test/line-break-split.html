@@ -244,9 +244,12 @@
 
       /* ---- Settings, renamed from "AI settings", holds the same switch. ---- */
       await check('theSettingsDialogHoldsTheSwitch', async () => {
-        const toolbarButton = Array.from(
-          overlay()?.querySelector('heo-toolbar')?.shadowRoot?.querySelectorAll('button') ?? [],
-        ).find((b) => b.getAttribute('aria-label') === 'Settings');
+        // Settings… in the toolbar's H menu.
+        const bar = () => overlay()?.querySelector('heo-toolbar')?.shadowRoot;
+        bar()?.querySelector('button[aria-label="HEO menu"]')?.click();
+        await frames();
+        const toolbarButton = Array.from(bar()?.querySelectorAll('.menu[data-menu="heo"] [role="menuitem"]') ?? [])
+          .find((item) => item.textContent.trim() === 'Settings…');
         toolbarButton?.click();
         await frames();
         const dialog = overlay()?.querySelector('heo-ai-settings')?.shadowRoot;

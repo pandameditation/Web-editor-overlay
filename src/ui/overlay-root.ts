@@ -19,6 +19,7 @@ import './chrome/save-dialog.js';
 import './chrome/code-workspace.js';
 import './chrome/extract-dialog.js';
 import './chrome/confirm-dialog.js';
+import './chrome/shortcuts-dialog.js';
 import './chrome/paste-dialog.js';
 import './chrome/capture-paste-dialog.js';
 import './chrome/css-paste-dialog.js';
@@ -160,6 +161,7 @@ export class HeoOverlay extends HeoElement {
         confirmation, so its own "Remove this provider?" appeared underneath it.
       -->
       ${state.aiSettingsOpen ? html`<heo-ai-settings></heo-ai-settings>` : nothing}
+      ${state.shortcutsOpen ? html`<heo-shortcuts-dialog></heo-shortcuts-dialog>` : nothing}
       ${state.codeWorkspace ? html`<heo-code-workspace></heo-code-workspace>` : nothing}
       <!--
         Above every other dialog, because it is asked *from* them: the library panel sits

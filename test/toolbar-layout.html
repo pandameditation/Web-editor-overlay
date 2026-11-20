@@ -40,6 +40,12 @@
       await engine.whenReady();
       await frames();
       const state = () => engine.store.value;
+      // The bar as it first placed itself, before any group moves it or changes what it shows.
+      const firstBar = (() => {
+        const host = document.querySelector('html-editor-overlay > heo-overlay')?.shadowRoot?.querySelector('heo-toolbar') ?? null;
+        const box = host?.getBoundingClientRect();
+        return box ? { left: box.left, top: box.top, width: box.width, stored: engine.store.value.toolbar } : null;
+      })();
 
       // Walks every open shadow root, so a test never depends on how deep a control is nested.
       const deepAll = (selector, root = document) => {
@@ -187,12 +193,371 @@
         })(),
       };
 
+
+      /* ---------------------------------------------------------------- *
+       * The toolbar: shared helpers. Re-queried every time, as the bar re-renders on every change.
+       * ---------------------------------------------------------------- */
+      const bar = () => deepAll('heo-toolbar')[0] ?? null;
+      const tb = () => bar()?.shadowRoot ?? null;
+      const inBar = (selector) => tb()?.querySelector(selector) ?? null;
+      const barButtons = () => Array.from(tb()?.querySelectorAll('.bar button') ?? []);
+      const layer = (id) => inBar(`.menu[data-menu="${id}"]`);
+      const isOpen = (id) => layer(id)?.matches(':popover-open') === true;
+      const centre = (el) => {
+        const box = rect(el);
+        return { x: Math.round(box.left + box.width / 2), y: Math.round(box.top + box.height / 2) };
+      };
+      const click = (point) => trusted({
+        mouse: [
+          { type: 'hover', x: point.x, y: point.y },
+          { type: 'down', x: point.x, y: point.y },
+          { type: 'up', x: point.x, y: point.y },
+        ],
+      });
+      const deepFocus = () => {
+        let a = document.activeElement;
+        while (a?.shadowRoot?.activeElement) a = a.shadowRoot.activeElement;
+        return a;
+      };
+      const tipOf = (el) => {
+        const id = el?.getAttribute('aria-describedby');
+        return id ? tb().getElementById(id) : null;
+      };
+      // The tip's parts as a reader meets them: the text, each key, the line under it.
+      const tipText = (el) => Array.from(tipOf(el)?.querySelectorAll('b, kbd, .s') ?? [])
+        .map((part) => part.textContent.trim()).join(' ');
+      const closeLayers = async () => {
+        for (const id of ['heo', 'viewport', 'sizes']) {
+          if (layer(id)) {
+            layer(id).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true, cancelable: true }));
+          }
+        }
+        await frames();
+      };
+
+      /* ---------------------------------------------------------------- *
+       * Anchoring. First, before anything moves the bar: where it places itself.
+       * ---------------------------------------------------------------- */
+      progress.textContent = 'anchoring';
+      await reset();
+      await frames();
+      diagnostics.firstBar = firstBar;
+      const firstBox = rect(bar());
+      // Centred on the window at its editing width, at 14px, and not written to the store: only a
+      // drag writes the place. The old default (24, 24) sat on top of the page panel.
+      const firstPlacement = Boolean(firstBar) && firstBar.stored === null && state().toolbar === null &&
+        Math.abs(firstBar.left - Math.max(8, (innerWidth - firstBar.width) / 2)) <= 1 &&
+        Math.round(firstBar.top) === 14 && Math.round(firstBox.left) === Math.round(firstBar.left);
+      // Edit off and on again: the handle stays, the bar grows to the right.
+      api.setEditing(false);
+      await frames();
+      const offBox = rect(bar());
+      const offHandle = rect(inBar('.handle'));
+      api.setEditing(true);
+      await frames();
+      const onBox = rect(bar());
+      const onHandle = rect(inBar('.handle'));
+      const growsRight = Math.round(offHandle.left) === Math.round(onHandle.left) &&
+        Math.round(offBox.left) === Math.round(onBox.left) && onBox.right > offBox.right + 200;
+      // Panels opening, closing and switching tab do not move the bar.
+      const boxNow = () => JSON.stringify([Math.round(rect(bar()).left), Math.round(rect(bar()).top)]);
+      const beforePanels = boxNow();
+      engine.setPanelOpen('page', false);
+      await frames();
+      const afterPageClosed = boxNow();
+      engine.setPanelOpen('selection', false);
+      await frames();
+      const afterBothClosed = boxNow();
+      engine.setDockTab('library');
+      engine.setDockTab('props');
+      await frames();
+      const panelsStill = [afterPageClosed, afterBothClosed, boxNow()].every((one) => one === beforePanels);
+      // A place the window is now too narrow for (put there in a wider one): shown inside the
+      // window, the place itself kept for when there is room again.
+      const farX = innerWidth - 200;
+      engine.setToolbarPosition(farX, 14);
+      await frames();
+      const narrowOn = rect(bar());
+      const clampedOn = Math.round(narrowOn.right) <= innerWidth - 8 && Math.round(narrowOn.left) < farX;
+      window.dispatchEvent(new Event('resize'));
+      await frames();
+      const resizeKeptX = state().toolbar?.x === farX;
+      api.setEditing(false);
+      await frames();
+      const narrowOff = rect(bar());
+      const roomAgain = Math.round(narrowOff.left) === farX;
+      api.setEditing(true);
+      await frames();
+      results.anchoring = {
+        theBarCentresItselfFirstAndTheStoreStaysEmpty: firstPlacement,
+        editOnGrowsToTheRightAndTheHandleStays: growsRight,
+        openingPanelsDoesNotMoveTheBar: panelsStill,
+        aNarrowWindowKeepsTheBarOnScreenWithoutForgettingX: clampedOn && resizeKeptX && roomAgain &&
+          state().toolbar?.x === farX && Math.round(rect(bar()).left) === Math.round(narrowOn.left),
+      };
+      engine.setToolbarPosition(Math.round(firstBox.left), 14);
+      await reset();
+
+      /* ---------------------------------------------------------------- *
+       * The order of the bar, the panel switches and the pin.
+       * ---------------------------------------------------------------- */
+      progress.textContent = 'order';
+      const ORDER = [
+        '.handle .grip', 'button[aria-label="HEO menu"]', 'button.toggle', '.selection',
+        '[data-menu-anchor="viewport"]', '[data-menu-anchor="sizes"]',
+        'button[aria-label="Undo"]', 'button[aria-label="Redo"]', 'button.btn.primary',
+        'button[aria-label="Page panel"]', 'button[aria-label="Selection panel"]',
+        'button[aria-label="Pin the toolbar and panels to the edges"]',
+      ];
+      const ordered = ORDER.map((selector) => inBar(selector));
+      const inOrder = ordered.every(Boolean) && ordered.every((el, i) =>
+        i === 0 || (ordered[i - 1].compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING &&
+          rect(el).left >= rect(ordered[i - 1]).right - 1));
+      diagnostics.missingInTheBar = ORDER.filter((selector, i) => !ordered[i]);
+      const TAB_NAMES = ['Layers', 'Blocks', 'Tokens', 'SEO', 'Styles', 'Props', 'Media', 'Code', 'Settings'];
+      const noTabs = !inBar('.tabs') && !barButtons().some((b) => TAB_NAMES.includes(b.getAttribute('aria-label'))) &&
+        !barButtons().some((b) => b.hasAttribute('title'));
+      api.setEditing(false);
+      await frames();
+      const offButtons = barButtons().map((b) => b.getAttribute('aria-label'));
+      const offOnly = offButtons.join() === 'HEO menu,Edit' && Boolean(inBar('.handle .grip'));
+      api.setEditing(true);
+      await frames();
+      const lastThree = barButtons().slice(-3).map((b) => b.getAttribute('aria-label'));
+      // Both open after reset: pressed. Each switch shows or hides its side alone.
+      const pageToggle = () => inBar('button[aria-label="Page panel"]');
+      const selToggle = () => inBar('button[aria-label="Selection panel"]');
+      const pressedAtStart = pageToggle().getAttribute('aria-pressed') === 'true' && selToggle().getAttribute('aria-pressed') === 'true';
+      const pageTipWhenOpen = tipText(pageToggle());
+      pageToggle().click();
+      await frames();
+      const pageHidden = !state().pageOpen && state().dockOpen && pageToggle().getAttribute('aria-pressed') === 'false' &&
+        selToggle().getAttribute('aria-pressed') === 'true' && !dock('page');
+      const pageTipWhenClosed = tipText(pageToggle());
+      selToggle().click();
+      await frames();
+      const selHidden = !state().dockOpen && selToggle().getAttribute('aria-pressed') === 'false' && !dock('selection');
+      pageToggle().click();
+      selToggle().click();
+      await frames();
+      const bothBack = state().pageOpen && state().dockOpen && state().pageTab === 'tree' && state().dockTab === 'styles';
+      const pin = () => inBar('button[aria-label="Pin the toolbar and panels to the edges"]');
+      const pinFloatTip = tipText(pin());
+      const pinUnpressed = pin().getAttribute('aria-pressed') === 'false';
+      pin().click();
+      await frames();
+      const pinDocked = state().layout === 'dock' && pin().getAttribute('aria-pressed') === 'true';
+      const pinDockTip = tipText(pin());
+      pin().click();
+      await frames();
+      results.order = {
+        toolbarControlsInTheAgreedOrder: inOrder,
+        noTabButtonsAndNoSettingsInTheBar: noTabs,
+        editOffShowsOnlyTheHandleAndEdit: offOnly,
+        bothTogglesSitJustBeforeThePin: lastThree.join() === 'Page panel,Selection panel,Pin the toolbar and panels to the edges' &&
+          pageToggle().closest('.panels') === selToggle().closest('.panels') &&
+          selToggle().closest('.panels')?.nextElementSibling === pin(),
+        togglesCarryAriaPressed: pressedAtStart && pageHidden && selHidden && bothBack,
+        // The tabs and their keys are on the switch's tip: the bar has no tab buttons any more.
+        panelSwitchTipsNameTheTabsAndKeys:
+          /^Hide the page panel Layers E · Blocks B · Tokens T · SEO O$/.test(pageTipWhenOpen) &&
+          /^Show the page panel/.test(pageTipWhenClosed) &&
+          /Styles S · Props P · Media M · Code C$/.test(tipText(selToggle())),
+        pinTogglesTheLayout: pinUnpressed && pinDocked && state().layout === 'float' && pin().getAttribute('aria-pressed') === 'false',
+        pinTipNamesBothStatesAndD: /^Floating over the page D /.test(pinFloatTip) && /^Docked to the edges D /.test(pinDockTip),
+      };
+      diagnostics.tips = { pageTipWhenOpen, pageTipWhenClosed, pinFloatTip, pinDockTip };
+
+      /* ---------------------------------------------------------------- *
+       * The handle: the grip and H are one control. Click opens the menu, drag moves the bar.
+       * ---------------------------------------------------------------- */
+      progress.textContent = 'handle';
+      await reset();
+      engine.setPanelOpen('page', false);
+      engine.setPanelOpen('selection', false);
+      await frames();
+      const hButton = () => inBar('button[aria-label="HEO menu"]');
+      const grip = () => inBar('.handle .grip');
+      await click(centre(grip()));
+      const gripOpens = isOpen('heo') && hButton().getAttribute('aria-expanded') === 'true';
+      await click(centre(grip()));
+      const gripCloses = !layer('heo') && hButton().getAttribute('aria-expanded') === 'false';
+      // A mouse click on H counts once: the press is the handle's, the button's own click is skipped.
+      await click(centre(hButton()));
+      const hOpens = isOpen('heo');
+      const items = () => Array.from(layer('heo')?.querySelectorAll('.mi') ?? []);
+      const itemNames = items().map((item) => item.querySelector('.lbl')?.textContent.trim());
+      const menuShape = itemNames.join('|') === 'Settings…|Keyboard shortcuts|Leave edit mode' &&
+        items().every((item) => item.getAttribute('role') === 'menuitem') &&
+        layer('heo')?.getAttribute('role') === 'menu' && Boolean(layer('heo')?.querySelector('hr')) &&
+        /⌘E|CtrlE/.test(items()[2]?.querySelector('small')?.textContent ?? '');
+      // A press anywhere else closes it.
+      await click({ x: Math.round(innerWidth / 2), y: innerHeight - 30 });
+      const outsideCloses = !layer('heo');
+      // A drag from the grip moves the bar and opens nothing; from H too, and it closes an open menu.
+      const startStore = state().toolbar;
+      const barAt = rect(bar());
+      let at = centre(grip());
+      await drag(at, { x: at.x + 60, y: at.y + 30 });
+      const barMoved = state().toolbar;
+      const dragMoves = barMoved?.x === Math.round(barAt.left) + 60 && barMoved?.y === Math.round(barAt.top) + 30 &&
+        !layer('heo') && !bar().hasAttribute('data-dragging');
+      // A wobble under the slop is still a click.
+      at = centre(grip());
+      await trusted({ mouse: [
+        { type: 'hover', x: at.x, y: at.y }, { type: 'down', x: at.x, y: at.y },
+        { type: 'move', x: at.x + 3, y: at.y }, { type: 'up', x: at.x + 3, y: at.y },
+      ] });
+      const wobbleOpens = isOpen('heo') && state().toolbar?.x === barMoved?.x;
+      at = centre(hButton());
+      await drag(at, { x: at.x - 40, y: at.y - 20 });
+      const dragClosed = !layer('heo') && state().toolbar?.x === barMoved.x - 40 && state().toolbar?.y === barMoved.y - 20;
+      // The keyboard: Enter on H opens it with the first item focused; Escape gives focus back.
+      hButton().focus();
+      await trusted({ keys: ['Enter'] });
+      await frames();
+      // And not also the page's Enter, which starts editing the selected element's text.
+      const enterOpens = isOpen('heo') && deepFocus()?.querySelector('.lbl')?.textContent.trim() === 'Settings…' && !state().textEditing;
+      await trusted({ keys: ['Escape'] });
+      await frames();
+      const escapeBack = !layer('heo') && deepFocus() === hButton();
+      // Settings… opens Settings on General.
+      hButton().click();
+      await frames();
+      items()[0]?.click();
+      await frames();
+      const settingsOpens = state().aiSettingsOpen && state().settingsCategory === 'general' && !layer('heo');
+      engine.setAiSettings(false);
+      await frames();
+      // Keyboard shortcuts opens the dialog: every panel key, the editing keys and D.
+      hButton().click();
+      await frames();
+      items()[1]?.click();
+      await frames();
+      await frames();
+      const dialog = () => deepAll('heo-shortcuts-dialog')[0]?.shadowRoot ?? null;
+      const keysListed = Array.from(dialog()?.querySelectorAll('kbd') ?? []).map((k) => k.textContent.trim());
+      const shortcutsShown = state().shortcutsOpen && Boolean(dialog()?.querySelector('[role="dialog"][aria-modal="true"]')) &&
+        ['E', 'B', 'T', 'O', 'S', 'P', 'M', 'C', 'D', 'Z'].every((k) => keysListed.includes(k));
+      // A letter in the dialog opens nothing and D does not pin.
+      dialog()?.querySelector('.close')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'd', bubbles: true, composed: true, cancelable: true }));
+      await frames();
+      const dIgnored = state().layout === 'float';
+      dialog()?.querySelector('.close')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true, cancelable: true }));
+      await frames();
+      const escapeClosesDialog = !state().shortcutsOpen && !dialog();
+      // Docked: no grip, no drag; H only opens the menu.
+      engine.setLayout('dock');
+      await frames();
+      const dockedNoGrip = !grip();
+      const dockedStore = JSON.stringify(state().toolbar);
+      at = centre(hButton());
+      await drag(at, { x: at.x + 80, y: at.y + 40 });
+      const dockedNoDrag = JSON.stringify(state().toolbar) === dockedStore;
+      await closeLayers();
+      await click(centre(hButton()));
+      const dockedOpens = isOpen('heo');
+      await closeLayers();
+      engine.setLayout('float');
+      await frames();
+      // Leave edit mode, from the menu.
+      hButton().click();
+      await frames();
+      items()[2]?.click();
+      await frames();
+      const leaves = !state().editing;
+      api.setEditing(true);
+      await frames();
+      results.handle = {
+        clickOnGripOpensTheMenu: gripOpens && gripCloses,
+        clickOnHOpensTheMenu: hOpens,
+        menuHasSettingsShortcutsLeave: menuShape,
+        aPressElsewhereClosesTheMenu: outsideCloses,
+        dragPastFourPxMovesAndDoesNotOpen: dragMoves,
+        aWobbleUnderFourPxIsStillAClick: wobbleOpens,
+        dragClosesAnOpenMenu: dragClosed,
+        enterOnHOpensTheMenu: enterOpens,
+        escapeClosesItAndReturnsToH: escapeBack,
+        settingsItemOpensGeneral: settingsOpens,
+        shortcutsItemOpensTheDialog: shortcutsShown,
+        theDialogKeepsLettersFromTheKeymap: dIgnored,
+        escapeClosesTheShortcutsDialog: escapeClosesDialog,
+        dockedHOnlyOpensTheMenu: dockedNoGrip && dockedNoDrag && dockedOpens,
+        leaveEditModeLeaves: leaves,
+      };
+      diagnostics.handle = { itemNames, keysListed, startStore, barMoved, barAt: barAt.toJSON() };
+
+      /* ---------------------------------------------------------------- *
+       * The preview size: a dropdown and its ⋮ in the bar, and none in the Styles panel.
+       * ---------------------------------------------------------------- */
+      progress.textContent = 'viewport';
+      await reset();
+      engine.setPreviewWidth(null);
+      await frames();
+      const vpButton = () => inBar('[data-menu-anchor="viewport"]');
+      const sizesButton = () => inBar('[data-menu-anchor="sizes"]');
+      vpButton().click();
+      await frames();
+      const radios = () => Array.from(layer('viewport')?.querySelectorAll('[role="menuitemradio"]') ?? []);
+      const shownWidths = engine.viewports().filter((one) => one.shown).map((one) => String(one.width));
+      const listsShown = isOpen('viewport') && layer('viewport')?.getAttribute('role') === 'menu' &&
+        vpButton().getAttribute('aria-expanded') === 'true' &&
+        radios().map((r) => r.dataset.key).join() === ['actual', ...shownWidths].join() &&
+        radios()[0]?.getAttribute('aria-checked') === 'true' &&
+        new RegExp(`this window, ${innerWidth}px`).test(radios()[0]?.textContent ?? '');
+      diagnostics.viewportItems = radios().map((r) => r.textContent.replace(/\s+/g, ' ').trim());
+      const fit = () => layer('viewport')?.querySelector('[data-key="fit"]');
+      const fitBefore = engine.viewport.fit;
+      const fitShape = fit()?.getAttribute('role') === 'menuitemcheckbox' && fit()?.getAttribute('aria-checked') === String(fitBefore);
+      fit()?.click();
+      await frames();
+      const fitToggles = engine.viewport.fit === !fitBefore && fit()?.getAttribute('aria-checked') === String(!fitBefore) && isOpen('viewport');
+      fit()?.click();
+      await frames();
+      const pickWidth = Number(shownWidths[1] ?? shownWidths[0]);
+      radios().find((r) => r.dataset.key === String(pickWidth))?.click();
+      await frames();
+      await frames();
+      const picked = state().previewWidth === pickWidth && !layer('viewport') &&
+        vpButton().querySelector('.vw')?.textContent.trim() === String(pickWidth) &&
+        vpButton().querySelector('.vn')?.textContent.trim() === engine.viewports().find((one) => one.width === pickWidth)?.name &&
+        deepFocus() === vpButton();
+      vpButton().click();
+      await frames();
+      radios().find((r) => r.dataset.key === 'actual')?.click();
+      await frames();
+      const backToActual = state().previewWidth === null && vpButton().querySelector('.vn')?.textContent.trim() === 'Actual';
+      // The ⋮ opens the viewport sizes editor, and only one of the two layers is open at a time.
+      vpButton().click();
+      await frames();
+      sizesButton().click();
+      await frames();
+      await frames();
+      const sizesOpen = isOpen('sizes') && layer('sizes')?.getAttribute('role') === 'dialog' &&
+        Boolean(layer('sizes')?.querySelector('heo-viewport-sizes')) && sizesButton().getAttribute('aria-expanded') === 'true' &&
+        sizesButton().getAttribute('aria-haspopup') === 'dialog' && !layer('viewport');
+      await closeLayers();
+      const sizesClosed = !layer('sizes');
+      api.select(document.getElementById('first'));
+      engine.setDockTab('styles');
+      await frames();
+      await settle(150);
+      const stylesRoot = deepAll('heo-styles-panel')[0]?.shadowRoot;
+      results.viewport = {
+        dropdownListsActualAndTheShownSizes: listsShown,
+        pickingASizePreviewsIt: picked && backToActual,
+        fitItemIsAMenuitemcheckbox: fitShape && fitToggles && engine.viewport.fit === fitBefore,
+        dotsOpenTheViewportSizesEditor: sizesOpen && sizesClosed,
+        stylesPanelHasNoPreviewBar: Boolean(stylesRoot) && !stylesRoot.querySelector('.sizes') &&
+          !stylesRoot.querySelector('heo-viewport-sizes') && !stylesRoot.querySelector('[data-menu-anchor="preview"]'),
+      };
+
       /* ---------------------------------------------------------------- *
        * Resize from the inner edge, move by the header row, and back to the edge.
        * ---------------------------------------------------------------- */
       progress.textContent = 'resize';
       await reset();
-      // Out of the way of the page panel's header, which the bar's old default corner covers.
+      // Out of the way of the panel headers, which the centred bar covers in a window this narrow.
       engine.setToolbarPosition(Math.round(innerWidth / 2) - 60, innerHeight - 60);
       await frames();
       const grabs = ['page', 'selection'].map((side) => inDock(side, '.grab'));
@@ -299,6 +664,7 @@
       await frames();
       const keep = (s) => JSON.stringify([s.pageOpen, s.pageTab, s.pageWidth, s.pageFloat, s.dockOpen, s.dockTab, s.dockWidth, s.dockFloat, s.layout]);
       const before = keep(state());
+      const barBefore = JSON.stringify(state().toolbar);
       const boxesBefore = ['page', 'selection'].map((side) => JSON.stringify(rect(dock(side)).toJSON()));
       api.setEditing(false);
       await frames();
@@ -315,6 +681,14 @@
           boxesAfter.join() === boxesBefore.join() &&
           tabs('page').find((t) => t.getAttribute('aria-selected') === 'true')?.getAttribute('aria-label') === 'Tokens' &&
           tabs('selection').find((t) => t.getAttribute('aria-selected') === 'true')?.getAttribute('aria-label') === 'Props',
+        // The place is kept; where it shows follows the bar's width now (the selection chip's
+        // text may differ), clamped into the window from that same place.
+        barPositionKeptAcrossEditOffOn: JSON.stringify(state().toolbar) === barBefore && (() => {
+          const box = rect(bar());
+          const { x, y } = state().toolbar;
+          return Math.round(box.left) === Math.round(Math.min(Math.max(x, 8), innerWidth - box.width - 8)) &&
+            Math.round(box.top) === Math.round(Math.min(Math.max(y, 8), innerHeight - box.height - 8));
+        })(),
       };
       await reset();
 

@@ -146,9 +146,13 @@
           root().activeElement === cat('general');
         engine.setAiSettings(false);
         await frames();
-        // The toolbar gear.
-        const gear = document.querySelector('html-editor-overlay > heo-overlay')?.shadowRoot
-          ?.querySelector('heo-toolbar')?.shadowRoot?.querySelector('button[aria-label="Settings"]');
+        // Settings… in the H menu (the toolbar's gear moved there).
+        const bar = () => document.querySelector('html-editor-overlay > heo-overlay')?.shadowRoot
+          ?.querySelector('heo-toolbar')?.shadowRoot;
+        bar()?.querySelector('button[aria-label="HEO menu"]')?.click();
+        await frames();
+        const gear = Array.from(bar()?.querySelectorAll('.menu[data-menu="heo"] [role="menuitem"]') ?? [])
+          .find((item) => item.textContent.trim() === 'Settings…');
         gear?.click();
         await frames();
         await frames();

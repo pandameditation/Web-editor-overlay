@@ -818,7 +818,12 @@ export interface EditorState {
    */
   dockOpen: boolean;
   dockTab: PanelId;
-  toolbar: { x: number; y: number };
+  /**
+   * Where the user dragged the toolbar to, or null until they do: the bar then centres itself
+   * on the window once (see the toolbar) and stays there. Only a drag writes it. A resize used
+   * to clamp and write it back, so a narrow window moment lost the place for good.
+   */
+  toolbar: { x: number; y: number } | null;
   dockWidth: number;
   /**
    * Set once the dock has been dragged away from its edge.
@@ -1065,7 +1070,6 @@ export interface ProjectInfo {
   lost?: boolean;
 }
 
-const DEFAULT_TOOLBAR = { x: 24, y: 24 };
 
 /** `1 file`, `3 files`. */
 function filesCount(count: number): string {
@@ -1425,7 +1429,7 @@ export class EditorEngine {
       textEditing: null,
       dockOpen: false,
       dockTab: 'styles',
-      toolbar: { ...DEFAULT_TOOLBAR },
+      toolbar: null,
       dockWidth: 340,
       dockFloat: null,
       pageOpen: false,

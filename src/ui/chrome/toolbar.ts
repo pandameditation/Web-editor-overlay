@@ -1,26 +1,52 @@
 import { css, html, nothing, type TemplateResult } from 'lit';
-import { customElement } from 'lit/decorators.js';
+import { customElement, state } from 'lit/decorators.js';
+import { firstFocusable } from '../../core/modal.js';
+import { listen, unlisten } from '../../core/shield.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
+import { tabsOf, type PanelSide } from '../../core/panels.js';
 import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
 import { baseStyles, surfaceStyles } from '../theme.js';
-import { PANEL_TABS } from '../../core/panels.js';
+import { tip, tipId, tipStyles } from '../controls/tip.js';
+import { menuStyles, placeLayer, renderMenu } from '../panels/styles/menu.js';
+import { renderViewportControls, viewportMenuStyles } from './viewport-menu.js';
 
 /**
  * The floating toolbar.
  *
- * Deliberately the only always-visible piece of chrome. When edit mode is off it
- * collapses to a single pill so it stays out of the way of the page it is sitting
- * on top of; turning edit mode on expands it into the full control set.
+ * Deliberately the only always-visible piece of chrome. When edit mode is off it collapses to
+ * the handle and the Edit switch, so it stays out of the way of the page it sits on; turning
+ * edit mode on grows it to the right into the full set, in this order: the handle (grip and the
+ * H menu), Edit, the selection, the preview size, undo, redo and Save, then the two panel
+ * switches and the pin.
  *
- * Dragging moves it, and the position is clamped on release so it can never end
- * up off-screen after a window resize.
+ * The bar used to carry one button per panel tab and a Settings gear. The tabs are the panels'
+ * own now (their keys are in the panel switches' tips), and Settings is in the H menu.
+ *
+ * It stays where it was put. Its left end is the anchor: growing or shrinking never moves the
+ * handle, and a window too narrow for it shows it nudged left without forgetting where it was.
+ * Only a drag moves it.
  */
+
+/** Movement under this many pixels is a click on the handle, which opens the menu. */
+const DRAG_SLOP = 4;
+/**
+ * The bar's editing width, guessed, when it is first placed with Edit off: it centres on the
+ * window at the width it will have when editing, so turning Edit on grows it in place. Close to
+ * the measured width at a wide window (about 650px); a guess is enough, as it only picks x once.
+ */
+const EDITING_WIDTH_GUESS = 640;
+
+type Layer = 'heo' | 'viewport' | 'sizes';
+
 @customElement('heo-toolbar')
 export class HeoToolbar extends HeoElement {
   static override styles = [
     baseStyles,
     surfaceStyles,
+    tipStyles,
+    menuStyles,
+    viewportMenuStyles,
     css`
       :host {
         position: fixed;
@@ -37,20 +63,87 @@ export class HeoToolbar extends HeoElement {
         max-width: calc(100vw - 32px);
       }
 
-      .grip {
-        display: grid;
-        place-items: center;
-        width: 18px;
-        height: 30px;
-        color: var(--heo-text-faint);
+      /* Every control holds its tip, placed under it. */
+      .bar button,
+      .selection {
+        position: relative;
+      }
+
+      /*
+       * The grip and the H are one handle: lit as one, a press on either is the same gesture
+       * (click opens the menu, drag moves the bar), so the zone to aim at is the pair.
+       */
+      .handle {
+        display: inline-flex;
+        align-items: center;
+        flex: 0 0 auto;
+        border-radius: var(--heo-r-md);
         cursor: grab;
         touch-action: none;
       }
-      .grip:active {
+      :host([data-layout='dock']) .handle {
+        cursor: default;
+      }
+      .handle:hover,
+      .handle:has(.logo[aria-expanded='true']) {
+        background: var(--heo-hover);
+      }
+      :host([data-dragging]) .handle {
+        background: var(--heo-accent-soft);
         cursor: grabbing;
       }
+      .grip {
+        display: grid;
+        place-items: center;
+        width: 16px;
+        height: 30px;
+        color: var(--heo-text-faint);
+      }
+      .handle:hover .grip,
       :host([data-dragging]) .grip {
-        color: var(--heo-accent);
+        color: var(--heo-text);
+      }
+      .logo {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        height: 30px;
+        padding: 0 5px 0 3px;
+        border: 0;
+        border-radius: var(--heo-r-md);
+        background: transparent;
+        color: var(--heo-text-faint);
+        cursor: inherit;
+      }
+      .logo:focus-visible {
+        outline: 2px solid var(--heo-focus-ring);
+        outline-offset: -1px;
+      }
+      .mark {
+        display: grid;
+        place-items: center;
+        width: 22px;
+        height: 22px;
+        border-radius: 6px;
+        background: var(--heo-accent);
+        color: var(--heo-accent-ink);
+        font: 800 11px var(--heo-font);
+      }
+      /* Hovering the grip shows the H's tip too: they are one control to the eye. */
+      .handle:hover .logo > .tip {
+        visibility: visible;
+        opacity: 1;
+        transition-delay: 450ms;
+      }
+      /* The ends of the bar hold their tips inside the window. */
+      .logo > .tip {
+        left: 0;
+        transform: none;
+      }
+      .pin > .tip {
+        left: auto;
+        right: 0;
+        transform: none;
       }
 
       .toggle {
@@ -109,16 +202,11 @@ export class HeoToolbar extends HeoElement {
         flex: 0 0 auto;
       }
 
-      .tabs {
-        display: flex;
-        gap: 2px;
-      }
-
       .selection {
         display: flex;
         align-items: center;
         gap: 5px;
-        max-width: 190px;
+        max-width: 170px;
         height: 26px;
         padding: 0 9px;
         border-radius: 999px;
@@ -127,11 +215,21 @@ export class HeoToolbar extends HeoElement {
         font-family: var(--heo-mono);
         font-size: 10.5px;
         white-space: nowrap;
-        overflow: hidden;
+      }
+      .selection > svg {
+        flex: 0 0 auto;
       }
       .selection .name {
+        min-width: 0;
         overflow: hidden;
         text-overflow: ellipsis;
+      }
+
+      /* The two panel switches read as a pair, just before the pin. */
+      .panels {
+        display: inline-flex;
+        flex: 0 0 auto;
+        gap: 1px;
       }
 
       .count {
@@ -148,8 +246,8 @@ export class HeoToolbar extends HeoElement {
       }
 
       @media (max-width: 720px) {
-        .tabs .wide,
-        .selection {
+        .selection,
+        .selection + .sep {
           display: none;
         }
       }
@@ -164,109 +262,263 @@ export class HeoToolbar extends HeoElement {
         s.editing,
         s.selected,
         s.dockOpen,
-        s.dockTab,
         s.pageOpen,
-        s.pageTab,
+        s.layout,
         s.canUndo,
         s.canRedo,
+        s.undoLabel,
         s.changeCount,
         s.toolbar,
         s.saving,
+        s.previewWidth,
+        s.viewportSizes,
+        s.geometry,
       ] as const,
     shallowArrayEquals,
   );
 
-  #pointerOffset = { x: 0, y: 0 };
+  /** The open layer: the H menu, the preview size menu, or the viewport sizes editor. */
+  @state() private open: Layer | null = null;
+
+  /**
+   * Where the bar centred itself the first time it was drawn, until the user drags it (the
+   * store's `toolbar` stays null until then). Chosen once, so it does not follow the window.
+   */
+  #home: { x: number; y: number } | null = null;
+  /** What to focus once the next render has drawn it. */
+  #focusAfter: { layer: Layer; into: boolean } | null = null;
+  #resizeObserver = new ResizeObserver(() => {
+    this.#applyPosition();
+    this.#placeOpen();
+  });
+  #offSettings: (() => void) | null = null;
 
   override connectedCallback(): void {
     super.connectedCallback();
-    this.#applyPosition();
-    addEventListener('resize', this.#clamp);
+    this.#resizeObserver.observe(this);
+    listen(window, 'resize', this.#onResize);
+    listen(document, 'pointerdown', this.#onOutsidePress, true);
+    // The hidden and renamed sizes are settings, which the store does not mirror.
+    this.#offSettings = this.editor.settings.onChange(() => this.requestUpdate());
   }
 
   override disconnectedCallback(): void {
     super.disconnectedCallback();
-    removeEventListener('resize', this.#clamp);
+    this.#resizeObserver.disconnect();
+    unlisten(window, 'resize', this.#onResize);
+    unlisten(document, 'pointerdown', this.#onOutsidePress, true);
+    this.#offSettings?.();
+    this.#offSettings = null;
   }
 
   override updated(): void {
     this.#applyPosition();
+    this.#placeOpen();
+    this.#focusPending();
   }
 
-  #applyPosition(): void {
-    const { x, y } = this.state.value.toolbar;
-    this.style.left = `${x}px`;
-    this.style.top = `${y}px`;
-  }
-
-  #clamp = (): void => {
-    const { x, y } = this.state.value.toolbar;
-    const box = this.getBoundingClientRect();
-    const maxX = Math.max(8, innerWidth - box.width - 8);
-    const maxY = Math.max(8, innerHeight - box.height - 8);
-    this.editor.setToolbarPosition(
-      Math.min(Math.max(8, x), maxX),
-      Math.min(Math.max(8, y), maxY),
-    );
+  /** The window changed: the bar is clamped again (from the kept x) and Actual's width is new. */
+  #onResize = (): void => {
+    this.requestUpdate();
   };
+
+  /**
+   * Show the bar at its place, clamped into the window, without writing the clamp back: the
+   * stored x is where the user put it, and a window narrowed for a moment must not move it for
+   * good. The old resize handler wrote the clamped value into the store.
+   */
+  #applyPosition(): void {
+    const width = this.offsetWidth;
+    const height = this.offsetHeight;
+    if (!this.isConnected || !width) return;
+    const stored = this.state.value.toolbar;
+    if (!stored && !this.#home) {
+      const full = this.state.value.editing ? width : EDITING_WIDTH_GUESS;
+      this.#home = { x: Math.max(8, Math.round((innerWidth - full) / 2)), y: 14 };
+    }
+    const at = stored ?? this.#home ?? { x: 8, y: 14 };
+    const left = `${clamp(at.x, 8, innerWidth - width - 8)}px`;
+    const top = `${clamp(at.y, 8, innerHeight - height - 8)}px`;
+    if (this.style.left !== left) this.style.left = left;
+    if (this.style.top !== top) this.style.top = top;
+  }
+
+  /* ---------------------------------------------------------------- layers */
+
+  #setOpen(next: Layer | null, refocus = false): void {
+    const was = this.open;
+    if (next === was) return;
+    this.open = next;
+    if (next) this.#focusAfter = { layer: next, into: true };
+    else if (refocus && was) this.#focusAfter = { layer: was, into: false };
+  }
+
+  #placeOpen(): void {
+    const id = this.open;
+    if (!id) return;
+    const root = this.renderRoot;
+    const anchor = root.querySelector<HTMLElement>(`[data-menu-anchor="${id}"]`);
+    // Gone from the bar (Edit turned off while it was open): so is the layer.
+    if (!anchor) {
+      this.open = null;
+      return;
+    }
+    const place = id === 'heo'
+      ? root.querySelector('.handle')
+      : id === 'sizes' ? root.querySelector('[data-menu-place="sizes"]') : anchor;
+    placeLayer(root.querySelector<HTMLElement>(`.menu[data-menu="${id}"]`), place ?? anchor, {
+      minWidth: id === 'sizes' ? 320 : id === 'heo' ? 210 : 250,
+      gap: 6,
+      source: anchor,
+    });
+  }
+
+  /** Into a layer just opened (its first item), or back to the control a closed one came from. */
+  #focusPending(): void {
+    const pending = this.#focusAfter;
+    if (!pending) return;
+    this.#focusAfter = null;
+    const root = this.renderRoot;
+    const tries = { left: 4 };
+    const go = (): void => {
+      const layer = root.querySelector<HTMLElement>(`.menu[data-menu="${pending.layer}"]`);
+      const target = pending.into
+        ? layer && (layer.querySelector<HTMLElement>('.mi:not([disabled])') ?? firstFocusable(layer))
+        : root.querySelector<HTMLElement>(`[data-menu-anchor="${pending.layer}"]`);
+      // The sizes editor draws its rows a render after the layer: try again a frame later.
+      if (!target && pending.into && tries.left-- > 0) {
+        requestAnimationFrame(go);
+        return;
+      }
+      target?.focus({ preventScroll: true });
+    };
+    requestAnimationFrame(go);
+  }
+
+  /*
+   * Closed by a press anywhere else. Through listen, because the event shield gates pointerdown
+   * on the document. A press on the handle is the handle's own: it toggles the menu on release,
+   * and closing it here first would reopen it there.
+   */
+  #onOutsidePress = (event: Event): void => {
+    const id = this.open;
+    if (!id) return;
+    const path = event.composedPath();
+    const root = this.renderRoot;
+    const keep = [
+      root.querySelector(`.menu[data-menu="${id}"]`),
+      id === 'heo' ? root.querySelector('.handle') : root.querySelector(`[data-menu-anchor="${id}"]`),
+    ];
+    if (keep.some((el) => el && path.includes(el))) return;
+    this.#setOpen(null);
+  };
+
+  /* ---------------------------------------------------------------- render */
 
   override render(): TemplateResult {
     const state = this.state.value;
+    const docked = state.layout === 'dock';
+    this.dataset.layout = state.layout;
     const label = state.selected ? tagLabel(state.selected) : null;
+    const heoOpen = this.open === 'heo';
 
     return html`<div class="bar surface">
-      <div
-        class="grip"
-        title="Drag to move the toolbar"
-        @pointerdown=${this.#onDragStart}
-      >
-        ${icon('grip', 13)}
+        <div class="handle" @pointerdown=${docked ? nothing : this.#onHandleDown}>
+          ${docked ? nothing : html`<span class="grip" aria-hidden="true">${icon('grip', 13)}</span>`}
+          <button
+            class="logo"
+            type="button"
+            data-menu-anchor="heo"
+            aria-label="HEO menu"
+            aria-haspopup="menu"
+            aria-expanded=${heoOpen ? 'true' : 'false'}
+            aria-describedby=${tipId('HEO menu')}
+            @click=${(event: MouseEvent) => {
+        // A mouse press is the handle's (released without moving, it toggles); this is
+        // Enter and Space, whose click has no detail, or any click once docked.
+        if (docked || event.detail === 0) this.#setOpen(heoOpen ? null : 'heo');
+      }}
+          >
+            <span class="mark" aria-hidden="true">H</span>${icon('chevronDown', 10)}
+            ${tip('HEO menu', '', docked ? 'Settings and keyboard shortcuts' : 'Click to open, drag to move the toolbar')}
+          </button>
+        </div>
+
+        <button
+          class="toggle"
+          type="button"
+          aria-label="Edit"
+          aria-pressed=${state.editing}
+          aria-describedby=${tipId(state.editing ? 'Leave edit mode' : 'Enter edit mode')}
+          @click=${() => this.editor.toggleEditing()}
+        >
+          <span class="led"></span>
+          Edit
+          ${tip(state.editing ? 'Leave edit mode' : 'Enter edit mode', `${modLabel()} E`, 'Panels, sizes and layout are kept until you reload')}
+        </button>
+
+        ${state.editing ? this.#renderTools(label, state.changeCount) : nothing}
       </div>
+      ${heoOpen ? this.#renderHeoMenu() : nothing}`;
+  }
 
-      <button
-        class="toggle"
-        type="button"
-        aria-pressed=${state.editing}
-        title=${`${state.editing ? 'Leave' : 'Enter'} edit mode (${modLabel()}+E)`}
-        @click=${() => this.editor.toggleEditing()}
-      >
-        <span class="led"></span>
-        Edit
-      </button>
-
-      ${state.editing ? this.#renderTools(label, state.changeCount) : nothing}
-    </div>`;
+  #renderHeoMenu(): TemplateResult {
+    const editing = this.state.value.editing;
+    // Focus goes back to H before the dialog opens, so closing the dialog lands there too.
+    const then = (act: () => void) => (): void => {
+      this.#setOpen(null);
+      this.renderRoot.querySelector<HTMLElement>('[data-menu-anchor="heo"]')?.focus({ preventScroll: true });
+      act();
+    };
+    return renderMenu({
+      id: 'heo',
+      label: 'HEO menu',
+      onClose: () => this.#setOpen(null, true),
+      groups: [
+        {
+          items: [
+            { key: 'settings', label: 'Settings…', icon: 'settings', onSelect: then(() => this.editor.setAiSettings(true, 'general')) },
+            { key: 'shortcuts', label: 'Keyboard shortcuts', icon: 'keyboard', onSelect: then(() => this.editor.setShortcuts(true)) },
+          ],
+        },
+        {
+          items: [{
+            key: 'edit',
+            label: editing ? 'Leave edit mode' : 'Enter edit mode',
+            icon: 'exit',
+            note: `${modLabel()}E`,
+            onSelect: then(() => this.editor.toggleEditing()),
+          }],
+        },
+      ],
+    });
   }
 
   #renderTools(label: string | null, changes: number): TemplateResult {
     const state = this.state.value;
+    const mod = modLabel();
+    const undoTip = state.undoLabel ? `Undo: ${state.undoLabel}` : 'Undo';
+    const docked = state.layout === 'dock';
+    const pinTip = docked ? 'Docked to the edges' : 'Floating over the page';
     return html`
       <span class="sep"></span>
 
-      ${label
-        ? html`<span class="selection" title="Current selection">
-            ${icon('cursor', 11)}<span class="name">${label}</span>
-          </span>`
-        : html`<span class="selection">Click any element</span>`}
+      <span class="selection" aria-describedby=${tipId('Current selection')}>
+        ${icon('cursor', 11)}<span class="name">${label ?? 'Click any element'}</span>
+        ${tip('Current selection', '', label ? 'Click any element on the page to change it' : 'Nothing is selected yet')}
+      </span>
 
       <span class="sep"></span>
 
-      <div class="tabs">
-        ${PANEL_TABS.map(
-          (tab) => html`<button
-            class="btn icon ghost"
-            type="button"
-            aria-pressed=${tab.side === 'page'
-              ? state.pageOpen && state.pageTab === tab.id
-              : state.dockOpen && state.dockTab === tab.id}
-            title=${`${tab.label} (${tab.key})`}
-            aria-label=${tab.label}
-            @click=${() => this.editor.togglePanelTab(tab.id)}
-          >
-            ${icon(tab.glyph, 14)}
-          </button>`,
-        )}
-      </div>
+      ${renderViewportControls({
+      engine: this.editor,
+      previewWidth: state.previewWidth,
+      open: this.open === 'viewport' || this.open === 'sizes' ? this.open : null,
+      onOpen: (layer, refocus) => this.#setOpen(layer, refocus),
+      onLayout: () => this.#placeOpen(),
+      refresh: () => this.requestUpdate(),
+      inShadowRoot: state.selected !== null && state.selected.getRootNode() instanceof ShadowRoot,
+    })}
 
       <span class="sep"></span>
 
@@ -274,33 +526,22 @@ export class HeoToolbar extends HeoElement {
         class="btn icon ghost"
         type="button"
         ?disabled=${!state.canUndo}
-        title=${state.undoLabel ? `Undo: ${state.undoLabel}` : 'Undo'}
         aria-label="Undo"
+        aria-describedby=${tipId(undoTip)}
         @click=${() => this.editor.undo()}
       >
-        ${icon('undo', 14)}
+        ${icon('undo', 14)}${tip(undoTip, `${mod} Z`)}
       </button>
       <button
         class="btn icon ghost"
         type="button"
         ?disabled=${!state.canRedo}
-        title="Redo"
         aria-label="Redo"
+        aria-describedby=${tipId('Redo')}
         @click=${() => this.editor.redo()}
       >
-        ${icon('redo', 14)}
+        ${icon('redo', 14)}${tip('Redo', `⇧ ${mod} Z`)}
       </button>
-      <button
-        class="btn icon ghost"
-        type="button"
-        title="Settings"
-        aria-label="Settings"
-        @click=${() => this.editor.setAiSettings(true, 'general')}
-      >
-        ${icon('settings', 14)}
-      </button>
-
-      <span class="sep"></span>
 
       <!--
         Never disabled by the change count. The dialog behind this button holds the
@@ -312,47 +553,100 @@ export class HeoToolbar extends HeoElement {
         class="btn primary"
         type="button"
         ?disabled=${state.saving}
-        title=${`Review and save changes (${modLabel()}+S)`}
+        aria-label=${changes ? `Save, ${changes} unsaved` : 'Save'}
+        aria-describedby=${tipId('Review and save changes')}
         @click=${() => this.editor.previewSave()}
       >
         ${icon('save', 13)} Save
         ${changes ? html`<span class="count">${changes}</span>` : nothing}
+        ${tip('Review and save changes', `${mod} S`)}
+      </button>
+
+      <span class="sep"></span>
+
+      <span class="panels" role="group" aria-label="Panels">
+        ${this.#renderPanelToggle('page', state.pageOpen)}
+        ${this.#renderPanelToggle('selection', state.dockOpen)}
+      </span>
+      <button
+        class="btn icon ghost pin"
+        type="button"
+        aria-label="Pin the toolbar and panels to the edges"
+        aria-pressed=${docked}
+        aria-describedby=${tipId(pinTip)}
+        @click=${() => this.editor.toggleLayout()}
+      >
+        ${icon('pin', 15)}
+        ${tip(pinTip, 'D', docked ? 'D: float over the page' : 'D: pin to the edges, with the page between the panels')}
       </button>
     `;
   }
 
-  /**
-   * Drag the toolbar with pointer capture.
-   *
-   * Capture on the grip means the gesture keeps working when the pointer outruns
-   * the element, which is easy to do with a fast flick.
-   */
-  #onDragStart(event: PointerEvent): void {
-    event.preventDefault();
-    const box = this.getBoundingClientRect();
-    this.#pointerOffset = { x: event.clientX - box.left, y: event.clientY - box.top };
-    this.toggleAttribute('data-dragging', true);
+  /** Show or hide one side; the tip lists the tabs it holds and their keys. */
+  #renderPanelToggle(side: PanelSide, open: boolean): TemplateResult {
+    const name = side === 'page' ? 'page' : 'selection';
+    const text = `${open ? 'Hide' : 'Show'} the ${name} panel`;
+    const keys = tabsOf(side).map((tab) => `${tab.label} ${tab.key}`).join(' · ');
+    return html`<button
+      class="btn icon ghost"
+      type="button"
+      data-side=${side}
+      aria-label=${side === 'page' ? 'Page panel' : 'Selection panel'}
+      aria-pressed=${open}
+      aria-describedby=${tipId(text)}
+      @click=${() => this.editor.setPanelOpen(side, !open)}
+    >
+      ${icon(side === 'page' ? 'panelLeft' : 'panel', 15)}${tip(text, '', keys)}
+    </button>`;
+  }
 
-    const grip = event.currentTarget as HTMLElement;
-    grip.setPointerCapture(event.pointerId);
+  /**
+   * A press on the handle: a click opens the H menu, a drag moves the bar.
+   *
+   * Both from one press, so the grip and the H are one target. The move starts past a few
+   * pixels, and only then takes pointer capture (so the gesture keeps working when the pointer
+   * outruns the bar); a release before that is the click. The button's own click is ignored for a
+   * mouse, or the menu would toggle twice.
+   */
+  #onHandleDown = (event: PointerEvent): void => {
+    if (event.button !== 0) return;
+    // No focus ring from a mouse press, and no text selected by the drag.
+    event.preventDefault();
+    const handle = event.currentTarget as HTMLElement;
+    const box = this.getBoundingClientRect();
+    const offset = { x: event.clientX - box.left, y: event.clientY - box.top };
+    const start = { x: event.clientX, y: event.clientY };
+    let moving = false;
 
     const move = (moveEvent: PointerEvent): void => {
-      const width = this.offsetWidth;
-      const height = this.offsetHeight;
-      const x = clamp(moveEvent.clientX - this.#pointerOffset.x, 8, innerWidth - width - 8);
-      const y = clamp(moveEvent.clientY - this.#pointerOffset.y, 8, innerHeight - height - 8);
+      if (moveEvent.pointerId !== event.pointerId) return;
+      if (!moving) {
+        if (Math.hypot(moveEvent.clientX - start.x, moveEvent.clientY - start.y) <= DRAG_SLOP) return;
+        moving = true;
+        try {
+          handle.setPointerCapture(moveEvent.pointerId);
+        } catch {
+          /* released already */
+        }
+        this.toggleAttribute('data-dragging', true);
+        if (this.open === 'heo') this.#setOpen(null);
+      }
+      const x = clamp(Math.round(moveEvent.clientX - offset.x), 8, innerWidth - this.offsetWidth - 8);
+      const y = clamp(Math.round(moveEvent.clientY - offset.y), 8, innerHeight - this.offsetHeight - 8);
       this.editor.setToolbarPosition(x, y);
     };
-    const up = (): void => {
-      grip.removeEventListener('pointermove', move);
-      grip.removeEventListener('pointerup', up);
-      grip.removeEventListener('pointercancel', up);
+    const up = (upEvent: PointerEvent): void => {
+      if (upEvent.pointerId !== event.pointerId) return;
+      unlisten(window, 'pointermove', move, true);
+      unlisten(window, 'pointerup', up, true);
+      unlisten(window, 'pointercancel', up, true);
       this.toggleAttribute('data-dragging', false);
+      if (!moving && upEvent.type === 'pointerup') this.#setOpen(this.open === 'heo' ? null : 'heo');
     };
-    grip.addEventListener('pointermove', move);
-    grip.addEventListener('pointerup', up);
-    grip.addEventListener('pointercancel', up);
-  }
+    listen(window, 'pointermove', move, true);
+    listen(window, 'pointerup', up, true);
+    listen(window, 'pointercancel', up, true);
+  };
 }
 
 function clamp(value: number, min: number, max: number): number {

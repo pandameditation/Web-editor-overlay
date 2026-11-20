@@ -215,7 +215,8 @@
           shown = () => q('.cardpop .cls[data-card=".card"] .actions');
           break;
         case 'preview-menu':
-          need(q('[data-menu-anchor="preview"]'), 'preview menu button')?.click();
+          // The viewport sizes editor behind the toolbar's ⋮ (it left the Styles panel).
+          need(deep('heo-toolbar')?.shadowRoot.querySelector('[data-menu-anchor="sizes"]'), 'viewport sizes button')?.click();
           break;
         case 'search-padding': {
           const field = need(q('.top heo-search-field'), 'search field');
