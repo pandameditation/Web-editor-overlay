@@ -20,9 +20,13 @@ import { namesAFont } from '../../core/tokens.js';
 import './font-editor.js';
 import { icon } from '../icons.js';
 import { killStyles, renderKill } from '../kill.js';
+import { placeAnchored } from '../place.js';
 import { baseStyles } from '../theme.js';
 
 const WEB_FONTS_KEY = 'heo:web-font-previews';
+/** The tallest the dropdown gets, in px. */
+const LIST_TALLEST = 380;
+
 /** The generic families a chain can end with, in the order they are usually wanted. */
 const FALLBACK_GENERICS = ['serif', 'sans-serif', 'monospace', 'system-ui', 'cursive'];
 const GENERIC_LABELS: Record<string, string> = {
@@ -221,17 +225,74 @@ export class HeoFontPicker extends LitElement {
       .slotfoot .add {
         border-style: dashed;
       }
-      /* The selected slot's list, under it, as an autocomplete's. */
+      /*
+       * The selected slot's list: a dropdown in the top layer, hung from its field and joined to
+       * it like a combobox, over the slots below rather than pushing them down — so nothing
+       * moves, and the list starts where the click was. The rest of the dialog is under a scrim.
+       */
       .list {
+        position: fixed;
+        inset: auto;
+        z-index: 2;
         display: grid;
+        align-content: start;
         gap: 1px;
-        max-height: 280px;
+        margin: 0;
         overflow: auto;
+        overscroll-behavior: contain;
         padding: 4px;
-        border: 1px solid var(--heo-line-strong);
-        border-radius: var(--heo-r-md);
+        border: 1px solid var(--heo-accent);
+        border-radius: 0 0 var(--heo-r-md) var(--heo-r-md);
         background: var(--heo-raised);
-        box-shadow: var(--heo-shadow-md, 0 10px 24px -12px rgb(15 23 42 / 30%));
+        color: var(--heo-text);
+        box-shadow:
+          0 0 0 3px color-mix(in oklab, var(--heo-accent) 16%, transparent),
+          0 24px 48px -12px rgb(15 23 42 / 45%);
+        transform-origin: top;
+        animation: heo-font-drop 180ms var(--heo-ease, cubic-bezier(0.2, 0, 0, 1));
+      }
+      .list[data-side='above'] {
+        border-radius: var(--heo-r-md) var(--heo-r-md) 0 0;
+        transform-origin: bottom;
+      }
+      .list:not(:popover-open) {
+        display: none;
+      }
+      @keyframes heo-font-drop {
+        from {
+          opacity: 0;
+          transform: scaleY(0.94);
+        }
+      }
+      /*
+       * In the dialog's own stacking, not the top layer, so the field the list hangs from can sit
+       * above it. Placed over the whole dialog, head included, from the two boxes (see #place).
+       */
+      .scrim {
+        position: absolute;
+        z-index: 2;
+        border-radius: var(--heo-r-md);
+        background: rgb(15 23 42 / 14%);
+        animation: heo-font-scrim 160ms ease-out;
+      }
+      @keyframes heo-font-scrim {
+        from {
+          opacity: 0;
+        }
+      }
+      /* The field the list hangs from: its edge on the list's side opens into it. */
+      .slot.joined-below .vf.on {
+        border-bottom-color: var(--heo-line);
+        border-radius: var(--heo-r-sm) var(--heo-r-sm) 0 0;
+      }
+      .slot.joined-above .vf.on {
+        border-top-color: var(--heo-line);
+        border-radius: 0 0 var(--heo-r-sm) var(--heo-r-sm);
+      }
+      /* Above the scrim, with its list. */
+      .slot[aria-current='true'] .vf.on {
+        position: relative;
+        z-index: 3;
       }
       .group {
         display: flex;
@@ -445,6 +506,109 @@ export class HeoFontPicker extends LitElement {
     super.disconnectedCallback();
     this.#unlisten?.();
     this.#unlisten = null;
+    cancelAnimationFrame(this.#follow);
+    this.#follow = 0;
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* The dropdown                                                            */
+  /* ---------------------------------------------------------------------- */
+
+  /** The frame loop that keeps the list on its field while it is open. */
+  #follow = 0;
+  /** What the list and the scrim were last placed at, so an unchanged frame writes nothing. */
+  #placedAt = '';
+
+  /** Put the open list and its scrim in the top layer, and keep them where they belong. */
+  #showList(): void {
+    const list = this.renderRoot.querySelector<HTMLElement>('.list');
+    const scrim = this.renderRoot.querySelector<HTMLElement>('.scrim');
+    if (!list || !scrim) {
+      cancelAnimationFrame(this.#follow);
+      this.#follow = 0;
+      this.#placedAt = '';
+      return;
+    }
+    if (!list.matches(':popover-open')) list.showPopover?.();
+    this.#place();
+    if (!this.#follow) {
+      /*
+       * Every frame, but writing only when something moved. The dialog can be dragged, the panel
+       * scrolled and the window resized, and none of them tells this element; reading two boxes a
+       * frame is cheaper than a listener for each, and placement reads only the field and the
+       * dialog, never the list, so it cannot feed back into itself.
+       */
+      const tick = (): void => {
+        if (!this.isConnected || !this.renderRoot.querySelector('.list')) {
+          this.#follow = 0;
+          return;
+        }
+        this.#place();
+        this.#follow = requestAnimationFrame(tick);
+      };
+      this.#follow = requestAnimationFrame(tick);
+    }
+  }
+
+  #place(): void {
+    const list = this.renderRoot.querySelector<HTMLElement>('.list');
+    const scrim = this.renderRoot.querySelector<HTMLElement>('.scrim');
+    const field = this.renderRoot.querySelector<HTMLElement>('.slot[aria-current="true"] .vf');
+    if (!list || !scrim || !field) return;
+    const anchor = field.getBoundingClientRect();
+    // The dialog this picker sits in: the scrim covers it, the list may run past its edge.
+    const dialog = (this.closest('.popup') as HTMLElement | null) ?? this;
+    const frame = dialog.getBoundingClientRect();
+    const at = placeAnchored({
+      anchor,
+      content: list.scrollHeight,
+      minWidth: Math.max(anchor.width, 240),
+      // Joined to the field: one border between them, not a gap.
+      gap: -1,
+      beside: false,
+    });
+    const box = this.getBoundingClientRect();
+    const key = `${Math.round(box.left)},${Math.round(box.top)},${Math.round(anchor.left)},${Math.round(anchor.top)},${Math.round(anchor.width)},${at.top},${at.maxHeight},${at.side},${Math.round(frame.left)},${Math.round(frame.top)},${Math.round(frame.width)},${Math.round(frame.height)}`;
+    if (key === this.#placedAt) return;
+    this.#placedAt = key;
+    // Ten rows or so: a list as tall as the window is a page to scroll, not a choice to make.
+    const height = Math.min(at.maxHeight, LIST_TALLEST);
+    const top = at.side === 'above' ? Math.round(anchor.top + 1 - Math.min(height, list.scrollHeight)) : at.top;
+    list.style.cssText = `top:${Math.max(8, top)}px;left:${Math.round(anchor.left)}px;width:${Math.round(anchor.width)}px;max-height:${height}px`;
+    list.dataset.side = at.side;
+    // From this element's box: the dialog may be dragged (a translate) or scrolled, and both move it too.
+    const host = this.getBoundingClientRect();
+    scrim.style.cssText = `top:${Math.round(frame.top - host.top)}px;left:${Math.round(frame.left - host.left)}px;width:${Math.round(frame.width)}px;height:${Math.round(frame.height)}px`;
+    const slot = field.closest('.slot');
+    slot?.classList.toggle('joined-below', at.side !== 'above');
+    slot?.classList.toggle('joined-above', at.side === 'above');
+  }
+
+  #closeList(): void {
+    this.#preview(null);
+    this.listOpen = false;
+  }
+
+  /**
+   * Close the open list, for an Escape that reached the dialog rather than the list: the press
+   * landed on the dialog's blank, or the focus was on a slot that was just replaced. True when
+   * there was one to close, so the dialog stays open and only the next Escape closes it.
+   */
+  closeList(): boolean {
+    if (!this.listOpen || this.draft) return false;
+    this.#closeList();
+    void this.updateComplete.then(() => this.renderRoot.querySelector<HTMLElement>('.slot[aria-current="true"] input')?.focus());
+    return true;
+  }
+
+
+  /** Escape closes the list and leaves the dialog open: it is the inner layer. */
+  #listEscape(event: KeyboardEvent): void {
+    if (event.key !== 'Escape' || !this.listOpen) return;
+    event.preventDefault();
+    event.stopPropagation();
+    this.#closeList();
+    void this.updateComplete.then(() => this.renderRoot.querySelector<HTMLElement>('.slot[aria-current="true"] input')?.focus());
   }
   #hovered: string | null = null;
 
@@ -650,6 +814,15 @@ export class HeoFontPicker extends LitElement {
     this.sel = index;
     this.query = '';
     this.listOpen = true;
+    this.#focusField();
+  }
+
+  /**
+   * The field of the selected slot, focused: the slot clicked is replaced by its field, and the
+   * focus would otherwise fall to the dialog, where Escape closes everything at once.
+   */
+  #focusField(): void {
+    void this.updateComplete.then(() => this.renderRoot.querySelector<HTMLInputElement>('.slot[aria-current="true"] input')?.focus({ preventScroll: true }));
   }
 
   #addSlot(): void {
@@ -761,6 +934,7 @@ export class HeoFontPicker extends LitElement {
 
   override updated(): void {
     this.#loadWebNames();
+    this.#showList();
     if (this.#refocus === null) return;
     const at = this.#refocus;
     this.#refocus = null;
@@ -828,6 +1002,12 @@ export class HeoFontPicker extends LitElement {
             <span class="what">Font of <code>--${this.tokenEdit}</code>, for every element that uses it</span>
             <button class="btn sm" type="button" @click=${() => this.#editToken(null)}>Done</button>
           </div>`
+        : nothing}
+ ${this.listOpen && !this.draft
+        ? html`<div class="scrim" aria-hidden="true" @pointerdown=${(event: Event) => {
+            event.preventDefault();
+            this.#closeList();
+          }}></div>${this.#renderList(this.#slots[this.sel] ?? '')}`
         : nothing}
       <div class="slots" role="list" aria-label="The font, then its fallbacks, in order" ?hidden=${Boolean(this.draft)}>
         ${(slots.length ? slots : ['']).map((one, at) => this.#renderSlot(one, at, slots.length))}
@@ -899,9 +1079,6 @@ export class HeoFontPicker extends LitElement {
                   placeholder=${label || (at ? 'type or pick a fallback' : 'type or pick a font')}
                   style=${`font-family:${face.replace(/[;{}<>]/g, '')}`}
                   .value=${this.query}
-                  @focus=${() => {
-                    this.listOpen = true;
-                  }}
                   @input=${(event: Event) => {
                     this.query = (event.target as HTMLInputElement).value;
                     this.listOpen = true;
@@ -910,6 +1087,8 @@ export class HeoFontPicker extends LitElement {
                     if (event.key === 'Enter') {
                       event.preventDefault();
                       this.#submitTyped();
+                    } else if (event.key === 'Escape') {
+                      this.#listEscape(event);
                     } else if (event.key === 'ArrowDown') {
                       event.preventDefault();
                       this.listOpen = true;
@@ -928,11 +1107,14 @@ export class HeoFontPicker extends LitElement {
               @click=${(event: Event) => {
                 event.stopPropagation();
                 if (!selected) this.#select(at);
-                else this.listOpen = !this.listOpen;
+                else {
+                  this.listOpen = !this.listOpen;
+                  this.#focusField();
+                }
               }}
             >${icon('chevronDown', 11)}</button>
           </div>
-          ${selected && this.listOpen ? this.#renderList(family) : nothing}
+
         </div>
         ${at > 0
           ? html`<span class="x">${renderKill({ label: `Remove ${label || 'this fallback'}`, tight: true, onClick: () => this.#removeSlot(at) })}</span>`
@@ -943,7 +1125,14 @@ export class HeoFontPicker extends LitElement {
   #renderList(current: string): TemplateResult {
     const groups = this.#visibleGroups();
     const value = current.toLowerCase();
-    return html`<div class="list" role="listbox" aria-label="Fonts" @pointerleave=${() => this.#preview(null)}>
+    return html`<div
+      class="list"
+      popover="manual"
+      role="listbox"
+      aria-label="Fonts"
+      @pointerleave=${() => this.#preview(null)}
+      @keydown=${(event: KeyboardEvent) => this.#listEscape(event)}
+    >
       ${groups.map((group) => {
         const open = !this.collapsed.has(group.group);
         return html`<button

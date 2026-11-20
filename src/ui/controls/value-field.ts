@@ -1419,7 +1419,13 @@ export class HeoValueField extends LitElement {
 
   #settleDialog(popup: HTMLElement): void {
     const opening = !this.#escapeLayer;
-    if (!this.#escapeLayer) this.#escapeLayer = pushEscapeLayer(() => this.#closeDialog());
+    // From the page or the dock too: a layer inside the dialog (the font picker's list) goes first.
+    if (!this.#escapeLayer) {
+      this.#escapeLayer = pushEscapeLayer(() => {
+        if (this.renderRoot.querySelector<HTMLElement & { closeList?: () => boolean }>('heo-font-picker')?.closeList?.()) return;
+        this.#closeDialog();
+      });
+    }
     /*
      * As the overlay's other popovers do: focus goes in, to the first control (menus focus their
      * first item; modals their first field), and Tab treats the dialog as sitting right after the
@@ -1520,6 +1526,8 @@ export class HeoValueField extends LitElement {
     if (event.key !== 'Escape' || event.defaultPrevented) return;
     event.preventDefault();
     event.stopPropagation();
+    // A layer inside the dialog first: the font picker's open list closes, the dialog stays.
+    if (this.renderRoot.querySelector<HTMLElement & { closeList?: () => boolean }>('heo-font-picker')?.closeList?.()) return;
     this.#closeDialog();
   };
 

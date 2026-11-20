@@ -523,6 +523,95 @@
         };
       });
 
+      await check('dropdown', async () => {
+        // The selected slot's list is a dropdown joined to its field, over the slots below; a scrim covers the rest.
+        if (!picker()) {
+          field().openShadowEditor();
+          await settle(700);
+        }
+        const p = picker();
+        const slots = () => Array.from(p.querySelectorAll('.slot'));
+        const close = p.querySelector('.slot[aria-current="true"] [data-chevron]');
+        if (close?.getAttribute('aria-expanded') === 'true') { close.click(); await settle(250); }
+        const below = slots()[1];
+        const belowTop = below?.getBoundingClientRect().top;
+        p.querySelector('.slot[data-at="0"] [data-chevron]').click();
+        await settle(350);
+        const list = p.querySelector('.list');
+        const slotField = p.querySelector('.slot[aria-current="true"] .vf');
+        const lb = list.getBoundingClientRect();
+        const fb = slotField.getBoundingClientRect();
+        const side = list.dataset.side;
+        const wasOpen = list.matches(':popover-open');
+        const joined = side === 'above' ? Math.abs(lb.bottom - fb.top) <= 2 : Math.abs(lb.top - fb.bottom) <= 2;
+        const frame = picker().host.closest('.popup').getBoundingClientRect();
+        const sb = p.querySelector('.scrim').getBoundingClientRect();
+        const stackStill = Math.abs((slots()[1]?.getBoundingClientRect().top ?? 0) - belowTop) <= 1;
+        // The field the list hangs from is above the scrim, and so answers a click.
+        const hit = picker().elementFromPoint(fb.left + 20, fb.top + fb.height / 2);
+        const fieldOnTop = Boolean(hit && slotField.contains(hit));
+        // Escape closes the list, not the dialog.
+        p.querySelector('.slot[aria-current="true"] input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true, cancelable: true }));
+        await settle(250);
+        const escapeClosesTheList = !p.querySelector('.list') && Boolean(slotField.isConnected && picker().host.closest('.popup'));
+        // And a press on the scrim does too.
+        // Escape put the focus back in the field without opening the list again.
+        const stayedClosed = !p.querySelector('.list');
+        p.querySelector('.slot[aria-current="true"] [data-chevron]').click();
+        await until(() => p.querySelector('.scrim'));
+        p.querySelector('.scrim').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, composed: true, cancelable: true }));
+        await settle(250);
+        return {
+          aTopLayerDropdown: wasOpen,
+          joinedToItsField: joined && Math.abs(lb.left - fb.left) <= 1 && Math.abs(lb.width - fb.width) <= 1,
+          theStackDoesNotMove: stackStill,
+          aScrimCoversTheDialog: Math.abs(sb.top - frame.top) <= 1 && Math.abs(sb.height - frame.height) <= 1,
+          theFieldStaysAboveIt: fieldOnTop,
+          escapeClosesTheList,
+          andItStaysClosed: stayedClosed,
+          theScrimClosesIt: !p.querySelector('.list'),
+        };
+      });
+
+      await check('escape', async () => {
+        // Real key presses: Escape closes the list first, and only the second closes the dialog.
+        const press = (keys) => new Promise((resolve) => {
+          const id = Math.random().toString(36).slice(2);
+          window.__heoKeysDone = (done) => { if (done === id) resolve(); };
+          window.__heoPressKeys(JSON.stringify({ id, keys }));
+        });
+        if (!picker()) {
+          field().openShadowEditor();
+          await settle(700);
+        }
+        const dialog = () => field().shadowRoot.querySelector('.popup.dialog');
+        // Clicking another slot replaces it with its field: the focus goes there, not to the dialog.
+        picker().querySelector('.slot[data-at="1"] .vf').click();
+        await until(() => picker().querySelector('.list'));
+        await settle(200);
+        const focusedInField = picker().activeElement?.tagName === 'INPUT';
+        await press(['Escape']);
+        await settle(250);
+        const firstClosesTheList = !picker()?.querySelector('.list') && Boolean(dialog());
+        await press(['Escape']);
+        await settle(300);
+        const secondClosesTheDialog = !dialog();
+        // From a row of the list, the same two steps.
+        field().openShadowEditor();
+        await settle(700);
+        const chevron = picker().querySelector('.slot[aria-current="true"] [data-chevron]');
+        if (chevron?.getAttribute('aria-expanded') !== 'true') chevron.click();
+        await until(() => picker().querySelector('.list [data-font]'));
+        picker().querySelector('.list [data-font]').focus();
+        await press(['Escape']);
+        await settle(250);
+        const fromARow = !picker()?.querySelector('.list') && Boolean(dialog());
+        await press(['Escape']);
+        await settle(300);
+        const thenTheDialog = !dialog();
+        return { focusedInField, firstClosesTheList, secondClosesTheDialog, fromARow, thenTheDialog };
+      });
+
       await check('placement', async () => {
         // Too tall for below: beside the field, the left side (the page has room), its middle at the field's.
         field().shadowRoot.querySelector('.dialog-head button[aria-label="Close"]')?.click();
