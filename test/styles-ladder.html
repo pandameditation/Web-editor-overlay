@@ -6,7 +6,8 @@
   <title>The cascade ladder: where a value is, and where an edit goes</title>
   <!--
     The shared sample from styles-cascade.html (design §8). `.promo .card { color … !important }`
-    beats the element's inline colour; `.card` is worn by four cards, `.featured` by the target only.
+    beats the element's inline colour; `.card` is worn by four cards, `.featured` by the target only,
+    `.note` by the fourth card only (a class the target can be given by name on the new-class rung).
   -->
   <style id="site">
     .cards {
@@ -99,7 +100,7 @@
       <p id="target" class="card featured" style="color: #b91c1c; font-size: 16px">The selected card</p>
       <p class="card">Second</p>
       <p class="card">Third</p>
-      <p class="card">Fourth</p>
+      <p class="card note">Fourth</p>
     </div>
   </section>
 
@@ -278,15 +279,30 @@
         {
           await openMenu('font-size');
           await pick('.featured|base');
+          const said = result();
           await closeMenu();
           fire(rowIn('font-size')?.querySelector('heo-value-field'), 'value-change', '19px');
           await settle();
           // Checked on the rule, not the panel: the value lands in the picked place.
           results.menu.pickingARungMakesTheRowEditThatPlace =
-            ruleOf('.featured')?.style.getPropertyValue('font-size') === '19px' &&
-            getComputedStyle(target).fontSize === '19px';
+            ruleOf('.featured')?.style.getPropertyValue('font-size') === '19px';
+          // What the result line said is what happens: the inline value stays where it is, and wins.
+          results.menu.aRowEditNeverMovesTheInlineValue =
+            /^A value here will be hidden by inline style/.test(said) &&
+            target.style.getPropertyValue('font-size') === '16px' && getComputedStyle(target).fontSize === '16px';
           engine.undo();
           await settle();
+          await openMenu('font-size');
+          await pick('.featured|base');
+          fire(openField(), 'value-change', '19px');
+          await settle();
+          // The menu's own field writes the same way as the row: there, and nothing moved.
+          results.menu.theMenuFieldWritesTheSameWayAsTheRow =
+            ruleOf('.featured')?.style.getPropertyValue('font-size') === '19px' &&
+            target.style.getPropertyValue('font-size') === '16px' && /^Hidden by inline style/.test(result());
+          engine.undo();
+          await settle();
+          await closeMenu();
         }
 
         progress.textContent = 'menu: new class';
@@ -311,6 +327,37 @@
           const undone = !target.classList.contains('ink-own') && !engine.classes.get('ink-own');
           // Named on the last rung, then one value: the class on the element and its rule, one undo.
           results.menu.theLastRungCreatesANewClassByName = picked && written && oneEntry && undone;
+          await closeMenu();
+        }
+
+        progress.textContent = 'menu: existing class by name';
+        {
+          await openMenu('letter-spacing');
+          const nameField = () => pop()?.querySelector('.lr.new heo-value-field');
+          const submitName = async (name) => {
+            fire(nameField(), 'value-input', name);
+            await settle();
+            fire(nameField(), 'value-submit', name);
+            await settle();
+          };
+          const chip = (key) => text(rung(key)?.querySelector('.uses'));
+          await submitName('card');
+          // A class it wears already is that class's rung, with its real reach: not a "new class" of 1.
+          results.menu.namingAClassItWearsPicksThatClassRung =
+            radioOf(rung('.card|base'))?.getAttribute('aria-checked') === 'true' &&
+            chip('.card|base') === '4×' && / · changes 4 elements/.test(result()) &&
+            radioOf(pop()?.querySelector('.lr.new'))?.getAttribute('aria-checked') === 'false';
+          await wait(2600); // past the merge window, so one entry is one entry
+          const before = engine.history.size;
+          await submitName('note');
+          // One it does not wear is put on it (one undo entry), and its own rung picked: 2 elements.
+          const given = target.classList.contains('note') && engine.history.size === before + 1;
+          results.menu.namingAnExistingClassPutsItOnTheElementAndPicksItsRung =
+            given && radioOf(rung('.note|base'))?.getAttribute('aria-checked') === 'true' &&
+            chip('.note|base') === '2×' && / · changes 2 elements/.test(result()) && !engine.classes.get('note');
+          engine.undo();
+          await settle();
+          results.menu.namingAnExistingClassIsUndoneInOne = !target.classList.contains('note');
           await closeMenu();
         }
 
@@ -495,6 +542,37 @@
           await settle(60);
           // Enter is the keyboard's ✓, at the default place (inline).
           results.adder.enterStillCommits = inlineText('word-spacing') === '4px' && !adderOf('other');
+          engine.undo();
+          await settle();
+        }
+
+        progress.textContent = 'adder: new class by name';
+        {
+          await openAdder('other');
+          await typeIn(nameField('other'), 'word-spacing');
+          await pressEnter(nameField('other'));
+          await settle(60);
+          const classField = () => adderOf('other')?.querySelector('.lr.new heo-value-field');
+          const submitName = async (name) => {
+            fire(classField(), 'value-input', name);
+            await settle();
+            fire(classField(), 'value-submit', name);
+            await settle(60);
+          };
+          const hasField = Boolean(classField());
+          await submitName('card');
+          // The menu's name field, in the adder: an existing class picks its own rung here too.
+          results.adder.theAdderNameFieldPicksAnExistingClassRung = hasField && pickedKey('other') === '.card|base';
+          await submitName('gap-own');
+          const picked = pickedKey('other') === 'new-class|base';
+          await typeIn(valueField('other'), '5px');
+          confirmOf('other')?.click();
+          await settle(60);
+          // A new name: ✓ makes the class by that name, on the element, with the value.
+          results.adder.theAdderLadderNamesANewClassLikeTheMenu =
+            picked && target.classList.contains('gap-own') &&
+            engine.classes.get('gap-own')?.declarations['word-spacing'] === '5px' &&
+            inlineText('word-spacing') === '' && !adderOf('other');
           engine.undo();
           await settle();
         }

@@ -10,7 +10,7 @@
 
       ?state=actual | preview-320 | popover-padding | save-spacing | save-typography-320 |
              add-menu | detach | preview-menu | search-padding |
-             cards | applied | cascade-menu | adder-ladder
+             cards | applied | cascade-menu | adder-ladder | condition-strip
       &theme=dark | light
 
     `--shot` resizes the window to 1440x900 after the page reports, so the page re-places what it
@@ -257,6 +257,17 @@
           await settle();
           need(q('.property-adder[data-adder="search"][data-step="value"]'), 'search adder value step');
           shown = () => q('.top');
+          break;
+        }
+        case 'condition-strip': {
+          // The element's header and the panel-wide strip: Element, the states, the sizes (the one
+          // not in effect at this width dimmed) and the pseudo-element `::before`, then the cards.
+          const strip = need(q('[data-strip="panel"]'), 'panel condition strip');
+          need(strip?.querySelector('[data-cond="state::before"], [data-cond*="::before"]'), 'pseudo-element chip');
+          need(strip?.querySelector('.notnow'), 'dimmed size chip');
+          await openCard('spacing');
+          // From the panel's own top: the element header, then the strip.
+          shown = () => sroot()?.firstElementChild ?? strip;
           break;
         }
         default:

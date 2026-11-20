@@ -8,7 +8,7 @@ import { buildSuggestions, valueKindFor } from '../../suggestions.js';
 import { ladderStyles, renderLadder, renderResult } from './ladder.js';
 import { renderPromote } from './promote.js';
 import { conditionKey, conditionName } from './size-strip.js';
-import { readRow, rowPlace, shownValue, slotWidth, type RowSpec } from './property-row.js';
+import { readRow, rowPlace, shownValue, slotWidth, submitNewClassName, type RowSpec } from './property-row.js';
 import type { StylesHost, StylesUiState } from './types.js';
 
 /**
@@ -59,14 +59,14 @@ export function renderCascadePopover(
       : '',
   ].filter(Boolean);
 
-  const pick = (place: Place, keyboard: boolean): void => {
+  const pick = (key: string, keyboard: boolean): void => {
     host.engine.cancelPreview();
     const places = new Map(host.ui.places);
-    places.set(rowId, place.key);
+    places.set(rowId, key);
     host.patch({ places });
     // An arrow key moves along the group; a press goes to the value it opened.
     host.focusSelector(keyboard
-      ? `.pop [role="radio"][data-place="${CSS.escape(place.key)}"], .pop [data-place="${CSS.escape(place.key)}"] [role="radio"]`
+      ? `.pop [role="radio"][data-place="${CSS.escape(key)}"], .pop [data-place="${CSS.escape(key)}"] [role="radio"]`
       : '.pop .open heo-value-field');
   };
   const draft = host.ui.newClass?.rowId === rowId ? host.ui.newClass.name : '';
@@ -89,17 +89,16 @@ export function renderCascadePopover(
     label: 'Strongest first',
     places: choice.places,
     picked: picked.key,
-    onPick: pick,
+    onPick: (place, keyboard) => pick(place.key, keyboard),
     open: (place) => renderOpen(place, host, spec, rowId, cond, list.applying[0]?.value),
     inactive,
     newClass: {
       draft,
       onDraft: (text) => host.patch({ newClass: { rowId, name: text } }),
-      onSubmit: (text) => {
+      onSubmit: (text, rung) => {
         host.patch({ newClass: { rowId, name: text } });
         if (!host.newClassForm.submit()) return;
-        const rung = choice.places.find((one) => one.key === `new-class|${placeConditionKey(cond)}`);
-        if (rung) pick(rung, false);
+        pick(submitNewClassName(host, element, text, rung), false);
       },
       form: host.newClassForm,
       field: NEW_CLASS_FIELD,

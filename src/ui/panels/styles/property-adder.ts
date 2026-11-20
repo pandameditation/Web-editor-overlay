@@ -13,7 +13,7 @@ import { field } from '../../form-errors.js';
 import { icon } from '../../icons.js';
 import { buildSuggestions, valueKindFor } from '../../suggestions.js';
 import type { ClassEditorHost } from '../class-editor.js';
-import { renderLadder, renderResult } from './ladder.js';
+import { renderLadder, renderResult, type LadderSpec } from './ladder.js';
 import { renderPromote } from './promote.js';
 
 /**
@@ -95,6 +95,8 @@ export interface AdderSpec {
    * and `destinations` is not read.
    */
   places?(property: string): AdderPlaces;
+  /** The ladder's new-class name field, the cascade menu's own (with `places`). */
+  newClass?: LadderSpec['newClass'];
   /** `!important` asked for in the ladder's picked rung, before the value is written. */
   important?: boolean;
   onImportant?(next: boolean): void;
@@ -587,6 +589,7 @@ export function renderAdder(spec: AdderSpec, host: AdderHost): TemplateResult {
     onPick: pick,
     open,
     inactive: places.inactive,
+    ...(spec.newClass ? { newClass: spec.newClass } : {}),
   })}
     ${host.form.error(valueName)}
   </div>`;

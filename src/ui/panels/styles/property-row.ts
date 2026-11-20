@@ -9,6 +9,7 @@ import type {
   WriteTarget,
 } from '../../../core/cascade.js';
 import { longhandsOf, shorthandChain, shorthandGroups, splitImportant, type Declaration } from '../../../core/declaration-list.js';
+import { normalizeClassName } from '../../../core/classes.js';
 import { renderFamilies } from '../class-editor.js';
 import { entryLabel, reachText, shortLabel } from '../../../core/save-plan.js';
 import { mediaApplies } from '../../../core/viewport.js';
@@ -296,12 +297,10 @@ function underCondition(spec: RowSpec, cond: PlaceCondition, one: Contribution):
 export function rowPlace(spec: RowSpec, host: StylesHost, rowId = rowIdOf(spec.scope, spec.property, host.element)): RowPlace {
   const cond = rowCondition(spec.scope);
   const { shown } = readRow(spec);
-  const named = host.ui.newClass?.rowId === rowId ? host.ui.newClass.name.trim() : '';
-  const places = placesFor(spec.model, spec.property, cond, spec.element, {
+  const named = host.ui.newClass?.rowId === rowId ? host.ui.newClass.name : '';
+  const places = withNewClassName(placesFor(spec.model, spec.property, cond, spec.element, {
     ownedClass: (name) => host.engine.classes.get(name) ?? null,
-  }).map((place) => place.key.startsWith('new-class|') && named && place.dest.kind === 'auto-class'
-    ? { ...place, label: `.${named.replace(/^\./, '')}`, dest: { ...place.dest, name: named } }
-    : place);
+  }), named, host);
   const writable = (place: Place | undefined): Place | undefined =>
     place && place.target?.kind !== 'readonly' ? place : undefined;
   const current = shown
@@ -321,14 +320,42 @@ export function rowPlace(spec: RowSpec, host: StylesHost, rowId = rowIdOf(spec.s
   return { cond, places, current, picked, rowId };
 }
 
+/**
+ * The ladder's places with the name typed on the new-class rung: the rung is then that class, to
+ * be made. A name that is a class already is not a new class, so the rung is left as it is (one
+ * element, the editor's name) until Enter picks that class's own rung (`submitNewClassName`).
+ */
+export function withNewClassName(places: readonly Place[], typed: string, host: Pick<StylesHost, 'engine'>): Place[] {
+  const name = typed.trim();
+  if (!name || host.engine.isKnownClass(name)) return [...places];
+  return places.map((place) => place.key.startsWith('new-class|') && place.dest.kind === 'auto-class'
+    ? { ...place, label: `.${name.replace(/^\./, '')}`, dest: { ...place.dest, name } }
+    : place);
+}
+
+/**
+ * Enter on the new-class rung's name, once the name is valid: the key of the rung to pick. A new
+ * name is the new-class rung itself, named. A class that exists already is put on the element (one
+ * undo entry, when it does not wear it yet) and its own rung is picked, with the reach and the
+ * result line it really has: a value there changes every element that wears it.
+ */
+export function submitNewClassName(host: StylesHost, element: HTMLElement, typed: string, rung: Place): string {
+  const name = normalizeClassName(typed);
+  if (!name || !host.engine.isKnownClass(name)) return rung.key;
+  if (!element.classList.contains(name)) host.engine.toggleClass(name, element);
+  host.patch({ newClass: null });
+  return `.${CSS.escape(name)}|${rung.key.slice('new-class|'.length)}`;
+}
+
 const isInlinePlace = (place: Place | null | undefined): boolean =>
   place?.dest.kind === 'target' && place.dest.target.kind === 'inline';
 
 /**
- * Write one value where the row's place says: the element's own value moves when another place is
- * picked for it, so the inline copy does not go on beating it. Empty removes the element's own
- * value; a shared rule's declaration is removed with the trash, which asks first. A pending
- * `!important` asked for on an empty place goes in with the first value.
+ * Write one value where the row's place says, and only there: a value somewhere else (the
+ * element's inline one included) stays, as the menu's own field leaves it, so the result line's
+ * "hidden by" holds for both. Empty removes the element's own value; a shared rule's declaration
+ * is removed with the trash, which asks first. A pending `!important` asked for on an empty place
+ * goes in with the first value.
  */
 export function writeChosen(
   host: StylesHost,
@@ -361,8 +388,7 @@ export function writeChosen(
     places.delete(choice.rowId);
     host.patch({ places, newClass: null });
   }
-  const moving = isInlinePlace(current) && !isInlinePlace(picked);
-  const { hint } = engine.writeDeclarationTo(picked.dest, property, written, moving ? { move: element } : {});
+  const { hint } = engine.writeDeclarationTo(picked.dest, property, written);
   if (hint) engine.notify(hint, 'info');
 }
 

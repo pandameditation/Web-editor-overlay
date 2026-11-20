@@ -2397,8 +2397,6 @@ export class HeoStylesPanel extends HeoElement {
         dest: choice.picked.dest,
         property,
         value,
-        move: choice.current?.dest?.kind === 'target' && choice.current.dest.target.kind === 'inline' &&
-          !(choice.picked.dest?.kind === 'target' && choice.picked.dest.target.kind === 'inline'),
       })),
       'Adjust spacing',
       el,
@@ -2624,10 +2622,9 @@ export class HeoStylesPanel extends HeoElement {
         model.cascade(property, ctx).applying.some((one) =>
           !one.via && sameTarget(targetOf(one, el), into)))
       : [];
-    const moving = choice.current?.dest?.kind === 'target' && choice.current.dest.target.kind === 'inline' && into?.kind !== 'inline';
     this.editor.writeDeclarationsTo(
       [
-        { dest, property: kind, value, move: moving, remove: !value },
+        { dest, property: kind, value, remove: !value },
         ...folded.map((property) => ({ dest, property, value: '', remove: true })),
       ],
       value ? `Set ${kind}` : `Remove ${kind}`,
@@ -2732,20 +2729,19 @@ export class HeoStylesPanel extends HeoElement {
     this.editor.cancelPreview();
     const into = targetOfChoice(choice);
     const declaredHere = (property: string): boolean => declaredIn(property, into);
-    const moving = choice.current?.dest?.kind === 'target' && choice.current.dest.target.kind === 'inline' && into?.kind !== 'inline';
-    const writes: Array<{ dest: NonNullable<typeof dest>; property: string; value: string; move?: boolean; remove?: boolean }> = [];
+    const writes: Array<{ dest: NonNullable<typeof dest>; property: string; value: string; remove?: boolean }> = [];
     if (colourOnly) {
       if (next.color || declaredHere('background-color')) {
-        writes.push({ dest, property: 'background-color', value: next.color, move: moving, remove: !next.color });
+        writes.push({ dest, property: 'background-color', value: next.color, remove: !next.color });
       }
     } else {
       const value = composeBackground(next);
-      writes.push({ dest, property: 'background', value, move: moving, remove: !value });
+      writes.push({ dest, property: 'background', value, remove: !value });
       for (const property of BACKGROUND_LONGHANDS) {
         if (property !== 'background-blend-mode' && declaredHere(property)) writes.push({ dest, property, value: '', remove: true });
       }
       if (blend || declaredHere('background-blend-mode')) {
-        writes.push({ dest, property: 'background-blend-mode', value: blend, move: moving, remove: !blend });
+        writes.push({ dest, property: 'background-blend-mode', value: blend, remove: !blend });
       }
     }
     if (!writes.length) return;

@@ -35,8 +35,9 @@ export function displayName(name: string, max = SOURCE_NAME_MAX): string {
  * now carries the "now" badge whatever is picked, and a value a stronger rung hides is struck
  * through. Picking a rung opens it: the caller's value field, `!important` and the result line sit
  * right under the picked rung, so what is being edited and where are read together. The last rung
- * is a class of the element's own, named here or automatically. The same control is the cascade
- * menu of a row and the adder's "where it goes", so the two never disagree.
+ * is a class of the element's own, named here or automatically; naming a class that exists picks
+ * that class's own rung instead. The same control, name field included, is the cascade menu of a
+ * row and the adder's "where it goes", so the two never disagree.
  */
 export interface LadderSpec {
   property: string;
@@ -55,8 +56,8 @@ export interface LadderSpec {
   newClass?: {
     draft: string;
     onDraft(text: string): void;
-    /** Enter in the name field: picks the rung under that name once the name is valid. */
-    onSubmit(text: string): void;
+    /** Enter in the name field, on the rung `place`: picks a rung for that name once it is valid. */
+    onSubmit(text: string, place: Place): void;
     form: FormErrors;
     /** The form's field name for the name field. */
     field: string;
@@ -129,7 +130,7 @@ export function renderLadder(spec: LadderSpec): TemplateResult {
               .suggestions=${[]}
               @value-input=${(event: CustomEvent<{ value: string }>) => form.onDraft(event.detail.value)}
               @value-change=${(event: CustomEvent<{ value: string }>) => form.onDraft(event.detail.value)}
-              @value-submit=${(event: CustomEvent<{ value: string }>) => form.onSubmit(event.detail.value)}
+              @value-submit=${(event: CustomEvent<{ value: string }>) => form.onSubmit(event.detail.value, place)}
             ></heo-value-field>`
           : nothing}
         </div>

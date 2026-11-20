@@ -4107,18 +4107,24 @@ export class EditorEngine {
   }
 
   /**
+   * Whether a class name is a class already: in the registry, named by a rule, or worn on the page.
+   * Naming one on the cascade ladder's "new class" rung is picking that class, not making one.
+   */
+  isKnownClass(name: string): boolean {
+    const typed = normalizeClassName(name);
+    if (!typed) return false;
+    return this.classes.get(typed) !== undefined ||
+      this.rules.list().some((rule) => mentionsClass(rule.selector, typed)) ||
+      document.querySelector(`.${CSS.escape(typed)}`) !== null;
+  }
+  /**
    * The class an `auto-class` destination writes: the name the user typed (normalised), else the
    * automatic one. A typed name is "reused" when it is a class already: its rule is then added to,
    * as naming an existing class anywhere else in the editor does.
    */
   #autoClassOf(dest: Extract<AddDestination, { kind: 'auto-class' }>): { name: string; reuse: boolean } {
     const typed = dest.name ? normalizeClassName(dest.name) : '';
-    if (typed) {
-      const known = this.classes.get(typed) !== undefined ||
-        this.rules.list().some((rule) => mentionsClass(rule.selector, typed)) ||
-        document.querySelector(`.${CSS.escape(typed)}`) !== null;
-      return { name: typed, reuse: known };
-    }
+    if (typed) return { name: typed, reuse: this.isKnownClass(typed) };
     return this.#autoClass(dest.element, this.#suffixFor(dest.media, dest.state));
   }
 
@@ -4265,44 +4271,27 @@ export class EditorEngine {
   /**
    * Write one declaration where a row's cascade ladder says, as one undo entry.
    *
-   * `move` names the element whose inline declaration of the property goes in the same entry: the
-   * value was the element's own, and choosing a rule or a class for it is moving it there. Left
-   * inline, it would go on beating the rule it was moved to, and the edit would look like nothing.
+   * Only there: a value elsewhere (the element's inline one included) is left as it is, so what
+   * the ladder's result line said ("hidden by inline") is what happens.
    */
-  writeDeclarationTo(
-    dest: AddDestination,
-    property: string,
-    value: string,
-    options: { move?: HTMLElement } = {},
-  ): { hint: string | null } {
-    let hint: string | null = null;
-    const write = (): void => {
-      if (dest.kind === 'target' && dest.target.kind === 'inline') {
-        this.overrideStyle(property, value, dest.target.element);
-        return;
-      }
-      if (dest.kind === 'target') this.setDeclaration(dest.target, property, value);
-      else hint = this.addDeclaration(dest, property, value).hint;
-    };
-    const from = options.move;
-    if (from && this.#committedInlineText(from, property)) {
-      this.#asOneEntry(`Move ${property}`, () => {
-        this.setStyle(property, '', from);
-        write();
-      });
-    } else {
-      write();
+  writeDeclarationTo(dest: AddDestination, property: string, value: string): { hint: string | null } {
+    if (dest.kind === 'target' && dest.target.kind === 'inline') {
+      this.overrideStyle(property, value, dest.target.element);
+      return { hint: null };
     }
-    return { hint };
+    if (dest.kind === 'target') {
+      this.setDeclaration(dest.target, property, value);
+      return { hint: null };
+    }
+    return { hint: this.addDeclaration(dest, property, value).hint };
   }
 
   /**
    * Several declarations, each where its own destination says, as one undo entry: a box-editor
-   * batch, whose sides can be written in different places. `move` takes an element's own inline
-   * value away in the same entry, as `writeDeclarationTo` does for one.
+   * batch, whose sides can be written in different places. Nothing elsewhere is taken away.
    */
   writeDeclarationsTo(
-    writes: ReadonlyArray<{ dest: AddDestination; property: string; value: string; move?: boolean; remove?: boolean }>,
+    writes: ReadonlyArray<{ dest: AddDestination; property: string; value: string; remove?: boolean }>,
     label: string,
     el: HTMLElement,
   ): void {
@@ -4323,7 +4312,6 @@ export class EditorEngine {
           continue;
         }
         if (!splitImportant(one.value).value) continue;
-        if (one.move && this.#committedInlineText(el, one.property)) this.setStyle(one.property, '', el);
         if (one.dest.kind === 'target') this.setDeclaration(one.dest.target, one.property, one.value);
         else this.addDeclaration(one.dest, one.property, one.value);
       }

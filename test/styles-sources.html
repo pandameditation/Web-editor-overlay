@@ -862,8 +862,8 @@
           addButton(block('.card', 'base'))?.click();
           await settle(200);
           const cardAdder = () => block('.card', 'base')?.querySelector('.property-adder');
-          // An adder's field, at either step: the name, then the value.
-          const fieldOf = (adder) => adder?.querySelector('heo-value-field');
+          // An adder's field, at either step: the name, then the value (not the new-class rung's name).
+          const fieldOf = (adder) => adder?.querySelector('heo-value-field:not(.ncname)');
           const inputOf = (adder) => fieldOf(adder)?.shadowRoot?.querySelector('input[type="text"]');
           const stepOf = (adder) => adder?.dataset.step ?? null;
           // How an open adder looks, measured: the panel's used to show a stray "add" line above
@@ -1632,8 +1632,9 @@
             engine.undo();
             await settle(250);
             /*
-             * Picking another destination for the element's own value moves it there: font-size is
-             * inline, and written into .card it leaves the style attribute, as one undo entry.
+             * Picking another destination for the element's own value writes there and only there:
+             * font-size is inline, and written into .card the inline value stays (and still wins, as
+             * the ladder's result line said), as one undo entry.
              */
             await openLadder(effRow('font-size'));
             const inlineFirst = checkedKey() === 'inline';
@@ -1644,12 +1645,12 @@
             await typeInto(sizeInput, '17px');
             key(sizeInput, 'Enter');
             await settle(250);
-            const moved = siteRule('.card')?.style.getPropertyValue('font-size') === '17px' && !target.style.fontSize;
+            const written = siteRule('.card')?.style.getPropertyValue('font-size') === '17px' && target.style.fontSize === '16px';
             const oneEntry = engine.history.size === before + 1;
             engine.undo();
             await settle(250);
-            results.effective.choosingAClassMovesTheInlineValueThere =
-              inlineFirst && moved && oneEntry &&
+            results.effective.choosingAClassWritesThereAndLeavesTheInlineValue =
+              inlineFirst && written && oneEntry &&
               target.style.fontSize === '16px' && siteRule('.card')?.style.getPropertyValue('font-size') === '15px';
             /*
              * Short plain values (margin's common values) are a grid of cells, four to a line, so the

@@ -3,6 +3,7 @@ import { css, html, nothing, type CSSResult, type TemplateResult } from 'lit';
 import { repeat } from 'lit/directives/repeat.js';
 import { EDITABLE_STATES, isPseudoElement, isWidthQuery, mediaNow, mediaShort, needsGeneratedContent, pseudoElementNamed } from '../../../core/breakpoints.js';
 import { classFamily, withState, type Family, type RuleEntry, type WriteTarget } from '../../../core/cascade.js';
+import type { Place } from '../../../core/cascade-places.js';
 import { simpleClassName } from '../../../core/classes.js';
 import { escapeRegExp } from '../../../core/css.js';
 import {
@@ -28,7 +29,8 @@ import { renderAdder, stylesDestination, valueStepDraft, type AdderDestination, 
 import { bestRow, renderSearchField, renderSearchPopover } from './search-popover.js';
 import { pseudoElementSuggestions } from '../../suggestions.js';
 import type { HeoValueField } from '../../controls/value-field.js';
-import { previewSlot } from './property-row.js';
+import { previewSlot, submitNewClassName, withNewClassName } from './property-row.js';
+import { NEW_CLASS_FIELD } from './cascade-popover.js';
 import {
   barConditions,
   conditionKey,
@@ -198,6 +200,14 @@ export function renderBlockAdder(
   const { ui, engine } = host;
   const open = ui.adder?.id === id ? ui.adder : null;
   const el = host.element;
+  // The new-class rung's name, kept where the menu keeps its own, under the adder's key.
+  const nameKey = `adder:${id}`;
+  const named = ui.newClass?.rowId === nameKey ? ui.newClass.name : '';
+  const pickKey = (key: string): void => {
+    const adder = host.ui.adder;
+    if (adder) host.patch({ adder: { ...adder, dest: key } });
+  };
+  const places = options.places;
   return html`<div class="block-add">
     ${renderAdder(
     {
@@ -206,7 +216,26 @@ export function renderBlockAdder(
       selected: open?.dest,
       disclosure: true,
       open: Boolean(open),
-      places: options.places,
+      ...(places
+        ? {
+          places: (property: string): AdderPlaces => {
+            const found = places(property);
+            return { ...found, list: withNewClassName(found.list, named, host) };
+          },
+          newClass: {
+            draft: named,
+            onDraft: (text: string) => host.patch({ newClass: { rowId: nameKey, name: text } }),
+            onSubmit: (text: string, rung: Place) => {
+              host.patch({ newClass: { rowId: nameKey, name: text } });
+              if (!host.newClassForm.submit()) return;
+              pickKey(submitNewClassName(host, el, text, rung));
+              host.focusSelector(`.property-adder[data-adder="${CSS.escape(id)}"] .open heo-value-field.new-value`);
+            },
+            form: host.newClassForm,
+            field: NEW_CLASS_FIELD,
+          },
+        }
+        : {}),
       important: Boolean(open?.important),
       onImportant: (next) => {
         const adder = host.ui.adder;
@@ -214,17 +243,14 @@ export function renderBlockAdder(
       },
       onOpen: () => {
         host.form.reset();
-        host.patch({ adder: { id, draft: '', dest: '' }, menu: null, popover: null });
+        host.patch({ adder: { id, draft: '', dest: '' }, menu: null, popover: null, newClass: null });
       },
       onCancel: () => {
         host.form.reset();
-        host.patch({ adder: null, menu: null });
+        host.patch({ adder: null, menu: null, newClass: null });
         host.focusSelector(options.cancelFocus ?? `.add-prop[data-adder="${CSS.escape(id)}"]`);
       },
-      onPick: (key) => {
-        const adder = host.ui.adder;
-        if (adder) host.patch({ adder: { ...adder, dest: key } });
-      },
+      onPick: pickKey,
       seed: (property) => seedFor(el, state, property),
       // The value being typed, shown where it would be written: inline and an existing rule have
       // their previews; a rule or class not made yet shows once it is.
@@ -240,7 +266,7 @@ export function renderBlockAdder(
       commit: (property, value, dest) => {
         if (!dest.dest) return;
         engine.cancelPreview();
-        host.patch({ adder: null, menu: null });
+        host.patch({ adder: null, menu: null, newClass: null });
         const { hint } = engine.addDeclaration(dest.dest, property, value);
         host.flashRow(property, id);
         if (options.onAdded) options.onAdded(hint, property);

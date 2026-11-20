@@ -120,9 +120,14 @@
         await settle(500);
 
         progress.textContent = 'moved';
-        // Moved to a new class: two blocks, so no order control, but listed under margin with a note.
+        // Written to a new class: the inline side stays where it is (a write never moves a value).
         await writeVia('new-class|', '21px');
+        const leftInline = /margin-left:\s*20px/.test(el.getAttribute('style') ?? '') && el.classList.length === 2;
+        // Then taken off inline: two blocks, so no order control, but listed under margin with a note.
+        engine.overrideStyle('margin-left', '', el);
+        await settle(400);
         results.moved = {
+          aNewClassWriteLeavesTheInlineSide: leftInline,
           writtenInTheClass: !/margin-left/.test(el.getAttribute('style') ?? '') && el.classList.length === 2,
           listedUnderItsShorthand: !familyRows() && elsewhereRows() === 'margin-left' &&
             Boolean(list()?.querySelector('.family-loose .fam-elsewhere')),
