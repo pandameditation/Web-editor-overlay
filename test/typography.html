@@ -71,8 +71,9 @@
       engine.setDockTab('styles');
       const h = document.getElementById('h');
       const sroot = () => deep('heo-styles-panel').shadowRoot;
-      const section = (heading) => Array.from(sroot().querySelectorAll('heo-section')).find((one) => one.getAttribute('heading') === heading);
-      const typo = () => section('Typography');
+      // The panel's cards, by id: Text style is `typography`, Shadow & effects `effects`.
+      const section = (id) => sroot().querySelector(`heo-section[data-card="${id}"]`);
+      const typo = () => section('typography');
       const rowNames = () => Array.from(typo().querySelectorAll('.rows .row .pn')).map(flat);
       const field = (property) => typo().querySelector(`heo-value-field[data-property="${property}"]`);
       const dialogEl = () => typo().querySelector('heo-text-style-dialog');
@@ -82,9 +83,12 @@
         target.dispatchEvent(new CustomEvent(type, { detail: { value }, bubbles: true, composed: true }));
         await settle(300);
       };
+      // Cards start closed: the Text style card is opened on every selection, as a user would.
       const select = async (el) => {
         api.select(el);
         await settle(600);
+        if (typo() && !typo().open) typo().shadowRoot?.querySelector('.tile')?.click();
+        await settle(200);
       };
       const typeName = async (text) => {
         const input = dlg().querySelector('input');
@@ -97,13 +101,14 @@
 
       await check('rows', async () => {
         const names = rowNames();
-        const effects = section('Effects');
+        const effects = section('effects');
         const effectsOpen = effects && !effects.open ? (effects.shadowRoot?.querySelector('button')?.click(), await settle(200)) : null;
         void effectsOpen;
         return {
           textStylesComeFirst: Boolean(typo().querySelector('[data-text-styles]')) && Boolean(styleRow('text-heading-1')),
           theWornStyleIsPicked: styleRow('text-heading-1')?.getAttribute('aria-current') === 'true',
-          rowsAreNamedForWhatTheyDo: names.join(',') === 'Color,Font,Weight,Style,Line,Align,Case,Size,Line height,Letter spacing,Word spacing,Outline,Outline color,Shadow',
+          // Then white-space, which the card lists by its CSS name: how the box lays its text out.
+          rowsAreNamedForWhatTheyDo: names.join(',') === 'Color,Font,Weight,Style,Line,Align,Case,Size,Line height,Letter spacing,Word spacing,Outline,Outline color,Shadow,white-space',
           theCssNameIsTheTooltip: typo().querySelector('.row[data-property="letter-spacing"] .name')?.getAttribute('title') === 'letter-spacing',
           alignAndCaseAreSegmented: Boolean(typo().querySelector('.row[data-property="text-align"] heo-segmented')) && Boolean(typo().querySelector('.row[data-property="text-transform"] heo-segmented')),
           shadowMovedHere: Boolean(field('text-shadow')) && !effects?.querySelector('heo-value-field[data-property="text-shadow"]'),

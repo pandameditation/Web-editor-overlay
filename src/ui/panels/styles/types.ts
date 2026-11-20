@@ -13,18 +13,22 @@ import type { AdderHost } from './property-adder.js';
  * piece the same `ui` and one `patch` keeps those rules in the panel instead of in six places.
  */
 
-/** Which cascade a row shows and where its edits go. */
+/**
+ * Which cascade a row shows and where its edits go: the condition picked on the panel's strip,
+ * the same for every card's rows and rich editors.
+ */
 export type RowScope =
-  /** The element's own rows in Effective styles. */
+  /** Element: what the element renders with. */
   | { kind: 'element' }
-  /** A size group in Effective styles: the cascade at the slot's width. */
+  /** A size: the cascade at the slot's width. */
   | { kind: 'size'; slot: string }
-  /** A state or pseudo-element group: edits go into that state's rule. */
-  /** A state, under a media key (`tablet`, `other:print`) when `slot` is set: `:hover ≥768px`. */
+  /**
+   * A state or pseudo-element: edits go into that state's rule. Under a media key (`tablet`,
+   * `other:print`) when `slot` is set: `:hover ≥768px`. A pseudo-element with no slot reads any
+   * of its rules in effect now.
+   */
   | { kind: 'state'; state: string; slot?: string }
-  /** A category section (Typography, Spacing…). */
-  | { kind: 'section'; id: string }
-  /** In its parent: the element's own rows there, or the parent's controls. */
+  /** The parent's own controls in the In its parent card. */
   | { kind: 'parent'; element: HTMLElement };
 
 export interface StylesUiState {
@@ -59,8 +63,6 @@ export interface StylesUiState {
   pendingImportant: ReadonlySet<string>;
   /** The name being typed on a ladder's new-class rung, for one row at a time. */
   newClass: { rowId: string; name: string } | null;
-  /** A pseudo-element added to Effective styles, shown empty until its first property. */
-  effPseudo: string | null;
   /** The one open menu, by id. */
   menu: { id: string } | null;
   /**
@@ -68,8 +70,13 @@ export interface StylesUiState {
    * and the `!important` asked for there before the value is written.
    */
   adder: { id: string; draft: string; dest: string; important?: boolean } | null;
-  /** Effective styles' hand-picked size; null follows the preview (R13). */
-  effPick: string | null;
+  /**
+   * The condition picked on the panel's strip (a condition key, pseudo-elements included); null
+   * follows the preview's size (R13).
+   */
+  cond: string | null;
+  /** Cards to edit by category, or Applied to see everything set at once. */
+  view: 'cards' | 'applied';
   /** The header's "find or create a class" field is showing. */
   finderOpen: boolean;
   /** The header's "N rules" chip is open on the rules' own chips. */

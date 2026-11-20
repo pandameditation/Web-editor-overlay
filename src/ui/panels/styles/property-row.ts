@@ -20,9 +20,8 @@ import { renderUses } from '../class-editor.js';
 import type { RowScope, StylesHost } from './types.js';
 
 /**
- * The one property row: Effective styles, its size and state groups, every category section and
- * In its parent all draw this, so a value means the same thing and an edit goes the same way
- * wherever it is made.
+ * The one property row: every card of the Styles panel, its Applied view and In its parent all
+ * draw this, so a value means the same thing and an edit goes the same way wherever it is made.
  *
  * Name · value · trash. The name is a button that opens the property's cascade ladder, where the
  * place the row edits is picked; it carries the reach chip when that place styles more than this
@@ -140,8 +139,6 @@ export function scopeKey(scope: RowScope, selected: HTMLElement): string {
       return `size:${scope.slot}`;
     case 'state':
       return `state:${scope.state}${scope.slot && scope.slot !== 'base' ? `@${scope.slot}` : ''}`;
-    case 'section':
-      return `section:${scope.id}`;
     case 'parent':
       return scope.element === selected ? 'parent:self' : 'parent:up';
   }

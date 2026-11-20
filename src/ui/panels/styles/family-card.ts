@@ -41,6 +41,7 @@ import {
   slotMedia,
   slotName,
   type BarChip,
+  type ConditionOptions,
 } from './size-strip.js';
 import type { PendingState, StylesHost } from './types.js';
 import type { CssPasteOptions } from '../../../core/editor.js';
@@ -52,7 +53,7 @@ import type { CssPasteOptions } from '../../../core/editor.js';
  * class is the same thing in both panels and editing it here changes every element wearing it,
  * exactly as it does there. A card is a selector family: `.card`, its sizes and its states, since
  * those are what an author thinks of as "the card styles". The cascade is not traced here; that is
- * Effective styles' job, and dimming a card's rows by what beats them on one element made the card
+ * the cascade ladder's job (a row's name, in the panel), and dimming a card's rows by what beats them on one element made the card
  * read as broken for the other elements it styles.
  */
 
@@ -155,8 +156,8 @@ function renderRows(target: DeclarationTarget, list: readonly Declaration[], hos
 
 /**
  * The head of a block of declarations: its icon, its name (`:hover`, `≤767px`), what kind it is,
- * then whatever the place adds at the end (a card's trash, Effective's "when it applies" note).
- * One markup for the card blocks and the Effective groups, so they read as the same thing.
+ * then whatever the place adds at the end (a card's trash). One markup for every card block, so
+ * they read as the same thing.
  */
 export function renderBlockHeader(
   iconName: string,
@@ -525,8 +526,8 @@ export function renderFamilyCard(
 /**
  * "+ Add pseudo-element" (R24): the same search popover as the bar's "+", listing the
  * pseudo-elements not offered yet. Picking one hands it to `onPick`, which adds its block, written
- * as nothing until its first property, and says why when it refuses. Cards and Effective styles
- * both draw this one. Not under a picked state: a pseudo-element is a block under Always or a
+ * as nothing until its first property, and says why when it refuses. Source cards draw it (the
+ * panel's own strip offers pseudo-elements as conditions instead). Not under a picked state: a pseudo-element is a block under Always or a
  * media query, and one added there had no block to show in.
  */
 export function renderPseudoAdder(
@@ -585,11 +586,11 @@ export function renderPseudoAdder(
  */
 export function removeCondition(
   host: StylesHost,
-  options: { owner: string; key: string; entries: readonly RuleEntry[]; onCleared(): void },
+  options: { owner: string; key: string; entries: readonly RuleEntry[]; onCleared(): void } & ConditionOptions,
 ): void {
   const { engine, model } = host;
   const { owner, key } = options;
-  const under = options.entries.filter((entry) => conditionOf(model, entry) === key && entry.declarations.length);
+  const under = options.entries.filter((entry) => conditionOf(model, entry, options) === key && entry.declarations.length);
   const writable = under.filter((entry) => entry.target.kind !== 'readonly');
   const name = conditionName(model, key);
   const clear = (): void => {

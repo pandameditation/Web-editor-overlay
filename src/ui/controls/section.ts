@@ -11,6 +11,11 @@ import { baseStyles } from '../theme.js';
  * groups a user works in across selections rather than resetting every time.
  *
  * Fires `section-toggle` with `{ open }`.
+ *
+ * `card` draws it as a tile instead, for the Styles panel's grid of categories: closed it is one
+ * button (its picture in the `art` slot, else its glyph, then its name, count and `summary`); open
+ * it is the same head and body as a section, and the grid gives it the whole row. One component
+ * for both so a card opens, closes and remembers the way every section of the overlay does.
  */
 @customElement('heo-section')
 export class HeoSection extends LitElement {
@@ -69,6 +74,96 @@ export class HeoSection extends LitElement {
         display: flex;
         gap: 4px;
       }
+
+      /* A card: a tile of the Styles panel's category grid. */
+      :host([card]) {
+        min-width: 0;
+        border: 1px solid var(--heo-line);
+        border-radius: var(--heo-r-md);
+        background: var(--heo-raised);
+      }
+      :host([card]:last-of-type) {
+        border-bottom: 1px solid var(--heo-line);
+      }
+      :host([card][open]) {
+        border-color: var(--heo-line-strong);
+      }
+      :host([card]) .head {
+        padding: 8px 10px;
+        border-radius: var(--heo-r-md) var(--heo-r-md) 0 0;
+      }
+      :host([card]) .body {
+        padding: 0 10px 10px;
+      }
+      .tile {
+        display: grid;
+        align-content: start;
+        gap: 3px;
+        width: 100%;
+        min-width: 0;
+        padding: 5px 5px 8px;
+        border: 0;
+        border-radius: var(--heo-r-md);
+        background: transparent;
+        color: var(--heo-text);
+        text-align: left;
+        cursor: pointer;
+        transition: background var(--heo-fast);
+      }
+      .tile:hover {
+        background: var(--heo-hover);
+      }
+      .tile:focus-visible,
+      .head:focus-visible {
+        outline: 2px solid var(--heo-focus-ring);
+        outline-offset: -2px;
+      }
+      .art {
+        display: grid;
+        place-items: center;
+        height: 52px;
+        margin-bottom: 3px;
+        overflow: hidden;
+        border-radius: var(--heo-r-sm);
+        background: var(--heo-sunken);
+        color: var(--heo-text-dim);
+      }
+      .tile .ct {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 6px;
+        min-width: 0;
+        padding: 0 3px;
+      }
+      .tile .title {
+        overflow: hidden;
+        color: var(--heo-text);
+        font-size: 11.5px;
+        font-weight: 600;
+        letter-spacing: 0;
+        text-overflow: ellipsis;
+        text-transform: none;
+        white-space: nowrap;
+      }
+      .tile .count {
+        flex: 0 0 auto;
+        padding: 0 6px;
+        border-radius: 999px;
+        background: var(--heo-accent-soft);
+        color: var(--heo-accent-text);
+      }
+      .sum {
+        min-height: 1.35em;
+        padding: 0 3px;
+        overflow: hidden;
+        color: var(--heo-text-dim);
+        font-family: var(--heo-mono);
+        font-size: 10px;
+        line-height: 1.35;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
     `,
   ];
 
@@ -76,8 +171,28 @@ export class HeoSection extends LitElement {
   @property({ type: Boolean, reflect: true }) open = false;
   @property({ type: String }) badge = '';
   @property({ type: String }) glyph = '';
+  /** Drawn as a tile of a card grid while closed. */
+  @property({ type: Boolean, reflect: true }) card = false;
+  /** A card's one line under its name: what it holds, at a glance. */
+  @property({ type: String }) summary = '';
 
   override render(): TemplateResult {
+    if (this.card && !this.open) {
+      return html`<button
+        class="tile"
+        type="button"
+        aria-expanded="false"
+        title=${this.summary ? `${this.heading}: ${this.summary}` : this.heading}
+        @click=${this.#toggle}
+      >
+        <span class="art" aria-hidden="true"><slot name="art">${this.glyph ? icon(this.glyph, 18) : nothing}</slot></span>
+        <span class="ct">
+          <span class="title">${this.heading}</span>
+          ${this.badge ? html`<span class="count">${this.badge}</span>` : nothing}
+        </span>
+        <span class="sum">${this.summary}</span>
+      </button>`;
+    }
     return html`
       <button
         class="head"
@@ -98,7 +213,13 @@ export class HeoSection extends LitElement {
   }
 
   #toggle(): void {
+    // The tile and the head are different buttons: the one pressed goes, so focus follows to the other.
+    const focused = Boolean(this.shadowRoot?.activeElement);
     this.open = !this.open;
+    if (focused && this.card) {
+      void this.updateComplete.then(() =>
+        this.shadowRoot?.querySelector<HTMLElement>(this.open ? '.head' : '.tile')?.focus({ preventScroll: true }));
+    }
     this.dispatchEvent(
       new CustomEvent('section-toggle', {
         detail: { open: this.open },

@@ -32,13 +32,20 @@ import { bestRow, renderSearchField, renderSearchPopover } from './search-popove
  * though it were in effect, so a rule nobody is previewing still shows its values; pressing it
  * again goes back to Always. A condition that declares nothing has no button: "+" offers the states
  * and the page's media queries not on the bar, then "Add a media query…" for any other (the sizes
- * first), and picking one puts it on the bar, where the "+" was, to be filled. Pseudo-elements are not
- * conditions: they stay blocks under whichever condition is picked.
+ * first), and picking one puts it on the bar, where the "+" was, to be filled. On a source card
+ * pseudo-elements are not conditions: they stay blocks under whichever condition is picked. On the
+ * Styles panel's own strip they are (`{ pseudo: 'condition' }`): picking `::before` there makes every
+ * card read and write the pseudo-element, the way picking `:hover` does.
  *
- * Effective styles and every source card draw it, so picking looks and counts the same wherever it
+ * The panel's strip and every source card draw it, so picking looks and counts the same wherever it
  * is done. A media condition not in effect at the width the page renders at is drawn dashed, never
  * faded: it is still readable and still a choice.
  */
+
+/** How pseudo-elements are counted: blocks under a condition (cards), or conditions (the panel). */
+export interface ConditionOptions {
+  pseudo?: 'block' | 'condition';
+}
 
 /*
  * Condition keys.
@@ -61,10 +68,13 @@ export function conditionParts(key: string): { media: string; state: string } {
   return at === -1 ? { media: 'base', state: rest } : { media: rest.slice(at + 1), state: rest.slice(0, at) };
 }
 
-/** The condition a rule declares under. A pseudo-element's rule is a block under its media. */
-export function conditionOf(model: ElementModel, entry: RuleEntry): string {
+/**
+ * The condition a rule declares under. A pseudo-element's rule is a block under its media, unless
+ * pseudo-elements are conditions (the panel's strip), where it is `state:::before` like a state.
+ */
+export function conditionOf(model: ElementModel, entry: RuleEntry, options: ConditionOptions = {}): string {
   const media = model.slotOf(entry);
-  return isPseudoElement(entry.state) ? media : conditionKey(media, entry.state);
+  return isPseudoElement(entry.state) && options.pseudo !== 'condition' ? media : conditionKey(media, entry.state);
 }
 
 /** The media key a query lands on: its slot when it is one, else `other:<media>`. */
@@ -113,17 +123,19 @@ export interface BarChip {
 /**
  * The bar for a set of rules: one button per condition they declare under, plus `extra` (picked
  * from ⋮, or a state added and not written yet) while it is empty. While a width is previewed, a
- * media condition not in effect there is left out, as its rules are.
+ * media condition not in effect there is left out, as its rules are, unless `offWidth` is `dim`:
+ * the panel's strip keeps it, drawn as not in effect, since it is where a value for that size goes.
  */
 export function barConditions(
   model: ElementModel,
   entries: readonly RuleEntry[],
   previewWidth: number | null,
   extra: readonly string[] = [],
+  options: ConditionOptions & { offWidth?: 'hide' | 'dim' } = {},
 ): { chips: BarChip[]; count(key: string): number } {
   const counts = new Map<string, number>();
   for (const entry of entries) {
-    const key = conditionOf(model, entry);
+    const key = conditionOf(model, entry, options);
     counts.set(key, (counts.get(key) ?? 0) + entry.declarations.length);
   }
   const count = (key: string): number => counts.get(key) ?? 0;
@@ -132,7 +144,7 @@ export function barConditions(
   for (const key of extra) if (key !== 'base') keys.add(key);
   const visible = (key: string): boolean => {
     const media = slotMedia(model, key);
-    return media === null || previewWidth === null || mediaApplies(media, previewWidth);
+    return media === null || previewWidth === null || options.offWidth === 'dim' || mediaApplies(media, previewWidth);
   };
   // Sizes in slot order, then other media, then states in the state list's order.
   const slotOrder = model.slots().map((one) => one.key);
@@ -172,19 +184,29 @@ export function barConditions(
   return { chips, count };
 }
 
+/** What "+" offers, by kind. `pseudos` only where pseudo-elements are conditions. */
+export interface RemainingConditions {
+  media: Array<{ key: string; icon: string; label: string; note: string }>;
+  states: Array<{ key: string; label: string; note: string }>;
+  pseudos?: Array<{ key: string; label: string; note: string }>;
+}
+
 /**
  * What "+" offers: every condition not on the bar. Sizes not in effect at a previewed width are left
- * out, as they are from the bar. States are offered under the picked condition's media, so a state
- * added while a size is picked is that size's state, as it was from the adder.
+ * out, as they are from the bar (kept with `offWidth: 'dim'`, as the panel's strip keeps them).
+ * States are offered under the picked condition's media, so a state added while a size is picked is
+ * that size's state, as it was from the adder; pseudo-elements likewise, where they are conditions.
  */
 export function remainingConditions(
   model: ElementModel,
   onBar: readonly string[],
   previewWidth: number | null,
   picked = 'base',
-): { media: Array<{ key: string; icon: string; label: string; note: string }>; states: Array<{ key: string; label: string; note: string }> } {
+  options: ConditionOptions & { offWidth?: 'hide' | 'dim' } = {},
+): RemainingConditions {
   const taken = new Set(onBar);
-  const fits = (media: string): boolean => previewWidth === null || mediaApplies(media, previewWidth);
+  const fits = (media: string): boolean =>
+    previewWidth === null || options.offWidth === 'dim' || mediaApplies(media, previewWidth);
   const media = collectPageMedia()
     .map((one) => ({ one, key: mediaKeyFor(model, one.media) }))
     .filter(({ one, key }) => key.startsWith('other:') && !taken.has(key) && fits(one.media))
@@ -194,18 +216,25 @@ export function remainingConditions(
   const states = EDITABLE_STATES
     .filter((one) => one.kind === 'state' && !taken.has(conditionKey(under, one.name)))
     .map((one) => ({ key: conditionKey(under, one.name), label: one.name, note: at }));
-  return { media, states };
+  if (options.pseudo !== 'condition') return { media, states };
+  const pseudos = EDITABLE_STATES
+    .filter((one) => one.kind === 'pseudo-element' && !taken.has(conditionKey(under, one.name)))
+    .map((one) => ({ key: conditionKey(under, one.name), label: one.name, note: at }));
+  return { media, states, pseudos };
 }
 
 export interface ConditionBarSpec {
-  /** `effective`, or a card's family key; ids and the menu derive from it. */
+  /** `panel`, or a card's family key; ids and the menu derive from it. */
   owner: string;
   /** `base` or a condition key. */
   picked: string;
+  /** The first button's name: `Always` on a card, `Element` on the panel's strip. */
+  alwaysLabel?: string;
   alwaysCount: number;
   alwaysTitle: string;
   chips: readonly BarChip[];
-  remaining: ReturnType<typeof remainingConditions>;
+  /** With `pseudos`, "+" offers pseudo-elements too, and says so. */
+  remaining: RemainingConditions;
   menuOpen: boolean;
   /** The search field's text, or null before anything is typed. */
   mediaDraft: string | null;
@@ -251,7 +280,7 @@ export function renderConditionBar(spec: ConditionBarSpec): TemplateResult {
       title=${spec.alwaysTitle}
       @click=${() => spec.onPick('base')}
     >
-      Always <span class="c">${spec.alwaysCount}</span>
+      ${spec.alwaysLabel ?? 'Always'} <span class="c">${spec.alwaysCount}</span>
     </button>
     ${spec.chips.map((chip) => {
     const on = spec.picked === chip.key;
@@ -286,8 +315,8 @@ export function renderConditionBar(spec: ConditionBarSpec): TemplateResult {
     <button
       class="add"
       type="button"
-      aria-label="Add a state or media query"
-      title="Add a state or media query"
+      aria-label=${addConditionLabel(spec)}
+      title=${addConditionLabel(spec)}
       aria-haspopup="dialog"
       aria-expanded=${spec.menuOpen ? 'true' : 'false'}
       data-menu-anchor=${menuId}
@@ -297,6 +326,11 @@ export function renderConditionBar(spec: ConditionBarSpec): TemplateResult {
     </button>
   </div>
   ${spec.menuOpen ? renderAddCondition(spec, menuId) : nothing}`;
+}
+
+/** What "+" is called: it names pseudo-elements where it offers them. */
+function addConditionLabel(spec: ConditionBarSpec): string {
+  return spec.remaining.pseudos ? 'Add a state, size or pseudo-element' : 'Add a state or media query';
 }
 
 /**
@@ -313,7 +347,7 @@ function renderAddCondition(spec: ConditionBarSpec, menuId: string): TemplateRes
   return renderSearchPopover({
     id: menuId,
     kind: 'condpop',
-    label: width ? 'Add a custom width' : 'Add a state or media query',
+    label: width ? 'Add a custom width' : addConditionLabel(spec),
     onEscape: () => {
       spec.mediaForm.reset();
       if (spec.widthDraft) spec.onWidthDraft(null);
@@ -352,19 +386,37 @@ function conditionSuggestions(spec: ConditionBarSpec): ValueSuggestion[] {
     icon: 'cursor',
     group: 'States',
   }));
-  return [
-    ...page,
-    ...rest.filter((one) => one.group === 'Width'),
-    custom,
-    ...states,
-    ...rest.filter((one) => one.group !== 'Width'),
-  ];
+  const pseudos = spec.remaining.pseudos;
+  if (!pseudos) {
+    return [
+      ...page,
+      ...rest.filter((one) => one.group === 'Width'),
+      custom,
+      ...states,
+      ...rest.filter((one) => one.group !== 'Width'),
+    ];
+  }
+  /*
+   * The panel's strip: the three kinds it holds, each under its own caption, in the order the
+   * strip draws them (states, sizes, pseudo-elements), then the other common media queries.
+   */
+  const sizes = [...page, ...rest.filter((one) => one.group === 'Width'), custom].map((one) => ({ ...one, group: 'Sizes' }));
+  const parts: ValueSuggestion[] = pseudos.map((one) => ({
+    value: one.label,
+    label: one.label,
+    hint: EDITABLE_STATES.find((state) => state.name === one.label)?.hint ?? (one.note ? `at ${one.note}` : undefined),
+    icon: 'pseudo',
+    group: 'Pseudo-elements',
+  }));
+  return [...states, ...sizes, ...parts, ...rest.filter((one) => one.group !== 'Width')];
 }
 
 function renderSearchScreen(spec: ConditionBarSpec): TemplateResult {
   const stateKey = (text: string): string | null => {
-    const name = `:${text.trim().replace(/^:+/, '')}`;
-    return spec.remaining.states.find((one) => one.label === name)?.key ?? null;
+    const bare = text.trim().replace(/^:+/, '');
+    const name = `:${bare}`;
+    return spec.remaining.states.find((one) => one.label === name)?.key ??
+      spec.remaining.pseudos?.find((one) => one.label === `::${bare.toLowerCase()}`)?.key ?? null;
   };
   const add = (key: string): void => {
     spec.onMenu(false, !conditionParts(key).state);
@@ -401,8 +453,8 @@ function renderSearchScreen(spec: ConditionBarSpec): TemplateResult {
   return renderSearchField({
     form: spec.mediaForm,
     name: MEDIA_FIELD,
-    fieldLabel: 'Search media queries and states',
-    placeholder: 'print, max 600, dark, hover…',
+    fieldLabel: spec.remaining.pseudos ? 'Search states, sizes and pseudo-elements' : 'Search media queries and states',
+    placeholder: spec.remaining.pseudos ? 'hover, max 600, print, before…' : 'print, max 600, dark, hover…',
     suggestions: conditionSuggestions(spec),
     createLabel: addMediaLabel(spec.mediaDraft ?? ''),
     createTitle: ADD_MEDIA_TITLE,

@@ -82,7 +82,7 @@
     }
 
     /*
-     * --- the handles follow the Offsets section, not the display ---
+     * --- the handles follow the Position card's offsets, not the display ---
      *
      * Both halves set the same four properties, so the rule is `position`. The display values are
      * varied across these cases only to prove they are not what decides it.
@@ -126,7 +126,7 @@
       position: relative;
     }
 
-    /* Positioned *and* flex: the Offsets section shows, so the handles do too. */
+    /* Positioned *and* flex: the offset rows show, so the handles do too. */
     #p-abs-flex {
       display: flex;
       position: absolute;
@@ -270,7 +270,7 @@
       };
 
       /* ------------------------------------------------------------------ *
-       * The handles appear exactly where the Offsets section appears.
+       * The handles appear exactly where the Position card's offset rows appear.
        * ------------------------------------------------------------------ */
 
       /** Walk shadow roots to find a tag, wherever the dock has nested it. */
@@ -291,9 +291,8 @@
       const offsetsSectionShown = () => {
         const panel = deepFind('heo-styles-panel');
         if (!panel?.shadowRoot) return null;
-        return Array.from(panel.shadowRoot.querySelectorAll('heo-section')).some(
-          (section) => section.heading === 'Offsets',
-        );
+        // The Position card lists them, with the drag note, only while they move the element.
+        return Boolean(panel.shadowRoot.querySelector('heo-section[data-card="position"] .row[data-property="top"]'));
       };
 
       engine.setDockTab('styles');

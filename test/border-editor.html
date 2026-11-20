@@ -70,6 +70,10 @@
           const el = document.getElementById(id);
           api.select(el);
           await settle(500);
+          // The editor is the Border card's, and cards start closed: a closed one draws nothing.
+          const card = sroot().querySelector('heo-section[data-card="border"]');
+          if (card && !card.open) card.shadowRoot?.querySelector('button')?.click();
+          await settle(200);
           return el;
         };
 

@@ -167,8 +167,11 @@
       await wait(300);
       const panel = deep('heo-styles-panel');
       const panelText = panel ? deepText(panel.shadowRoot) : '';
-      // The box-sizing row's cascade menu: each rung names its place.
-      panel?.shadowRoot?.querySelector('[data-declarations="effective"] .row[data-property="box-sizing"] .dots')?.click();
+      // The box-sizing row's cascade menu, in the Size card (opened first): each rung names its place.
+      panel?.shadowRoot?.querySelector('heo-section[data-card="size"]')?.shadowRoot?.querySelector('.tile')?.click();
+      await panel?.updateComplete;
+      await frames();
+      panel?.shadowRoot?.querySelector('[data-declarations="size"] .row[data-property="box-sizing"] .dots')?.click();
       await panel?.updateComplete;
       await frames();
       const picks = Array.from(panel?.shadowRoot?.querySelectorAll('.pop .ladder .pl') ?? [])

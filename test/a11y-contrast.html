@@ -626,7 +626,12 @@
           await measure(specs, 'disabled');
           hosts.forEach((h, i) => { if (h) h.disabled = was[i]; });
         };
-        // The adder waits behind "+ Add property" in Styles (R23); open one to reach its way on.
+        // The adder waits behind "+ Add property" in Styles (R23), in the Other card, which starts
+        // closed; open both to reach its way on.
+        await ui(() => {
+          deep((el) => el.localName === 'heo-section' && el.dataset.card === 'other' && inside('heo-styles-panel')(el))
+            ?.shadowRoot?.querySelector('.tile')?.click();
+        });
         await ui(() => {
           deep((el) => el.localName === 'button' && el.classList.contains('add-prop') && inside('heo-styles-panel')(el))?.click();
         });
@@ -644,7 +649,8 @@
           const chip = deep((el) => el.localName === 'button' && el.classList.contains('name') && el.textContent.trim() === '.card' && inside('heo-styles-panel')(el));
           if (chip && chip.getAttribute('aria-expanded') !== 'true') chip.click();
         });
-        const inStyles = (test) => () => deep((el) => el.localName === 'button' && test(el) && inside('heo-styles-panel')(el));
+        // On screen only: a closed card of the panel still holds its rows, undrawn.
+        const inStyles = (test) => () => deep((el) => el.localName === 'button' && test(el) && el.getClientRects().length > 0 && inside('heo-styles-panel')(el));
         await measureInteractive([
           { name: 'styles.sideWin', component: 'class-editor', file: 'src/ui/panels/class-editor.ts', cat: 'styles', kind: 'icon', min: 3, host: inStyles((el) => el.matches('.side-win:not(.on)')) },
           { name: 'styles.importantTag', component: 'value-field', file: 'src/ui/controls/value-field.ts', cat: 'styles', kind: 'text', min: 4.5, host: inStyles((el) => el.classList.contains('imp') && inside('heo-value-field')(el)) },

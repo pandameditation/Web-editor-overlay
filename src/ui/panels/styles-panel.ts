@@ -1,7 +1,17 @@
 import { css, html, nothing, type PropertyValues, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
-import { isPseudoElement, isWidthQuery, mediaIcon, mediaKind, mediaNow, needsGeneratedContent } from '../../core/breakpoints.js';
-import { inlineDeclarations, rulesPass, stateTrigger, type ElementModel, type WriteTarget } from '../../core/cascade.js';
+import { repeat } from 'lit/directives/repeat.js';
+import { styleMap } from 'lit/directives/style-map.js';
+import { isPseudoElement, isWidthQuery, mediaNow, needsGeneratedContent } from '../../core/breakpoints.js';
+import {
+  inlineDeclarations,
+  rulesPass,
+  stateTrigger,
+  type CascadeContext,
+  type CascadeList,
+  type ElementModel,
+  type WriteTarget,
+} from '../../core/cascade.js';
 import {
   escapeRegExp,
   parentLayoutProperties,
@@ -31,10 +41,8 @@ import {
   INLINE_LIST_ID,
   removeCondition,
   renderBlockAdder,
-  renderBlockHeader,
   renderFamilyCard,
   renderInlineCard,
-  renderPseudoAdder,
   renderUnknownCard,
   sourcesStyles,
   type CardView,
@@ -48,7 +56,6 @@ import {
   barConditions,
   conditionKey,
   conditionName,
-  conditionOf,
   conditionParts,
   mediaKeyFor,
   previewToShow,
@@ -62,7 +69,7 @@ import {
 } from './styles/size-strip.js';
 import { menuStyles, placeLayer } from './styles/menu.js';
 import { searchPopoverStyles } from './styles/search-popover.js';
-import { stylesDestination, valueStepDraft, type AdderPlaces } from './styles/property-adder.js';
+import { stylesDestination, type AdderPlaces } from './styles/property-adder.js';
 import {
   previewSlot,
   propertyRowStyles,
@@ -76,6 +83,9 @@ import {
   shownValue,
   targetOf,
   renderPropertyRow,
+  rowCondition,
+  scopeContext,
+  shorten,
   type RowPlace,
   type RowSpec,
 } from './styles/property-row.js';
@@ -117,7 +127,7 @@ import type { TransitionTrigger, TriggerChange } from '../controls/transition-ed
 import { formatTransitions, readTransitions, timeMs, TRANSITION_PROPERTIES, type TransitionItem } from '../../core/transitions.js';
 import type { SegmentOption } from '../controls/segmented.js';
 import { shownTypographyRows } from './styles/typography.js';
-import { proposedTextStyleName, textStyleDeclarations, TYPOGRAPHY_PROPERTIES } from '../../core/text-styles.js';
+import { proposedTextStyleName, textStyleDeclarations, TYPOGRAPHY_PROPERTIES, TYPOGRAPHY_SHORTHANDS } from '../../core/text-styles.js';
 import { parseFamilies } from '../../core/fonts.js';
 import '../controls/type-tuning.js';
 import '../controls/text-style-dialog.js';
@@ -137,135 +147,45 @@ import { classNameIssues, forkNameIssues } from '../../core/validation.js';
 import { mediaApplies } from '../../core/viewport.js';
 import { field, FormErrors } from '../form-errors.js';
 
-interface SectionSpec {
+/**
+ * What a card's list is worked out from: the element, its computed style under the condition
+ * picked on the strip (the pseudo-element's own, under one), and the parent it sits in.
+ */
+interface CardContext {
+  el: HTMLElement;
+  computed: CSSStyleDeclaration;
+  /** The pseudo-element picked on the strip, or ''. */
+  pseudo: string;
+  parent: HTMLElement | null;
+}
+
+/**
+ * One category card. Its property list is fixed beforehand (decision 12): the card is where those
+ * properties are edited, set or not, and Other holds whatever no card lists.
+ */
+interface CardSpec {
   id: string;
   heading: string;
   glyph: string;
-  properties: string[];
-  /** Only render when the element's computed style makes the section relevant. */
-  when?: (computed: CSSStyleDeclaration) => boolean;
-  /** A line above the rows, for a section that has a second way in. */
-  note?: string;
+  /** Every property it can hold: where the adder says a property shows, and what Other leaves to it. */
+  all: readonly string[];
+  /** What it lists for this element now, when not all of them: Flex rows only for a flex box. */
+  properties?: (ctx: CardContext) => readonly string[];
+  /** Only shown where this says. */
+  when?: (ctx: CardContext) => boolean;
 }
 
-const SECTIONS: SectionSpec[] = [
-  {
-    id: 'layout',
-    heading: 'Layout',
-    glyph: 'panel',
-    // white-space moved here from Typography: it is about how the box lays its text out.
-    properties: ['display', 'position', 'overflow', 'z-index', 'white-space'],
-  },
-  {
-    id: 'inset',
-    heading: 'Offsets',
-    glyph: 'moveIn',
-    properties: ['top', 'right', 'bottom', 'left'],
-    // The same condition the page's handles use, from the same function: this section and those
-    // handles set the same four properties, so they are shown or hidden together by construction.
-    when: resolvesOffsets,
-    /*
-     * The same four properties the page's own handles write.
-     *
-     * Said here because the two are easy to mistake for alternatives, and they are not: a field is
-     * how you say a number you already know, and dragging is how you find out which number you
-     * meant. Whichever is used, the declaration that comes out is the same — and the drag keeps
-     * the unit, so an offset written in percent is still in percent afterwards.
-     */
-    note: 'Or drag the element on the page. Shift keeps it on one axis.',
-  },
-  {
-    id: 'flex',
-    heading: 'Flex',
-    glyph: 'columns',
-    properties: [
-      'flex-direction',
-      'flex-wrap',
-      'justify-content',
-      'align-items',
-      'gap',
-      'row-gap',
-      'column-gap',
-    ],
-    when: (computed) => computed.display.includes('flex'),
-  },
-  {
-    id: 'grid',
-    heading: 'Grid',
-    glyph: 'grid',
-    properties: [
-      'grid-template-columns',
-      'grid-template-rows',
-      'grid-auto-flow',
-      'grid-auto-rows',
-      'place-items',
-      'gap',
-    ],
-    when: (computed) => computed.display.includes('grid'),
-  },
-  // `child` is rendered by hand — see #renderParent — because it mixes the
-  // element's own properties with its parent's, and the two need telling apart.
-  {
-    id: 'size',
-    heading: 'Size',
-    glyph: 'wrap',
-    properties: [
-      'width',
-      'height',
-      'min-width',
-      'min-height',
-      'max-width',
-      'max-height',
-      'aspect-ratio',
-      'box-sizing',
-    ],
-  },
-  {
-    id: 'typography',
-    heading: 'Typography',
-    glyph: 'text',
-    // Drawn by hand (#renderTypography): text styles, then the rows of typography/rows.ts.
-    properties: [...TYPOGRAPHY_PROPERTIES],
-  },
-  {
-    id: 'surface',
-    heading: 'Background',
-    glyph: 'droplet',
-    // Drawn by hand, as the background editor and its rows (#renderBackground); listed here for the
-    // search. Borders and outlines have their own section and editor: see BORDER_PROPERTIES.
-    properties: ['background', ...BACKGROUND_LONGHANDS],
-  },
-  {
-    id: 'effects',
-    heading: 'Effects',
-    // Not the sparkle any more: that is Effective styles' glyph, and two sections sharing one
-    // picture made the panel's two most different sections look related.
-    glyph: 'eye',
-    // text-shadow beside box-shadow and filter: the three the shadow editor opens from.
-    // No will-change: a hint to the renderer, rarely authored by hand. Add property still reaches it.
-    // text-shadow is Typography's now, beside the text it shades.
-    properties: ['opacity', 'box-shadow', 'filter', 'backdrop-filter', 'transform', 'mix-blend-mode', 'cursor'],
-  },
-  {
-    id: 'motion',
-    heading: 'Motion',
-    glyph: 'play',
-    /*
-     * Drawn by hand (#renderMotion): Animation (keyframes that play on their own) and Transition
-     * (how a change of state plays), one at a time, each its editor then its declarations. They
-     * were two sections, and Motion's three transition rows — no property list, no delay — gave
-     * no sign of doing anything.
-     */
-    properties: [...TRANSITION_PROPERTIES, ...ANIMATION_PROPERTIES],
-  },
-];
+const FLEX_PROPERTIES = ['flex-direction', 'flex-wrap', 'justify-content', 'align-items', 'gap', 'row-gap', 'column-gap'];
+const GRID_PROPERTIES = ['grid-template-columns', 'grid-template-rows', 'grid-auto-flow', 'grid-auto-rows', 'place-items', 'gap'];
+const OFFSET_PROPERTIES = ['top', 'right', 'bottom', 'left'];
+const unique = (list: readonly string[]): string[] => [...new Set(list)];
 
 /**
- * What the Spacing section covers, named where the search can see it.
+ * What the Spacing card covers, named where the search can see it.
  *
- * Spacing is drawn by hand rather than from SECTIONS, because a box editor is not a list of
- * rows — and the cost of that was a search that could not find `margin` or `padding` at all.
- * Declaring the list here is what lets the filter and the section agree about what is in it.
+ * Spacing is drawn by hand, because a box editor is not a list of rows — and the cost of that was
+ * once a search that could not find `margin` or `padding` at all. Declaring the list here is what
+ * lets the filter and the card agree about what is in it.
  */
 const SPACING_PROPERTIES = [
   'margin',
@@ -281,7 +201,7 @@ const SPACING_PROPERTIES = [
 ];
 
 /**
- * What the Border section covers, for the same reason as SPACING_PROPERTIES: it is drawn by hand.
+ * What the Border card covers, for the same reason as SPACING_PROPERTIES: it is drawn by hand.
  *
  * The parts are here for the search, not as rows. The editor reads and writes them as one `border`
  * or `outline` shorthand, so they are listed as rows only where a block declares one on its own,
@@ -295,15 +215,148 @@ const BORDER_PARTS = ['border-width', 'border-style', 'border-color', 'outline-w
 const BORDER_SIDE_PROPERTIES = SIDES.flatMap((side) => [`border-${side}`, ...LINE_PARTS.map((part) => `border-${side}-${part}`)]);
 const BORDER_PROPERTIES = [...BORDER_SHORTHANDS, 'border-radius', ...BORDER_PARTS, ...BORDER_SIDE_PROPERTIES, 'outline-offset'];
 
-/** The section a property shows in besides Effective styles, for the adder's "shows in" hint. */
-function ownerOf(property: string): string | undefined {
-  if (SPACING_PROPERTIES.includes(property)) return 'Spacing';
-  if (BORDER_PROPERTIES.includes(property)) return 'Border';
-  return SECTIONS.find((section) => section.properties.includes(property))?.heading;
+/** The Text style card's rows that are not its labelled typography rows: listed by name, as set. */
+const TEXT_EXTRAS = ['white-space', ...TYPOGRAPHY_SHORTHANDS];
+
+/**
+ * The Position card's line above its offset rows: the same four properties the page's own handles
+ * write.
+ *
+ * Said here because the two are easy to mistake for alternatives, and they are not: a field is
+ * how you say a number you already know, and dragging is how you find out which number you
+ * meant. Whichever is used, the declaration that comes out is the same — and the drag keeps
+ * the unit, so an offset written in percent is still in percent afterwards.
+ */
+const DRAG_NOTE = 'Or drag the element on the page. Shift keeps it on one axis.';
+
+/**
+ * The cards, in their order (the card map in the plan): Content first and only under a
+ * pseudo-element, In its parent last before Other and only for an element with an editable parent.
+ */
+const CARDS: readonly CardSpec[] = [
+  { id: 'content', heading: 'Content', glyph: 'pseudo', all: ['content', 'quotes'], when: (ctx) => Boolean(ctx.pseudo) },
+  {
+    id: 'layout',
+    heading: 'Layout',
+    glyph: 'panel',
+    // Display stays a row: there is no display control to reuse (decision 13).
+    all: unique(['display', 'overflow', ...FLEX_PROPERTIES, ...GRID_PROPERTIES]),
+    properties: ({ computed }) => unique([
+      'display',
+      'overflow',
+      ...(computed.display.includes('flex') ? FLEX_PROPERTIES : []),
+      ...(computed.display.includes('grid') ? GRID_PROPERTIES : []),
+    ]),
+  },
+  { id: 'spacing', heading: 'Spacing', glyph: 'wrap', all: SPACING_PROPERTIES },
+  {
+    id: 'size',
+    heading: 'Size',
+    glyph: 'expand',
+    all: ['width', 'height', 'min-width', 'min-height', 'max-width', 'max-height', 'aspect-ratio', 'box-sizing'],
+  },
+  {
+    id: 'position',
+    heading: 'Position',
+    glyph: 'moveIn',
+    all: ['position', ...OFFSET_PROPERTIES, 'z-index'],
+    // The offsets only while they move the element: the same predicate the page's handles use, so
+    // the rows and the handles are shown or hidden together by construction.
+    properties: ({ computed }) => ['position', ...(resolvesOffsets(computed) ? OFFSET_PROPERTIES : []), 'z-index'],
+  },
+  // Drawn by hand (#renderTypography): text styles, then the rows of typography/rows.ts.
+  { id: 'typography', heading: 'Text style', glyph: 'text', all: [...TYPOGRAPHY_PROPERTIES, ...TEXT_EXTRAS] },
+  // Drawn by hand, as the background editor and its rows (#renderBackground).
+  { id: 'surface', heading: 'Background', glyph: 'droplet', all: ['background', ...BACKGROUND_LONGHANDS] },
+  { id: 'border', heading: 'Border', glyph: 'frame', all: BORDER_PROPERTIES },
+  {
+    id: 'effects',
+    heading: 'Shadow & effects',
+    glyph: 'eye',
+    // text-shadow is Text style's, beside the text it shades; cursor is Interaction's.
+    all: ['opacity', 'box-shadow', 'filter', 'backdrop-filter', 'transform', 'mix-blend-mode'],
+  },
+  /*
+   * Drawn by hand (#renderMotion): Animation (keyframes that play on their own) and Transition
+   * (how a change of state plays), one at a time, each its editor then its declarations.
+   */
+  { id: 'motion', heading: 'Motion', glyph: 'play', all: [...TRANSITION_PROPERTIES, ...ANIMATION_PROPERTIES] },
+  { id: 'interaction', heading: 'Interaction', glyph: 'cursor', all: ['cursor', 'pointer-events', 'user-select'] },
+  /*
+   * Drawn by hand (#renderParent): the element's own child properties, then why a size is capped,
+   * then the parent's own controls (decision 1). Not under a pseudo-element, which is no child.
+   */
+  {
+    id: 'child',
+    heading: 'In its parent',
+    glyph: 'moveOut',
+    all: ['flex', 'align-self', 'order', 'grid-column', 'grid-row'],
+    properties: ({ parent }) => [
+      'flex',
+      'align-self',
+      'order',
+      ...(parent && getComputedStyle(parent).display.includes('grid') ? ['grid-column', 'grid-row'] : []),
+    ],
+    when: (ctx) => Boolean(ctx.parent) && !ctx.pseudo,
+  },
+  // Whatever is set that no card lists, then "+ Add property" and "Paste CSS…".
+  { id: 'other', heading: 'Other', glyph: 'code', all: [] },
+];
+
+/** The `data-declarations` id of a card's rows; In its parent keeps the list id it always had. */
+function listOf(cardId: string): string {
+  return cardId === 'child' ? 'parent-self' : cardId;
 }
 
-/** The Effective styles element block: its rows' list and its adder share the id. */
-const EFFECTIVE_LIST_ID = 'effective';
+/** The card a property shows in, for the adder's "shows in" hint. */
+function ownerOf(property: string): string {
+  return CARDS.find((card) => card.all.includes(property))?.heading ?? 'Other';
+}
+
+/** The panel's two views: Cards to edit by category, Applied to check everything set at once. */
+const VIEWS: SegmentOption[] = [
+  { value: 'cards', label: 'Cards', title: 'Edit by category' },
+  { value: 'applied', label: 'Applied', title: 'Everything set on this element, at once' },
+];
+
+/** The panel's condition strip: its id, for its menu and the conditions added to it. */
+const PANEL_STRIP = 'panel';
+/** On the panel's strip, pseudo-elements are conditions and sizes off the previewed width stay, dimmed. */
+const STRIP_OPTIONS = { pseudo: 'condition', offWidth: 'dim' } as const;
+
+/** The condition picked on the strip, as the scope every row and rich editor reads and writes under. */
+function scopeOfCondition(key: string): RowScope {
+  if (key === 'base') return { kind: 'element' };
+  const { media, state } = conditionParts(key);
+  if (!state) return { kind: 'size', slot: media };
+  // A pseudo-element at no media reads any of its rules in effect now (readRow).
+  if (isPseudoElement(state) && media === 'base') return { kind: 'state', state };
+  return { kind: 'state', state, slot: media };
+}
+
+/** Everything one render's cards read: the condition's scope, the lists, and the shared lookups. */
+interface CardRender {
+  el: HTMLElement;
+  model: ElementModel;
+  host: StylesHost;
+  computed: CSSStyleDeclaration;
+  scope: RowScope;
+  /** The cascade context of the scope: what the rich editors read their values under. */
+  ctx: CascadeContext;
+  cond: PlaceCondition;
+  /** The state or pseudo-element picked, or ''. */
+  state: string;
+  pseudo: string;
+  parent: HTMLElement | null;
+  /** The cards shown, in order. */
+  visible: readonly CardSpec[];
+  /** Each shown card's properties now; Other's are what is set and no shown card lists. */
+  lists: ReadonlyMap<string, readonly string[]>;
+  /** The declaration a row of this property shows under the scope (readRow). */
+  read(property: string): Contribution | undefined;
+  cascade(property: string): CascadeList;
+  spec(property: string, listId: string): RowSpec;
+}
 /** The header popovers of the element's own styles: the tag chip's, and the id chip's. */
 const ELEMENT_POP = 'element';
 const ID_POP = 'id';
@@ -333,13 +386,13 @@ function sectionOpen(id: string, fallback: boolean): boolean {
 
 const EMPTY_UI: StylesUiState = {
   filter: '',
-  effPick: null,
+  cond: null,
+  view: 'cards',
   popover: null,
   cardPop: null,
   places: new Map(),
   pendingImportant: new Set(),
   newClass: null,
-  effPseudo: null,
   menu: null,
   adder: null,
   finderOpen: false,
@@ -363,11 +416,12 @@ function deepActive(): Element | null {
 /**
  * The style editor.
  *
- * Effective styles comes first: what the element renders with, one row per property, each with a
- * dot that opens the cascade behind it. Under it, where those styles are written, then the
- * task-oriented sections a designer reaches for. Every property row in the panel is the same row
- * with the same edit path, so a value typed in Typography goes where one typed in Effective styles
- * goes, and asks where it should stay when the page shows it only at some widths.
+ * One panel: the element's header, the condition strip (Element, its states, sizes and
+ * pseudo-elements), then the element's styles in one of two views. Cards is a two-column grid of
+ * categories, the ones set first, each opening in place on its rich editor and its fixed rows;
+ * Applied is everything set at once, grouped the same way. Every property row is the same row with
+ * the same edit path, read and written under the condition picked on the strip, and its name opens
+ * the cascade ladder where the place an edit goes is picked.
  */
 @customElement('heo-styles-panel')
 export class HeoStylesPanel extends HeoElement {
@@ -486,19 +540,151 @@ export class HeoStylesPanel extends HeoElement {
         min-width: 0;
       }
 
-      /* Effective styles: the element, then a group per state or pseudo-element. */
-      .egroup {
-        margin-top: 12px;
-        padding-top: 10px;
-        border-top: 1px solid var(--heo-line);
+      .top heo-segmented.views {
+        flex: 0 0 auto;
       }
-      /* A group heads a whole section rather than a block inside a card: a little larger. */
-      .egroup > .blabel {
-        margin-bottom: 7px;
+
+      /* The condition strip under the header, and its one line about the picked condition. */
+      .cond {
+        padding: 10px 12px 0;
       }
-      .egroup > .blabel .sel {
+      .ctxline {
+        margin: -2px 0 8px;
+        color: var(--heo-text-dim);
+        font-size: 10.5px;
+        line-height: 1.45;
+      }
+      .ctxline code {
+        color: var(--heo-text);
+        font-family: var(--heo-mono);
+      }
+      .ctxline .on {
+        color: var(--heo-success-text);
+      }
+      .ctxline .off {
+        color: var(--heo-warn-text);
+      }
+
+      /* Cards: a two-column grid of tiles; an open one takes the whole row, where it was. */
+      .cards-view {
+        padding: 10px 12px;
+      }
+      .glabel {
+        margin: 12px 0 7px;
+        color: var(--heo-text-faint);
+        font-size: 9.5px;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+      .glabel:first-child {
+        margin-top: 0;
+      }
+      .cats {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+      }
+      .cats > heo-section[open] {
+        grid-column: 1 / -1;
+      }
+      /* Not set yet: no fill, so the set ones read first. */
+      .cats > heo-section.unset:not([open]) {
+        background: transparent;
+      }
+      .cats > heo-section.flash {
+        animation: heo-row-flash 1.2s ease-out;
+      }
+      /* The tiles' live pictures, drawn from the element's computed values. */
+      .art-text {
+        padding: 4px 10px;
+        border-radius: var(--heo-r-sm);
+        line-height: 1.1;
+      }
+      .art-swatch {
+        width: 56px;
+        height: 34px;
+        border-radius: var(--heo-r-sm);
+        box-shadow: 0 0 0 1px var(--heo-line-strong);
+      }
+      .art-box {
+        width: 50px;
+        height: 32px;
+        background: var(--heo-raised);
+      }
+      .art-box.fx {
+        border-radius: var(--heo-r-sm);
+      }
+      .art-pad {
+        display: block;
+        border: 1px dashed var(--heo-accent-line);
+        border-radius: var(--heo-r-sm);
+      }
+      .art-pad > span {
+        display: block;
+        width: 28px;
+        height: 12px;
+        border-radius: 3px;
+        background: var(--heo-accent-soft);
+      }
+      .art-content {
+        padding: 3px 8px;
+        border: 1px dashed var(--heo-line-strong);
+        border-radius: var(--heo-r-sm);
+        color: var(--heo-text);
+        font-family: var(--heo-mono);
         font-size: 11px;
-        font-weight: 500;
+      }
+      .drag-note {
+        margin: 0;
+      }
+
+      /* Applied: one list, grouped by card; a group's head goes to its card. */
+      .applied {
+        padding: 4px 0;
+      }
+      .agroup {
+        padding: 2px 12px 10px;
+        border-bottom: 1px solid var(--heo-line);
+      }
+      .agroup:last-child {
+        border-bottom: 0;
+      }
+      .ahead {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        width: 100%;
+        height: 32px;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: var(--heo-text-dim);
+        text-align: left;
+        cursor: pointer;
+      }
+      .ahead:hover {
+        color: var(--heo-text);
+      }
+      .ahead:focus-visible {
+        outline: 2px solid var(--heo-focus-ring);
+        outline-offset: 1px;
+      }
+      .ahead .an {
+        flex: 1 1 auto;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      .ahead .gw {
+        color: var(--heo-text-faint);
+        font-family: var(--heo-mono);
+        font-size: 10px;
+      }
+      .applied-none {
+        margin: 0;
+        padding: 12px;
       }
       .actions {
         display: flex;
@@ -608,7 +794,9 @@ export class HeoStylesPanel extends HeoElement {
   protected newClassForm = new FormErrors(this, () => classNameIssues(NEW_CLASS_FIELD, this.ui.newClass?.name ?? ''));
   /** "Add a media query…" in a strip's menu. */
   protected mediaForm = new FormErrors(this, () => stripMediaIssues(this.ui.mediaDraft?.text ?? null));
-  /** The element whose size cap has already auto-opened the parent section. */
+  /** The group each open card was opened in, for the element it was opened on (#renderCards). */
+  #stayPut: { el: HTMLElement | null; groups: Map<string, boolean> } = { el: null, groups: new Map() };
+  /** The element whose size cap has already auto-opened the In its parent card. */
   #capsShownFor: HTMLElement | null = null;
   /** The model of the last render, and what it was built from. */
   #memo: { key: unknown[]; model: ElementModel } | null = null;
@@ -658,7 +846,6 @@ export class HeoStylesPanel extends HeoElement {
         places: new Map(),
         pendingImportant: new Set(),
         newClass: null,
-        effPseudo: null,
         menu: null,
         adder: null,
         finderOpen: false,
@@ -674,7 +861,7 @@ export class HeoStylesPanel extends HeoElement {
     if (width !== seen.width) {
       this.ui = {
         ...this.ui,
-        effPick: null,
+        cond: null,
         cardPicks: new Map(),
         // A place picked at one width is a question asked at that width.
         places: new Map(),
@@ -844,11 +1031,12 @@ export class HeoStylesPanel extends HeoElement {
       </div>`;
     }
 
-    const computed = getComputedStyle(el);
     const model = this.#model(el);
     const host = this.#host(el, model);
     this.#syncOwnCards(el, model, host);
-    const found = host.filtering ? this.#matchCount(model, computed) : -1;
+    const strip = this.#strip(model, host.previewWidth);
+    const cards = this.#cardRender(el, model, host, strip.picked);
+    const found = host.filtering ? this.#matchCount(cards) : -1;
     const popover = this.ui.popover;
     const popoverOn = popover?.scope.kind === 'parent' && popover.scope.element !== el
       ? popover.scope.element
@@ -907,6 +1095,10 @@ export class HeoStylesPanel extends HeoElement {
       finder: this.#renderFinder(el),
     })}
       ${selectionNotice(this.editor.selection.length, el)}
+      <div class="cond">
+        ${this.#renderStrip(model, host, strip)}
+        ${this.#renderContextLine(model, strip.picked, cards)}
+      </div>
       <div class="top">
         <heo-search-field
           label="Search styles"
@@ -917,23 +1109,21 @@ export class HeoStylesPanel extends HeoElement {
           action-icon="plus"
           action-compact
           @search-input=${(event: CustomEvent<{ value: string }>) => this.#patch({ filter: event.detail.value })}
-          @search-submit=${() => this.#openEffectiveAdder(this.ui.filter.trim())}
+          @search-submit=${() => this.#openAdder(this.ui.filter.trim())}
         ></heo-search-field>
+        <heo-segmented
+          class="views"
+          label="View"
+          .options=${VIEWS}
+          .value=${this.ui.view}
+          @segment-change=${(event: CustomEvent<{ value: string }>) => {
+        const view = event.detail.value;
+        if (view === 'cards' || view === 'applied') this.#patch({ view });
+      }}
+        ></heo-segmented>
       </div>
 
-      ${this.#renderEffective(el, model, host)}
-      ${this.#renderSpacing(el, model, computed, host)}
-      ${this.#renderBorder(el, model, computed, host)}
-      ${SECTIONS.filter((section) => !section.when || section.when(computed)).map((section) =>
-      section.id === 'surface'
-        ? this.#renderBackground(section, el, model, computed, host)
-        : section.id === 'motion'
-          ? this.#renderMotion(section, el, model, host)
-          : section.id === 'typography'
-            ? this.#renderTypography(section, el, model, host)
-            : this.#renderSection(section, el, model, host),
-    )}
-      ${this.#renderParent(el, model, host)}
+      ${this.ui.view === 'applied' ? this.#renderApplied(cards) : this.#renderCards(cards)}
       ${found === 0 ? this.#renderNoMatch() : nothing}
       ${popover
         ? renderCascadePopover(
@@ -948,101 +1138,313 @@ export class HeoStylesPanel extends HeoElement {
   }
 
   /* ---------------------------------------------------------------------- */
-  /* Effective styles                                                       */
+  /* The condition strip                                                    */
   /* ---------------------------------------------------------------------- */
 
   /**
-   * What the element renders with, first in the panel.
-   *
-   * One row per property with an applying declaration, wherever it is declared, because "what is
-   * this element actually using" is the question people open a style panel with. Each row's dot
-   * opens the cascade behind its value; the rows edit like every other row in the panel. Then a
-   * group per state or pseudo-element in effect now, whose rows write into that state's own rule,
-   * since a hover colour cannot be an inline style.
+   * The strip's chips and its pick: every condition a rule reaching the element declares under
+   * (pseudo-elements included), plus one added from "+" and not written yet, and the pick itself
+   * while it is empty (the size a preview follows). The pick is the hand pick, else the previewed
+   * width's size (R13).
    */
-  #renderEffective(el: HTMLElement, model: ElementModel, host: StylesHost): TemplateResult | typeof nothing {
-    const filtering = host.filtering;
-    const own = model.appliedProperties().filter((property) => {
-      const list = model.cascade(property);
-      return this.#hit(
-        property,
-        list.applying[0]?.value,
-        ...list.applying.map((one) => (one.source.kind === 'rule' ? one.source.entry.selector : 'inline style')),
-      );
-    });
-    // Pseudo-elements stay listed; states are picked on the bar, like media queries.
-    const groups = model.groups().filter((group) => group.kind === 'pseudo-element').map((group) => {
-      const all = statePropertiesOf(model, group.state);
-      return {
-        ...group,
-        properties: this.#hit(group.state)
-          ? all
-          : all.filter((property) =>
-            this.#hit(property, shownValue(model.cascade(property, { width: null, state: group.state }).applying[0]))),
-      };
-    }).filter((group) => group.properties.length);
-    if (filtering && !own.length && !groups.length) return nothing;
-    const at = host.previewWidth;
-    const { picked } = this.#effectiveConditions(model, host.previewWidth);
-    // A pseudo-element just added from "+ Add pseudo-element": its group, empty, until its first
-    // property makes it real.
-    const pendingPseudo = this.ui.effPseudo && !groups.some((group) => group.state === this.ui.effPseudo)
-      && !model.groups().some((group) => group.state === this.ui.effPseudo)
-      ? this.ui.effPseudo
-      : null;
+  #strip(model: ElementModel, previewWidth: number | null): { chips: BarChip[]; picked: string } {
+    const wanted = this.ui.cond ?? previewSlot(model, previewWidth);
+    const { chips } = barConditions(
+      model,
+      model.entries,
+      previewWidth,
+      [...(this.ui.otherSlots.get(PANEL_STRIP) ?? []), wanted],
+      STRIP_OPTIONS,
+    );
+    const picked = wanted !== 'base' && chips.some((chip) => chip.key === wanted) ? wanted : 'base';
+    return { chips, picked };
+  }
 
+  #renderStrip(model: ElementModel, host: StylesHost, strip: { chips: BarChip[]; picked: string }): TemplateResult {
+    const { chips, picked } = strip;
+    const menuId = `strip-${PANEL_STRIP}`;
+    const draft = this.ui.mediaDraft?.owner === PANEL_STRIP ? this.ui.mediaDraft : null;
+    return renderConditionBar({
+      owner: PANEL_STRIP,
+      picked,
+      alwaysLabel: 'Element',
+      alwaysCount: model.appliedProperties().length,
+      alwaysTitle: 'The element itself, as it renders now',
+      chips,
+      remaining: remainingConditions(model, chips.map((chip) => chip.key), host.previewWidth, picked, STRIP_OPTIONS),
+      menuOpen: this.ui.menu?.id === menuId,
+      mediaDraft: draft ? draft.text : null,
+      widthDraft: draft ? draft.width ?? null : null,
+      onWidthDraft: (width) => this.#patch({ mediaDraft: { owner: PANEL_STRIP, text: '', ...(width ? { width } : {}) } }),
+      viewports: this.editor.viewports().filter((one) => one.shown),
+      mediaForm: this.mediaForm,
+      // A button is a toggle: the bar hands back `base` for the one already picked. An open adder
+      // goes with the condition it was opened under: its ladder is that condition's places.
+      onPick: (key) => this.#patch({ cond: key, adder: null }),
+      onMenu: (open, refocus) => this.#toggleMenu(menuId, open, refocus),
+      onMediaDraft: (text) => this.#patch({ mediaDraft: text === null ? null : { owner: PANEL_STRIP, text } }),
+      // A size not in effect at the previewed width moves the preview to one it is (decision 3).
+      onAdd: (key) => this.#showCondition(slotMedia(model, key), () => {
+        // Only remembered here until a declaration is written under it: nothing empty is stored.
+        const next = new Map(this.ui.otherSlots);
+        next.set(PANEL_STRIP, [...new Set([...(next.get(PANEL_STRIP) ?? []), key])]);
+        this.#patch({ otherSlots: next, cond: key });
+      }),
+      keyForMedia: (media) => mediaKeyFor(model, media),
+      onRemove: (key) => removeCondition(host, {
+        owner: PANEL_STRIP,
+        key,
+        entries: model.entries,
+        pseudo: 'condition',
+        onCleared: () => this.#patch({ cond: 'base' }),
+      }),
+    });
+  }
+
+  /** One line under the strip for the picked condition: what is being styled, and whether it shows now. */
+  #renderContextLine(model: ElementModel, picked: string, cards: CardRender): TemplateResult | typeof nothing {
+    if (picked === 'base') return nothing;
+    const { state } = conditionParts(picked);
+    const media = slotMedia(model, picked);
+    const size = slotName(model, picked);
+    const at = size ? html` at <code>${size}</code>` : nothing;
+    if (state && isPseudoElement(state)) {
+      const side = /before$/i.test(state) ? 'before' : /after$/i.test(state) ? 'after' : '';
+      // A ::before or ::after with no content is not drawn at all, whatever else it is given.
+      const empty = needsGeneratedContent(state) && !cards.read('content');
+      return html`<p class="ctxline" data-ctx="pseudo">
+        Styling <code>${state}</code>${at}, ${side ? `a box the browser draws ${side} the element’s content` : 'a part of the element the browser draws'}.${empty
+        ? html` It shows nothing until it has <b>content</b>.`
+        : nothing}
+      </p>`;
+    }
+    if (state) {
+      return html`<p class="ctxline" data-ctx="state">
+        Showing the element on <code>${state}</code>${at}. What it does not set there is its value at rest.
+      </p>`;
+    }
+    const applies = media !== null && mediaApplies(media, null);
+    return html`<p class="ctxline" data-ctx="size">
+      Styling at <code>${size}</code>${media !== null && isWidthQuery(media) ? html` (<code>@media ${media}</code>)` : nothing},
+      <span class=${applies ? 'on' : 'off'}>${mediaNow(media ?? '', applies, model.width)}</span>.
+    </p>`;
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Cards and Applied                                                      */
+  /* ---------------------------------------------------------------------- */
+
+  /** What this render's cards read: the picked condition as a scope, and each card's list. */
+  #cardRender(el: HTMLElement, model: ElementModel, host: StylesHost, picked: string): CardRender {
+    const scope = scopeOfCondition(picked);
+    const state = scope.kind === 'state' ? scope.state : '';
+    const pseudo = isPseudoElement(state) ? state : '';
+    // Under a pseudo-element, the pseudo-element's own computed style: its editors read what it draws.
+    const computed = pseudo ? getComputedStyle(el, pseudo) : getComputedStyle(el);
+    const parent = selectableParent(el);
+    const ctx = scopeContext(scope, model);
+    const shown = new Map<string, Contribution | undefined>();
+    const spec = (property: string, listId: string): RowSpec => ({ property, scope, element: el, model, listId });
+    const read = (property: string): Contribution | undefined => {
+      if (!shown.has(property)) shown.set(property, readRow(spec(property, '')).shown);
+      return shown.get(property);
+    };
+    const cardContext: CardContext = { el, computed, pseudo, parent };
+    const visible = CARDS.filter((card) => !card.when || card.when(cardContext));
+    const lists = new Map<string, readonly string[]>();
+    const owned = new Set<string>();
+    for (const card of visible) {
+      if (card.id === 'other') continue;
+      // A property is the first card's that lists it (gap is Flex's and Grid's, so Layout's once).
+      const list = (card.properties ? card.properties(cardContext) : card.all).filter((property) => !owned.has(property));
+      for (const property of list) owned.add(property);
+      lists.set(card.id, list);
+    }
+    // Other: whatever is declared for the element, applies under the condition, and no card lists.
+    const declared = new Set(model.inline.map((one) => one.property.toLowerCase()));
+    for (const entry of model.entries) for (const one of entry.declarations) declared.add(one.property.toLowerCase());
+    lists.set('other', [...declared].filter((property) => !owned.has(property) && read(property)).sort());
+    // Under a text style, Text style's rows write the element's own style attribute (preferInline).
+    const typeInline = Boolean(this.editor.textStyleOf(el));
+    return {
+      el,
+      model,
+      host,
+      computed,
+      scope,
+      ctx,
+      cond: rowCondition(scope),
+      state,
+      pseudo,
+      parent,
+      visible,
+      lists,
+      read,
+      cascade: (property) => model.cascade(property, ctx),
+      spec: (property, listId) => ({
+        ...spec(property, listId),
+        ...(typeInline && TYPOGRAPHY_PROPERTIES.includes(property) ? { preferInline: true } : {}),
+      }),
+    };
+  }
+
+  /** A card's properties that are set under the condition, and those declared by their own name. */
+  #cardState(card: CardSpec, cards: CardRender): { set: string[]; own: string[] } {
+    const list = cards.lists.get(card.id) ?? [];
+    const set = list.filter((property) => cards.read(property));
+    return { set, own: set.filter((property) => !cards.read(property)!.via) };
+  }
+
+  /**
+   * Cards: the set ones first, under "On this element", then the rest under "Not set yet", each a
+   * tile of a two-column grid that opens in place across both columns. While searching, the cards
+   * with something that matches, open, under no caption.
+   */
+  #renderCards(cards: CardRender): TemplateResult {
+    const drawn = cards.visible.map((card) => ({ card, ...this.#cardState(card, cards) }));
+    if (cards.host.filtering) {
+      const shown = drawn.map((one) => this.#renderCard(one, cards)).filter((card): card is TemplateResult => card !== null);
+      return html`<div class="cards-view" data-view="cards">
+        ${shown.length ? html`<div class="cats">${shown}</div>` : nothing}
+      </div>`;
+    }
+    /*
+     * Under a pseudo-element its Content comes first, set or not: nothing shows until it has some.
+     *
+     * An open card stays in the group it was opened in until it is closed. Its first value would
+     * otherwise move it from "Not set yet" to "On this element" mid-edit: a different grid, so a
+     * new card, and the editor dialog or value list open in it went with the old one.
+     */
+    const stay = this.#stayPut.el === cards.el ? this.#stayPut.groups : new Map<string, boolean>();
+    this.#stayPut = { el: cards.el, groups: stay };
+    const isFirst = (one: (typeof drawn)[number]): boolean => {
+      const now = Boolean(one.set.length) || one.card.id === 'content';
+      if (!sectionOpen(one.card.id, false)) {
+        stay.delete(one.card.id);
+        return now;
+      }
+      if (!stay.has(one.card.id)) stay.set(one.card.id, now);
+      return stay.get(one.card.id)!;
+    };
+    const first = drawn.filter(isFirst);
+    const rest = drawn.filter((one) => !first.includes(one));
+    const grid = (list: typeof drawn, group: string): TemplateResult => html`<div class="cats" data-cards=${group}>
+      ${repeat(list, (one) => one.card.id, (one) => this.#renderCard(one, cards) ?? nothing)}
+    </div>`;
+    const on = cards.pseudo
+      ? `On ${cards.pseudo}`
+      : `On this element${cards.scope.kind === 'element' ? '' : ` · ${conditionName(cards.model, conditionKey(cards.cond.media, cards.cond.state))}`}`;
+    return html`<div class="cards-view" data-view="cards">
+      ${first.length ? html`<p class="glabel" data-group="set">${on}</p>${grid(first, 'set')}` : nothing}
+      ${rest.length ? html`<p class="glabel" data-group="unset">Not set yet</p>${grid(rest, 'unset')}` : nothing}
+    </div>`;
+  }
+
+  /** One card: a tile while closed (its live picture, name, count and first values), its body open. */
+  #renderCard(one: { card: CardSpec; set: string[]; own: string[] }, cards: CardRender): TemplateResult | null {
+    const { card, set, own } = one;
+    const open = this.#cardOpen(card, cards);
+    const body = this.#cardBody(card, cards, open);
+    if (cards.host.filtering && body === nothing) return null;
+    const summary = own
+      .slice(0, 3)
+      .map((property) => (cards.read(property)?.value ?? '').split(/,(?![^(]*\))/)[0]!.trim())
+      .filter(Boolean)
+      .join(' · ');
     return html`<heo-section
-      heading="Effective styles"
-      glyph="sparkle"
-      badge=${model.appliedProperties().length ? String(model.appliedProperties().length) : ''}
-      ?open=${filtering ? true : sectionOpen('effective', true)}
-      @section-toggle=${(event: CustomEvent<{ open: boolean }>) => this.#remember('effective', event.detail.open)}
+      card
+      class=${set.length ? 'set' : 'unset'}
+      data-card=${card.id}
+      heading=${card.heading}
+      glyph=${card.glyph}
+      badge=${own.length ? String(own.length) : ''}
+      summary=${summary || (card.id === 'other' ? 'Anything else, by name' : 'Nothing set')}
+      ?open=${open}
+      @section-toggle=${(event: CustomEvent<{ open: boolean }>) => this.#remember(card.id, event.detail.open)}
     >
-      <p class="hint" style="margin:0 0 9px">
-        What this element renders with${at !== null ? ` at ${at}px` : ''}, after the cascade. Pick a
-        size, media query or state to see what it declares when it applies. Click a dot to see what
-        else declares a value.
-      </p>
-      ${this.#renderEffectiveStrip(model, host)}
-      ${picked === 'base'
-        ? html`<div class="rows" data-declarations=${EFFECTIVE_LIST_ID}>
-              ${renderPropertyRows(own, (property) => {
-          const scope: RowScope = { kind: 'element' };
-          return {
-            property,
-            scope,
-            element: el,
-            model,
-            listId: EFFECTIVE_LIST_ID,
-          };
-        }, host)}
-            </div>
-            ${own.length ? nothing : html`<p class="hint" style="margin:0">
-              ${filtering ? 'No property matches.' : 'Nothing declares anything for this element yet.'}
-            </p>`}
-            ${renderBlockAdder(host, EFFECTIVE_LIST_ID, [], '', { places: this.#adderPlaces(el, model, { media: 'base', state: '' }) })}
-            ${groups.map((group) => this.#renderPseudoGroup(el, model, host, group.state, group.properties))}
-            ${pendingPseudo ? this.#renderPseudoGroup(el, model, host, pendingPseudo, []) : nothing}
-            ${filtering
-            ? nothing
-            : renderPseudoAdder(host, {
-              id: EFFECTIVE_LIST_ID,
-              existing: [...groups.map((group) => group.state), ...(pendingPseudo ? [pendingPseudo] : [])],
-              onPick: (state) => {
-                const id = `state-${state}`;
-                host.form.reset();
-                this.#patch({
-                  effPseudo: state,
-                  menu: null,
-                  adder: { id, draft: needsGeneratedContent(state) ? valueStepDraft('content', '""') : '', dest: '' },
-                });
-                return null;
-              },
-            })}`
-        : this.#renderSizeGroup(el, model, host)}
-      ${filtering
+      ${set.length ? this.#art(card.id, cards) : nothing}
+      ${body}
+    </heo-section>`;
+  }
+
+  /**
+   * Whether a card is open: every card with a match while searching; else as the user left it,
+   * closed by default. In its parent opens itself the first time a cap turns up for this element:
+   * it is the answer to a question the user is actively asking ("I set a bigger width and nothing
+   * happened"). Recorded in the session map rather than forced, so closing it still sticks.
+   */
+  #cardOpen(card: CardSpec, cards: CardRender): boolean {
+    if (cards.host.filtering) return true;
+    if (card.id === 'child' && this.#capsShownFor !== cards.el && this.#caps(cards.el).length) {
+      this.#capsShownFor = cards.el;
+      userToggled.set('child', true);
+    }
+    return sectionOpen(card.id, false);
+  }
+
+  #cardBody(card: CardSpec, cards: CardRender, open: boolean): TemplateResult | typeof nothing {
+    switch (card.id) {
+      case 'spacing':
+        return this.#renderSpacing(cards);
+      case 'border':
+        return this.#renderBorder(cards);
+      case 'surface':
+        return this.#renderBackground(cards);
+      case 'motion':
+        return this.#renderMotion(cards);
+      case 'typography':
+        return this.#renderTypography(cards);
+      case 'child':
+        return this.#renderParent(cards, open);
+      case 'other':
+        return this.#renderOther(cards);
+      default:
+        return this.#renderRows(card, cards);
+    }
+  }
+
+  /** A card of rows only (Layout, Size, Position, Shadow & effects, Interaction, Content). */
+  #renderRows(card: CardSpec, cards: CardRender): TemplateResult | typeof nothing {
+    const { host } = cards;
+    const properties = (cards.lists.get(card.id) ?? []).filter((property) =>
+      this.#matches(cards, property));
+    // Searched and nothing here matches: the card goes rather than standing open and empty.
+    if (!properties.length) return nothing;
+    const listId = listOf(card.id);
+    const rows = (list: readonly string[]): TemplateResult | typeof nothing =>
+      list.length ? renderPropertyRows(list, (property) => cards.spec(property, listId), host) : nothing;
+    const offsets = properties.filter((property) => OFFSET_PROPERTIES.includes(property));
+    // The drag note is about the element's own offsets on the page: at Element, above those rows.
+    if (card.id === 'position' && offsets.length && cards.scope.kind === 'element') {
+      return html`<div class="rows" data-declarations=${listId}>
+        ${rows(properties.filter((property) => property === 'position'))}
+        <p class="hint drag-note" data-drag-note>${DRAG_NOTE}</p>
+        ${rows(offsets)}
+        ${rows(properties.filter((property) => property !== 'position' && !offsets.includes(property)))}
+      </div>`;
+    }
+    return html`<div class="rows" data-declarations=${listId}>${rows(properties)}</div>`;
+  }
+
+  /**
+   * Other: what is set and no card lists, then "+ Add property" (the one adder of the cards, its
+   * value step the ladder for the picked condition) and "Paste CSS…" (decision 15).
+   */
+  #renderOther(cards: CardRender): TemplateResult | typeof nothing {
+    const { el, model, host } = cards;
+    const properties = (cards.lists.get('other') ?? []).filter((property) =>
+      this.#matches(cards, property));
+    if (host.filtering && !properties.length) return nothing;
+    return html`
+      ${properties.length
+        ? html`<div class="rows" data-declarations="other">
+            ${renderPropertyRows(properties, (property) => cards.spec(property, 'other'), host)}
+          </div>`
+        : nothing}
+      ${host.filtering
         ? nothing
-        : html`<div class="actions">
+        : html`${renderBlockAdder(host, 'other', [], cards.state, { places: this.#adderPlaces(el, model, cards.cond) })}
+          <div class="actions">
             <button
               class="btn sm"
               type="button"
@@ -1052,34 +1454,101 @@ export class HeoStylesPanel extends HeoElement {
             >
               ${icon('clipboard', 12)} Paste CSS…
             </button>
-          </div>`}
-    </heo-section>`;
+          </div>`}`;
   }
 
-  /** One pseudo-element's group under Always: its rows, written into its own rules, and its adder. */
-  #renderPseudoGroup(
-    el: HTMLElement,
-    model: ElementModel,
-    host: StylesHost,
-    state: string,
-    properties: readonly string[],
-  ): TemplateResult {
-    const scope: RowScope = { kind: 'state', state };
-    const listId = `state-${state}`;
-    return html`<div class="egroup" data-egroup=${state}>
-      ${renderBlockHeader('pseudo', state, 'pseudo-element', html`<span class="note">its own box</span>`)}
-      <div class="rows" data-declarations=${listId}>
-        ${renderPropertyRows(properties, (property) => ({
-      property,
-      scope,
-      element: el,
-      model,
-      listId,
-    }), host)}
-      </div>
-      ${properties.length ? nothing : html`<p class="hint" style="margin:0">No declarations yet.</p>`}
-      ${renderBlockAdder(host, listId, [], state, { places: this.#adderPlaces(el, model, { media: 'base', state }) })}
+  /**
+   * A closed card's picture, drawn from the element's own computed values under the condition, so
+   * the tile shows what is set rather than a stock icon: the text in its font and colour, the
+   * background's paint, the border's line, the shadow, the padding. Others keep their glyph.
+   */
+  #art(id: string, cards: CardRender): TemplateResult | typeof nothing {
+    const s = cards.computed;
+    const px = (value: string): number => Number.parseFloat(value) || 0;
+    switch (id) {
+      case 'typography':
+        return html`<span slot="art" class="art-text" style=${styleMap({
+          fontFamily: s.fontFamily,
+          fontWeight: s.fontWeight,
+          fontStyle: s.fontStyle,
+          fontSize: `${Math.min(px(s.fontSize), 24)}px`,
+          color: s.color,
+          backgroundColor: s.backgroundColor,
+          textTransform: s.textTransform,
+        })}>Aa</span>`;
+      case 'surface':
+        return html`<span slot="art" class="art-swatch" style=${styleMap({ backgroundColor: s.backgroundColor, backgroundImage: s.backgroundImage })}></span>`;
+      case 'border':
+        return html`<span slot="art" class="art-box" style=${styleMap({
+          border: `${s.borderTopWidth} ${s.borderTopStyle} ${s.borderTopColor}`,
+          borderRadius: s.borderTopLeftRadius,
+        })}></span>`;
+      case 'effects':
+        return html`<span slot="art" class="art-box fx" style=${styleMap({ boxShadow: s.boxShadow, transform: s.transform, opacity: s.opacity })}></span>`;
+      case 'spacing':
+        return html`<span slot="art" class="art-pad" style=${styleMap({
+          padding: `${Math.min(px(s.paddingTop), 14)}px ${Math.min(px(s.paddingLeft), 18)}px`,
+        })}><span></span></span>`;
+      case 'content':
+        return html`<span slot="art" class="art-content">${shorten(cards.read('content')?.value ?? '', 16)}</span>`;
+      default:
+        return nothing;
+    }
+  }
+
+  /**
+   * Applied: everything set under the condition at once, one list grouped by card in the cards'
+   * order, each property once. A group's heading goes to its card in Cards, where it is edited
+   * with its editor.
+   */
+  #renderApplied(cards: CardRender): TemplateResult {
+    const { host } = cards;
+    const groups = cards.visible
+      .map((card) => ({
+        card,
+        properties: this.#cardState(card, cards).own.filter((property) =>
+          this.#matches(cards, property)),
+      }))
+      .filter((group) => group.properties.length);
+    if (!groups.length) {
+      return html`<p class="hint applied-none">
+        ${host.filtering ? 'Nothing set matches.' : 'Nothing is set for this element yet.'}
+      </p>`;
+    }
+    return html`<div class="applied" data-view="applied">
+      ${groups.map(({ card, properties }) => html`<div class="agroup" data-applied=${card.id}>
+        <button
+          class="ahead"
+          type="button"
+          data-applied-group=${card.id}
+          title=${`Edit in the ${card.heading} card`}
+          @click=${() => this.#goToCard(card.id)}
+        >
+          ${icon(card.glyph, 12)}
+          <span class="an">${card.heading}</span>
+          <span class="gw">${properties.length}</span>
+          ${icon('chevronRight', 10)}
+        </button>
+        <div class="rows" data-declarations=${listOf(card.id)}>
+          ${renderPropertyRows(properties, (property) => cards.spec(property, listOf(card.id)), host)}
+        </div>
+      </div>`)}
     </div>`;
+  }
+
+  /** From Applied to a card: Cards, that card open, scrolled to and flashed, its head focused. */
+  #goToCard(id: string): void {
+    userToggled.set(id, true);
+    this.#patch({ view: 'cards', popover: null, menu: null });
+    void this.updateComplete.then(() => requestAnimationFrame(() => {
+      const card = this.renderRoot.querySelector<HTMLElement>(`heo-section[data-card="${CSS.escape(id)}"]`);
+      if (!card) return;
+      card.scrollIntoView({ block: 'nearest' });
+      card.classList.remove('flash');
+      card.classList.add('flash');
+      setTimeout(() => card.classList.remove('flash'), 1300);
+      card.shadowRoot?.querySelector<HTMLElement>('.head')?.focus({ preventScroll: true });
+    }));
   }
 
   /** Open or close one of the panel's menus; closing hands focus back to what opened it. */
@@ -1095,107 +1564,6 @@ export class HeoStylesPanel extends HeoElement {
     );
   }
 
-  /**
-   * Effective styles' bar and its pick: every condition a rule reaching the element declares under,
-   * plus one picked from ⋮ and not written yet, and the pick itself while it is empty (the size a
-   * preview follows). The pick is the hand pick, else the previewed width's size (R13).
-   */
-  #effectiveConditions(model: ElementModel, previewWidth: number | null): { chips: BarChip[]; count(key: string): number; picked: string } {
-    const wanted = this.ui.effPick ?? previewSlot(model, previewWidth);
-    const { chips, count } = barConditions(
-      model,
-      model.entries,
-      previewWidth,
-      [...(this.ui.otherSlots.get(EFFECTIVE_LIST_ID) ?? []), wanted],
-    );
-    const picked = wanted !== 'base' && chips.some((chip) => chip.key === wanted) ? wanted : 'base';
-    return { chips, count, picked };
-  }
-  #renderEffectiveStrip(model: ElementModel, host: StylesHost): TemplateResult {
-    const { chips, picked } = this.#effectiveConditions(model, host.previewWidth);
-    const menuId = `strip-${EFFECTIVE_LIST_ID}`;
-    return renderConditionBar({
-      owner: EFFECTIVE_LIST_ID,
-      picked,
-      alwaysCount: model.appliedProperties().length,
-      alwaysTitle: 'What the element renders with now',
-      chips,
-      remaining: remainingConditions(model, chips.map((chip) => chip.key), host.previewWidth, picked),
-      menuOpen: this.ui.menu?.id === menuId,
-      mediaDraft: this.ui.mediaDraft?.owner === EFFECTIVE_LIST_ID ? this.ui.mediaDraft.text : null,
-      widthDraft: this.ui.mediaDraft?.owner === EFFECTIVE_LIST_ID ? this.ui.mediaDraft.width ?? null : null,
-      onWidthDraft: (width) => this.#patch({ mediaDraft: { owner: EFFECTIVE_LIST_ID, text: '', ...(width ? { width } : {}) } }),
-      viewports: this.editor.viewports().filter((one) => one.shown),
-      mediaForm: this.mediaForm,
-      // A button is a toggle: the bar hands back `base` for the one already picked.
-      onPick: (key) => this.#patch({ effPick: key }),
-      onMenu: (open, refocus) => this.#toggleMenu(menuId, open, refocus),
-      onMediaDraft: (text) =>
-        this.#patch({ mediaDraft: text === null ? null : { owner: EFFECTIVE_LIST_ID, text } }),
-      onAdd: (key) => this.#showCondition(slotMedia(model, key), () => {
-        // Only remembered here until a declaration is written under it: nothing empty is stored.
-        const next = new Map(this.ui.otherSlots);
-        next.set(EFFECTIVE_LIST_ID, [...new Set([...(next.get(EFFECTIVE_LIST_ID) ?? []), key])]);
-        this.#patch({ otherSlots: next, effPick: key });
-      }),
-      keyForMedia: (media) => mediaKeyFor(model, media),
-      onRemove: (key) => removeCondition(host, {
-        owner: EFFECTIVE_LIST_ID,
-        key,
-        entries: model.entries,
-        onCleared: () => this.#patch({ effPick: 'base' }),
-      }),
-    });
-  }
-
-  /**
-   * The picked condition, as a group under the element's rows: what the rules under it declare, read
-   * as though it were in effect (at its size's width, with its media query held, in its state), and
-   * an adder that writes under it. Not what the element renders with now, where the condition is
-   * usually off and the group would show nothing it declares.
-   */
-  #renderSizeGroup(el: HTMLElement, model: ElementModel, host: StylesHost): TemplateResult | typeof nothing {
-    const { picked } = this.#effectiveConditions(model, host.previewWidth);
-    if (picked === 'base') return nothing;
-    const { media: slot, state } = conditionParts(picked);
-    const media = slotMedia(model, picked);
-    const short = slotName(model, picked);
-    const scope: RowScope = state ? { kind: 'state', state, slot } : { kind: 'size', slot };
-    const listId = state ? `state-${state}${slot === 'base' ? '' : `@${slot}`}` : `size-${slot}`;
-    const names = new Set<string>();
-    for (const entry of model.entries) {
-      if (conditionOf(model, entry) !== picked) continue;
-      for (const one of entry.declarations) names.add(one.property.toLowerCase());
-    }
-    const name = conditionName(model, picked);
-    const properties = [...names].sort().filter((property) => this.#hit(property, picked, name));
-    const note = state
-      ? `when it applies, over “Always”${short ? ` · ${media !== null && !isWidthQuery(media) ? 'under' : 'at'} ${short}` : ''}`
-      : mediaNow(media ?? '', media !== null && mediaApplies(media, null), model.width);
-    return html`<div class="egroup" data-egroup=${state ? `state:${picked.slice('state:'.length)}` : `size:${slot}`}>
-      ${renderBlockHeader(
-      state ? 'cursor' : mediaIcon(media ?? ''),
-      state || short,
-      state ? 'state' : mediaKind(media ?? ''),
-      html`<span class="note">${note}</span>`,
-    )}
-      <div class="rows" data-declarations=${listId}>
-        ${renderPropertyRows(properties, (property) => ({
-      property,
-      scope,
-      element: el,
-      model,
-      listId,
-    }), host)}
-      </div>
-      ${properties.length
-        ? nothing
-        : html`<p class="hint" style="margin:0">
-            Nothing ${state ? `on ${state}` : media !== null && isWidthQuery(media) ? 'changes at this size' : 'changes under this media query'} yet.
-          </p>`}
-      ${renderBlockAdder(host, listId, [], state, { places: this.#adderPlaces(el, model, { media: slot, state }) })}
-    </div>`;
-  }
   /**
    * What an element adder offers under a condition, for the property being added: the ladder's
    * places (cascade-places.ts), strongest first, the default pick (inline at Element, the
@@ -1216,19 +1584,19 @@ export class HeoStylesPanel extends HeoElement {
   }
 
   /**
-   * Open the Effective styles adder, seeded with what was being looked for.
+   * Open Other's adder, seeded with what was being looked for.
    *
    * Searching for a property and not finding it is the most common way somebody arrives at wanting
    * to add one, so the query carries over as the draft. The search is cleared on the way: adders
    * are hidden while it narrows the panel, and the question it asked has been answered.
    */
-  #openEffectiveAdder(seed = ''): void {
+  #openAdder(seed = ''): void {
     const property = normalizeProperty(seed);
     this.#clearFilter();
-    if (userToggled.get('effective') === false) userToggled.delete('effective');
+    userToggled.set('other', true);
     this.adderForm.reset();
-    this.#patch({ adder: { id: EFFECTIVE_LIST_ID, draft: property, dest: '' }, menu: null, popover: null });
-    this.#focusSelector(`.property-adder[data-adder="${EFFECTIVE_LIST_ID}"] heo-value-field`);
+    this.#patch({ view: 'cards', adder: { id: 'other', draft: property, dest: '' }, menu: null, popover: null });
+    this.#focusSelector('.property-adder[data-adder="other"] heo-value-field');
   }
 
   /* ---------------------------------------------------------------------- */
@@ -1333,8 +1701,8 @@ export class HeoStylesPanel extends HeoElement {
         ?? root.querySelector<HeoValueField>(`heo-value-field[data-property="${CSS.escape(property)}"]`)
         : null;
       if (same) same.focusInput();
-      // Else the section's header, a button: focus is in the panel, where Backspace is not a page key.
-      else root.querySelector('heo-section')?.shadowRoot?.querySelector<HTMLElement>('.head')?.focus({ preventScroll: true });
+      // Else a card's button: focus is in the panel, where Backspace is not a page key.
+      else root.querySelector('heo-section')?.shadowRoot?.querySelector<HTMLElement>('.head, .tile')?.focus({ preventScroll: true });
     });
   }
 
@@ -1464,60 +1832,31 @@ export class HeoStylesPanel extends HeoElement {
    * Editing someone else's element is the risk here, so the parent's rows are
    * fenced off: their own sub-header names the element, every row says so in its
    * tooltip, hovering the group highlights it on the page, and one click selects
-   * it outright.
+   * it outright. They edit the parent's own rules at rest, which a state or a size
+   * picked on the strip does not reach, so they are drawn at Element only.
    */
-  #renderParent(el: HTMLElement, model: ElementModel, host: StylesHost): TemplateResult | typeof nothing {
-    const parent = selectableParent(el);
-    const parentComputed = parent ? getComputedStyle(parent) : null;
-    const all = ['flex', 'align-self', 'order'];
-    if (parentComputed?.display.includes('grid')) all.push('grid-column', 'grid-row');
+  #renderParent(cards: CardRender, open: boolean): TemplateResult | typeof nothing {
+    const { el, host, parent } = cards;
     const filtering = host.filtering;
-    const own = all.filter((property) => this.#hit(property, shownValue(model.cascade(property).applying[0])));
+    const own = (cards.lists.get('child') ?? []).filter((property) => this.#matches(cards, property));
     // The parent's own controls and the cap notices are about the parent, and the field says
-    // "search styles" of this element — so while filtering this section is its matching rows or nothing.
+    // "search styles" of this element — so while filtering this card is its matching rows or nothing.
     if (filtering && !own.length) return nothing;
-
-    const caps = filtering
-      ? []
-      : [...sizeConstraints(el, 'width'), ...sizeConstraints(el, 'height')].filter(
-        (cap) => cap.binding,
-      );
-    const setCount = own.filter((property) => model.cascade(property).applying.length).length;
-
-    // Open itself the first time a cap turns up for this element: it is the answer
-    // to a question the user is actively asking, and hiding it behind a disclosure
-    // defeats the point. Recorded in the session set rather than forcing `open`, so
-    // collapsing it still sticks.
-    if (caps.length && this.#capsShownFor !== el) {
-      this.#capsShownFor = el;
-      userToggled.set('child', true);
-    }
-    const open = filtering ? true : sectionOpen('child', caps.length > 0 || setCount > 0);
-    const scope: RowScope = { kind: 'parent', element: el };
-
-    return html`<heo-section
-      heading="In its parent"
-      glyph="moveOut"
-      badge=${caps.length ? String(caps.length) : setCount ? String(setCount) : ''}
-      ?open=${open}
-      @section-toggle=${(event: CustomEvent<{ open: boolean }>) =>
-        this.#remember('child', event.detail.open)}
-    >
-      ${caps.length ? caps.map((cap) => this.#renderConstraint(cap)) : nothing}
-
+    const caps = filtering ? [] : this.#caps(el);
+    return html`
+      ${caps.map((cap) => this.#renderConstraint(cap))}
       <div class="rows" data-declarations="parent-self">
-        ${renderPropertyRows(own, (property) => ({ property, scope, element: el, model, listId: 'parent-self' }), host)}
+        ${renderPropertyRows(own, (property) => cards.spec(property, 'parent-self'), host)}
       </div>
+      ${!filtering && parent && open && cards.scope.kind === 'element'
+        // The parent's model is built only when the card is open to show it.
+        ? this.#renderParentControls(parent, host)
+        : nothing}`;
+  }
 
-      ${filtering
-        ? nothing
-        : parent && parentComputed
-          // The parent's model is built only when the section is open to show it.
-          ? open ? this.#renderParentControls(parent, host) : nothing
-          : html`<p class="hint" style="margin:9px 0 0">
-              This element has no editable parent, so its size is decided by the viewport.
-            </p>`}
-    </heo-section>`;
+  /** The ancestors capping the element's width or height: why a size set on it is not what it gets. */
+  #caps(el: HTMLElement): SizeConstraint[] {
+    return [...sizeConstraints(el, 'width'), ...sizeConstraints(el, 'height')].filter((cap) => cap.binding);
   }
 
   /** One "something above is capping this" notice, with the cause editable. */
@@ -1713,7 +2052,8 @@ export class HeoStylesPanel extends HeoElement {
    * the same whichever chip opened it; only its height follows what opened it.
    */
   #cardPopFrame(): { minWidth: number; gap: number; left?: number } {
-    const place = this.renderRoot.querySelector('heo-section');
+    // The search row spans the panel's column, as the sections under it once did.
+    const place = this.renderRoot.querySelector('.top');
     const box = place?.getBoundingClientRect();
     /*
      * The popover's frame is 3px of padding and 1px of border each side, and the popped card drops
@@ -1888,30 +2228,26 @@ export class HeoStylesPanel extends HeoElement {
   /**
    * Spacing: the box editor, plus the two shorthands as rows.
    *
-   * Searchable now, which it was not. `margin` and `padding` are not in SECTIONS — the box editor
-   * is a diagram, not a list of rows, so this section is written by hand — and the filter only ever
-   * looked at SECTIONS, so the two most-reached-for properties in CSS could not be found by typing
-   * their names. The section narrows itself instead: the box editor stays for any spacing query,
+   * Searchable, which it once was not: the box editor is a diagram, not a list of rows, so this
+   * card is written by hand, and the filter used to look only at the sections' lists, so the two
+   * most-reached-for properties in CSS could not be found by typing their names (SPACING_PROPERTIES
+   * fixed that). The card narrows itself instead: the box editor stays for any spacing query,
    * since it is the editor for all eight sides at once, and the shorthand rows come and go with
    * the query like every other row.
    *
    * The box commits a batch, which follows the same rule as one row: inline unless one of its
    * sides depends on the viewport, in which case one box asks where the whole batch should stay.
    */
-  #renderSpacing(
-    el: HTMLElement,
-    model: ElementModel,
-    computed: CSSStyleDeclaration,
-    host: StylesHost,
-  ): TemplateResult | typeof nothing {
+  #renderSpacing(cards: CardRender): TemplateResult | typeof nothing {
+    const { el, model, computed, host, scope } = cards;
     const longhands = SPACING_PROPERTIES.filter((property) => property.includes('-'));
     const declaredBox: Record<string, string> = {};
-    for (const property of longhands) declaredBox[property] = shownValue(model.cascade(property).applying[0]);
+    for (const property of longhands) declaredBox[property] = shownValue(cards.cascade(property).applying[0]);
     const computedBox: Record<string, string> = { width: computed.width, height: computed.height };
     for (const property of longhands) computedBox[property] = computed.getPropertyValue(property);
 
     const hits = SPACING_PROPERTIES.filter((property) =>
-      this.#hit(property, shownValue(model.cascade(property).applying[0])),
+      this.#matches(cards, property),
     );
     if (!hits.length) return nothing;
     // The shorthands, and each side declared for this element, under its shorthand: written in the
@@ -1920,19 +2256,10 @@ export class HeoStylesPanel extends HeoElement {
     const rowsShown = shorthands.flatMap((shorthand) => [
       shorthand,
       ...longhands.filter((side) => side.startsWith(`${shorthand}-`) && hits.includes(side) &&
-        model.cascade(side).applying.some((one) => !one.via)),
+        cards.cascade(side).applying.some((one) => !one.via)),
     ]);
-    const touched = longhands.filter((property) => declaredBox[property]).length;
-    const scope: RowScope = { kind: 'section', id: 'spacing' };
 
-    return html`<heo-section
-      heading="Spacing"
-      glyph="wrap"
-      badge=${touched ? String(touched) : ''}
-      ?open=${host.filtering ? true : sectionOpen('spacing', true)}
-      @section-toggle=${(event: CustomEvent<{ open: boolean }>) =>
-        this.#remember('spacing', event.detail.open)}
-    >
+    return html`
       <heo-box-editor
         .declared=${declaredBox}
         .computed=${computedBox}
@@ -1951,8 +2278,7 @@ export class HeoStylesPanel extends HeoElement {
           listId: 'spacing',
         }), host)}
           </div>`
-        : nothing}
-    </heo-section>`;
+        : nothing}`;
   }
 
   /**
@@ -1986,16 +2312,11 @@ export class HeoStylesPanel extends HeoElement {
    * shorthand, as a family, since then they are real declarations; supplied by the shorthand they
    * are not rows at all (BORDER_PROPERTIES).
    */
-  #renderBorder(
-    el: HTMLElement,
-    model: ElementModel,
-    computed: CSSStyleDeclaration,
-    host: StylesHost,
-  ): TemplateResult | typeof nothing {
+  #renderBorder(cards: CardRender): TemplateResult | typeof nothing {
+    const { el, model, computed, host, scope, ctx } = cards;
     const hits = BORDER_PROPERTIES.filter((property) =>
-      this.#hit(property, shownValue(model.cascade(property).applying[0])));
+      this.#matches(cards, property));
     if (!hits.length) return nothing;
-    const scope: RowScope = { kind: 'section', id: 'border' };
     const specOf = (property: string): RowSpec => ({ property, scope, element: el, model, listId: 'border' });
     const choiceOf = (property: string) => {
       const spec = specOf(property);
@@ -2003,7 +2324,7 @@ export class HeoStylesPanel extends HeoElement {
       return { spec, shown, choice: rowPlace(spec, host, rowIdOf(scope, property, el)) };
     };
 
-    const lines = { border: this.#lineView('border', model, computed), outline: this.#lineView('outline', model, computed) };
+    const lines = { border: this.#lineView('border', model, computed, ctx), outline: this.#lineView('outline', model, computed, ctx) };
     const fields: Record<string, BorderFieldSpec> = {};
     for (const kind of BORDER_SHORTHANDS) {
       for (const part of LINE_PARTS) {
@@ -2012,12 +2333,12 @@ export class HeoStylesPanel extends HeoElement {
     }
     fields['border-radius'] = { suggestions: buildSuggestions(this.editor, 'border-radius', el) };
     fields['outline-offset'] = { suggestions: buildSuggestions(this.editor, 'outline-offset', el) };
-    const radius = { value: shownValue(model.cascade('border-radius').applying[0]), computed: computed.borderRadius };
-    const offset = { value: shownValue(model.cascade('outline-offset').applying[0]), computed: computed.outlineOffset };
+    const radius = { value: shownValue(cards.cascade('border-radius').applying[0]), computed: computed.borderRadius };
+    const offset = { value: shownValue(cards.cascade('outline-offset').applying[0]), computed: computed.outlineOffset };
 
     // Each shorthand, then the parts a block declares on their own (a real declaration to show):
     // the border's, each side's family, the outline's, and its offset.
-    const own = (property: string): boolean => model.cascade(property).applying.some((one) => !one.via);
+    const own = (property: string): boolean => cards.cascade(property).applying.some((one) => !one.via);
     const partsOf = (kind: LineKind): string[] => BORDER_PARTS.filter((part) => part.startsWith(`${kind}-`) && own(part));
     const rowsShown = [
       'border',
@@ -2028,7 +2349,6 @@ export class HeoStylesPanel extends HeoElement {
       ...(own('outline-offset') ? ['outline-offset'] : []),
       'border-radius',
     ].filter((property) => hits.includes(property));
-    const touched = BORDER_PROPERTIES.filter(own).length;
 
     /** The line a field's edit writes: a shorthand's part, a side's part, or null for its own property. */
     const lineOf = (property: string): { kind: LineKind; part: LinePart; side?: Side } | null => {
@@ -2067,23 +2387,17 @@ export class HeoStylesPanel extends HeoElement {
         return;
       }
       if (line.side) {
-        this.#commitEdge(edgeWrites(line.side, line.part, value), choiceOf('border').choice, el, model, `Set border-${line.side}`);
+        this.#commitEdge(edgeWrites(line.side, line.part, value), choiceOf('border').choice, el, model, ctx, `Set border-${line.side}`);
         return;
       }
-      this.#commitLine(line.kind, composeLine(this.#lineBase(lines[line.kind]), line.part, value), choiceOf(line.kind).choice, el, model);
+      this.#commitLine(line.kind, composeLine(this.#lineBase(lines[line.kind]), line.part, value), choiceOf(line.kind).choice, el, model, ctx);
     };
     const reset = (side: Side): void => {
       const writes = Object.fromEntries([`border-${side}`, ...LINE_PARTS.map((part) => `border-${side}-${part}`)].map((name) => [name, '']));
-      this.#commitEdge(writes, choiceOf('border').choice, el, model, `Reset border-${side}`);
+      this.#commitEdge(writes, choiceOf('border').choice, el, model, ctx, `Reset border-${side}`);
     };
 
-    return html`<heo-section
-      heading="Border"
-      glyph="frame"
-      badge=${touched ? String(touched) : ''}
-      ?open=${host.filtering ? true : sectionOpen('border', true)}
-      @section-toggle=${(event: CustomEvent<{ open: boolean }>) => this.#remember('border', event.detail.open)}
-    >
+    return html`
       <heo-border-editor
         .lines=${lines}
         .radius=${radius}
@@ -2098,19 +2412,18 @@ export class HeoStylesPanel extends HeoElement {
         ? html`<div class="rows" style="margin-top:10px" data-declarations="border">
             ${renderPropertyRows(rowsShown, specOf, host)}
           </div>`
-        : nothing}
-    </heo-section>`;
+        : nothing}`;
   }
 
   /**
    * One line as the editor shows it: each part as written, read through whichever declaration
    * supplies it (the part's own, or the shorthand's text), and the parts the page draws.
    */
-  #lineView(kind: LineKind, model: ElementModel, computed: CSSStyleDeclaration): LineView {
+  #lineView(kind: LineKind, model: ElementModel, computed: CSSStyleDeclaration, ctx: CascadeContext): LineView {
     const parts: LineParts = { width: '', style: '', color: '' };
     let token = '';
     for (const part of LINE_PARTS) {
-      const winner = model.cascade(`${kind}-${part}`).applying[0];
+      const winner = model.cascade(`${kind}-${part}`, ctx).applying[0];
       if (!winner) continue;
       if (!winner.via) parts[part] = winner.value;
       else if (winner.via === kind) {
@@ -2128,7 +2441,7 @@ export class HeoStylesPanel extends HeoElement {
       mixed[part] = new Set(values).size > 1;
     }
     if (kind !== 'border') return { parts, token, computed: drawn, mixed };
-    const edges = Object.fromEntries(SIDES.map((side): [Side, EdgeView] => [side, this.#edgeView(side, model, computed)])) as Record<Side, EdgeView>;
+    const edges = Object.fromEntries(SIDES.map((side): [Side, EdgeView] => [side, this.#edgeView(side, model, computed, ctx)])) as Record<Side, EdgeView>;
     return { parts, token, computed: drawn, mixed, edges };
   }
 
@@ -2136,13 +2449,13 @@ export class HeoStylesPanel extends HeoElement {
    * One side as the editor shows it: the parts it declares for itself, by its longhand or through
    * its own shorthand (`border-bottom`), and not those it takes from `border` or `border-width`.
    */
-  #edgeView(side: Side, model: ElementModel, computed: CSSStyleDeclaration): EdgeView {
+  #edgeView(side: Side, model: ElementModel, computed: CSSStyleDeclaration, ctx: CascadeContext): EdgeView {
     const parts: LineParts = { width: '', style: '', color: '' };
     const drawn: LineParts = { width: '', style: '', color: '' };
     for (const part of LINE_PARTS) {
       const property = `border-${side}-${part}`;
       drawn[part] = computed.getPropertyValue(property).trim();
-      const winner = model.cascade(property).applying[0];
+      const winner = model.cascade(property, ctx).applying[0];
       if (!winner) continue;
       if (!winner.via) parts[part] = winner.value;
       else if (winner.via === `border-${side}`) parts[part] = parseLine(winner.value)[part];
@@ -2169,6 +2482,7 @@ export class HeoStylesPanel extends HeoElement {
     choice: RowPlace,
     el: HTMLElement,
     model: ElementModel,
+    ctx: CascadeContext,
     label: string,
   ): void {
     const dest = choice.picked.dest;
@@ -2176,7 +2490,7 @@ export class HeoStylesPanel extends HeoElement {
     this.editor.cancelPreview();
     const into = dest.kind === 'target' ? dest.target : null;
     const declaredHere = (property: string): boolean => Boolean(into) &&
-      model.cascade(property).applying.some((one) => !one.via && sameTarget(targetOf(one, el), into!));
+      model.cascade(property, ctx).applying.some((one) => !one.via && sameTarget(targetOf(one, el), into!));
     const list = Object.entries(writes)
       .filter(([property, value]) => value || declaredHere(property))
       .map(([property, value]) => ({ dest, property, value, remove: !value }));
@@ -2199,14 +2513,14 @@ export class HeoStylesPanel extends HeoElement {
    * declares on their own: kept, they would compete with the new shorthand by order, which is how
    * `border-width` came to override a border just set. One undo entry.
    */
-  #commitLine(kind: LineKind, value: string, choice: RowPlace, el: HTMLElement, model: ElementModel): void {
+  #commitLine(kind: LineKind, value: string, choice: RowPlace, el: HTMLElement, model: ElementModel, ctx: CascadeContext): void {
     const dest = choice.picked.dest;
     if (!dest) return;
     this.editor.cancelPreview();
     const into = dest.kind === 'target' ? dest.target : null;
     const folded = into
       ? LINE_PARTS.map((part) => `${kind}-${part}`).filter((property) =>
-        model.cascade(property).applying.some((one) =>
+        model.cascade(property, ctx).applying.some((one) =>
           !one.via && sameTarget(targetOf(one, el), into)))
       : [];
     const moving = choice.current?.dest?.kind === 'target' && choice.current.dest.target.kind === 'inline' && into?.kind !== 'inline';
@@ -2229,45 +2543,33 @@ export class HeoStylesPanel extends HeoElement {
    * `background-blend-mode` beside it, which the shorthand cannot carry. A change to the colour alone,
    * in a block with no shorthand, stays the `background-color` it was.
    */
-  #renderBackground(
-    section: SectionSpec,
-    el: HTMLElement,
-    model: ElementModel,
-    computed: CSSStyleDeclaration,
-    host: StylesHost,
-  ): TemplateResult | typeof nothing {
-    const hits = section.properties.filter((property) => this.#hit(property, shownValue(model.cascade(property).applying[0])));
+  #renderBackground(cards: CardRender): TemplateResult | typeof nothing {
+    const { el, model, computed, host, scope, ctx } = cards;
+    const properties = ['background', ...BACKGROUND_LONGHANDS];
+    const hits = properties.filter((property) => this.#matches(cards, property));
     if (!hits.length) return nothing;
-    const scope: RowScope = { kind: 'section', id: section.id };
-    const specOf = (property: string): RowSpec => ({ property, scope, element: el, model, listId: section.id });
+    const specOf = (property: string): RowSpec => ({ property, scope, element: el, model, listId: 'surface' });
     const choiceOf = (property: string) => {
       const spec = specOf(property);
       const { shown } = readRow(spec);
       return { spec, shown, choice: rowPlace(spec, host, rowIdOf(scope, property, el)) };
     };
-    const value = this.#backgroundView(model);
+    const value = this.#backgroundView(model, ctx);
     const fields: Record<string, BackgroundFieldSpec> = {};
     for (const property of BACKGROUND_LONGHANDS) {
       fields[property] = { suggestions: buildSuggestions(this.editor, property, el) };
     }
-    const own = (property: string): boolean => model.cascade(property).applying.some((one) => !one.via);
+    const own = (property: string): boolean => cards.cascade(property).applying.some((one) => !one.via);
     const rowsShown = ['background', ...BACKGROUND_LONGHANDS.filter(own)].filter((property) => hits.includes(property));
-    const touched = section.properties.filter(own).length;
 
     const preview = (next: Background): void => {
       const { spec, choice } = choiceOf('background');
       previewChosen(host, spec, choice.picked, composeBackground(next));
     };
     const commit = (next: Background): void =>
-      this.#commitBackground(value, next, choiceOf('background').choice, choiceOf('background-color').choice, el, model);
+      this.#commitBackground(value, next, choiceOf('background').choice, choiceOf('background-color').choice, el, model, ctx);
 
-    return html`<heo-section
-      heading=${section.heading}
-      glyph=${section.glyph}
-      badge=${touched ? String(touched) : ''}
-      ?open=${host.filtering ? true : sectionOpen(section.id, false)}
-      @section-toggle=${(event: CustomEvent<{ open: boolean }>) => this.#remember(section.id, event.detail.open)}
-    >
+    return html`
       <heo-background-editor
         .value=${value}
         .computedColor=${computed.backgroundColor}
@@ -2277,22 +2579,21 @@ export class HeoStylesPanel extends HeoElement {
         @background-revert=${() => this.editor.cancelPreview()}
       ></heo-background-editor>
       ${rowsShown.length
-        ? html`<div class="rows" style="margin-top:10px" data-declarations=${section.id}>
+        ? html`<div class="rows" style="margin-top:10px" data-declarations="surface">
             ${renderPropertyRows(rowsShown, specOf, host)}
           </div>`
-        : nothing}
-    </heo-section>`;
+        : nothing}`;
   }
 
   /**
    * The background as the editor shows it: the winning shorthand read as layers, with each longhand
    * that beats it laid over (a later `background-size`, a more specific rule's colour).
    */
-  #backgroundView(model: ElementModel): Background {
-    const shorthand = model.cascade('background').applying[0];
+  #backgroundView(model: ElementModel, ctx: CascadeContext): Background {
+    const shorthand = model.cascade('background', ctx).applying[0];
     let background = shorthand ? parseBackground(shorthand.value) : { layers: [], color: '' };
     for (const property of BACKGROUND_LONGHANDS) {
-      const winner = model.cascade(property).applying[0];
+      const winner = model.cascade(property, ctx).applying[0];
       if (!winner || winner.via) continue;
       if (shorthand && compareContributions(shorthand, winner) < 0) continue;
       background = applyLonghand(background, property, winner.value);
@@ -2313,9 +2614,10 @@ export class HeoStylesPanel extends HeoElement {
     colourChoice: RowPlace,
     el: HTMLElement,
     model: ElementModel,
+    ctx: CascadeContext,
   ): void {
     const declaredIn = (property: string, into: WriteTarget | null): boolean => Boolean(into) &&
-      model.cascade(property).applying.some((one) => !one.via && sameTarget(targetOf(one, el), into!));
+      model.cascade(property, ctx).applying.some((one) => !one.via && sameTarget(targetOf(one, el), into!));
     const targetOfChoice = (choice: RowPlace): WriteTarget | null =>
       choice.picked.dest?.kind === 'target' ? choice.picked.dest.target : null;
     const layersOf = (background: Background): string => composeBackground({ ...background, color: '' });
@@ -2354,21 +2656,21 @@ export class HeoStylesPanel extends HeoElement {
    * the `animation-name` row writes; a hover animation goes into the element's `:hover` state.
    * The declarations a block holds are rows under it.
    */
-  #animationPart(el: HTMLElement, model: ElementModel, host: StylesHost): MotionPart | null {
-    const hits = ANIMATION_PROPERTIES.filter((property) => this.#hit(property, shownValue(model.cascade(property).applying[0])));
+  #animationPart(cards: CardRender): MotionPart | null {
+    const { el, model, host, scope, ctx } = cards;
+    const hits = ANIMATION_PROPERTIES.filter((property) => this.#matches(cards, property));
     if (!hits.length) return null;
-    const scope: RowScope = { kind: 'section', id: 'motion' };
     const specOf = (property: string): RowSpec => ({ property, scope, element: el, model, listId: 'motion' });
     const hover = { width: null, state: ':hover' } as const;
     // Written where the animation already is: its name's row, or the shorthand's when only that
     // is declared, so a rule's `animation` is replaced in that rule and not shadowed inline.
-    const anchor = !model.cascade('animation-name').applying[0] && model.cascade('animation').applying[0] ? 'animation' : 'animation-name';
+    const anchor = !cards.cascade('animation-name').applying[0] && cards.cascade('animation').applying[0] ? 'animation' : 'animation-name';
     const choice = (() => {
       const spec = specOf(anchor);
       return rowPlace(spec, host, rowIdOf(scope, anchor, el));
     })();
     const winner = (property: string, onHover: boolean): Contribution | undefined =>
-      model.cascade(property, onHover ? hover : undefined).applying[0];
+      model.cascade(property, onHover ? hover : ctx).applying[0];
     const fromHover = (one: Contribution | undefined): boolean =>
       one?.source.kind === 'rule' && one.source.entry.state.includes(':hover');
     const baseName = winner('animation-name', false) ?? winner('animation', false);
@@ -2380,9 +2682,8 @@ export class HeoStylesPanel extends HeoElement {
     }, onHover);
     // Where the animation now lives, so a change rewrites it there and a move takes it out.
     const home = onHover ? hoverName : baseName;
-    const own = (property: string): boolean => model.cascade(property).applying.some((one) => !one.via);
+    const own = (property: string): boolean => cards.cascade(property).applying.some((one) => !one.via);
     const rowsShown = ANIMATION_PROPERTIES.filter((property) => own(property) && hits.includes(property));
-    const touched = rowsShown.length;
 
     const commit = (next: AnimationConfig | null): void => {
       const base = choice.picked.dest;
@@ -2397,7 +2698,7 @@ export class HeoStylesPanel extends HeoElement {
       const list: Array<{ dest: AddDestination; property: string; value: string; remove?: boolean }> = [];
       const into = dest.kind === 'target' ? dest.target : null;
       const declaredIn = (property: string, target: WriteTarget | null, onHoverState: boolean): boolean => Boolean(target) &&
-        model.cascade(property, onHoverState ? hover : undefined).applying.some((one) => !one.via && sameTarget(targetOf(one, el), target!));
+        model.cascade(property, onHoverState ? hover : ctx).applying.some((one) => !one.via && sameTarget(targetOf(one, el), target!));
       // Everything about an animation the destination block holds and the new one does not say,
       // the shorthand included: kept, it would go on competing with the longhands.
       for (const property of ANIMATION_PROPERTIES) {
@@ -2417,7 +2718,6 @@ export class HeoStylesPanel extends HeoElement {
     };
 
     return {
-      touched,
       set: Boolean(value),
       body: html`
         <heo-animation-editor
@@ -2438,12 +2738,12 @@ export class HeoStylesPanel extends HeoElement {
    * where its row writes, the longhands that block declares taken out so they cannot go on
    * competing with it. The declarations a block holds are rows under it.
    */
-  #transitionPart(el: HTMLElement, model: ElementModel, host: StylesHost): MotionPart | null {
-    const hits = TRANSITION_PROPERTIES.filter((property) => this.#hit(property, shownValue(model.cascade(property).applying[0])));
+  #transitionPart(cards: CardRender): MotionPart | null {
+    const { el, model, host, scope } = cards;
+    const hits = TRANSITION_PROPERTIES.filter((property) => this.#matches(cards, property));
     if (!hits.length) return null;
-    const scope: RowScope = { kind: 'section', id: 'motion' };
     const specOf = (property: string): RowSpec => ({ property, scope, element: el, model, listId: 'motion' });
-    const winner = (property: string): Contribution | undefined => model.cascade(property).applying[0];
+    const winner = (property: string): Contribution | undefined => cards.cascade(property).applying[0];
     // Written where the transition already is: the shorthand's row, or a longhand's when only
     // longhands are declared, so a rule's transition is replaced in that rule.
     const anchor = winner('transition') || !winner('transition-property') ? 'transition' : 'transition-property';
@@ -2452,7 +2752,7 @@ export class HeoStylesPanel extends HeoElement {
       return rowPlace(spec, host, rowIdOf(scope, anchor, el));
     })();
     const items = readTransitions((property) => winner(property)?.value ?? '');
-    const own = (property: string): boolean => model.cascade(property).applying.some((one) => !one.via);
+    const own = (property: string): boolean => cards.cascade(property).applying.some((one) => !one.via);
     const rowsShown = TRANSITION_PROPERTIES.filter((property) => own(property) && hits.includes(property));
     const shown = getComputedStyle(el);
     const durations = this.editor.tokens
@@ -2470,7 +2770,7 @@ export class HeoStylesPanel extends HeoElement {
       this.editor.cancelPreview();
       const into = dest.kind === 'target' ? dest.target : null;
       const declaredIn = (property: string): boolean => Boolean(into) &&
-        model.cascade(property).applying.some((one) => !one.via && sameTarget(targetOf(one, el), into!));
+        cards.cascade(property).applying.some((one) => !one.via && sameTarget(targetOf(one, el), into!));
       const list: Array<{ dest: AddDestination; property: string; value: string; remove?: boolean }> = [];
       for (const property of TRANSITION_PROPERTIES.slice(1)) {
         if (declaredIn(property)) list.push({ dest, property, value: '', remove: true });
@@ -2482,7 +2782,6 @@ export class HeoStylesPanel extends HeoElement {
     };
 
     return {
-      touched: rowsShown.length,
       set: Boolean(items?.length),
       body: html`
         ${items === null
@@ -2505,24 +2804,26 @@ export class HeoStylesPanel extends HeoElement {
     };
   }
 
-  /** The Typography section's dialog, while open: saving, or saving on the way to another style. */
+  /** The Text style card's dialog, while open: saving, or saving on the way to another style. */
   #typeDialog: { mode: 'save' | 'leave'; target: string | null } | null = null;
   #typeTune = false;
 
   /**
-   * Typography: the design system's text styles, then the element's typography as labelled rows.
+   * Text style: the design system's text styles, then the element's typography as labelled rows.
    *
    * A text style is a class (see core/text-styles.ts). The rows write to the element's style
    * attribute, so editing anything makes the element differ from its style: the list then shows
    * "This text", unsaved, and "Save as text style…" names it. Picking another style with edits
-   * unsaved asks first, in one dialog that can save them as it goes.
+   * unsaved asks first, in one dialog that can save them as it goes. The styles are offered at
+   * Element only: wearing one is the element's, not a state's or a size's.
    */
-  #renderTypography(section: SectionSpec, el: HTMLElement, model: ElementModel, host: StylesHost): TemplateResult | typeof nothing {
+  #renderTypography(cards: CardRender): TemplateResult | typeof nothing {
+    const { el, model, host, scope } = cards;
     const engine = this.editor;
-    const styles = engine.textStyles();
+    const atElement = scope.kind === 'element';
+    const styles = atElement ? engine.textStyles() : [];
     const current = engine.textStyleOf(el);
     const edited = engine.hasOwnTypography(el);
-    const scope: RowScope = { kind: 'section', id: section.id };
     /*
      * Under a text style, one place to write: the element's own style attribute, so an edit makes
      * the element its own rather than changing the style every other element wears (that is done
@@ -2530,13 +2831,17 @@ export class HeoStylesPanel extends HeoElement {
      * as every section of the panel does. The ladder can still pick the style's class by hand.
      */
     const inline = Boolean(current);
-    const value = (property: string): string => model.cascade(property).applying[0]?.value ?? '';
-    const rows = shownTypographyRows(value('text-decoration-line') || getComputedStyle(el).textDecorationLine)
-      .filter((row) => host.hit(row.property, row.label, value(row.property)));
+    const value = (property: string): string => cards.cascade(property).applying[0]?.value ?? '';
+    const rows = shownTypographyRows(value('text-decoration-line') || cards.computed.textDecorationLine)
+      .filter((row) => this.#matches(cards, row.property, row.label));
+    // white-space is laid out with the text; the shorthands are listed only where one is set.
+    const extras = (cards.lists.get('typography') ?? [])
+      .filter((property) => TEXT_EXTRAS.includes(property) && (property === 'white-space' || cards.read(property)))
+      .filter((property) => this.#matches(cards, property));
     const tuning = (['text-wrap', 'hyphens', 'text-indent', 'font-variant-numeric', 'font-variant-caps', 'font-variant-ligatures'] as const);
     const tuneShown = tuning.some((property) => host.hit(property, value(property)));
     const styleHits = styles.filter((one) => host.hit(one.name, one.entry.name));
-    if (!rows.length && !tuneShown && !styleHits.length) return nothing;
+    if (!rows.length && !extras.length && !tuneShown && !styleHits.length) return nothing;
 
     const look = (): Record<string, string> => {
       const out: Record<string, string> = {};
@@ -2564,7 +2869,7 @@ export class HeoStylesPanel extends HeoElement {
     const changes = Object.keys(inlineDeclarations(el)).filter((property) => TYPOGRAPHY_PROPERTIES.includes(property)).length;
     const dialog = this.#typeDialog;
     const targetName = dialog?.target ? styles.find((one) => one.entry.name === dialog.target)?.name ?? '' : '';
-    const computedFamily = getComputedStyle(el).fontFamily;
+    const computedFamily = cards.computed.fontFamily;
     const sizeOf = (decl: Record<string, string>): string => {
       const size = decl['font-size'] ?? '';
       return /^var\(/.test(size) ? (getComputedStyle(el).getPropertyValue(size.replace(/^var\(\s*|\s*(,.*)?\)$/g, '')).trim() || size) : size;
@@ -2574,14 +2879,17 @@ export class HeoStylesPanel extends HeoElement {
       .map(([property, text]) => `${property}:${text.replace(/[;{}<>]/g, '')}`)
       .join(';');
 
-    return html`<heo-section
-      heading=${section.heading}
-      glyph=${section.glyph}
-      badge=${edited ? 'unsaved' : current ? fromName : ''}
-      ?open=${host.filtering ? true : sectionOpen(section.id, true)}
-      @section-toggle=${(event: CustomEvent<{ open: boolean }>) => this.#remember(section.id, event.detail.open)}
-    >
-      <div class="typestyles" data-text-styles>
+    /*
+     * Fine-tuning writes where its rows write: through the row's place, under the condition picked
+     * on the strip, rather than always into the style attribute.
+     */
+    const tune = (property: string, text: string): void => {
+      const spec = cards.spec(property, 'typography');
+      writeChosen(host, spec, rowPlace(spec, host), cards.read(property), text);
+    };
+
+    return html`
+      ${atElement ? html`<div class="typestyles" data-text-styles>
         <div class="tgroup">Text style</div>
         ${edited
           ? html`<div class="tstyle mine" aria-current="true" data-text-style="mine">
@@ -2617,19 +2925,20 @@ export class HeoStylesPanel extends HeoElement {
               }}>Save as text style…</button>
             </div>`
           : nothing}
-      </div>
-      <div class="rows" data-declarations=${section.id}>
+      </div>` : nothing}
+      <div class="rows" data-declarations="typography">
         ${rows.map((row) => renderPropertyRow({
           property: row.property,
           scope,
           element: el,
           model,
-          listId: section.id,
+          listId: 'typography',
           label: row.label,
           sub: row.sub,
           segments: row.segments,
           ...(inline ? { preferInline: true } : {}),
         }, host))}
+        ${extras.length ? renderPropertyRows(extras, (property) => cards.spec(property, 'typography'), host) : nothing}
       </div>
       ${tuneShown
         ? html`<button class="more" type="button" aria-expanded=${this.#typeTune ? 'true' : 'false'} @click=${() => {
@@ -2642,7 +2951,7 @@ export class HeoStylesPanel extends HeoElement {
                 family=${computedFamily}
                 familyName=${parseFamilies(computedFamily)[0] ?? ''}
                 @tune-change=${(event: CustomEvent<{ property: string; value: string }>) =>
-                  engine.setStyle(event.detail.property, event.detail.value, el)}
+                  tune(event.detail.property, event.detail.value)}
               ></heo-type-tuning>`
             : nothing}`
         : nothing}
@@ -2674,11 +2983,10 @@ export class HeoStylesPanel extends HeoElement {
           if (saved) engine.notify(`Saved ${event.detail.name} as a text style.`, 'success', { label: 'Undo', run: () => engine.undo() });
           this.requestUpdate();
         }}
-      ></heo-text-style-dialog>
-    </heo-section>`;
+      ></heo-text-style-dialog>`;
   }
 
-  /** Which of the two the Motion section shows, once picked; until then, the one in use. */
+  /** Which of the two the Motion card shows, once picked; until then, the one in use. */
   #motionTab: 'animation' | 'transition' | null = null;
 
   /**
@@ -2686,25 +2994,18 @@ export class HeoStylesPanel extends HeoElement {
    * the element uses — a transition with no animation opens on Transition — and Animation
    * otherwise. While searching, a tab with nothing that matches gives way to the other.
    */
-  #renderMotion(section: SectionSpec, el: HTMLElement, model: ElementModel, host: StylesHost): TemplateResult | typeof nothing {
-    const animation = this.#animationPart(el, model, host);
-    const transition = this.#transitionPart(el, model, host);
+  #renderMotion(cards: CardRender): TemplateResult | typeof nothing {
+    const animation = this.#animationPart(cards);
+    const transition = this.#transitionPart(cards);
     if (!animation && !transition) return nothing;
     let tab = this.#motionTab ?? (transition?.set && !animation?.set ? 'transition' : 'animation');
     if (tab === 'transition' && !transition) tab = 'animation';
     if (tab === 'animation' && !animation) tab = 'transition';
-    const touched = (animation?.touched ?? 0) + (transition?.touched ?? 0);
     const options: SegmentOption[] = [
       { value: 'animation', label: 'Animation', title: 'Keyframes that play on their own: on load, on hover, on scroll' },
       { value: 'transition', label: 'Transition', title: 'How a change plays: when a state such as :hover starts or ends' },
     ];
-    return html`<heo-section
-      heading=${section.heading}
-      glyph=${section.glyph}
-      badge=${touched ? String(touched) : ''}
-      ?open=${host.filtering ? true : sectionOpen(section.id, false)}
-      @section-toggle=${(event: CustomEvent<{ open: boolean }>) => this.#remember(section.id, event.detail.open)}
-    >
+    return html`
       <div class="motion-tabs" style="margin-bottom:10px">
         <heo-segmented
           label="Animation or transition"
@@ -2717,38 +3018,7 @@ export class HeoStylesPanel extends HeoElement {
           }}
         ></heo-segmented>
       </div>
-      <div data-motion=${tab}>${tab === 'transition' ? transition!.body : animation!.body}</div>
-    </heo-section>`;
-  }
-
-  #renderSection(
-    section: SectionSpec,
-    el: HTMLElement,
-    model: ElementModel,
-    host: StylesHost,
-  ): TemplateResult | typeof nothing {
-    const properties = section.properties.filter((property) =>
-      this.#hit(property, shownValue(model.cascade(property).applying[0])),
-    );
-    // Searched and nothing here matches: the section goes rather than standing open and empty.
-    if (!properties.length) return nothing;
-    const setCount = properties.filter((property) => model.cascade(property).applying.length).length;
-    const scope: RowScope = { kind: 'section', id: section.id };
-    return html`<heo-section
-      heading=${section.heading}
-      glyph=${section.glyph}
-      badge=${setCount ? String(setCount) : ''}
-      ?open=${host.filtering
-        ? true
-        : sectionOpen(section.id, section.id === 'layout' || section.id === 'typography')}
-      @section-toggle=${(event: CustomEvent<{ open: boolean }>) =>
-        this.#remember(section.id, event.detail.open)}
-    >
-      ${section.note ? html`<p class="hint" style="margin:0 0 9px">${section.note}</p>` : nothing}
-      <div class="rows" data-declarations=${section.id}>
-        ${renderPropertyRows(properties, (property) => ({ property, scope, element: el, model, listId: section.id }), host)}
-      </div>
-    </heo-section>`;
+      <div data-motion=${tab}>${tab === 'transition' ? transition!.body : animation!.body}</div>`;
   }
 
   /* ---------------------------------------------------------------------- */
@@ -2762,6 +3032,23 @@ export class HeoStylesPanel extends HeoElement {
    * applied: a property name, a value, a class name, a selector. Empty query matches everything,
    * which is what makes the unfiltered panel fall out of the same code path.
    */
+  /**
+   * Whether a card's row matches the search: its property, its label, what it shows under the
+   * condition, or the selector of any declaration applying to it there (`card` finds what `.card`
+   * writes).
+   */
+  #matches(cards: CardRender, property: string, ...also: Array<string | undefined>): boolean {
+    if (!this.ui.filter.trim()) return true;
+    const applying = cards.cascade(property).applying;
+    return this.#hit(
+      property,
+      ...also,
+      shownValue(cards.read(property)),
+      applying[0]?.value,
+      ...applying.map((one) => (one.source.kind === 'rule' ? one.source.entry.selector : 'inline style')),
+    );
+  }
+
   #hit(...texts: Array<string | undefined>): boolean {
     const needle = this.ui.filter.trim().toLowerCase();
     if (!needle) return true;
@@ -2774,19 +3061,15 @@ export class HeoStylesPanel extends HeoElement {
    * Counted rather than inferred so the number beside the field and what is on screen cannot
    * disagree — which is the whole reason the count lives here and not in the control. Properties
    * are de-duplicated across surfaces because one property drawn in two sections is still one
-   * answer to "is this here".
+   * answer to "is this here". Counted over the cards' own lists, Other's included.
    */
-  #matchCount(model: ElementModel, computed: CSSStyleDeclaration): number {
+  #matchCount(cards: CardRender): number {
     const properties = new Set<string>();
-    const consider = (property: string): void => {
-      if (this.#hit(property, shownValue(model.cascade(property).applying[0]))) properties.add(property);
-    };
-    for (const section of SECTIONS.filter((section) => !section.when || section.when(computed))) {
-      for (const property of section.properties) consider(property);
+    for (const list of cards.lists.values()) {
+      for (const property of list) {
+        if (this.#matches(cards, property)) properties.add(property);
+      }
     }
-    for (const property of SPACING_PROPERTIES) consider(property);
-    for (const property of BORDER_PROPERTIES) consider(property);
-    for (const property of model.appliedProperties()) consider(property);
     return properties.size;
   }
 
@@ -2850,7 +3133,7 @@ export class HeoStylesPanel extends HeoElement {
                 type="button"
                 role="listitem"
                 title=${`Add ${meta.name} to this element`}
-                @click=${() => this.#openEffectiveAdder(meta.name)}
+                @click=${() => this.#openAdder(meta.name)}
               >
                 <span class="name">${meta.name}</span>
                 <span class="meta">${PROPERTY_GROUP_LABELS[meta.group]}</span>
@@ -2872,7 +3155,7 @@ export class HeoStylesPanel extends HeoElement {
             title=${real
             ? `Add ${seed} to this element`
             : `Add ${seed} anyway — this browser will ignore it`}
-            @click=${() => this.#openEffectiveAdder(seed)}
+            @click=${() => this.#openAdder(seed)}
           >
             ${icon('plus', 12)} ${this.#addLabel()}
           </button>`
@@ -2899,12 +3182,9 @@ export class HeoStylesPanel extends HeoElement {
   }
 }
 
-/** The properties a state's rules in effect now declare, sorted. */
-/** What one tab of the Motion section draws, and how much it holds. */
+/** What one tab of the Motion card draws, and whether it is in use. */
 interface MotionPart {
   body: TemplateResult;
-  /** Rows declared, for the section's badge. */
-  touched: number;
   /** Whether the element has one now. */
   set: boolean;
 }
@@ -2937,6 +3217,7 @@ function transitionTriggers(model: ElementModel): TransitionTrigger[] {
   return out;
 }
 
+/** The properties a state's rules in effect now declare, sorted. */
 function statePropertiesOf(model: ElementModel, state: string): string[] {
   const names = new Set<string>();
   for (const entry of model.entries) {

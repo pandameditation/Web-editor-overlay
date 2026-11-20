@@ -68,7 +68,10 @@
         api.select(el);
         await settle(500);
         const sroot = () => deep('heo-styles-panel').shadowRoot;
-        const list = () => sroot().querySelector('[data-declarations="effective"]');
+        // The Spacing card's rows: margin and the sides declared for the element. Opened first.
+        sroot().querySelector('heo-section[data-card="spacing"]')?.shadowRoot?.querySelector('.tile')?.click();
+        await settle(200);
+        const list = () => sroot().querySelector('heo-section[data-card="spacing"] [data-declarations="spacing"]');
         const familyRows = () => Array.from(list()?.querySelectorAll('.family .row') ?? []).map((row) => row.dataset.property).join(',');
         const elsewhereRows = () => Array.from(list()?.querySelectorAll('.fam-elsewhere .row') ?? []).map((row) => row.dataset.property).join(',');
         const noteText = (selector) => list()?.querySelector(selector)?.textContent.replace(/\s+/g, ' ').trim() ?? '';
@@ -228,7 +231,11 @@
           const target = document.getElementById('t');
           api.select(target);
           await settle(400);
-          const field = list()?.querySelector('.row[data-property="color"] heo-value-field');
+          // The colour row, in the Text style card (opened first: cards start closed).
+          const textCard = sroot().querySelector('heo-section[data-card="typography"]');
+          if (textCard && !textCard.open) textCard.shadowRoot?.querySelector('.tile')?.click();
+          await settle(200);
+          const field = sroot().querySelector('[data-declarations="typography"] .row[data-property="color"] heo-value-field');
           field?.focusInput();
           await settle(100);
           await keys('Backspace', 'Backspace');

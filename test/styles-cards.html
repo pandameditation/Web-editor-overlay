@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>The Styles panel: Cards | Applied, and the condition strip</title>
+  <!--
+    The shared sample from styles-cascade.html: #target sits in a grid parent and has :hover, ::before
+    and a ≥768px rule. #capped is a relatively positioned child of a flex row whose fixed width
+    caps it, so its In its parent card has a binding cap to show and its Position card its offsets.
+  -->
+  <style id="site">
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+
+    .card {
+      padding: 12px 16px;
+      margin: 0 0 12px;
+      color: #1f2937;
+      background-color: #ffffff;
+      border-radius: 8px;
+      font-size: 15px;
+      font-weight: 600;
+      text-transform: none;
+      text-align: left;
+      opacity: 1;
+      display: block;
+    }
+
+    .featured {
+      border: 1px solid #a5b4fc;
+    }
+
+    .card.featured {
+      background-color: #eef2ff;
+    }
+
+    .promo .card {
+      color: #3730a3 !important;
+    }
+
+    section p {
+      letter-spacing: 0.01em;
+    }
+
+    @media (min-width: 768px) {
+      .card {
+        padding: 20px 28px;
+      }
+    }
+
+    .card:hover {
+      background-color: #f9fafb;
+    }
+
+    .featured::before {
+      content: "★";
+      color: #f59e0b;
+    }
+
+    .narrow {
+      display: flex;
+      width: 240px;
+    }
+
+    .pinned {
+      position: relative;
+      top: 4px;
+      flex: 1 1 auto;
+      width: 600px;
+    }
+  </style>
+</head>
+
+<body>
+  <section class="promo">
+    <div class="cards">
+      <p id="target" class="card featured" style="color: #b91c1c; font-size: 16px">The selected card</p>
+      <p class="card">Second</p>
+      <p class="card">Third</p>
+    </div>
+  </section>
+  <div class="narrow">
+    <p id="capped" class="pinned">Capped by its parent</p>
+  </div>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const results = {};
+      const errors = [];
+      addEventListener('error', (event) => errors.push('error: ' + event.message));
+      addEventListener('unhandledrejection', (event) => errors.push('rejection: ' + String(event.reason)));
+      const progress = document.getElementById('progress');
+      const frames = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const deep = (selector, root = document) => {
+        const direct = root.querySelector?.(selector);
+        if (direct) return direct;
+        for (const el of root.querySelectorAll?.('*') ?? []) {
+          if (!el.shadowRoot) continue;
+          const found = deep(selector, el.shadowRoot);
+          if (found) return found;
+        }
+        return null;
+      };
+      const text = (el) => (el?.textContent ?? '').replace(/\s+/g, ' ').trim();
+      try {
+        const api = window.HtmlEditorOverlay.mount({ theme: 'dark', presets: false, detectScriptContent: false });
+        const engine = api.engine;
+        api.setEditing(true);
+        await engine.whenReady();
+        const target = document.getElementById('target');
+        const capped = document.getElementById('capped');
+        api.select(target);
+        engine.setDockTab('styles');
+        await frames();
+        await wait(300);
+        // Re-queried every time: the panel re-renders on every store change.
+        const panel = () => deep('heo-styles-panel');
+        const root = () => panel().shadowRoot;
+        const settle = async (ms = 0) => {
+          await panel().updateComplete;
+          await frames();
+          if (ms) await wait(ms);
+        };
+        const card = (id) => root().querySelector(`.cards-view heo-section[data-card="${id}"]`);
+        const cardIds = (group) =>
+          Array.from(root().querySelectorAll(`.cats[data-cards="${group}"] > heo-section[data-card]`)).map((one) => one.dataset.card);
+        const allCardIds = () => Array.from(root().querySelectorAll('.cards-view heo-section[data-card]')).map((one) => one.dataset.card);
+        const toggle = async (id) => {
+          const one = card(id);
+          one?.shadowRoot?.querySelector(one.open ? '.head' : '.tile')?.click();
+          await settle();
+        };
+        const openCard = async (id) => {
+          if (card(id) && !card(id).open) await toggle(id);
+        };
+        const closeCard = async (id) => {
+          if (card(id)?.open) await toggle(id);
+        };
+        const views = () => root().querySelector('.top heo-segmented.views');
+        const setView = async (value) => {
+          views()?.dispatchEvent(new CustomEvent('segment-change', { detail: { value }, bubbles: true, composed: true }));
+          await settle();
+        };
+        const fieldIn = (cardId, property) =>
+          card(cardId)?.querySelector(`.row[data-property="${property}"] heo-value-field`);
+        const strip = () => root().querySelector('[data-strip="panel"]');
+        const pickCond = async (key) => {
+          strip()?.querySelector(`[data-cond="${CSS.escape(key)}"]`)?.click();
+          await settle();
+        };
+        const tablet = engine.elementModel(target).slots().find((one) => one.media === '(min-width: 768px)')?.key;
+
+        /* ------------------------------------------------------------------ *
+         * Cards | Applied
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'switch: cards';
+        results.switch = {};
+        // Cards is where editing starts: the switch reads Cards and the grid is drawn, not the list.
+        results.switch.cardsIsTheDefaultView =
+          views()?.value === 'cards' && Boolean(root().querySelector('.cards-view')) && !root().querySelector('.applied');
+        {
+          const cats = root().querySelector('.cats[data-cards="set"]');
+          const tiles = Array.from(cats?.children ?? []).slice(0, 2).map((one) => one.getBoundingClientRect());
+          // Two tiles side by side, each half the row: a column of sections was the panel this replaces.
+          results.switch.cardsAreATwoColumnGrid =
+            getComputedStyle(cats).gridTemplateColumns.split(' ').length === 2 &&
+            tiles.length === 2 && Math.abs(tiles[0].top - tiles[1].top) < 1 && tiles[1].left > tiles[0].right;
+        }
+        {
+          const labels = Array.from(root().querySelectorAll('.cards-view .glabel')).map(text);
+          const set = cardIds('set');
+          // What the element uses is what it is edited for: the set cards first, under their caption.
+          results.switch.setCardsComeFirstUnderOnThisElement =
+            labels[0] === 'On this element' &&
+            ['layout', 'spacing', 'typography', 'surface', 'border', 'effects'].every((id) => set.includes(id)) &&
+            !set.includes('motion');
+          const unset = cardIds('unset');
+          results.switch.unsetCardsComeAfterUnderNotSetYet =
+            labels[1] === 'Not set yet' && ['motion', 'interaction', 'other'].every((id) => unset.includes(id)) &&
+            allCardIds().indexOf(unset[0]) > allCardIds().indexOf(set.at(-1));
+        }
+        progress.textContent = 'switch: open in place';
+        {
+          const before = cardIds('set');
+          await openCard('spacing');
+          const grid = root().querySelector('.cats[data-cards="set"]').getBoundingClientRect();
+          const box = card('spacing').getBoundingClientRect();
+          // Opened where it was, across both columns: not moved to the top, not a popover.
+          results.switch.aCardOpensInPlaceAcrossBothColumns =
+            card('spacing').open && Math.abs(box.width - grid.width) < 1 &&
+            cardIds('set').join(',') === before.join(',');
+          const editor = card('spacing').querySelector('heo-box-editor');
+          const rows = card('spacing').querySelector('.rows');
+          // The card's rich editor first, then its fixed rows: the editor is the card's way in.
+          results.switch.anOpenCardShowsItsEditorAboveItsRows =
+            Boolean(editor && rows) && editor.getClientRects().length > 0 &&
+            Boolean(editor.compareDocumentPosition(rows) & Node.DOCUMENT_POSITION_FOLLOWING);
+          await closeCard('spacing');
+        }
+        {
+          /*
+           * A card opened from "Not set yet" stays there while its first value is set: moving it to
+           * "On this element" mid-edit drew a new card, and the dialog or list open in the old one
+           * went with it (shadow-editor's text-shadow editor did). It moves once it is closed.
+           */
+          await openCard('interaction');
+          const held = card('interaction');
+          fieldIn('interaction', 'cursor')?.dispatchEvent(
+            new CustomEvent('value-change', { detail: { value: 'pointer' }, bubbles: true, composed: true }));
+          await settle();
+          const stayed = target.style.cursor === 'pointer' && card('interaction') === held &&
+            card('interaction')?.open && cardIds('unset').includes('interaction');
+          await closeCard('interaction');
+          results.switch.anOpenCardStaysWhereItIsWhileItsFirstValueIsSet = stayed && cardIds('set').includes('interaction');
+          engine.undo();
+          await settle();
+        }
+        {
+          const adds = Array.from(root().querySelectorAll('.cards-view .add-prop'));
+          // A property is added from the search or from Other: no card grows its own "+ Add".
+          results.switch.onlyOtherHasAnAddPropertyButton =
+            adds.length === 1 && adds[0].closest('heo-section[data-card]')?.dataset.card === 'other';
+        }
+        progress.textContent = 'switch: applied';
+        {
+          const cardsOrder = cardIds('set');
+          await setView('applied');
+          const rows = Array.from(root().querySelectorAll('.applied .row[data-property]')).map((one) => one.dataset.property);
+          const applied = engine.elementModel(target).appliedProperties();
+          // Everything the element is given, each once: Applied is the place to check it all at a glance.
+          results.switch.appliedListsEverySetPropertyOnce =
+            new Set(rows).size === rows.length && [...rows].sort().join(',') === [...applied].sort().join(',');
+          const groups = Array.from(root().querySelectorAll('.applied [data-applied]')).map((one) => one.dataset.applied);
+          results.switch.appliedGroupsFollowTheCards =
+            groups.length > 3 && groups.join(',') === cardsOrder.filter((id) => groups.includes(id)).join(',');
+          root().querySelector('[data-applied-group="border"]')?.click();
+          await settle();
+          // A heading is the way to edit the group with its editor: Cards, that card open and flashed.
+          results.switch.anAppliedHeadingOpensThatCardInCards =
+            views()?.value === 'cards' && Boolean(card('border')?.open) && card('border').classList.contains('flash') &&
+            Boolean(card('border').querySelector('heo-border-editor'));
+          await closeCard('border');
+        }
+
+        /* ------------------------------------------------------------------ *
+         * The condition strip
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'strip: element';
+        results.strip = {};
+        // The element itself first, named as what it is (not "Always", a source card's word).
+        results.strip.theStripStartsWithElement =
+          /^Element\b/.test(text(strip()?.querySelector('.base'))) && strip()?.querySelector('.base')?.getAttribute('aria-pressed') === 'true';
+        {
+          strip()?.querySelector('.add')?.click();
+          await settle(60);
+          const field = root().querySelector('.menu.condpop heo-value-field');
+          const groups = [...new Set((field?.suggestions ?? []).map((one) => one.group))];
+          const values = (field?.suggestions ?? []).map((one) => one.value);
+          // The three kinds the strip holds, captioned in its order; a pseudo-element on it is not offered twice.
+          results.strip.plusOffersStatesSizesAndPseudoElements =
+            groups.slice(0, 3).join(',') === 'States,Sizes,Pseudo-elements' &&
+            values.includes('::after') && !values.includes('::before') && values.includes(':focus');
+          root().querySelector('.menu.condpop')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true, cancelable: true }));
+          await settle();
+          if (root().querySelector('.menu.condpop')) {
+            strip()?.querySelector('.add')?.click();
+            await settle();
+          }
+        }
+        progress.textContent = 'strip: hover';
+        {
+          await pickCond('state::hover');
+          await openCard('surface');
+          const hoverBackground = fieldIn('surface', 'background-color')?.value;
+          await openCard('typography');
+          // A value typed under :hover goes to the element's own class's hover rule, not inline.
+          await wait(2600);
+          fieldIn('typography', 'letter-spacing')?.dispatchEvent(
+            new CustomEvent('value-change', { detail: { value: '0.2em' }, bubbles: true, composed: true }));
+          await settle();
+          const hoverRule = engine.elementModel(target).entries.find((one) =>
+            one.state === ':hover' && one.declarations.some((d) => d.property === 'letter-spacing'));
+          results.strip.pickingHoverReadsEveryCardUnderHover =
+            hoverBackground === '#f9fafb' && root().querySelector('.ctxline')?.dataset.ctx === 'state' &&
+            hoverRule?.selector === '.featured:hover' && target.style.getPropertyValue('letter-spacing') === '';
+          engine.undo();
+          await settle();
+          await closeCard('surface');
+          await closeCard('typography');
+          await pickCond('state::hover');
+        }
+        progress.textContent = 'strip: size';
+        {
+          await pickCond(tablet);
+          await openCard('spacing');
+          // At ≥768px the Spacing card reads the rule written there, whatever the window's width.
+          results.strip.pickingAMediaSizeReadsItsRule =
+            Boolean(tablet) && fieldIn('spacing', 'padding')?.value === '20px 28px' &&
+            root().querySelector('.ctxline')?.dataset.ctx === 'size';
+          await closeCard('spacing');
+          await pickCond(tablet);
+          engine.setPreviewWidth(320);
+          await settle(100);
+          const chip = strip()?.querySelector(`[data-cond="${CSS.escape(tablet)}"]`);
+          // Still on the strip (it is where a ≥768px value goes), drawn as not in effect at 320.
+          results.strip.aSizeNotInEffectIsDimmed = Boolean(chip?.classList.contains('notnow'));
+          engine.setPreviewWidth(null);
+          await settle(100);
+        }
+        progress.textContent = 'strip: ::before';
+        {
+          await pickCond('state:::before');
+          const ids = allCardIds();
+          await openCard('content');
+          // A ::before shows nothing without content: its Content card leads, holding the star.
+          results.strip.pickingBeforeShowsTheContentCardFirst =
+            ids[0] === 'content' && fieldIn('content', 'content')?.value === '"★"' &&
+            root().querySelector('.ctxline')?.dataset.ctx === 'pseudo';
+          await closeCard('content');
+          const noParentUnderPseudo = !card('child');
+          await pickCond('state:::before');
+          api.select(capped);
+          await settle(150);
+          // A binding cap opens In its parent by itself the first time: it answers "why is my width ignored".
+          results.strip.theParentCardShowsACapAndIsHiddenUnderAPseudoElement =
+            noParentUnderPseudo && Boolean(card('child')?.open) && Boolean(card('child').querySelector('.capped')) &&
+            Boolean(card('child').querySelector('.onparent'));
+          await openCard('position');
+          const note = card('position')?.querySelector('[data-drag-note]');
+          const top = card('position')?.querySelector('.row[data-property="top"]');
+          // The page's drag handles write these offsets: the card says so above the rows they write.
+          results.strip.thePositionCardCarriesTheDragNote =
+            Boolean(note && top) && Boolean(note.compareDocumentPosition(top) & Node.DOCUMENT_POSITION_FOLLOWING);
+          api.select(target);
+          await settle(150);
+          // A static element has no offsets to drag: no note, no offset rows.
+          results.strip.thePositionCardCarriesTheDragNote &&=
+            !card('position')?.querySelector('[data-drag-note]') && !card('position')?.querySelector('.row[data-property="top"]');
+        }
+
+        const failed = Object.entries(results)
+          .filter(([, group]) => group && typeof group === 'object')
+          .filter(([, group]) => Object.values(group).some((value) => value === false))
+          .map(([name]) => name);
+        document.getElementById('out').textContent =
+          'RESULTS:' + JSON.stringify({ ...results, errors, failed }, null, 2) + ':END';
+      } catch (e) {
+        document.getElementById('out').textContent =
+          'RESULTS:' + JSON.stringify({ threw: String((e && e.stack) || e), errors, failed: ['threw'] }, null, 2) + ':END';
+      }
+    })();
+  </script>
+</body>
+
+</html>

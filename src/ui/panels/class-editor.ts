@@ -503,7 +503,7 @@ export const ClassEditor = {
       border-left-style: dashed;
       border-left-color: var(--heo-line-strong);
     }
-    /* Written here, so read like a set row in Effective styles: the same face, size and ink. */
+    /* Written here, so read like a set row of the Styles panel: the same face, size and ink. */
     .cls .decl .p {
       overflow: hidden;
       color: var(--heo-text);

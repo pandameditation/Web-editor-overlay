@@ -284,7 +284,7 @@
           declaredColor?.own === false;
 
         /* ------------------------------------------------------------------ *
-         * The panel: Effective styles, the dot, the popover, states, the field.
+         * The panel: Cards and Applied, the name, the ladder, the strip, the field.
          * ------------------------------------------------------------------ */
         progress.textContent = 'panel';
         const panel = () => deep('heo-styles-panel');
@@ -293,8 +293,14 @@
           await panel().updateComplete;
           await frames();
         };
+        // `effective`: the property's own row, in whichever card holds it (one card per property).
         const rowIn = (list, property) =>
-          root().querySelector(`[data-declarations="${list}"] .row[data-property="${property}"]`);
+          root().querySelector(`${list === 'effective' ? '.cards-view' : `[data-declarations="${list}"]`} .row[data-property="${property}"]`);
+        const setView = async (value) => {
+          root().querySelector('.top heo-segmented.views')?.dispatchEvent(
+            new CustomEvent('segment-change', { detail: { value }, bubbles: true, composed: true }));
+          await settle();
+        };
         const fieldIn = (list, property) => rowIn(list, property)?.querySelector('heo-value-field');
         // The cascade ladder's rungs, and those holding a declaration (a value, not a dash).
         const rungsOf = () => Array.from(pop()?.querySelectorAll('.ladder > [data-place]') ?? []);
@@ -312,16 +318,25 @@
           await settle();
         };
         const fresh = engine.elementModel(target);
-        const effectiveRows = Array.from(root().querySelectorAll('[data-declarations="effective"] .row'));
+        // Applied: everything set at once, Effective styles' rows; then Cards, every card opened.
+        await setView('applied');
+        const appliedRows = Array.from(root().querySelectorAll('.applied .row'));
+        const appliedNames = appliedRows.map((row) => row.dataset.property);
+        const appliedClearable = appliedRows.some((row) => row.querySelector('heo-value-field')?.hasAttribute('clearable'));
+        await setView('cards');
+        for (const card of root().querySelectorAll('heo-section[card]')) {
+          if (!card.open) card.shadowRoot?.querySelector('.tile')?.click();
+        }
+        await settle();
 
         const sideLabel = below768 ? '.card ≤767px' : '.card ≥768px';
         const otherLabel = below768 ? '≥768px' : '≤767px';
         const padRow = rowIn('effective', 'padding');
         results.effective = {
-          isFirstSection: root().querySelector('heo-section')?.heading === 'Effective styles',
-          // One row per property the element renders with, as declared (no synthesised sides).
+          // One row per property the element renders with, as declared (no synthesised sides),
+          // grouped by card, so compared as a set.
           oneRowPerAppliedProperty:
-            effectiveRows.map((row) => row.dataset.property).join(',') === fresh.appliedProperties().join(','),
+            [...appliedNames].sort().join(',') === fresh.appliedProperties().join(','),
           /*
            * No source hint on the row any more (the cascade menu says where a value comes from);
            * the name's label says where an edit goes, and the reach chip shows when it is shared.
@@ -333,7 +348,7 @@
             /edits inline, only this element\. Show cascade$/.test(rowIn('effective', 'font-size')?.querySelector('.dots')?.getAttribute('aria-label') ?? '') &&
             !rowIn('effective', 'font-size')?.querySelector('.dots .uses'),
           // No clear button on a displayed row: its trash is the one way to remove or reset.
-          noRowHasAClearButton: effectiveRows.every((row) => !row.querySelector('heo-value-field')?.hasAttribute('clearable')),
+          noRowHasAClearButton: appliedRows.length > 0 && !appliedClearable,
         };
         /*
          * Where an edit goes is said once, by the ladder's pick, and it starts where the value is
@@ -385,8 +400,8 @@
               return dot && dot.getAttribute('aria-haspopup') === 'dialog' && /Show cascade$/.test(dot.getAttribute('aria-label'));
             }),
         };
-        const zRow = () => rowIn('layout', 'z-index');
-        await openDot('layout', 'z-index');
+        const zRow = () => rowIn('position', 'z-index');
+        await openDot('position', 'z-index');
         // Not declared: the name says so, in the dim ink of an unset row, and still opens the cascade.
         results.dots.undeclaredSaysSoAndStillOpensTheCascade =
           !zRow().classList.contains('set') && Boolean(pop()) &&
@@ -557,9 +572,13 @@
           /inherited from section\.promo \(\.promo\)/.test(inherited) &&
           /Typing a value adds it inline/.test(inherited);
         results.popover.explainsBrowserDefault = /the browser's default/.test(defaultText);
-        // Nothing writes it, so an edit goes inline at any width: previewing a size changes nothing
-        // about that, and the popover says the same as at Actual.
+        // Nothing writes it, so an edit at Element goes inline at any width: previewing a size changes
+        // nothing about that, and the popover says the same as at Actual. (The strip follows the
+        // preview to its size, R13; Element is picked back by hand.)
         engine.setPreviewWidth(320);
+        await settle();
+        const followedTheSize = root().querySelector('[data-strip="panel"] .base')?.getAttribute('aria-pressed') === 'false';
+        root().querySelector('[data-strip="panel"] .base')?.click();
         await settle();
         // The precondition: 320px picks a real size slot (the sample's max-width 767px), not All sizes.
         const previewedSlot = engine.elementModel(target).slots()
@@ -570,23 +589,23 @@
         engine.setPreviewWidth(null);
         await settle();
         results.popover.theInlinePromiseHoldsWhilePreviewing =
-          previewedSlot &&
+          previewedSlot && followedTheSize &&
           /Nothing declares it for this element at 320px/.test(previewedText) &&
           /adds it inline/.test(previewedText);
 
         /*
-         * ---- the conditions bar: Always, then what declares something ----
+         * ---- the conditions strip: Element, then what declares something ----
          *
-         * States moved onto the bar with the media queries; pseudo-elements stay listed groups.
+         * States, media queries and (on the panel's strip) pseudo-elements.
          */
-        const bar = () => root().querySelector('[data-strip="effective"]');
+        const bar = () => root().querySelector('[data-strip="panel"]');
         const chipKeys = () => Array.from(bar()?.querySelectorAll('[data-cond]') ?? []).map((one) => one.dataset.cond);
         const keysOnBar = chipKeys();
         const alwaysText = bar()?.querySelector('.base')?.textContent.replace(/\s+/g, ' ').trim() ?? '';
         const addButton = () => bar()?.querySelector('.add');
         const noMore = !bar()?.querySelector('.more');
         // The "+" sits right after the bar's last condition, where what it adds will appear.
-        const addIsLast = bar()?.lastElementChild === addButton() && addButton()?.getAttribute('aria-label') === 'Add a state or media query';
+        const addIsLast = bar()?.lastElementChild === addButton() && addButton()?.getAttribute('aria-label') === 'Add a state, size or pseudo-element';
         /*
          * "+" opens one popover, straight onto a search with its list showing, like the class finder:
          * states first, then media queries, matched by words rather than exact syntax.
@@ -594,7 +613,7 @@
         addButton()?.click();
         await settle();
         await wait(150);
-        const cpop = () => root().querySelector('.menu.condpop[data-menu="strip-effective"]');
+        const cpop = () => root().querySelector('.menu.condpop[data-menu="strip-panel"]');
         const mfield = () => cpop()?.querySelector('heo-value-field');
         const mlist = () => mfield()?.shadowRoot?.querySelector('.popup');
         const groupsShown = () => Array.from(mlist()?.querySelectorAll('.group') ?? []).map((one) => one.textContent.trim());
@@ -750,29 +769,29 @@
         // Back to Always for what follows.
         bar()?.querySelector('.base')?.click();
         await settle();
-        // Under print, nobody previews: the group still shows what print declares, not what renders now.
+        // Under print, nobody previews: the cards still show what print declares, not what renders now.
         bar()?.querySelector('[data-cond="other:print"]')?.click();
         await settle();
-        const printColour = root().querySelector('[data-egroup="size:other:print"] .row[data-property="color"] heo-value-field')?.value;
+        const printColour = fieldIn('typography', 'color')?.value;
         const printPressed = bar()?.querySelector('[data-cond="other:print"]')?.getAttribute('aria-pressed') === 'true';
         bar()?.querySelector('[data-cond="other:print"]')?.click();
         await settle();
         const backToAlways = bar()?.querySelector('.base')?.getAttribute('aria-pressed') === 'true' &&
-          !root().querySelector('[data-egroup="size:other:print"]');
+          !root().querySelector('.ctxline');
         results.bar = {
-          startsAtAlways: /^Always \d+$/.test(alwaysText) && bar()?.querySelector('.base')?.getAttribute('aria-pressed') === 'true',
+          startsAtElement: /^Element \d+$/.test(alwaysText) && bar()?.querySelector('.base')?.getAttribute('aria-pressed') === 'true',
           listsOnlyConditionsThatDeclareSomething:
             keysOnBar.includes('state::hover') && keysOnBar.includes('other:print') &&
-            keysOnBar.includes('state::hover@tablet') &&
-            !keysOnBar.includes('laptop') && !keysOnBar.includes('desktop') &&
-            !keysOnBar.some((key) => key.includes('::before')),
+            keysOnBar.includes('state::hover@tablet') && keysOnBar.includes('state:::before') &&
+            !keysOnBar.includes('laptop') && !keysOnBar.includes('desktop'),
           // A "+" in place of ⋮, its menu States first and Media queries last, sizes not in it.
           // A "+" in place of ⋮, opening a search with its list: States first, then media queries.
           plusReplacesTheMoreButton: noMore && addIsLast,
-          // The page's own media queries first (its @media all), then widths, then states.
+          // States, then sizes (the page's own media queries, widths), then pseudo-elements.
           plusOpensASearchWithItsList:
             focusedOnOpen && listIsInline &&
-            firstGroups.slice(0, 3).join('|') === 'Media queries on this page|Width|States' &&
+            firstGroups.slice(0, 3).join('|') === 'States|Sizes|Pseudo-elements' &&
+            firstOptions.some((one) => one.startsWith('::after')) && !firstOptions.some((one) => one.startsWith('::before')) &&
             firstOptions.some((one) => one.startsWith(':focus')) && !firstOptions.some((one) => one.startsWith(':hover')) &&
             firstOptions.some((one) => /^Custom width/.test(one)) && !firstGroups.includes('Viewport sizes'),
           impossibleQueriesAreRefusedWithTheReason: refusedAll,
@@ -793,27 +812,31 @@
           pressingTheOnePickedGoesBackToAlways: backToAlways,
         };
 
-        /* ---- state and pseudo-element groups ---- */
-        const groupNames = Array.from(root().querySelectorAll('[data-egroup]')).map((g) => g.dataset.egroup);
+        /* ---- states and pseudo-elements, picked on the strip ---- */
         const hoverList = fresh.cascade('background-color', { width: null, state: ':hover' }).applying;
         const beforeList = fresh.cascade('color', { width: null, state: '::before' }).applying;
         bar()?.querySelector('[data-cond="state::hover"]')?.click();
         await settle();
-        const hoverGroup = Boolean(root().querySelector('[data-egroup="state::hover"]'));
-        await openDot('state-:hover', 'background-color');
+        const hoverRead = root().querySelector('.ctxline')?.dataset.ctx === 'state';
+        await openDot('surface', 'background-color');
         const hoverSet = declaredRungs().length;
         const hoverInline = Boolean(rungAt('inline'));
         await closePop();
         bar()?.querySelector('[data-cond="state::hover"]')?.click();
         await settle();
-        await openDot('state-::before', 'color');
+        bar()?.querySelector('[data-cond="state:::before"]')?.click();
+        await settle();
+        await openDot('typography', 'color');
         const beforeSet = declaredRungs().length;
         const beforeInline = Boolean(rungAt('inline'));
         await closePop();
+        bar()?.querySelector('[data-cond="state:::before"]')?.click();
+        await settle();
         results.states = {
-          // Pseudo-elements stay listed; a state is a group only once it is picked on the bar.
-          onlyPseudoElementsAreListed: groupNames.join(',') === '::before',
-          aPickedStateIsAGroup: hoverGroup,
+          // Pseudo-elements are conditions on the panel's strip, like states (no listed groups).
+          pseudoElementsAreOnTheStrip: keysOnBar.includes('state:::before') && !root().querySelector('[data-egroup]'),
+          // A picked state is what every card reads, said in one line under the strip.
+          aPickedStateReadsTheCards: hoverRead,
           // A state is over the element's own declarations: they are in its cascade.
           stateCompetesWithElement:
             hoverList[0]?.source.entry?.state === ':hover' &&
@@ -883,35 +906,42 @@
         engine.undo();
         await settle();
 
+        await setView('applied');
+        const appliedColour = root().querySelector('.applied .row[data-property="color"]');
+        const appliedSame = appliedColour?.dataset.heoPart === 'row' && Boolean(appliedColour.querySelector('button.dots'));
+        await setView('cards');
         results.rows = {
-          // One component: the Effective row and the Typography row are the same markup.
-          sameComponentInEffectiveAndCategories:
-            rowIn('effective', 'color')?.dataset.heoPart === 'row' &&
+          // One component: the Applied row and the Text style card's row are the same markup.
+          sameComponentInAppliedAndCards:
+            appliedSame &&
             rowIn('typography', 'color')?.dataset.heoPart === 'row' &&
             Boolean(rowIn('typography', 'color')?.querySelector('button.dots')),
         };
 
-        /* ---- the picked size, as a group ---- */
-        const effStrip = () => root().querySelector('[data-strip="effective"]');
+        /* ---- the picked size: every card reads it ---- */
+        const effStrip = () => root().querySelector('[data-strip="panel"]');
         const pickSize = async (key) => {
           effStrip()?.querySelector(`[data-slot="${key}"]`)?.click();
           await settle();
         };
-        const sizeGroup = (key) => root().querySelector(`[data-egroup="size:${key}"]`);
+        // The cards under the picked size; the line under the strip says whether it is in effect.
+        const sizeGroup = () => root().querySelector('.cards-view');
+        const sizeNote = () => root().querySelector('.ctxline[data-ctx="size"] :is(.on, .off)')?.textContent.trim();
         const otherSlot = below768 ? 'tablet' : 'phone';
         const nowSlot = below768 ? 'phone' : 'tablet';
         await pickSize(otherSlot);
-        const otherProps = Array.from(sizeGroup(otherSlot)?.querySelectorAll('.row') ?? []).map((row) => row.dataset.property);
-        const otherPadding = sizeGroup(otherSlot)?.querySelector('.row[data-property="padding"] heo-value-field')?.value;
-        const otherNote = sizeGroup(otherSlot)?.querySelector('.note')?.textContent.trim();
-        sizeGroup(otherSlot)?.querySelector('.row[data-property="padding"] .dots')?.click();
+        const otherProps = Array.from(sizeGroup()?.querySelectorAll('[data-declarations="spacing"] .row') ?? []).map((row) => row.dataset.property);
+        const otherPadding = sizeGroup()?.querySelector('[data-declarations="spacing"] .row[data-property="padding"] heo-value-field')?.value;
+        const otherNote = sizeNote();
+        sizeGroup()?.querySelector('[data-declarations="spacing"] .row[data-property="padding"] .dots')?.click();
         await settle();
         const sizeCaption = pop()?.querySelector('.cap')?.textContent.replace(/\s+/g, ' ') ?? '';
         await closePop();
-        const sizeAdderButton = sizeGroup(otherSlot)?.querySelector(`[data-heo-part="adder"][data-adder="size-${otherSlot}"]`);
+        // Other's "+ Add property", under the picked size.
+        const sizeAdderButton = sizeGroup()?.querySelector('[data-heo-part="adder"][data-adder="other"]');
         sizeAdderButton?.click();
         await settle();
-        const sizeAdder = sizeGroup(otherSlot)?.querySelector('.property-adder');
+        const sizeAdder = sizeGroup()?.querySelector('.property-adder[data-adder="other"]');
         const namesFirst = sizeAdder?.dataset.step === 'name' && Boolean(sizeAdder?.querySelector('heo-value-field.name-field'));
         {
           const input = sizeAdder?.querySelector('heo-value-field.name-field')?.shadowRoot?.querySelector('input');
@@ -923,12 +953,12 @@
             await settle();
           }
         }
-        const sizeAdderNow = () => sizeGroup(otherSlot)?.querySelector('.property-adder');
+        const sizeAdderNow = () => sizeGroup()?.querySelector('.property-adder[data-adder="other"]');
         const sizeRungs = Array.from(sizeAdderNow()?.querySelectorAll('.ladder > [data-place]') ?? []).map((one) => one.dataset.place);
         sizeAdderNow()?.querySelector('.cancel')?.click();
         await settle();
         await pickSize(nowSlot);
-        const nowNote = sizeGroup(nowSlot)?.querySelector('.note')?.textContent.trim();
+        const nowNote = sizeNote();
         await pickSize(nowSlot); // the pressed size again: back to Always
         results.sizeGroup = {
           // The value at that size, read at that size's width, even though the page is not there.

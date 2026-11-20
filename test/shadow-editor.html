@@ -73,10 +73,24 @@
         const el = document.getElementById(id);
         api.select(el);
         await settle(500);
-        const section = sroot().querySelector('[data-declarations="effects"]')?.closest('heo-section');
-        if (section && !section.open) section.shadowRoot?.querySelector('button')?.click();
+        // The shadow editor opens from Shadow & effects (box-shadow, filter) and Text style (text-shadow).
+        for (const id of ['effects', 'typography']) {
+          const section = sroot().querySelector(`heo-section[data-card="${id}"]`);
+          if (section && !section.open) section.shadowRoot?.querySelector('button')?.click();
+        }
         await settle(300);
         return el;
+      };
+      /*
+       * A colour field on screen: the Text style card's colour row. Cards start closed, and a closed
+       * card's fields are still in the panel's tree, so the first colour field found could be hidden.
+       */
+      const shownColour = async () => {
+        const card = sroot().querySelector('heo-section[data-card="typography"]');
+        if (card && !card.open) card.shadowRoot?.querySelector('button')?.click();
+        await settle(200);
+        return Array.from(sroot().querySelectorAll('heo-value-field'))
+          .find((one) => one.kind === 'color' && one.getClientRects().length);
       };
       // The opener toggles, so a field whose editor is still up from an earlier step is left as it is.
       const open = async (property) => {
@@ -276,7 +290,7 @@
         await settle(250);
         const closed = !editor('box-shadow');
         // The colour picker has the same head: moved by it, closed by its cross.
-        const colour = Array.from(sroot().querySelectorAll('heo-value-field')).find((one) => one.kind === 'color');
+        const colour = await shownColour();
         colour?.pickColor();
         await settle(500);
         const pick = () => colour.shadowRoot.querySelector('.popup.dialog');
@@ -343,7 +357,7 @@
         await settle(300);
         const crossFocus = focusedIn(field('box-shadow'));
         // And the colour picker, the same way.
-        const colour = Array.from(sroot().querySelectorAll('heo-value-field')).find((one) => one.kind === 'color');
+        const colour = await shownColour();
         colour.shadowRoot.querySelector('.color-btn').click();
         await settle(500);
         await keys('Escape');
@@ -386,7 +400,7 @@
         head('box-shadow').querySelector('button[aria-label="Close"]').click();
         await settle(250);
         // The colour picker the same way.
-        const colour = Array.from(sroot().querySelectorAll('heo-value-field')).find((one) => one.kind === 'color');
+        const colour = await shownColour();
         colour.shadowRoot.querySelector('.color-btn').click();
         await settle(500);
         const inPicker = deepIn(colour.shadowRoot);
@@ -434,7 +448,7 @@
         await open('text-shadow');
         const root = ed('text-shadow');
         const blocked = Array.from(root.querySelectorAll('.swatch')).filter((one) => one.disabled).length;
-        // Held, not looked up again: once set, text-shadow also gets a row in Effective styles above.
+        // Held, not looked up again: the panel re-renders as the shadow is set.
         const opened = field('text-shadow');
         const popup = () => opened.shadowRoot.querySelector('.popup.dialog');
         const before = popup().getBoundingClientRect();

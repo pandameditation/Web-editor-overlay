@@ -772,7 +772,7 @@
           listedAndKept &&
           engine.settings.value.viewportSizes.includes(1280) &&
           engine.store.value.previewWidth === 1280 &&
-          Boolean(root().querySelector('[data-strip="effective"] [data-slot="from-1280"]'));
+          Boolean(root().querySelector('[data-strip="panel"] [data-slot="from-1280"]'));
 
         /* The same panel in Settings, live there too: the dialog's Save is for its own fields. */
         progress.textContent = 'settings';
@@ -830,7 +830,7 @@
         progress.textContent = 'follow';
         engine.setPreviewWidth(null);
         await settle();
-        const strip = () => root().querySelector('[data-strip="effective"]');
+        const strip = () => root().querySelector('[data-strip="panel"]');
         const pressedSlot = () =>
           strip()?.querySelector('.base[aria-pressed="true"]')
             ? 'base'
@@ -838,7 +838,8 @@
         results.follow = { actualPicksAllSizes: pressedSlot() === 'base' };
         strip()?.querySelector('[data-slot="tablet"]')?.click();
         await settle();
-        const picked = pressedSlot() === 'tablet' && Boolean(root().querySelector('[data-egroup="size:tablet"]'));
+        // Picked, the cards read that size, which the line under the strip says.
+        const picked = pressedSlot() === 'tablet' && Boolean(root().querySelector('.ctxline[data-ctx="size"]'));
         api.select(second);
         await settle();
         api.select(target);
@@ -861,7 +862,7 @@
           .filter((entry) => entry.state === '' && fresh.slotOf(entry) === 'phone')
           .reduce((sum, entry) => sum + entry.declarations.length, 0);
         results.strip = {
-          effectiveTogglesBackToAlways: onPhone && pressedSlot() === 'base',
+          stripTogglesBackToElement: onPhone && pressedSlot() === 'base',
           // Bootstrap's 767.98px is the phone breakpoint, not "another media query".
           toleratesFractionalBreakpoints:
             Boolean(fraction) && fresh.slotOf(fraction) === 'phone' &&
@@ -920,14 +921,18 @@
         engine.setPreviewWidth(320);
         await settle(300);
         const phoneMeta = metaOf('.card');
-        const phonePressed = [pressedIn(root().querySelector('heo-section[heading="Effective styles"]')), pressedIn(card('.card'))];
+        const phonePressed = [pressedIn(root().querySelector('.cond')), pressedIn(card('.card'))];
         results.filter.previewHidesNonMatchingRules =
           phoneMeta === `${cardCount(320)} rules • 4×` && cardCount(320) < cardCount(null) &&
           !card('.card')?.querySelector('.block[data-block=":hover"] .decl .p[title="box-shadow"]');
-        // At 320 only what applies there: the phone size, and :hover outside any media query.
+        // At 320 only what applies there: the phone size, and :hover outside any media query. The
+        // panel's strip keeps the others, dimmed: a size not in effect is still where a value goes;
+        // and it holds the pseudo-element as a condition too.
+        const inEffect = (scope) => Array.from(scope?.querySelectorAll('.slots [data-slot]:not(.notnow)') ?? []).map((one) => one.dataset.slot);
         results.filter.barsShowOnlyMatchingConditions =
           slotsOf(card('.card')).join(',') === 'phone,state::hover' &&
-          slotsOf(root().querySelector('[data-strip="effective"]')?.parentElement).join(',') === 'phone,state::hover';
+          inEffect(root().querySelector('.cond')).join(',') === 'phone,state::hover,state:::before' &&
+          Boolean(root().querySelector('.cond .slots [data-slot="tablet"].notnow'));
         const hoverAt320 = slotsOf(card('.card'));
         // One card is open at a time: the other class's, for the same question.
         await show('.featured');
@@ -936,11 +941,11 @@
         engine.setPreviewWidth(1024);
         await settle(300);
         const hoverAt1024 = slotsOf(card('.card'));
-        const widePressed = [pressedIn(root().querySelector('heo-section[heading="Effective styles"]')), pressedIn(card('.card'))];
+        const widePressed = [pressedIn(root().querySelector('.cond')), pressedIn(card('.card'))];
         results.filter.previewHidesStateRulesOutsideTheWidth =
           hoverAt1024.includes('state::hover@tablet') && !hoverAt320.includes('state::hover@tablet') &&
           hoverAt320.includes('state::hover');
-        // The preview's slot is what every strip shows, the Effective one and each card's.
+        // The preview's slot is what every strip shows, the panel's and each card's.
         results.follow.previewPicksItsSlotEverywhere =
           phonePressed.join(',') === 'phone,phone,phone' && widePressed.join(',') === 'laptop,laptop';
         engine.setPreviewWidth(null);

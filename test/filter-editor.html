@@ -77,8 +77,11 @@
         const el = document.getElementById(id);
         api.select(el);
         await settle(500);
-        const section = sroot().querySelector('[data-declarations="effects"]')?.closest('heo-section');
-        if (section && !section.open) section.shadowRoot?.querySelector('button')?.click();
+        // Shadow & effects, and Interaction for its cursor row: cards start closed.
+        for (const id of ['effects', 'interaction']) {
+          const section = sroot().querySelector(`heo-section[data-card="${id}"]`);
+          if (section && !section.open) section.shadowRoot?.querySelector('button')?.click();
+        }
         await settle(300);
         return el;
       };

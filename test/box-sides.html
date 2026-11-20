@@ -177,9 +177,15 @@
          * captured once goes stale mid-gesture and every assertion after it reads a detached node.
          * That is also exactly the thing under test here, so holding a reference would hide it.
          */
-        // Effective styles' element rows: what replaced "Set on this element" (th has only inline styles).
-        const modified = () =>
-          panel.shadowRoot.querySelector('heo-section[heading="Effective styles"] .rows[data-declarations="effective"]');
+        // The Applied view: every property set on the element, once, grouped by card (th has only inline styles).
+        const setView = async (value) => {
+          panel.shadowRoot.querySelector('.top heo-segmented.views')?.dispatchEvent(
+            new CustomEvent('segment-change', { detail: { value }, bubbles: true, composed: true }));
+          await panel.updateComplete;
+          await frames();
+        };
+        await setView('applied');
+        const modified = () => panel.shadowRoot.querySelector('.applied');
         const listed = () =>
           Array.from(modified()?.querySelectorAll('.row') ?? []).map((row) => row.dataset.property);
         const rowFor = (property) =>
@@ -190,8 +196,14 @@
         const gaugeFor = (property) => fieldFor(property)?.shadowRoot.querySelector('.gauge');
         const inputFor = (property) =>
           fieldFor(property)?.shadowRoot.querySelector('input[type="text"]');
-        const sideBox = (label) =>
-          deep('heo-box-editor')?.shadowRoot.querySelector(`input[aria-label="${label}"]`);
+        // The box editor is the Spacing card's: read in Cards, then back to Applied.
+        const sideValues = async (...labels) => {
+          await setView('cards');
+          const values = labels.map((label) =>
+            deep('heo-box-editor')?.shadowRoot.querySelector(`input[aria-label="${label}"]`)?.value);
+          await setView('applied');
+          return values;
+        };
 
         /* ------------------------------------------------------------------ *
          * 1. A shorthand on its own is one row, not five.
@@ -199,20 +211,17 @@
         progress.textContent = 'shorthandOnly';
         {
           const rows = listed();
+          const box = await sideValues('padding top', 'padding bottom', 'padding left', 'padding right');
           const sides = ['padding-top', 'padding-right', 'padding-bottom', 'padding-left'];
           results.shorthandOnly = {
             order: rows.join(','),
-            // Exactly what the style attribute holds, in alphabetical order.
-            listsWhatTheAttributeHolds: rows.join(',') === 'border-bottom,padding,text-align',
+            // Exactly what the style attribute holds (grouped by card, so compared as a set).
+            listsWhatTheAttributeHolds: [...rows].sort().join(',') === 'border-bottom,padding,text-align',
             noPhantomSideRows: sides.every((side) => !rows.includes(side)),
             // The expansion itself is still there, in the one place it was ever for: the diagram
             // reads each side, so `padding: 8px` shows 8 on all four. Dropping the expansion
             // instead of dropping its origin would have broken this.
-            theBoxEditorStillShowsEachSide:
-              sideBox('padding top')?.value === '8px' &&
-              sideBox('padding bottom')?.value === '8px' &&
-              sideBox('padding left')?.value === '8px' &&
-              sideBox('padding right')?.value === '8px',
+            theBoxEditorStillShowsEachSide: box.every((value) => value === '8px'),
             // And the badge counts the sides the shorthand covers, which is what it always meant.
             styleAttributeUntouched:
               th.getAttribute('style') === 'padding:8px;border-bottom:2px solid #d8dde8;text-align:left',
@@ -220,16 +229,19 @@
         }
 
         {
-          // Spacing's margin/padding rows are the same row Effective styles draws (R32), not a copy.
+          const appliedRow = rowFor('padding')?.dataset.heoPart;
+          await setView('cards');
+          // The Spacing card's margin/padding rows are the same row Applied draws (R32), not a copy.
           const spacingRows = Array.from(
-            panel.shadowRoot.querySelectorAll('heo-section[heading="Spacing"] .rows[data-declarations="spacing"] .row'),
+            panel.shadowRoot.querySelectorAll('heo-section[data-card="spacing"] .rows[data-declarations="spacing"] .row'),
           );
           results.box = {
             sidesRowsUseTheSharedRow:
               spacingRows.map((row) => row.dataset.property).join(',') === 'margin,padding' &&
               spacingRows.every((row) => row.dataset.heoPart === 'row') &&
-              rowFor('padding')?.dataset.heoPart === 'row',
+              appliedRow === 'row',
           };
+          await setView('applied');
         }
         /* ------------------------------------------------------------------ *
          * 2. A side that is genuinely declared IS a row, and sits beside its
@@ -359,7 +371,7 @@
           results.emptyingASide.theShorthandStillCoversTheSide =
             /(?:^|;)\s*padding:\s*8px/.test(th.getAttribute('style'));
           await wait(50);
-          results.emptyingASide.andTheDiagramReadsItAgain = sideBox('padding bottom')?.value === '8px';
+          results.emptyingASide.andTheDiagramReadsItAgain = (await sideValues('padding bottom'))[0] === '8px';
         }
 
         /* ------------------------------------------------------------------ *
@@ -382,7 +394,7 @@
             cleanOrder: clean.join(','),
             order: rows.join(','),
             // Neither shorthand brings phantom sides along.
-            onlyTheThreeDeclared: clean.join(',') === 'color,margin,padding',
+            onlyTheThreeDeclared: [...clean].sort().join(',') === 'color,margin,padding',
             marginSideSitsWithMargin: adjacent('margin', 'margin-left'),
             paddingSideSitsWithPadding: adjacent('padding', 'padding-left'),
             /*
@@ -446,12 +458,13 @@
         await frames();
         await wait(250);
         {
-          const section = () =>
-            Array.from(panel.shadowRoot.querySelectorAll('heo-section')).find(
-              (s) => s.heading === 'Effective styles',
-            );
-          // Effective styles' adder waits behind "+ Add property".
-          section()?.querySelector('.add-prop[data-adder="effective"]')?.click();
+          await setView('cards');
+          const section = () => panel.shadowRoot.querySelector('heo-section[data-card="other"]');
+          // The Other card's adder waits behind "+ Add property", in the card, which opens first.
+          if (!section()?.open) section()?.shadowRoot?.querySelector('.tile')?.click();
+          await panel.updateComplete;
+          await frames();
+          section()?.querySelector('.add-prop[data-adder="other"]')?.click();
           await panel.updateComplete;
           await frames();
           // The name field and its list of property names.
@@ -510,7 +523,7 @@
         await wait(300);
         {
           // The rule's card opens from the id chip. One card is open at a time, so the focus check
-          // below is against the rest of the panel: Effective styles lists margin-left too.
+          // below is against the rest of the panel: Applied lists margin-left too.
           panel.shadowRoot.querySelector('.ident .cchip.id .name')?.click();
           await frames();
           await wait(250);

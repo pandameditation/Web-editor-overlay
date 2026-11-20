@@ -92,6 +92,7 @@ export const FIXTURES = [
   { page: 'test/css-rules.html', budget: 45000, weight: 2400, fast: true },
   { page: 'test/styles-cascade.html', budget: 60000, fast: true },
   { page: 'test/styles-ladder.html', budget: 60000, fast: true },
+  { page: 'test/styles-cards.html', budget: 60000, fast: true },
   { page: 'test/styles-save.html', budget: 90000 },
   { page: 'test/styles-preview.html', budget: 60000 },
   { page: 'test/styles-sources.html', budget: 90000 },

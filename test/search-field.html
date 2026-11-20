@@ -216,8 +216,9 @@
       await frames();
       const stylePanel = deep('heo-styles-panel');
       const filterField = stylePanel.shadowRoot.querySelector('.top heo-search-field');
+      // The cards drawn: a search leaves the ones with something that matches.
       const headingsOf = () =>
-        Array.from(stylePanel.shadowRoot.querySelectorAll('heo-section')).map((s) => s.heading);
+        Array.from(stylePanel.shadowRoot.querySelectorAll('.cards-view heo-section[data-card]')).map((s) => s.heading);
 
       results.styles = {
         filterIsOnTheFirstLine: Boolean(filterField),
@@ -244,14 +245,15 @@
 
       await typeInto(filterField, 'shadow', stylePanel);
       results.styles.narrowsTheSections = headingsOf().length < results.styles.sectionsBefore;
-      results.styles.keepsTheMatchingOne = headingsOf().includes('Effects');
+      results.styles.keepsTheMatchingOne = headingsOf().includes('Shadow & effects');
 
       /* The reworked panel under a query (R8, D5, D16). */
-      const effectiveRows = () =>
-        Array.from(stylePanel.shadowRoot.querySelectorAll('[data-declarations="effective"] .row'))
+      // The rows the cards draw, set or not: a query leaves only those that match.
+      const cardRows = () =>
+        Array.from(stylePanel.shadowRoot.querySelectorAll('.cards-view .row[data-property]'))
           .map((row) => row.dataset.property);
       await typeInto(filterField, '', stylePanel);
-      const rowsUnfiltered = effectiveRows();
+      const rowsUnfiltered = cardRows();
       await typeInto(filterField, 'padding', stylePanel);
       results.search = {
         // Named for what it searches, consistently with its placeholder.
@@ -259,8 +261,8 @@
           filterField.getAttribute('label') === 'Search styles' &&
           filterField.getAttribute('placeholder') === 'Search properties, values, selectors…',
         // `.card` gives `para` several properties; the query keeps only padding.
-        narrowsEffectiveStyles:
-          rowsUnfiltered.length > 1 && effectiveRows().join(',') === 'padding',
+        narrowsTheCards:
+          rowsUnfiltered.length > 1 && cardRows().join(',') === 'padding',
         // A query asks what is here; adding something, pasting or extracting is not an answer to it.
         hidesAdders:
           stylePanel.shadowRoot.querySelectorAll('[data-heo-part="adder"]').length === 0 &&
@@ -279,11 +281,9 @@
       await typeInto(filterField, 'padding', stylePanel);
       results.styles.findsPadding = headingsOf().includes('Spacing');
 
-      // Effective styles' rows, re-queried after every render: where a search finds a class's or a
+      // The cards' rows, re-queried after every render: where a search finds a class's or a
       // rule's declarations, by value or by the selector writing them.
-      const foundRows = () =>
-        Array.from(stylePanel.shadowRoot.querySelectorAll('[data-declarations="effective"] .row[data-property]'))
-          .map((row) => row.dataset.property);
+      const foundRows = cardRows;
       // A value, not a name. `.card` declares padding: 8px and nothing is called "8px".
       await typeInto(filterField, '8px', stylePanel);
       results.styles.findsByValue = foundRows().includes('padding');
@@ -318,8 +318,8 @@
       );
       results.styles.offersTheNearMiss = offered().includes('isolation');
 
-      // And taking one opens the Effective styles adder with it, so the completion is the whole gesture.
-      const adderBox = () => stylePanel.shadowRoot.querySelector('.property-adder[data-adder="effective"]');
+      // And taking one opens the Other card's adder with it, so the completion is the whole gesture.
+      const adderBox = () => stylePanel.shadowRoot.querySelector('.property-adder[data-adder="other"]');
       // The adder's field (name, then value) and its real input.
       const adderField = () => adderBox()?.querySelector('heo-value-field');
       const adderInput = () => adderField()?.shadowRoot?.querySelector('input[type="text"]');
@@ -348,7 +348,7 @@
        *
        * It used to open a multi-row popup; that popup is gone (one Add property everywhere, the user
        * confirmed it), and several declarations in one step go through Paste CSS. Add now opens
-       * Effective styles' own adder with the query as its draft, one property at a time.
+       * the Other card's own adder with the query as its draft, one property at a time.
        */
       const target = document.getElementById('para');
       await typeInto(filterField, 'box-shadow', stylePanel);
@@ -358,8 +358,8 @@
       await wait(80);
       results.styles.popupOpened = Boolean(adderBox());
       results.styles.seededFromTheQuery = adderInput()?.value === 'box-shadow';
-      // Add (and Enter in the field) opens Effective styles' own adder, seeded, with the caret in it.
-      results.search.addOpensTheEffectiveAdder =
+      // Add (and Enter in the field) opens the Other card's own adder, seeded, with the caret in it.
+      results.search.addOpensTheOtherCardsAdder =
         results.styles.popupOpened &&
         results.styles.seededFromTheQuery &&
         stylePanel.shadowRoot.activeElement === adderField();
@@ -448,7 +448,7 @@
       // Seeded with the resolved value, so adding it changes nothing until it is edited.
       results.styles.seededAValue = target.style.getPropertyValue('font-stretch') !== '';
       const stretchRow = () =>
-        stylePanel.shadowRoot.querySelector('[data-declarations="effective"] heo-value-field[data-property="font-stretch"]');
+        stylePanel.shadowRoot.querySelector('[data-declarations="other"] heo-value-field[data-property="font-stretch"]');
       stretchRow()?.dispatchEvent(new CustomEvent('value-change', { detail: { value: '50%' }, bubbles: true, composed: true }));
       await stylePanel.updateComplete;
       await wait(120);
@@ -456,7 +456,8 @@
       // The search went when the adder opened: adders are hidden while it narrows the panel.
       results.styles.filterClearedSoTheResultShows =
         filterField.shadowRoot.querySelector('input').value === '';
-      results.styles.showsUnderSetOnThisElement = Boolean(stretchRow());
+      // No card lists font-stretch: it shows in Other, with what else no card owns.
+      results.styles.showsInTheOtherCard = Boolean(stretchRow());
       engine.undo();
       engine.undo();
       await frames();
@@ -489,7 +490,7 @@
       await frames();
       await wait(120);
       const authoredRows = Array.from(
-        stylePanel.shadowRoot.querySelectorAll('[data-declarations="effective"] .row .pn'),
+        stylePanel.shadowRoot.querySelectorAll('[data-declarations="other"] .row .pn'),
       ).map((n) =>
         n.textContent.trim(),
       );
@@ -567,7 +568,7 @@
         said.push(`${kind}: ${message}`);
         return realNotify(message, kind);
       };
-      /* Driven through Effective styles' adder, which is the panel's way in. */
+      /* Driven through the Other card's adder, which is the panel's way in. */
       const addDeclaration = async (property) => {
         said.length = 0;
         await addNamed(property);

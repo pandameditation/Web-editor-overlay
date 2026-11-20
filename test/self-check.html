@@ -90,6 +90,24 @@
       const dockEl = () => overlayRoot().shadowRoot.querySelector('heo-dock');
       const dockPanel = (name) => dockEl().shadowRoot.querySelector('heo-' + name + '-panel');
       /**
+       * The Styles panel's two views: Cards (by category, closed until opened) and Applied
+       * (everything set on the element at once, grouped by card), which is where Effective
+       * styles' "what does it declare" rows now are.
+       */
+      const stylesView = async (value) => {
+        dockPanel('styles')?.shadowRoot.querySelector('.top heo-segmented.views')?.dispatchEvent(
+          new CustomEvent('segment-change', { detail: { value }, bubbles: true, composed: true }));
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      };
+      const appliedRows = () =>
+        Array.from(dockPanel('styles')?.shadowRoot.querySelectorAll('.applied .row') ?? []).map((r) => r.dataset.property);
+      /** Open a Styles card by id, as a user would: cards start closed. */
+      const openStylesCard = async (id) => {
+        const card = dockPanel('styles')?.shadowRoot.querySelector(`heo-section[data-card="${id}"]`);
+        if (card && !card.open) card.shadowRoot?.querySelector('.tile')?.click();
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      };
+      /**
        * HTML, CSS and JS are one dock tab now (`heo-code-tabs`) hosting three
        * language panels rather than three separate tabs, so reaching one of them
        * needs an extra step down. `lang` defaults to HTML, which is what
@@ -491,6 +509,15 @@
         const root = document.querySelector('html-editor-overlay > heo-overlay');
         return root.shadowRoot.querySelector('heo-dock').shadowRoot.querySelector('heo-styles-panel');
       };
+      /*
+       * The Styles cards start closed, and a closed card's rows are in the panel's tree but not
+       * drawn: open every card once, as the sections this page was written against stood open. An
+       * opened card stays open for the session, from selection to selection.
+       */
+      for (const card of stylesPanel().shadowRoot.querySelectorAll('heo-section[card]')) {
+        if (!card.open) card.shadowRoot?.querySelector('.tile')?.click();
+      }
+      await new Promise((r) => setTimeout(r, 80));
       const fieldFor = (label) =>
         Array.from(stylesPanel().shadowRoot.querySelectorAll('.row')).find(
           (row) => row.dataset.property === label,
@@ -692,12 +719,9 @@
       const stylesSections = () =>
         Array.from(stylesPanel().shadowRoot.querySelectorAll('heo-section')).map((s) => s.heading);
       check('firstSectionIsModified', () => stylesSections()[0]);
-      check('modifiedListsInlineProperties', () => {
-        const section = stylesPanel().shadowRoot.querySelector('heo-section');
-        return Array.from(section.querySelectorAll('.row .name'))
-          .map((n) => n.textContent.trim())
-          .join(',');
-      });
+      await stylesView('applied');
+      check('modifiedListsInlineProperties', () => appliedRows().sort().join(','));
+      await stylesView('cards');
       check('styleAttributeInCascade', () =>
         Array.from(stylesPanel().shadowRoot.querySelectorAll('.rule .sel'))
           .map((s) => s.textContent.trim())
@@ -1655,13 +1679,11 @@
       engine.setStyle('opacity', '0.4', k1);
       await frame();
       await wait(140);
-      const setSection = () =>
-        Array.from(dockPanel('styles').shadowRoot.querySelectorAll('heo-section'))
-          .find((s) => s.heading === 'Effective styles');
-      const setRows = () =>
-        Array.from(setSection()?.querySelectorAll('.rows[data-declarations="effective"] .row') ?? []).map((r) => r.dataset.property);
+      await stylesView('applied');
+      const setSection = () => dockPanel('styles').shadowRoot.querySelector('.applied');
+      const setRows = appliedRows;
       const setRowField = (property) =>
-        Array.from(setSection()?.querySelectorAll('.rows[data-declarations="effective"] .row') ?? [])
+        Array.from(setSection()?.querySelectorAll('.row') ?? [])
           .find((r) => r.dataset.property === property)
           ?.querySelector('heo-value-field');
       check('theSetSectionListsTheDeclaration', () => setRows().join(','));
@@ -1719,10 +1741,7 @@
       engine.setStyle('z-index', '4', k1);
       await frame();
       check('setSectionExcludesClassDeclarations', () => {
-        const section = Array.from(dockPanel('styles').shadowRoot.querySelectorAll('heo-section'))
-          .find((s) => s.heading === 'Effective styles');
-        const rows = Array.from(section?.querySelectorAll('.rows[data-declarations="effective"] .row') ?? [])
-          .map((r) => r.dataset.property);
+        const rows = appliedRows();
         const fromCard = Object.keys(engine.classes.get('card').declarations);
         return `rows=${rows.join(',')} card=${fromCard.join(',')} overlap=${rows.filter((r) => fromCard.includes(r)).join(',') || 'none'}`;
       });
@@ -1763,9 +1782,8 @@
         Array.from(dockPanel('styles').shadowRoot.querySelectorAll('heo-section'))
           .find((s) => s.heading === heading);
 
-      check('setOnThisElementIsInlineOnly', () =>
-        Array.from(stylesSection('Effective styles').querySelectorAll('.rows[data-declarations="effective"] .row'))
-          .map((r) => r.dataset.property).sort().join(','));
+      check('setOnThisElementIsInlineOnly', () => appliedRows().sort().join(','));
+      await stylesView('cards');
 
       // Page rules that are not the element's own classes are rule chips in the element header,
       // behind "N rules", one per selector family (R17); each opens its card in a popover.
@@ -1792,11 +1810,9 @@
       await frame();
       await wait(120);
       check('emptySectionsStayClosed', () => {
-        const shut = ['Effective styles'].map((heading) => {
-          const section = stylesSection(heading);
-          return `${heading}=${section ? section.open : 'missing'}`;
-        });
-        return shut.join(' ');
+        // The cards with nothing set: closed unless opened by hand earlier in the session.
+        const unset = Array.from(dockPanel('styles').shadowRoot.querySelectorAll('.cats[data-cards="unset"] > heo-section'));
+        return unset.map((card) => `${card.heading}=${card.open}`).join(' ');
       });
       bareEl.remove();
       api.select(rtarget);
@@ -1937,13 +1953,13 @@
       /*
        * And a state rule never reports as the element's current value. This is why
        * they are collected apart from the cascade: in it, the panel would claim this
-       * paragraph is already the hover colour. Effective styles' own :hover group is where it
-       * belongs, said as a state, so only the element's rows are checked.
+       * paragraph is already the hover colour. The strip's :hover is where it belongs, said as a
+       * state, so with Element picked only the element's rows are checked.
        */
       check('noStateValueEscapesIntoTheOtherSections', () => {
         const hoverColour = 'rgb(238,17,17)';
         return !Array.from(dockPanel('styles').shadowRoot.querySelectorAll('heo-value-field'))
-          .filter((f) => !f.closest('.cardpop') && !f.closest('.egroup'))
+          .filter((f) => !f.closest('.cardpop') && !f.closest('.pop'))
           .some((f) => (f.value || '').replace(/\s/g, '').toLowerCase() === hoverColour);
       });
 
@@ -2276,7 +2292,9 @@
 
       /* Focus inside the list keeps it; stepping back out of it does not. */
       const listRow = listField.shadowRoot.querySelector('.popup .option');
-      listRow.focus();
+      // Optional: run alone (no window focus) the list above does not reopen, and a throw here
+      // hung the page instead of reporting the checks.
+      listRow?.focus();
       await wait(220);
       check('listStaysWhenFocusIsOnARow', () => listShown());
       chevron.focus();
@@ -2347,12 +2365,9 @@
       check('enterCommitsTheFormulaNotTheNumber', () => exprProbe.style.color);
 
       /* Set-on-this-element lists what a rule declares, not only inline styles. */
-      check('setSectionListsRuleProperties', () => {
-        const section = Array.from(dockPanel('styles').shadowRoot.querySelectorAll('heo-section'))
-          .find((s) => s.heading === 'Effective styles');
-        return Array.from(section?.querySelectorAll('.rows[data-declarations="effective"] .row') ?? [])
-          .map((r) => r.dataset.property).join(',');
-      });
+      await stylesView('applied');
+      check('setSectionListsRuleProperties', () => appliedRows().join(','));
+      await stylesView('cards');
       exprProbe.remove();
       engine.history.clear();
 
@@ -2426,18 +2441,14 @@
       api.select(inlineAdderTarget);
       await frame();
       await wait(120);
-      const inlineSetSection = () =>
-        Array.from(dockPanel('styles').shadowRoot.querySelectorAll('heo-section'))
-          .find((s) => s.heading === 'Effective styles');
+      // The Other card's adder, and the Text style card its letter-spacing lands in.
+      const inlineSetSection = () => dockPanel('styles').shadowRoot.querySelector('.cards-view');
       const inlineAdderField = () => inlineSetSection()?.querySelector('.property-adder heo-value-field');
       const inlineAdderInput = () => inlineAdderField()?.shadowRoot.querySelector('input[type="text"]');
-      const sectionBeforeAdder = inlineSetSection();
-      if (sectionBeforeAdder && !sectionBeforeAdder.open) {
-        sectionBeforeAdder.shadowRoot.querySelector('.head')?.click();
-      }
-      await frame();
-      // Effective styles' adder waits behind "+ Add property" until it is opened.
-      inlineSetSection()?.querySelector('.add-prop[data-adder="effective"]')?.click();
+      await openStylesCard('other');
+      await openStylesCard('typography');
+      // The adder waits behind "+ Add property" until it is opened.
+      inlineSetSection()?.querySelector('.add-prop[data-adder="other"]')?.click();
       await frame();
       check('setSectionOffersAnElementPropertyAdder', () => Boolean(inlineAdderInput()));
       check('elementPropertyAdderHasAConfirmButton', () =>
@@ -2467,12 +2478,12 @@
       await wait(140);
       const inlineValueField = () =>
         inlineSetSection()?.querySelector(
-          '.rows[data-declarations="effective"] .row[data-property="letter-spacing"] heo-value-field',
+          '.rows[data-declarations="typography"] .row[data-property="letter-spacing"] heo-value-field',
         );
       // Seeded with what the element resolves to now (R23), so adding it changes nothing until edited.
       check('elementPropertyAdderSeedsAStartingValue', () => seededInline === 'normal' && inlineValueField()?.value === 'normal');
       check('elementPropertyAdderFocusesAddPropertyAgain', () =>
-        Boolean(dockPanel('styles').shadowRoot.activeElement?.matches('.add-prop[data-adder="effective"]')));
+        Boolean(dockPanel('styles').shadowRoot.activeElement?.matches('.add-prop[data-adder="other"]')));
       check('elementPropertyAdderCommitsAnInlineDeclaration', () =>
         inlineAdderTarget.style.getPropertyValue('letter-spacing') === 'normal');
       check('elementPropertyAdderKeepsExistingInlineDeclarations', () =>

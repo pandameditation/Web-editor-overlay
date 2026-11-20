@@ -5,8 +5,8 @@ import { countText } from '../../../core/save-plan.js';
 /**
  * The selected element, its id and its classes.
  *
- * The tag, the id and one chip per class, nothing else: the cascade lives in Effective styles and
- * the media queries in the cards, so restating them here only made the first line long. The tag opens
+ * The tag, the id and one chip per class, nothing else: the cascade lives in each row's ladder and
+ * the conditions on the strip under it, so restating them here only made the first line long. The tag opens
  * what is written for this element alone, its style attribute and its id's rules, in a popover
  * under the chips. The id and each class are two controls, because the two acts are not
  * comparable: the name opens and closes its rules in that popover, the cross takes it off this one

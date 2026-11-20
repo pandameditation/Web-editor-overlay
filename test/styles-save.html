@@ -419,25 +419,30 @@
 
         /* ---- edit: each surface writes where its row says ---- */
         let size = engine.history.size;
-        // States are picked on the conditions bar, then their rows edit the state's own rule.
-        root().querySelector('[data-strip="effective"] [data-cond="state::hover"]')?.click();
+        // The Background card holds the row (cards start closed, so it is opened first).
+        const surface = () => root().querySelector('heo-section[data-card="surface"]');
+        if (!surface()?.open) surface()?.shadowRoot?.querySelector('.tile')?.click();
         await settle();
-        await send(fieldIn('state-:hover', 'background-color'), 'value-change', '#abcdef');
+        // States are picked on the conditions strip, then every card's rows edit the state's own rule.
+        root().querySelector('[data-strip="panel"] [data-cond="state::hover"]')?.click();
+        await settle();
+        await send(fieldIn('surface', 'background-color'), 'value-change', '#abcdef');
         results.edit.stateRowWritesTheStateRule =
           hoverRule.style.getPropertyValue('background-color') === 'rgb(171, 205, 239)' &&
           !second.hasAttribute('style') && engine.history.size === size + 1;
         results.ask = { neverForStateRows: !anyBox() };
         engine.undo();
         await settle();
-        // A picked condition shows only its own rows: back to Always for the rest.
-        root().querySelector('[data-strip="effective"] .base')?.click();
+        // Back to Element for the rest: the same row, read at rest again (no state line).
+        root().querySelector('[data-strip="panel"] .base')?.click();
         await settle();
-        results.edit.aPickedStateShowsOnlyItsRows = Boolean(rowIn('effective', 'background-color'));
+        results.edit.backAtElementTheRowsReadTheElement =
+          Boolean(rowIn('surface', 'background-color')) && !root().querySelector('.ctxline');
 
         // The cascade menu's `.card` rung, picked, edits that rule through its own field.
         const radioOf = (one) => (one?.matches('[role="radio"]') ? one : one?.querySelector('[role="radio"]'));
         const rungIn = (placeKey) => root().querySelector(`.pop .ladder > [data-place="${CSS.escape(placeKey)}"]`);
-        rowIn('effective', 'background-color')?.querySelector('.dots')?.click();
+        rowIn('surface', 'background-color')?.querySelector('.dots')?.click();
         await settle();
         radioOf(rungIn('.card|base'))?.click();
         await settle();
@@ -467,7 +472,7 @@
         engine.undo();
         root().querySelector('.ident .cchip[data-class="card"] .name')?.click();
         await settle();
-        // Every section's row edits where its value is written now, like Effective styles: the
+        // Every card's row edits where its value is written now, as Applied's rows do: the
         // colour comes from `.promo .card`, so that is what an edit changes, with no question asked.
         await send(fieldIn('typography', 'color'), 'value-change', 'rgb(9, 9, 9)');
         results.edit.categorySectionsUseTheSamePath =

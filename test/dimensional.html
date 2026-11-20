@@ -111,6 +111,12 @@
         await wait(250);
 
         const panel = deep('heo-styles-panel');
+        // The cards start closed, and a closed card's rows have no layout to measure: open them all.
+        for (const card of panel.shadowRoot.querySelectorAll('heo-section[card]')) {
+          if (!card.open) card.shadowRoot?.querySelector('.tile')?.click();
+        }
+        await panel.updateComplete;
+        await frames();
         const rowFor = (property) =>
           Array.from(panel.shadowRoot.querySelectorAll('.row')).find(
             (row) => row.dataset.property === property,
@@ -620,14 +626,14 @@
 
         /*
          * And what the search's Add opens. It used to be a popup with no max-height at all; it is
-         * now Effective styles' own adder, which has to come into view with its confirm reachable.
+         * now the Other card's own adder, which has to come into view with its confirm reachable.
          */
         const styleSearch = panel.shadowRoot.querySelector('.top heo-search-field');
         styleSearch.shadowRoot.querySelector('.go').click();
         await panel.updateComplete;
         await frames();
         await wait(150);
-        const adderNow = () => panel.shadowRoot.querySelector('.property-adder[data-adder="effective"]');
+        const adderNow = () => panel.shadowRoot.querySelector('.property-adder[data-adder="other"]');
         results.placement.addPopupFitsOnScreen = adderNow()
           ? onScreen(adderNow().getBoundingClientRect())
           : null;

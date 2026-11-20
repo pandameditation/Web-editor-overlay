@@ -1154,10 +1154,11 @@
       // Placed before the header, not inside it: in Styles the header is a flex row, and a third
       // item there would squeeze the chip and the filter, which a text check cannot see.
       const aboveTheHeader = (el) =>
-        // The Styles panel's header is its element line (.ident); the other panels' is .top.
+        // The Styles panel's header is its element line (.ident) and its condition strip (.cond)
+        // under it; the other panels' is .top.
         Boolean(el) &&
-        ['top', 'ident'].some((name) => el.nextElementSibling?.classList.contains(name)) &&
-        el.closest('.top, .ident') === null;
+        ['top', 'ident', 'cond'].some((name) => el.nextElementSibling?.classList.contains(name)) &&
+        el.closest('.top, .ident, .cond') === null;
 
       await section('panelsShowThePrimaryAndSaySo', async () => {
         const out = {};

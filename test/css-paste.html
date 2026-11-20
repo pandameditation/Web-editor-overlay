@@ -1734,15 +1734,17 @@ color: rebeccapurple;`;
       await frames();
 
       /*
-       * Effective styles' Paste CSS opens the dialog in the inline context for the selected element
-       * (R16): what is pasted there is about this element, as the section is.
+       * The Other card's Paste CSS opens the dialog in the inline context for the selected element
+       * (R16, decision 15): what is pasted there is about this element, as the card is.
        */
       api.select(target);
       engine.setDockTab('styles');
       await frames();
       await new Promise((resolve) => setTimeout(resolve, 200));
       const effective = deepQuery('heo-styles-panel')?.shadowRoot
-        ?.querySelector('heo-section[heading="Effective styles"]');
+        ?.querySelector('heo-section[data-card="other"]');
+      effective?.shadowRoot?.querySelector('.tile')?.click();
+      await frames();
       const effectivePaste = Array.from(effective?.querySelectorAll('.actions button') ?? [])
         .find((button) => /Paste CSS/.test(button.textContent ?? ''));
       effectivePaste?.click();
@@ -1755,7 +1757,7 @@ color: rebeccapurple;`;
       };
       engine.cancelCssPaste();
       await frames();
-      // One general Paste CSS outside the cards (Effective styles'), and one at the end of a
+      // One general Paste CSS outside the header's cards (the Other card's), and one at the end of a
       // popped card, which opens on that card's rule.
       const panelRoot = deepQuery('heo-styles-panel')?.shadowRoot;
       const everyPaste = Array.from(panelRoot?.querySelectorAll('button') ?? [])

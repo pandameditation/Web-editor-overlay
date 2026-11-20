@@ -494,7 +494,8 @@
           // With a class's card open from its chip, the general "Paste CSS…" opens on that class; a
           // real press arrives as a pointerdown first, which must not close the card under it.
           {
-            const general = sroot().querySelector('heo-section[heading="Effective styles"] [data-act="paste"]');
+            // The general one is the Other card's (decision 15).
+            const general = sroot().querySelector('heo-section[data-card="other"] [data-act="paste"]');
             general?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, composed: true }));
             await settle(60);
             general?.click();
@@ -606,11 +607,11 @@
             results.header.idCrossRemovesTheId = gone && target.id === 'target' && Boolean(idName());
           }
 
-          /* No Sources section: Effective styles, then the category sections. */
+          /* No Sources section: the cards, by category. */
           results.sources = {
             noSourcesSection:
               !Array.from(sroot().querySelectorAll('heo-section')).some((one) => one.heading === 'Sources') &&
-              sroot().querySelector('heo-section')?.heading === 'Effective styles',
+              Boolean(sroot().querySelector('.cards-view heo-section[data-card]')),
           };
           /*
            * Every card ends with "Paste CSS", on the same line as "Detach styles from class" when
@@ -853,8 +854,7 @@
           const addButton = (scope) => scope?.querySelector(':scope > .block-add .add-prop, :scope .block-add .add-prop');
           results.adder = {
             oneComponentEverywhere:
-              Boolean(sroot().querySelector('.block-add [data-heo-part="adder"][data-adder="effective"]')) &&
-              Boolean(sroot().querySelector('.egroup [data-heo-part="adder"]')) &&
+              Boolean(sroot().querySelector('.block-add [data-heo-part="adder"][data-adder="other"]')) &&
               Boolean(block('.card', 'base')?.querySelector('[data-heo-part="adder"]')) &&
               inlineHasAdder &&
               tokensHasAdder,
@@ -866,7 +866,7 @@
           const fieldOf = (adder) => adder?.querySelector('heo-value-field');
           const inputOf = (adder) => fieldOf(adder)?.shadowRoot?.querySelector('input[type="text"]');
           const stepOf = (adder) => adder?.dataset.step ?? null;
-          // How an open adder looks, measured: Effective's used to show a stray "add" line above
+          // How an open adder looks, measured: the panel's used to show a stray "add" line above
           // its field, because only a card's row grid styled that label.
           const adderLook = (adder) => {
             const input = inputOf(adder);
@@ -993,11 +993,17 @@
             !cardAdder() && Boolean(addButton(block('.card', 'base'))) && engine.history.size === before &&
             engine.selected === target;
           // Several destinations: the cascade ladder in the value step, the value in the picked rung.
-          sroot().querySelector('.block-add [data-adder="effective"]')?.click();
+          // The panel's adder is the Other card's, opened first (cards start closed) to be measured.
+          {
+            const other = sroot().querySelector('heo-section[data-card="other"]');
+            if (other && !other.open) other.shadowRoot?.querySelector('.tile')?.click();
+            await settle(200);
+          }
+          sroot().querySelector('.block-add [data-adder="other"]')?.click();
           await settle(200);
-          const effAdder = () => sroot().querySelector('.property-adder[data-adder="effective"]');
+          const effAdder = () => sroot().querySelector('.property-adder[data-adder="other"]');
           const effLook = adderLook(effAdder());
-          results.adder.looksTheSameInEffectiveAndCards =
+          results.adder.looksTheSameInOtherAndCards =
             Boolean(cardLook) && Boolean(effLook) &&
             !cardLook.label && !effLook.label &&
             cardLook.border.startsWith('solid') &&
@@ -1044,14 +1050,14 @@
           results.keys = {
             escapeClosesInnermostFirst: listShutFirst && !effAdder(),
           };
-          // A size group's adder: the same shared adder, so the same box. Pinned here too, since
-          // only the element block's adder was compared before and a size group could drift alone.
-          const effSlot = () => sroot().querySelector('[data-strip="effective"] [data-slot="tablet"]');
+          // The adder under a picked size: the same shared adder, so the same box. Pinned here too,
+          // since only the element's adder was compared before and a size could drift alone.
+          const effSlot = () => sroot().querySelector('[data-strip="panel"] [data-slot="tablet"]');
           effSlot()?.click();
           await settle(200);
-          sroot().querySelector('.block-add button[data-adder="size-tablet"]')?.click();
+          sroot().querySelector('.block-add button[data-adder="other"]')?.click();
           await settle(200);
-          const sizeAdder = () => sroot().querySelector('.property-adder[data-adder="size-tablet"]');
+          const sizeAdder = () => sroot().querySelector('.property-adder[data-adder="other"]');
           const sizeLook = adderLook(sizeAdder());
           results.adder.looksTheSameInASizeGroup =
             Boolean(cardLook) && Boolean(sizeLook) && !sizeLook.label &&
@@ -1066,9 +1072,9 @@
           effSlot()?.click();
           await settle(200);
           results.adder.sizeGroupClosesBehindItself =
-            !sizeAdder() && !sroot().querySelector('[data-egroup="size:tablet"]');
+            !sizeAdder() && !sroot().querySelector('.ctxline');
           // "a new class" makes an automatic class for this element.
-          sroot().querySelector('.block-add [data-adder="effective"]')?.click();
+          sroot().querySelector('.block-add [data-adder="other"]')?.click();
           await settle(200);
           await typeInto(inputOf(effAdder()), 'letter-spacing');
           key(inputOf(effAdder()), 'Enter');
@@ -1130,8 +1136,8 @@
             .filter((entry) => entry.family === k && conditionOf(entry) === slot)
             .reduce((sum, entry) => sum + entry.declarations.length, 0);
           results.strip = {
-            sameComponentInEffectiveAndCards:
-              Boolean(sroot().querySelector('[data-heo-part="strip"][data-strip="effective"]')) &&
+            sameComponentInThePanelAndCards:
+              Boolean(sroot().querySelector('[data-heo-part="strip"][data-strip="panel"]')) &&
               strip('.card')?.matches('.slots[role="group"]'),
             countsPerSlot:
               textOf(strip('.card')?.querySelector('.base .c')) === String(slotCount('.card', 'base')) &&
@@ -1215,7 +1221,7 @@
               promoLabel === '!important on color in .promo .card' && promoPressed === 'true',
           };
           const everyCardRowHasOne = cardRowsAll().every((row) => row.querySelectorAll('.promote').length === 1);
-          sroot().querySelector('.rows[data-declarations="effective"] .row[data-property="color"] .dots')?.click();
+          sroot().querySelector('.rows[data-declarations="typography"] .row[data-property="color"] .dots')?.click();
           await settle(250);
           // The cascade menu's toggle sits with the picked rung's field: one, for the place being edited.
           const rungCount = sroot().querySelectorAll('.pop .ladder > [data-place]').length;
@@ -1576,14 +1582,19 @@
           }
 
           /* ---------------------------------------------------------------- *
-           * Effective styles: where a value goes, the bar, pseudo-elements, rows.
+           * The cards' rows: where a value goes, the strip, pseudo-elements, rows.
            * ---------------------------------------------------------------- */
           progress.textContent = 'effective';
           results.effective = {};
           {
             api.select(target);
             await settle(300);
-            const effList = () => sroot().querySelector('[data-declarations="effective"]');
+            // Every card opened, as Effective styles stood open: a closed card's rows are not drawn.
+            for (const one of sroot().querySelectorAll('heo-section[card]')) {
+              if (!one.open) one.shadowRoot?.querySelector('.tile')?.click();
+            }
+            await settle(200);
+            const effList = () => sroot().querySelector('.cards-view');
             const effRow = (property) => effList()?.querySelector(`.row[data-property="${property}"]`);
             const effField = (property) => effRow(property)?.querySelector('heo-value-field');
             // The row's cascade menu: its ladder, its picked rung, and a pick by place key.
@@ -1721,7 +1732,7 @@
             await closeLadder();
             before = engine.history.size;
             Array.from(alignRow()?.querySelector('heo-segmented')?.shadowRoot?.querySelectorAll('button') ?? [])
-              .find((one) => textOf(one) === 'C')?.click();
+              .find((one) => textOf(one) === 'C' || one.getAttribute('aria-label') === 'Align center')?.click();
             await settle(250);
             results.effective.aSegmentedRowPicksWhereFromItsName =
               startsOnCard && !sroot().querySelector('.dest-line, .dest-pick') &&
@@ -1731,9 +1742,9 @@
             engine.undo();
             await settle(250);
             /* Under a media query, a rung names the rule, its size a tag beside it. */
-            sroot().querySelector('[data-strip="effective"] [data-slot="tablet"]')?.click();
+            sroot().querySelector('[data-strip="panel"] [data-slot="tablet"]')?.click();
             await settle(250);
-            await openLadder(sroot().querySelector('[data-egroup="size:tablet"] .row[data-property="padding"]'));
+            await openLadder(effRow('padding'));
             const tabletRung = ladderPop()?.querySelector(`.ladder > [data-place="${CSS.escape(checkedKey())}"]`);
             results.effective.underAMediaQueryTheLadderNamesTheRuleAndItsSize =
               checkedKey() === '.card|tablet' &&
@@ -1741,38 +1752,46 @@
               textOf(tabletRung?.querySelector('.sz')) === '≥768px' &&
               rungsIn().every((one) => !/[≤≥(]/.test(textOf(one.querySelector('.pl'))));
             await closeLadder();
-            sroot().querySelector('[data-strip="effective"] .base')?.click();
+            sroot().querySelector('[data-strip="panel"] .base')?.click();
             await settle(250);
-            /* The bar: a picked size shows that size's rows alone, as in a card. */
-            sroot().querySelector('[data-strip="effective"] [data-slot="tablet"]')?.click();
+            /* The strip: a picked size is what every card reads, said under the strip. */
+            sroot().querySelector('[data-strip="panel"] [data-slot="tablet"]')?.click();
             await settle(250);
-            results.effective.aPickedConditionShowsOnlyItsRows =
-              !effList() && Boolean(sroot().querySelector('[data-egroup="size:tablet"] .row[data-property="padding"]')) &&
-              !sroot().querySelector('[data-egroup="::before"]');
-            sroot().querySelector('[data-strip="effective"] .base')?.click();
+            results.effective.aPickedConditionReadsEveryCardThere =
+              Boolean(sroot().querySelector('.ctxline[data-ctx="size"]')) && Boolean(effRow('padding')) &&
+              !sroot().querySelector('heo-section[data-card="content"]');
+            sroot().querySelector('[data-strip="panel"] .base')?.click();
             await settle(250);
-            results.effective.alwaysShowsAlwaysAgain = Boolean(effList()) && Boolean(sroot().querySelector('[data-egroup="::before"]'));
-            /* "+ Add pseudo-element", in Effective styles too: nothing written until a property is. */
-            const effPseudo = () => sroot().querySelector('heo-section[heading="Effective styles"] [data-menu-anchor="pseudo-effective"]');
-            const hadButton = Boolean(effPseudo());
-            effPseudo()?.click();
+            results.effective.elementShowsTheElementAgain = Boolean(effList()) && !sroot().querySelector('.ctxline');
+            /*
+             * A pseudo-element from the strip's "+": nothing written until a property is, and its
+             * Content card first, since ::after renders nothing without content.
+             */
+            const stripAdd = () => sroot().querySelector('[data-strip="panel"] .add');
+            const hadButton = /pseudo-element/.test(stripAdd()?.getAttribute('aria-label') ?? '');
+            stripAdd()?.click();
             await settle(250);
+            const condInput = () => sroot().querySelector('.menu.condpop[data-menu="strip-panel"] heo-value-field')?.shadowRoot?.querySelector('input');
             before = engine.history.size;
-            await typeInto(pseudoInput(), '::after');
-            key(pseudoInput(), 'Enter');
+            await typeInto(condInput(), '::after');
+            key(condInput(), 'Enter');
             await settle(300);
-            const group = () => sroot().querySelector('[data-egroup="::after"]');
-            const pendingShown = Boolean(group()) && engine.history.size === before;
-            const afterAdder = () => group()?.querySelector('.property-adder');
-            // ::after renders nothing without content, so its value step opens on `content: ""`.
-            const offersContent = fieldOf(afterAdder())?.dataset.property === 'content';
-            key(inputOf(afterAdder()), 'Enter');
+            const pendingShown = sroot().querySelector('[data-strip="panel"] [data-cond="state:::after"]')?.getAttribute('aria-pressed') === 'true' &&
+              engine.history.size === before;
+            const contentCard = () => sroot().querySelector('.cards-view heo-section[data-card="content"]');
+            const offersContent = sroot().querySelector('.cards-view heo-section[data-card]') === contentCard();
+            if (contentCard() && !contentCard().open) contentCard().shadowRoot?.querySelector('.tile')?.click();
+            await settle(200);
+            contentCard()?.querySelector('.row[data-property="content"] heo-value-field')?.dispatchEvent(
+              new CustomEvent('value-change', { detail: { value: '""' }, bubbles: true, composed: true }));
             await settle(300);
-            results.effective.addsAPseudoElementLikeACard =
+            results.effective.addsAPseudoElementFromTheStrip =
               hadButton && pendingShown && offersContent && engine.history.size === before + 1 &&
               getComputedStyle(target, '::after').content === '""';
             engine.undo();
             await settle(300);
+            sroot().querySelector('[data-strip="panel"] .base')?.click();
+            await settle(200);
           }
 
           /* ---------------------------------------------------------------- *

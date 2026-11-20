@@ -122,6 +122,9 @@
       api.select(h);
       engine.setDockTab('styles');
       await settle(700);
+      // The font row is the Text style card's, and cards start closed.
+      deep('heo-styles-panel').shadowRoot.querySelector('heo-section[data-card="typography"]')?.shadowRoot?.querySelector('.tile')?.click();
+      await settle(200);
 
       const field = () => deep('heo-styles-panel').shadowRoot.querySelector('heo-value-field[data-property="font-family"]');
       const picker = () => field()?.shadowRoot.querySelector('heo-font-picker')?.shadowRoot;
@@ -159,7 +162,13 @@
         lora.querySelector('[data-font]').click();
         await until(() => editor()?.querySelector('[data-style]'));
         const opened = Boolean(editor());
-        const notPicked = h.style.fontFamily === before && engine.history.records.length === recordsBefore;
+        /*
+         * Nothing written: no record, and the element's style as it was, unless it is only the
+         * field's preview on show. The Text style card's row edits inline under a text style, so its
+         * preview is on the style attribute, where Effective styles' row previewed in the class.
+         */
+        const onlyPreviewed = engine.previewTarget?.property === 'font-family' && engine.previewTarget.before === before;
+        const notPicked = (h.style.fontFamily === before || onlyPreviewed) && engine.history.records.length === recordsBefore;
         const listHidden = picker().querySelector('.slots').hidden;
         // Escape closes the editor and leaves the dialog open.
         editor().querySelector('.fpop').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true, cancelable: true }));

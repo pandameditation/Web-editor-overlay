@@ -488,17 +488,29 @@
           await frames();
           await wait(400);
           /*
-           * Effective styles and Spacing show the same family, with the same control: #between
+           * Applied and the Spacing card show the same family, with the same control: #between
            * writes padding and padding-left in one rule, so the two rows are one group there too,
            * and pressing the losing side's control moves it last in that rule.
            */
           {
-            const effFamily = () => panelRoot().querySelector('[data-declarations="effective"] .family');
-            const spacingFamily = () => panelRoot().querySelector('[data-declarations="spacing"] .family');
+            const setView = async (value) => {
+              panelRoot().querySelector('.top heo-segmented.views')?.dispatchEvent(
+                new CustomEvent('segment-change', { detail: { value }, bubbles: true, composed: true }));
+              await frames();
+              await wait(100);
+            };
+            const spacingCard = () => panelRoot().querySelector('heo-section[data-card="spacing"]');
+            if (!spacingCard()?.open) spacingCard()?.shadowRoot?.querySelector('.tile')?.click();
+            await frames();
+            await wait(100);
+            const effFamily = () => panelRoot().querySelector('heo-section[data-card="spacing"] [data-declarations="spacing"] .family');
             const rowsOf = (fam) => Array.from(fam?.querySelectorAll('.row') ?? []).map((r) => r.dataset.property).join(',');
+            await setView('applied');
+            const appliedShape = rowsOf(panelRoot().querySelector('.applied [data-declarations="spacing"] .family'));
+            await setView('cards');
             // Its cascade lists #between once: the rule's padding and padding-left compete in the
             // family control, not as a line overriding another line of the same rule.
-            panelRoot().querySelector('[data-declarations="effective"] .row[data-property="padding-left"] .dots')?.click();
+            effFamily()?.querySelector('.row[data-property="padding-left"] .dots')?.click();
             await frames();
             await wait(200);
             // Set rungs only (a value, not a dash): one per block.
@@ -510,7 +522,7 @@
             await frames();
             await wait(150);
             const before = pressedIn(effFamily());
-            const shapes = rowsOf(effFamily()) === 'padding,padding-left' && rowsOf(spacingFamily()) === 'padding,padding-left';
+            const shapes = rowsOf(effFamily()) === 'padding,padding-left' && appliedShape === 'padding,padding-left';
             effFamily()?.querySelector('.side-win:not(.on)')?.click();
             await frames();
             await wait(350);
@@ -521,7 +533,7 @@
             const rule = Array.from(document.styleSheets).flatMap((sheet) => { try { return Array.from(sheet.cssRules); } catch { return []; } })
               .find((one) => one.selectorText === '#between');
             results.familiesEverywhere = {
-              effectiveAndSpacingGroupTheFamily: shapes,
+              appliedAndSpacingGroupTheFamily: shapes,
               theControlFlipsTheWinnerThere: before !== 'neither' && after !== 'neither' && after !== before,
               andTheCardAgrees: cardSays === after,
               writtenInTheRule: Boolean(rule),

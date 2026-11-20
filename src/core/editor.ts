@@ -4263,7 +4263,7 @@ export class EditorEngine {
   }
 
   /**
-   * Write one declaration where Effective styles' switch says, as one undo entry.
+   * Write one declaration where a row's cascade ladder says, as one undo entry.
    *
    * `move` names the element whose inline declaration of the property goes in the same entry: the
    * value was the element's own, and choosing a rule or a class for it is moving it there. Left
