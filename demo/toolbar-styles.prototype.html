@@ -1,0 +1,822 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PROTOTYPE — HEO toolbar: Floating and Docked styles, and how to switch</title>
+  <!--
+  PROTOTYPE — throwaway, not part of the overlay build. Round 2 after toolbar.prototype.html.
+  Two interface styles with one order and one grouping:
+    Floating — round 1's A, re-ordered to match C: a pill and two floating panels over the page.
+    Docked   — round 1's C: a bar across the top, the panels docked to the edges, the page between.
+  Both have the same groups, left to right: HEO menu + Edit | left panel + selection | viewport |
+  undo, redo, Save | right panel. Left panel = the page: Layers, Library, Tokens, SEO. Right panel =
+  the selection: Styles, Props, Media, Code. Settings › Interface holds the choice in every variant.
+  The variants are the quick switch:
+    A  In the menu  — a Floating | Docked switch in the HEO menu
+    B  In the bar   — one dock / float button at the end of the bar, like DevTools' dock side
+    C  Drag to dock — drag the pill onto the top edge to dock it, drag the bar's grip down to float it
+  ?variant=A|B|C, ?style=float|dock, ?open=logo|vp|vpedit|settings. D toggles the style everywhere.
+  Everything is in memory.
+-->
+  <style>
+    :root {
+      --accent: #6366f1;
+      --accent-ink: #fff;
+      --accent-soft: color-mix(in oklab, var(--accent) 18%, transparent);
+      --accent-line: color-mix(in oklab, var(--accent) 55%, transparent);
+      --accent-text: color-mix(in oklab, var(--accent) 60%, white);
+      --bg: oklch(19% 0.014 265);
+      --glass: oklch(16% 0.014 265 / 86%);
+      --raised: oklch(23.5% 0.016 265);
+      --sunken: oklch(16% 0.012 265);
+      --hover: oklch(28% 0.018 265);
+      --text: oklch(96% 0.005 265);
+      --dim: oklch(74% 0.012 265);
+      --faint: oklch(68% 0.014 265);
+      --line: oklch(100% 0 0 / 9%);
+      --line2: oklch(100% 0 0 / 16%);
+      --inset: inset 0 1px 0 oklch(100% 0 0 / 6%);
+      --shadow-lg: 0 24px 60px -12px oklch(0% 0 0 / 60%), 0 6px 16px oklch(0% 0 0 / 30%);
+      --font: 'Inter var', Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+      --mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+      --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+    }
+    /* The real overlay is injected into every demo page by the dev server; this page mocks its own. */
+    heo-overlay { display: none !important; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; }
+    body { font-family: var(--font); background: #fffdf8; overflow: hidden; }
+    ::view-transition-group(*) { animation-duration: 260ms; animation-timing-function: var(--ease); }
+
+    /* ------------------------------------------------------------ the page being edited */
+    #stage { position: fixed; inset: 0; overflow: auto; transition: padding 260ms var(--ease); }
+    #stage.previewing { background: #2b2e39; }
+    #site { container-type: inline-size; min-height: 100%; background: #fffdf8; color: #1d2230; font-family: Inter, ui-sans-serif, system-ui, sans-serif; transform-origin: top left; }
+    #stage.previewing #site { position: absolute; min-height: 0; box-shadow: 0 0 0 1px #000, 0 20px 60px -10px #000; }
+    #site .top { display: flex; align-items: center; gap: 24px; padding: 18px 48px; border-bottom: 1px solid #eee5d8; }
+    #site .logo { font-weight: 800; font-size: 18px; color: #3b2a1a; text-decoration: none; }
+    #site .links { display: flex; gap: 22px; margin-left: auto; font-size: 14px; color: #5a4a3a; }
+    #site .cbtn { display: inline-block; padding: 10px 18px; border-radius: 999px; background: #c2410c; color: #fff; text-decoration: none; font-weight: 600; font-size: 14px; }
+    #site .cbtn.ghost { background: transparent; color: #c2410c; box-shadow: inset 0 0 0 1px #c2410c; }
+    #site .hero { padding: 72px 48px 56px; max-width: 780px; }
+    #site h1 { font-size: 54px; line-height: 1.04; margin: 0 0 18px; letter-spacing: -0.025em; }
+    #site .lede { font-size: 18px; line-height: 1.55; color: #5a4a3a; margin: 0 0 28px; }
+    #site .features { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; padding: 0 48px 64px; }
+    #site .card { background: #fff; border: 1px solid #eee5d8; border-radius: 14px; padding: 32px 24px 24px; }
+    #site .card .sq { width: 34px; height: 34px; border-radius: 9px; background: #fde7d6; }
+    #site .card:nth-child(2) .sq { background: #e3ecda; }
+    #site .card:nth-child(3) .sq { background: #e0e4f6; }
+    #site .card h3 { margin: 14px 0 6px; font-size: 18px; }
+    #site .card p { margin: 0; color: #5a4a3a; line-height: 1.5; font-size: 14.5px; }
+    #site .quote { margin: 0 48px 64px; padding: 40px; border-radius: 18px; background: #3b2a1a; color: #fbe9d6; font-size: 22px; line-height: 1.45; }
+    #site .quote small { display: block; margin-top: 14px; font-size: 13px; opacity: 0.7; }
+    #site footer { padding: 28px 48px 90px; border-top: 1px solid #eee5d8; color: #8a7a6a; font-size: 13px; }
+    @container (max-width: 960px) { #site .features { grid-template-columns: 1fr 1fr; } #site h1 { font-size: 42px; } }
+    @container (max-width: 600px) {
+      #site .features { grid-template-columns: 1fr; padding: 0 20px 40px; }
+      #site .top { padding: 14px 20px; } #site .links { display: none; }
+      #site .hero { padding: 40px 20px; } #site h1 { font-size: 32px; }
+      #site .quote { margin: 0 20px 40px; padding: 24px; font-size: 18px; }
+    }
+    body.editing #site .sel { outline: 2px solid var(--accent); outline-offset: 2px; position: relative; }
+    body.editing #site .sel::after { content: attr(data-label); position: absolute; left: -2px; top: -24px; padding: 2px 6px; border-radius: 4px; background: var(--accent); color: #fff; font: 500 10.5px var(--mono); white-space: nowrap; pointer-events: none; }
+
+    /* ------------------------------------------------------------ HEO chrome */
+    #chrome { position: fixed; inset: 0; pointer-events: none; z-index: 10; color: var(--text); font-size: 12px; }
+    #chrome > * { pointer-events: auto; }
+    .surface { background: var(--glass); backdrop-filter: blur(18px) saturate(1.4); -webkit-backdrop-filter: blur(18px) saturate(1.4); border: 1px solid var(--line); box-shadow: var(--shadow-lg), var(--inset); }
+    button { font: inherit; color: inherit; }
+    button:focus-visible, input:focus-visible, summary:focus-visible, [role='radio']:focus-visible { outline: 2px solid var(--accent-text); outline-offset: 1px; }
+
+    .grp { display: flex; align-items: center; gap: 3px; min-width: 0; }
+    .sep { width: 1px; height: 20px; margin: 0 3px; background: var(--line); flex: 0 0 auto; }
+    .ib { position: relative; display: grid; place-items: center; flex: 0 0 auto; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 9px; background: transparent; color: var(--dim); cursor: pointer; }
+    .ib:hover:not(:disabled) { background: var(--hover); color: var(--text); }
+    .ib[aria-pressed='true'], .ib[aria-expanded='true'] { background: var(--accent-soft); color: var(--text); box-shadow: inset 0 0 0 1px var(--accent-line); }
+    .ib:disabled { opacity: 0.38; cursor: default; }
+    .ib.swap { color: var(--accent-text); }
+    .grip { display: grid; place-items: center; width: 18px; height: 30px; color: var(--faint); cursor: grab; touch-action: none; flex: 0 0 auto; }
+    .grip:hover { color: var(--text); }
+    body.dragging, body.dragging * { cursor: grabbing !important; user-select: none; }
+
+    .toggle { display: inline-flex; align-items: center; gap: 7px; height: 30px; padding: 0 12px 0 9px; border: 1px solid var(--line); border-radius: 999px; background: var(--raised); color: var(--dim); font-size: 11.5px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; cursor: pointer; flex: 0 0 auto; }
+    .toggle[aria-pressed='true'] { background: var(--accent); border-color: transparent; color: var(--accent-ink); box-shadow: 0 0 0 4px var(--accent-soft); }
+    .toggle .led { width: 7px; height: 7px; border-radius: 9px; background: currentColor; opacity: 0.45; }
+    .toggle[aria-pressed='true'] .led { opacity: 1; }
+
+    .selection { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 170px; height: 26px; padding: 0 9px; border-radius: 999px; background: var(--sunken); color: var(--dim); font-family: var(--mono); font-size: 10.5px; overflow: hidden; white-space: nowrap; }
+    .selection span { overflow: hidden; text-overflow: ellipsis; }
+    .selection svg { flex: 0 0 auto; }
+
+    .dd { position: relative; display: inline-flex; align-items: center; gap: 2px; flex: 0 0 auto; }
+    .vpbtn { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 7px 0 9px; border: 1px solid var(--line); border-radius: 9px; background: var(--sunken); color: var(--text); font-size: 11.5px; cursor: pointer; white-space: nowrap; }
+    .vpbtn:hover { border-color: var(--line2); }
+    .vpbtn .w { color: var(--dim); font-family: var(--mono); font-size: 10.5px; }
+    .vpbtn .chev { color: var(--faint); }
+    .vpbtn.on { background: var(--accent-soft); border-color: var(--accent-line); }
+    .vpbtn.on .w { color: var(--accent-text); }
+    .vpbtn[aria-expanded='true'] { border-color: var(--accent-line); }
+
+    .logo-btn { display: inline-flex; align-items: center; gap: 4px; height: 30px; padding: 0 5px 0 4px; border: 0; border-radius: 9px; background: transparent; cursor: pointer; flex: 0 0 auto; }
+    .logo-btn:hover, .logo-btn[aria-expanded='true'] { background: var(--hover); }
+    .mark { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 6px; background: linear-gradient(135deg, #818cf8, #6366f1 60%, #4f46e5); color: #fff; font: 800 11px var(--font); }
+    .logo-btn .chev { color: var(--faint); }
+
+    .save { display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; height: 30px; padding: 0 11px; border: 0; border-radius: 9px; background: var(--accent); color: var(--accent-ink); font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+    .save:hover { filter: brightness(1.08); }
+    .count { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: oklch(100% 0 0 / 22%); font-size: 10px; font-weight: 700; line-height: 18px; text-align: center; }
+
+    /* menus */
+    .pop { position: absolute; z-index: 40; top: calc(100% + 8px); left: 0; min-width: 240px; padding: 5px; border-radius: 12px; background: var(--bg); border: 1px solid var(--line2); box-shadow: var(--shadow-lg); text-align: left; white-space: normal; }
+    .pop.r { left: auto; right: 0; }
+    .mi { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 30px; padding: 0 8px; border: 0; border-radius: 7px; background: transparent; color: var(--text); font-size: 12px; text-align: left; cursor: pointer; white-space: nowrap; }
+    .mi:hover:not(:disabled) { background: var(--hover); }
+    .mi:disabled { color: var(--faint); cursor: default; }
+    .mi svg { color: var(--dim); flex: 0 0 auto; }
+    .mi .k { margin-left: auto; padding-left: 18px; color: var(--faint); font-family: var(--mono); font-size: 10.5px; }
+    .mi .chk { width: 14px; display: grid; place-items: center; color: var(--accent-text); }
+    .mi small { color: var(--faint); font-size: 10px; margin-left: 2px; }
+    .mi .w { margin-left: auto; padding-left: 18px; color: var(--dim); font-family: var(--mono); font-size: 10.5px; }
+    .mdiv { height: 1px; margin: 5px 4px; background: var(--line); }
+    .cap { margin: 5px 7px 6px; color: var(--faint); font-size: 10px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+    .mnote { margin: 2px 8px 6px; color: var(--dim); font-size: 10.5px; line-height: 1.45; }
+    .mrow { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 0 4px 0 8px; font-size: 12px; }
+    .mrow > svg { color: var(--dim); }
+    .mrow .k { color: var(--faint); font: 10.5px var(--mono); }
+    .seg { display: inline-flex; margin-left: auto; padding: 2px; border-radius: 8px; background: var(--sunken); border: 1px solid var(--line); }
+    .seg button { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 8px; border: 0; border-radius: 6px; background: transparent; color: var(--dim); font-size: 11px; cursor: pointer; }
+    .seg button[aria-checked='true'] { background: var(--raised); color: var(--text); box-shadow: 0 1px 2px #0006, inset 0 0 0 1px var(--line2); }
+
+    /* viewport sizes panel, as today */
+    .vped { width: 320px; padding: 4px 10px 10px; }
+    .vlist { list-style: none; margin: 0; padding: 0; }
+    .vrow { display: grid; grid-template-columns: minmax(0, 1fr) 96px 20px; align-items: center; gap: 7px; min-height: 34px; border-bottom: 1px solid var(--line); }
+    .vrow:last-child { border-bottom: 0; }
+    .vrow label { display: flex; align-items: center; gap: 7px; min-width: 0; cursor: pointer; font-size: 11px; }
+    .vrow input[type='checkbox'] { width: 13px; height: 13px; margin: 0; accent-color: var(--accent); }
+    .vrow label svg { color: var(--dim); }
+    .vrow small { margin-left: 5px; color: var(--dim); font-size: 10px; }
+    .vrow.off label { color: var(--dim); }
+    .vrow .fixed { padding: 0 8px; color: var(--dim); font: 11px var(--mono); }
+    .vf { display: flex; align-items: center; height: 24px; padding: 0 7px; border: 1px solid var(--line); border-radius: 7px; background: var(--sunken); }
+    .vf input { width: 100%; min-width: 0; border: 0; background: transparent; color: var(--text); font: 11px var(--mono); outline: none; }
+    .vf i { color: var(--faint); font: normal 10px var(--mono); }
+    .kill { display: grid; place-items: center; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--dim); cursor: pointer; }
+    .link { display: inline-flex; align-items: center; gap: 5px; margin-top: 6px; padding: 3px 0; border: 0; background: transparent; color: var(--dim); font-size: 11px; cursor: pointer; }
+    .vped details { margin-top: 8px; color: var(--dim); font-size: 10.5px; line-height: 1.5; }
+    .vped details ul { margin: 4px 0 0; padding-left: 16px; }
+
+    /* panels */
+    .dock { position: fixed; display: flex; flex-direction: column; overflow: hidden; border-radius: 14px; }
+    .dhead { display: flex; align-items: center; gap: 8px; padding: 10px 10px 8px 12px; }
+    .dhead .title { flex: 1 1 auto; min-width: 0; }
+    .dhead .name { font-size: 13px; font-weight: 600; }
+    .dhead .target { display: block; overflow: hidden; color: var(--faint); font: 10px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+    .tabs { display: flex; flex-wrap: wrap; gap: 2px; padding: 0 8px 8px; border-bottom: 1px solid var(--line); }
+    .tab { display: inline-flex; align-items: center; height: 26px; padding: 0 8px; border: 0; border-radius: 7px; background: transparent; color: var(--faint); font-size: 11.5px; font-weight: 500; cursor: pointer; }
+    .tab:hover { background: var(--hover); color: var(--text); }
+    .tab[aria-selected='true'] { color: var(--text); font-weight: 600; background: var(--hover); }
+    .dbody { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+    .sec { padding: 10px 12px 12px; border-bottom: 1px solid var(--line); }
+    .sec h4 { margin: 0 0 8px; font-size: 11px; font-weight: 600; display: flex; justify-content: space-between; }
+    .sec h4 span { color: var(--faint); font-weight: 400; }
+    .row { display: grid; grid-template-columns: 92px minmax(0, 1fr); align-items: center; gap: 8px; min-height: 28px; }
+    .row label { color: var(--dim); font-size: 11px; }
+    .field { display: flex; align-items: center; gap: 6px; height: 24px; padding: 0 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--sunken); font: 11px var(--mono); color: var(--text); overflow: hidden; white-space: nowrap; }
+    .field .sw { flex: 0 0 auto; width: 12px; height: 12px; border-radius: 3px; box-shadow: inset 0 0 0 1px var(--line2); }
+    .field .u { margin-left: auto; color: var(--faint); }
+    .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .crumb { padding: 9px 12px; border-bottom: 1px solid var(--line); font: 10.5px var(--mono); color: var(--faint); }
+    .crumb b { color: var(--text); font-weight: 500; }
+    .ph { padding: 18px 14px; color: var(--dim); font-size: 11.5px; line-height: 1.5; }
+    .ph i { display: block; height: 26px; margin: 8px 0; border-radius: 7px; background: var(--sunken); border: 1px solid var(--line); }
+    .tree { list-style: none; margin: 0; padding: 6px; }
+    .tree li { display: flex; align-items: center; gap: 6px; height: 26px; padding-right: 8px; border-radius: 7px; font: 11px var(--mono); color: var(--dim); cursor: pointer; }
+    .tree li:hover { background: var(--hover); color: var(--text); }
+    .tree li.on { background: var(--accent-soft); color: var(--text); box-shadow: inset 0 0 0 1px var(--accent-line); }
+    .tree li svg { color: var(--faint); }
+    .blocks { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 10px; }
+    .blk { display: grid; gap: 6px; padding: 8px; border: 1px solid var(--line); border-radius: 9px; background: var(--sunken); color: var(--dim); font-size: 11px; }
+    .blk i { display: block; height: 52px; border-radius: 5px; background: linear-gradient(180deg, oklch(30% 0.02 265), oklch(24% 0.02 265)); }
+    .toks { list-style: none; margin: 0; padding: 6px 10px; }
+    .toks li { display: flex; align-items: center; gap: 8px; height: 28px; font: 11px var(--mono); color: var(--dim); }
+    .toks li .sw { width: 16px; height: 16px; border-radius: 5px; box-shadow: inset 0 0 0 1px var(--line2); }
+    .toks li span:last-child { margin-left: auto; color: var(--faint); }
+    .seo .row { grid-template-columns: 1fr; gap: 4px; padding: 6px 0; }
+    .seo .field { height: auto; min-height: 24px; padding: 5px 8px; font-family: var(--font); white-space: normal; line-height: 1.4; }
+
+    /* Floating style */
+    .pill { position: fixed; top: 14px; z-index: 5; display: flex; align-items: center; gap: 3px; padding: 5px; border-radius: 20px; white-space: nowrap; view-transition-name: heo-bar; }
+    .pill.auto { transform: translateX(-50%); }
+    .dock.f-left { left: 14px; top: 14px; bottom: 14px; width: 264px; view-transition-name: heo-left; }
+    .dock.f-right { right: 14px; top: 14px; bottom: 14px; width: 320px; view-transition-name: heo-right; }
+    /* Docked style */
+    .appbar { position: fixed; z-index: 5; left: 0; right: 0; top: 0; height: 44px; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 8px; padding: 0 8px; background: var(--bg); border-bottom: 1px solid var(--line); view-transition-name: heo-bar; }
+    .appbar .r { justify-content: flex-end; }
+    .dock.d-left, .dock.d-right { top: 44px; bottom: 0; border-radius: 0; background: var(--bg); box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
+    .dock.d-left { left: 0; width: 264px; border-width: 0 1px 0 0; view-transition-name: heo-left; }
+    .dock.d-right { right: 0; width: 320px; border-width: 0 0 0 1px; view-transition-name: heo-right; }
+
+    /* drag to dock (C) */
+    #dropzone { position: fixed; z-index: 4; left: 6px; right: 6px; top: 6px; height: 44px; display: none; place-items: center; border: 2px dashed var(--accent); border-radius: 10px; background: color-mix(in oklab, var(--accent) 14%, transparent); color: #312e81; font: 600 12px var(--font); pointer-events: none; }
+    #dropzone.near { display: grid; }
+    #dropzone.hot { background: color-mix(in oklab, var(--accent) 30%, transparent); border-style: solid; color: #fff; }
+
+    /* Settings dialog */
+    #scrim { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; background: oklch(0% 0 0 / 35%); }
+    .dialog { width: 560px; max-width: calc(100vw - 32px); border-radius: 16px; background: var(--bg); border: 1px solid var(--line2); box-shadow: var(--shadow-lg); color: var(--text); font-size: 12px; overflow: hidden; }
+    .dialog header { display: flex; align-items: center; padding: 14px 14px 12px 18px; border-bottom: 1px solid var(--line); }
+    .dialog header h2 { margin: 0; font-size: 14px; font-weight: 600; flex: 1; }
+    .dialog nav { display: flex; gap: 2px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+    .dialog nav span { padding: 5px 9px; border-radius: 7px; color: var(--faint); font-size: 11.5px; }
+    .dialog nav span.on { background: var(--hover); color: var(--text); font-weight: 600; }
+    .dialog section { padding: 16px 18px 18px; }
+    .dialog h3 { margin: 0 0 4px; font-size: 12px; font-weight: 600; }
+    .dialog .lede { margin: 0 0 12px; color: var(--dim); font-size: 11.5px; line-height: 1.5; }
+    .styles { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .stc { display: grid; gap: 8px; padding: 8px 8px 10px; border: 1px solid var(--line2); border-radius: 12px; background: var(--sunken); text-align: left; cursor: pointer; }
+    .stc:hover { border-color: var(--accent-line); }
+    .stc[aria-checked='true'] { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+    .stc b { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; }
+    .stc b i { width: 12px; height: 12px; border-radius: 9px; border: 1.5px solid var(--line2); }
+    .stc[aria-checked='true'] b i { border: 4px solid var(--accent); }
+    .stc span { color: var(--dim); font-size: 11px; line-height: 1.45; }
+    .thumb { position: relative; height: 108px; border-radius: 8px; background: #fbf4ea; overflow: hidden; }
+    .thumb .pg { position: absolute; background: repeating-linear-gradient(180deg, #e7dccd 0 4px, transparent 4px 11px); opacity: 0.8; }
+    .thumb .b, .thumb .l, .thumb .rr { position: absolute; background: #23252f; }
+    .thumb.float .pg { inset: 14px 14px 10px 14px; }
+    .thumb.float .b { left: 33%; right: 33%; top: 6px; height: 9px; border-radius: 6px; }
+    .thumb.float .l { left: 5px; top: 22px; bottom: 6px; width: 21%; border-radius: 5px; opacity: 0.94; }
+    .thumb.float .rr { right: 5px; top: 22px; bottom: 6px; width: 25%; border-radius: 5px; opacity: 0.94; }
+    .thumb.dock .b { left: 0; right: 0; top: 0; height: 12px; }
+    .thumb.dock .l { left: 0; top: 12px; bottom: 0; width: 22%; border-right: 1px solid #3a3d4a; }
+    .thumb.dock .rr { right: 0; top: 12px; bottom: 0; width: 26%; }
+    .thumb.dock .pg { left: 25%; right: 29%; top: 20px; bottom: 8px; }
+    .dialog .opt { display: flex; align-items: center; gap: 10px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); color: var(--dim); font-size: 11.5px; }
+    .dialog .opt kbd { margin-left: auto; }
+
+    /* tooltip */
+    #tip { position: fixed; z-index: 100; display: none; max-width: 270px; padding: 6px 8px; border-radius: 8px; background: oklch(12% 0.01 265); border: 1px solid var(--line2); box-shadow: 0 8px 20px -6px #000; color: var(--text); font: 11.5px var(--font); pointer-events: none; }
+    #tip .t { display: flex; align-items: center; gap: 8px; }
+    #tip .t b { font-weight: 500; }
+    #tip .keys { display: inline-flex; gap: 3px; margin-left: auto; }
+    #tip .s { margin-top: 3px; color: var(--dim); font-size: 10.5px; line-height: 1.4; }
+    kbd { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 4px; border-radius: 5px; background: var(--hover); border: 1px solid var(--line2); color: var(--text); font: 500 10.5px var(--mono); }
+    #toast { position: fixed; z-index: 120; left: 50%; top: 70px; transform: translateX(-50%); display: none; padding: 8px 14px; border-radius: 10px; background: var(--bg); border: 1px solid var(--line2); color: var(--text); font: 12px var(--font); box-shadow: var(--shadow-lg); }
+
+    /* ------------------------------------------------------------ switcher (not part of the design) */
+    .switcher { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 200; display: flex; align-items: center; gap: 4px; padding: 5px; border-radius: 999px; background: #fde047; color: #111; box-shadow: 0 10px 30px -8px rgb(0 0 0 / 50%), 0 0 0 1px rgb(0 0 0 / 20%); font: 600 12.5px/1 system-ui, sans-serif; }
+    .switcher button { height: 30px; min-width: 30px; padding: 0 10px; border: 0; border-radius: 999px; background: #111; color: #fde047; cursor: pointer; font: 600 12px system-ui, sans-serif; }
+    .switcher .lab { min-width: 320px; padding: 0 12px; text-align: center; }
+    .switcher .lab small { display: block; margin-top: 3px; font-size: 10.5px; font-weight: 500; opacity: 0.7; }
+    #notes { position: fixed; left: 50%; bottom: 66px; transform: translateX(-50%); z-index: 199; width: min(580px, calc(100vw - 32px)); padding: 14px 16px 12px; border-radius: 14px; background: #fffbe0; color: #1a1a1a; box-shadow: 0 16px 40px -10px rgb(0 0 0 / 45%), 0 0 0 1px rgb(0 0 0 / 12%); font: 12.5px/1.5 system-ui, sans-serif; }
+    #notes h3 { margin: 0 0 6px; font-size: 13px; }
+    #notes h4 { margin: 10px 0 2px; font-size: 12px; }
+    #notes ul { margin: 0; padding-left: 18px; }
+    #notes li { margin: 3px 0; }
+    #notes .x { position: absolute; right: 8px; top: 8px; width: 24px; height: 24px; border: 0; border-radius: 6px; background: transparent; cursor: pointer; font-size: 15px; }
+  </style>
+</head>
+<body>
+  <div id="stage">
+    <div id="site">
+      <header class="top" data-k="header" data-label="header.top">
+        <a class="logo" href="#" data-k="logo" data-label="a.logo">Northwind Coffee</a>
+        <nav class="links" data-k="nav" data-label="nav.links"><span>Beans</span><span>Brewing</span><span>Cafés</span><span>Journal</span></nav>
+        <a class="cbtn ghost" href="#" data-k="cta-top" data-label="a.cbtn.ghost">Order</a>
+      </header>
+      <section class="hero" data-k="hero" data-label="section.hero">
+        <h1 data-k="h1" data-label="h1">Small-batch coffee, roasted the week you drink it.</h1>
+        <p class="lede" data-k="lede" data-label="p.lede">Single-origin beans from six farms we visit every year, shipped within 48 hours of roasting.</p>
+        <a class="cbtn" href="#" data-k="hero-btn" data-label="a.cbtn">Start a subscription</a>
+      </section>
+      <section class="features" data-k="features" data-label="section.features">
+        <div class="card" data-k="card1" data-label="div.card"><div class="sq"></div><h3>Fresh, always</h3><p>Every bag carries its roast date. We never ship beans older than a week.</p></div>
+        <div class="card" data-k="card2" data-label="div.card"><div class="sq"></div><h3>Traceable farms</h3><p>Know who grew it: each origin page tells the story of the farm and the harvest.</p></div>
+        <div class="card" data-k="card3" data-label="div.card"><div class="sq"></div><h3>Pause anytime</h3><p>Skip a delivery, change the grind or switch beans from your account.</p></div>
+      </section>
+      <blockquote class="quote" data-k="quote" data-label="blockquote.quote">“The only subscription I’ve never been tempted to cancel.”<small>Mara L., subscriber since 2021</small></blockquote>
+      <footer data-k="footer" data-label="footer">© 2026 Northwind Coffee Roasters · Portland, OR</footer>
+    </div>
+  </div>
+
+  <div id="dropzone">Release to dock the toolbar at the top</div>
+  <div id="chrome"></div>
+  <div id="modal"></div>
+  <div id="tip" role="tooltip"></div>
+  <div id="toast" role="status"></div>
+
+  <div id="notes" hidden></div>
+  <div class="switcher" role="group" aria-label="Prototype variant switcher">
+    <button type="button" data-act="var:prev" aria-label="Previous variant">←</button>
+    <span class="lab" id="vlab"></span>
+    <button type="button" data-act="var:next" aria-label="Next variant">→</button>
+    <button type="button" data-act="notes" id="notesbtn">Why</button>
+  </div>
+
+  <script>
+    /* ---------------------------------------------------------------- data */
+    const SHARED = [
+      '<b>One order in both styles:</b> HEO menu, Edit · left panel, selection · viewport · undo, redo, Save · right panel. Floating is Docked’s bar folded into a pill; switching moves nothing relative to anything else.',
+      '<b>Left = the page:</b> Layers (E), Library (B), Tokens (T), SEO (O). <b>Right = the selection:</b> Styles (S), Props (P), Media (M), Code (C). Each panel has one toggle at its own end of the bar.',
+      '<b>History next to Save:</b> undo, redo and Save are one group, at the right where the commit action usually is. Settings moves into the HEO menu.',
+      '<b>The choice is a setting:</b> Settings › Interface holds Floating / Docked with a picture of each, in every variant. <kbd>D</kbd> toggles it (D is free among the single-key shortcuts; ⇧⌘D would hit Duplicate).',
+    ];
+    const VARIANTS = [
+      {
+        k: 'A', name: 'In the menu', sub: 'A Floating | Docked switch in the HEO menu',
+        notes: [
+          'Open the H menu: <b>Layout</b> is a two-way switch at the top, with its key. Two clicks, where people look for preferences.',
+          'Costs nothing in the bar. Less discoverable than B; fine if the choice is made once and rarely changed.',
+        ],
+      },
+      {
+        k: 'B', name: 'In the bar', sub: 'One dock / float button at the end of the bar',
+        notes: [
+          'A button at the right end of the bar, after the panel toggle, like DevTools’ “Dock side” or a picture-in-picture button. One click, visible all the time.',
+          'Its icon shows where it will go, not where it is: “dock to the top” while floating, “float” while docked.',
+          'Costs one slot. Worth it if people switch often (a page whose top bar matters vs. one where it does not).',
+        ],
+      },
+      {
+        k: 'C', name: 'Drag to dock', sub: 'Drag the pill onto the top edge; drag the bar’s grip down',
+        notes: [
+          'Direct manipulation, like docking panels in Photoshop or VS Code: drag the floating pill by its grip towards the top, a drop zone appears, release to dock. Drag the docked bar’s grip down to float it again.',
+          'The grip already exists to move the pill, so this costs no new control. Its tooltip says what it does; the menu and Settings are the fallback.',
+          'Hard to discover on its own and needs a pointer, so it should come with A or B, not instead of them.',
+        ],
+      },
+    ];
+
+    const TABS = [
+      { id: 'tree', side: 'left', label: 'Layers', key: 'E', sub: 'The page’s elements' },
+      { id: 'library', side: 'left', label: 'Library', key: 'B', sub: 'Blocks to insert' },
+      { id: 'tokens', side: 'left', label: 'Tokens', key: 'T', sub: 'Colours, sizes and type of the design system' },
+      { id: 'seo', side: 'left', label: 'SEO', key: 'O', sub: 'Title, description, headings' },
+      { id: 'styles', side: 'right', label: 'Styles', key: 'S', sub: 'The selection’s cascade and properties' },
+      { id: 'props', side: 'right', label: 'Props', key: 'P', sub: 'Attributes and component properties' },
+      { id: 'media', side: 'right', label: 'Media', key: 'M', sub: 'Images and files' },
+      { id: 'code', side: 'right', label: 'Code', key: 'C', sub: 'HTML, CSS and JS of the selection' },
+    ];
+    const VPS = [
+      { w: 1680, name: 'Custom', ic: 'monitor', shown: false, origin: 'custom' },
+      { w: 1440, name: 'Desktop', ic: 'monitor', shown: true, origin: 'preset' },
+      { w: 1280, name: 'Laptop', ic: 'laptop', shown: true, origin: 'preset' },
+      { w: 960, name: 'md', ic: 'laptop', shown: true, origin: 'page', media: '(max-width: 960px)' },
+      { w: 768, name: 'Tablet', ic: 'tablet', shown: true, origin: 'preset' },
+      { w: 390, name: 'Mobile', ic: 'phone', shown: true, origin: 'preset' },
+    ];
+    const TREE = [
+      ['body', 'body', 0], ['header', 'header.top', 1], ['logo', 'a.logo', 2], ['nav', 'nav.links', 2], ['cta-top', 'a.cbtn.ghost', 2],
+      ['hero', 'section.hero', 1], ['h1', 'h1', 2], ['lede', 'p.lede', 2], ['hero-btn', 'a.cbtn', 2],
+      ['features', 'section.features', 1], ['card1', 'div.card', 2], ['card2', 'div.card', 2], ['card3', 'div.card', 2],
+      ['quote', 'blockquote.quote', 1], ['footer', 'footer', 1],
+    ];
+    const PARENT = { logo: 'header', nav: 'header', 'cta-top': 'header', h1: 'hero', lede: 'hero', 'hero-btn': 'hero', card1: 'features', card2: 'features', card3: 'features' };
+    const EDITS = ['Padding of div.card', 'Text of h1', 'Background of a.cbtn', 'Gap of section.features', 'Font size of p.lede'];
+
+    const params = new URLSearchParams(location.search);
+    const S = {
+      v: VARIANTS.some((x) => x.k === params.get('variant')) ? params.get('variant') : 'A',
+      style: params.get('style') === 'dock' ? 'dock' : 'float',
+      editing: true, left: true, leftTab: 'tree', panel: true, tab: 'styles',
+      open: params.get('open') === 'settings' ? null : params.get('open'), settings: params.get('open') === 'settings',
+      vp: null, fit: true, sel: 'card2', applied: 3, top: 3, saved: 0, notes: false, pos: null,
+    };
+    const LW = 264;
+    const RW = 320;
+
+    /* ---------------------------------------------------------------- icons */
+    const P = {
+      grip: '<circle cx="9" cy="6" r="1.4" fill="currentColor" stroke="none"/><circle cx="15" cy="6" r="1.4" fill="currentColor" stroke="none"/><circle cx="9" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="15" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="9" cy="18" r="1.4" fill="currentColor" stroke="none"/><circle cx="15" cy="18" r="1.4" fill="currentColor" stroke="none"/>',
+      cursor: '<path d="M5 3l6 17 2.5-7 7-2.5z"/>',
+      window: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/>',
+      monitor: '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>',
+      laptop: '<path d="M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v9H4zM2 19h20"/>',
+      tablet: '<rect x="4" y="2" width="16" height="20" rx="2"/><path d="M11 18h2"/>',
+      phone: '<rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/>',
+      dots: '<circle cx="12" cy="5" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="19" r="1.5" fill="currentColor" stroke="none"/>',
+      chev: '<path d="m6 9 6 6 6-6"/>',
+      undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>',
+      redo: '<path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/>',
+      settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1 7 17M17 7l2.1-2.1"/>',
+      pright: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/>',
+      pleft: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/>',
+      dockTop: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M12 18v-5M9.5 15.5 12 13l2.5 2.5"/>',
+      floatOut: '<rect x="3" y="3" width="18" height="18" rx="2"/><rect x="7" y="7" width="10" height="4" rx="2"/><path d="M12 19v-5M9.5 16.5 12 19l2.5-2.5"/>',
+      close: '<path d="M6 6l12 12M18 6 6 18"/>',
+      check: '<path d="m5 12 5 5 9-10"/>',
+      plus: '<path d="M12 5v14M5 12h14"/>',
+      trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>',
+      save: '<path d="M5 3h11l5 5v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M7 3v5h8M7 21v-7h10v7"/>',
+      layout: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 9v12"/>',
+      keyboard: '<rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/>',
+      exit: '<path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4M10 17l5-5-5-5M15 12H3"/>',
+      fit: '<path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/>',
+    };
+    const ic = (n, s = 14) => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${P[n]}</svg>`;
+    const $ = (q) => document.querySelector(q);
+    const $$ = (q) => [...document.querySelectorAll(q)];
+    const tipAttrs = (tip, keys = '', sub = '') => `data-tip="${tip}"${keys ? ` data-kbd="${keys}"` : ''}${sub ? ` data-sub="${sub}"` : ''}`;
+
+    /* ---------------------------------------------------------------- derived */
+    const docked = () => S.style === 'dock';
+    const tabOf = (id) => TABS.find((t) => t.id === id);
+    const selLabel = () => TREE.find((t) => t[0] === S.sel)?.[1] ?? 'Nothing selected';
+    const unsaved = () => Math.max(0, S.applied - S.saved);
+    /* What the chrome covers: docked panels push the page, floating ones sit over it. */
+    function occ() {
+      if (!S.editing) return { l: 0, r: 0, t: 0 };
+      if (docked()) return { l: S.left ? LW : 0, r: S.panel ? RW : 0, t: 44 };
+      return { l: S.left ? LW + 28 : 0, r: S.panel ? RW + 28 : 0, t: 0 };
+    }
+    const actualWidth = () => innerWidth - (docked() && S.editing ? occ().l + occ().r : 0);
+    const curVp = () => (S.vp === null ? null : VPS.find((v) => v.w === S.vp) ?? { w: S.vp, name: 'Custom', ic: 'monitor' });
+
+    /* ---------------------------------------------------------------- the controls: one set for both styles */
+    const gripC = () => `<span class="grip" data-grip ${tipAttrs(docked() ? 'Drag down to float the toolbar' : S.v === 'C' ? 'Drag to move, or onto the top edge to dock' : 'Drag to move the toolbar')}>${ic('grip', 13)}</span>`;
+    const editToggle = () => `<button class="toggle" type="button" data-act="edit" aria-pressed="${S.editing}" ${tipAttrs(S.editing ? 'Leave edit mode' : 'Enter edit mode', '⌘ E')}><span class="led"></span>Edit</button>`;
+    const selChip = () => `<span class="selection" ${tipAttrs('Current selection', '', 'Click any element on the page')}>${ic('cursor', 11)}<span>${selLabel()}</span></span>`;
+    const leftBtn = () => `<button class="ib" type="button" data-act="left" aria-label="Page panel" aria-pressed="${S.left}" ${tipAttrs(S.left ? 'Hide the page panel' : 'Show the page panel', '', 'Layers E · Library B · Tokens T · SEO O')}>${ic('pleft', 15)}</button>`;
+    const rightBtn = () => `<button class="ib" type="button" data-act="panel" aria-label="Selection panel" aria-pressed="${S.panel}" ${tipAttrs(S.panel ? 'Hide the selection panel' : 'Show the selection panel', '', 'Styles S · Props P · Media M · Code C')}>${ic('pright', 15)}</button>`;
+    const undoBtn = () => `<button class="ib" type="button" data-act="undo" aria-label="Undo" ${S.applied > S.saved ? '' : 'disabled'} ${tipAttrs(S.applied > S.saved ? `Undo: ${EDITS[S.applied - 1]}` : 'Undo', '⌘ Z')}>${ic('undo')}</button>`;
+    const redoBtn = () => `<button class="ib" type="button" data-act="redo" aria-label="Redo" ${S.applied < S.top ? '' : 'disabled'} ${tipAttrs(S.applied < S.top ? `Redo: ${EDITS[S.applied]}` : 'Redo', '⇧ ⌘ Z')}>${ic('redo')}</button>`;
+    const saveBtn = () => `<button class="save" type="button" data-act="save" ${tipAttrs('Review and save changes', '⌘ S')}>${ic('save', 13)}Save${unsaved() ? `<span class="count">${unsaved()}</span>` : ''}</button>`;
+    const swapBtn = () => `<button class="ib swap" type="button" data-act="style" aria-label="${docked() ? 'Float the toolbar' : 'Dock the toolbar at the top'}" ${tipAttrs(docked() ? 'Float the toolbar and panels' : 'Dock the toolbar and panels', 'D', docked() ? 'Over the page, out of its layout' : 'Across the top, with the page between the panels')}>${ic(docked() ? 'floatOut' : 'dockTop', 15)}</button>`;
+
+    function logoDD() {
+      const layout = S.v === 'A' ? `
+        <div class="mrow">${ic('layout', 13)}Layout
+          <span class="seg" role="radiogroup" aria-label="Layout">
+            <button role="radio" aria-checked="${!docked()}" data-act="style:float">Floating</button>
+            <button role="radio" aria-checked="${docked()}" data-act="style:dock">Docked</button>
+          </span><span class="k">D</span>
+        </div><div class="mdiv"></div>` : '';
+      return `<div class="dd">
+        <button class="logo-btn" type="button" data-act="pop:logo" aria-haspopup="menu" aria-expanded="${S.open === 'logo'}" ${tipAttrs('HEO menu', '', S.v === 'A' ? 'Layout, settings, shortcuts' : 'Settings, shortcuts')}><span class="mark">H</span><span class="chev">${ic('chev', 11)}</span></button>
+        ${S.open === 'logo' ? `<div class="pop" role="menu" aria-label="HEO menu">
+          ${layout}
+          <button class="mi" data-act="settings">${ic('settings', 13)}Settings…</button>
+          <button class="mi" data-act="toast:Keyboard shortcuts sheet">${ic('keyboard', 13)}Keyboard shortcuts<span class="k">?</span></button>
+          <div class="mdiv"></div>
+          <button class="mi" data-act="edit">${ic('exit', 13)}Leave edit mode<span class="k">⌘E</span></button>
+        </div>` : ''}
+      </div>`;
+    }
+
+    function vpDD() {
+      const v = curVp();
+      return `<div class="dd">
+        <button class="vpbtn${v ? ' on' : ''}" type="button" data-act="pop:vp" aria-haspopup="menu" aria-expanded="${S.open === 'vp'}" ${tipAttrs('Preview size')}>
+          ${ic(v ? v.ic : 'window', 13)}<span>${v ? v.name : 'Actual'}</span><span class="w">${v ? v.w : actualWidth()}</span><span class="chev">${ic('chev', 12)}</span>
+        </button>
+        <button class="ib" type="button" data-act="pop:vpedit" aria-label="Edit the viewport sizes" aria-haspopup="dialog" aria-expanded="${S.open === 'vpedit'}" ${tipAttrs('Viewport sizes', '', 'Which ones the list shows, and their widths')}>${ic('dots', 14)}</button>
+        ${S.open === 'vp' ? vpMenu() : ''}${S.open === 'vpedit' ? vpEditor() : ''}
+      </div>`;
+    }
+    function vpMenu() {
+      const item = (key, icon, name, w, tag = '') => `<button class="mi" role="menuitemradio" aria-checked="${S.vp === key}" data-act="vp:${key ?? 'actual'}">
+        <span class="chk">${S.vp === key ? ic('check', 12) : ''}</span>${ic(icon, 13)}${name}${tag ? `<small>${tag}</small>` : ''}<span class="w">${w}px</span></button>`;
+      return `<div class="pop" role="menu" aria-label="Preview size">
+        <p class="cap">Preview size</p>
+        ${item(null, 'window', 'Actual', actualWidth(), docked() ? 'between the panels' : 'this window')}
+        <div class="mdiv"></div>
+        ${VPS.filter((v) => v.shown).map((v) => item(v.w, v.ic, v.name, v.w, v.origin === 'page' ? 'page' : v.origin === 'custom' ? 'yours' : '')).join('')}
+        <div class="mdiv"></div>
+        <button class="mi" role="menuitemcheckbox" aria-checked="${S.fit}" data-act="fit"><span class="chk">${S.fit ? ic('check', 12) : ''}</span>${ic('fit', 13)}Fit wider sizes to the window</button>
+      </div>`;
+    }
+    function vpEditor() {
+      return `<div class="pop vped" role="dialog" aria-label="Viewport sizes">
+        <p class="cap">Viewport sizes</p>
+        <ul class="vlist">${VPS.map((v, i) => `<li class="vrow${v.shown ? '' : ' off'}">
+          <label><input type="checkbox" data-vpshow="${i}" ${v.shown ? 'checked' : ''}>${ic(v.ic, 12)}<span>${v.name}${v.origin === 'page' ? '<small>page</small>' : v.origin === 'custom' ? '<small>yours</small>' : ''}</span></label>
+          ${v.origin === 'page' ? `<span class="fixed">${v.w}px</span>` : `<span class="vf"><input aria-label="${v.name} width" value="${v.w}" data-vpw="${i}"><i>px</i></span>`}
+          ${v.origin === 'custom' ? `<button class="kill" type="button" aria-label="Remove" data-act="toast:Removes this size and its breakpoint (unchanged)">${ic('trash', 11)}</button>` : '<span></span>'}
+        </li>`).join('')}</ul>
+        <button class="link" type="button" data-act="toast:Add a viewport size… (unchanged)">${ic('plus', 11)} Add a viewport size…</button>
+        <details><summary>Where a preview is not reliable</summary><ul><li>Page scripts see the real window.</li><li>Fixed elements still span the whole window.</li></ul></details>
+      </div>`;
+    }
+
+    /* The three groups, identical in both styles. */
+    function groups() {
+      const swap = S.v === 'B' ? `<span class="sep"></span>${swapBtn()}` : '';
+      const grip = !docked() || S.v === 'C' ? gripC() : '';
+      return {
+        left: `${grip}${logoDD()}${editToggle()}<span class="sep"></span>${leftBtn()}${selChip()}`,
+        mid: vpDD(),
+        right: `${undoBtn()}${redoBtn()}${saveBtn()}<span class="sep"></span>${rightBtn()}${swap}`,
+      };
+    }
+
+    /* ---------------------------------------------------------------- panels */
+    function body(id) {
+      if (id === 'styles') {
+        const parent = PARENT[S.sel] ? TREE.find((t) => t[0] === PARENT[S.sel])[1] : null;
+        return `<div class="crumb">${parent ? `${parent} › ` : ''}<b>${selLabel()}</b></div>
+          <div class="sec"><h4>Layout <span>block</span></h4><div class="row"><label>Display</label><span class="field">block</span></div><div class="row"><label>Width</label><div class="pair"><span class="field">auto</span><span class="field">max 100%</span></div></div></div>
+          <div class="sec"><h4>Spacing</h4><div class="row"><label>Padding</label><div class="pair"><span class="field">32<span class="u">px</span></span><span class="field">24<span class="u">px</span></span></div></div><div class="row"><label>Margin</label><span class="field">0</span></div></div>
+          <div class="sec"><h4>Typography <span>inherited</span></h4><div class="row"><label>Font</label><span class="field">Inter</span></div><div class="row"><label>Size / line</label><div class="pair"><span class="field">14.5<span class="u">px</span></span><span class="field">1.5</span></div></div></div>
+          <div class="sec"><h4>Background</h4><div class="row"><label>Color</label><span class="field"><span class="sw" style="background:#fff"></span>#ffffff</span></div></div>
+          <div class="sec"><h4>Border</h4><div class="row"><label>Border</label><span class="field"><span class="sw" style="background:#eee5d8"></span>1px solid</span></div><div class="row"><label>Radius</label><span class="field">14<span class="u">px</span></span></div></div>`;
+      }
+      if (id === 'tree') return `<ul class="tree" role="tree">${TREE.map(([k, label, d]) => `<li role="treeitem" class="${k === S.sel ? 'on' : ''}" data-act="sel:${k}" style="padding-left:${8 + d * 14}px">${d < 2 && k !== 'body' ? ic('chev', 10) : '<span style="width:10px"></span>'}${label}</li>`).join('')}</ul>`;
+      if (id === 'library') return `<div class="blocks">${['Hero', 'Feature cards', 'Quote', 'Pricing', 'FAQ', 'Footer'].map((n) => `<div class="blk"><i></i>${n}</div>`).join('')}</div>`;
+      if (id === 'tokens') return `<ul class="toks">${[['#c2410c', '--color-brand'], ['#3b2a1a', '--color-ink'], ['#fffdf8', '--color-paper'], ['#eee5d8', '--color-line'], ['#fde7d6', '--color-peach']].map(([c, n]) => `<li><span class="sw" style="background:${c}"></span>${n}<span>${c}</span></li>`).join('')}</ul><div class="ph" style="padding-top:4px">Spacing, radii and type scales below, unchanged.</div>`;
+      if (id === 'seo') return `<div class="sec seo"><div class="row"><label>Title</label><span class="field">Northwind Coffee — small-batch, roasted weekly</span></div><div class="row"><label>Description</label><span class="field">Single-origin beans from six farms, shipped within 48 hours of roasting.</span></div><div class="row"><label>Headings</label><span class="field">1 × h1 · 3 × h3</span></div></div>`;
+      return `<div class="ph">${tabOf(id).label} panel, unchanged by this prototype.<i></i><i></i><i style="width:70%"></i><i></i></div>`;
+    }
+    function panel(side) {
+      const isLeft = side === 'left';
+      const active = isLeft ? S.leftTab : S.tab;
+      const tabs = TABS.filter((t) => t.side === side);
+      const cls = `${docked() ? 'd' : 'f'}-${side}`;
+      return `<aside class="dock surface ${cls}" aria-label="${isLeft ? 'Page panel' : 'Selection panel'}">
+        <div class="dhead">
+          <div class="title"><div class="name">${isLeft ? 'index.html' : tabOf(active).label}</div><span class="target">${isLeft ? 'Northwind Coffee' : selLabel()}</span></div>
+          <button class="ib" type="button" data-act="${isLeft ? 'left' : 'panel'}" aria-label="Close panel" ${tipAttrs('Close panel')}>${ic('close', 14)}</button>
+        </div>
+        <div class="tabs" role="tablist">${tabs.map((t) => `<button class="tab" role="tab" aria-selected="${t.id === active}" data-act="tab:${t.id}" ${tipAttrs(t.label, t.key, t.sub)}>${t.label}</button>`).join('')}</div>
+        <div class="dbody" role="tabpanel">${body(active)}</div>
+      </aside>`;
+    }
+
+    /* ---------------------------------------------------------------- the two styles */
+    function floating() {
+      if (!S.editing) return `<div class="pill surface${S.pos ? '' : ' auto'}" style="${pillPos()}">${gripC()}${logoDD()}${editToggle()}</div>`;
+      const g = groups();
+      return `<div class="pill surface${S.pos ? '' : ' auto'}" role="toolbar" aria-label="HEO" style="${pillPos()}">
+          ${g.left}<span class="sep"></span>${g.mid}<span class="sep"></span>${g.right}
+        </div>
+        ${S.left ? panel('left') : ''}${S.panel ? panel('right') : ''}`;
+    }
+    function pillPos() {
+      if (S.pos) return `left:${S.pos.x}px;top:${S.pos.y}px`;
+      const o = occ();
+      return `left:${Math.round((o.l + innerWidth - o.r) / 2)}px`;
+    }
+    function dockedBar() {
+      if (!S.editing) return floating();
+      const g = groups();
+      return `<header class="appbar" role="toolbar" aria-label="HEO">
+          <div class="grp">${g.left}</div><div class="grp">${g.mid}</div><div class="grp r">${g.right}</div>
+        </header>
+        ${S.left ? panel('left') : ''}${S.panel ? panel('right') : ''}`;
+    }
+
+    function settingsDialog() {
+      if (!S.settings) return '';
+      const card = (style, name, text) => `<button class="stc" role="radio" aria-checked="${S.style === style}" data-act="style:${style}">
+          <div class="thumb ${style}"><div class="pg"></div><div class="l"></div><div class="rr"></div><div class="b"></div></div>
+          <b><i></i>${name}</b><span>${text}</span></button>`;
+      return `<div id="scrim" data-act="closesettings"><div class="dialog" role="dialog" aria-modal="true" aria-label="Settings" data-stop>
+        <header><h2>Settings</h2><button class="ib" type="button" data-act="closesettings" aria-label="Close">${ic('close', 14)}</button></header>
+        <nav><span>General</span><span class="on">Interface</span><span>Viewports</span><span>AI</span><span>Files</span></nav>
+        <section>
+          <h3>Layout</h3>
+          <p class="lede">The same tools in the same order either way. Changes at once; you can switch back any time.</p>
+          <div class="styles" role="radiogroup" aria-label="Layout">
+            ${card('float', 'Floating', 'A toolbar and panels over the page. The page keeps its real width and layout.')}
+            ${card('dock', 'Docked', 'A bar across the top and panels on the sides, with the page between them, like a site builder.')}
+          </div>
+          <div class="opt">Switch from anywhere${S.v === 'A' ? ': the HEO menu, or' : S.v === 'B' ? ': the button at the end of the bar, or' : ': drag the toolbar’s grip to or from the top edge, or'} <kbd>D</kbd></div>
+        </section>
+      </div></div>`;
+    }
+
+    /* ---------------------------------------------------------------- render */
+    function scaleFor() {
+      const o = occ();
+      return S.fit ? Math.min(1, (innerWidth - o.l - o.r - 40) / S.vp) : 1;
+    }
+    function layoutStage() {
+      const stage = $('#stage');
+      const site = $('#site');
+      const o = occ();
+      const pushes = docked() && S.editing;
+      stage.classList.toggle('previewing', S.vp !== null);
+      if (S.vp === null) {
+        stage.style.padding = pushes ? `${o.t}px ${o.r}px 0 ${o.l}px` : '0';
+        site.style.cssText = '';
+        return;
+      }
+      stage.style.padding = '0';
+      const scale = scaleFor();
+      const room = innerWidth - o.l - o.r;
+      site.style.cssText = `width:${S.vp}px;left:${o.l + Math.max(20, (room - S.vp * scale) / 2)}px;top:${(pushes ? o.t : 0) + 24}px;transform:scale(${scale})`;
+    }
+    function render() {
+      hideTip();
+      document.body.classList.toggle('editing', S.editing);
+      $('#chrome').innerHTML = docked() ? dockedBar() : floating();
+      $('#modal').innerHTML = settingsDialog();
+      $$('#site [data-k]').forEach((el) => el.classList.toggle('sel', el.dataset.k === S.sel));
+      layoutStage();
+      const v = VARIANTS.find((x) => x.k === S.v);
+      $('#vlab').innerHTML = `${v.k} — ${v.name} · ${docked() ? 'Docked' : 'Floating'}<small>${v.sub}</small>`;
+      const notes = $('#notes');
+      notes.hidden = !S.notes;
+      notes.innerHTML = `<button class="x" data-act="notes" aria-label="Close notes">×</button>
+        <h3>${v.k} — ${v.name}: the quick switch</h3><ul>${v.notes.map((n) => `<li>${n}</li>`).join('')}</ul>
+        <h4>In every variant</h4><ul>${SHARED.map((n) => `<li>${n}</li>`).join('')}</ul>`;
+      $('#notesbtn').textContent = S.notes ? 'Hide why' : 'Why';
+    }
+    /* Style changes morph the bar and panels from one place to the other. */
+    function transition(fn) {
+      if (document.startViewTransition && !matchMedia('(prefers-reduced-motion: reduce)').matches) document.startViewTransition(() => { fn(); render(); });
+      else { fn(); render(); }
+    }
+    function setStyle(style) {
+      if (style === S.style) return;
+      transition(() => { S.style = style; S.pos = null; S.open = null; });
+      const url = new URL(location.href);
+      url.searchParams.set('style', style);
+      history.replaceState(null, '', url);
+      toast(style === 'dock' ? 'Docked: the page sits between the panels' : 'Floating: over the page');
+    }
+
+    /* ---------------------------------------------------------------- actions */
+    let toastTimer;
+    function toast(text) {
+      const t = $('#toast');
+      t.textContent = text;
+      t.style.display = 'block';
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => (t.style.display = 'none'), 1700);
+    }
+    function toggleTab(id) {
+      const t = tabOf(id);
+      if (t.side === 'left') {
+        if (S.left && S.leftTab === id) S.left = false; else { S.left = true; S.leftTab = id; }
+      } else if (S.panel && S.tab === id) S.panel = false; else { S.panel = true; S.tab = id; }
+    }
+    function act(a) {
+      const [verb, arg] = a.split(/:(.*)/s);
+      switch (verb) {
+        case 'pop': S.open = S.open === arg ? null : arg; break;
+        case 'edit': S.editing = !S.editing; S.open = null; break;
+        case 'panel': S.panel = !S.panel; break;
+        case 'left': S.left = !S.left; break;
+        case 'tab': if (tabOf(arg).side === 'left') S.leftTab = arg; else S.tab = arg; break;
+        case 'vp': S.vp = arg === 'actual' ? null : Number(arg); S.open = null; break;
+        case 'fit': S.fit = !S.fit; break;
+        case 'undo': if (S.applied > S.saved) { S.applied--; toast(`Undid: ${EDITS[S.applied]}`); } break;
+        case 'redo': if (S.applied < S.top) { toast(`Redid: ${EDITS[S.applied]}`); S.applied++; } break;
+        case 'save': S.open = null; toast(unsaved() ? `Save dialog: ${unsaved()} changes to review` : 'Save dialog: nothing pending'); break;
+        case 'settings': S.open = null; S.settings = true; break;
+        case 'closesettings': S.settings = false; break;
+        case 'style': setStyle(arg || (docked() ? 'float' : 'dock')); return;
+        case 'sel': S.sel = arg; break;
+        case 'toast': toast(arg); break;
+        case 'notes': S.notes = !S.notes; break;
+        case 'var': {
+          const i = VARIANTS.findIndex((x) => x.k === S.v);
+          S.v = VARIANTS[(i + (arg === 'next' ? 1 : VARIANTS.length - 1)) % VARIANTS.length].k;
+          S.open = null;
+          const url = new URL(location.href);
+          url.searchParams.set('variant', S.v);
+          history.replaceState(null, '', url);
+          break;
+        }
+      }
+      render();
+    }
+
+    document.addEventListener('click', (e) => {
+      if (justDragged) { justDragged = false; return; }
+      const el = e.target.closest('[data-act]');
+      const inPop = e.target.closest('.pop');
+      if (el) {
+        if (el.dataset.act === 'closesettings' && e.target.closest('[data-stop]') && !e.target.closest('button')) return;
+        if (el.matches('a')) e.preventDefault();
+        if (!inPop && !el.dataset.act.startsWith('pop:') && S.open && !el.closest('.switcher')) S.open = null;
+        act(el.dataset.act);
+        return;
+      }
+      if (inPop || e.target.closest('.dialog')) return;
+      const pageEl = e.target.closest('#site [data-k]');
+      if (pageEl) {
+        e.preventDefault();
+        if (S.editing) { S.sel = pageEl.dataset.k; S.open = null; render(); }
+        return;
+      }
+      if (S.open) { S.open = null; render(); }
+    });
+    document.addEventListener('change', (e) => {
+      const t = e.target;
+      if (t.dataset.vpshow) { VPS[t.dataset.vpshow].shown = t.checked; render(); }
+      if (t.dataset.vpw) {
+        const w = Math.round(Number(t.value));
+        const one = VPS[t.dataset.vpw];
+        if (w >= 200 && w <= 3840) { if (S.vp === one.w) S.vp = w; one.w = w; VPS.sort((a, b) => b.w - a.w); }
+        render();
+      }
+    });
+    document.addEventListener('keydown', (e) => {
+      const typing = e.target.closest?.('input, textarea, [contenteditable]');
+      const mod = e.metaKey || e.ctrlKey;
+      const k = e.key.toLowerCase();
+      if (e.key === 'Escape') { if (S.settings) S.settings = false; else S.open = null; render(); return; }
+      if (typing) return;
+      if (mod && k === 'e') { e.preventDefault(); act('edit'); return; }
+      if (mod && k === 'z') { e.preventDefault(); act(e.shiftKey ? 'redo' : 'undo'); return; }
+      if (mod && k === 's') { e.preventDefault(); act('save'); return; }
+      if (mod || e.altKey) return;
+      if (e.key === 'ArrowLeft') { act('var:prev'); return; }
+      if (e.key === 'ArrowRight') { act('var:next'); return; }
+      if (k === 'd' && S.editing) { act('style'); return; }
+      const tab = TABS.find((t) => t.key.toLowerCase() === k);
+      if (tab && S.editing) { toggleTab(tab.id); render(); }
+    });
+    addEventListener('resize', render);
+
+    /* ---------------------------------------------------------------- drag: move the pill; in C, dock and undock */
+    let drag = null;
+    let justDragged = false;
+    document.addEventListener('pointerdown', (e) => {
+      const grip = e.target.closest('[data-grip]');
+      if (!grip) return;
+      e.preventDefault();
+      const bar = grip.closest('.pill, .appbar');
+      const box = bar.getBoundingClientRect();
+      drag = { sx: e.clientX, sy: e.clientY, ox: e.clientX - box.left, oy: e.clientY - box.top, moved: false };
+      document.body.classList.add('dragging');
+    });
+    document.addEventListener('pointermove', (e) => {
+      if (!drag) return;
+      if (!drag.moved && Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) < 4) return;
+      drag.moved = true;
+      if (docked()) {
+        // C only: pulling the docked bar down by its grip floats it under the pointer.
+        if (S.v !== 'C' || e.clientY - drag.sy < 24) return;
+        S.style = 'float';
+        S.open = null;
+        drag.ox = 24; drag.oy = 20;
+        S.pos = { x: e.clientX - drag.ox, y: e.clientY - drag.oy };
+        render();
+        return;
+      }
+      const pill = $('.pill');
+      const x = Math.min(Math.max(8, e.clientX - drag.ox), innerWidth - pill.offsetWidth - 8);
+      const y = Math.min(Math.max(8, e.clientY - drag.oy), innerHeight - pill.offsetHeight - 8);
+      S.pos = { x, y };
+      pill.classList.remove('auto');
+      pill.style.left = `${x}px`;
+      pill.style.top = `${y}px`;
+      if (S.v === 'C' && S.editing) {
+        const zone = $('#dropzone');
+        zone.classList.toggle('near', e.clientY < 160);
+        zone.classList.toggle('hot', e.clientY < 40);
+      }
+    });
+    document.addEventListener('pointerup', (e) => {
+      if (!drag) return;
+      const moved = drag.moved;
+      drag = null;
+      document.body.classList.remove('dragging');
+      const zone = $('#dropzone');
+      const hot = zone.classList.contains('hot');
+      zone.classList.remove('near', 'hot');
+      if (!moved) return;
+      justDragged = true;
+      setTimeout(() => (justDragged = false), 0);
+      if (hot && !docked()) setStyle('dock');
+      else render();
+    });
+
+    /* ---------------------------------------------------------------- tooltip */
+    const tip = $('#tip');
+    let tipTimer;
+    let tipFor = null;
+    let tipWarm = false;
+    function showTip(a) {
+      tipFor = a;
+      const keys = (a.dataset.kbd ?? '').split(' ').filter(Boolean).map((x) => `<kbd>${x}</kbd>`).join('');
+      tip.innerHTML = `<div class="t"><b>${a.dataset.tip}</b>${keys ? `<span class="keys">${keys}</span>` : ''}</div>${a.dataset.sub ? `<div class="s">${a.dataset.sub}</div>` : ''}`;
+      tip.style.display = 'block';
+      const r = a.getBoundingClientRect();
+      let top = r.bottom + 8;
+      if (top + tip.offsetHeight > innerHeight - 8) top = r.top - tip.offsetHeight - 8;
+      tip.style.top = `${top}px`;
+      tip.style.left = `${Math.min(Math.max(8, r.left + r.width / 2 - tip.offsetWidth / 2), innerWidth - tip.offsetWidth - 8)}px`;
+      tipWarm = true;
+    }
+    function hideTip() { clearTimeout(tipTimer); tip.style.display = 'none'; tipFor = null; }
+    document.addEventListener('pointerover', (e) => {
+      if (drag) return;
+      const a = e.target.closest('[data-tip]');
+      if (a === tipFor) return;
+      clearTimeout(tipTimer);
+      if (!a || a.closest('.pop') || a.getAttribute('aria-expanded') === 'true') { tip.style.display = 'none'; tipFor = null; tipTimer = setTimeout(() => (tipWarm = false), 400); return; }
+      tipTimer = setTimeout(() => showTip(a), tipWarm ? 40 : 450);
+    });
+    document.addEventListener('focusin', (e) => { const a = e.target.closest?.('[data-tip]'); if (a && e.target.matches(':focus-visible')) showTip(a); });
+    document.addEventListener('focusout', hideTip);
+    document.addEventListener('pointerdown', hideTip);
+
+    render();
+  </script>
+</body>
+</html>

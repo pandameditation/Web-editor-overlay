@@ -1,0 +1,2163 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PROTOTYPE — HEO toolbar: the layout switch in the bar, a bar that stays put, panels you can move</title>
+  <!--
+  PROTOTYPE — throwaway, not part of the overlay build. Round 3 after toolbar-styles.prototype.html.
+  Round 2's B won: the Floating / Docked switch lives at the end of the bar, so Settings no longer
+  has a Layout section. New principles, the same in every variant:
+    - The floating bar is anchored by its left end. Turning Edit on grows it to the right; opening
+      or closing a panel does not re-centre it. It moves only when dragged by its grip.
+    - Panels resize from their inner edge (left panel: its right edge; right panel: its left edge),
+      in both layouts. Floating panels also move by dragging anywhere in their header row, and a
+      moved panel gets a button to snap back to its edge.
+    - Edit off and on keeps the layout, the open panels and tabs, their sizes and positions, and the
+      bar's position. A reload resets all of it (everything here is in memory).
+  The variants are the switch's look:
+    A  Pin          — one pin toggle, pressed when docked (Office ribbon, Windows, Material push_pin)
+    B  Two icons    — a two-way icon switch: Floating | Docked (view-mode toggles in Finder, Figma)
+    C  Label        — a text button that says what it does: "Dock" / "Undock" (DevTools wording)
+    D  Layout menu  — one icon showing the current layout, opening a picker (DevTools "Dock side")
+  ?variant=A|B|C|D, ?style=float|dock (start only), ?open=logo|vp|vpedit|layout. The D key toggles.
+-->
+  <style>
+    :root {
+      --accent: #6366f1;
+      --accent-ink: #fff;
+      --accent-soft: color-mix(in oklab, var(--accent) 18%, transparent);
+      --accent-line: color-mix(in oklab, var(--accent) 55%, transparent);
+      --accent-text: color-mix(in oklab, var(--accent) 60%, white);
+      --bg: oklch(19% 0.014 265);
+      --glass: oklch(16% 0.014 265 / 86%);
+      --raised: oklch(23.5% 0.016 265);
+      --sunken: oklch(16% 0.012 265);
+      --hover: oklch(28% 0.018 265);
+      --text: oklch(96% 0.005 265);
+      --dim: oklch(74% 0.012 265);
+      --faint: oklch(68% 0.014 265);
+      --line: oklch(100% 0 0 / 9%);
+      --line2: oklch(100% 0 0 / 16%);
+      --inset: inset 0 1px 0 oklch(100% 0 0 / 6%);
+      --shadow-lg: 0 24px 60px -12px oklch(0% 0 0 / 60%), 0 6px 16px oklch(0% 0 0 / 30%);
+      --font: 'Inter var', Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+      --mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+      --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+    }
+
+    /* The real overlay is injected into every demo page by the dev server; this page mocks its own. */
+    heo-overlay {
+      display: none !important;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      height: 100%;
+    }
+
+    body {
+      font-family: var(--font);
+      background: #fffdf8;
+      overflow: hidden;
+    }
+
+    ::view-transition-group(*) {
+      animation-duration: 260ms;
+      animation-timing-function: var(--ease);
+    }
+
+    /* ------------------------------------------------------------ the page being edited */
+    #stage {
+      position: fixed;
+      inset: 0;
+      overflow: auto;
+    }
+
+    #stage.previewing {
+      background: #2b2e39;
+    }
+
+    #site {
+      container-type: inline-size;
+      min-height: 100%;
+      background: #fffdf8;
+      color: #1d2230;
+      font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+      transform-origin: top left;
+    }
+
+    #stage.previewing #site {
+      position: absolute;
+      min-height: 0;
+      box-shadow: 0 0 0 1px #000, 0 20px 60px -10px #000;
+    }
+
+    #site .top {
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      padding: 18px 48px;
+      border-bottom: 1px solid #eee5d8;
+    }
+
+    #site .logo {
+      font-weight: 800;
+      font-size: 18px;
+      color: #3b2a1a;
+      text-decoration: none;
+    }
+
+    #site .links {
+      display: flex;
+      gap: 22px;
+      margin-left: auto;
+      font-size: 14px;
+      color: #5a4a3a;
+    }
+
+    #site .cbtn {
+      display: inline-block;
+      padding: 10px 18px;
+      border-radius: 999px;
+      background: #c2410c;
+      color: #fff;
+      text-decoration: none;
+      font-weight: 600;
+      font-size: 14px;
+    }
+
+    #site .cbtn.ghost {
+      background: transparent;
+      color: #c2410c;
+      box-shadow: inset 0 0 0 1px #c2410c;
+    }
+
+    #site .hero {
+      padding: 72px 48px 56px;
+      max-width: 780px;
+    }
+
+    #site h1 {
+      font-size: 54px;
+      line-height: 1.04;
+      margin: 0 0 18px;
+      letter-spacing: -0.025em;
+    }
+
+    #site .lede {
+      font-size: 18px;
+      line-height: 1.55;
+      color: #5a4a3a;
+      margin: 0 0 28px;
+    }
+
+    #site .features {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 20px;
+      padding: 0 48px 64px;
+    }
+
+    #site .card {
+      background: #fff;
+      border: 1px solid #eee5d8;
+      border-radius: 14px;
+      padding: 32px 24px 24px;
+    }
+
+    #site .card .sq {
+      width: 34px;
+      height: 34px;
+      border-radius: 9px;
+      background: #fde7d6;
+    }
+
+    #site .card:nth-child(2) .sq {
+      background: #e3ecda;
+    }
+
+    #site .card:nth-child(3) .sq {
+      background: #e0e4f6;
+    }
+
+    #site .card h3 {
+      margin: 14px 0 6px;
+      font-size: 18px;
+    }
+
+    #site .card p {
+      margin: 0;
+      color: #5a4a3a;
+      line-height: 1.5;
+      font-size: 14.5px;
+    }
+
+    #site .quote {
+      margin: 0 48px 64px;
+      padding: 40px;
+      border-radius: 18px;
+      background: #3b2a1a;
+      color: #fbe9d6;
+      font-size: 22px;
+      line-height: 1.45;
+    }
+
+    #site .quote small {
+      display: block;
+      margin-top: 14px;
+      font-size: 13px;
+      opacity: 0.7;
+    }
+
+    #site footer {
+      padding: 28px 48px 90px;
+      border-top: 1px solid #eee5d8;
+      color: #8a7a6a;
+      font-size: 13px;
+    }
+
+    @container (max-width: 960px) {
+      #site .features {
+        grid-template-columns: 1fr 1fr;
+      }
+
+      #site h1 {
+        font-size: 42px;
+      }
+    }
+
+    @container (max-width: 600px) {
+      #site .features {
+        grid-template-columns: 1fr;
+        padding: 0 20px 40px;
+      }
+
+      #site .top {
+        padding: 14px 20px;
+      }
+
+      #site .links {
+        display: none;
+      }
+
+      #site .hero {
+        padding: 40px 20px;
+      }
+
+      #site h1 {
+        font-size: 32px;
+      }
+
+      #site .quote {
+        margin: 0 20px 40px;
+        padding: 24px;
+        font-size: 18px;
+      }
+    }
+
+    body.editing #site .sel {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+      position: relative;
+    }
+
+    body.editing #site .sel::after {
+      content: attr(data-label);
+      position: absolute;
+      left: -2px;
+      top: -24px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      background: var(--accent);
+      color: #fff;
+      font: 500 10.5px var(--mono);
+      white-space: nowrap;
+      pointer-events: none;
+    }
+
+    /* ------------------------------------------------------------ HEO chrome */
+    #chrome {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 10;
+      color: var(--text);
+      font-size: 12px;
+    }
+
+    #chrome>* {
+      pointer-events: auto;
+    }
+
+    .surface {
+      background: var(--glass);
+      backdrop-filter: blur(18px) saturate(1.4);
+      -webkit-backdrop-filter: blur(18px) saturate(1.4);
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow-lg), var(--inset);
+    }
+
+    button {
+      font: inherit;
+      color: inherit;
+    }
+
+    button:focus-visible,
+    input:focus-visible,
+    summary:focus-visible {
+      outline: 2px solid var(--accent-text);
+      outline-offset: 1px;
+    }
+
+    .grp {
+      display: flex;
+      align-items: center;
+      gap: 3px;
+      min-width: 0;
+    }
+
+    .sep {
+      width: 1px;
+      height: 20px;
+      margin: 0 3px;
+      background: var(--line);
+      flex: 0 0 auto;
+    }
+
+    .ib {
+      position: relative;
+      display: grid;
+      place-items: center;
+      flex: 0 0 auto;
+      width: 30px;
+      height: 30px;
+      padding: 0;
+      border: 0;
+      border-radius: 9px;
+      background: transparent;
+      color: var(--dim);
+      cursor: pointer;
+    }
+
+    .ib:hover:not(:disabled) {
+      background: var(--hover);
+      color: var(--text);
+    }
+
+    .ib[aria-pressed='true'],
+    .ib[aria-expanded='true'] {
+      background: var(--accent-soft);
+      color: var(--text);
+      box-shadow: inset 0 0 0 1px var(--accent-line);
+    }
+
+    .ib:disabled {
+      opacity: 0.38;
+      cursor: default;
+    }
+
+    .ib.sm {
+      width: 26px;
+      height: 26px;
+    }
+
+    .grip {
+      display: grid;
+      place-items: center;
+      width: 18px;
+      height: 30px;
+      color: var(--faint);
+      cursor: grab;
+      touch-action: none;
+      flex: 0 0 auto;
+    }
+
+    .grip:hover {
+      color: var(--text);
+    }
+
+    body.dragging,
+    body.dragging * {
+      cursor: grabbing !important;
+      user-select: none;
+    }
+
+    body.resizing,
+    body.resizing * {
+      cursor: ew-resize !important;
+      user-select: none;
+    }
+
+    .toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      height: 30px;
+      padding: 0 12px 0 9px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--raised);
+      color: var(--dim);
+      font-size: 11.5px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      cursor: pointer;
+      flex: 0 0 auto;
+    }
+
+    .toggle[aria-pressed='true'] {
+      background: var(--accent);
+      border-color: transparent;
+      color: var(--accent-ink);
+      box-shadow: 0 0 0 4px var(--accent-soft);
+    }
+
+    .toggle .led {
+      width: 7px;
+      height: 7px;
+      border-radius: 9px;
+      background: currentColor;
+      opacity: 0.45;
+    }
+
+    .toggle[aria-pressed='true'] .led {
+      opacity: 1;
+    }
+
+    .selection {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      min-width: 0;
+      max-width: 170px;
+      height: 26px;
+      padding: 0 9px;
+      border-radius: 999px;
+      background: var(--sunken);
+      color: var(--dim);
+      font-family: var(--mono);
+      font-size: 10.5px;
+      overflow: hidden;
+      white-space: nowrap;
+    }
+
+    .selection span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .selection svg {
+      flex: 0 0 auto;
+    }
+
+    .dd {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      flex: 0 0 auto;
+    }
+
+    .vpbtn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      height: 30px;
+      padding: 0 7px 0 9px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: var(--sunken);
+      color: var(--text);
+      font-size: 11.5px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .vpbtn:hover {
+      border-color: var(--line2);
+    }
+
+    .vpbtn .w {
+      color: var(--dim);
+      font-family: var(--mono);
+      font-size: 10.5px;
+    }
+
+    .vpbtn .chev {
+      color: var(--faint);
+    }
+
+    .vpbtn.on {
+      background: var(--accent-soft);
+      border-color: var(--accent-line);
+    }
+
+    .vpbtn.on .w {
+      color: var(--accent-text);
+    }
+
+    .vpbtn[aria-expanded='true'] {
+      border-color: var(--accent-line);
+    }
+
+    .logo-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      height: 30px;
+      padding: 0 5px 0 4px;
+      border: 0;
+      border-radius: 9px;
+      background: transparent;
+      cursor: pointer;
+      flex: 0 0 auto;
+    }
+
+    .logo-btn:hover,
+    .logo-btn[aria-expanded='true'] {
+      background: var(--hover);
+    }
+
+    .mark {
+      display: grid;
+      place-items: center;
+      width: 22px;
+      height: 22px;
+      border-radius: 6px;
+      background: linear-gradient(135deg, #818cf8, #6366f1 60%, #4f46e5);
+      color: #fff;
+      font: 800 11px var(--font);
+    }
+
+    .logo-btn .chev {
+      color: var(--faint);
+    }
+
+    .save {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      flex: 0 0 auto;
+      height: 30px;
+      padding: 0 11px;
+      border: 0;
+      border-radius: 9px;
+      background: var(--accent);
+      color: var(--accent-ink);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .save:hover {
+      filter: brightness(1.08);
+    }
+
+    .count {
+      min-width: 18px;
+      height: 18px;
+      padding: 0 5px;
+      border-radius: 999px;
+      background: oklch(100% 0 0 / 22%);
+      font-size: 10px;
+      font-weight: 700;
+      line-height: 18px;
+      text-align: center;
+    }
+
+    /* the layout switch, four looks */
+    .seg2 {
+      display: inline-flex;
+      flex: 0 0 auto;
+      padding: 2px;
+      gap: 1px;
+      border-radius: 9px;
+      background: var(--sunken);
+      border: 1px solid var(--line);
+    }
+
+    .seg2 button {
+      display: grid;
+      place-items: center;
+      width: 28px;
+      height: 24px;
+      padding: 0;
+      border: 0;
+      border-radius: 7px;
+      background: transparent;
+      color: var(--faint);
+      cursor: pointer;
+    }
+
+    .seg2 button:hover {
+      color: var(--text);
+    }
+
+    .seg2 button[aria-checked='true'] {
+      background: var(--raised);
+      color: var(--text);
+      box-shadow: 0 1px 2px #0006, inset 0 0 0 1px var(--line2);
+    }
+
+    .lbl {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      flex: 0 0 auto;
+      height: 30px;
+      padding: 0 10px 0 8px;
+      border: 1px solid var(--line2);
+      border-radius: 9px;
+      background: transparent;
+      color: var(--text);
+      font-size: 11.5px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+
+    .lbl:hover {
+      background: var(--hover);
+    }
+
+    .lbl svg {
+      color: var(--dim);
+    }
+
+    .laybtn {
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      height: 30px;
+      padding: 0 4px 0 7px;
+      border: 0;
+      border-radius: 9px;
+      background: transparent;
+      color: var(--dim);
+      cursor: pointer;
+    }
+
+    .laybtn:hover,
+    .laybtn[aria-expanded='true'] {
+      background: var(--hover);
+      color: var(--text);
+    }
+
+    .laybtn .chev {
+      color: var(--faint);
+    }
+
+    .laypop {
+      width: 268px;
+    }
+
+    .layopt {
+      display: grid;
+      grid-template-columns: 56px 1fr 14px;
+      align-items: center;
+      gap: 10px;
+      width: 100%;
+      padding: 6px;
+      border: 0;
+      border-radius: 9px;
+      background: transparent;
+      color: var(--text);
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .layopt:hover {
+      background: var(--hover);
+    }
+
+    .layopt b {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .layopt span {
+      color: var(--dim);
+      font-size: 10.5px;
+      line-height: 1.4;
+    }
+
+    .layopt .chk {
+      color: var(--accent-text);
+    }
+
+    .mini {
+      position: relative;
+      width: 56px;
+      height: 38px;
+      border-radius: 6px;
+      background: #fbf4ea;
+      overflow: hidden;
+      box-shadow: inset 0 0 0 1px var(--line2);
+    }
+
+    .mini i {
+      position: absolute;
+      background: #2a2d38;
+    }
+
+    .mini.m-float .b {
+      left: 18px;
+      right: 18px;
+      top: 3px;
+      height: 5px;
+      border-radius: 3px;
+    }
+
+    .mini.m-float .l {
+      left: 3px;
+      top: 10px;
+      bottom: 3px;
+      width: 11px;
+      border-radius: 3px;
+    }
+
+    .mini.m-float .r {
+      right: 3px;
+      top: 10px;
+      bottom: 3px;
+      width: 13px;
+      border-radius: 3px;
+    }
+
+    .mini.m-dock .b {
+      left: 0;
+      right: 0;
+      top: 0;
+      height: 7px;
+      border-bottom: 1px solid #4a4d5a;
+    }
+
+    .mini.m-dock .l {
+      left: 0;
+      top: 7px;
+      bottom: 0;
+      width: 12px;
+      border-right: 1px solid #4a4d5a;
+    }
+
+    .mini.m-dock .r {
+      right: 0;
+      top: 7px;
+      bottom: 0;
+      width: 14px;
+      border-left: 1px solid #4a4d5a;
+    }
+
+    /* menus */
+    .pop {
+      position: absolute;
+      z-index: 40;
+      top: calc(100% + 8px);
+      left: 0;
+      min-width: 240px;
+      padding: 5px;
+      border-radius: 12px;
+      background: var(--bg);
+      border: 1px solid var(--line2);
+      box-shadow: var(--shadow-lg);
+      text-align: left;
+      white-space: normal;
+    }
+
+    .pop.r {
+      left: auto;
+      right: 0;
+    }
+
+    .mi {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      min-height: 30px;
+      padding: 0 8px;
+      border: 0;
+      border-radius: 7px;
+      background: transparent;
+      color: var(--text);
+      font-size: 12px;
+      text-align: left;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .mi:hover:not(:disabled) {
+      background: var(--hover);
+    }
+
+    .mi svg {
+      color: var(--dim);
+      flex: 0 0 auto;
+    }
+
+    .mi .k {
+      margin-left: auto;
+      padding-left: 18px;
+      color: var(--faint);
+      font-family: var(--mono);
+      font-size: 10.5px;
+    }
+
+    .mi .chk {
+      width: 14px;
+      display: grid;
+      place-items: center;
+      color: var(--accent-text);
+    }
+
+    .mi small {
+      color: var(--faint);
+      font-size: 10px;
+      margin-left: 2px;
+    }
+
+    .mi .w {
+      margin-left: auto;
+      padding-left: 18px;
+      color: var(--dim);
+      font-family: var(--mono);
+      font-size: 10.5px;
+    }
+
+    .mdiv {
+      height: 1px;
+      margin: 5px 4px;
+      background: var(--line);
+    }
+
+    .cap {
+      margin: 5px 7px 6px;
+      color: var(--faint);
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .cap .k {
+      float: right;
+      font: 500 10px var(--mono);
+      letter-spacing: 0;
+      text-transform: none;
+    }
+
+    /* viewport sizes panel, as today */
+    .vped {
+      width: 320px;
+      padding: 4px 10px 10px;
+    }
+
+    .vlist {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }
+
+    .vrow {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 96px 20px;
+      align-items: center;
+      gap: 7px;
+      min-height: 34px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .vrow:last-child {
+      border-bottom: 0;
+    }
+
+    .vrow label {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      min-width: 0;
+      cursor: pointer;
+      font-size: 11px;
+    }
+
+    .vrow input[type='checkbox'] {
+      width: 13px;
+      height: 13px;
+      margin: 0;
+      accent-color: var(--accent);
+    }
+
+    .vrow label svg {
+      color: var(--dim);
+    }
+
+    .vrow small {
+      margin-left: 5px;
+      color: var(--dim);
+      font-size: 10px;
+    }
+
+    .vrow .fixed {
+      padding: 0 8px;
+      color: var(--dim);
+      font: 11px var(--mono);
+    }
+
+    .vf {
+      display: flex;
+      align-items: center;
+      height: 24px;
+      padding: 0 7px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--sunken);
+    }
+
+    .vf input {
+      width: 100%;
+      min-width: 0;
+      border: 0;
+      background: transparent;
+      color: var(--text);
+      font: 11px var(--mono);
+      outline: none;
+    }
+
+    .vf i {
+      color: var(--faint);
+      font: normal 10px var(--mono);
+    }
+
+    .kill {
+      display: grid;
+      place-items: center;
+      width: 20px;
+      height: 20px;
+      padding: 0;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--dim);
+      cursor: pointer;
+    }
+
+    .link {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      margin-top: 6px;
+      padding: 3px 0;
+      border: 0;
+      background: transparent;
+      color: var(--dim);
+      font-size: 11px;
+      cursor: pointer;
+    }
+
+    /* panels */
+    .dock {
+      position: fixed;
+      display: flex;
+      flex-direction: column;
+      border-radius: 14px;
+    }
+
+    .dock .clip {
+      display: flex;
+      flex-direction: column;
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow: hidden;
+      border-radius: inherit;
+    }
+
+    .dhead {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 10px 10px 8px 8px;
+      touch-action: none;
+      user-select: none;
+    }
+
+    .f-left .dhead,
+    .f-right .dhead {
+      cursor: grab;
+    }
+
+    .dhead .gd {
+      display: grid;
+      place-items: center;
+      width: 14px;
+      color: var(--faint);
+    }
+
+    .moved .dhead .gd {
+      color: var(--accent-text);
+    }
+
+    .dhead .title {
+      flex: 1 1 auto;
+      min-width: 0;
+      padding-left: 2px;
+    }
+
+    .dock.d-left .dhead,
+    .dock.d-right .dhead {
+      padding-left: 12px;
+    }
+
+    .dhead .name {
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .dhead .target {
+      display: block;
+      overflow: hidden;
+      color: var(--faint);
+      font: 10px var(--mono);
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .dhead .ib {
+      cursor: pointer;
+    }
+
+    .tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 2px;
+      padding: 0 8px 8px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .tab {
+      display: inline-flex;
+      align-items: center;
+      height: 26px;
+      padding: 0 8px;
+      border: 0;
+      border-radius: 7px;
+      background: transparent;
+      color: var(--faint);
+      font-size: 11.5px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+
+    .tab:hover {
+      background: var(--hover);
+      color: var(--text);
+    }
+
+    .tab[aria-selected='true'] {
+      color: var(--text);
+      font-weight: 600;
+      background: var(--hover);
+    }
+
+    .dbody {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+    }
+
+    /* The inner-edge resize handle: shows a bar on hover, like today's dock. */
+    .grab {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 9px;
+      cursor: ew-resize;
+      touch-action: none;
+      z-index: 3;
+    }
+
+    .left-p .grab {
+      right: -5px;
+    }
+
+    .right-p .grab {
+      left: -5px;
+    }
+
+    .grab::after {
+      content: '';
+      position: absolute;
+      left: 3.5px;
+      top: 50%;
+      width: 2px;
+      height: 38px;
+      border-radius: 2px;
+      background: var(--accent-text);
+      transform: translateY(-50%);
+      opacity: 0;
+      transition: opacity 120ms;
+    }
+
+    .grab:hover::after,
+    body.resizing .grab.live::after {
+      opacity: 1;
+    }
+
+    .wtag {
+      position: absolute;
+      top: 50%;
+      padding: 2px 6px;
+      border-radius: 5px;
+      background: var(--accent);
+      color: #fff;
+      font: 600 10px var(--mono);
+      transform: translateY(-50%);
+      pointer-events: none;
+      z-index: 4;
+    }
+
+    .left-p .wtag {
+      right: 10px;
+    }
+
+    .right-p .wtag {
+      left: 10px;
+    }
+
+    .sec {
+      padding: 10px 12px 12px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .sec h4 {
+      margin: 0 0 8px;
+      font-size: 11px;
+      font-weight: 600;
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .sec h4 span {
+      color: var(--faint);
+      font-weight: 400;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 92px minmax(0, 1fr);
+      align-items: center;
+      gap: 8px;
+      min-height: 28px;
+    }
+
+    .row label {
+      color: var(--dim);
+      font-size: 11px;
+    }
+
+    .field {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      height: 24px;
+      padding: 0 8px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--sunken);
+      font: 11px var(--mono);
+      color: var(--text);
+      overflow: hidden;
+      white-space: nowrap;
+    }
+
+    .field .sw {
+      flex: 0 0 auto;
+      width: 12px;
+      height: 12px;
+      border-radius: 3px;
+      box-shadow: inset 0 0 0 1px var(--line2);
+    }
+
+    .field .u {
+      margin-left: auto;
+      color: var(--faint);
+    }
+
+    .pair {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+    }
+
+    .crumb {
+      padding: 9px 12px;
+      border-bottom: 1px solid var(--line);
+      font: 10.5px var(--mono);
+      color: var(--faint);
+    }
+
+    .crumb b {
+      color: var(--text);
+      font-weight: 500;
+    }
+
+    .ph {
+      padding: 18px 14px;
+      color: var(--dim);
+      font-size: 11.5px;
+      line-height: 1.5;
+    }
+
+    .ph i {
+      display: block;
+      height: 26px;
+      margin: 8px 0;
+      border-radius: 7px;
+      background: var(--sunken);
+      border: 1px solid var(--line);
+    }
+
+    .tree {
+      list-style: none;
+      margin: 0;
+      padding: 6px;
+    }
+
+    .tree li {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      height: 26px;
+      padding-right: 8px;
+      border-radius: 7px;
+      font: 11px var(--mono);
+      color: var(--dim);
+      cursor: pointer;
+    }
+
+    .tree li:hover {
+      background: var(--hover);
+      color: var(--text);
+    }
+
+    .tree li.on {
+      background: var(--accent-soft);
+      color: var(--text);
+      box-shadow: inset 0 0 0 1px var(--accent-line);
+    }
+
+    .tree li svg {
+      color: var(--faint);
+    }
+
+    .blocks {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+      gap: 8px;
+      padding: 10px;
+    }
+
+    .blk {
+      display: grid;
+      gap: 6px;
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: var(--sunken);
+      color: var(--dim);
+      font-size: 11px;
+    }
+
+    .blk i {
+      display: block;
+      height: 52px;
+      border-radius: 5px;
+      background: linear-gradient(180deg, oklch(30% 0.02 265), oklch(24% 0.02 265));
+    }
+
+    .toks {
+      list-style: none;
+      margin: 0;
+      padding: 6px 10px;
+    }
+
+    .toks li {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      height: 28px;
+      font: 11px var(--mono);
+      color: var(--dim);
+    }
+
+    .toks li .sw {
+      width: 16px;
+      height: 16px;
+      border-radius: 5px;
+      box-shadow: inset 0 0 0 1px var(--line2);
+    }
+
+    .toks li span:last-child {
+      margin-left: auto;
+      color: var(--faint);
+    }
+
+    .seo .row {
+      grid-template-columns: 1fr;
+      gap: 4px;
+      padding: 6px 0;
+    }
+
+    .seo .field {
+      height: auto;
+      min-height: 24px;
+      padding: 5px 8px;
+      font-family: var(--font);
+      white-space: normal;
+      line-height: 1.4;
+    }
+
+    /* Floating */
+    .pill {
+      position: fixed;
+      z-index: 5;
+      display: flex;
+      align-items: center;
+      gap: 3px;
+      padding: 5px;
+      border-radius: 20px;
+      white-space: nowrap;
+      view-transition-name: heo-bar;
+    }
+
+    .dock.f-left {
+      view-transition-name: heo-left;
+    }
+
+    .dock.f-right {
+      view-transition-name: heo-right;
+    }
+
+    .dock.moved {
+      z-index: 6;
+    }
+
+    /* Docked */
+    .appbar {
+      position: fixed;
+      z-index: 5;
+      left: 0;
+      right: 0;
+      top: 0;
+      height: 44px;
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      gap: 8px;
+      padding: 0 8px;
+      background: var(--bg);
+      border-bottom: 1px solid var(--line);
+      view-transition-name: heo-bar;
+    }
+
+    .appbar .r {
+      justify-content: flex-end;
+    }
+
+    .dock.d-left,
+    .dock.d-right {
+      top: 44px;
+      bottom: 0;
+      border-radius: 0;
+      background: var(--bg);
+      box-shadow: none;
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+    }
+
+    .dock.d-left {
+      left: 0;
+      border-width: 0 1px 0 0;
+      view-transition-name: heo-left;
+    }
+
+    .dock.d-right {
+      right: 0;
+      border-width: 0 0 0 1px;
+      view-transition-name: heo-right;
+    }
+
+    /* tooltip */
+    #tip {
+      position: fixed;
+      z-index: 100;
+      display: none;
+      max-width: 270px;
+      padding: 6px 8px;
+      border-radius: 8px;
+      background: oklch(12% 0.01 265);
+      border: 1px solid var(--line2);
+      box-shadow: 0 8px 20px -6px #000;
+      color: var(--text);
+      font: 11.5px var(--font);
+      pointer-events: none;
+    }
+
+    #tip .t {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    #tip .t b {
+      font-weight: 500;
+    }
+
+    #tip .keys {
+      display: inline-flex;
+      gap: 3px;
+      margin-left: auto;
+    }
+
+    #tip .s {
+      margin-top: 3px;
+      color: var(--dim);
+      font-size: 10.5px;
+      line-height: 1.4;
+    }
+
+    kbd {
+      display: inline-grid;
+      place-items: center;
+      min-width: 18px;
+      height: 18px;
+      padding: 0 4px;
+      border-radius: 5px;
+      background: var(--hover);
+      border: 1px solid var(--line2);
+      color: var(--text);
+      font: 500 10.5px var(--mono);
+    }
+
+    #toast {
+      position: fixed;
+      z-index: 120;
+      left: 50%;
+      top: 70px;
+      transform: translateX(-50%);
+      display: none;
+      padding: 8px 14px;
+      border-radius: 10px;
+      background: var(--bg);
+      border: 1px solid var(--line2);
+      color: var(--text);
+      font: 12px var(--font);
+      box-shadow: var(--shadow-lg);
+    }
+
+    /* ------------------------------------------------------------ switcher (not part of the design) */
+    .switcher {
+      position: fixed;
+      left: 50%;
+      bottom: 14px;
+      transform: translateX(-50%);
+      z-index: 200;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 5px;
+      border-radius: 999px;
+      background: #fde047;
+      color: #111;
+      box-shadow: 0 10px 30px -8px rgb(0 0 0 / 50%), 0 0 0 1px rgb(0 0 0 / 20%);
+      font: 600 12.5px/1 system-ui, sans-serif;
+    }
+
+    .switcher button {
+      height: 30px;
+      min-width: 30px;
+      padding: 0 10px;
+      border: 0;
+      border-radius: 999px;
+      background: #111;
+      color: #fde047;
+      cursor: pointer;
+      font: 600 12px system-ui, sans-serif;
+    }
+
+    .switcher .lab {
+      min-width: 320px;
+      padding: 0 12px;
+      text-align: center;
+    }
+
+    .switcher .lab small {
+      display: block;
+      margin-top: 3px;
+      font-size: 10.5px;
+      font-weight: 500;
+      opacity: 0.7;
+    }
+
+    #notes {
+      position: fixed;
+      left: 50%;
+      bottom: 66px;
+      transform: translateX(-50%);
+      z-index: 199;
+      width: min(600px, calc(100vw - 32px));
+      max-height: calc(100vh - 100px);
+      overflow: auto;
+      padding: 14px 16px 12px;
+      border-radius: 14px;
+      background: #fffbe0;
+      color: #1a1a1a;
+      box-shadow: 0 16px 40px -10px rgb(0 0 0 / 45%), 0 0 0 1px rgb(0 0 0 / 12%);
+      font: 12.5px/1.5 system-ui, sans-serif;
+    }
+
+    #notes h3 {
+      margin: 0 0 6px;
+      font-size: 13px;
+    }
+
+    #notes h4 {
+      margin: 10px 0 2px;
+      font-size: 12px;
+    }
+
+    #notes ul {
+      margin: 0;
+      padding-left: 18px;
+    }
+
+    #notes li {
+      margin: 3px 0;
+    }
+
+    #notes kbd {
+      background: #fff;
+      color: #111;
+      border-color: #0003;
+    }
+
+    #notes .x {
+      position: absolute;
+      right: 8px;
+      top: 8px;
+      width: 24px;
+      height: 24px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      cursor: pointer;
+      font-size: 15px;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="stage">
+    <div id="site">
+      <header class="top" data-k="header" data-label="header.top">
+        <a class="logo" href="#" data-k="logo" data-label="a.logo">Northwind Coffee</a>
+        <nav class="links" data-k="nav" data-label="nav.links">
+          <span>Beans</span><span>Brewing</span><span>Cafés</span><span>Journal</span>
+        </nav>
+        <a class="cbtn ghost" href="#" data-k="cta-top" data-label="a.cbtn.ghost">Order</a>
+      </header>
+      <section class="hero" data-k="hero" data-label="section.hero">
+        <h1 data-k="h1" data-label="h1">Small-batch coffee, roasted the week you drink it.</h1>
+        <p class="lede" data-k="lede" data-label="p.lede">Single-origin beans from six farms we visit every year,
+          shipped within 48 hours of roasting.</p>
+        <a class="cbtn" href="#" data-k="hero-btn" data-label="a.cbtn">Start a subscription</a>
+      </section>
+      <section class="features" data-k="features" data-label="section.features">
+        <div class="card" data-k="card1" data-label="div.card">
+          <div class="sq"></div>
+          <h3>Fresh, always</h3>
+          <p>Every bag carries its roast date. We never ship beans older than a week.</p>
+        </div>
+        <div class="card" data-k="card2" data-label="div.card">
+          <div class="sq"></div>
+          <h3>Traceable farms</h3>
+          <p>Know who grew it: each origin page tells the story of the farm and the harvest.</p>
+        </div>
+        <div class="card" data-k="card3" data-label="div.card">
+          <div class="sq"></div>
+          <h3>Pause anytime</h3>
+          <p>Skip a delivery, change the grind or switch beans from your account.</p>
+        </div>
+      </section>
+      <blockquote class="quote" data-k="quote" data-label="blockquote.quote">“The only subscription I’ve never been
+        tempted to cancel.”<small>Mara L., subscriber since 2021</small></blockquote>
+      <footer data-k="footer" data-label="footer">© 2026 Northwind Coffee Roasters · Portland, OR</footer>
+    </div>
+  </div>
+
+  <div id="chrome"></div>
+  <div id="tip" role="tooltip"></div>
+  <div id="toast" role="status"></div>
+
+  <div id="notes" hidden></div>
+  <div class="switcher" role="group" aria-label="Prototype variant switcher">
+    <button type="button" data-act="var:prev" aria-label="Previous variant">←</button>
+    <span class="lab" id="vlab"></span>
+    <button type="button" data-act="var:next" aria-label="Next variant">→</button>
+    <button type="button" data-act="notes" id="notesbtn">Why</button>
+  </div>
+
+  <script>
+    /* ---------------------------------------------------------------- data */
+    const SHARED = [
+      '<b>The bar stays put.</b> Floating, it is anchored by its left end: Edit on grows it to the right, so the grip, the H menu and Edit never move under the pointer. Opening or closing a panel no longer re-centres it. Only a drag on its grip moves it (and it shifts left only if it would run off the right edge).',
+      '<b>Panels resize from their inner edge</b>, the left one from its right edge and the right one from its left edge, in both layouts (docked, the page reflows). A width label shows while dragging. 220–560px.',
+      '<b>Floating panels move by their header row</b>: drag anywhere on the title row. A moved panel gets a “back to the edge” button, like today’s dock.',
+      '<b>Edit off and on keeps everything</b>: the layout, which panels and tabs are open, their sizes and positions, the bar’s position. A reload resets it all (this page keeps nothing).',
+      '<b>Settings has no Layout section any more:</b> the switch is in the bar and on <kbd>D</kbd>.',
+    ];
+    const VARIANTS = [
+      {
+        k: 'A', name: 'Pin', sub: 'A pin toggle, pressed when docked',
+        notes: [
+          'The pin is the most widespread “keep this attached” icon: Office’s “Pin the ribbon”, Windows and macOS pinning, Material’s push_pin, IDE tool windows. Pressed (accent) = docked; unpressed = floating.',
+          'One slot, and it shows the state. The weak point: “pin” is about attaching, so it says “docked” clearly, “floating” less so; the tooltip names both.',
+        ],
+      },
+      {
+        k: 'B', name: 'Two icons', sub: 'A two-way switch: Floating | Docked',
+        notes: [
+          'A segmented switch with a picture of each layout, like the view-mode switches in Finder, Figma’s UI3 or a code editor’s layout controls. Both options are visible, the current one is raised, nothing to decode.',
+          'Two slots instead of one; the icons are small, so each has a tooltip with its name.',
+        ],
+      },
+      {
+        k: 'C', name: 'Label', sub: 'A text button: “Dock” / “Undock”',
+        notes: [
+          'Words instead of an icon: the button says what it will do, “Dock” while floating and “Undock” while docked, as Chrome DevTools does (“Undock into separate window”). The most explicit for a first-time user.',
+          'About 80px wide, and a label that flips can be read as the current state by mistake; the icon beside it (the target layout) helps.',
+        ],
+      },
+      {
+        k: 'D', name: 'Layout menu', sub: 'One icon of the current layout, opening a picker',
+        notes: [
+          'Like DevTools’ “Dock side” or VS Code’s “Customize layout”: the button shows the current layout as a small picture; it opens a picker with both layouts drawn, their names and what they do.',
+          'Two clicks, but the clearest: each option is a picture and a sentence. Room to grow later (e.g. a bottom bar, a compact pill).',
+        ],
+      },
+    ];
+
+    const TABS = [
+      { id: 'tree', side: 'left', label: 'Layers', key: 'E', sub: 'The page’s elements' },
+      { id: 'library', side: 'left', label: 'Library', key: 'B', sub: 'Blocks to insert' },
+      { id: 'tokens', side: 'left', label: 'Tokens', key: 'T', sub: 'Colours, sizes and type of the design system' },
+      { id: 'seo', side: 'left', label: 'SEO', key: 'O', sub: 'Title, description, headings' },
+      { id: 'styles', side: 'right', label: 'Styles', key: 'S', sub: 'The selection’s cascade and properties' },
+      { id: 'props', side: 'right', label: 'Props', key: 'P', sub: 'Attributes and component properties' },
+      { id: 'media', side: 'right', label: 'Media', key: 'M', sub: 'Images and files' },
+      { id: 'code', side: 'right', label: 'Code', key: 'C', sub: 'HTML, CSS and JS of the selection' },
+    ];
+    const VPS = [
+      { w: 1680, name: 'Custom', ic: 'monitor', shown: false, origin: 'custom' },
+      { w: 1440, name: 'Desktop', ic: 'monitor', shown: true, origin: 'preset' },
+      { w: 1280, name: 'Laptop', ic: 'laptop', shown: true, origin: 'preset' },
+      { w: 960, name: 'md', ic: 'laptop', shown: true, origin: 'page', media: '(max-width: 960px)' },
+      { w: 768, name: 'Tablet', ic: 'tablet', shown: true, origin: 'preset' },
+      { w: 390, name: 'Mobile', ic: 'phone', shown: true, origin: 'preset' },
+    ];
+    const TREE = [
+      ['body', 'body', 0], ['header', 'header.top', 1], ['logo', 'a.logo', 2], ['nav', 'nav.links', 2], ['cta-top', 'a.cbtn.ghost', 2],
+      ['hero', 'section.hero', 1], ['h1', 'h1', 2], ['lede', 'p.lede', 2], ['hero-btn', 'a.cbtn', 2],
+      ['features', 'section.features', 1], ['card1', 'div.card', 2], ['card2', 'div.card', 2], ['card3', 'div.card', 2],
+      ['quote', 'blockquote.quote', 1], ['footer', 'footer', 1],
+    ];
+    const PARENT = { logo: 'header', nav: 'header', 'cta-top': 'header', h1: 'hero', lede: 'hero', 'hero-btn': 'hero', card1: 'features', card2: 'features', card3: 'features' };
+    const EDITS = ['Padding of div.card', 'Text of h1', 'Background of a.cbtn', 'Gap of section.features', 'Font size of p.lede'];
+    const MIN_W = 220;
+    const MAX_W = 560;
+
+    const params = new URLSearchParams(location.search);
+    /* Session state: survives Edit off/on, not a reload. */
+    const S = {
+      v: VARIANTS.some((x) => x.k === params.get('variant')) ? params.get('variant') : 'A',
+      style: params.get('style') === 'dock' ? 'dock' : 'float',
+      editing: params.get('edit') !== 'off', open: params.get('open'),
+      left: true, leftTab: 'tree', right: true, rightTab: 'styles',
+      lw: 264, rw: 320,
+      lfloat: null, rfloat: null, // {x, y, h} once a floating panel is dragged off its edge
+      bar: null,                   // {x, y}: set on first layout, then only by dragging the grip
+      vp: null, fit: true, sel: 'card2', applied: 3, top: 3, saved: 0, notes: false,
+      resizing: null,
+    };
+
+    /* ---------------------------------------------------------------- icons */
+    const P = {
+      grip: '<circle cx="9" cy="6" r="1.4" fill="currentColor" stroke="none"/><circle cx="15" cy="6" r="1.4" fill="currentColor" stroke="none"/><circle cx="9" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="15" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="9" cy="18" r="1.4" fill="currentColor" stroke="none"/><circle cx="15" cy="18" r="1.4" fill="currentColor" stroke="none"/>',
+      cursor: '<path d="M5 3l6 17 2.5-7 7-2.5z"/>',
+      window: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/>',
+      monitor: '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>',
+      laptop: '<path d="M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v9H4zM2 19h20"/>',
+      tablet: '<rect x="4" y="2" width="16" height="20" rx="2"/><path d="M11 18h2"/>',
+      phone: '<rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/>',
+      dots: '<circle cx="12" cy="5" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="19" r="1.5" fill="currentColor" stroke="none"/>',
+      chev: '<path d="m6 9 6 6 6-6"/>',
+      undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>',
+      redo: '<path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/>',
+      settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1 7 17M17 7l2.1-2.1"/>',
+      pright: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/>',
+      pleft: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/>',
+      // Layout pictures: a frame with a floating pill and two inset panels / a bar and two flush columns.
+      lfloat: '<rect x="2" y="3" width="20" height="18" rx="2.5"/><rect x="8" y="5.8" width="8" height="2.4" rx="1.2" fill="currentColor" stroke="none"/><rect x="4.6" y="10.2" width="3.6" height="8.2" rx="1" fill="currentColor" stroke="none"/><rect x="15.8" y="10.2" width="3.6" height="8.2" rx="1" fill="currentColor" stroke="none"/>',
+      ldock: '<rect x="2" y="3" width="20" height="18" rx="2.5"/><path d="M2 8.5h20M8 8.5V21M16 8.5V21"/>',
+      pin: '<path d="M12 17v5"/><path d="M9 10.8a2 2 0 0 1-1.1 1.8l-1.8.9A2 2 0 0 0 5 15.2V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.8a2 2 0 0 0-1.1-1.8l-1.8-.9a2 2 0 0 1-1.1-1.8V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/>',
+      pinFill: '<path d="M12 17v5"/><path fill="currentColor" d="M9 10.8a2 2 0 0 1-1.1 1.8l-1.8.9A2 2 0 0 0 5 15.2V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.8a2 2 0 0 0-1.1-1.8l-1.8-.9a2 2 0 0 1-1.1-1.8V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/>',
+      snapL: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="m16 9-3 3 3 3"/>',
+      snapR: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/><path d="m8 9 3 3-3 3"/>',
+      close: '<path d="M6 6l12 12M18 6 6 18"/>',
+      check: '<path d="m5 12 5 5 9-10"/>',
+      plus: '<path d="M12 5v14M5 12h14"/>',
+      trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>',
+      save: '<path d="M5 3h11l5 5v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M7 3v5h8M7 21v-7h10v7"/>',
+      keyboard: '<rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/>',
+      exit: '<path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4M10 17l5-5-5-5M15 12H3"/>',
+      fit: '<path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/>',
+    };
+    const ic = (n, s = 14) => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${P[n]}</svg>`;
+    const $ = (q) => document.querySelector(q);
+    const $$ = (q) => [...document.querySelectorAll(q)];
+    const tipAttrs = (tip, keys = '', sub = '') => `data-tip="${tip}"${keys ? ` data-kbd="${keys}"` : ''}${sub ? ` data-sub="${sub}"` : ''}`;
+    const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), Math.max(lo, hi));
+
+    /* ---------------------------------------------------------------- derived */
+    const docked = () => S.style === 'dock';
+    const tabOf = (id) => TABS.find((t) => t.id === id);
+    const selLabel = () => TREE.find((t) => t[0] === S.sel)?.[1] ?? 'Nothing selected';
+    const unsaved = () => Math.max(0, S.applied - S.saved);
+    /* Docked panels push the page; floating ones sit over it, so they cover nothing of its width. */
+    function occ() {
+      if (!S.editing || !docked()) return { l: 0, r: 0, t: 0 };
+      return { l: S.left ? S.lw : 0, r: S.right ? S.rw : 0, t: 44 };
+    }
+    const actualWidth = () => innerWidth - occ().l - occ().r;
+    const curVp = () => (S.vp === null ? null : VPS.find((v) => v.w === S.vp) ?? { w: S.vp, name: 'Custom', ic: 'monitor' });
+
+    /* ---------------------------------------------------------------- controls (one set, both layouts) */
+    const gripC = () => `<span class="grip" data-grip ${tipAttrs('Drag to move the toolbar')}>${ic('grip', 13)}</span>`;
+    const editToggle = () => `<button class="toggle" type="button" data-act="edit" aria-pressed="${S.editing}" ${tipAttrs(S.editing ? 'Leave edit mode' : 'Enter edit mode', '⌘ E', 'Panels, sizes and layout are kept until you reload')}><span class="led"></span>Edit</button>`;
+    const selChip = () => `<span class="selection" ${tipAttrs('Current selection', '', 'Click any element on the page')}>${ic('cursor', 11)}<span>${selLabel()}</span></span>`;
+    const leftBtn = () => `<button class="ib" type="button" data-act="left" aria-label="Page panel" aria-pressed="${S.left}" ${tipAttrs(S.left ? 'Hide the page panel' : 'Show the page panel', '', 'Layers E · Library B · Tokens T · SEO O')}>${ic('pleft', 15)}</button>`;
+    const rightBtn = () => `<button class="ib" type="button" data-act="right" aria-label="Selection panel" aria-pressed="${S.right}" ${tipAttrs(S.right ? 'Hide the selection panel' : 'Show the selection panel', '', 'Styles S · Props P · Media M · Code C')}>${ic('pright', 15)}</button>`;
+    const undoBtn = () => `<button class="ib" type="button" data-act="undo" aria-label="Undo" ${S.applied > S.saved ? '' : 'disabled'} ${tipAttrs(S.applied > S.saved ? `Undo: ${EDITS[S.applied - 1]}` : 'Undo', '⌘ Z')}>${ic('undo')}</button>`;
+    const redoBtn = () => `<button class="ib" type="button" data-act="redo" aria-label="Redo" ${S.applied < S.top ? '' : 'disabled'} ${tipAttrs(S.applied < S.top ? `Redo: ${EDITS[S.applied]}` : 'Redo', '⇧ ⌘ Z')}>${ic('redo')}</button>`;
+    const saveBtn = () => `<button class="save" type="button" data-act="save" ${tipAttrs('Review and save changes', '⌘ S')}>${ic('save', 13)}Save${unsaved() ? `<span class="count">${unsaved()}</span>` : ''}</button>`;
+
+    /* The layout switch: the four looks under test. */
+    function layoutSwitch() {
+      const d = docked();
+      switch (S.v) {
+        case 'A':
+          return `<button class="ib" type="button" data-act="style" aria-pressed="${d}" aria-label="Pin the toolbar and panels to the edges" ${tipAttrs(d ? 'Docked: pinned to the edges' : 'Floating over the page', 'D', d ? 'Click to unpin and float over the page' : 'Click to pin to the edges, with the page between the panels')}>${ic(d ? 'pinFill' : 'pin', 15)}</button>`;
+        case 'B':
+          return `<span class="seg2" role="radiogroup" aria-label="Layout">
+            <button type="button" role="radio" aria-checked="${!d}" data-act="style:float" aria-label="Floating" ${tipAttrs('Floating', 'D', 'Toolbar and panels over the page')}>${ic('lfloat', 15)}</button>
+            <button type="button" role="radio" aria-checked="${d}" data-act="style:dock" aria-label="Docked" ${tipAttrs('Docked', 'D', 'Bar across the top, page between the panels')}>${ic('ldock', 15)}</button>
+          </span>`;
+        case 'C':
+          return `<button class="lbl" type="button" data-act="style" ${tipAttrs(d ? 'Undock: float over the page' : 'Dock to the edges', 'D', d ? 'Now docked' : 'Now floating')}>${ic(d ? 'lfloat' : 'ldock', 14)}${d ? 'Undock' : 'Dock'}</button>`;
+        default:
+          return `<div class="dd">
+            <button class="laybtn" type="button" data-act="pop:layout" aria-haspopup="menu" aria-expanded="${S.open === 'layout'}" aria-label="Layout: ${d ? 'Docked' : 'Floating'}" ${tipAttrs(`Layout: ${d ? 'Docked' : 'Floating'}`, 'D')}>${ic(d ? 'ldock' : 'lfloat', 15)}<span class="chev">${ic('chev', 11)}</span></button>
+            ${S.open === 'layout' ? `<div class="pop r laypop" role="menu" aria-label="Layout">
+              <p class="cap">Layout <span class="k">D toggles</span></p>
+              ${[['float', 'Floating', 'Toolbar and panels over the page. The page keeps its real width.'], ['dock', 'Docked', 'Bar across the top, panels on the sides, the page between them.']].map(([k, n, t]) => `
+                <button class="layopt" role="menuitemradio" aria-checked="${S.style === k}" data-act="style:${k}">
+                  <span class="mini m-${k}"><i class="b"></i><i class="l"></i><i class="r"></i></span>
+                  <span><b>${n}</b><span>${t}</span></span>
+                  <span class="chk">${S.style === k ? ic('check', 13) : ''}</span>
+                </button>`).join('')}
+            </div>` : ''}
+          </div>`;
+      }
+    }
+
+    function logoDD() {
+      return `<div class="dd">
+        <button class="logo-btn" type="button" data-act="pop:logo" aria-haspopup="menu" aria-expanded="${S.open === 'logo'}" ${tipAttrs('HEO menu', '', 'Settings, shortcuts')}><span class="mark">H</span><span class="chev">${ic('chev', 11)}</span></button>
+        ${S.open === 'logo' ? `<div class="pop" role="menu" aria-label="HEO menu">
+          <button class="mi" data-act="toast:Settings: General, Viewports, AI, Files. No Layout section: it is in the bar">${ic('settings', 13)}Settings…</button>
+          <button class="mi" data-act="toast:Keyboard shortcuts sheet">${ic('keyboard', 13)}Keyboard shortcuts<span class="k">?</span></button>
+          <div class="mdiv"></div>
+          <button class="mi" data-act="edit">${ic('exit', 13)}Leave edit mode<span class="k">⌘E</span></button>
+        </div>` : ''}
+      </div>`;
+    }
+
+    function vpDD() {
+      const v = curVp();
+      return `<div class="dd">
+        <button class="vpbtn${v ? ' on' : ''}" type="button" data-act="pop:vp" aria-haspopup="menu" aria-expanded="${S.open === 'vp'}" ${tipAttrs('Preview size')}>
+          ${ic(v ? v.ic : 'window', 13)}<span>${v ? v.name : 'Actual'}</span><span class="w">${v ? v.w : actualWidth()}</span><span class="chev">${ic('chev', 12)}</span>
+        </button>
+        <button class="ib" type="button" data-act="pop:vpedit" aria-label="Edit the viewport sizes" aria-haspopup="dialog" aria-expanded="${S.open === 'vpedit'}" ${tipAttrs('Viewport sizes', '', 'Which ones the list shows, and their widths')}>${ic('dots', 14)}</button>
+        ${S.open === 'vp' ? vpMenu() : ''}${S.open === 'vpedit' ? vpEditor() : ''}
+      </div>`;
+    }
+    function vpMenu() {
+      const item = (key, icon, name, w, tag = '') => `<button class="mi" role="menuitemradio" aria-checked="${S.vp === key}" data-act="vp:${key ?? 'actual'}">
+        <span class="chk">${S.vp === key ? ic('check', 12) : ''}</span>${ic(icon, 13)}${name}${tag ? `<small>${tag}</small>` : ''}<span class="w">${w}px</span></button>`;
+      return `<div class="pop" role="menu" aria-label="Preview size">
+        <p class="cap">Preview size</p>
+        ${item(null, 'window', 'Actual', actualWidth(), docked() ? 'between the panels' : 'this window')}
+        <div class="mdiv"></div>
+        ${VPS.filter((v) => v.shown).map((v) => item(v.w, v.ic, v.name, v.w, v.origin === 'page' ? 'page' : '')).join('')}
+        <div class="mdiv"></div>
+        <button class="mi" role="menuitemcheckbox" aria-checked="${S.fit}" data-act="fit"><span class="chk">${S.fit ? ic('check', 12) : ''}</span>${ic('fit', 13)}Fit wider sizes to the window</button>
+      </div>`;
+    }
+    function vpEditor() {
+      return `<div class="pop vped" role="dialog" aria-label="Viewport sizes">
+        <p class="cap">Viewport sizes</p>
+        <ul class="vlist">${VPS.map((v, i) => `<li class="vrow">
+          <label><input type="checkbox" data-vpshow="${i}" ${v.shown ? 'checked' : ''}>${ic(v.ic, 12)}<span>${v.name}${v.origin === 'page' ? '<small>page</small>' : v.origin === 'custom' ? '<small>yours</small>' : ''}</span></label>
+          ${v.origin === 'page' ? `<span class="fixed">${v.w}px</span>` : `<span class="vf"><input aria-label="${v.name} width" value="${v.w}" data-vpw="${i}"><i>px</i></span>`}
+          ${v.origin === 'custom' ? `<button class="kill" type="button" aria-label="Remove" data-act="toast:Removes this size (unchanged)">${ic('trash', 11)}</button>` : '<span></span>'}
+        </li>`).join('')}</ul>
+        <button class="link" type="button" data-act="toast:Add a viewport size… (unchanged)">${ic('plus', 11)} Add a viewport size…</button>
+      </div>`;
+    }
+
+    function groups() {
+      return {
+        left: `${docked() ? '' : gripC()}${logoDD()}${editToggle()}<span class="sep"></span>${leftBtn()}${selChip()}`,
+        mid: vpDD(),
+        right: `${undoBtn()}${redoBtn()}${saveBtn()}<span class="sep"></span>${rightBtn()}<span class="sep"></span>${layoutSwitch()}`,
+      };
+    }
+
+    /* ---------------------------------------------------------------- panels */
+    function body(id) {
+      if (id === 'styles') {
+        const parent = PARENT[S.sel] ? TREE.find((t) => t[0] === PARENT[S.sel])[1] : null;
+        return `<div class="crumb">${parent ? `${parent} › ` : ''}<b>${selLabel()}</b></div>
+          <div class="sec"><h4>Layout <span>block</span></h4><div class="row"><label>Display</label><span class="field">block</span></div><div class="row"><label>Width</label><div class="pair"><span class="field">auto</span><span class="field">max 100%</span></div></div></div>
+          <div class="sec"><h4>Spacing</h4><div class="row"><label>Padding</label><div class="pair"><span class="field">32<span class="u">px</span></span><span class="field">24<span class="u">px</span></span></div></div><div class="row"><label>Margin</label><span class="field">0</span></div></div>
+          <div class="sec"><h4>Typography <span>inherited</span></h4><div class="row"><label>Font</label><span class="field">Inter</span></div><div class="row"><label>Size / line</label><div class="pair"><span class="field">14.5<span class="u">px</span></span><span class="field">1.5</span></div></div></div>
+          <div class="sec"><h4>Background</h4><div class="row"><label>Color</label><span class="field"><span class="sw" style="background:#fff"></span>#ffffff</span></div></div>
+          <div class="sec"><h4>Border</h4><div class="row"><label>Border</label><span class="field"><span class="sw" style="background:#eee5d8"></span>1px solid</span></div><div class="row"><label>Radius</label><span class="field">14<span class="u">px</span></span></div></div>`;
+      }
+      if (id === 'tree') return `<ul class="tree" role="tree">${TREE.map(([k, label, d]) => `<li role="treeitem" class="${k === S.sel ? 'on' : ''}" data-act="sel:${k}" style="padding-left:${8 + d * 14}px">${d < 2 && k !== 'body' ? ic('chev', 10) : '<span style="width:10px"></span>'}${label}</li>`).join('')}</ul>`;
+      if (id === 'library') return `<div class="blocks">${['Hero', 'Feature cards', 'Quote', 'Pricing', 'FAQ', 'Footer'].map((n) => `<div class="blk"><i></i>${n}</div>`).join('')}</div>`;
+      if (id === 'tokens') return `<ul class="toks">${[['#c2410c', '--color-brand'], ['#3b2a1a', '--color-ink'], ['#fffdf8', '--color-paper'], ['#eee5d8', '--color-line'], ['#fde7d6', '--color-peach']].map(([c, n]) => `<li><span class="sw" style="background:${c}"></span>${n}<span>${c}</span></li>`).join('')}</ul>`;
+      if (id === 'seo') return `<div class="sec seo"><div class="row"><label>Title</label><span class="field">Northwind Coffee — small-batch, roasted weekly</span></div><div class="row"><label>Description</label><span class="field">Single-origin beans from six farms, shipped within 48 hours of roasting.</span></div><div class="row"><label>Headings</label><span class="field">1 × h1 · 3 × h3</span></div></div>`;
+      return `<div class="ph">${tabOf(id).label} panel, unchanged by this prototype.<i></i><i></i><i style="width:70%"></i><i></i></div>`;
+    }
+    function panelGeometry(side) {
+      const isLeft = side === 'left';
+      const w = isLeft ? S.lw : S.rw;
+      const fl = isLeft ? S.lfloat : S.rfloat;
+      if (docked()) return `width:${w}px`;
+      if (fl) return `width:${w}px;left:${fl.x}px;top:${fl.y}px;height:${fl.h}px`;
+      return `width:${w}px;top:14px;bottom:14px;${isLeft ? 'left' : 'right'}:14px`;
+    }
+    function panel(side) {
+      const isLeft = side === 'left';
+      const active = isLeft ? S.leftTab : S.rightTab;
+      const moved = !docked() && (isLeft ? S.lfloat : S.rfloat);
+      const tabs = TABS.filter((t) => t.side === side);
+      const live = S.resizing === side;
+      return `<aside class="dock surface ${side}-p ${docked() ? 'd' : 'f'}-${side}${moved ? ' moved' : ''}" style="${panelGeometry(side)}" aria-label="${isLeft ? 'Page panel' : 'Selection panel'}" data-panel="${side}">
+        <div class="grab${live ? ' live' : ''}" data-grab="${side}" ${tipAttrs('Drag to resize')}></div>
+        ${live ? `<span class="wtag">${isLeft ? S.lw : S.rw}px</span>` : ''}
+        <div class="clip">
+          <div class="dhead" data-head="${side}">
+            ${docked() ? '' : `<span class="gd" ${tipAttrs('Drag the header to move the panel')}>${ic('grip', 12)}</span>`}
+            <div class="title"><div class="name">${isLeft ? 'index.html' : tabOf(active).label}</div><span class="target">${isLeft ? 'Northwind Coffee' : selLabel()}</span></div>
+            ${moved ? `<button class="ib sm" type="button" data-act="snap:${side}" aria-label="Back to the ${side} edge" ${tipAttrs(`Back to the ${side} edge`)}>${ic(isLeft ? 'snapL' : 'snapR', 14)}</button>` : ''}
+            <button class="ib sm" type="button" data-act="${side}" aria-label="Close panel" ${tipAttrs('Close panel')}>${ic('close', 14)}</button>
+          </div>
+          <div class="tabs" role="tablist">${tabs.map((t) => `<button class="tab" role="tab" aria-selected="${t.id === active}" data-act="tab:${t.id}" ${tipAttrs(t.label, t.key, t.sub)}>${t.label}</button>`).join('')}</div>
+          <div class="dbody" role="tabpanel">${body(active)}</div>
+        </div>
+      </aside>`;
+    }
+
+    /* ---------------------------------------------------------------- the two layouts */
+    function floatingBar() {
+      const inner = S.editing
+        ? (() => { const g = groups(); return `${g.left}<span class="sep"></span>${g.mid}<span class="sep"></span>${g.right}`; })()
+        : `${gripC()}${logoDD()}${editToggle()}`;
+      return `<div class="pill surface" role="toolbar" aria-label="HEO" style="left:${S.bar?.x ?? -9999}px;top:${S.bar?.y ?? 14}px">${inner}</div>`;
+    }
+    function chrome() {
+      if (!S.editing) return floatingBar();
+      const panels = `${S.left ? panel('left') : ''}${S.right ? panel('right') : ''}`;
+      if (!docked()) return `${floatingBar()}${panels}`;
+      const g = groups();
+      return `<header class="appbar" role="toolbar" aria-label="HEO"><div class="grp">${g.left}</div><div class="grp">${g.mid}</div><div class="grp r">${g.right}</div></header>${panels}`;
+    }
+
+    /* ---------------------------------------------------------------- render */
+    function scaleFor() {
+      const o = occ();
+      return S.fit ? Math.min(1, (innerWidth - o.l - o.r - 40) / S.vp) : 1;
+    }
+    function layoutStage() {
+      const stage = $('#stage');
+      const site = $('#site');
+      const o = occ();
+      stage.classList.toggle('previewing', S.vp !== null);
+      if (S.vp === null) {
+        stage.style.padding = `${o.t}px ${o.r}px 0 ${o.l}px`;
+        site.style.cssText = '';
+        return;
+      }
+      stage.style.padding = '0';
+      const scale = scaleFor();
+      const room = innerWidth - o.l - o.r;
+      site.style.cssText = `width:${S.vp}px;left:${o.l + Math.max(20, (room - S.vp * scale) / 2)}px;top:${o.t + 24}px;transform:scale(${scale})`;
+    }
+    /*
+     * The bar's place: chosen once, centred on the window at its full (editing) width, then kept.
+     * Shown at that x; nudged left only if it would run off the right edge, without forgetting x.
+     */
+    function placeBar() {
+      const pill = $('.pill');
+      if (!pill) return;
+      if (!S.bar) {
+        // Starting with Edit off: the place the full bar would be centred at (it is about 690px wide).
+        S.bar = { x: Math.round((innerWidth - (S.editing ? pill.offsetWidth : 690)) / 2), y: 14 };
+      }
+      pill.style.left = `${clamp(S.bar.x, 8, innerWidth - pill.offsetWidth - 8)}px`;
+      pill.style.top = `${S.bar.y}px`;
+    }
+    function render() {
+      hideTip();
+      document.body.classList.toggle('editing', S.editing);
+      $('#chrome').innerHTML = chrome();
+      placeBar();
+      $$('#site [data-k]').forEach((el) => el.classList.toggle('sel', el.dataset.k === S.sel));
+      layoutStage();
+      const v = VARIANTS.find((x) => x.k === S.v);
+      $('#vlab').innerHTML = `${v.k} — ${v.name} · ${docked() ? 'Docked' : 'Floating'}<small>${v.sub}</small>`;
+      const notes = $('#notes');
+      notes.hidden = !S.notes;
+      notes.innerHTML = `<button class="x" data-act="notes" aria-label="Close notes">×</button>
+        <h3>${v.k} — ${v.name}</h3><ul>${v.notes.map((n) => `<li>${n}</li>`).join('')}</ul>
+        <h4>In every variant</h4><ul>${SHARED.map((n) => `<li>${n}</li>`).join('')}</ul>`;
+      $('#notesbtn').textContent = S.notes ? 'Hide why' : 'Why';
+    }
+    function setStyle(style) {
+      if (style === S.style) return;
+      const go = () => { S.style = style; S.open = null; render(); };
+      if (document.startViewTransition && !matchMedia('(prefers-reduced-motion: reduce)').matches) document.startViewTransition(go);
+      else go();
+      toast(style === 'dock' ? 'Docked: the page sits between the panels' : 'Floating: over the page');
+    }
+
+    /* ---------------------------------------------------------------- actions */
+    let toastTimer;
+    function toast(text) {
+      const t = $('#toast');
+      t.textContent = text;
+      t.style.display = 'block';
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => (t.style.display = 'none'), 1800);
+    }
+    function toggleTab(id) {
+      const t = tabOf(id);
+      if (t.side === 'left') { if (S.left && S.leftTab === id) S.left = false; else { S.left = true; S.leftTab = id; } }
+      else if (S.right && S.rightTab === id) S.right = false; else { S.right = true; S.rightTab = id; }
+    }
+    function act(a) {
+      const [verb, arg] = a.split(/:(.*)/s);
+      switch (verb) {
+        case 'pop': S.open = S.open === arg ? null : arg; break;
+        case 'edit': S.editing = !S.editing; S.open = null; break;
+        case 'left': S.left = !S.left; break;
+        case 'right': S.right = !S.right; break;
+        case 'tab': if (tabOf(arg).side === 'left') S.leftTab = arg; else S.rightTab = arg; break;
+        case 'snap': if (arg === 'left') S.lfloat = null; else S.rfloat = null; break;
+        case 'vp': S.vp = arg === 'actual' ? null : Number(arg); S.open = null; break;
+        case 'fit': S.fit = !S.fit; break;
+        case 'undo': if (S.applied > S.saved) { S.applied--; toast(`Undid: ${EDITS[S.applied]}`); } break;
+        case 'redo': if (S.applied < S.top) { toast(`Redid: ${EDITS[S.applied]}`); S.applied++; } break;
+        case 'save': S.open = null; toast(unsaved() ? `Save dialog: ${unsaved()} changes to review` : 'Save dialog: nothing pending'); break;
+        case 'style': setStyle(arg || (docked() ? 'float' : 'dock')); return;
+        case 'sel': S.sel = arg; break;
+        case 'toast': S.open = null; toast(arg); break;
+        case 'notes': S.notes = !S.notes; break;
+        case 'var': {
+          const i = VARIANTS.findIndex((x) => x.k === S.v);
+          S.v = VARIANTS[(i + (arg === 'next' ? 1 : VARIANTS.length - 1)) % VARIANTS.length].k;
+          S.open = null;
+          const url = new URL(location.href);
+          url.searchParams.set('variant', S.v);
+          history.replaceState(null, '', url);
+          break;
+        }
+      }
+      render();
+    }
+
+    document.addEventListener('click', (e) => {
+      if (justDragged) { justDragged = false; return; }
+      const el = e.target.closest('[data-act]');
+      const inPop = e.target.closest('.pop');
+      if (el) {
+        if (el.matches('a')) e.preventDefault();
+        if (!inPop && !el.dataset.act.startsWith('pop:') && S.open && !el.closest('.switcher')) S.open = null;
+        act(el.dataset.act);
+        return;
+      }
+      if (inPop) return;
+      const pageEl = e.target.closest('#site [data-k]');
+      if (pageEl) {
+        e.preventDefault();
+        if (S.editing) { S.sel = pageEl.dataset.k; S.open = null; render(); }
+        return;
+      }
+      if (S.open) { S.open = null; render(); }
+    });
+    document.addEventListener('change', (e) => {
+      const t = e.target;
+      if (t.dataset.vpshow) { VPS[t.dataset.vpshow].shown = t.checked; render(); }
+      if (t.dataset.vpw) {
+        const w = Math.round(Number(t.value));
+        const one = VPS[t.dataset.vpw];
+        if (w >= 200 && w <= 3840) { if (S.vp === one.w) S.vp = w; one.w = w; VPS.sort((a, b) => b.w - a.w); }
+        render();
+      }
+    });
+    document.addEventListener('keydown', (e) => {
+      const typing = e.target.closest?.('input, textarea, [contenteditable]');
+      const mod = e.metaKey || e.ctrlKey;
+      const k = e.key.toLowerCase();
+      if (e.key === 'Escape') { S.open = null; render(); return; }
+      if (typing) return;
+      if (mod && k === 'e') { e.preventDefault(); act('edit'); return; }
+      if (mod && k === 'z') { e.preventDefault(); act(e.shiftKey ? 'redo' : 'undo'); return; }
+      if (mod && k === 's') { e.preventDefault(); act('save'); return; }
+      if (mod || e.altKey) return;
+      if (e.key === 'ArrowLeft') { act('var:prev'); return; }
+      if (e.key === 'ArrowRight') { act('var:next'); return; }
+      if (k === 'd' && S.editing) { act('style'); return; }
+      const tab = TABS.find((t) => t.key.toLowerCase() === k);
+      if (tab && S.editing) { toggleTab(tab.id); render(); }
+    });
+    addEventListener('resize', render);
+
+    /* ---------------------------------------------------------------- pointer: move the bar, move and resize panels */
+    let drag = null;
+    let justDragged = false;
+    document.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      const grip = e.target.closest('[data-grip]');
+      const grab = e.target.closest('[data-grab]');
+      const head = e.target.closest('[data-head]');
+      if (grab) {
+        e.preventDefault();
+        const side = grab.dataset.grab;
+        drag = { kind: 'resize', side, sx: e.clientX, w: side === 'left' ? S.lw : S.rw, box: grab.parentElement.getBoundingClientRect() };
+        S.resizing = side;
+        document.body.classList.add('resizing');
+        render();
+        return;
+      }
+      if (grip) {
+        e.preventDefault();
+        const box = $('.pill').getBoundingClientRect();
+        drag = { kind: 'bar', sx: e.clientX, sy: e.clientY, ox: e.clientX - box.left, oy: e.clientY - box.top, moved: false };
+        document.body.classList.add('dragging');
+        return;
+      }
+      // A floating panel moves from anywhere in its header row, except its buttons.
+      if (head && !docked() && !e.target.closest('button')) {
+        e.preventDefault();
+        const side = head.dataset.head;
+        const box = head.closest('.dock').getBoundingClientRect();
+        drag = { kind: 'panel', side, sx: e.clientX, sy: e.clientY, ox: e.clientX - box.left, oy: e.clientY - box.top, h: box.height, w: box.width, moved: false };
+        document.body.classList.add('dragging');
+      }
+    });
+    document.addEventListener('pointermove', (e) => {
+      if (!drag) return;
+      if (drag.kind === 'resize') {
+        // The inner edge: dragging right grows the left panel, dragging left grows the right one.
+        const dx = e.clientX - drag.sx;
+        const w = Math.round(clamp(drag.w + (drag.side === 'left' ? dx : -dx), MIN_W, MAX_W));
+        if (drag.side === 'left') S.lw = w; else S.rw = w;
+        const fl = drag.side === 'left' ? S.lfloat : S.rfloat;
+        // A right panel on its edge, or one moved, keeps its outer edge where it was.
+        if (fl && drag.side === 'right') fl.x = Math.round(drag.box.right - w);
+        render();
+        return;
+      }
+      if (!drag.moved && Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) < 4) return;
+      drag.moved = true;
+      if (drag.kind === 'bar') {
+        const pill = $('.pill');
+        S.bar = { x: Math.round(clamp(e.clientX - drag.ox, 8, innerWidth - pill.offsetWidth - 8)), y: Math.round(clamp(e.clientY - drag.oy, 8, innerHeight - pill.offsetHeight - 8)) };
+        pill.style.left = `${S.bar.x}px`;
+        pill.style.top = `${S.bar.y}px`;
+        return;
+      }
+      const fl = { x: Math.round(clamp(e.clientX - drag.ox, 8, innerWidth - drag.w - 8)), y: Math.round(clamp(e.clientY - drag.oy, 8, innerHeight - 60)), h: Math.round(Math.min(drag.h, innerHeight - 16)) };
+      if (drag.side === 'left') S.lfloat = fl; else S.rfloat = fl;
+      const el = $(`[data-panel="${drag.side}"]`);
+      if (!el.classList.contains('moved')) { render(); return; }
+      el.style.left = `${fl.x}px`;
+      el.style.top = `${fl.y}px`;
+    });
+    document.addEventListener('pointerup', () => {
+      if (!drag) return;
+      const d = drag;
+      drag = null;
+      document.body.classList.remove('dragging', 'resizing');
+      if (d.kind === 'resize') { S.resizing = null; render(); return; }
+      if (d.moved) { justDragged = true; setTimeout(() => (justDragged = false), 0); }
+    });
+
+    /* ---------------------------------------------------------------- tooltip */
+    const tip = $('#tip');
+    let tipTimer;
+    let tipFor = null;
+    let tipWarm = false;
+    function showTip(a) {
+      tipFor = a;
+      const keys = (a.dataset.kbd ?? '').split(' ').filter(Boolean).map((x) => `<kbd>${x}</kbd>`).join('');
+      tip.innerHTML = `<div class="t"><b>${a.dataset.tip}</b>${keys ? `<span class="keys">${keys}</span>` : ''}</div>${a.dataset.sub ? `<div class="s">${a.dataset.sub}</div>` : ''}`;
+      tip.style.display = 'block';
+      const r = a.getBoundingClientRect();
+      let top = r.bottom + 8;
+      if (top + tip.offsetHeight > innerHeight - 8) top = r.top - tip.offsetHeight - 8;
+      tip.style.top = `${top}px`;
+      tip.style.left = `${clamp(r.left + r.width / 2 - tip.offsetWidth / 2, 8, innerWidth - tip.offsetWidth - 8)}px`;
+      tipWarm = true;
+    }
+    function hideTip() { clearTimeout(tipTimer); tip.style.display = 'none'; tipFor = null; }
+    document.addEventListener('pointerover', (e) => {
+      if (drag) return;
+      const a = e.target.closest('[data-tip]');
+      if (a === tipFor) return;
+      clearTimeout(tipTimer);
+      if (!a || a.closest('.pop') || a.getAttribute('aria-expanded') === 'true') { tip.style.display = 'none'; tipFor = null; tipTimer = setTimeout(() => (tipWarm = false), 400); return; }
+      tipTimer = setTimeout(() => showTip(a), tipWarm ? 40 : 450);
+    });
+    document.addEventListener('focusin', (e) => { const a = e.target.closest?.('[data-tip]'); if (a && e.target.matches(':focus-visible')) showTip(a); });
+    document.addEventListener('focusout', hideTip);
+    document.addEventListener('pointerdown', hideTip);
+
+    render();
+  </script>
+</body>
+
+</html>
