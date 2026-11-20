@@ -3,7 +3,7 @@
 
 <head>
   <meta charset="utf-8">
-  <title>The Styles panel: Cards | Applied, and the condition strip</title>
+  <title>The Styles panel: Cards | Applied, the condition strip, and the search</title>
   <!--
     The shared sample from styles-cascade.html: #target sits in a grid parent and has :hover, ::before
     and a ≥768px rule. #capped is a relatively positioned child of a flex row whose fixed width
@@ -344,7 +344,139 @@
           results.strip.thePositionCardCarriesTheDragNote &&=
             !card('position')?.querySelector('[data-drag-note]') && !card('position')?.querySelector('.row[data-property="top"]');
         }
-
+        /* ------------------------------------------------------------------ *
+         * The search: it filters what is shown and adds any property
+         * ------------------------------------------------------------------ */
+        progress.textContent = 'search: suggestions';
+        results.search = {};
+        if (strip()?.querySelector('.base')?.getAttribute('aria-pressed') !== 'true') {
+          strip()?.querySelector('.base')?.click();
+          await settle();
+        }
+        const search = () => root().querySelector('.top heo-search-field');
+        const typeSearch = async (value) => {
+          const input = search().shadowRoot.querySelector('input');
+          input.focus();
+          input.value = value;
+          input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+          await settle();
+          await search().updateComplete;
+          await frames();
+        };
+        const suggested = (value) => (search()?.suggestions ?? []).find((one) => one.value === value);
+        const optionFor = (value) => Array.from(search()?.shadowRoot?.querySelectorAll('.popup .option') ?? [])
+          .find((one) => text(one.querySelector('.name')) === value);
+        const searchAdder = () => root().querySelector('.property-adder[data-adder="search"]');
+        const enterIn = async (field) => {
+          field?.shadowRoot?.querySelector('input')?.dispatchEvent(
+            new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, composed: true, cancelable: true }));
+          await settle(150);
+        };
+        const typeIn = async (field, value) => {
+          const input = field?.shadowRoot?.querySelector('input');
+          if (!input) return;
+          input.value = value;
+          input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+          await settle();
+        };
+        const flashed = (cardId, property) =>
+          Boolean(card(cardId)?.querySelector(`.row[data-property="${property}"]`)?.closest('.prow')?.classList.contains('flash'));
+        {
+          await typeSearch('padd');
+          const list = search()?.suggestions ?? [];
+          // A list under the field as soon as something is typed: what is set, and what could be added.
+          results.search.typingListsSuggestions =
+            list.length > 0 && list.length <= 8 && Boolean(optionFor('padding')) &&
+            list.every((one) => one.value.includes('padd'));
+          // Set here already: offered as a way to it, not as a second declaration.
+          results.search.aSetPropertyIsOfferedAsGoTo =
+            suggested('padding')?.group === 'Set on this element' && suggested('padding')?.hint === 'set · go to it';
+          await typeSearch('will');
+          const willChange = suggested('will-change');
+          await typeSearch('curs');
+          // Not set: offered to add, naming the card it will show in (Other when no card lists it).
+          results.search.anUnsetPropertyIsOfferedAsAdd =
+            willChange?.group === 'Add' && willChange?.hint === 'add · Other' &&
+            suggested('cursor')?.group === 'Add' && suggested('cursor')?.hint === 'add · Interaction';
+        }
+        progress.textContent = 'search: go to';
+        {
+          await closeCard('spacing');
+          await typeSearch('padd');
+          optionFor('padding')?.click();
+          await settle(60);
+          // Taking a set one goes to its row: Cards, its card opened, the row flashed and its name
+          // focused, the search emptied.
+          results.search.goToOpensItsCardAndFlashesTheRow =
+            views()?.value === 'cards' && Boolean(card('spacing')?.open) && flashed('spacing', 'padding') &&
+            search()?.shadowRoot?.querySelector('input')?.value === '' &&
+            root().activeElement === card('spacing')?.querySelector('.row[data-property="padding"] .dots');
+          await closeCard('spacing');
+        }
+        progress.textContent = 'search: add';
+        {
+          await closeCard('other');
+          await typeSearch('letter-spacing');
+          search()?.shadowRoot?.querySelector('.go')?.click();
+          await settle(60);
+          const adder = searchAdder();
+          const top = root().querySelector('.top');
+          const view = root().querySelector('.cards-view');
+          // The search's Add opens today's adder right under the search, seeded with the text, not
+          // one at the end of Other, a scroll away from where the question was asked.
+          results.search.theActionOpensTheAdderUnderTheSearch =
+            Boolean(adder && top && view) &&
+            Boolean(top.compareDocumentPosition(adder) & Node.DOCUMENT_POSITION_FOLLOWING) &&
+            Boolean(adder.compareDocumentPosition(view) & Node.DOCUMENT_POSITION_FOLLOWING) &&
+            adder.getBoundingClientRect().top >= top.getBoundingClientRect().bottom - 1 &&
+            adder.querySelector('heo-value-field.name-field')?.shadowRoot?.querySelector('input')?.value === 'letter-spacing' &&
+            !card('other')?.querySelector('.property-adder');
+          await enterIn(searchAdder()?.querySelector('heo-value-field.name-field'));
+          const valueStep = searchAdder()?.dataset.step === 'value';
+          await typeIn(searchAdder()?.querySelector('heo-value-field.new-value'), '0.3em');
+          await enterIn(searchAdder()?.querySelector('heo-value-field.new-value'));
+          await settle(60);
+          // Written, and shown where it is edited from now on: its card (Text style), opened, the row flashed.
+          results.search.aCardPropertyLandsInItsCard =
+            valueStep && target.style.getPropertyValue('letter-spacing') === '0.3em' && !searchAdder() &&
+            Boolean(card('typography')?.open) && flashed('typography', 'letter-spacing');
+          engine.undo();
+          await settle();
+          await closeCard('typography');
+        }
+        {
+          await typeSearch('will-change');
+          optionFor('will-change')?.click();
+          await settle(60);
+          // Taken from the list, the name is settled: the adder opens on its value.
+          const onItsValue = searchAdder()?.dataset.step === 'value';
+          await typeIn(searchAdder()?.querySelector('heo-value-field.new-value'), 'transform');
+          await enterIn(searchAdder()?.querySelector('heo-value-field.new-value'));
+          await settle(60);
+          // No card lists will-change: it lands in Other, opened, the row flashed.
+          results.search.anUnownedPropertyLandsInOther =
+            onItsValue && target.style.getPropertyValue('will-change') === 'transform' && !searchAdder() &&
+            Boolean(card('other')?.open) && flashed('other', 'will-change') &&
+            Boolean(root().querySelector('[data-declarations="other"] .row[data-property="will-change"]'));
+          engine.undo();
+          await settle();
+          await closeCard('other');
+        }
+        progress.textContent = 'search: no match';
+        {
+          await typeSearch('zzzznope');
+          const none = (search()?.suggestions ?? []).length === 0;
+          const action = search()?.getAttribute('action');
+          Array.from(root().querySelectorAll('.nomatch button')).find((one) => /add zzzznope/i.test(one.textContent))?.click();
+          await settle(60);
+          // Nothing matches and nothing is suggested, yet the text can still be added: from the
+          // field's action and from the panel's no-match answer, which opens the same adder.
+          results.search.nothingMatchingStillOffersToAddIt =
+            none && action === 'Add zzzznope' &&
+            searchAdder()?.querySelector('heo-value-field.name-field')?.shadowRoot?.querySelector('input')?.value === 'zzzznope';
+          searchAdder()?.querySelector('.cancel')?.click();
+          await settle();
+        }
         const failed = Object.entries(results)
           .filter(([, group]) => group && typeof group === 'object')
           .filter(([, group]) => Object.values(group).some((value) => value === false))

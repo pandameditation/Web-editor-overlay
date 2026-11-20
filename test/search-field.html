@@ -318,8 +318,8 @@
       );
       results.styles.offersTheNearMiss = offered().includes('isolation');
 
-      // And taking one opens the Other card's adder with it, so the completion is the whole gesture.
-      const adderBox = () => stylePanel.shadowRoot.querySelector('.property-adder[data-adder="other"]');
+      // And taking one opens the adder under the search with it, so the completion is the whole gesture.
+      const adderBox = () => stylePanel.shadowRoot.querySelector('.property-adder[data-adder="search"]');
       // The adder's field (name, then value) and its real input.
       const adderField = () => adderBox()?.querySelector('heo-value-field');
       const adderInput = () => adderField()?.shadowRoot?.querySelector('input[type="text"]');
@@ -348,7 +348,7 @@
        *
        * It used to open a multi-row popup; that popup is gone (one Add property everywhere, the user
        * confirmed it), and several declarations in one step go through Paste CSS. Add now opens
-       * the Other card's own adder with the query as its draft, one property at a time.
+       * the adder right under the search with the query as its draft, one property at a time.
        */
       const target = document.getElementById('para');
       await typeInto(filterField, 'box-shadow', stylePanel);
@@ -358,8 +358,8 @@
       await wait(80);
       results.styles.popupOpened = Boolean(adderBox());
       results.styles.seededFromTheQuery = adderInput()?.value === 'box-shadow';
-      // Add (and Enter in the field) opens the Other card's own adder, seeded, with the caret in it.
-      results.search.addOpensTheOtherCardsAdder =
+      // Add (and Enter in the field) opens the adder under the search, seeded, with the caret in it.
+      results.search.addOpensTheAdderUnderTheSearch =
         results.styles.popupOpened &&
         results.styles.seededFromTheQuery &&
         stylePanel.shadowRoot.activeElement === adderField();

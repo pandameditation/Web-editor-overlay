@@ -9,7 +9,8 @@
     reports ready, so `browser-check.mjs --shot` can capture it.
 
       ?state=actual | preview-320 | popover-padding | save-spacing | save-typography-320 |
-             add-menu | detach | preview-menu | search-padding
+             add-menu | detach | preview-menu | search-padding |
+             cards | applied | cascade-menu | adder-ladder
       &theme=dark | light
 
     `--shot` resizes the window to 1440x900 after the page reports, so the page re-places what it
@@ -222,6 +223,42 @@
           send(field, 'search-input', { value: 'padding' });
           break;
         }
+        case 'cards':
+          // The default view, one card open in place across both columns.
+          await openCard('spacing');
+          // From the search down: the search and view switch, then the grid.
+          shown = () => q('.top');
+          break;
+        case 'applied':
+          send(need(q('.top heo-segmented.views'), 'view switch'), 'segment-change', { value: 'applied' });
+          shown = () => q('.applied');
+          break;
+        case 'cascade-menu': {
+          // The J ladder for the Text style card's color: inline, the !important rule over it, the classes.
+          await openCard('typography');
+          const row = need(q('[data-declarations="typography"] .row[data-property="color"]'), 'typography color row');
+          row?.scrollIntoView({ block: 'center' });
+          await settle();
+          need(row?.querySelector('.dots'), 'color name')?.click();
+          shown = () => q('.dots[aria-expanded="true"]')?.closest('.row');
+          break;
+        }
+        case 'adder-ladder': {
+          // The search's Add: the adder under the search, on its value step (the ladder, with confirm).
+          const field = need(q('.top heo-search-field'), 'search field');
+          field?.reset?.('letter-spacing');
+          send(field, 'search-input', { value: 'letter-spacing' });
+          await settle();
+          need(field?.shadowRoot?.querySelector('.go'), 'search action')?.click();
+          await settle();
+          need(q('.property-adder[data-adder="search"] heo-value-field.name-field'), 'search adder name')
+            ?.shadowRoot?.querySelector('input')
+            ?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, composed: true, cancelable: true }));
+          await settle();
+          need(q('.property-adder[data-adder="search"][data-step="value"]'), 'search adder value step');
+          shown = () => q('.top');
+          break;
+        }
         default:
           missing.push(`unknown state ${state}`);
       }
@@ -240,7 +277,8 @@
       // Every drawn row's name starts at the same x, set or not.
       const names = Array.from(sroot()?.querySelectorAll('.cards-view .row .pn, .applied .row .pn') ?? [])
         .filter((el) => el.getClientRects().length).map((el) => rect(el).left);
-      layout.rowNamesAlign = names.length > 0 && names.every((x) => x === names[0]);
+      // Null when the state draws no rows (every card closed): nothing to line up.
+      layout.rowNamesAlign = names.length ? names.every((x) => x === names[0]) : null;
       const rects = { panel: panelRect, names };
       const box = q('.savebox');
       if (box) {
@@ -260,11 +298,21 @@
       const pop = q('.pop');
       if (pop) {
         const row = q(`.row[data-row="${CSS.escape(panel().ui?.popover?.rowId ?? '')}"]`) ?? q('.dots[aria-expanded="true"]')?.closest('.row');
+        // Under, over, or to one side of its row (place.ts tries each in turn); never on top of it.
         layout.popoverSitsBesideItsRow = Boolean(row) &&
-          (rect(pop).top >= rect(row).bottom - 1 || rect(pop).bottom <= rect(row).top + 1);
+          (rect(pop).top >= rect(row).bottom - 1 || rect(pop).bottom <= rect(row).top + 1 ||
+            rect(pop).right <= rect(row).left + 1 || rect(pop).left >= rect(row).right - 1);
         Object.assign(rects, { pop: rect(pop), popRow: rect(row) });
       }
 
+      const adder = q('.property-adder[data-adder="search"]');
+      if (adder) {
+        const top = q('.top');
+        // Right under the search it was opened from, and inside the panel.
+        layout.adderSitsUnderTheSearch = Boolean(top) && rect(adder).top >= rect(top).bottom - 1;
+        layout.adderIsInsideThePanel = rect(adder).left >= panelRect.left && rect(adder).right <= panelRect.right + 1;
+        Object.assign(rects, { adder: rect(adder), search: rect(top) });
+      }
       /* ---- after the shot's resize: put the layers back under their anchors ---- */
       let timer = 0;
       addEventListener('resize', () => {

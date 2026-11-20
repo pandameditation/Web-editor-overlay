@@ -69,7 +69,7 @@ import {
 } from './styles/size-strip.js';
 import { menuStyles, placeLayer } from './styles/menu.js';
 import { searchPopoverStyles } from './styles/search-popover.js';
-import { stylesDestination, type AdderPlaces } from './styles/property-adder.js';
+import { stylesDestination, valueStepDraft, type AdderPlaces } from './styles/property-adder.js';
 import {
   previewSlot,
   propertyRowStyles,
@@ -95,6 +95,7 @@ import type { RowScope, StylesHost, StylesUiState } from './styles/types.js';
 import type { HeoValueField } from '../controls/value-field.js';
 import '../controls/value-field.js';
 import '../controls/search-field.js';
+import type { SearchSuggestion } from '../controls/search-field.js';
 import '../controls/box-editor.js';
 import '../controls/border-editor.js';
 import type { BorderFieldSpec, EdgeView, LineView } from '../controls/border-editor.js';
@@ -308,10 +309,16 @@ function listOf(cardId: string): string {
   return cardId === 'child' ? 'parent-self' : cardId;
 }
 
-/** The card a property shows in, for the adder's "shows in" hint. */
-function ownerOf(property: string): string {
-  return CARDS.find((card) => card.all.includes(property))?.heading ?? 'Other';
+/** A card's heading, by id. */
+function headingOf(cardId: string): string {
+  return CARDS.find((card) => card.id === cardId)?.heading ?? 'Other';
 }
+
+/** The adder the search opens, drawn right under it (decision 14). */
+const SEARCH_ADDER = 'search';
+/** How many suggestions the search lists, and how many of them may be ones already set. */
+const SUGGESTION_MAX = 8;
+const SUGGESTION_SET_MAX = 5;
 
 /** The panel's two views: Cards to edit by category, Applied to check everything set at once. */
 const VIEWS: SegmentOption[] = [
@@ -332,6 +339,14 @@ function scopeOfCondition(key: string): RowScope {
   // A pseudo-element at no media reads any of its rules in effect now (readRow).
   if (isPseudoElement(state) && media === 'base') return { kind: 'state', state };
   return { kind: 'state', state, slot: media };
+}
+
+/**
+ * The card a property shows in for this render: the first visible card listing it now, else
+ * Other (which holds whatever is set that no card lists: an offset on a static element too).
+ */
+function landingOf(cards: CardRender, property: string): string {
+  return cards.visible.find((card) => card.id !== 'other' && (cards.lists.get(card.id) ?? []).includes(property))?.id ?? 'other';
 }
 
 /** Everything one render's cards read: the condition's scope, the lists, and the shared lookups. */
@@ -542,6 +557,11 @@ export class HeoStylesPanel extends HeoElement {
 
       .top heo-segmented.views {
         flex: 0 0 auto;
+      }
+      /* The search's adder, right under it, above the cards it adds to. */
+      .search-add {
+        padding: 6px 12px 10px;
+        border-bottom: 1px solid var(--heo-line);
       }
 
       /* The condition strip under the header, and its one line about the picked condition. */
@@ -1105,10 +1125,13 @@ export class HeoStylesPanel extends HeoElement {
           placeholder="Search properties, values, selectors…"
           .value=${this.ui.filter}
           .count=${found}
+          mode="suggest"
+          .suggestions=${this.#suggestions(cards)}
           action=${this.#addLabel()}
           action-icon="plus"
           action-compact
           @search-input=${(event: CustomEvent<{ value: string }>) => this.#patch({ filter: event.detail.value })}
+          @search-pick=${(event: CustomEvent<{ value: string }>) => this.#pickSuggestion(cards, event.detail.value)}
           @search-submit=${() => this.#openAdder(this.ui.filter.trim())}
         ></heo-search-field>
         <heo-segmented
@@ -1122,6 +1145,7 @@ export class HeoStylesPanel extends HeoElement {
       }}
         ></heo-segmented>
       </div>
+      ${this.ui.adder?.id === SEARCH_ADDER ? this.#renderSearchAdder(cards) : nothing}
 
       ${this.ui.view === 'applied' ? this.#renderApplied(cards) : this.#renderCards(cards)}
       ${found === 0 ? this.#renderNoMatch() : nothing}
@@ -1431,7 +1455,7 @@ export class HeoStylesPanel extends HeoElement {
    * value step the ladder for the picked condition) and "Paste CSS…" (decision 15).
    */
   #renderOther(cards: CardRender): TemplateResult | typeof nothing {
-    const { el, model, host } = cards;
+    const { el, host } = cards;
     const properties = (cards.lists.get('other') ?? []).filter((property) =>
       this.#matches(cards, property));
     if (host.filtering && !properties.length) return nothing;
@@ -1443,7 +1467,7 @@ export class HeoStylesPanel extends HeoElement {
         : nothing}
       ${host.filtering
         ? nothing
-        : html`${renderBlockAdder(host, 'other', [], cards.state, { places: this.#adderPlaces(el, model, cards.cond) })}
+        : html`${renderBlockAdder(host, 'other', [], cards.state, { places: this.#adderPlaces(cards) })}
           <div class="actions">
             <button
               class="btn sm"
@@ -1569,14 +1593,15 @@ export class HeoStylesPanel extends HeoElement {
    * places (cascade-places.ts), strongest first, the default pick (inline at Element, the
    * element's own class under a condition) and what a value at each would do.
    */
-  #adderPlaces(el: HTMLElement, model: ElementModel, cond: PlaceCondition): (property: string) => AdderPlaces {
+  #adderPlaces(cards: CardRender): (property: string) => AdderPlaces {
+    const { el, model, cond } = cards;
     const ownedClass = (name: string) => this.editor.classes.get(name) ?? null;
     return (property) => {
       const list = placesFor(model, property, cond, el, { ownedClass });
       return {
         list,
         inactive: inactivePlaces(model, property, cond),
-        owner: ownerOf(property),
+        owner: headingOf(landingOf(cards, property)),
         fallback: defaultPlace(model, el, cond, list).key,
         outcome: (place, important) => placeOutcome(model, property, cond, place, important),
       };
@@ -1584,19 +1609,89 @@ export class HeoStylesPanel extends HeoElement {
   }
 
   /**
-   * Open Other's adder, seeded with what was being looked for.
+   * Open the adder under the search, seeded with what was being looked for: at its name step
+   * (the search's Add, the no-match offers), or at the value step of a property picked from the
+   * suggestions, whose name is already settled.
    *
    * Searching for a property and not finding it is the most common way somebody arrives at wanting
    * to add one, so the query carries over as the draft. The search is cleared on the way: adders
    * are hidden while it narrows the panel, and the question it asked has been answered.
    */
-  #openAdder(seed = ''): void {
+  #openAdder(seed = '', valueStep = false): void {
     const property = normalizeProperty(seed);
     this.#clearFilter();
-    userToggled.set('other', true);
     this.adderForm.reset();
-    this.#patch({ view: 'cards', adder: { id: 'other', draft: property, dest: '' }, menu: null, popover: null });
-    this.#focusSelector('.property-adder[data-adder="other"] heo-value-field');
+    this.#patch({
+      adder: { id: SEARCH_ADDER, draft: valueStep && property ? valueStepDraft(property) : property, dest: '' },
+      menu: null,
+      popover: null,
+    });
+    this.#focusSelector(`.property-adder[data-adder="${SEARCH_ADDER}"] heo-value-field`);
+  }
+
+  /**
+   * The search's adder: today's one adder (name, then the ladder for the picked condition), drawn
+   * under the search while it is open. A declaration is not shown here once written: it goes to
+   * the card that lists its property, or to Other, opened and flashed there.
+   */
+  #renderSearchAdder(cards: CardRender): TemplateResult | typeof nothing {
+    const added = renderBlockAdder(cards.host, SEARCH_ADDER, [], cards.state, {
+      places: this.#adderPlaces(cards),
+      // It opened from the search: Cancel goes back there.
+      cancelFocus: '.top heo-search-field',
+      onAdded: (hint, property) => {
+        if (hint) this.editor.notify(hint, 'info');
+        this.#goToRow(property, landingOf(cards, property));
+      },
+    });
+    return added === nothing ? nothing : html`<div class="search-add">${added}</div>`;
+  }
+
+  /**
+   * What the search suggests for its text (the part before a colon, for "property: value"): the
+   * properties set under the condition that match, to go to, then properties to add, each saying
+   * the card it would show in. Empty text lists what is set, then the common ones: the list the
+   * field's chevron promises.
+   */
+  #suggestions(cards: CardRender): SearchSuggestion[] {
+    const needle = this.ui.filter.split(':')[0]!.trim().toLowerCase();
+    const set = new Set<string>();
+    for (const card of cards.visible) {
+      for (const property of cards.lists.get(card.id) ?? []) if (cards.read(property)) set.add(property);
+    }
+    const goTo = [...set]
+      .filter((property) => property.includes(needle))
+      // Names starting with the text first, as searchProperties ranks them.
+      .sort((a, b) => Number(b.startsWith(needle)) - Number(a.startsWith(needle)))
+      .slice(0, SUGGESTION_SET_MAX);
+    const add = searchProperties(needle, SUGGESTION_MAX * 3)
+      .map((meta) => meta.name)
+      .filter((property) => !set.has(property))
+      .slice(0, SUGGESTION_MAX - goTo.length);
+    return [
+      ...goTo.map((property) => ({ value: property, hint: 'set · go to it', group: 'Set on this element' })),
+      ...add.map((property) => ({ value: property, hint: `add · ${headingOf(landingOf(cards, property))}`, group: 'Add' })),
+    ];
+  }
+
+  /** A suggestion taken: a set property is gone to in its card; an unset one opens its value step. */
+  #pickSuggestion(cards: CardRender, value: string): void {
+    const property = normalizeProperty(value);
+    if (!property) return;
+    if (cards.read(property)) {
+      this.#clearFilter();
+      this.#goToRow(property, landingOf(cards, property));
+    } else this.#openAdder(property, true);
+  }
+
+  /**
+   * To a property's row in its card: Cards, the card opened, the row scrolled to and flashed, and
+   * focus on its name (the cascade menu's opener), so the keyboard arrives where the eye does.
+   */
+  #goToRow(property: string, cardId: string): void {
+    userToggled.set(cardId, true);
+    this.#patch({ view: 'cards', menu: null, popover: null });
+    this.#flashRow(property, listOf(cardId), true);
   }
 
   /* ---------------------------------------------------------------------- */
@@ -1604,7 +1699,7 @@ export class HeoStylesPanel extends HeoElement {
   /* ---------------------------------------------------------------------- */
 
   /** Flash a property's row in one list once the next render has landed: where an add landed. */
-  #flashRow(property: string, listId: string): void {
+  #flashRow(property: string, listId: string, reveal = false): void {
     void this.updateComplete.then(() =>
       requestAnimationFrame(() => {
         const root = this.renderRoot;
@@ -1616,12 +1711,16 @@ export class HeoStylesPanel extends HeoElement {
         row?.classList.remove('flash');
         row?.classList.add('flash');
         setTimeout(() => row?.classList.remove('flash'), 1300);
+        if (!reveal) return;
+        row?.scrollIntoView({ block: 'nearest' });
+        row?.querySelector<HTMLElement>('.dots')?.focus({ preventScroll: true });
       }),
     );
   }
 
   /**
-   * Focus a control once the next render has landed. A value field takes the caret in its input.
+   * Focus a control once the next render has landed. A value field or the search takes the caret
+   * in its input.
    * `onlyFromKeyboard` leaves focus where it is unless it was on the control that asked.
    */
   #focusSelector(selector: string, onlyFromKeyboard = false): void {
@@ -1631,7 +1730,9 @@ export class HeoStylesPanel extends HeoElement {
       requestAnimationFrame(() => {
         const found = this.renderRoot.querySelector<HTMLElement>(selector);
         if (!found) return;
+        // A value field, or the search, takes the caret in its input: neither host is focusable.
         if (found.localName === 'heo-value-field') (found as HeoValueField).focusInput();
+        else if (found.localName === 'heo-search-field') (found as HTMLElement & { focusInput(): void }).focusInput();
         else found.focus({ preventScroll: true });
       }),
     );
@@ -3076,7 +3177,7 @@ export class HeoStylesPanel extends HeoElement {
   /** What the add action would do, named after what has been typed. */
   #addLabel(): string {
     const seed = this.ui.filter.trim();
-    return seed ? `Add ${seed}` : 'Add a declaration';
+    return seed ? `Add ${seed}` : 'Add a property';
   }
 
   /**

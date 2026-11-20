@@ -626,14 +626,14 @@
 
         /*
          * And what the search's Add opens. It used to be a popup with no max-height at all; it is
-         * now the Other card's own adder, which has to come into view with its confirm reachable.
+         * now the adder under the search, which has to come into view with its confirm reachable.
          */
         const styleSearch = panel.shadowRoot.querySelector('.top heo-search-field');
         styleSearch.shadowRoot.querySelector('.go').click();
         await panel.updateComplete;
         await frames();
         await wait(150);
-        const adderNow = () => panel.shadowRoot.querySelector('.property-adder[data-adder="other"]');
+        const adderNow = () => panel.shadowRoot.querySelector('.property-adder[data-adder="search"]');
         results.placement.addPopupFitsOnScreen = adderNow()
           ? onScreen(adderNow().getBoundingClientRect())
           : null;

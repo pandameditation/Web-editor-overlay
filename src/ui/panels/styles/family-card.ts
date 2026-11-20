@@ -183,10 +183,15 @@ export function renderBlockAdder(
   destinations: AdderDestination[],
   state: string,
   options: {
-    /** After a property is written, with the engine's note when there is one; else it is notified. */
-    onAdded?: (hint: string | null) => void;
+    /**
+     * After a property is written, with the engine's note when there is one (else it is notified)
+     * and the property, for a host that shows where it landed.
+     */
+    onAdded?: (hint: string | null, property: string) => void;
     /** The element's adders: the value step is the ladder of these places (`destinations` empty). */
     places?: (property: string) => AdderPlaces;
+    /** Where Cancel puts focus back, for an adder with no "+ Add property" of its own to return to. */
+    cancelFocus?: string;
   } = {},
 ): TemplateResult | typeof nothing {
   if (host.filtering) return nothing;
@@ -214,7 +219,7 @@ export function renderBlockAdder(
       onCancel: () => {
         host.form.reset();
         host.patch({ adder: null, menu: null });
-        host.focusSelector(`.add-prop[data-adder="${CSS.escape(id)}"]`);
+        host.focusSelector(options.cancelFocus ?? `.add-prop[data-adder="${CSS.escape(id)}"]`);
       },
       onPick: (key) => {
         const adder = host.ui.adder;
@@ -238,7 +243,7 @@ export function renderBlockAdder(
         host.patch({ adder: null, menu: null });
         const { hint } = engine.addDeclaration(dest.dest, property, value);
         host.flashRow(property, id);
-        if (options.onAdded) options.onAdded(hint);
+        if (options.onAdded) options.onAdded(hint, property);
         else if (hint) engine.notify(hint, 'info');
       },
     },

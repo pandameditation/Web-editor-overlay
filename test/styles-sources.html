@@ -1018,7 +1018,7 @@
           key(inputOf(effAdder()), 'Enter');
           await settle(300);
           const effRungs = () => Array.from(effAdder()?.querySelectorAll('.ladder > [data-place]') ?? []);
-          const effPicked = () => effAdder()?.querySelector('.ladder [role="radio"][aria-checked="true"]');
+          const adderPicked = () => effAdder()?.querySelector('.ladder [role="radio"][aria-checked="true"]');
           const effResult = () => textOf(effAdder()?.querySelector('.open .res'));
           // Every place letter-spacing can go, strongest first: the empty inline style above the
           // classes, `section p` (which sets it now) under them, and the element's new class last.
@@ -1026,18 +1026,18 @@
             nameAsksNothing && stepOf(effAdder()) === 'value' &&
             effRungs().map((one) => textOf(one.querySelector('.pl'))).join(',') === 'inline,.featured,.card,section p,new class' &&
             // Nothing writes it yet at Element, so inline is where it goes until another is picked.
-            effPicked()?.dataset.place === 'inline';
+            adderPicked()?.dataset.place === 'inline';
           // Each rung says how far it reaches, and the picked one what a value there would do.
           results.adder.theResultLineSaysWhatThePickDoes =
             effResult() === 'A value here will apply, over section p · only this element' &&
             effRungs().map((one) => textOf(one.querySelector('.uses'))).join(',') === '1×,1×,4×,4×,1×';
           // The arrows step the pick, as in any radio group; the result follows it.
-          key(effPicked(), 'ArrowDown');
+          key(adderPicked(), 'ArrowDown');
           await settle(200);
-          key(effPicked(), 'ArrowDown');
+          key(adderPicked(), 'ArrowDown');
           await settle(200);
           results.adder.arrowKeysStepThePick =
-            effPicked()?.dataset.place === '.card|base' &&
+            adderPicked()?.dataset.place === '.card|base' &&
             effResult() === 'A value here will apply, over section p · changes 4 elements';
           // Escape closes the list first, then the adder.
           fieldOf(effAdder())?.openList();
