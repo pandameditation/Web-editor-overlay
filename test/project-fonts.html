@@ -619,6 +619,112 @@
         return { focusedInField, firstClosesTheList, secondClosesTheDialog, fromARow, thenTheDialog };
       });
 
+      await check('slotPreview', async () => {
+        // A slot clicked or focused is shown on the element, list open or not: a fallback as it renders
+        // where the fonts above it are missing.
+        if (!picker()) {
+          field().openShadowEditor();
+          await settle(700);
+        }
+        const parseFirst = (value) => value.split(',')[0].trim().replace(/^["']|["']$/g, '');
+        const families = () => Array.from(picker().querySelectorAll('.slot')).map((one) => one.dataset.family).filter(Boolean);
+        const before = getComputedStyle(h).fontFamily;
+        const stack = families();
+        picker().querySelector('.slot[data-at="1"] .vf').click();
+        await settle(300);
+        const shown = getComputedStyle(h).fontFamily;
+        const expected = stack.slice(1);
+        // Computed, so a token shows as what it resolves to: the font itself is what is missing.
+        const fallbackShown = shown !== before && !shown.startsWith(stack[0]) && (expected.at(-1) === 'serif' ? /serif$/.test(shown) : true);
+        // Closed, the slot stays shown.
+        picker().querySelector('.slot[aria-current="true"] [data-chevron]').click();
+        await settle(250);
+        const stillShown = !picker().querySelector('.list') && getComputedStyle(h).fontFamily === shown;
+        const notWritten = parseFirst(field().value) === stack[0];
+        // The font itself selected: the element is as it is.
+        picker().querySelector('.slot[data-at="0"] .vf').click();
+        await settle(300);
+        const backOnTheFont = getComputedStyle(h).fontFamily === before;
+        // A click inside the selected slot's field opens its list.
+        const chev = picker().querySelector('.slot[aria-current="true"] [data-chevron]');
+        if (chev?.getAttribute('aria-expanded') === 'true') { chev.click(); await settle(250); }
+        const wasClosed = !picker().querySelector('.list');
+        picker().querySelector('.slot[aria-current="true"] input').click();
+        await settle(300);
+        const clickOpens = wasClosed && Boolean(picker().querySelector('.list'));
+        picker().querySelector('.slot[aria-current="true"] [data-chevron]').click();
+        await settle(250);
+        // Tabbing to a slot selects and shows it, without opening its list.
+        const other = picker().querySelector('.slot[data-at="1"] .v');
+        other?.focus();
+        await settle(300);
+        const tabbed = picker().querySelector('.slot[data-at="1"]')?.getAttribute('aria-current') === 'true' && !picker().querySelector('.list') && getComputedStyle(h).fontFamily === shown;
+        // Closing the dialog puts the element back.
+        field().shadowRoot.querySelector('.dialog-head button[aria-label="Close"]')?.click();
+        await settle(300);
+        return {
+          hasAFallback: stack.length >= 2,
+          aFallbackClickedIsShown: fallbackShown,
+          andStaysShownWithItsListClosed: stillShown,
+          withoutWriting: notWritten,
+          theFontSelectedShowsTheElementAsItIs: backOnTheFont,
+          aSlotTabbedToIsShownToo: tabbed,
+          aClickInTheFieldOpensItsList: clickOpens,
+          closingPutsItBack: getComputedStyle(h).fontFamily === before,
+          andTheValueIsUnchanged: parseFirst(field().value) === stack[0],
+        };
+      });
+
+      await check('firstClick', async () => {
+        // Real input: the first click in a field opens its list, and so does Tab; opening the editor does not.
+        const press = (payload) => new Promise((resolve) => {
+          const id = Math.random().toString(36).slice(2);
+          window.__heoKeysDone = (done) => { if (done === id) resolve(); };
+          window.__heoPressKeys(JSON.stringify({ id, ...payload }));
+        });
+        const clickAt = async (el) => {
+          const box = el.getBoundingClientRect();
+          const x = box.left + Math.min(40, box.width / 3);
+          const y = box.top + box.height / 2;
+          await press({ mouse: [{ type: 'hover', x, y }, { type: 'down', x, y }, { type: 'up', x, y }] });
+          await settle(300);
+        };
+        if (picker()) {
+          field().shadowRoot.querySelector('.dialog-head button[aria-label="Close"]')?.click();
+          await settle(300);
+        }
+        field().openShadowEditor();
+        await settle(700);
+        const closedOnOpen = !picker().querySelector('.list');
+        // A slot not selected yet: one click.
+        await clickAt(picker().querySelector('.slot[data-at="1"] .vf'));
+        const otherSlotOpens = picker().querySelector('.slot[data-at="1"]')?.getAttribute('aria-current') === 'true' && Boolean(picker().querySelector('.list'));
+        await press({ keys: ['Escape'] });
+        await settle(250);
+        // The selected slot's own field: one click.
+        await clickAt(picker().querySelector('.slot[aria-current="true"] input'));
+        const ownFieldOpens = Boolean(picker().querySelector('.list'));
+        await press({ keys: ['Escape'] });
+        await settle(250);
+        // Tab to the next slot's field: its list opens.
+        const input = picker().querySelector('.slot[aria-current="true"] input');
+        input.focus();
+        const before = picker().querySelector('.slot[aria-current="true"]')?.dataset.at;
+        let tabbed = false;
+        for (let i = 0; i < 4 && !tabbed; i += 1) {
+          await press({ keys: ['Tab'] });
+          await settle(250);
+          const now = picker().querySelector('.slot[aria-current="true"]')?.dataset.at;
+          tabbed = now !== before;
+        }
+        const tabOpens = tabbed && Boolean(picker().querySelector('.list'));
+        await press({ keys: ['Escape'] });
+        await settle(250);
+        field().shadowRoot.querySelector('.dialog-head button[aria-label="Close"]')?.click();
+        await settle(300);
+        return { closedOnOpen, otherSlotOpens, ownFieldOpens, tabbedToTheNextSlot: tabbed, tabOpens };
+      });
+
       await check('placement', async () => {
         // Too tall for below: beside the field, the left side (the page has room), its middle at the field's.
         field().shadowRoot.querySelector('.dialog-head button[aria-label="Close"]')?.click();

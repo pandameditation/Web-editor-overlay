@@ -2479,6 +2479,21 @@ export class HeoValueField extends LitElement {
       if (this.composer) return;
       if (!this.#focusKeepsListOpen()) this.closePopup();
       if (this.#hasFocus()) return;
+      /*
+       * A font the picker is only showing — a slot selected, a row hovered — is never committed by
+       * looking away. The picker moves the focus between its slots, and a focus that fell out for
+       * a moment wrote the previewed fallback as the value. It goes back instead.
+       */
+      if (this.kind === 'font' && this.#fontCommitted !== null) {
+        if (this.open && this.shadowing) return;
+        this.#fontCommitted = null;
+        this.draft = this.value;
+        if (this.#painted) {
+          this.#painted = false;
+          this.dispatchEvent(new CustomEvent('value-revert', { bubbles: true, composed: true }));
+        }
+        return;
+      }
       // A submit control has an explicit trigger, so looking away is not an
       // instruction to act. Committing here would fire an action the host never
       // asked for — adding a class the user was only half-way through typing.

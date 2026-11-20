@@ -497,6 +497,8 @@ export class HeoFontPicker extends LitElement {
 
   override connectedCallback(): void {
     super.connectedCallback();
+    // At the window, in the capture phase: Tab from the dialog's head starts outside this element.
+    addEventListener('keydown', this.#onTab, true);
     this.#unlisten = maybeEngine()?.fonts.onChange(() => {
       this.fontsRevision += 1;
     }) ?? null;
@@ -504,6 +506,7 @@ export class HeoFontPicker extends LitElement {
 
   override disconnectedCallback(): void {
     super.disconnectedCallback();
+    removeEventListener('keydown', this.#onTab, true);
     this.#unlisten?.();
     this.#unlisten = null;
     cancelAnimationFrame(this.#follow);
@@ -760,18 +763,49 @@ export class HeoFontPicker extends LitElement {
    * slot — a fallback previewed is the page as it will look where the font above it is missing.
    */
   #preview(choice: Choice | null): void {
-    const name = choice ? `${this.sel}:${choice.name}` : null;
-    if (name === this.#hovered) return;
-    this.#hovered = name;
-    if (choice?.web) void previewWebFont(choice.web);
+    // A font being added stays shown while it is decided on: a row blurred as the list went away
+    // (whenever the browser reports that) must not take its preview back.
+    if (!choice && this.draft?.mode === 'add') return;
     if (!choice) {
-      this.#emit('font-preview', { value: null });
+      // Nothing hovered: the selected slot is still shown, as it renders where the ones above are missing.
+      const rest = this.#slotValue();
+      const key = `rest:${rest ?? ''}`;
+      if (key === this.#hovered) return;
+      this.#hovered = key;
+      this.#emit('font-preview', { value: rest });
       return;
     }
+    const name = `row:${this.sel}:${choice.name}`;
+    if (name === this.#hovered) return;
+    this.#hovered = name;
+    if (choice.web) void previewWebFont(choice.web);
     // A fallback is seen as what it is: the stack from that slot on, the fonts above it missing.
     const stack = this.#withSlot(this.#valueOf(choice), choice.web);
     const value = this.sel > 0 ? formatFamilies(parseFamilies(stack).slice(this.sel)) : stack;
     this.#emit('font-preview', { value });
+  }
+
+  /**
+   * What the element shows while a slot is selected and nothing in its list is hovered: the stack
+   * from that slot on, so a fallback focused or clicked is seen at work — what visitors get where
+   * the fonts above it are missing. Null for the font itself, which is what the element has.
+   */
+  /** When Tab was last pressed: a focus that follows it is the user's, one without it the editor's. */
+  #tabAt = -Infinity;
+  #onTab = (event: KeyboardEvent): void => {
+    if (event.key === 'Tab') this.#tabAt = performance.now();
+  };
+
+  #byTab(): boolean {
+    return performance.now() - this.#tabAt < 400;
+  }
+
+  #slotValue(): string | null {
+    if (this.sel === 0 || this.draft) return null;
+    const slots = this.#slots;
+    if (!slots[this.sel]) return null;
+    const rest = slots.slice(this.sel).filter(Boolean);
+    return rest.length ? formatFamilies(rest) : null;
   }
 
   #pointer: { x: number; y: number } | null = null;
@@ -807,17 +841,18 @@ export class HeoFontPicker extends LitElement {
     this.#setChain(parseFamilies(stack));
   }
 
-  #select(index: number): void {
+  #select(index: number, open = true): void {
     if (this.pending !== null && index !== this.pending) {
       // Leaving an empty slot drops it, and what was under it moves up.
       const from = this.pending;
       this.pending = null;
       if (index > from) index -= 1;
     }
-    if (index !== this.sel) this.#preview(null);
     this.sel = index;
     this.query = '';
-    this.listOpen = true;
+    this.listOpen = open;
+    // The slot is shown on the element at once, list open or not.
+    this.#preview(null);
     this.#focusField();
   }
 
@@ -939,6 +974,7 @@ export class HeoFontPicker extends LitElement {
   override updated(): void {
     this.#loadWebNames();
     this.#showList();
+    if (!this.#hovered?.startsWith('row:')) this.#preview(null);
     if (this.#refocus === null) return;
     const at = this.#refocus;
     this.#refocus = null;
@@ -1073,11 +1109,26 @@ export class HeoFontPicker extends LitElement {
           @keydown=${(event: KeyboardEvent) => this.#chipKey(event, at)}
         >${movable ? icon('grip', 10) : nothing}</span>
         <div class="slotbody">
-          <div class=${selected ? 'vf on' : 'vf'} @click=${() => {
-            if (!selected) this.#select(at);
+          <div class=${selected ? 'vf on' : 'vf'} @pointerdown=${(event: PointerEvent) => {
+            /*
+             * On the press, not the click: a slot not yet selected is replaced by its field as it
+             * takes the focus, and the click that should have opened its list then landed on an
+             * element that was gone — it opened on the second click.
+             */
+            if (event.button !== 0 || (event.composedPath()[0] as HTMLElement).closest?.('[data-chevron]')) return;
+            if (this.sel !== at) this.#select(at, true);
+            else if (!this.listOpen) this.listOpen = true;
+          }} @click=${(event: MouseEvent) => {
+            // Enter or Space on a slot (a click with no press before it) opens it the same way.
+            if ((event.composedPath()[0] as HTMLElement).closest?.('[data-chevron]')) return;
+            if (this.sel !== at) this.#select(at, true);
+            else if (!this.listOpen) this.listOpen = true;
           }}>
             ${selected
               ? html`<input
+                  @focus=${() => {
+                    if (this.#byTab() && !this.listOpen) this.listOpen = true;
+                  }}
                   type="text"
                   aria-label=${`${role}: search fonts, or type a family`}
                   placeholder=${label || (at ? 'type or pick a fallback' : 'type or pick a font')}
@@ -1100,7 +1151,16 @@ export class HeoFontPicker extends LitElement {
                     }
                   }}
                 />`
-              : html`<button class="v" type="button" style=${`font-family:${face.replace(/[;{}<>]/g, '')}`} title=${`${role}: change it`}>${label || (at ? 'type or pick a fallback' : 'type or pick a font')}</button>`}
+              : html`<button
+                  class="v"
+                  type="button"
+                  style=${`font-family:${face.replace(/[;{}<>]/g, '')}`}
+                  title=${`${role}: change it`}
+                  @focus=${() => {
+                    // Tabbed to, the list opens as it would for a click; focused by the editor, it does not.
+                    if (this.sel !== at) this.#select(at, this.#byTab());
+                  }}
+                >${label || (at ? 'type or pick a fallback' : 'type or pick a font')}</button>`}
             <span class="role">${role}</span>
             <button
               class="chev"
