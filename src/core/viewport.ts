@@ -337,18 +337,31 @@ export function noteRuleEdited(rule: CSSRule): void {
 /** The preview that is on, if any: what the module-level hooks above talk to. */
 let active: ViewportPreview | null = null;
 
+/**
+ * What the editor's chrome keeps of the window, in screen px, read fresh on every layout.
+ *
+ * Floating, an open panel at its edge keeps its width plus `DOCK_GUTTER` on its side, and a moved
+ * one keeps nothing. Docked, the panels keep their widths flush to the edges and the bar keeps
+ * `top`; the page is laid out in what is left even at Actual (a "room" render).
+ */
+export interface ViewportInsets {
+  docked: boolean;
+  left: number;
+  right: number;
+  top: number;
+}
+
 export interface ViewportPreviewOptions {
   /** After every apply, relayout and restore: the engine re-measures its chrome. */
   onChange: () => void;
-  /** The dock's footprint, read fresh on every layout. */
-  dock: () => { open: boolean; width: number; floating: boolean };
+  insets: () => ViewportInsets;
 }
 
 /** What the internal frame sheet is called. Skipped by the rewrite walk, like every internal sheet. */
 const FRAME_SHEET_ID = 'heo-viewport-frame';
 
-/** The gap the docked panel keeps from the window edge, which the frame also leaves free. */
-const DOCK_GUTTER = 28;
+/** The gap a floating panel at its edge keeps from the window edge, which the frame also leaves free. */
+export const DOCK_GUTTER = 28;
 
 /**
  * Preview the page at a width the window is not.
@@ -380,7 +393,13 @@ const DOCK_GUTTER = 28;
 export class ViewportPreview {
   readonly #evaluator: MediaEvaluator;
   readonly #options: ViewportPreviewOptions;
+  /** The width asked for, or null at Actual. */
   #width: number | null = null;
+  /**
+   * The width the page is laid out at: the one asked for, or, docked at Actual, the room between
+   * the panels. Null when the page is at the window's own width and nothing is rewritten.
+   */
+  #render: number | null = null;
   /** Strong references to every list rewritten in the last walk, so Actual can put each back. */
   #touched: MediaList[] = [];
   #frame: ManagedStyleSheet | null = null;
@@ -389,6 +408,10 @@ export class ViewportPreview {
   /** Re-entrancy guard: writing the frame sheet is itself a sheet change. */
   #busy = false;
   #frameLeft = 0;
+  /** The room's left edge in screen px: what the left panel keeps. */
+  #roomLeft = 0;
+  /** What the docked bar keeps above the page, in screen px; 0 floating. */
+  #top = 0;
   /** Whether a width wider than the room is scaled to fit; at 100% otherwise. */
   #fit = true;
   /** The root's zoom: 1 unless the previewed width is being scaled to fit. */
@@ -414,12 +437,30 @@ export class ViewportPreview {
     this.#options = options;
   }
 
-  /** The previewed width, or null at Actual. */
+  /** The previewed width, or null at Actual (docked or not). */
   get width(): number | null {
     return this.#width;
   }
 
-  /** The frame's left edge in CSS px; 0 at Actual. */
+  /**
+   * The width the page is laid out at, which media queries and width units answer to: the
+   * previewed width, the room between the panels when docked at Actual, else null (the window's).
+   */
+  get renderWidth(): number | null {
+    return this.#render;
+  }
+
+  /** Whether no width is asked for: Actual, even while docked lays the page out in the room. */
+  get actual(): boolean {
+    return this.#width === null;
+  }
+
+  /** The room's left edge in screen px (what the left panel keeps); 0 when nothing is rendered. */
+  get roomLeft(): number {
+    return this.#roomLeft;
+  }
+
+  /** The frame's left edge in screen px; 0 when nothing is rendered (floating at Actual). */
   get frameLeft(): number {
     return this.#frameLeft;
   }
@@ -434,7 +475,7 @@ export class ViewportPreview {
     return this.#overflows;
   }
 
-  /** The width beside a docked panel, in screen px; the whole window with no dock. 0 at Actual. */
+  /** The width between the panels, in screen px; the whole window with none. 0 when nothing is rendered. */
   get room(): number {
     return this.#room;
   }
@@ -478,43 +519,36 @@ export class ViewportPreview {
    */
   set(width: number | null): boolean {
     if (width === this.#width) return true;
-    if (width === null) {
-      this.#restore();
-      this.#options.onChange();
-      return true;
-    }
-    if (!Number.isInteger(width) || width < MIN_VIEWPORT || width > MAX_VIEWPORT) return false;
-    // Sized once for the whole pass: resizing per query is what costs (§1.1).
-    this.#evaluator.beginPass();
-    this.#evaluator.matches('(min-width: 0px)', width);
-    if (!this.#evaluator.available) return false;
+    if (width !== null && (!Number.isInteger(width) || width < MIN_VIEWPORT || width > MAX_VIEWPORT)) return false;
+    const before = this.#width;
     this.#width = width;
-    active = this;
-    this.#layout();
-    this.#walk();
-    this.#writeFrame();
-    this.#connect();
+    if (!this.#update(false)) {
+      // Nothing rendered any more (a render that was on was put back): nothing is previewed.
+      this.#width = this.#render === null ? null : before;
+      return false;
+    }
     this.#options.onChange();
     return true;
   }
 
   /** Re-apply after a sheet change; one walk, and lists already at their verdict are left alone. */
   reconcile(): void {
-    if (this.#width === null || this.#busy) return;
+    if (this.#render === null || this.#busy) return;
     this.#walk();
   }
 
   /**
-   * Recompute the frame's position and scale, and rewrite the frame sheet. A media walk only when
-   * the scale moved, since the simulated height moves with it.
+   * Follow the chrome: recompute the frame's position and scale, and rewrite the frame sheet.
+   *
+   * Also where the docked room render starts and stops, since docking is a change of the insets:
+   * docked at Actual the page is laid out between the panels, and floating at Actual it goes back
+   * to the window. A media walk only when the rendered width or the scale moved (the simulated
+   * height moves with the scale), so a panel resized while a fixed width is previewed costs no walk.
    */
   relayout(): void {
-    if (this.#width === null) return;
-    if (this.#layout()) {
-      this.#evaluator.beginPass();
-      this.#walk();
-    }
-    this.#writeFrame();
+    const was = this.#render;
+    this.#update(false);
+    if (was === null && this.#render === null) return;
     this.#options.onChange();
   }
 
@@ -527,12 +561,7 @@ export class ViewportPreview {
    */
   onWindowResize(): void {
     this.#evaluator.beginPass();
-    if (this.#width === null) {
-      this.#options.onChange();
-      return;
-    }
-    if (this.#layout() || innerHeight !== this.#height) this.#walk();
-    this.#writeFrame();
+    this.#update(innerHeight !== this.#height);
     this.#options.onChange();
   }
 
@@ -543,14 +572,14 @@ export class ViewportPreview {
 
   /** Read one live-edited rule again and restate the units; a full read when it is unknown. */
   refreshRule(rule: CSSRule): void {
-    if (this.#width === null) return;
+    if (this.#render === null) return;
     if (!rereadBlock(rule, this.#index)) this.#blocks = collectBlocks(this.#unitSheets(), this.#index);
     this.#writeUnits();
   }
 
   /** Run `fn` with every rewritten list at its authored text, then re-apply. */
   withAuthored<T>(fn: () => T): T {
-    if (this.#width === null) return fn();
+    if (this.#render === null) return fn();
     this.#busy = true;
     try {
       for (const list of this.#touched) setMedia(list, authored.get(list) ?? list.mediaText);
@@ -563,14 +592,51 @@ export class ViewportPreview {
 
   destroy(): void {
     this.#restore();
+    this.#width = null;
     this.#frame?.destroy();
     this.#frame = null;
   }
 
   /* ---------------------------------------------------------------------- */
 
+  /**
+   * Start, move or stop the render so it matches the asked width and the chrome's insets.
+   *
+   * False when a render had to start or move and the page refuses an evaluator; a render that was
+   * on is then put back, rather than left answering at a width it no longer shows. `walk` forces
+   * a media walk (the window's height changed).
+   */
+  #update(walk: boolean): boolean {
+    const insets = this.#options.insets();
+    const target = this.#width ?? (insets.docked ? roomOf(insets) : null);
+    if (target === null) {
+      if (this.#render !== null) this.#restore();
+      return true;
+    }
+    const moved = target !== this.#render;
+    if (moved) {
+      // Sized once for the whole pass: resizing per query is what costs (§1.1).
+      this.#evaluator.beginPass();
+      this.#evaluator.matches('(min-width: 0px)', target);
+      if (!this.#evaluator.available) {
+        if (this.#render !== null) this.#restore();
+        return false;
+      }
+    }
+    this.#render = target;
+    active = this;
+    const rescaled = this.#layout(insets);
+    if (moved || rescaled || walk) {
+      if (!moved) this.#evaluator.beginPass();
+      this.#walk();
+    }
+    this.#writeFrame();
+    this.#connect();
+    return true;
+  }
+
   #walk(): void {
-    const width = this.#width;
+    const width = this.#render;
     if (width === null) return;
     this.#busy = true;
     this.#height = innerHeight;
@@ -641,7 +707,7 @@ export class ViewportPreview {
 
   /** Write the units sheet, or remove it when nothing uses a width unit. */
   #writeUnits(): void {
-    const width = this.#width;
+    const width = this.#render;
     // Height units only while scaled: at 100% the frame is as tall as the window, so they are right.
     const height = this.#scale < 1 ? this.#evaluator.height : null;
     const css = width === null ? '' : unitsCss(this.#blocks, this.#inline, width, height);
@@ -664,30 +730,32 @@ export class ViewportPreview {
   }
 
   /**
-   * Where the frame sits and how far it is scaled, from the width, the window and the dock. Sets
-   * the evaluator's height to match. True when the scale changed, which moves that height.
+   * Where the frame sits and how far it is scaled, from the width, the window and the insets.
+   * Sets the evaluator's height to match. True when the scale changed, which moves that height.
    */
-  #layout(): boolean {
-    const width = this.#width;
+  #layout(insets: ViewportInsets): boolean {
+    const width = this.#render;
     const before = this.#scale;
     if (width === null) return false;
-    const dock = this.#options.dock();
-    const footprint = dock.open && !dock.floating ? dock.width + DOCK_GUTTER : 0;
-    const available = Math.max(MIN_VIEWPORT, innerWidth - footprint);
+    const available = roomOf(insets);
     const wider = width > available;
     this.#overflows = wider;
     this.#room = available;
+    this.#roomLeft = insets.left;
+    this.#top = insets.top;
     // Rounded down, so the scaled frame always fits rather than overhanging by a subpixel.
     this.#scale = wider && this.#fit && zoomWorks() ? Math.floor((available / width) * 1000) / 1000 : 1;
-    // Centred in the space the docked panel leaves; flush left when the frame is wider than that.
-    this.#frameLeft = Math.max(0, Math.floor((available - width) / 2));
-    this.#reserve = wider && this.#scale === 1 ? footprint : 0;
-    this.#evaluator.setHeight(this.#scale < 1 ? Math.round(innerHeight / this.#scale) : null);
+    // Centred in the room the panels leave; flush to its left when the frame is wider than that.
+    this.#frameLeft = insets.left + Math.max(0, Math.floor((available - width) / 2));
+    this.#reserve = wider && this.#scale === 1 ? insets.right : 0;
+    // Docked, the page stands for a window as tall as what the bar leaves.
+    const tall = innerHeight - insets.top;
+    this.#evaluator.setHeight(this.#scale < 1 ? Math.round(tall / this.#scale) : insets.top ? tall : null);
     return this.#scale !== before;
   }
 
   #writeFrame(): void {
-    const width = this.#width;
+    const width = this.#render;
     if (width === null) return;
     this.#frame ??= new ManagedStyleSheet(FRAME_SHEET_ID, { internal: true });
     /*
@@ -702,11 +770,19 @@ export class ViewportPreview {
       // at its own size. Important, to beat the host's inline `all: initial`.
       ? ` zoom: ${this.#scale} !important; } ${HOST_TAG} { zoom: ${1 / this.#scale} !important;`
       : '';
+    /*
+     * The root's zoom scales its own margins too (measured: 200px under zoom 0.5 lands at 100px),
+     * so they are written in unzoomed px. A wide preview used to be flush left, where that did not
+     * show; with a left panel keeping room, the frame landed half way into it.
+     */
+    const left = round2(this.#frameLeft / this.#scale);
+    const top = round2(this.#top / this.#scale);
     this.#busy = true;
     try {
       this.#frame.write(
         `html { width: ${width}px !important; min-width: 0 !important; max-width: none !important; ` +
-        `margin-left: ${this.#frameLeft}px !important; margin-right: ${this.#reserve}px !important; ` +
+        `margin-left: ${left}px !important; margin-right: ${this.#reserve}px !important; ` +
+        `margin-top: ${top}px !important; ` +
         `box-sizing: border-box !important;${scrolls}${scaled} }`,
       );
     } finally {
@@ -719,7 +795,7 @@ export class ViewportPreview {
     this.#observer = new MutationObserver((records) => {
       if (records.some(touchesPageCss)) this.reconcile();
       // An inline value, or an element moved: inline twins are keyed by position.
-      else if (this.#width !== null && records.some((record) => !isEditorOwned(record.target))) {
+      else if (this.#render !== null && records.some((record) => !isEditorOwned(record.target))) {
         this.#inline = collectInline(this.#scale < 1);
         this.#writeUnits();
       }
@@ -752,14 +828,25 @@ export class ViewportPreview {
     this.#index.clear();
     this.#frame?.write('');
     this.#frameLeft = 0;
+    this.#roomLeft = 0;
+    this.#top = 0;
     this.#scale = 1;
     this.#reserve = 0;
     this.#overflows = false;
     this.#room = 0;
     this.#evaluator.setHeight(null);
-    this.#width = null;
+    this.#render = null;
     if (active === this) active = null;
   }
+}
+
+/** The width between the panels, in screen px, never under the smallest previewable width. */
+function roomOf(insets: ViewportInsets): number {
+  return Math.max(MIN_VIEWPORT, Math.round(innerWidth - insets.left - insets.right));
+}
+
+function round2(value: number): number {
+  return Math.round(value * 100) / 100;
 }
 
 /**

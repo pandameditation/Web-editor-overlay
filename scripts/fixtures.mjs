@@ -170,6 +170,8 @@ export const MANUAL_PAGES = {
     'Poked by hand through scripts/firefox-poke.mjs. Emits no results at all.',
   'test/styles-shots.html':
     'A page to look at. Sets one panel state from its query string and reports ready.',
+  'test/toolbar-shots.html':
+    'A page to look at. Sets the floating or docked layout and the theme from its query string, reports ready.',
 };
 
 /**

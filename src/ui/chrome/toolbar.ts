@@ -1,5 +1,6 @@
 import { css, html, nothing, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
+import { DOCKED_BAR_HEIGHT } from '../../core/constants.js';
 import { firstFocusable } from '../../core/modal.js';
 import { listen, unlisten } from '../../core/shield.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
@@ -26,6 +27,11 @@ import { renderViewportControls, viewportMenuStyles } from './viewport-menu.js';
  * It stays where it was put. Its left end is the anchor: growing or shrinking never moves the
  * handle, and a window too narrow for it shows it nudged left without forgetting where it was.
  * Only a drag moves it.
+ *
+ * Pinned (layout 'dock', while editing), it is a full-width bar across the top instead, in three
+ * groups: the handle, Edit and the selection on the left, the preview size in the middle, and the
+ * history, Save, the panel switches and the pin on the right. Nothing to drag then. With Edit off
+ * it floats as usual, since the panels it was pinned with are hidden and the page has the window.
  */
 
 /** Movement under this many pixels is a click on the handle, which opens the menu. */
@@ -61,6 +67,46 @@ export class HeoToolbar extends HeoElement {
         padding: 5px;
         border-radius: var(--heo-r-xl);
         max-width: calc(100vw - 32px);
+      }
+
+      /* Floating, the groups are not boxes: the bar is one row. Pinned, they are its three cells. */
+      .grp {
+        display: contents;
+      }
+      :host([data-layout='dock']) {
+        left: 0;
+        right: 0;
+        top: 0;
+        height: ${DOCKED_BAR_HEIGHT}px;
+      }
+      :host([data-layout='dock']) .bar {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+        gap: 12px;
+        box-sizing: border-box;
+        height: 100%;
+        max-width: none;
+        padding: 0 8px;
+        border-width: 0 0 1px;
+        border-radius: 0;
+        box-shadow: none;
+      }
+      :host([data-layout='dock']) .grp {
+        display: flex;
+        align-items: center;
+        gap: 3px;
+        min-width: 0;
+      }
+      :host([data-layout='dock']) .grp.end {
+        justify-content: flex-end;
+      }
+      /* The separators between the groups: the grid's gap is the separation when pinned. */
+      :host([data-layout='dock']) .sep.between {
+        display: none;
+      }
+      :host([data-layout='dock']) .selection {
+        min-width: 0;
+        flex: 0 1 auto;
       }
 
       /* Every control holds its tip, placed under it. */
@@ -331,6 +377,12 @@ export class HeoToolbar extends HeoElement {
     const width = this.offsetWidth;
     const height = this.offsetHeight;
     if (!this.isConnected || !width) return;
+    // Pinned, the stylesheet places it across the top; the floating place is kept for later.
+    if (this.dataset.layout === 'dock') {
+      this.style.removeProperty('left');
+      this.style.removeProperty('top');
+      return;
+    }
     const stored = this.state.value.toolbar;
     if (!stored && !this.#home) {
       const full = this.state.value.editing ? width : EDITING_WIDTH_GUESS;
@@ -417,12 +469,13 @@ export class HeoToolbar extends HeoElement {
 
   override render(): TemplateResult {
     const state = this.state.value;
-    const docked = state.layout === 'dock';
-    this.dataset.layout = state.layout;
+    const docked = state.editing && state.layout === 'dock';
+    this.dataset.layout = docked ? 'dock' : 'float';
     const label = state.selected ? tagLabel(state.selected) : null;
     const heoOpen = this.open === 'heo';
 
     return html`<div class="bar surface">
+        <div class="grp start">
         <div class="handle" @pointerdown=${docked ? nothing : this.#onHandleDown}>
           ${docked ? nothing : html`<span class="grip" aria-hidden="true">${icon('grip', 13)}</span>`}
           <button
@@ -456,8 +509,10 @@ export class HeoToolbar extends HeoElement {
           Edit
           ${tip(state.editing ? 'Leave edit mode' : 'Enter edit mode', `${modLabel()} E`, 'Panels, sizes and layout are kept until you reload')}
         </button>
+        ${state.editing ? this.#renderSelection(label) : nothing}
+        </div>
 
-        ${state.editing ? this.#renderTools(label, state.changeCount) : nothing}
+        ${state.editing ? this.#renderTools(state.changeCount, docked) : nothing}
       </div>
       ${heoOpen ? this.#renderHeoMenu() : nothing}`;
   }
@@ -494,12 +549,7 @@ export class HeoToolbar extends HeoElement {
     });
   }
 
-  #renderTools(label: string | null, changes: number): TemplateResult {
-    const state = this.state.value;
-    const mod = modLabel();
-    const undoTip = state.undoLabel ? `Undo: ${state.undoLabel}` : 'Undo';
-    const docked = state.layout === 'dock';
-    const pinTip = docked ? 'Docked to the edges' : 'Floating over the page';
+  #renderSelection(label: string | null): TemplateResult {
     return html`
       <span class="sep"></span>
 
@@ -507,21 +557,33 @@ export class HeoToolbar extends HeoElement {
         ${icon('cursor', 11)}<span class="name">${label ?? 'Click any element'}</span>
         ${tip('Current selection', '', label ? 'Click any element on the page to change it' : 'Nothing is selected yet')}
       </span>
+    `;
+  }
 
-      <span class="sep"></span>
+  #renderTools(changes: number, docked: boolean): TemplateResult {
+    const state = this.state.value;
+    const mod = modLabel();
+    const undoTip = state.undoLabel ? `Undo: ${state.undoLabel}` : 'Undo';
+    const pinTip = docked ? 'Docked to the edges' : 'Floating over the page';
+    return html`
+      <span class="sep between"></span>
 
+      <div class="grp mid">
       ${renderViewportControls({
       engine: this.editor,
       previewWidth: state.previewWidth,
+      docked,
       open: this.open === 'viewport' || this.open === 'sizes' ? this.open : null,
       onOpen: (layer, refocus) => this.#setOpen(layer, refocus),
       onLayout: () => this.#placeOpen(),
       refresh: () => this.requestUpdate(),
       inShadowRoot: state.selected !== null && state.selected.getRootNode() instanceof ShadowRoot,
     })}
+      </div>
 
-      <span class="sep"></span>
+      <span class="sep between"></span>
 
+      <div class="grp end">
       <button
         class="btn icon ghost"
         type="button"
@@ -579,6 +641,7 @@ export class HeoToolbar extends HeoElement {
         ${icon('pin', 15)}
         ${tip(pinTip, 'D', docked ? 'D: float over the page' : 'D: pin to the edges, with the page between the panels')}
       </button>
+      </div>
     `;
   }
 

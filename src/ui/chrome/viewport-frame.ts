@@ -16,6 +16,12 @@ import { baseStyles, surfaceStyles } from '../theme.js';
  * A width wider than the room is scaled to fit by default, and the label says by how much and
  * offers 100% instead; at 100% the page scrolls sideways and the label offers fitting again.
  *
+ * The label is a reaction, not a fixture: it shows when the width changes or the layout is docked
+ * (`previewLabel`), and its × hides it without touching the width. Docked at Actual the page is
+ * laid out in the room between the panels, so the label says that width ("Actual: 712px, between
+ * the panels") and follows it as the panels open, close or resize; there is nothing to go back to
+ * and nothing outside the page to shade.
+ *
  * Inert apart from its buttons, so the page under the shade can still be selected.
  */
 @customElement('heo-viewport-frame')
@@ -60,19 +66,54 @@ export class HeoViewportFrame extends HeoElement {
     `,
   ];
 
-  /* Everything the frame's position depends on, so it moves with the dock and the scroll. */
+  /* Everything the frame's position depends on, so it moves with the panels and the scroll. */
   protected state = new StoreController(
     this,
     this.editor.store,
     (s) =>
-      [s.editing, s.previewWidth, s.geometry, s.dockOpen, s.dockWidth, s.dockFloat] as const,
+      [
+        s.editing,
+        s.previewWidth,
+        s.previewLabel,
+        s.geometry,
+        s.layout,
+        s.dockOpen,
+        s.dockWidth,
+        s.dockFloat,
+        s.pageOpen,
+        s.pageWidth,
+        s.pageFloat,
+      ] as const,
     shallowArrayEquals,
   );
 
   override render(): TemplateResult | typeof nothing {
-    const { editing, previewWidth: width } = this.state.value;
-    if (!editing || width === null) return nothing;
-    const { scale, overflows, canFit, room } = this.editor.viewport;
+    const { editing, previewWidth: width, previewLabel, layout } = this.state.value;
+    const { scale, overflows, canFit, room, roomLeft, renderWidth } = this.editor.viewport;
+    if (!editing || renderWidth === null) return nothing;
+    /*
+     * Centred in the room between the panels, never on the frame: at 100% the frame runs under
+     * the right panel and off screen, and centring on it put "Fit to window" where it could not
+     * be clicked. Narrower than its text, the label wraps rather than spilling out of the room.
+     */
+    const placed = `left:${Math.round(roomLeft + room / 2)}px;max-width:${Math.max(160, room - 16)}px`;
+    const hide = html`<button
+      class="btn sm ghost hide"
+      type="button"
+      aria-label="Hide this label"
+      @click=${() => this.editor.setPreviewLabel(false)}
+    >
+      ${icon('close', 11)}
+    </button>`;
+    if (width === null) {
+      // Docked at Actual: the room is the width, so the label is only what that width is.
+      return previewLabel && layout === 'dock'
+        ? html`<div class="label surface" style=${placed} role="status">
+            <span>Actual: ${room}px<span class="note">, between the panels</span></span>
+            ${hide}
+          </div>`
+        : nothing;
+    }
     const left = this.editor.viewport.frameLeft - scrollX;
     // What the frame covers on screen: a fitted preview is drawn at `scale`.
     const shown = width * scale;
@@ -80,17 +121,25 @@ export class HeoViewportFrame extends HeoElement {
     const scaled = scale < 1;
     // At 100% and wider than the room: there is something to scroll to.
     const scrolls = overflows && !scaled;
-    /*
-     * Centred in the room beside the dock, never on the frame: at 100% the frame runs under the
-     * dock and off screen, and centring on it put "Fit to window" where it could not be clicked.
-     * Narrower than its text, the label wraps rather than spilling out of the room.
-     */
-    const placed = `left:${Math.round(room / 2)}px;max-width:${Math.max(160, room - 16)}px`;
     return html`
       ${left > 0 ? html`<div class="shade" style=${`left:0;width:${left}px`}></div>` : nothing}
       ${right < innerWidth
         ? html`<div class="shade" style=${`left:${right}px;right:0`}></div>`
         : nothing}
+      ${previewLabel ? this.#renderLabel(width, placed, scaled, scrolls, canFit, hide) : nothing}
+    `;
+  }
+
+  #renderLabel(
+    width: number,
+    placed: string,
+    scaled: boolean,
+    scrolls: boolean,
+    canFit: boolean,
+    hide: TemplateResult,
+  ): TemplateResult {
+    const scale = this.editor.viewport.scale;
+    return html`
       <div class="label surface" style=${placed} role="status">
         <span>
           Previewing ${width}px${scaled
@@ -116,6 +165,7 @@ export class HeoViewportFrame extends HeoElement {
         >
           ${icon('close', 11)} Back to actual
         </button>
+        ${hide}
       </div>
     `;
   }

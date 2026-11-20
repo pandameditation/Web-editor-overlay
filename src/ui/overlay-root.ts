@@ -121,8 +121,11 @@ export class HeoOverlay extends HeoElement {
     else document.documentElement.style.removeProperty('--heo-drag-accent');
 
     return html`
-      <!-- First, so the shade sits under the selection outlines and every piece of chrome. -->
-      ${state.editing && state.previewWidth !== null
+      <!--
+        First, so the shade sits under the selection outlines and every piece of chrome. Docked,
+        at Actual too: the page is laid out between the panels, and the label says at what width.
+      -->
+      ${state.editing && (state.previewWidth !== null || state.layout === 'dock')
         ? html`<heo-viewport-frame></heo-viewport-frame>`
         : nothing}
       ${state.editing ? html`<heo-selection-layer></heo-selection-layer>` : nothing}

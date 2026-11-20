@@ -18,6 +18,7 @@ import {
   DRAGGING_ATTR,
   DRAG_TIMING,
   EDITING_ATTR,
+  DOCKED_BAR_HEIGHT,
   EDIT_DISCARDED_EVENT,
   HOST_TAG,
   IGNORE_ATTR,
@@ -50,6 +51,7 @@ import {
   authoredPrelude,
   bindViewport,
   collectPageMedia,
+  DOCK_GUTTER,
   noteRuleEdited,
   MediaEvaluator,
   pageScale,
@@ -1262,11 +1264,24 @@ export class EditorEngine {
    */
   readonly viewport = new ViewportPreview(this.#media, {
     onChange: () => this.#bumpGeometry(),
-    dock: () => ({
-      open: this.store.value.dockOpen,
-      width: this.store.value.dockWidth,
-      floating: this.store.value.dockFloat !== null,
-    }),
+    /*
+     * Floating, a panel at its edge keeps its width and the gutter, and a moved one keeps nothing
+     * (the page panel too now, not only the right one). Docked, the panels and the bar keep what
+     * they cover, and the page is laid out between them. Nothing while Edit is off, when the panels
+     * are hidden: the page goes back to the window then, docked or not.
+     */
+    insets: () => {
+      const s = this.store.value;
+      const docked = s.editing && s.layout === 'dock';
+      const keeps = (open: boolean, width: number, moved: boolean): number =>
+        !s.editing || !open ? 0 : docked ? width : moved ? 0 : width + DOCK_GUTTER;
+      return {
+        docked,
+        left: keeps(s.pageOpen, s.pageWidth, s.pageFloat !== null),
+        right: keeps(s.dockOpen, s.dockWidth, s.dockFloat !== null),
+        top: docked ? DOCKED_BAR_HEIGHT : 0,
+      };
+    },
   });
 
   #listeners: Array<() => void> = [];
@@ -1408,7 +1423,8 @@ export class EditorEngine {
     this.options = options;
     this.#animationSheet.write(animationLibraryCss());
     // `null` width means the width the page renders at: the preview's, else the window's.
-    bindViewport(this.#media, () => this.viewport.width);
+    // The rendered width, not the asked one: docked at Actual the page answers at the room.
+    bindViewport(this.#media, () => this.viewport.renderWidth);
     this.#sourceAccess = { endpoint: options.sourceEndpoint, token: options.sourceToken };
     // A change to something inside a shadow tree is journaled from inside that tree.
     this.history.observeRootsWith((record) => shadowRootsOf(elementOfRecord(record)));
@@ -1602,17 +1618,29 @@ export class EditorEngine {
     syncSettings();
     this.#listeners.push(this.settings.onChange(syncSettings));
     /*
-     * The preview frame is centred in the space the docked panel leaves, so it moves with the dock.
-     * Only the frame sheet is rewritten; the media verdicts do not depend on the dock.
+     * The preview frame is centred in the room the panels leave, so it moves with them. With a
+     * width previewed only the frame sheet is rewritten; docked at Actual the room is the width,
+     * so a panel resized re-walks the media. One relayout per frame: a resize drag patches the
+     * width on every pointermove, and walking the sheets that often made the drag stutter.
      */
-    let dockTuple = '';
+    let panelTuple = '';
+    let relayoutFrame = 0;
     this.#listeners.push(
       this.store.subscribe((state) => {
-        const next = `${state.dockOpen}|${state.dockWidth}|${state.dockFloat !== null}`;
-        if (next === dockTuple) return;
-        dockTuple = next;
-        if (this.viewport.width !== null) this.viewport.relayout();
+        const next = [
+          state.editing, state.layout,
+          state.pageOpen, state.pageWidth, state.pageFloat !== null,
+          state.dockOpen, state.dockWidth, state.dockFloat !== null,
+        ].join('|');
+        if (next === panelTuple) return;
+        panelTuple = next;
+        if (relayoutFrame) return;
+        relayoutFrame = requestAnimationFrame(() => {
+          relayoutFrame = 0;
+          this.viewport.relayout();
+        });
       }),
+      () => cancelAnimationFrame(relayoutFrame),
     );
     if (this.store.value.editing) void this.#sweepOnLoad();
 
@@ -1871,6 +1899,9 @@ export class EditorEngine {
       // the open panel, although the user expects the layout, tabs and sizes to come back as left;
       // the overlay root already hides every panel while not editing.
     });
+    // Now, not a frame later: docked, Edit off gives the page its window back (and Edit on lays it
+    // out between the panels again) in the same task that hides or shows them.
+    this.viewport.relayout();
     if (editing) void this.#sweepOnLoad();
   }
 
@@ -1961,6 +1992,8 @@ export class EditorEngine {
   setLayout(layout: 'float' | 'dock'): void {
     if (this.store.value.layout === layout) return;
     this.store.patch(layout === 'dock' ? { layout, previewLabel: true } : { layout });
+    // At once: the docked bar and panels draw this frame, and the page has to be between them.
+    this.viewport.relayout();
   }
 
   toggleLayout(): void {

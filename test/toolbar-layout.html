@@ -6,6 +6,8 @@
   <style>
     body { margin: 0; padding: 24px; font-family: system-ui, sans-serif; }
     pre { margin-top: 16px; }
+    /* Answered at the room between the docked panels (236px here), not at the window. */
+    @media (max-width: 500px) { #second { letter-spacing: 2px; } }
   </style>
 </head>
 <body>
@@ -553,6 +555,218 @@
       };
 
       /* ---------------------------------------------------------------- *
+       * The pin: the bar across the top, the panels flush under it, the page between them.
+       * ---------------------------------------------------------------- */
+      progress.textContent = 'pin';
+      await reset();
+      // Narrow panels, so the room between them (756 - 220 - 300 = 236) is above the 200px floor.
+      engine.setPanelWidth('page', 220);
+      engine.setPanelWidth('selection', 300);
+      api.select(document.getElementById('first'));
+      await frames();
+      const BAR_H = 44;
+      const press = (target, key, init = {}) => {
+        const event = new KeyboardEvent('keydown', { key, bubbles: true, composed: true, cancelable: true, ...init });
+        target.dispatchEvent(event);
+        return event;
+      };
+      const pinButton = () => inBar('button[aria-label="Pin the toolbar and panels to the edges"]');
+      const htmlBox = () => document.documentElement.getBoundingClientRect();
+      const floatPlace = boxNow();
+      const storedBefore = JSON.stringify(state().toolbar);
+      const floatTipText = tipText(pinButton());
+      pinButton().click();
+      await frames();
+      const pinDocks = state().layout === 'dock' && pinButton().getAttribute('aria-pressed') === 'true' &&
+        bar().dataset.layout === 'dock';
+      const dockTipText = tipText(pinButton());
+      const barBox = rect(bar());
+      const grp = (name) => inBar(`.grp.${name}`);
+      // Three groups: the handle, Edit and the selection; the preview size, centred; the rest.
+      const groupsHold = grp('start')?.contains(inBar('.handle')) && grp('start')?.contains(inBar('button.toggle')) &&
+        grp('start')?.contains(inBar('.selection')) && grp('mid')?.contains(inBar('[data-menu-anchor="viewport"]')) &&
+        ['Undo', 'Redo', 'Page panel', 'Selection panel', 'Pin the toolbar and panels to the edges']
+          .every((name) => grp('end')?.contains(inBar(`button[aria-label="${name}"]`))) &&
+        grp('end')?.contains(inBar('button.btn.primary'));
+      const midBox = rect(grp('mid'));
+      // Left, centred, right, and nothing running into the next group (the chip shrinks first).
+      const groupsPlaced = Math.round(rect(inBar('.handle')).left) <= 10 &&
+        Math.abs((midBox.left + midBox.right) / 2 - innerWidth / 2) <= 2 &&
+        Math.round(rect(pinButton()).right) >= innerWidth - 10 &&
+        rect(inBar('.selection')).right <= rect(inBar('.vp')).left &&
+        rect(inBar('.vp')).right <= rect(inBar('button[aria-label="Undo"]')).left;
+      diagnostics.dockedGroups = [inBar('.selection'), inBar('.vp'), inBar('button[aria-label="Undo"]'), pinButton()]
+        .map((el) => [Math.round(rect(el).left), Math.round(rect(el).right)]);
+      const pageDocked = rect(dock('page'));
+      const selDocked = rect(dock('selection'));
+      const htmlDocked = htmlBox();
+      const letterSpacingDocked = getComputedStyle(document.getElementById('second')).letterSpacing;
+      const firstParaBox = rect(document.getElementById('first'));
+      const selectBox = deepAll('.select').map((el) => rect(el)).find((box) => box.width > 0);
+      diagnostics.docked = { html: htmlDocked.toJSON(), page: pageDocked.toJSON(), selection: selDocked.toJSON(), render: engine.viewport.renderWidth };
+      // Dragging the docked H moves nothing; clicking it opens the menu.
+      let hAt = centre(inBar('button[aria-label="HEO menu"]'));
+      await drag(hAt, { x: hAt.x + 80, y: hAt.y + 40 });
+      const dockedStill = JSON.stringify(state().toolbar) === storedBefore && Math.round(rect(bar()).left) === 0;
+      await closeLayers();
+      await click(centre(inBar('button[aria-label="HEO menu"]')));
+      const dockedMenu = isOpen('heo') && !inBar('.handle .grip');
+      await closeLayers();
+      // Resizing a docked panel lays the page out again, in the next frame.
+      const dockGrab = grabPoint('page');
+      await drag(dockGrab, { x: dockGrab.x + 30, y: dockGrab.y });
+      await frames();
+      const reflowed = state().pageWidth === 250 && Math.round(htmlBox().left) === 250 &&
+        Math.round(htmlBox().right) === Math.round(rect(dock('selection')).left) &&
+        engine.viewport.renderWidth === innerWidth - 250 - 300;
+      engine.setPanelWidth('page', 220);
+      await frames();
+      pinButton().click();
+      await frames();
+      const floatsBack = state().layout === 'float' && bar().dataset.layout === 'float' && boxNow() === floatPlace &&
+        engine.viewport.renderWidth === null && Math.round(htmlBox().left) === 0 && Math.round(htmlBox().width) === innerWidth &&
+        Math.round(htmlBox().top) === 0;
+      // D, on the page: the same switch. In a field it is a D.
+      document.activeElement?.blur?.();
+      press(document.body, 'd');
+      await frames();
+      const dDocks = state().layout === 'dock' && bar().dataset.layout === 'dock';
+      press(document.body, 'd');
+      await frames();
+      const dFloats = state().layout === 'float';
+      engine.setDockTab('library');
+      await frames();
+      await settle(100);
+      const field = deepAll('input', dock('page').shadowRoot)[0];
+      field?.focus();
+      const dEvent = field ? press(field, 'd') : null;
+      await frames();
+      const dInField = Boolean(field) && state().layout === 'float' && !dEvent.defaultPrevented;
+      field?.blur();
+      engine.setDockTab('tree');
+      await frames();
+      results.pin = {
+        pinTogglesDocked: pinDocks && floatsBack,
+        dKeyTogglesDocked: dDocks && dFloats,
+        dInAFieldDoesNothing: dInField,
+        dockedBarSpansTheWindow: Math.round(barBox.left) === 0 && Math.round(barBox.right) === innerWidth &&
+          Math.round(barBox.top) === 0 && Math.round(barBox.height) === BAR_H,
+        dockedBarHasThreeGroups: Boolean(groupsHold) && groupsPlaced,
+        dockedPanelsAreFlushUnderTheBar: Math.round(pageDocked.left) === 0 && Math.round(pageDocked.top) === BAR_H &&
+          Math.round(pageDocked.bottom) === innerHeight && Math.round(pageDocked.width) === 220 &&
+          Math.round(selDocked.right) === innerWidth && Math.round(selDocked.top) === BAR_H &&
+          Math.round(selDocked.bottom) === innerHeight && Math.round(selDocked.width) === 300,
+        // The page's root box sits between the panels and below the bar, at Actual.
+        pageIsLaidOutBetweenThePanels: state().previewWidth === null &&
+          Math.round(htmlDocked.left) === Math.round(pageDocked.right) &&
+          Math.round(htmlDocked.right) === Math.round(selDocked.left) && Math.round(htmlDocked.top) === BAR_H &&
+          diagnostics.docked.render === innerWidth - 220 - 300,
+        // The media queries answer at the room: 236px matches max-width 500px, the window does not.
+        mediaQueriesAnswerAtTheRoom: diagnostics.docked.render === 236 &&
+          getComputedStyle(document.getElementById('second')).letterSpacing === 'normal' &&
+          letterSpacingDocked === '2px',
+        // Outlines are drawn from the element's box, so the narrowed, lowered page keeps them on it.
+        selectionOutlinesFollowThePage: Boolean(selectBox) && Math.abs(selectBox.left - firstParaBox.left) <= 1 &&
+          Math.abs(selectBox.top - firstParaBox.top) <= 1 && Math.abs(selectBox.width - firstParaBox.width) <= 1 &&
+          firstParaBox.left >= pageDocked.right && firstParaBox.top >= BAR_H,
+        dockedHOnlyOpensTheMenu: dockedStill && dockedMenu,
+        dockedResizeReflowsThePage: reflowed,
+        floatingAgainTheBarIsBackInItsPlace: floatsBack && JSON.stringify(state().toolbar) === storedBefore,
+        pinTipNamesBothStatesAndD: /^Floating over the page D /.test(floatTipText) && /^Docked to the edges D /.test(dockTipText),
+      };
+
+      /* ---------------------------------------------------------------- *
+       * The label: a reaction to a viewport change or to docking, hidden by its ×.
+       * ---------------------------------------------------------------- */
+      progress.textContent = 'label';
+      await reset();
+      engine.setPanelWidth('page', 220);
+      engine.setPanelWidth('selection', 300);
+      engine.setPreviewWidth(null);
+      engine.setPreviewLabel(false);
+      await frames();
+      const frameRoot = () => deepAll('heo-viewport-frame')[0]?.shadowRoot ?? null;
+      const labelEl = () => frameRoot()?.querySelector('.label') ?? null;
+      const labelText = () => labelEl()?.textContent.replace(/\s+/g, ' ').trim() ?? null;
+      const labelButton = (name) => Array.from(labelEl()?.querySelectorAll('button') ?? [])
+        .find((b) => b.getAttribute('aria-label') === name || b.textContent.trim() === name) ?? null;
+      const hiddenAtStart = !state().previewLabel && !labelEl();
+      // A re-render for another reason does not bring it back.
+      engine.setPanelWidth('selection', 310);
+      await frames();
+      engine.setPanelWidth('selection', 300);
+      await frames();
+      const stillHidden = !labelEl();
+      engine.setPreviewWidth(480);
+      await frames();
+      const shown = state().previewLabel && /^Previewing 480px/.test(labelText() ?? '') &&
+        Boolean(labelButton('Back to actual')) && Boolean(labelButton('Hide this label'));
+      labelButton('Hide this label')?.click();
+      await frames();
+      const xHides = !state().previewLabel && !labelEl() && state().previewWidth === 480 &&
+        engine.viewport.width === 480 && Boolean(frameRoot());
+      // The same width again is not a change.
+      engine.setPreviewWidth(480);
+      await frames();
+      const sameStaysHidden = !labelEl();
+      engine.setPreviewWidth(null);
+      engine.setPreviewLabel(false);
+      await frames();
+      const noneFloatingAtActual = !frameRoot();
+      engine.setLayout('dock');
+      await frames();
+      const dockShows = state().previewLabel && Boolean(labelEl());
+      const roomNow = innerWidth - 220 - 300;
+      const dockedText = labelText() ?? '';
+      const labelBox = rect(labelEl());
+      const centredInRoom = Boolean(labelBox) && Math.abs((labelBox.left + labelBox.right) / 2 - (220 + roomNow / 2)) <= 2;
+      const dockedActual = new RegExp(`^Actual: ${roomNow}px, between the panels`).test(dockedText) &&
+        !labelButton('Back to actual') && Boolean(labelButton('Hide this label')) && !frameRoot().querySelector('.shade') &&
+        /^Actual: \d+px, between the panels/.test(dockedText);
+      // The bar's Actual is the room too, and says so in the menu.
+      const vpReads = inBar('[data-menu-anchor="viewport"] .vw')?.textContent.trim() === String(roomNow);
+      inBar('[data-menu-anchor="viewport"]').click();
+      await frames();
+      const actualNote = layer('viewport')?.querySelector('[data-key="actual"]')?.textContent.replace(/\s+/g, ' ') ?? '';
+      await closeLayers();
+      // Closing a panel: the room, the label and the page follow.
+      engine.setPanelOpen('page', false);
+      await frames();
+      const afterClose = labelText() ?? '';
+      const followsClose = new RegExp(`^Actual: ${innerWidth - 300}px, between the panels`).test(afterClose) &&
+        Math.round(htmlBox().left) === 0 && engine.viewport.renderWidth === innerWidth - 300;
+      engine.setPanelOpen('page', true);
+      await frames();
+      // A width picked while docked, then Back to actual: the page stays between the panels.
+      engine.setPreviewWidth(320);
+      await frames();
+      const dockedPreview = /^Previewing 320px/.test(labelText() ?? '') && Boolean(labelButton('Hide this label'));
+      labelButton('Back to actual')?.click();
+      await frames();
+      const backKeepsRoom = state().previewWidth === null && engine.viewport.renderWidth === roomNow &&
+        Math.round(htmlBox().left) === 220 && /^Actual: /.test(labelText() ?? '');
+      labelButton('Hide this label')?.click();
+      await frames();
+      const dockedXHides = !labelEl() && engine.viewport.renderWidth === roomNow && state().layout === 'dock';
+      engine.setLayout('float');
+      await frames();
+      const windowBack = engine.viewport.renderWidth === null && !frameRoot() && Math.round(htmlBox().width) === innerWidth;
+      diagnostics.label = { dockedText, afterClose, actualNote, labelBox: labelBox?.toJSON() };
+      results.label = {
+        labelHiddenUntilAViewportChange: hiddenAtStart && stillHidden && noneFloatingAtActual,
+        aChangeShowsIt: shown,
+        xHidesOnlyTheLabel: xHides && sameStaysHidden,
+        dockingShowsItAgain: dockShows,
+        dockedActualReadsActualBetweenThePanels: dockedActual,
+        theLabelIsCentredInTheRoom: centredInRoom,
+        theBarsActualIsTheRoom: vpReads && new RegExp(`between the panels, ${roomNow}px`).test(actualNote),
+        itUpdatesAsAPanelCloses: followsClose,
+        aDockedPreviewHasTheXToo: dockedPreview && dockedXHides,
+        backToActualWhileDockedKeepsTheRoom: backKeepsRoom,
+        floatingAtActualGivesThePageTheWindowBack: windowBack,
+      };
+
+      /* ---------------------------------------------------------------- *
        * Resize from the inner edge, move by the header row, and back to the edge.
        * ---------------------------------------------------------------- */
       progress.textContent = 'resize';
@@ -666,21 +880,32 @@
       const before = keep(state());
       const barBefore = JSON.stringify(state().toolbar);
       const boxesBefore = ['page', 'selection'].map((side) => JSON.stringify(rect(dock(side)).toJSON()));
+      const roomBefore = engine.viewport.renderWidth;
       api.setEditing(false);
       await frames();
       const hiddenWhileOff = !dock('page') && !dock('selection');
       const keptWhileOff = keep(state()) === before;
+      // Off, the page has the window back and the bar floats: the panels it was pinned with are hidden.
+      const offGivesTheWindow = engine.viewport.renderWidth === null &&
+        Math.round(document.documentElement.getBoundingClientRect().width) === innerWidth && bar().dataset.layout === 'float';
       api.setEditing(true);
       await frames();
       await settle(300);
       const boxesAfter = ['page', 'selection'].map((side) => JSON.stringify(rect(dock(side))?.toJSON() ?? null));
+      const layoutBack = state().layout === 'dock' && bar().dataset.layout === 'dock' &&
+        roomBefore !== null && engine.viewport.renderWidth === roomBefore;
+      const panelsBack = keep(state()) === before &&
+        boxesAfter.join() === boxesBefore.join() &&
+        tabs('page').find((t) => t.getAttribute('aria-selected') === 'true')?.getAttribute('aria-label') === 'Tokens' &&
+        tabs('selection').find((t) => t.getAttribute('aria-selected') === 'true')?.getAttribute('aria-label') === 'Props';
+      // The floating place is checked floating: pinned, the bar spans the window.
+      engine.setLayout('float');
+      await frames();
       results.kept = {
+        layoutKeptAcrossEditOffOn: offGivesTheWindow && layoutBack,
         panelsAreHiddenWhileEditIsOff: hiddenWhileOff,
         theStoreKeepsThemWhileEditIsOff: keptWhileOff,
-        editOffAndOnKeepsPanelsTabsSizesAndPositions: keep(state()) === before &&
-          boxesAfter.join() === boxesBefore.join() &&
-          tabs('page').find((t) => t.getAttribute('aria-selected') === 'true')?.getAttribute('aria-label') === 'Tokens' &&
-          tabs('selection').find((t) => t.getAttribute('aria-selected') === 'true')?.getAttribute('aria-label') === 'Props',
+        editOffAndOnKeepsPanelsTabsSizesAndPositions: panelsBack,
         // The place is kept; where it shows follows the bar's width now (the selection chip's
         // text may differ), clamped into the window from that same place.
         barPositionKeptAcrossEditOffOn: JSON.stringify(state().toolbar) === barBefore && (() => {
